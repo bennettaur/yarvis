@@ -2,9 +2,9 @@ import type * as Monaco from "monaco-editor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { monacoLanguageForPath } from "./language";
 import { attachLineActions } from "./lineActions";
-import { useMonaco } from "./loader";
+import { type MonacoApi, useMonaco } from "./loader";
 import { BASE_EDITOR_OPTIONS, EditorPlaceholder } from "./MonacoFileView";
-import { acquireModel, releaseModel, syncModel } from "./models";
+import { acquireModel, ModelHold, syncModel } from "./models";
 import { type OpenLocationHandler, setOpenLocationHandler } from "./navigation";
 import type { EditorZone, LineAction } from "./types";
 import { type PlacedZone, useZonePortals } from "./useZonePortals";
@@ -77,13 +77,18 @@ function DiffEditor({
   onLineAction,
   revealLine,
   onOpenLocation,
-}: MonacoDiffViewProps & { monaco: typeof Monaco }) {
+}: MonacoDiffViewProps & { monaco: MonacoApi }) {
   const container = useRef<HTMLDivElement>(null);
   const [diff, setDiff] = useState<Monaco.editor.IStandaloneDiffEditor | null>(null);
-  const [models, setModels] = useState<{
+  // The models on screen and the URIs they were made for, so content is only
+  // ever written into the models it belongs to.
+  const [held, setHeld] = useState<{
+    originalUri: string;
+    modifiedUri: string;
     original: Monaco.editor.ITextModel;
     modified: Monaco.editor.ITextModel;
   } | null>(null);
+  const hold = useRef<ModelHold | null>(null);
   const [changes, setChanges] = useState<LineChange[]>([]);
   const callbacks = useRef({ onLineAction, onOpenLocation });
   callbacks.current = { onLineAction, onOpenLocation };
@@ -105,14 +110,19 @@ function DiffEditor({
     setOpenLocationHandler(made.getModifiedEditor(), getOpen);
     const getAction = () => callbacks.current.onLineAction;
     const actions = [
-      attachLineActions(monaco, made.getOriginalEditor(), "LEFT", getAction),
-      attachLineActions(monaco, made.getModifiedEditor(), "RIGHT", getAction),
+      attachLineActions(monaco, made.getOriginalEditor(), () => "LEFT", getAction),
+      attachLineActions(monaco, made.getModifiedEditor(), () => "RIGHT", getAction),
     ];
+    // `getLineChanges` is the only public view of the computed diff in this
+    // Monaco version; the richer `getDiffComputationResult` is internal.
     const diffUpdates = made.onDidUpdateDiff(() => setChanges(made.getLineChanges() ?? []));
     setDiff(made);
     return () => {
       diffUpdates.dispose();
       for (const a of actions) a.dispose();
+      made.setModel(null);
+      hold.current?.release();
+      hold.current = null;
       made.dispose();
       setDiff(null);
     };
@@ -127,27 +137,33 @@ function DiffEditor({
     if (!diff) return;
     const base = acquireModel(monaco, originalUri, original, language);
     const head = acquireModel(monaco, modifiedUri, modified, language);
+    const mine = new ModelHold([base.key, head.key]);
+    hold.current = mine;
+    // The last diff's hunks describe other files until this one is computed.
+    setChanges([]);
     diff.setModel({ original: base.model, modified: head.model });
-    setModels({ original: base.model, modified: head.model });
+    setHeld({ originalUri, modifiedUri, original: base.model, modified: head.model });
     return () => {
+      // On unmount the editor's own cleanup has already let go.
+      if (hold.current !== mine) return;
       diff.setModel(null);
-      releaseModel(base.key);
-      releaseModel(head.key);
+      mine.release();
+      hold.current = null;
     };
   }, [monaco, diff, originalUri, modifiedUri]);
 
   useEffect(() => {
-    if (!models) return;
-    syncModel(monaco, models.original, original, language);
-    syncModel(monaco, models.modified, modified, language);
-  }, [monaco, models, original, modified, language]);
+    if (held?.originalUri !== originalUri || held.modifiedUri !== modifiedUri) return;
+    syncModel(monaco, held.original, original, language);
+    syncModel(monaco, held.modified, modified, language);
+  }, [monaco, held, originalUri, modifiedUri, original, modified, language]);
 
   useEffect(() => {
-    if (!diff || !models || !revealLine) return;
+    if (!diff || !held || !revealLine) return;
     const editor = diff.getModifiedEditor();
     editor.revealLineInCenter(revealLine);
     editor.setPosition({ lineNumber: revealLine, column: 1 });
-  }, [diff, models, revealLine]);
+  }, [diff, held, revealLine]);
 
   const placed = useMemo<PlacedZone[]>(() => {
     if (!diff || !zones?.length) return [];

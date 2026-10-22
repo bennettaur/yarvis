@@ -1,6 +1,7 @@
 import type * as Monaco from "monaco-editor";
 import { PALENIGHT as P } from "../../../lib/palette";
 import type { ColorTheme } from "../../../lib/theme";
+import type { MonacoApi } from "./loader";
 
 type ThemeData = Monaco.editor.IStandaloneThemeData;
 
@@ -14,7 +15,6 @@ const ZINC_HEX = {
   900: "#18181b",
   600: "#52525b",
   400: "#a1a1aa",
-  100: "#f4f4f5",
 } as const;
 
 /** Palenight's syntax colours, keyed by the token names Monaco's grammars emit. */
@@ -49,7 +49,7 @@ const palenightRules: Monaco.editor.ITokenThemeRule[] = [
 /** `index.css`'s Palenight retint of zinc-900, its panel colour. */
 const PALENIGHT_PANEL = "#2f3347";
 
-export const THEMES: Record<"palenight" | "dark" | "light", { name: string; data: ThemeData }> = {
+export const THEMES: Record<ColorTheme, { name: string; data: ThemeData }> = {
   palenight: {
     name: "yarvis-palenight",
     data: {
@@ -77,7 +77,7 @@ export const THEMES: Record<"palenight" | "dark" | "light", { name: string; data
       },
     },
   },
-  dark: {
+  default: {
     name: "yarvis-dark",
     data: {
       base: "vs-dark",
@@ -101,35 +101,13 @@ export const THEMES: Record<"palenight" | "dark" | "light", { name: string; data
       },
     },
   },
-  light: {
-    name: "yarvis-light",
-    data: {
-      base: "vs",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#ffffff",
-        "editor.lineHighlightBackground": "#00000000",
-        "editor.lineHighlightBorder": "#00000000",
-        "diffEditor.insertedLineBackground": "#10b9811a",
-        "diffEditor.insertedTextBackground": "#10b98140",
-        "diffEditor.removedLineBackground": "#ef44441a",
-        "diffEditor.removedTextBackground": "#ef444440",
-        "diffEditor.unchangedRegionBackground": ZINC_HEX[100],
-      },
-    },
-  },
 };
 
-export function defineThemes(monaco: typeof Monaco): void {
+export function defineThemes(monaco: MonacoApi): void {
   for (const { name, data } of Object.values(THEMES)) monaco.editor.defineTheme(name, data);
 }
 
-/**
- * The Monaco theme for the app's colour theme. Both of the app's themes are
- * dark today; the light Monaco theme is defined so a light app theme only has
- * to be mapped here.
- */
+/** The Monaco theme for the app's colour theme, one each; both are dark. */
 export function monacoThemeFor(theme: ColorTheme): string {
-  return theme === "palenight" ? THEMES.palenight.name : THEMES.dark.name;
+  return THEMES[theme].name;
 }

@@ -1,7 +1,8 @@
 import type * as Monaco from "monaco-editor";
 import { useEffect } from "react";
+import type { MonacoApi } from "./loader";
 import type { EditorRange } from "./types";
-import { REVIEW_SCHEME, reviewUri } from "./uri";
+import { REVIEW_SCHEME, reviewUriFromParts } from "./uri";
 
 export interface DefinitionTarget {
   uri: string;
@@ -20,7 +21,12 @@ export interface NavigationProvider {
   ): Promise<DefinitionTarget[]>;
 }
 
-/** Called when a jump lands in a file other than the one on screen. */
+/**
+ * Called when a jump lands in a file other than the one on screen. `uri` is
+ * always a `review://` URI, but it can come from a definition provider or
+ * the language worker reading PR code, so a host must check it with
+ * `parseReviewUri` (and that it names a PR and path it has) before acting.
+ */
 export type OpenLocationHandler = (uri: string, range: EditorRange | null) => void;
 
 const providers = new Set<NavigationProvider>();
@@ -33,7 +39,11 @@ export function registerNavigationProvider(provider: NavigationProvider): () => 
   };
 }
 
-/** {@link registerNavigationProvider} for the lifetime of a component. */
+/**
+ * {@link registerNavigationProvider} for the lifetime of a component. The
+ * provider must be stable (memoized): a new object each render would be
+ * unregistered and registered again on every one.
+ */
 export function useMonacoNavigation(provider: NavigationProvider | null): void {
   useEffect(() => (provider ? registerNavigationProvider(provider) : undefined), [provider]);
 }
@@ -59,11 +69,11 @@ export function setOpenLocationHandler(
  * URI's path its own way when printing it, so a review URI is rebuilt from its
  * decoded parts rather than taken from `toString()`.
  */
-export function uriKey(uri: Monaco.Uri): string {
+export function uriKey(
+  uri: Pick<Monaco.Uri, "scheme" | "authority" | "path" | "toString">,
+): string {
   if (uri.scheme !== REVIEW_SCHEME) return uri.toString();
-  const [, side, ...rest] = uri.path.split("/");
-  if (side !== "base" && side !== "head") return uri.toString();
-  return reviewUri(uri.authority, side, rest.join("/"));
+  return reviewUriFromParts(uri.authority, uri.path) ?? uri.toString();
 }
 
 function toRange(at: Monaco.IRange | Monaco.IPosition | undefined): EditorRange | null {
@@ -89,9 +99,10 @@ function toRange(at: Monaco.IRange | Monaco.IPosition | undefined): EditorRange 
  * asks every registered provider and merges what they say; one that fails is
  * dropped from the answer rather than failing the jump. The opener is what
  * makes a cross-file jump reach the host: standalone Monaco only knows how to
- * move within the model already on screen.
+ * move within the model already on screen. It takes only review files; any
+ * other URI is refused, and links go to `openExternal` instead (`runtime.ts`).
  */
-export function installNavigation(monaco: typeof Monaco): void {
+export function installNavigation(monaco: MonacoApi): void {
   monaco.languages.registerDefinitionProvider(
     { scheme: REVIEW_SCHEME },
     {
@@ -116,6 +127,7 @@ export function installNavigation(monaco: typeof Monaco): void {
 
   monaco.editor.registerEditorOpener({
     openCodeEditor(source, resource, selectionOrPosition) {
+      if (resource.scheme !== REVIEW_SCHEME) return false;
       const handler = openHandlers.get(source)?.();
       if (!handler) return false;
       handler(uriKey(resource), toRange(selectionOrPosition));

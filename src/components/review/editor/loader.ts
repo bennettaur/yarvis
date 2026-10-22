@@ -27,11 +27,6 @@ export function loadMonaco(): Promise<MonacoApi> {
   return loading;
 }
 
-/** Monaco if it has already loaded; registrations made before then wait for it. */
-export function loadedMonaco(): MonacoApi | null {
-  return loaded;
-}
-
 export type MonacoState =
   | { status: "loading" }
   | { status: "ready"; monaco: MonacoApi }

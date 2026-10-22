@@ -2,8 +2,8 @@ import type * as Monaco from "monaco-editor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { monacoLanguageForPath } from "./language";
 import { attachLineActions } from "./lineActions";
-import { useMonaco } from "./loader";
-import { acquireModel, releaseModel, syncModel } from "./models";
+import { type MonacoApi, useMonaco } from "./loader";
+import { acquireModel, ModelHold, syncModel } from "./models";
 import { type OpenLocationHandler, setOpenLocationHandler } from "./navigation";
 import type { DiffSide, EditorZone, LineAction, LineDecoration } from "./types";
 import { type PlacedZone, useZonePortals } from "./useZonePortals";
@@ -74,59 +74,75 @@ function FileEditor({
   onLineAction,
   onOpenLocation,
   side = "RIGHT",
-}: MonacoFileViewProps & { monaco: typeof Monaco }) {
+}: MonacoFileViewProps & { monaco: MonacoApi }) {
   const container = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
-  const [model, setModel] = useState<Monaco.editor.ITextModel | null>(null);
-  const callbacks = useRef({ onLineAction, onOpenLocation });
-  callbacks.current = { onLineAction, onOpenLocation };
+  const [lineDecorations, setLineDecorations] =
+    useState<Monaco.editor.IEditorDecorationsCollection | null>(null);
+  // The model on screen and the URI it was made for, so content is only ever
+  // written into the model it belongs to.
+  const [held, setHeld] = useState<{ uri: string; model: Monaco.editor.ITextModel } | null>(null);
+  const hold = useRef<ModelHold | null>(null);
+  const latest = useRef({ onLineAction, onOpenLocation, side });
+  latest.current = { onLineAction, onOpenLocation, side };
   const languageId = language ?? monacoLanguageForPath(path);
 
   useEffect(() => {
     if (!container.current) return;
     const made = monaco.editor.create(container.current, { ...BASE_EDITOR_OPTIONS, model: null });
-    setOpenLocationHandler(made, () => callbacks.current.onOpenLocation);
+    setOpenLocationHandler(made, () => latest.current.onOpenLocation);
+    const actions = attachLineActions(
+      monaco,
+      made,
+      () => latest.current.side,
+      () => latest.current.onLineAction,
+    );
+    setLineDecorations(made.createDecorationsCollection());
     setEditor(made);
     return () => {
+      actions.dispose();
+      made.setModel(null);
+      hold.current?.release();
+      hold.current = null;
       made.dispose();
       setEditor(null);
+      setLineDecorations(null);
     };
   }, [monaco]);
-
-  useEffect(() => {
-    if (!editor) return;
-    const actions = attachLineActions(monaco, editor, side, () => callbacks.current.onLineAction);
-    return () => actions.dispose();
-  }, [monaco, editor, side]);
 
   // The model follows the URI. Content and language changes for the same URI
   // update it in place (below), so the view keeps its scroll and selection.
   // biome-ignore lint/correctness/useExhaustiveDependencies: content and language are synced separately
   useEffect(() => {
     if (!editor) return;
-    const { model: held, key } = acquireModel(monaco, uri, content, languageId);
-    editor.setModel(held);
-    setModel(held);
+    const { model, key } = acquireModel(monaco, uri, content, languageId);
+    const mine = new ModelHold([key]);
+    hold.current = mine;
+    editor.setModel(model);
+    setHeld({ uri, model });
     return () => {
+      // On unmount the editor's own cleanup has already let go.
+      if (hold.current !== mine) return;
       editor.setModel(null);
-      releaseModel(key);
+      mine.release();
+      hold.current = null;
     };
   }, [monaco, editor, uri]);
 
   useEffect(() => {
-    if (model) syncModel(monaco, model, content, languageId);
-  }, [monaco, model, content, languageId]);
+    if (held?.uri === uri) syncModel(monaco, held.model, content, languageId);
+  }, [monaco, held, uri, content, languageId]);
 
   useEffect(() => {
-    if (!editor || !model || !revealLine) return;
+    if (!editor || !held || !revealLine) return;
     editor.revealLineInCenter(revealLine);
     editor.setPosition({ lineNumber: revealLine, column: 1 });
-  }, [editor, model, revealLine]);
+  }, [editor, held, revealLine]);
 
   useEffect(() => {
-    if (!editor || !model || !decorations?.length) return;
-    const collection = editor.createDecorationsCollection(
-      decorations.map((d) => ({
+    if (!lineDecorations || !held) return;
+    lineDecorations.set(
+      (decorations ?? []).map((d) => ({
         range: new monaco.Range(d.startLine, 1, d.endLine, 1),
         options: {
           isWholeLine: true,
@@ -136,8 +152,7 @@ function FileEditor({
         },
       })),
     );
-    return () => collection.clear();
-  }, [monaco, editor, model, decorations]);
+  }, [monaco, lineDecorations, held, decorations]);
 
   const placed = useMemo<PlacedZone[]>(
     () =>

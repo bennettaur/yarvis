@@ -33,6 +33,22 @@ export function releaseModel(key: string): void {
   cache.release(key);
 }
 
+/**
+ * The models one editor is showing, released once whichever of its cleanups
+ * gets there first: the editor's own (on unmount, so the models are let go
+ * before the editor is disposed) or the model effect's (on a new URI).
+ */
+export class ModelHold {
+  private released = false;
+  constructor(private readonly keys: readonly string[]) {}
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    for (const key of this.keys) releaseModel(key);
+  }
+}
+
 /** Brings a held model up to date with what the caller now has. */
 export function syncModel(
   monaco: MonacoApi,
