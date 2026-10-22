@@ -532,7 +532,11 @@ back to ad-hoc.
   The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
   `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
   Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
-  suite's own file reads never pass through the rules.
+  suite's own file reads never pass through the rules. The plugins compiled
+  into Claude Code (`cc-plugin-*@builtin`) load with no settings file at all,
+  so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
+  security default managed settings seat. Claude Code's core agents and skills
+  aren't plugins and stay.
   The permission mode is always set and never one that approves on its own, a
   budget is required, the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
