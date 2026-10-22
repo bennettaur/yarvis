@@ -5,6 +5,7 @@ import {
   boolean,
   check,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -1897,3 +1898,41 @@ export const alarms = pgTable(
 );
 
 export type AlarmRow = typeof alarms.$inferSelect;
+/**
+ * A headless Claude Code run started by a feature (a verification report, a
+ * mutation-testing pass) and streamed to the UI while it works.
+ *
+ * The live stream is held in memory by `agentRuns/registry.ts`; this row is what
+ * outlasts it — the outcome, and a trimmed copy of the events so a finished run
+ * can still be replayed. `instance` names the app instance whose process ran it:
+ * only that instance can tell whether a `running` row is still running, so its
+ * startup sweep fails its own leftovers and leaves other instances' runs alone.
+ */
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** What the run is for, e.g. "verification-report". Chosen by the feature. */
+    kind: text("kind").notNull(),
+    /** What it ran against, e.g. a PR's `refKey`. */
+    targetKey: text("target_key").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status").notNull(),
+    instance: text("instance").notNull(),
+    /** The run's validated structured output, when it produced one. */
+    result: jsonb("result"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    sessionId: text("session_id"),
+    /** Feature-specific context the run was started with. */
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    /** The tail of the event stream, redacted, written when the run ends. */
+    events: jsonb("events").$type<unknown[]>().notNull().default([]),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("agent_runs_target_idx").on(t.kind, t.targetKey, t.startedAt.desc())],
+);
+
+export type AgentRunRow = typeof agentRuns.$inferSelect;
+export type NewAgentRunRow = typeof agentRuns.$inferInsert;

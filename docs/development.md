@@ -84,7 +84,9 @@ aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
 `YARVIS_AGENTS_DIR` at an empty temp folder for the whole suite when it runs
 from `sidecar/`, so your own `~/.yarvis/agents` definitions never change what
-the tests load. A test that writes settings should still set its own path per
+the tests load. `YARVIS_CLAUDE_PLUGINS_DIR` gets the same treatment, so a test
+that writes out a shipped Claude Code plugin never touches
+`~/.yarvis/claude-plugins`. A test that writes settings should still set its own path per
 test.
 
 Frontend tests use `bun test` with happy-dom. The preload in
@@ -432,6 +434,8 @@ sidecar/        Bun + TS service (Hono)
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/headsDown/   the heads-down loop: passes, its tool policy, questions and messages
   src/agents/      specialists and bounded delegated runs
+  src/agentRuns/   headless Claude Code runs streamed to the UI, and the
+                   Claude Code plugins shipped to them
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, GitHub review sync, and your own scheduled jobs
@@ -454,6 +458,7 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
   src/questions/   questions agents ask over MCP, and their answers
+  claude-plugins/  source of the Claude Code plugins headless runs load
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
 demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)

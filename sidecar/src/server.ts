@@ -1,3 +1,4 @@
+import { failInterruptedAgentRuns } from "./agentRuns/service.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
 import { importLegacyAlarms } from "./alarms/legacyImport.ts";
 import { startAlarmScheduler } from "./alarms/scheduler.ts";
@@ -28,6 +29,9 @@ installLogCapture();
 
 const config = loadConfig();
 const instance = loadInstanceConfig();
+// Agent runs this instance recorded before this moment belong to a previous
+// process; see `failInterruptedAgentRuns`.
+const bootedAt = new Date();
 
 // When launched by the Rust core (host-supplied token), exit if that parent
 // dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
@@ -98,6 +102,13 @@ if (config.databaseUrl) {
           console.error("[sidecar] alarm import failed:", redactSecrets(String(e)));
         }
       }
+      // Every instance sweeps its own agent runs, secondaries included: only the
+      // instance that started a run can know its process is gone.
+      failInterruptedAgentRuns(getDb(config.databaseUrl as string).db, instance.name, bootedAt)
+        .then((failed) => {
+          if (failed > 0) console.log(`[agent-runs] marked ${failed} interrupted runs as failed`);
+        })
+        .catch((e) => console.error("[agent-runs] could not sweep interrupted runs:", e));
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.
