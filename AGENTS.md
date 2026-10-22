@@ -208,13 +208,24 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`, `decision`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  `embed`, `decision`, `reasoning`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
   take a provider's catalogue over the moment the user saves one — no database
   needed, so custom providers and the model catalogue work even without
   Postgres configured. Surfaces ask for the capability they need rather than
   filtering names — `availableProviders(config, "chat")` — so a text-to-speech
   model can be listed without becoming something to think with. A new provider
-  adds its defaults there, not a fresh array beside them.
+  adds its defaults there, not a fresh array beside them. A custom provider's
+  own tagged model list is its default catalogue in the same way. A model choice
+  can carry an effort level: `resolveModel(config, provider, model, { effort })`
+  bakes it into the returned model and drops it unless the catalogue tags that
+  model `reasoning`, so a surface with a model picker passes its saved
+  `ModelSelection.effort` through rather than deciding per provider.
+- A gateway that speaks the OpenAI Responses API loosely, LiteLLM especially,
+  is fixed at the provider boundary in `llm/responsesCompat.ts`, through the
+  provider's `fetch` or a model middleware, never at each caller. Custom
+  `openai` providers send `store: false`, because LiteLLM can't resolve an
+  `item_reference` for a non-OpenAI model, so a tool loop replays reasoning
+  inline instead.
 - Speech backends sit behind the `SpeechClient` interface in
   `sidecar/src/voice/speech.ts`, resolved by `voice/providers.ts` the same way
   `llm/providers.ts` resolves chat models — built-ins keep a bare id, user
@@ -517,7 +528,7 @@ back to ad-hoc.
     model-composed text that is kept and displayed.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
-  `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
+  `sidecar/src/llm/complexity.ts`), optional effort and step budget, body as its system prompt.
   The shipped ones live in `agents/definitions/` and are imported
   with `with { type: "text" }`, so they are reviewable in git *and* embedded in
   the compiled binary; `~/.yarvis/agents/*.md` loads beside them and wins on a

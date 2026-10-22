@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listProviders, type ProviderInfo } from "../lib/chat";
 import type { ModelSelection } from "../lib/complexityModels";
-import { modelTakesEffort } from "../lib/effort";
+import { modelTakesEffort, withModel } from "../lib/effort";
 import {
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
@@ -110,7 +110,7 @@ export default function PrModelSection() {
                   disabled={!selection?.provider}
                   onChange={(e) => {
                     if (!selection?.provider) return;
-                    void save(feature, { ...selection, model: e.target.value });
+                    void save(feature, withModel(providers, selection, e.target.value));
                   }}
                 >
                   {modelsFor(selection?.provider ?? "").map((m) => (

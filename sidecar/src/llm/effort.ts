@@ -1,49 +1,62 @@
-import { wrapLanguageModel } from "ai";
+import { type CallSettings, wrapLanguageModel } from "ai";
 import { z } from "zod";
+import type { LanguageModelObject } from "./providers.ts";
 
 /**
  * How hard a model thinks before it answers. It is chosen wherever the model
  * is chosen rather than fixed on the model, since the right level depends on
  * the job: a tool-call judgement wants it low, a planning turn may want it high.
  *
- * These are the AI SDK's provider-neutral levels. The SDK maps each one onto
- * the provider's own field (Anthropic's `effort`, Bedrock's
- * `maxReasoningEffort`, Gemini's `thinkingLevel`, OpenAI's `reasoning.effort`),
- * so no surface needs to know which provider it is talking to. Unset means the
- * provider's default.
+ * These are the AI SDK's provider-neutral levels. For Anthropic, Bedrock and
+ * Gemini the SDK maps each one onto that provider's own field, clamping a
+ * level it doesn't have. The OpenAI SDK sends the level as-is, so a proxy's
+ * model has to accept it. On a Claude model any level also turns thinking on.
+ * Unset means the provider's default.
  */
-export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const REASONING_EFFORTS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const satisfies readonly NonNullable<CallSettings["reasoning"]>[];
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 export const reasoningEffortSchema = z.enum(REASONING_EFFORTS);
 
-/** A model object, as opposed to a gateway model id string, which can't be wrapped. */
-export type ProviderModel = Parameters<typeof wrapLanguageModel>[0]["model"];
+export function isReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORTS as readonly string[]).includes(value);
+}
 
 /**
  * Wraps `model` so every call asks for `effort`, unless the call sets its own.
  *
- * `forceReasoning` is for models reached through the OpenAI SDK, which sends
- * an effort only to model ids it recognizes as reasoning models. A proxy's
- * alias for one (say `bedrock-claude-opus-5-5`) is never recognized, so the
- * caller's `reasoning` tag has to vouch for it instead.
+ * `viaOpenAI` is for models the OpenAI SDK built. That SDK sends an effort only
+ * to model ids it recognizes as reasoning models, and a proxy's alias for one
+ * (say `bedrock-claude-opus-5-5`) never is, so `forceReasoning` vouches for it.
+ * Forcing it would also move the system prompt to OpenAI's `developer` role,
+ * which other backends may reject or ignore, so the prompt stays `system`.
  */
 export function withEffort(
-  model: ProviderModel,
+  model: LanguageModelObject,
   effort: ReasoningEffort,
-  { forceReasoning = false }: { forceReasoning?: boolean } = {},
-): ProviderModel {
+  { viaOpenAI }: { viaOpenAI: boolean },
+): LanguageModelObject {
   return wrapLanguageModel({
     model,
     middleware: {
       transformParams: async ({ params }) => ({
         ...params,
         reasoning: params.reasoning ?? effort,
-        providerOptions: forceReasoning
+        providerOptions: viaOpenAI
           ? {
               ...params.providerOptions,
-              openai: { forceReasoning: true, ...params.providerOptions?.openai },
+              openai: {
+                forceReasoning: true,
+                systemMessageMode: "system",
+                ...params.providerOptions?.openai,
+              },
             }
           : params.providerOptions,
       }),

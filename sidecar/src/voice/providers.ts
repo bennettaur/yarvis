@@ -94,8 +94,8 @@ function customVoiceProviderInfo(
     // An OpenAI-audio server may serve either endpoint or both; which one it
     // implements is only discoverable by asking it, so both are offered.
     capabilities: ["stt", "tts"],
-    // Suggests the models the user tagged `stt` or `tts`; audio model names are
-    // the server's own either way.
+    // Suggests the models tagged `stt` or `tts`, from saved catalogue entries or
+    // else the provider's own model list.
     ...speechModels(id, rows, row.models),
     custom: true,
   };

@@ -107,7 +107,10 @@ offered. A local model served by Ollama is a good fit: add a custom provider
 with the **Ollama** protocol and the server's root URL (for example
 `http://localhost:11434`, without `/v1` — Yarvis adds the path itself), then tag
 its model `decision`. Only an Ollama on this machine works; one elsewhere on
-your network is refused like any other private address.
+your network is refused like any other private address. A decision model tagged
+`reasoning` also gets an effort picker. A low effort keeps reviews quick, since
+one runs before each MCP tool call it judges. An Ollama decision model ignores
+it.
 
 Before any tool set to **Ask** raises the approval bar, the decision model reads
 your message this turn, the recent conversation (tool results included, and

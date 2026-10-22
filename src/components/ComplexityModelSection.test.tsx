@@ -14,7 +14,10 @@ const PROVIDERS = [
     id: "anthropic",
     label: "Anthropic",
     available: true,
-    models: [{ id: "claude-opus-4-7", capabilities: ["chat", "reasoning"] }],
+    models: [
+      { id: "claude-opus-4-7", capabilities: ["chat", "reasoning"] },
+      { id: "claude-haiku-4-5", capabilities: ["chat"] },
+    ],
   },
 ];
 
@@ -148,6 +151,24 @@ describe("ComplexityModelSection", () => {
         { max: { provider: "anthropic", model: "claude-opus-4-7", effort: "high" } },
         { max: { provider: "anthropic", model: "claude-opus-4-7" } },
       ]);
+    });
+
+    it("drops the effort when the tier moves to a model that doesn't take one", async () => {
+      config = {
+        low: null,
+        medium: null,
+        max: { provider: "anthropic", model: "claude-opus-4-7", effort: "high" },
+      };
+      const mounted = await mountForInteraction(createElement(ComplexityModelSection));
+      unmount = mounted.unmount;
+
+      const modelSelect = [...mounted.host.querySelectorAll("select")].find((s) =>
+        [...s.options].some((o) => o.value === "claude-haiku-4-5"),
+      );
+      await choose(modelSelect, "claude-haiku-4-5");
+
+      const saved = calls.filter((c) => c.method === "PATCH").map((c) => JSON.parse(c.body ?? ""));
+      expect(saved).toEqual([{ max: { provider: "anthropic", model: "claude-haiku-4-5" } }]);
     });
   });
 });

@@ -7,7 +7,7 @@ There are two ways to type to [the assistant](assistant.md):
   what you're looking at.
 
 Both use the same agent, the same tools and the same memory. They also share
-the provider and model you last picked.
+the provider, model and effort you last picked.
 
 ## Omni Chat
 
@@ -109,5 +109,5 @@ Both chat surfaces have a microphone button. See [Voice](voice.md).
 Two related buttons live on **Memory → Memories**:
 
 - **Recap: Today / This week** writes a short summary of the tasks you
-  completed and the notes you took, using the chat's current model.
+  completed and the notes you took, using the chat's current model and effort.
 - **Quick note** saves a `note` memory. Notes feed the recaps.

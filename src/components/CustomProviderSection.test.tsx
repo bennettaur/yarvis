@@ -11,6 +11,7 @@ const PROVIDER = {
   models: [
     { id: "bedrock-claude-opus-5-5", capabilities: ["chat"] },
     { id: "gpt-typo", capabilities: ["chat"] },
+    { id: "whisper-1", capabilities: ["stt"] },
   ],
   headerNames: [],
   createdAt: "2026-10-21T00:00:00.000Z",
@@ -20,10 +21,12 @@ const PROVIDER = {
 /** Requests the section made, so a test can assert what it wrote. */
 const calls: { url: string; method: string; body?: string }[] = [];
 
+const CONNECTED = { ok: true, latencyMs: 42, models: ["bedrock-claude-opus-5-5", "whisper-1"] };
+/** What the next connection test answers; a test can swap it for a failure. */
+let connectionReply: unknown = CONNECTED;
+
 function reply(url: string, method: string): unknown {
-  if (url.endsWith("/test")) {
-    return { ok: true, latencyMs: 42, models: ["bedrock-claude-opus-5-5", "other"] };
-  }
+  if (url.endsWith("/test")) return connectionReply;
   if (url.endsWith("/test-model")) {
     return {
       ok: false,
@@ -38,7 +41,8 @@ function reply(url: string, method: string): unknown {
 
 /**
  * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in rather than stubbed (see `ComplexityModelSection.test.tsx`).
+ * exports are spread back in: a stub that redefines `ensureOk` silently
+ * replaces what `api.test.ts` asserts about.
  */
 const actualApi = await import("../lib/api");
 
@@ -68,6 +72,7 @@ afterEach(() => {
   unmount?.();
   unmount = null;
   calls.length = 0;
+  connectionReply = CONNECTED;
 });
 
 async function mount() {
@@ -126,6 +131,7 @@ describe("CustomProviderSection", () => {
     expect(JSON.parse(patch?.body ?? "{}").models).toEqual([
       { id: "bedrock-claude-opus-5-5", capabilities: ["chat", "reasoning"] },
       { id: "gpt-typo", capabilities: ["chat"] },
+      { id: "whisper-1", capabilities: ["stt"] },
     ]);
   });
 
@@ -148,5 +154,28 @@ describe("CustomProviderSection", () => {
       id: "gpt-typo",
       capabilities: ["chat"],
     });
+  });
+
+  it("shows the provider's own error when the connection test fails", async () => {
+    connectionReply = {
+      ok: false,
+      latencyMs: 5,
+      error: "The provider refused the model list request (status 401)",
+      detail: "body=bad key",
+    };
+    const host = await mount();
+    button(host, "Test connection")?.click();
+    await settle();
+
+    expect(host.textContent).toContain("refused the model list request (status 401)");
+    expect(host.textContent).not.toContain("Connected in");
+  });
+
+  it("offers Test only for models that answer a text prompt", async () => {
+    const host = await mount();
+    // Two chat models get a button; the speech-only model doesn't.
+    expect(
+      [...host.querySelectorAll("button")].filter((b) => b.textContent === "Test"),
+    ).toHaveLength(2);
   });
 });

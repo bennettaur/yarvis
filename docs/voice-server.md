@@ -139,7 +139,7 @@ That shape keeps a model name from pointing anywhere except the model
 endpoint.
 
 Which models a provider offers is set in **Settings → LLM Providers → Models**.
-Each model carries tags (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`)
+Each model carries tags (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`, `reasoning`)
 that decide where it shows up. Only a `tts` model can speak, only a `chat` model
 can answer a message, and only a `decision` model can be the decision model.
 

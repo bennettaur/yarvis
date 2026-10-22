@@ -27,6 +27,23 @@ export function isReasoningEffort(value: string): value is ReasoningEffort {
   return (REASONING_EFFORTS as readonly string[]).includes(value);
 }
 
+/**
+ * The selection with its model changed. The effort carries over only to a
+ * model that takes one; otherwise it would stay saved behind a hidden picker.
+ */
+export function withModel<T extends { model: string; effort?: ReasoningEffort }>(
+  providers: ProviderInfo[],
+  selection: T & { provider: string },
+  model: string,
+): T {
+  const { effort, ...rest } = selection;
+  return (
+    effort && modelTakesEffort(providers, selection.provider, model)
+      ? { ...rest, model, effort }
+      : { ...rest, model }
+  ) as T;
+}
+
 /** Whether the catalogue tags this model `reasoning`, which is what offers an effort picker. */
 export function modelTakesEffort(
   providers: ProviderInfo[],
@@ -42,11 +59,11 @@ export function modelTakesEffort(
 }
 
 /**
- * Shared by every surface that uses the chat's provider/model keys (the Chat
- * tab, Omni Chat, the Omni view and the memory recap), so the effort follows
- * the model it was chosen for.
+ * Shared by every surface that reads the chat's provider/model keys (the Chat
+ * tab, Omni Chat, the Omni view and the memory recap), since those surfaces
+ * share one model choice and so share its effort.
  */
-export const CHAT_EFFORT_KEY = "yarvis.chat.effort";
+const CHAT_EFFORT_KEY = "yarvis.chat.effort";
 
 /** The chat surfaces' saved effort, or undefined for the provider's default. */
 export function readChatEffort(): ReasoningEffort | undefined {

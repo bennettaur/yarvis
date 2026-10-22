@@ -236,9 +236,8 @@ export default function ModelCatalogSection() {
         const defaults = catalog.defaults[providerId] ?? [];
         const customised = rows.length > 0;
         // A custom provider's defaults are the list saved in its own settings, not bundled ones.
-        const defaultsLabel = providerId.startsWith("custom:")
-          ? "provider's list"
-          : "built-in list";
+        const isCustom = providers.find((p) => p.id === providerId)?.custom ?? false;
+        const defaultsLabel = isCustom ? "provider's list" : "built-in list";
         const draft = drafts[providerId] ?? blankDraft();
         const shown: {
           id: string;

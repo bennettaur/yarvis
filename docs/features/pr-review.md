@@ -16,7 +16,8 @@ those notes later.
 2. Guided reviews and line questions are agent runs, so they also need an LLM
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
-   **Settings → PR review → Review models**.
+   **Settings → PR review → Review models**. A model tagged `reasoning` also
+   gets an effort level there.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 

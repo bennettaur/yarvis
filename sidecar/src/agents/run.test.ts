@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
@@ -101,6 +101,9 @@ describe("specialist prompting", () => {
 });
 
 describe("specialist model choice", () => {
+  // The suite shares one settings file, so a saved tier would leak into later files.
+  afterEach(() => saveComplexityModelConfig({ low: null, medium: null, max: null }));
+
   const config = { secrets: {}, customProviderSecrets: {} } as unknown as Config;
   const withTier = {
     ...specialist,

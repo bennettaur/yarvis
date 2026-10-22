@@ -10,13 +10,11 @@ import {
 export default function EffortSelect({
   value,
   onChange,
-  disabled,
   ariaLabel = "Effort",
   className = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm",
 }: {
   value: ReasoningEffort | undefined;
   onChange: (value: ReasoningEffort | undefined) => void;
-  disabled?: boolean;
   ariaLabel?: string;
   className?: string;
 }) {
@@ -25,7 +23,6 @@ export default function EffortSelect({
       title={EFFORT_HINT}
       aria-label={ariaLabel}
       value={value ?? ""}
-      disabled={disabled}
       onChange={(e) => onChange(isReasoningEffort(e.target.value) ? e.target.value : undefined)}
       className={className}
     >

@@ -1,5 +1,5 @@
 import { defaultSettingsMiddleware, wrapLanguageModel } from "ai";
-import type { ProviderModel } from "./effort.ts";
+import type { LanguageModelObject } from "./providers.ts";
 
 /**
  * Fixes for gateways that speak the OpenAI Responses API loosely, LiteLLM
@@ -9,6 +9,22 @@ import type { ProviderModel } from "./effort.ts";
  */
 
 type Fetch = typeof globalThis.fetch;
+
+/**
+ * `response` with a new body. `text()` has already decompressed the original,
+ * and the new one may be re-serialized, so its length and encoding headers no
+ * longer describe it.
+ */
+function withBody(response: Response, body: string): Response {
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 /**
  * Adds `summary: []` to reasoning output items that lack one.
@@ -22,41 +38,31 @@ type Fetch = typeof globalThis.fetch;
 export async function fillMissingReasoningSummaries(response: Response): Promise<Response> {
   if (!response.headers.get("content-type")?.includes("application/json")) return response;
   const text = await response.text();
-  const rebuild = (body: string): Response => {
-    // The body is re-encoded, so the length and encoding it arrived with no longer apply.
-    const headers = new Headers(response.headers);
-    headers.delete("content-length");
-    headers.delete("content-encoding");
-    return new Response(body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  };
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return rebuild(text);
+    return withBody(response, text);
   }
   const output = (parsed as { output?: unknown } | null)?.output;
-  if (!Array.isArray(output)) return rebuild(text);
+  if (!Array.isArray(output)) return withBody(response, text);
 
   let changed = false;
-  for (const item of output) {
+  for (const item of output as ({ type?: unknown; summary?: unknown } | null)[]) {
     if (item?.type === "reasoning" && !Array.isArray(item.summary)) {
       item.summary = [];
       changed = true;
     }
   }
-  return rebuild(changed ? JSON.stringify(parsed) : text);
+  return withBody(response, changed ? JSON.stringify(parsed) : text);
 }
 
-/** A `fetch` for the OpenAI provider that applies the fixes above to every reply. */
+/** A `fetch` for the OpenAI provider that runs every reply through `fillMissingReasoningSummaries`. */
 export function responsesCompatFetch(inner: Fetch = globalThis.fetch): Fetch {
   const wrapped = async (input: Parameters<Fetch>[0], init?: Parameters<Fetch>[1]) =>
     fillMissingReasoningSummaries(await inner(input, init));
+  // Bun's `typeof fetch` carries `preconnect`, so the wrapper needs it to type-check as one.
   return Object.assign(wrapped, { preconnect: inner.preconnect }) as Fetch;
 }
 
@@ -69,14 +75,28 @@ export function responsesCompatFetch(inner: Fetch = globalThis.fetch): Fetch {
  * resolve that id against and drops the item, which loses the signed thinking
  * block a Claude model needs to continue a tool call. Inline, the item carries
  * that block in `encrypted_content`, which LiteLLM decodes back into thinking.
+ *
+ * OpenAI itself only returns `encrypted_content` when asked, and the SDK asks
+ * only for model ids it recognizes as reasoning models. `includeReasoning`
+ * asks for a model the catalogue tags `reasoning` behind an alias the SDK
+ * doesn't know; without it, a later step would name reasoning OpenAI never
+ * stored. It isn't sent for every model because OpenAI rejects it on a
+ * non-reasoning one.
  */
 export function withoutServerSideStorage(
-  model: ProviderModel,
-): ReturnType<typeof wrapLanguageModel> {
+  model: LanguageModelObject,
+  { includeReasoning }: { includeReasoning: boolean },
+): LanguageModelObject {
   return wrapLanguageModel({
     model,
     middleware: defaultSettingsMiddleware({
-      settings: { providerOptions: { openai: { store: false } } },
+      settings: {
+        providerOptions: {
+          openai: includeReasoning
+            ? { store: false, include: ["reasoning.encrypted_content"] }
+            : { store: false },
+        },
+      },
     }),
   });
 }
