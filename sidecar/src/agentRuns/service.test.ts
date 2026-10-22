@@ -133,6 +133,7 @@ describe("the arguments a run is started with", () => {
       "--json-schema",
       "--disallowedTools",
       "--plugin-dir",
+      "--add-dir",
     ]) {
       expect(args).not.toContain(flag);
     }
@@ -147,10 +148,18 @@ describe("the arguments a run is started with", () => {
         disallowedTools: ["Edit"],
         appendSystemPrompt: "Be brief.",
         permissionMode: "plan",
+        addDirs: ["/ctx/one", "/ctx/two"],
       }),
       ["/plugins/yarvis-review"],
     );
     const value = (flag: string) => full[full.indexOf(flag) + 1];
+    // One flag per directory.
+    expect(full.slice(full.indexOf("--add-dir"), full.indexOf("--add-dir") + 4)).toEqual([
+      "--add-dir",
+      "/ctx/one",
+      "--add-dir",
+      "/ctx/two",
+    ]);
     expect(value("--model")).toBe("haiku");
     expect(value("--max-turns")).toBe("5");
     expect(value("--disallowedTools")).toBe("Edit");
@@ -197,6 +206,15 @@ describe("refusing a run", () => {
     await expect(
       startClaudeRun(db, runOptions("/definitely/not/here"), deps("claude")),
     ).rejects.toThrow("no such directory");
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("refuses an added directory that is relative or missing, before recording anything", async () => {
+    for (const addDir of ["relative/dir", "/definitely/not/here"]) {
+      await expect(
+        startClaudeRun(db, runOptions(dir, { addDirs: [addDir] }), deps("claude")),
+      ).rejects.toThrow(/absolute path|no such directory/);
+    }
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 });

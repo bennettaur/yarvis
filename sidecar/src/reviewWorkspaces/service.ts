@@ -764,7 +764,10 @@ async function requireReadyPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReadyPr> {
-  const pr = await getReviewPr(db, workspaceId, prId);
+  return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
+}
+
+function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }
@@ -896,6 +899,32 @@ export async function reviewDiff(
   return { ...base, patch, tooLarge: false };
 }
 
+/**
+ * How big the PR's diff is, counting only files `reviewPatches` would read with
+ * the same `maxFileBytes`: a lockfile left out for its size isn't part of what
+ * a reader of the patches pays for.
+ */
+export async function reviewDiffSize(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+  maxFileBytes: number,
+): Promise<{ files: number; changedLines: number }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const files = await changedFiles(
+    ready.runners,
+    ready.clonePath,
+    ready.mergeBaseSha,
+    ready.headSha,
+  );
+  const changedLines = files
+    .filter((f) => !f.binary && Math.max(f.oldSize, f.newSize) <= maxFileBytes)
+    .reduce((n, f) => n + f.additions + f.deletions, 0);
+  return { files: files.length, changedLines };
+}
+
 /** One changed file's patch for a whole-PR read, or why it was left out. */
 export interface ReviewPatch {
   file: ReviewChangedFile;
@@ -906,19 +935,20 @@ export interface ReviewPatch {
 /**
  * Every changed file's patch, in path order, for a reader that wants the whole
  * PR at once (an agent run). A file over `maxFileBytes` on either side is left
- * out — a lockfile or generated bundle is all bulk and no review — and once the
- * patches reach `maxTotalBytes` the rest are listed but not read, so one huge
- * PR can't produce an unbounded file.
+ * out — a lockfile or generated bundle is all bulk and no review — and a patch
+ * that would take the total past `maxTotalBytes` is listed but not included,
+ * so one huge PR can't produce an unbounded file.
+ *
+ * Takes the PR row rather than reading it, so a caller that also uses the
+ * row's head and worktree gets patches from that same head.
  */
 export async function reviewPatches(
-  db: Db,
   config: Config,
-  workspaceId: string,
-  prId: string,
+  pr: ReviewWorkspacePr,
   deps: ReviewDeps,
   limits: { maxFileBytes: number; maxTotalBytes: number },
 ): Promise<ReadShas & { patches: ReviewPatch[] }> {
-  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const ready = readyFrom(config, pr, deps);
   const files = await changedFiles(
     ready.runners,
     ready.clonePath,
@@ -934,9 +964,7 @@ export async function reviewPatches(
       ? "binary"
       : Math.max(oldSize, newSize) > limits.maxFileBytes
         ? "too-large"
-        : total >= limits.maxTotalBytes
-          ? "over-budget"
-          : null;
+        : null;
     if (omitted) {
       patches.push({ file, patch: null, omitted });
       continue;
@@ -951,6 +979,10 @@ export async function reviewPatches(
       file.path,
       file.oldPath,
     );
+    if (total + patch.length > limits.maxTotalBytes) {
+      patches.push({ file, patch: null, omitted: "over-budget" });
+      continue;
+    }
     total += patch.length;
     patches.push({ file, patch, omitted: null });
   }
