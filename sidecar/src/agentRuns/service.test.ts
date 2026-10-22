@@ -82,6 +82,32 @@ describe("the arguments a run is started with", () => {
     expect(settings.sandbox.network.allowedDomains).toEqual([]);
   });
 
+  it("keeps the home directory's credentials from Bash and from the Read tool", () => {
+    const settings = lockedDownSettings("/home/me") as {
+      permissions: { deny: string[] };
+      sandbox: { filesystem: { denyRead: string[] } };
+    };
+    const secrets = [
+      ".ssh",
+      ".aws",
+      ".config/gh",
+      ".gnupg",
+      ".netrc",
+      ".docker",
+      ".kube",
+      ".yarvis",
+      "Library/Keychains",
+      ".claude.json",
+      ".claude/.credentials.json",
+    ];
+    expect(settings.sandbox.filesystem.denyRead).toEqual(
+      expect.arrayContaining(secrets.map((path) => `/home/me/${path}`)),
+    );
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining(secrets.flatMap((path) => [`Read(~/${path})`, `Read(~/${path}/**)`])),
+    );
+  });
+
   it("keeps the prompt out of argv", () => {
     expect(args).not.toContain("count the files");
   });

@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { and, desc, eq, getTableColumns, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadInstanceConfig } from "../config.ts";
@@ -161,16 +163,48 @@ const ALWAYS_DENIED = [
 ];
 
 /**
- * The only settings a run gets (`--settings`). Key names are Claude Code's
- * (checked against 2.1.307). The deny list is a backstop to the sandbox, not a
- * substitute for it: a rule names a command, and there are other commands.
+ * Credentials and private configuration under the home directory that nothing
+ * a run starts may read. The sandbox keeps writes inside the checkout but lets
+ * reads through, and a test suite from a pull request runs under Bash: without
+ * this it could read an SSH key and print it into the transcript. Claude Code's
+ * own credentials are listed too; Claude Code itself reads them outside the
+ * sandbox, which only wraps the commands it runs.
  */
-export function lockedDownSettings(): Record<string, unknown> {
+export const SECRET_HOME_PATHS = [
+  ".ssh",
+  ".aws",
+  ".azure",
+  ".config/gcloud",
+  ".config/gh",
+  ".gnupg",
+  ".netrc",
+  ".git-credentials",
+  ".npmrc",
+  ".pypirc",
+  ".docker",
+  ".kube",
+  ".yarvis",
+  "Library/Keychains",
+  ".local/share/keyrings",
+  ".claude.json",
+  ".claude/.credentials.json",
+];
+
+/**
+ * The only settings a run gets (`--settings`). Key names are Claude Code's
+ * (checked against 2.1.307). The command deny list is a backstop to the
+ * sandbox, not a substitute for it: a rule names a command, and there are other
+ * commands. The secret paths are denied twice over because two things read
+ * files: the Read tool, which `Read(…)` rules govern, and whatever Bash runs,
+ * which only the sandbox's `filesystem.denyRead` reaches.
+ */
+export function lockedDownSettings(home: string = homedir()): Record<string, unknown> {
+  const readRules = SECRET_HOME_PATHS.flatMap((path) => [`Read(~/${path})`, `Read(~/${path}/**)`]);
   return {
     disableAllHooks: true,
     autoMemoryEnabled: false,
     enableAllProjectMcpServers: false,
-    permissions: { deny: ALWAYS_DENIED },
+    permissions: { deny: [...ALWAYS_DENIED, ...readRules] },
     sandbox: {
       enabled: true,
       // Without this a sandbox that can't start is a warning and Bash runs
@@ -179,6 +213,7 @@ export function lockedDownSettings(): Record<string, unknown> {
       autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: [] },
+      filesystem: { denyRead: SECRET_HOME_PATHS.map((path) => join(home, path)) },
     },
   };
 }
