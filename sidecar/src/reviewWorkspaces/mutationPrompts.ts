@@ -121,7 +121,7 @@ export function buildPlanningPrompt(input: {
   return [
     "Plan a mutation test of this pull request's changes, following your instructions.",
     "",
-    `- Propose at most ${input.maxMutants} mutants, plus one positive control.`,
+    `- Propose at most ${input.maxMutants} mutants, plus one positive control per test command.`,
     `- The working directory is a copy of the pull request at commit ${input.headSha}.`,
     input.setupRan
       ? "- The repository's setup script has run, so its dependencies should be installed."

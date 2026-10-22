@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { parseTestCounts, testCommandProblem } from "./testCommands.ts";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseTestCounts, resolveTestCommand, testCommandProblem } from "./testCommands.ts";
 
 describe("which test commands may run", () => {
   it("allows the listed runners with relative paths, flags and filters", () => {
@@ -36,6 +39,93 @@ describe("which test commands may run", () => {
   });
 });
 
+describe("flags that load code", () => {
+  const refused: string[][] = [
+    ["bun", "test", "--preload", "./x.ts"],
+    ["bun", "test", "-r", "./x.ts"],
+    ["node", "--test", "--require", "./x.js"],
+    ["node", "--test", "--import=./x.mjs"],
+    ["node", "--test", "--loader", "./x.mjs"],
+    ["node", "--test", "-e", "1"],
+    ["node", "--test", "--test-reporter=./r.mjs"],
+    ["npx", "jest", "--config", "jest.config.js"],
+    ["npx", "jest", "-c", "x.js"],
+    ["npx", "jest", "--setupFiles=./s.js"],
+    ["npx", "jest", "--testEnvironment", "./env.js"],
+    ["npx", "jest", "--reporters=./r.js"],
+    ["npx", "vitest", "run", "--config=v.ts"],
+    ["npx", "vitest", "run", "--reporter", "./r.ts"],
+    ["npx", "mocha", "--require", "./x.js"],
+    ["npx", "mocha", "-rsetup.js"],
+    ["npm", "test", "--script-shell=./sh"],
+    ["npm", "test", "--userconfig", "./npmrc"],
+    ["npm", "test", "--", "--require", "./x.js"],
+    ["pytest", "-p", "evil_plugin"],
+    ["pytest", "-pevil_plugin"],
+    ["pytest", "-c", "other.ini"],
+    ["pytest", "-o", "addopts=-p evil"],
+    ["python3", "-m", "pytest", "--confcutdir", "."],
+    ["go", "test", "-exec", "./wrapper"],
+    ["go", "test", "-toolexec=./wrapper"],
+    ["go", "test", "-overlay", "o.json"],
+    ["cargo", "test", "--config", "target.x.runner='./r'"],
+    ["cargo", "test", "-Z", "unstable-options"],
+    ["rspec", "-r", "./x.rb"],
+    ["dotnet", "test", "--logger", "x"],
+    ["dotnet", "test", "--collect", "x"],
+    ["dotnet", "test", "--test-adapter-path", "."],
+  ];
+  for (const argv of refused) {
+    it(`refuses ${argv.join(" ")}`, () => {
+      expect(testCommandProblem(argv)).toContain("loads code or configuration");
+    });
+  }
+
+  it("keeps the ordinary filters and switches", () => {
+    for (const argv of [
+      ["go", "test", "-v", "-run", "TestFee", "-count=1", "./..."],
+      ["pytest", "-q", "-x", "-k", "fee", "-rA"],
+      ["npx", "jest", "-t", "fee", "--runInBand"],
+      ["bun", "test", "-t", "fee"],
+    ]) {
+      expect(testCommandProblem(argv)).toBeNull();
+    }
+  });
+});
+
+describe("running npx and bunx without fetching", () => {
+  let copy: string;
+  beforeEach(() => {
+    copy = mkdtempSync(join(tmpdir(), "yarvis-resolve-"));
+    mkdirSync(join(copy, "node_modules", "vitest"), { recursive: true });
+    writeFileSync(join(copy, "node_modules", "vitest", "cli.js"), "");
+    mkdirSync(join(copy, "node_modules", ".bin"));
+    symlinkSync("../vitest/cli.js", join(copy, "node_modules", ".bin", "vitest"));
+    symlinkSync("/usr/bin/true", join(copy, "node_modules", ".bin", "escape"));
+  });
+  afterEach(() => rmSync(copy, { recursive: true, force: true }));
+
+  it("runs an installed tool straight from node_modules/.bin", () => {
+    const resolved = resolveTestCommand(["npx", "vitest", "run", "a.test.ts"], copy);
+    expect(resolved).toEqual({
+      argv: [join(realpathSync(copy), "node_modules", ".bin", "vitest"), "run", "a.test.ts"],
+    });
+  });
+
+  it("refuses a tool that isn't installed, or whose link leaves the copy", () => {
+    expect(resolveTestCommand(["npx", "jest"], copy)).toEqual({
+      problem: expect.stringContaining("isn't installed"),
+    });
+    expect(resolveTestCommand(["bunx", "escape"], copy)).toEqual({
+      problem: expect.stringContaining("outside the copy"),
+    });
+  });
+
+  it("leaves other runners alone", () => {
+    expect(resolveTestCommand(["bun", "test"], copy)).toEqual({ argv: ["bun", "test"] });
+  });
+});
+
 describe("counting tests from runner output", () => {
   const cases: [string[], string, { total: number; failed: number } | null][] = [
     [
@@ -51,6 +141,8 @@ describe("counting tests from runner output", () => {
     [["node", "--test"], "ℹ tests 3\nℹ pass 3\nℹ fail 0\n", { total: 3, failed: 0 }],
     [["pytest"], "======= 1 failed, 4 passed in 0.12s =======\n", { total: 5, failed: 1 }],
     [["pytest"], "==== 2 passed, 1 error in 0.30s ====", { total: 3, failed: 1 }],
+    [["pytest", "-q"], ".F.\n1 failed, 2 passed in 0.05s\n", { total: 3, failed: 1 }],
+    [["pytest", "-q"], "...\n3 passed in 0.12s\n", { total: 3, failed: 0 }],
     [
       ["go", "test", "-v"],
       "=== RUN   TestA\n--- PASS: TestA (0.00s)\n--- FAIL: TestB (0.00s)\nFAIL\n",
@@ -66,8 +158,8 @@ describe("counting tests from runner output", () => {
     [["mix", "test"], "4 tests, 0 failures\n", { total: 4, failed: 0 }],
     [
       ["dotnet", "test"],
-      "Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3",
-      { total: 3, failed: 0 },
+      "Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3\nFailed!  - Failed:     1, Passed:     1, Skipped:     0, Total:     2",
+      { total: 5, failed: 1 },
     ],
     // A package script: whichever runner's summary it printed.
     [

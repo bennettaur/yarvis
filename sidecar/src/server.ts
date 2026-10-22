@@ -129,6 +129,13 @@ if (config.databaseUrl) {
             getDb(config.databaseUrl as string).db,
             instance.name,
             bootedAt,
+          ).then(
+            (failed) => {
+              if (failed > 0) {
+                console.log(`[mutation-testing] marked ${failed} interrupted runs as failed`);
+              }
+            },
+            (e) => console.error("[mutation-testing] could not sweep interrupted runs:", e),
           ),
         )
         .then(() =>

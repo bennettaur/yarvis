@@ -31,6 +31,7 @@ import { type RunResult, run } from "../workspaces/exec.ts";
 import { type GitRunner, git } from "../workspaces/git.ts";
 import { reviewGit } from "./git.ts";
 import { assertWorktreeInWorkspace, reviewWorkspaceDir, reviewWorkspacesRoot } from "./service.ts";
+import { killStrays } from "./testSandbox.ts";
 
 const COPY_NAME = /^(.+)-mutants-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
@@ -309,6 +310,9 @@ export async function sweepMutantCopies(
       }
     }
     try {
+      // A crashed pass's tests, or something they started, may still be at
+      // work in the copy.
+      await killStrays([candidate.path]);
       await removeMutantCopy(config, candidate.workspaceId, candidate.path);
       removed++;
     } catch (e) {

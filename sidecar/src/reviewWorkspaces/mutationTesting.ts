@@ -23,6 +23,7 @@
 
 import { and, desc, eq, lt } from "drizzle-orm";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
+import { killLeftoverGroup, processStartTime } from "../agentRuns/process.ts";
 import {
   type AgentRunOutcome,
   agentRunRegistry,
@@ -65,6 +66,7 @@ import {
   reviewChangedFiles,
   reviewClonePath,
 } from "./service.ts";
+import { SANDBOX_NOTES } from "./testSandbox.ts";
 
 // ---------------------------------------------------------------------------
 // Gating
@@ -178,6 +180,8 @@ interface MutationTestingState {
   headSha: string | null;
   /** Why a new pass can't start now, or null when it can. */
   blocked: { reason: string; needsTestConfirmation?: true } | null;
+  /** What the test sandbox does and doesn't protect, to show before starting. */
+  sandboxNotes: string;
 }
 
 /** The PR's latest pass, whether it ran against the current head, and whether one can start. */
@@ -201,6 +205,7 @@ export async function getMutationTesting(
       : null,
     headSha: pr.headSha,
     blocked,
+    sandboxNotes: SANDBOX_NOTES,
   };
 }
 
@@ -247,6 +252,7 @@ export async function startMutationTesting(
     let copyPath: string;
     let prompt: string;
     let changedPaths: Set<string>;
+    let ranges: Awaited<ReturnType<typeof changedRanges>>;
     let settings: MutationTestingConfig;
     try {
       claim.emit({ type: "log", text: "Copying the checkout for mutation testing\n" });
@@ -258,7 +264,7 @@ export async function startMutationTesting(
         prId,
         reviewDeps,
       );
-      const ranges = await changedRanges(
+      ranges = await changedRanges(
         reviewDeps.git({}).local,
         reviewClonePath(config, pr.ref),
         mergeBaseSha,
@@ -311,6 +317,7 @@ export async function startMutationTesting(
       copyPath,
       prompt,
       changedPaths,
+      changedRanges: ranges,
       settings,
       signal,
       registry,
@@ -331,6 +338,7 @@ interface PassContext {
   copyPath: string;
   prompt: string;
   changedPaths: Set<string>;
+  changedRanges: Map<string, [number, number][]>;
   settings: MutationTestingConfig;
   signal: AbortSignal;
   registry: RunRegistry<MutationProgressEvent>;
@@ -380,8 +388,8 @@ async function runPass(ctx: PassContext): Promise<void> {
   const update = (values: Partial<MutationRunRow>) =>
     db.update(mutationRuns).set(values).where(eq(mutationRuns.id, row.id));
   const setPhase = async (phase: MutationPhase) => {
-    await update({ phase });
     emit({ type: "phase", phase });
+    await update({ phase });
   };
 
   let cost = 0;
@@ -420,6 +428,8 @@ async function runPass(ctx: PassContext): Promise<void> {
       throw new Error(`planning failed: ${planned.error ?? "no plan"}`);
     }
     const plan = planned.output;
+    // Kept whatever happens next: they often explain why it went wrong.
+    if (plan.notes.trim()) extraNotes.push(`Planner: ${plan.notes.trim()}`);
     await update({ plan, costUsd: cost });
 
     execution = await executeMutationPlan(
@@ -427,21 +437,29 @@ async function runPass(ctx: PassContext): Promise<void> {
         copyRoot: ctx.copyPath,
         plan,
         changedPaths: ctx.changedPaths,
+        changedRanges: ctx.changedRanges,
+        sandbox: {
+          workspacesRoot: ctx.config.workspacesRoot,
+          extraBlockedPorts: localServicePorts(ctx.config),
+        },
+        onSpawn: (pgid) => void recordProcess(db, row.id, pgid),
         maxMutants: settings.maxMutants,
         timeoutCapMs: settings.testTimeoutCapSeconds * 1000,
         signal: ctx.signal,
         onEvent: (event) => {
-          if (event.type === "phase") void setPhase(event.phase);
-          else emit(event);
+          if (event.type === "phase") {
+            setPhase(event.phase).catch((e) =>
+              console.error(`[mutation-testing] could not record the phase of ${row.id}:`, e),
+            );
+          } else emit(event);
         },
         onUpdate: async (latest) => {
           execution = latest;
-          await update({ execution: latest, summary: summarize(latest, { finished: false }) });
+          await update({ execution: latest, summary: summarize(latest) });
         },
       },
       ctx.deps.exec,
     );
-    if (plan.notes.trim()) extraNotes.push(`Planner: ${plan.notes.trim()}`);
     if (ctx.signal.aborted) {
       status = "cancelled";
       return;
@@ -488,7 +506,7 @@ async function runPass(ctx: PassContext): Promise<void> {
   } finally {
     let summary: MutationSummary | null = null;
     if (execution) {
-      summary = summarize(execution, { finished: status === "succeeded" });
+      summary = summarize(execution);
       summary.notes.push(...extraNotes);
     }
     try {
@@ -541,6 +559,44 @@ export async function failInterruptedMutationRuns(
         lt(mutationRuns.startedAt, startedBefore),
       ),
     )
-    .returning({ id: mutationRuns.id });
+    .returning({
+      id: mutationRuns.id,
+      pid: mutationRuns.pid,
+      pidStartedAt: mutationRuns.pidStartedAt,
+    });
+  for (const row of rows) {
+    if (row.pid === null) continue;
+    if (await killLeftoverGroup(row.pid, row.pidStartedAt)) {
+      console.log(`[mutation-testing] killed what interrupted run ${row.id} left running`);
+    }
+  }
   return rows.length;
+}
+
+/**
+ * Records the test command running now, so a sweep after a crash can kill
+ * its group. Best effort: the command is usually over before it matters.
+ */
+async function recordProcess(db: Db, id: string, pgid: number): Promise<void> {
+  try {
+    const pidStartedAt = await processStartTime(pgid);
+    await db.update(mutationRuns).set({ pid: pgid, pidStartedAt }).where(eq(mutationRuns.id, id));
+  } catch (e) {
+    console.error(`[mutation-testing] could not record the process of run ${id}:`, e);
+  }
+}
+
+/**
+ * Loopback ports of this app's own services. They sit outside the ephemeral
+ * range the sandbox opens unless configured into it; listed so they stay
+ * closed even then.
+ */
+function localServicePorts(config: Config): number[] {
+  const ports = [config.port];
+  try {
+    if (config.databaseUrl) ports.push(Number(new URL(config.databaseUrl).port || 5432));
+  } catch {
+    // Not a URL; the default range already excludes Postgres's port.
+  }
+  return ports.filter((port) => Number.isInteger(port) && port > 0);
 }

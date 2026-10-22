@@ -43,7 +43,7 @@ function execution(
         excerpt: "",
       },
     ],
-    positiveControl: control ? mutant(control, "positive-control") : null,
+    positiveControls: control ? [mutant(control, "control-unit")] : [],
     mutants: outcomes.map((o, i) => mutant(o, `m${i}`)),
     planned: outcomes.length,
   };
@@ -113,6 +113,22 @@ describe("the verdict", () => {
     }
   });
 
+  it("holds a strong result at mixed when much of the change has no test", () => {
+    const summary = summarize(execution([...many(6, "killed"), ...many(3, "uncovered")]));
+    expect(summary).toMatchObject({ killRate: 1, uncovered: 3, verdict: "mixed" });
+    expect(summary.notes.join(" ")).toContain("3 of 9 mutants hit code no test reaches");
+    // Below the 25% line it stands.
+    expect(summarize(execution([...many(9, "killed"), "uncovered"])).verdict).toBe("strong");
+  });
+
+  it("counts only a control that was caught, and says which wasn't", () => {
+    const ex = execution(many(6, "killed"));
+    ex.positiveControls.push({ ...mutant("survived", "control-e2e"), testCommandId: "e2e" });
+    const summary = summarize(ex);
+    expect(summary.verdict).toBe("strong");
+    expect(summary.notes.join(" ")).toContain("positive control for `e2e` was not caught");
+  });
+
   it("names a baseline that couldn't be used and marks partial results", () => {
     const ex = execution(["killed"]);
     ex.planned = 5;
@@ -123,7 +139,7 @@ describe("the verdict", () => {
       passed: false,
       problem: "it ran no tests",
     });
-    const notes = summarize(ex, { finished: false }).notes.join(" ");
+    const notes = summarize(ex).notes.join(" ");
     expect(notes).toContain("`npm test` couldn't be used: it ran no tests");
     expect(notes).toContain("Stopped after 1 of 5 mutants");
   });

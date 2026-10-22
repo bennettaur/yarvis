@@ -400,6 +400,7 @@ describe("setup", () => {
       branch: "feature",
       headSha: (await prRow(prId)).headSha,
       withheldEnv: ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"],
+      sandboxNotes: expect.stringContaining("setup script runs without a sandbox"),
       consent: null,
       consentHeadSha: null,
       status: null,
