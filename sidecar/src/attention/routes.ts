@@ -16,13 +16,13 @@ import {
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import { navTargetFor } from "./navTarget.ts";
 import {
+  answerQuestionPrompt,
   awaitPermissionDecision,
   canHoldAnotherPermission,
   decidePermission,
   hasPendingPermission,
   hookOutputFor,
   listPendingPermissions,
-  type PermissionDecision,
   type PermissionRequestInfo,
   summarizePermission,
   truncate,
@@ -285,8 +285,13 @@ export function createAttentionIngestRoutes(config: Config): Hono {
   return router;
 }
 
+/** `answer` replies to an AskUserQuestion prompt, keyed by each question's text. */
 const decisionSchema = z.discriminatedUnion("behavior", [
   z.object({ behavior: z.literal("allow") }),
+  z.object({
+    behavior: z.literal("answer"),
+    answers: z.record(z.string().max(1_000), z.string().trim().min(1).max(4_000)),
+  }),
   z.object({ behavior: z.literal("deny"), message: z.string().trim().max(4_000).optional() }),
   z.object({ behavior: z.literal("terminal") }),
 ]);
@@ -414,7 +419,15 @@ export function createAttentionRoutes(config: Config): Hono {
   router.post("/permissions/:id", async (c) => {
     const parsed = decisionSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const decision: PermissionDecision = parsed.data;
+    const decision = parsed.data;
+    if (decision.behavior === "answer") {
+      const result = answerQuestionPrompt(c.req.param("id"), decision.answers);
+      if (result === "gone") return c.json({ error: "no longer waiting" }, 410);
+      if (result === "mismatch") {
+        return c.json({ error: "answers don't match the prompt's questions" }, 400);
+      }
+      return c.json({ ok: true });
+    }
     if (!decidePermission(c.req.param("id"), decision)) {
       return c.json({ error: "no longer waiting" }, 410);
     }

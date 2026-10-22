@@ -119,6 +119,11 @@ terminal** hands the prompt back to Claude Code's own dialog, for its other
 options such as "don't ask again". **Go to session** opens the terminal without
 answering.
 
+When Claude asks you a question with its own question tool, the window shows
+the questions and their options the way the terminal would. Pick an option or
+type an answer for each one and press **Send answers**, and Claude carries on
+with them. **Skip** tells Claude you won't answer.
+
 Some details:
 
 - **Yarvis holds the prompt for about four minutes.** After that, Claude Code

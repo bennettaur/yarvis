@@ -13,9 +13,12 @@ import { randomUUID } from "node:crypto";
  * durable record.
  */
 
-/** What the user chose. `terminal` hands the prompt back to Claude Code's own dialog. */
+/**
+ * What the user chose. `terminal` hands the prompt back to Claude Code's own
+ * dialog. `updatedInput` replaces the tool's input when Claude Code runs it.
+ */
 export type PermissionDecision =
-  | { behavior: "allow" }
+  | { behavior: "allow"; updatedInput?: Record<string, unknown> }
   | { behavior: "deny"; message?: string }
   | { behavior: "terminal" };
 
@@ -98,6 +101,43 @@ export function awaitPermissionDecision(
   });
 }
 
+/**
+ * Claude Code's built-in question tool. It asks for permission like any other
+ * tool, and a hook that allows it with `answers` filled in answers it for the
+ * user, so the terminal never shows the question.
+ */
+export const ASK_USER_QUESTION = "AskUserQuestion";
+
+/** The question texts of an `AskUserQuestion` input, or null when it has none. */
+function questionTexts(toolInput: Record<string, unknown>): string[] | null {
+  const { questions } = toolInput;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const texts = questions.map((q) => (typeof q?.question === "string" ? q.question : null));
+  return texts.every((t): t is string => t !== null) ? texts : null;
+}
+
+/**
+ * Answers a waiting `AskUserQuestion` prompt. `answers` maps each question's
+ * text to the reply, which is how Claude Code reads them back. `gone` when it is
+ * no longer waiting; `mismatch` when it isn't a question, or the answers don't
+ * cover exactly its questions.
+ */
+export function answerQuestionPrompt(
+  id: string,
+  answers: Record<string, string>,
+): "answered" | "gone" | "mismatch" {
+  const entry = pending.get(id);
+  if (!entry) return "gone";
+  const { toolName, toolInput } = entry.info;
+  const texts = toolName === ASK_USER_QUESTION ? questionTexts(toolInput) : null;
+  const keys = Object.keys(answers);
+  if (!texts || keys.length !== new Set(texts).size || !keys.every((k) => texts.includes(k))) {
+    return "mismatch";
+  }
+  entry.resolve({ behavior: "allow", updatedInput: { ...toolInput, answers } });
+  return "answered";
+}
+
 /** Answers a waiting request. False when it is no longer waiting. */
 export function decidePermission(id: string, decision: PermissionDecision): boolean {
   const entry = pending.get(id);
@@ -131,11 +171,16 @@ export function truncate(text: string, max: number): string {
 /**
  * One line describing what the tool wants to do, for the attention row and the
  * OS notification: the command for Bash, the path for file tools, otherwise
- * just the tool's name.
+ * the first question for AskUserQuestion, otherwise just the tool's name.
  */
 export function summarizePermission(toolName: string, toolInput: Record<string, unknown>): string {
   const pick = (key: string) => (typeof toolInput[key] === "string" ? toolInput[key] : null);
-  const detail = pick("command") ?? pick("file_path") ?? pick("url") ?? pick("pattern");
+  const detail =
+    pick("command") ??
+    pick("file_path") ??
+    pick("url") ??
+    pick("pattern") ??
+    (toolName === ASK_USER_QUESTION ? (questionTexts(toolInput)?.[0] ?? null) : null);
   const line = detail ? `${toolName}: ${detail.replace(/\s+/g, " ").trim()}` : toolName;
   return truncate(line, MAX_SUMMARY_CHARS);
 }
@@ -148,7 +193,10 @@ export function hookOutputFor(decision: PermissionDecision | null): Record<strin
   if (!decision || decision.behavior === "terminal") return null;
   const body =
     decision.behavior === "allow"
-      ? { behavior: "allow" }
+      ? {
+          behavior: "allow",
+          ...(decision.updatedInput ? { updatedInput: decision.updatedInput } : {}),
+        }
       : { behavior: "deny", ...(decision.message ? { message: decision.message } : {}) };
   return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: body } };
 }

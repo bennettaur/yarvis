@@ -326,6 +326,70 @@ describe("permission requests", () => {
     });
   });
 
+  describe("AskUserQuestion", () => {
+    const questionInput = {
+      ...hookInput,
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [{ label: "Postgres" }, { label: "SQLite" }],
+            multiSelect: false,
+          },
+          { question: "Anything else?", options: [{ label: "No" }, { label: "Yes" }] },
+        ],
+      },
+    };
+    const answers = { "Which database?": "Postgres", "Anything else?": "Keep it local" };
+
+    it("shows the first question as the item's summary", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask(questionInput);
+      await untilItemRaised();
+      const [item] = await pendingItems();
+      expect(item!.body).toBe("AskUserQuestion: Which database?");
+    });
+
+    it("answers the hook with the questions and the user's answers", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask(questionInput);
+      expect((await decide(id, { behavior: "answer", answers })).status).toBe(200);
+      expect(await (await response).json()).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: {
+            behavior: "allow",
+            updatedInput: { ...questionInput.tool_input, answers },
+          },
+        },
+      });
+    });
+
+    it("refuses answers that don't cover exactly the prompt's questions", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { id } = await ask(questionInput);
+      const missing = { "Which database?": "Postgres" };
+      const extra = { ...answers, "Something else?": "x" };
+      expect((await decide(id, { behavior: "answer", answers: missing })).status).toBe(400);
+      expect((await decide(id, { behavior: "answer", answers: extra })).status).toBe(400);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("refuses answers for a prompt that isn't a question", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { id } = await ask();
+      const res = await decide(id, { behavior: "answer", answers: { "rm -rf build": "yes" } });
+      expect(res.status).toBe(400);
+    });
+
+    it("reports an answer to a prompt that's gone", async () => {
+      const res = await decide(crypto.randomUUID(), { behavior: "answer", answers });
+      expect(res.status).toBe(410);
+    });
+  });
+
   it("hands the prompt back to the terminal with an empty reply and keeps the item", async () => {
     await seedWorkspace(workspaceId, "WS");
     const { response, id } = await ask();
