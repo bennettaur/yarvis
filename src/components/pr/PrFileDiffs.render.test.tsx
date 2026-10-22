@@ -6,6 +6,7 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { setPrFileContent } from "../../test/prFiles";
 import { renderToHtml, textOf } from "../../test/render";
+import { reviewThread } from "../../test/reviewThread";
 import { DiffBody } from "./PrFileDiffs";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -71,15 +72,31 @@ describe("DiffBody comment-container rendering", () => {
   // The other half of the guard: a real thread on a commentable line must still
   // render its container, so the fix can't regress by suppressing every one.
   it("renders the comment container on a line that has a thread", async () => {
-    const thread: ReviewThread = {
-      path: file.filename,
-      line: 2,
-      isResolved: false,
-      comments: [{ author: "octocat", body: "needs a guard", createdAt: "" }],
-    };
+    const thread = reviewThread({ path: file.filename, line: 2, bodies: ["needs a guard"] });
     const html = await render(["@@ -1,2 +1,2 @@", " a", "+b"].join("\n"), [thread]);
     expect(html).toContain(CONTAINER_MARKER);
     expect(html).toContain("needs a guard");
+  });
+
+  // A deleted line exists only in the old file, so a thread left on it is
+  // anchored by the old line number — which the unified view must still place.
+  it("shows a thread on a deleted line, by its old line number", async () => {
+    const thread = reviewThread({
+      path: file.filename,
+      line: 2,
+      side: "LEFT",
+      bodies: ["why remove this?"],
+    });
+    const html = await render(["@@ -1,2 +1,1 @@", " a", "-b"].join("\n"), [thread]);
+    expect(html).toContain("why remove this?");
+    expect(html).toContain("line 2 (old)");
+  });
+
+  it("does not show an old-side thread on the new line with the same number", async () => {
+    const thread = reviewThread({ path: file.filename, line: 2, side: "LEFT", bodies: ["old"] });
+    // New line 2 exists, but old line 2 does not: the hunk only adds.
+    const html = await render(["@@ -1,1 +1,2 @@", " a", "+b"].join("\n"), [thread]);
+    expect(html).not.toContain(CONTAINER_MARKER);
   });
 });
 

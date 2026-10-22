@@ -15,6 +15,8 @@ import {
   azPrStatus,
   azPrSummary,
   azRemoveStar,
+  azReplyToThread,
+  azSetThreadResolved,
   azSubmitVote,
 } from "./azure";
 import {
@@ -30,6 +32,8 @@ import {
   ghPrStatus,
   ghPrSummary,
   ghRemoveStar,
+  ghReplyToThread,
+  ghSetThreadResolved,
   ghSubmitReview,
 } from "./github";
 import type {
@@ -40,6 +44,7 @@ import type {
   PrRef,
   PrStatus,
   PrSummary,
+  ReviewThread,
 } from "./types";
 
 /** The list-row summary for one PR the user named rather than picked from a list. */
@@ -73,6 +78,30 @@ export const fetchPrFileContent = (ref: PrRef, path: string, sha: string): Promi
 
 export const postPrComment = (ref: PrRef, comment: NewComment): Promise<{ ok: boolean }> =>
   ref.provider === "github" ? ghPostComment(ref, comment) : azPostComment(ref, comment);
+
+/**
+ * Replies to a review thread. Azure threads a reply under a parent comment; the
+ * thread's first one is what Azure's own UI answers.
+ */
+export function replyToPrThread(
+  ref: PrRef,
+  thread: Pick<ReviewThread, "id" | "comments">,
+  body: string,
+): Promise<{ ok: boolean }> {
+  if (ref.provider === "github") return ghReplyToThread(ref, thread.id, body);
+  const parent = Number(thread.comments[0]?.id);
+  return azReplyToThread(ref, thread.id, body, Number.isInteger(parent) ? parent : undefined);
+}
+
+export const resolvePrThread = (ref: PrRef, threadId: string): Promise<{ ok: boolean }> =>
+  ref.provider === "github"
+    ? ghSetThreadResolved(ref, threadId, true)
+    : azSetThreadResolved(ref, threadId, true);
+
+export const unresolvePrThread = (ref: PrRef, threadId: string): Promise<{ ok: boolean }> =>
+  ref.provider === "github"
+    ? ghSetThreadResolved(ref, threadId, false)
+    : azSetThreadResolved(ref, threadId, false);
 
 export const addStar = (ref: PrRef, title?: string | null, url?: string | null) =>
   ref.provider === "github" ? ghAddStar(ref, title, url) : azAddStar(ref, title, url);

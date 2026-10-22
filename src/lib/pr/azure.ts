@@ -122,6 +122,22 @@ export const azFileContent = (ref: PrRef, path: string, sha: string) =>
   );
 export const azPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+export const azReplyToThread = (
+  ref: PrRef,
+  threadId: string,
+  body: string,
+  parentCommentId?: number,
+) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/replies`,
+    "POST",
+    { body, parentCommentId },
+  );
+export const azSetThreadResolved = (ref: PrRef, threadId: string, resolved: boolean) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/${resolved ? "resolve" : "unresolve"}`,
+    "POST",
+  );
 
 export const azMarkReady = (ref: PrRef) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");

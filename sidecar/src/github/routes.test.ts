@@ -124,6 +124,52 @@ describe("github merge validation", () => {
   });
 });
 
+describe("github comment thread routes", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const post = (path: string, body?: unknown) =>
+    configured.request(`/api/github/pr/octo/repo/1${path}`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it("rejects a range that ends before it starts with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startLine: 9, body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a start side with no start line with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startSide: "LEFT", body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a thread id carrying path characters with 400", async () => {
+    const res = await post(`/threads/${encodeURIComponent("T1/../x")}/resolve`);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty reply with 400", async () => {
+    const res = await post("/threads/PRRT_1/replies", { body: "  " });
+    expect(res.status).toBe(400);
+  });
+
+  it("resolves a thread through GitHub's mutation", async () => {
+    const sent: { query: string; variables: unknown }[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("resolveReviewThread");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1" });
+  });
+});
+
 describe("github pr config validation", () => {
   const put = (body: unknown) =>
     configured.request("/api/github/config", {

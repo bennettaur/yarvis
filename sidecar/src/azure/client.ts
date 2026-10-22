@@ -33,6 +33,7 @@ import type {
   AzurePullRequest,
   AzureReviewer,
   AzureThread,
+  AzureThreadContext,
 } from "./apiTypes.ts";
 import { buildPatch } from "./diff.ts";
 
@@ -51,6 +52,7 @@ const SEARCH_API_VERSION = "7.1-preview.1";
 // Azure comment/thread enum values used when posting a thread.
 const COMMENT_TYPE_TEXT = 1;
 const THREAD_STATUS_ACTIVE = 1;
+const THREAD_STATUS_FIXED = 2;
 
 // The PR's base/head commit pair is invariant for the life of an iteration, but
 // every per-file diff needs it. Cache it briefly so opening an N-file PR doesn't
@@ -208,6 +210,36 @@ export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckIte
     status: normalized,
     conclusion,
     url: null,
+  };
+}
+
+/**
+ * Whether an Azure thread status counts as resolved. Azure's UI files every
+ * status but the open ones under "resolved" — won't fix and by design close a
+ * thread just as fixed does. A thread with no status is a plain comment.
+ */
+function isResolvedStatus(status: string | undefined): boolean {
+  return status != null && !["active", "pending", "unknown"].includes(status);
+}
+
+/**
+ * Where a thread sits in the diff. A range is anchored by its start and end
+ * positions on one side; the right (new file) side wins when both are set,
+ * matching where Azure's own UI draws such a thread.
+ */
+function threadAnchor(
+  ctx: AzureThreadContext | null | undefined,
+): Pick<ReviewThread, "line" | "startLine" | "side"> {
+  const right = ctx?.rightFileStart?.line != null;
+  const start = right ? ctx?.rightFileStart?.line : ctx?.leftFileStart?.line;
+  const end = (right ? ctx?.rightFileEnd?.line : ctx?.leftFileEnd?.line) ?? start;
+  if (start == null || end == null) {
+    return { line: null, side: "RIGHT" };
+  }
+  return {
+    line: end,
+    ...(start < end ? { startLine: start } : {}),
+    side: right ? "RIGHT" : "LEFT",
   };
 }
 
@@ -534,18 +566,26 @@ export class AzureDevOpsClient {
   }
 
   private toThread(thread: AzureThread): ReviewThread | null {
+    if (thread.isDeleted) return null;
     const comments = (thread.comments ?? []).filter(
-      (c: AzureComment) => c.commentType !== "system",
+      (c: AzureComment) => c.commentType !== "system" && !c.isDeleted,
     );
     if (comments.length === 0) return null;
     const ctx = thread.threadContext;
     const path = ctx?.filePath ? ctx.filePath.replace(/^\//, "") : null;
-    const line = ctx?.rightFileStart?.line ?? ctx?.leftFileStart?.line ?? null;
+    const anchor = threadAnchor(ctx);
     return {
+      id: thread.id != null ? String(thread.id) : "",
       path,
-      line,
-      isResolved: thread.status === "closed" || thread.status === "fixed",
+      ...anchor,
+      isResolved: isResolvedStatus(thread.status),
+      // Azure reports no per-thread permissions and no "outdated" flag: anyone
+      // who can read a PR can comment on it and set a thread's status.
+      isOutdated: false,
+      canReply: true,
+      canResolve: true,
       comments: comments.map((c) => ({
+        id: c.id != null ? String(c.id) : "",
         author: c.author?.displayName ?? "",
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
@@ -753,29 +793,72 @@ export class AzureDevOpsClient {
     if (!res.ok) throw new Error(`azure post pr comment -> ${res.status}`);
   }
 
-  /** Posts a single-line comment thread anchored to the right side of the diff. */
+  /**
+   * Opens a comment thread on one line or a range, in the old ("LEFT") or new
+   * ("RIGHT") file. Azure's thread context holds one side's start and end, so
+   * a range keeps to the side it ends on. Offsets are 1: the caller knows lines,
+   * not columns, and Azure anchors the thread by line either way.
+   */
   async postComment(ref: AzureRef, input: NewComment): Promise<void> {
+    const prefix = input.side === "LEFT" ? "left" : "right";
+    const start = input.startLine ?? input.line;
     const body = {
       comments: [{ content: input.body, commentType: COMMENT_TYPE_TEXT }],
       status: THREAD_STATUS_ACTIVE,
       threadContext: {
         filePath: `/${input.path.replace(/^\//, "")}`,
-        rightFileStart: { line: input.line, offset: 1 },
-        rightFileEnd: { line: input.line, offset: 1 },
+        [`${prefix}FileStart`]: { line: start, offset: 1 },
+        [`${prefix}FileEnd`]: { line: input.line, offset: 1 },
       },
     };
-    const res = await this.fetchImpl(
-      this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`, API_VERSION),
-      {
-        method: "POST",
-        headers: {
-          Authorization: this.authHeader(),
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      },
+    await this.sendJson("POST", `${this.prBase(ref)}/threads`, body, "post comment");
+  }
+
+  /**
+   * Replies to a thread. `parentCommentId` is the comment being answered; the
+   * thread's first comment is what Azure's own UI replies to.
+   */
+  async replyToThread(
+    ref: AzureRef,
+    threadId: number,
+    body: string,
+    parentCommentId = 1,
+  ): Promise<void> {
+    await this.sendJson(
+      "POST",
+      `${this.prBase(ref)}/threads/${threadId}/comments`,
+      { content: body, parentCommentId, commentType: COMMENT_TYPE_TEXT },
+      "reply to thread",
     );
-    if (!res.ok) throw new Error(`azure post comment -> ${res.status}`);
+  }
+
+  /**
+   * Resolves a thread as fixed, or reopens it as active. Those are the two
+   * statuses Azure's own resolve and reactivate buttons set.
+   */
+  async setThreadResolved(ref: AzureRef, threadId: number, resolved: boolean): Promise<void> {
+    await this.sendJson(
+      "PATCH",
+      `${this.prBase(ref)}/threads/${threadId}`,
+      { status: resolved ? THREAD_STATUS_FIXED : THREAD_STATUS_ACTIVE },
+      resolved ? "resolve thread" : "reactivate thread",
+    );
+  }
+
+  private prBase(ref: AzureRef): string {
+    return `${this.repoBase(ref)}/pullRequests/${ref.prId}`;
+  }
+
+  private async sendJson(method: string, url: string, body: unknown, label: string): Promise<void> {
+    const res = await this.fetchImpl(this.withVersion(url, API_VERSION), {
+      method,
+      headers: {
+        Authorization: this.authHeader(),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`azure ${label} -> ${res.status}`);
   }
 }
