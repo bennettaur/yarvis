@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { ModelSelection } from "../llm/complexity.ts";
 import { defaultProviderModel } from "../llm/providers.ts";
@@ -40,6 +41,65 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
     const next = { ...DEFAULT_PR_MODEL_CONFIG, ...current, ...input };
     return { next, result: next };
   });
+}
+
+/**
+ * The verification report runs on Claude Code rather than on a chat provider,
+ * so it takes a Claude Code model alias and a spend ceiling instead of a
+ * provider/model pair. Kept under its own `prVerification` key.
+ */
+export const VERIFICATION_MODELS = ["sonnet", "opus", "haiku"] as const;
+
+export type VerificationModel = (typeof VERIFICATION_MODELS)[number];
+
+export const VERIFICATION_BUDGET_LIMITS = { min: 0.25, max: 20 } as const;
+
+export const verificationRunConfigSchema = z.object({
+  model: z.enum(VERIFICATION_MODELS),
+  maxBudgetUsd: z.number().min(VERIFICATION_BUDGET_LIMITS.min).max(VERIFICATION_BUDGET_LIMITS.max),
+});
+
+export type VerificationRunConfig = z.infer<typeof verificationRunConfigSchema>;
+
+export const DEFAULT_VERIFICATION_RUN_CONFIG: VerificationRunConfig = {
+  model: "sonnet",
+  maxBudgetUsd: 2,
+};
+
+const VERIFICATION_SETTINGS_KEY = "prVerification";
+
+/**
+ * The stored verification settings over the defaults. A stored field that no
+ * longer validates (a hand edit, an alias since dropped) falls back to its
+ * default rather than failing every run.
+ */
+function verificationConfigFrom(
+  stored: Record<string, unknown> | undefined,
+): VerificationRunConfig {
+  const shape = verificationRunConfigSchema.shape;
+  const model = shape.model.safeParse(stored?.model);
+  const budget = shape.maxBudgetUsd.safeParse(stored?.maxBudgetUsd);
+  return {
+    model: model.success ? model.data : DEFAULT_VERIFICATION_RUN_CONFIG.model,
+    maxBudgetUsd: budget.success ? budget.data : DEFAULT_VERIFICATION_RUN_CONFIG.maxBudgetUsd,
+  };
+}
+
+export async function getVerificationRunConfig(): Promise<VerificationRunConfig> {
+  return verificationConfigFrom(await readSection(VERIFICATION_SETTINGS_KEY));
+}
+
+/** Merges the given fields onto the stored settings and writes them back. */
+export async function saveVerificationRunConfig(
+  input: Partial<VerificationRunConfig>,
+): Promise<VerificationRunConfig> {
+  return withSection<Record<string, unknown>, VerificationRunConfig>(
+    VERIFICATION_SETTINGS_KEY,
+    (current) => {
+      const next = { ...verificationConfigFrom(current), ...input };
+      return { next, result: next };
+    },
+  );
 }
 
 /** The provider/model for a feature, or the default chat model when it is unset. */

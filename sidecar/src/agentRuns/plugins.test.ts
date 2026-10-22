@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { writePluginCopy } from "./plugins.ts";
 
 describe("writing out a shipped plugin", () => {
@@ -13,6 +13,25 @@ describe("writing out a shipped plugin", () => {
       );
       expect(manifest.name).toBe("yarvis-review");
       expect(existsSync(join(copy.dir, "README.md"))).toBe(true);
+    } finally {
+      copy.remove();
+    }
+  });
+
+  it("ships every file in the plugin's source folder", () => {
+    const source = join(import.meta.dir, "../../claude-plugins/yarvis-review");
+    const copy = writePluginCopy("yarvis-review");
+    try {
+      const sourceFiles = readdirSync(source, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => relative(source, join(entry.parentPath, entry.name)))
+        .sort();
+      expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
+      for (const path of sourceFiles) {
+        expect(readFileSync(join(copy.dir, path), "utf8")).toBe(
+          readFileSync(join(source, path), "utf8"),
+        );
+      }
     } finally {
       copy.remove();
     }

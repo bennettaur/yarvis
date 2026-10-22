@@ -4,15 +4,22 @@ import type { ModelSelection } from "../lib/complexityModels";
 import {
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
+  getVerificationRunConfig,
   PR_MODEL_FEATURES,
   type PrModelConfig,
   type PrModelFeature,
   savePrModelConfig,
+  saveVerificationRunConfig,
+  VERIFICATION_BUDGET_LIMITS,
+  VERIFICATION_MODELS,
+  type VerificationModel,
+  type VerificationRunConfig,
 } from "../lib/pr/models";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
- * code. A feature left unset uses the default chat model.
+ * code. A feature left unset uses the default chat model. The verification report runs
+ * on Claude Code instead, so it takes a Claude Code model and a spend ceiling.
  */
 
 const FIELD =
@@ -23,16 +30,31 @@ const FEATURE_LABELS: Record<PrModelFeature, { label: string; hint: string }> = 
   ask: { label: "Line questions", hint: "Answers a question about the lines you selected." },
 };
 
+const VERIFICATION_MODEL_LABELS: Record<VerificationModel, string> = {
+  sonnet: "Claude Sonnet",
+  opus: "Claude Opus",
+  haiku: "Claude Haiku",
+};
+
 export default function PrModelSection() {
   const [config, setConfig] = useState<PrModelConfig>(DEFAULT_PR_MODEL_CONFIG);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [verification, setVerification] = useState<VerificationRunConfig | null>(null);
+  /** The budget as typed; saved on blur, so a half-typed number isn't sent. */
+  const [budgetDraft, setBudgetDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [saved, catalog] = await Promise.all([getPrModelConfig(), listProviders("chat")]);
+      const [saved, catalog, run] = await Promise.all([
+        getPrModelConfig(),
+        listProviders("chat"),
+        getVerificationRunConfig(),
+      ]);
       setConfig(saved);
       setProviders(catalog);
+      setVerification(run);
+      setBudgetDraft(String(run.maxBudgetUsd));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -58,6 +80,35 @@ export default function PrModelSection() {
     },
     [config],
   );
+
+  const saveVerification = useCallback(async (patch: Partial<VerificationRunConfig>) => {
+    try {
+      const saved = await saveVerificationRunConfig(patch);
+      setVerification(saved);
+      setBudgetDraft(String(saved.maxBudgetUsd));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const commitBudget = () => {
+    if (!verification) return;
+    const value = Number(budgetDraft);
+    if (
+      budgetDraft.trim() === "" ||
+      !Number.isFinite(value) ||
+      value < VERIFICATION_BUDGET_LIMITS.min ||
+      value > VERIFICATION_BUDGET_LIMITS.max
+    ) {
+      setBudgetDraft(String(verification.maxBudgetUsd));
+      setError(
+        `The budget must be between $${VERIFICATION_BUDGET_LIMITS.min} and $${VERIFICATION_BUDGET_LIMITS.max}.`,
+      );
+      return;
+    }
+    if (value !== verification.maxBudgetUsd) void saveVerification({ maxBudgetUsd: value });
+  };
 
   const modelsFor = (providerId: string) =>
     providers.find((p) => p.id === providerId)?.models ?? [];
@@ -119,6 +170,45 @@ export default function PrModelSection() {
             </div>
           );
         })}
+        {verification && (
+          <div className="grid grid-cols-[120px_1fr_1fr] items-start gap-2">
+            <div>
+              <p className="text-sm text-zinc-300">Verification report</p>
+              <p className="text-xs text-zinc-600">
+                Runs on Claude Code. The budget caps what one report may spend.
+              </p>
+            </div>
+            <select
+              className={FIELD}
+              aria-label="Verification report model"
+              value={verification.model}
+              onChange={(e) =>
+                void saveVerification({ model: e.target.value as VerificationModel })
+              }
+            >
+              {VERIFICATION_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {VERIFICATION_MODEL_LABELS[m]}
+                </option>
+              ))}
+            </select>
+            <label className="flex items-center gap-1 text-sm text-zinc-500">
+              $
+              <input
+                className={FIELD}
+                aria-label="Verification report budget in US dollars"
+                type="number"
+                inputMode="decimal"
+                min={VERIFICATION_BUDGET_LIMITS.min}
+                max={VERIFICATION_BUDGET_LIMITS.max}
+                step={0.25}
+                value={budgetDraft}
+                onChange={(e) => setBudgetDraft(e.target.value)}
+                onBlur={commitBudget}
+              />
+            </label>
+          </div>
+        )}
       </div>
 
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
