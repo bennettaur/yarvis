@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
+import type { ReasoningEffort } from "./effort";
 
 /**
  * Built-in providers use their bare name; user-configured proxies are
@@ -209,6 +210,8 @@ export interface ChatRequest {
   source?: "voice";
   /** Ask the provider to stream the model's reasoning, where it supports it. */
   reasoning?: boolean;
+  /** How hard the model should think, for a model tagged `reasoning`. */
+  effort?: ReasoningEffort;
   /** Restart from this persisted user message: it and everything after it are dropped first. */
   rewindTo?: string;
 }

@@ -73,8 +73,9 @@ These are stored in `voiceConfig` in `~/.yarvis/settings.json`, so every
 surface shares one setup.
 
 Which models appear in each picker comes from the model catalog. Each model is
-tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`). Edit the
-tags under **Settings → LLM Providers → Models**. The first edit copies the
+tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`,
+`reasoning`). Edit the tags under **Settings → LLM Providers → Models**, or on a
+custom provider's own model list. The first edit copies the
 built-in list into your settings, and **Reset to built-in list** undoes it.
 Model names are free text, in the form `namespace/name` with an optional
 `:tag`.

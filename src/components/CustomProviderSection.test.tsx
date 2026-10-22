@@ -36,43 +36,14 @@ function reply(url: string, method: string): unknown {
   return [PROVIDER];
 }
 
+/**
+ * `mock.module` replaces the module for the whole test process, so the real
+ * exports are spread back in rather than stubbed (see `ComplexityModelSection.test.tsx`).
+ */
+const actualApi = await import("../lib/api");
+
 mock.module("../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Faithful copy of the real implementation: `mock.module` is process-global,
-  // so a naive stub here would break other files' assertions about it.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
+  ...actualApi,
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -81,13 +52,6 @@ mock.module("../lib/api", () => ({
     phase: "ready" as const,
   }),
   waitForSidecarReady: async () => {},
-  getStatus: async () => ({
-    service: "sidecar",
-    databaseConfigured: true,
-    providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
-  }),
-  getDbHealth: async () => ({ configured: true, reachable: true }),
-  streamSSE: async function* streamSSE() {},
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });

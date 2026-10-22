@@ -10,6 +10,12 @@ const PROVIDERS = [
     available: true,
     models: [{ id: "llama-3.3-70b", capabilities: ["chat"] }],
   },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    available: true,
+    models: [{ id: "claude-opus-4-7", capabilities: ["chat", "reasoning"] }],
+  },
 ];
 
 let config: Record<string, unknown> = { low: null, medium: null, max: null };
@@ -102,5 +108,46 @@ describe("ComplexityModelSection", () => {
     expect(mounted.host.textContent).toContain("failed");
     // Reverted to unset rather than showing the picked provider as if it saved.
     expect((mounted.host.querySelectorAll("select")[0] as HTMLSelectElement).value).toBe("");
+  });
+
+  describe("effort", () => {
+    /** Picks `value` in `select` the way a user would. */
+    async function choose(select: Element | null | undefined, value: string) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(select, value);
+      select?.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    it("offers an effort only for a model tagged reasoning", async () => {
+      config = {
+        low: { provider: "cerebras", model: "llama-3.3-70b" },
+        medium: null,
+        max: { provider: "anthropic", model: "claude-opus-4-7" },
+      };
+      const mounted = await mountForInteraction(createElement(ComplexityModelSection));
+      unmount = mounted.unmount;
+      expect(mounted.host.querySelector('select[aria-label="low effort"]')).toBeNull();
+      expect(mounted.host.querySelector('select[aria-label="max effort"]')).not.toBeNull();
+    });
+
+    it("saves the chosen effort with the tier's model, and clears it on Default", async () => {
+      config = {
+        low: null,
+        medium: null,
+        max: { provider: "anthropic", model: "claude-opus-4-7" },
+      };
+      const mounted = await mountForInteraction(createElement(ComplexityModelSection));
+      unmount = mounted.unmount;
+
+      await choose(mounted.host.querySelector('select[aria-label="max effort"]'), "high");
+      await choose(mounted.host.querySelector('select[aria-label="max effort"]'), "");
+
+      const saved = calls.filter((c) => c.method === "PATCH").map((c) => JSON.parse(c.body ?? ""));
+      expect(saved).toEqual([
+        { max: { provider: "anthropic", model: "claude-opus-4-7", effort: "high" } },
+        { max: { provider: "anthropic", model: "claude-opus-4-7" } },
+      ]);
+    });
   });
 });

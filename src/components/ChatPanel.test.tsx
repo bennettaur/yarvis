@@ -3,6 +3,7 @@ import { createElement, useState } from "react";
 import * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
+import { EFFORT_HINT } from "../lib/effort";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
@@ -20,7 +21,10 @@ const providers = [
   {
     id: "anthropic",
     label: "Anthropic",
-    models: [{ id: "claude-sonnet-5", capabilities: ["chat"] }],
+    models: [
+      { id: "claude-sonnet-5", capabilities: ["chat"] },
+      { id: "claude-opus-5", capabilities: ["chat", "reasoning"] },
+    ],
     available: true,
   },
   { id: "gemini", label: "Gemini", models: [], available: false },
@@ -194,6 +198,38 @@ describe("ChatPanel", () => {
       s.getAttribute("title"),
     );
     expect(titles).toEqual([SESSION_HINT, PROVIDER_HINT, MODEL_HINT]);
+  });
+
+  it("offers an effort only for a model tagged reasoning, and sends the one chosen", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const effortSelect = () =>
+      Array.from(mounted.host.querySelectorAll("select")).find(
+        (s) => s.getAttribute("title") === EFFORT_HINT,
+      );
+    expect(effortSelect()).toBeUndefined();
+
+    const choose = (select: HTMLSelectElement | undefined, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        value,
+      );
+      select?.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose(
+      Array.from(mounted.host.querySelectorAll("select")).find(
+        (s) => s.getAttribute("title") === MODEL_HINT,
+      ),
+      "claude-opus-5",
+    );
+    await settle();
+    choose(effortSelect(), "high");
+    await settle();
+
+    scripted = [{ type: "done", finishReason: "stop" }];
+    await say(mounted.host, "plan my week");
+    expect(sent[0]).toMatchObject({ model: "claude-opus-5", effort: "high" });
   });
 
   it("adds a session the thread created to the picker and selects it", async () => {

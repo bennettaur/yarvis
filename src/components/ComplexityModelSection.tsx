@@ -9,6 +9,8 @@ import {
   type ModelSelection,
   saveComplexityModelConfig,
 } from "../lib/complexityModels";
+import { modelTakesEffort } from "../lib/effort";
+import EffortSelect from "./EffortSelect";
 
 /**
  * Which model answers for each complexity tier — the setting internal-use
@@ -110,21 +112,31 @@ export default function ComplexityModelSection() {
                   </option>
                 ))}
               </select>
-              <select
-                className={FIELD}
-                value={selection?.model ?? ""}
-                disabled={!selection?.provider}
-                onChange={(e) => {
-                  if (!selection?.provider) return;
-                  void save(tier, { provider: selection.provider, model: e.target.value });
-                }}
-              >
-                {modelsFor(selection?.provider ?? "").map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.id}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-1">
+                <select
+                  className={FIELD}
+                  value={selection?.model ?? ""}
+                  disabled={!selection?.provider}
+                  onChange={(e) => {
+                    if (!selection?.provider) return;
+                    void save(tier, { ...selection, model: e.target.value });
+                  }}
+                >
+                  {modelsFor(selection?.provider ?? "").map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.id}
+                    </option>
+                  ))}
+                </select>
+                {selection && modelTakesEffort(providers, selection.provider, selection.model) && (
+                  <EffortSelect
+                    className={FIELD}
+                    ariaLabel={`${tier} effort`}
+                    value={selection.effort}
+                    onChange={(effort) => void save(tier, { ...selection, effort })}
+                  />
+                )}
+              </div>
             </div>
           );
         })}

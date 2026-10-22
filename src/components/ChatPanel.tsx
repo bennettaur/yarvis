@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
+import { modelTakesEffort, useChatEffort } from "../lib/effort";
 import { type DisplayError, formatError } from "../lib/errors";
 import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
@@ -8,6 +9,7 @@ import { REASONING_HINT, useReasoningPreference } from "../lib/useReasoningPrefe
 import { useVoice } from "../lib/useVoice";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
+import EffortSelect from "./EffortSelect";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
 import ToolApprovalBar from "./ToolApprovalBar";
@@ -41,6 +43,7 @@ export default function ChatPanel({
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
   const [reasoning, setReasoning] = useReasoningPreference();
+  const [effort, setEffort] = useChatEffort();
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -71,7 +74,12 @@ export default function ChatPanel({
     stop,
     newChat,
     loadSession,
-  } = useChatThread({ onSessionCreated: addSession, reasoning, sessionStorageKey });
+  } = useChatThread({
+    onSessionCreated: addSession,
+    reasoning,
+    effort,
+    sessionStorageKey,
+  });
 
   const voice = useVoice({ send, streaming, busy });
 
@@ -191,6 +199,9 @@ export default function ChatPanel({
               </option>
             ))}
           </select>
+          {modelTakesEffort(providers, provider, model) && (
+            <EffortSelect value={effort} onChange={setEffort} />
+          )}
         </div>
       </div>
 

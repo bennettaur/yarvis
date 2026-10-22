@@ -45,6 +45,9 @@ Open it with **Cmd+1**. At the top:
 - **Thinking** shows the model's reasoning, for providers that return it.
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
+- An **effort** picker, for a model tagged `reasoning`. It sets how hard the
+  model thinks before answering. Omni Chat shares the same choice. See
+  [Effort level](../configuration.md#effort-level).
 
 The Chat tab stays loaded when you switch tabs, so a long answer keeps
 streaming while you do something else.

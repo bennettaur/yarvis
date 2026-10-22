@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listSpecialists, reloadSpecialists, type SpecialistCatalog } from "../lib/agents";
 import { writeClipboard } from "../lib/clipboard";
+import { EFFORT_LABELS } from "../lib/effort";
 
 /**
  * The specialists the chat agent delegates to.
@@ -105,6 +106,7 @@ export default function SpecialistSection() {
                   : specialist.complexityTier
                     ? `${specialist.complexityTier} complexity`
                     : "default model"}
+                {specialist.effort && ` · ${EFFORT_LABELS[specialist.effort].toLowerCase()} effort`}
               </span>
               <span className="text-xs text-zinc-600">{specialist.maxSteps} steps</span>
               {!specialist.enabled && (
