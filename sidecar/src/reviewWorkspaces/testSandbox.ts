@@ -25,10 +25,14 @@
  * where the sandbox can't be applied, or its startup check finds a gap, no test
  * runs (`SandboxUnavailableError`).
  *
- * Commands are argv, never a shell line, with no provider secrets or SSH
- * agent, in their own process group. A command counts as finished when its
- * process exits; anything it left behind is killed, by process group and then
- * by any process still working in the copy or temp folder.
+ * Compiling the profile takes about three seconds (it lists every ephemeral
+ * port), so a pass pays it once: `openSandboxSession` starts one small helper
+ * under `sandbox-exec` and runs every command as the helper's child, which
+ * inherits the sandbox. Commands are argv, never a shell line, with no
+ * provider secrets or SSH agent, each in its own process group. A command
+ * counts as finished when its process exits; anything it left behind is
+ * killed, by process group and then by any process still working in the copy
+ * or temp folder.
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
@@ -43,6 +47,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { createInterface } from "node:readline";
 import { SECRET_HOME_PATHS } from "../agentRuns/service.ts";
 import { scrubbedEnv } from "../workspaces/exec.ts";
 
@@ -365,22 +370,40 @@ export const sandboxDefaults: Omit<SandboxPaths, "copy" | "tempDir"> = {
   extraBlockedPorts: [],
 };
 
-export const runSandboxed: SandboxRunner = (command) => {
-  assertSandboxAvailable();
-  if (!exitHookInstalled) {
-    exitHookInstalled = true;
-    process.on("exit", () => {
-      for (const pgid of liveGroups) killGroup(pgid, "SIGKILL");
-    });
-  }
-  const paths = { ...sandboxDefaults, ...command.sandbox };
-  const profile = sandboxProfile({ ...paths, copy: command.cwd, tempDir: command.tempDir });
-  // Too large for an argument; written where the sandboxed command can't reach.
+function installExitHook(): void {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on("exit", () => {
+    for (const pgid of liveGroups) killGroup(pgid, "SIGKILL");
+  });
+}
+
+/**
+ * Writes the profile where no sandboxed command can reach (it is too large for
+ * an argument), and the fake home it points the tests at.
+ */
+function writeProfile(
+  paths: Omit<SandboxPaths, "copy" | "tempDir">,
+  copy: string,
+  tempDir: string,
+): { profileFile: string; removeProfile: () => void } {
+  const profile = sandboxProfile({ ...paths, copy, tempDir });
   const profileDir = mkdtempSync(join(tmpdir(), "yarvis-sandbox-profile-"));
   const profileFile = join(profileDir, "profile.sb");
   writeFileSync(profileFile, profile, { mode: 0o600 });
-  const removeProfile = () => rmSync(profileDir, { recursive: true, force: true });
-  mkdirSync(join(command.tempDir, "home"), { recursive: true });
+  mkdirSync(join(tempDir, "home"), { recursive: true });
+  return { profileFile, removeProfile: () => rmSync(profileDir, { recursive: true, force: true }) };
+}
+
+/**
+ * Runs one command in a sandbox of its own: compiles the profile every time.
+ * What `openSandboxSession` falls back to when it can't start its helper.
+ */
+export const runSandboxed: SandboxRunner = (command) => {
+  assertSandboxAvailable();
+  installExitHook();
+  const paths = { ...sandboxDefaults, ...command.sandbox };
+  const { profileFile, removeProfile } = writeProfile(paths, command.cwd, command.tempDir);
   const started = Date.now();
   return new Promise<SandboxedRun>((resolve, reject) => {
     let child: ChildProcess;
@@ -466,6 +489,235 @@ export const runSandboxed: SandboxRunner = (command) => {
   });
 };
 
+/**
+ * The helper that runs inside the sandbox for a whole pass. It reads one JSON
+ * request per line — `{id, argv, cwd}` — and for each forks a child in its own
+ * process group, `exec`s the argv directly (no shell), and streams back JSON
+ * lines: `spawned` with the child's pgid at once, then `exit` with its exit
+ * code or signal and the tail of its output (base64). Output stops being read
+ * two seconds after the child exits, so a grandchild that escaped holding the
+ * pipe can't stall it. Timeouts and cancels are the sidecar's: it signals the
+ * group itself. Perl because it ships with macOS and has what this needs
+ * (fork, exec, select, JSON) in its core library.
+ */
+const SESSION_HELPER = String.raw`
+use strict; use warnings;
+use JSON::PP; use MIME::Base64; use POSIX qw(:sys_wait_h); use IO::Select; use Time::HiRes qw(time);
+$| = 1;
+my $json = JSON::PP->new->utf8->canonical;
+my ($max, $grace) = (${MAX_OUTPUT_CHARS}, ${EXIT_GRACE_MS / 1000});
+sub reply { print $json->encode($_[0]), "
+"; }
+while (my $line = <STDIN>) {
+  my $req = eval { $json->decode($line) };
+  next unless ref $req eq "HASH" && ref $req->{argv} eq "ARRAY" && @{$req->{argv}};
+  my ($id, $argv, $cwd) = ($req->{id}, $req->{argv}, $req->{cwd});
+  my ($r, $w);
+  unless (pipe($r, $w)) { reply({ id => $id, event => "error", message => "pipe: $!" }); next; }
+  my $pid = fork();
+  unless (defined $pid) { reply({ id => $id, event => "error", message => "fork: $!" }); next; }
+  if ($pid == 0) {
+    close $r;
+    setpgrp(0, 0);
+    open(STDIN, "<", "/dev/null");
+    open(STDOUT, ">&", $w); open(STDERR, ">&", $w); close $w;
+    chdir $cwd or do { print STDERR "cannot enter $cwd: $!
+"; POSIX::_exit(126); };
+    { no warnings; exec { $argv->[0] } @$argv; }
+    print STDERR "cannot run $argv->[0]: $!
+";
+    POSIX::_exit(127);
+  }
+  setpgrp($pid, $pid);
+  close $w;
+  reply({ id => $id, event => "spawned", pgid => $pid });
+  my $sel = IO::Select->new($r);
+  my ($out, $status, $exited, $eof) = ("", undef, undef, 0);
+  while (1) {
+    if (!defined $status) {
+      if (waitpid($pid, WNOHANG) == $pid) { $status = $?; $exited = time; }
+    }
+    last if defined $status && ($eof || time - $exited >= $grace);
+    if ($eof) { select(undef, undef, undef, 0.05); next; }
+    if ($sel->can_read(0.05)) {
+      my $n = sysread($r, my $buf, 65536);
+      if (!$n) { $eof = 1; next; }
+      $out .= $buf;
+      $out = substr($out, -$max) if length($out) > $max;
+    }
+  }
+  close $r;
+  reply({
+    id => $id, event => "exit",
+    code => (WIFEXITED($status) ? WEXITSTATUS($status) : undef),
+    signal => (WIFSIGNALED($status) ? WTERMSIG($status) : undef),
+    output => encode_base64($out, ""),
+  });
+}
+`;
+
+const PERL = "/usr/bin/perl";
+
+export interface SandboxSession {
+  /** Runs commands through the session's helper; every command must use the session's copy and temp folder. */
+  runner: SandboxRunner;
+  /** The helper's pid, which the stray sweep must spare. */
+  helperPid: number | undefined;
+  close: () => void;
+}
+
+/**
+ * Starts one sandboxed helper for a pass, so the profile is compiled once. Falls
+ * back to a sandbox per command (`runSandboxed`) when the helper can't start;
+ * the protection is the same either way, only slower.
+ */
+export async function openSandboxSession(base: {
+  cwd: string;
+  tempDir: string;
+  sandbox?: SandboxedCommand["sandbox"];
+}): Promise<SandboxSession> {
+  assertSandboxAvailable();
+  if (!existsSync(PERL)) {
+    console.log("[mutation-testing] no perl for the sandbox helper; sandboxing each command");
+    return { runner: runSandboxed, helperPid: undefined, close: () => {} };
+  }
+  installExitHook();
+  const paths = { ...sandboxDefaults, ...base.sandbox };
+  const { profileFile, removeProfile } = writeProfile(paths, base.cwd, base.tempDir);
+  let helper: ChildProcess;
+  try {
+    helper = spawn(SANDBOX_EXEC, ["-f", profileFile, PERL, "-e", SESSION_HELPER], {
+      cwd: base.cwd,
+      env: sandboxEnv({ tempDir: base.tempDir, realHome: paths.realHome }),
+      shell: false,
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (e) {
+    removeProfile();
+    throw e;
+  }
+  const helperPid = helper.pid;
+  if (helperPid !== undefined) liveGroups.add(helperPid);
+
+  type Pending = {
+    onSpawned: (pgid: number) => void;
+    onExit: (reply: { code: number | null; signal: number | null; output: string }) => void;
+    onError: (message: string) => void;
+  };
+  const pending = new Map<number, Pending>();
+  let broken: string | null = null;
+  let helperErrors = "";
+  helper.stderr?.on("data", (chunk: Buffer) => {
+    helperErrors = (helperErrors + chunk.toString("utf8")).slice(-2_000);
+  });
+  const fail = (message: string) => {
+    broken ??= message;
+    for (const entry of pending.values()) entry.onError(broken);
+    pending.clear();
+  };
+  helper.on("exit", () => {
+    if (helperPid !== undefined) liveGroups.delete(helperPid);
+    removeProfile();
+    fail(`the sandbox helper stopped${helperErrors ? `: ${helperErrors.trim()}` : ""}`);
+  });
+  helper.on("error", (e) => fail(`the sandbox helper failed: ${e.message}`));
+  if (helper.stdout) {
+    createInterface({ input: helper.stdout }).on("line", (line) => {
+      let reply: Record<string, unknown>;
+      try {
+        reply = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const entry = pending.get(Number(reply.id));
+      if (!entry) return;
+      if (reply.event === "spawned") entry.onSpawned(Number(reply.pgid));
+      else if (reply.event === "exit") {
+        pending.delete(Number(reply.id));
+        entry.onExit({
+          code: typeof reply.code === "number" ? reply.code : null,
+          signal: typeof reply.signal === "number" ? reply.signal : null,
+          output: Buffer.from(String(reply.output ?? ""), "base64").toString("utf8"),
+        });
+      } else if (reply.event === "error") {
+        pending.delete(Number(reply.id));
+        entry.onError(String(reply.message));
+      }
+    });
+  }
+
+  let nextId = 1;
+  const runner: SandboxRunner = (command) => {
+    if (command.cwd !== base.cwd || command.tempDir !== base.tempDir) {
+      return Promise.reject(new Error("a sandbox session runs commands in its own copy only"));
+    }
+    if (broken) return Promise.reject(new SandboxUnavailableError(broken));
+    const id = nextId++;
+    const started = Date.now();
+    return new Promise<SandboxedRun>((resolve, reject) => {
+      let pgid: number | undefined;
+      let timedOut = false;
+      let aborted = false;
+      let forceKill: ReturnType<typeof setTimeout> | undefined;
+      const stop = () => {
+        if (pgid === undefined) return;
+        killGroup(pgid, "SIGTERM");
+        forceKill ??= setTimeout(
+          () => pgid !== undefined && killGroup(pgid, "SIGKILL"),
+          KILL_GRACE_MS,
+        );
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        stop();
+      }, command.timeoutMs);
+      const onAbort = () => {
+        aborted = true;
+        stop();
+      };
+      const settle = () => {
+        clearTimeout(timer);
+        if (forceKill) clearTimeout(forceKill);
+        command.signal.removeEventListener("abort", onAbort);
+        if (pgid !== undefined) {
+          // Whatever the command left running in its group goes with it.
+          killGroup(pgid, "SIGKILL");
+          liveGroups.delete(pgid);
+        }
+      };
+      pending.set(id, {
+        onSpawned: (spawned) => {
+          pgid = spawned;
+          liveGroups.add(spawned);
+          command.onSpawn?.(spawned);
+          if (aborted || timedOut) stop();
+        },
+        onExit: ({ code, output }) => {
+          settle();
+          resolve({ exitCode: code, timedOut, aborted, durationMs: Date.now() - started, output });
+        },
+        onError: (message) => {
+          settle();
+          reject(new SandboxUnavailableError(message));
+        },
+      });
+      if (command.signal.aborted) onAbort();
+      else command.signal.addEventListener("abort", onAbort, { once: true });
+      helper.stdin?.write(`${JSON.stringify({ id, argv: command.argv, cwd: command.cwd })}\n`);
+    });
+  };
+
+  return {
+    runner,
+    helperPid,
+    close: () => {
+      helper.stdin?.end();
+      if (helperPid !== undefined) killGroup(helperPid, "SIGKILL");
+    },
+  };
+}
+
 /** Lists processes as `pid` with their working directory, from `lsof`. */
 function processCwds(): Promise<{ pid: number; path: string }[]> {
   return new Promise((resolve) => {
@@ -501,7 +753,10 @@ function processExecutables(): Promise<{ pid: number; path: string }[]> {
  * left behind outside its process group (a daemon that called `setsid`, say).
  * Returns the pids it killed. Never this process.
  */
-export async function killStrays(roots: string[]): Promise<number[]> {
+export async function killStrays(
+  roots: string[],
+  spare: ReadonlySet<number> = new Set(),
+): Promise<number[]> {
   const prefixes = roots.flatMap((root) => {
     const real = realpathOr(root);
     return [...new Set([root, real])].map((p) => (p.endsWith(sep) ? p : `${p}${sep}`));
@@ -510,7 +765,7 @@ export async function killStrays(roots: string[]): Promise<number[]> {
   const [cwds, executables] = await Promise.all([processCwds(), processExecutables()]);
   const pids = new Set(
     [...cwds, ...executables]
-      .filter((p) => p.pid !== process.pid && under(p.path))
+      .filter((p) => p.pid !== process.pid && !spare.has(p.pid) && under(p.path))
       .map((p) => p.pid),
   );
   for (const pid of pids) {
