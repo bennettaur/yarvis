@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { mcpReply } from "../test/mcpResponse.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -71,7 +72,7 @@ async function callTool(
     }),
   });
   expect(res.status).toBe(200);
-  const body = (await res.json()) as {
+  const body = (await mcpReply(res)) as {
     result: { isError?: boolean; content: { text: string }[] };
   };
   const text = body.result.content[0]?.text ?? "{}";

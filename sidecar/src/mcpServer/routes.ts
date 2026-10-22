@@ -114,18 +114,36 @@ export function createMcpEndpointRoutes(config: Config): Hono {
       waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, signal),
     });
     const transport = new StreamableHTTPTransport({
-      enableJsonResponse: true,
+      // Streamed rather than one JSON body, so the reply's headers go out at
+      // once. Claude Code gives up on an HTTP tool call whose first byte takes
+      // over a minute, and `ask_user` waits far longer than that.
+      enableJsonResponse: false,
       enableDnsRebindingProtection: true,
       allowedHosts: allowedHosts(config.port),
     });
+    // The stream outlives this handler, so the server closes once the stream
+    // ends or the client goes away. Closing it releases the transport's stream
+    // mapping too.
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      void server.close();
+    };
+    signal.addEventListener("abort", close, { once: true });
     try {
       await server.connect(transport);
+      const res = await transport.handleRequest(c);
       // The transport answers every case itself (including 202 for a batch of
       // notifications); the fallback only satisfies its optional return type.
-      return (await transport.handleRequest(c)) ?? c.body(null, 202);
-    } finally {
-      // Closes the transport too, releasing this request's stream mapping.
-      await server.close();
+      if (!res?.body) {
+        close();
+        return res ?? c.body(null, 202);
+      }
+      return new Response(res.body.pipeThrough(new TransformStream({ flush: close })), res);
+    } catch (e) {
+      close();
+      throw e;
     }
   });
 
