@@ -31,6 +31,7 @@ import {
   sanitizeIssueText,
   upsertLink,
 } from "../issues/service.ts";
+import { createKeyedLock } from "../lib/keyedLock.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import { syncClaudeAssets } from "./claudeAssets.ts";
@@ -40,7 +41,7 @@ import {
   stopClaudeSession,
 } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
-import { runStreaming } from "./exec.ts";
+import { runSetupScript } from "./exec.ts";
 import {
   readWorktreeFile,
   type WorktreeFile,
@@ -76,9 +77,6 @@ import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import type { RepoTracker } from "./tracker.ts";
 import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
-
-const SETUP_LOG_CAP = 16 * 1024;
-const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Repo registry
@@ -1254,21 +1252,7 @@ export type ProvisionEvent =
 export type ProvisionEmit = (event: ProvisionEvent) => void | Promise<void>;
 
 /** Serializes mutations to a repo's primary clone across concurrent workspaces. */
-const repoLocks = new Map<string, Promise<unknown>>();
-
-async function withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = repoLocks.get(repoId) ?? Promise.resolve();
-  const result = prev.then(fn, fn);
-  // Store a never-rejecting tail so a failure doesn't poison the chain.
-  repoLocks.set(
-    repoId,
-    result.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return result;
-}
+const withRepoLock = createKeyedLock();
 
 /**
  * How many progress events a run keeps for replay. Setup-script output can be
@@ -1612,17 +1596,11 @@ export async function provisionWorkspace(
 
         let exitCode = 0;
         if (wr.repo.setupScript?.trim()) {
-          // `bash -c`, not `-lc`: a login shell would source the user's profile
-          // and re-import the provider secrets exec.ts deliberately stripped.
-          let logTail = "";
-          exitCode = await runStreaming(["bash", "-c", wr.repo.setupScript], {
-            cwd: wr.worktreePath,
-            timeoutMs: SETUP_TIMEOUT_MS,
-            onChunk: async (text) => {
-              logTail = (logTail + text).slice(-SETUP_LOG_CAP);
-              await safeEmit({ type: "log", workspaceRepoId: wr.id, text });
-            },
-          });
+          const setup = await runSetupScript(wr.worktreePath, wr.repo.setupScript, (text) =>
+            safeEmit({ type: "log", workspaceRepoId: wr.id, text }),
+          );
+          exitCode = setup.exitCode;
+          const logTail = setup.logTail;
           await db
             .update(workspaceRepos)
             .set({ setupLog: logTail, setupExitCode: exitCode })

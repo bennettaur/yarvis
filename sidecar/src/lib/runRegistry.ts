@@ -129,6 +129,14 @@ export class RunRegistry<E> {
     run.forgetTimer.unref?.();
   }
 
+  /** Drops a finished run's history now, rather than when `keepFinishedMs` runs out. */
+  forget(key: string): void {
+    const run = this.runs.get(key);
+    if (!run || run.live) return;
+    if (run.forgetTimer) clearTimeout(run.forgetTimer);
+    this.runs.delete(key);
+  }
+
   /** Asks a live run to stop. False when there is no such run here. */
   cancel(key: string): boolean {
     const run = this.runs.get(key);
