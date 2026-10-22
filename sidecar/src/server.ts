@@ -15,12 +15,12 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
-import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
 import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
 import {
   failInterruptedMutationRuns,
   mutantCopiesInUse,
 } from "./reviewWorkspaces/mutationTesting.ts";
+import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
