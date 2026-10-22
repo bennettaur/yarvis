@@ -407,6 +407,85 @@ describe("permission requests", () => {
     });
   });
 
+  describe("settled in the terminal", () => {
+    async function settle(body: unknown, headers: Record<string, string> = permissionAuth) {
+      return app.request("/ingest/permission/settled", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("drops the request for a call that ran, and clears its item", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response } = await ask();
+      await untilItemRaised();
+      const res = await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: hookInput.tool_input,
+      });
+      expect(res.status).toBe(204);
+      expect((await response).status).toBe(204);
+      expect(await waitingRequests()).toHaveLength(0);
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
+    it("keeps a request whose call hasn't run", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "bun test" },
+      });
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("matches a question that ran with its answers added", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const tool_input = { questions: [{ question: "Which?", options: [{ label: "A" }] }] };
+      await ask({ ...hookInput, tool_name: "AskUserQuestion", tool_input });
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "AskUserQuestion",
+        tool_input: { ...tool_input, answers: { "Which?": "A" } },
+      });
+      expect(await waitingRequests()).toHaveLength(0);
+    });
+
+    it("drops only one of two identical requests for one call", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: hookInput.tool_input,
+      });
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("drops every request from the session when the turn ends", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await ask({ ...hookInput, tool_input: { command: "bun test" } });
+      await settle({ hook_event_name: "Stop" });
+      expect(await waitingRequests()).toHaveLength(0);
+    });
+
+    it("refuses a terminal settling another terminal's prompts", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      const res = await settle(
+        { hook_event_name: "Stop" },
+        { ...permissionAuth, "X-Yarvis-Session-Token": "forged" },
+      );
+      expect(res.status).toBe(403);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+  });
+
   it("leaves a session's prompts to its terminal once it holds too many", async () => {
     await seedWorkspace(workspaceId, "WS");
     for (let i = 0; i < 8; i++) await ask();

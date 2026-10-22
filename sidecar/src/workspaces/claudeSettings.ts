@@ -112,6 +112,31 @@ export function permissionHookCommand(workspaceId: string): string {
 }
 
 /**
+ * The shell command that tells the sidecar a session has moved past its held
+ * permission prompts, so the app stops offering ones the user already answered
+ * in the terminal. Claude Code leaves the permission hook running after that,
+ * so its connection can't say so. It runs on PostToolUse, where the call that
+ * ran was approved, and on Stop and UserPromptSubmit, where the turn is over.
+ *
+ * It sends the same session headers as the permission hook and prints nothing,
+ * since UserPromptSubmit's output would be added to Claude's context.
+ */
+export function permissionSettledHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
+  return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission/settled" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H 'X-Yarvis-Workspace-Id: ${workspaceId}' ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `--data-binary @- >/dev/null 2>&1 || true`
+  );
+}
+
+/**
  * The shell command the SessionStart and SessionEnd hooks run to register the
  * session with its workspace (see `agentSessions.ts`). Claude Code's hook input
  * goes to the sidecar unchanged as the body, since it already carries the
@@ -149,7 +174,7 @@ export function agentSessionHookCommand(workspaceId: string): string {
 
 interface HookEntry {
   matcher?: string;
-  hooks: { type: "command"; command: string; timeout?: number }[];
+  hooks: { type: "command"; command: string; timeout?: number; async?: boolean }[];
 }
 
 /** True if an existing hook entry is one we wrote (so re-provision replaces it). */
@@ -181,8 +206,8 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 
 /**
  * Merges our hooks into any existing settings: the three attention hooks, which
- * include the permission hook, and the SessionStart/SessionEnd pair that
- * registers the session. Unrelated
+ * include the permission hook, the hooks that settle held permission prompts,
+ * and the SessionStart/SessionEnd pair that registers the session. Unrelated
  * top-level keys and the user's own hooks for these events are preserved — our
  * entry is *appended* alongside them, not substituted for the array. Idempotent:
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
@@ -203,6 +228,12 @@ export function buildClaudeSettings(
     command: attentionHookCommand(workspaceId, fallbackSessionKey, kind),
   });
   const registration = { type: "command" as const, command: agentSessionHookCommand(workspaceId) };
+  // Async, so the post that runs after every tool call never holds Claude up.
+  const settled = {
+    type: "command" as const,
+    command: permissionSettledHookCommand(workspaceId),
+    async: true,
+  };
 
   const existingHooks =
     existing.hooks && typeof existing.hooks === "object"
@@ -231,7 +262,9 @@ export function buildClaudeSettings(
         matcher: "idle_prompt",
         hooks: [command("idle")],
       }),
-      Stop: withOurEntry("Stop", { hooks: [command("completed")] }),
+      Stop: withOurEntry("Stop", { hooks: [command("completed"), settled] }),
+      PostToolUse: withOurEntry("PostToolUse", { hooks: [settled] }),
+      UserPromptSubmit: withOurEntry("UserPromptSubmit", { hooks: [settled] }),
       SessionStart: withOurEntry("SessionStart", { hooks: [registration] }),
       SessionEnd: withOurEntry("SessionEnd", { hooks: [registration] }),
     },

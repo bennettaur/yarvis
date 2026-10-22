@@ -15,12 +15,14 @@ import { randomUUID } from "node:crypto";
 
 /**
  * What the user chose. `terminal` hands the prompt back to Claude Code's own
- * dialog. `updatedInput` replaces the tool's input when Claude Code runs it.
+ * dialog. `settled` means it was answered there already. `updatedInput`
+ * replaces the tool's input when Claude Code runs it.
  */
 export type PermissionDecision =
   | { behavior: "allow"; updatedInput?: Record<string, unknown> }
   | { behavior: "deny"; message?: string }
-  | { behavior: "terminal" };
+  | { behavior: "terminal" }
+  | { behavior: "settled" };
 
 /** Context about a request, everything except the waiting hook itself. */
 export interface PermissionRequestInfo {
@@ -161,6 +163,38 @@ export function decidePermission(id: string, decision: PermissionDecision): bool
   return true;
 }
 
+/** A tool call Claude Code ran, as its PostToolUse hook reports it. */
+export interface RanToolCall {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+}
+
+/**
+ * Drops requests the session has moved past because the user answered them in
+ * Claude Code's own dialog. Claude Code leaves the permission hook running
+ * after that, so its connection never says so. With `ran`, it drops the oldest
+ * request for that call: one whose every input field `ran` carries unchanged,
+ * since Claude Code may add fields (an answered AskUserQuestion gains
+ * `answers`). Without it, it drops every request from the session. Returns how
+ * many it dropped.
+ */
+export function settlePermissions(sessionKey: string, ran?: RanToolCall): number {
+  const held = listPendingPermissions({ sessionKey });
+  const matches = ran
+    ? held
+        .filter(
+          (info) =>
+            info.toolName === ran.toolName &&
+            Object.entries(info.toolInput).every(([key, value]) =>
+              Bun.deepEquals(ran.toolInput[key], value),
+            ),
+        )
+        .slice(0, 1)
+    : held;
+  for (const info of matches) pending.get(info.id)?.resolve({ behavior: "settled" });
+  return matches.length;
+}
+
 /** The requests still waiting, oldest first, optionally for one session. */
 export function listPendingPermissions(filter: { sessionKey?: string } = {}) {
   return [...pending.values()]
@@ -205,7 +239,9 @@ export function summarizePermission(toolName: string, toolInput: Record<string, 
  * no decision, which leaves the prompt to Claude Code's own dialog.
  */
 export function hookOutputFor(decision: PermissionDecision | null): Record<string, unknown> | null {
-  if (!decision || decision.behavior === "terminal") return null;
+  if (!decision || decision.behavior === "terminal" || decision.behavior === "settled") {
+    return null;
+  }
   const body =
     decision.behavior === "allow"
       ? {

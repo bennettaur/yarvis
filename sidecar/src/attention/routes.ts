@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
@@ -26,6 +26,7 @@ import {
   hookOutputFor,
   listPendingPermissions,
   type PermissionRequestInfo,
+  settlePermissions,
   summarizePermission,
   truncate,
 } from "./permissions.ts";
@@ -100,6 +101,13 @@ export const permissionHookSchema = z.object({
   tool_input: z.record(z.string(), z.unknown()).default({}),
 });
 
+/** The stdin of the hooks that settle held prompts; only these fields are read. */
+const settledHookSchema = z.object({
+  hook_event_name: z.string().max(64),
+  tool_name: z.string().max(256).optional(),
+  tool_input: z.record(z.string(), z.unknown()).optional(),
+});
+
 /**
  * Who is asking. The hook can't put these in the body, which is Claude Code's
  * stdin, so it sends them as headers with the same values the attention hook
@@ -172,6 +180,24 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       });
   };
 
+  /**
+   * The session a hook speaks for, from its headers, or the error to reply
+   * with. Every terminal holds the ingest token; only this one holds its own
+   * session token, so a hook can't act under another terminal's name.
+   */
+  const sessionOrigin = (c: Context) => {
+    const origin = permissionOriginSchema.safeParse({
+      workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
+      sessionKey: c.req.header(SESSION_KEY_HEADER),
+    });
+    if (!origin.success) return { error: c.json({ error: origin.error.flatten() }, 400) };
+    const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
+    if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
+      return { error: c.json({ error: "session token does not match the session key" }, 403) };
+    }
+    return { origin: origin.data };
+  };
+
   router.post("/attention", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -208,20 +234,11 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     async (c) => {
       const arrivedAt = Date.now();
       if (!canHoldAnotherPermission()) return c.body(null, 204);
-      const origin = permissionOriginSchema.safeParse({
-        workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
-        sessionKey: c.req.header(SESSION_KEY_HEADER),
-      });
-      if (!origin.success) return c.json({ error: origin.error.flatten() }, 400);
-      // Every terminal holds the ingest token; only this one holds its own
-      // session token, so a prompt can't be raised under another terminal's name.
-      const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
-      if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
-        return c.json({ error: "session token does not match the session key" }, 403);
-      }
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
       const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-      const { workspaceId, sessionKey } = origin.data;
+      const { workspaceId, sessionKey } = checked.origin;
       const hook = parsed.data;
       if (!canHoldAnotherPermission(sessionKey)) return c.body(null, 204);
 
@@ -267,7 +284,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
         },
       );
 
-      // Answered, or the hook ended (Claude Code killed it), means this request
+      // Answered here or in the terminal, or the hook ended, means this request
       // no longer blocks anyone. A timeout or a hand-back leaves the terminal
       // dialog waiting, so the item stays for the user to follow.
       const handled = decision !== null && decision.behavior !== "terminal";
@@ -285,6 +302,30 @@ export function createAttentionIngestRoutes(config: Config): Hono {
 
       const output = hookOutputFor(decision);
       return output ? c.json(output) : c.body(null, 204);
+    },
+  );
+
+  // Tells the app a session has moved past its held prompts, which the user
+  // answered in Claude Code's own dialog. PostToolUse names the call that ran;
+  // Stop and UserPromptSubmit mean the turn is over, so nothing it asked waits.
+  router.post(
+    "/permission/settled",
+    bodyLimit({ maxSize: MAX_PERMISSION_BODY_BYTES, onError: (c) => c.body(null, 413) }),
+    async (c) => {
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
+      const parsed = settledHookSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      const { hook_event_name: event, tool_name, tool_input } = parsed.data;
+      if (event === "PostToolUse" && tool_name) {
+        settlePermissions(checked.origin.sessionKey, {
+          toolName: tool_name,
+          toolInput: tool_input ?? {},
+        });
+      } else if (event === "Stop" || event === "UserPromptSubmit") {
+        settlePermissions(checked.origin.sessionKey);
+      }
+      return c.body(null, 204);
     },
   );
 
