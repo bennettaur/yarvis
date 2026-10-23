@@ -104,7 +104,11 @@ describe("ReviewPrBar", () => {
   });
 
   it("puts a conflict with the PR's base, and the way to resolve it, on the bar", async () => {
-    const host = await mount(false, { mergeable: "CONFLICTING", baseRef: "main" });
+    const host = await mount(false, {
+      mergeable: "CONFLICTING",
+      hasConflicts: true,
+      baseRef: "main",
+    });
     expect(host.textContent).toContain("Conflicts with main");
     expect(button(host, "Resolve conflicts")).toBeDefined();
   });

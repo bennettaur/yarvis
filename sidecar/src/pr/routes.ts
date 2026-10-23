@@ -19,7 +19,7 @@ import {
   saveInsight,
 } from "./insights.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
-import { resolveConflictsForPr } from "./resolveConflicts.ts";
+import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
 import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
@@ -471,6 +471,7 @@ export function createPrRoutes(config: Config): Hono {
       return c.json(result, result.outcome === "created" ? 201 : 200);
     } catch (e) {
       console.error("[pr] could not hand the conflicts to an agent:", describeError(e));
+      if (e instanceof ResolveConflictsInFlight) return c.json({ error: clientError(e) }, 409);
       const refused = e instanceof PrWorkspaceRefusal;
       return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }

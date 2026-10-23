@@ -20,10 +20,14 @@ type Step =
   | { kind: "idle" }
   | { kind: "pending" }
   | { kind: "confirm"; reason: string }
-  | { kind: "done"; result: Exclude<ResolveConflictsResult, { outcome: "needs_confirm" }> }
+  | { kind: "done"; result: Delivered }
+  /** Asking whether to send again, so a stray second click doesn't. */
+  | { kind: "again"; result: Delivered }
   | { kind: "error"; message: string };
 
-function doneMessage(result: Extract<Step, { kind: "done" }>["result"]): string {
+type Delivered = Exclude<ResolveConflictsResult, { outcome: "needs_confirm" }>;
+
+function doneMessage(result: Delivered): string {
   switch (result.outcome) {
     case "sent":
       return `Sent to the agent in “${result.name}”.`;
@@ -103,7 +107,6 @@ export default function PrConflictBanner({
 
   return (
     <div
-      role="status"
       data-testid="pr-conflict-banner"
       className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-red-800/70 bg-red-950/50 px-3 py-1.5 text-xs text-red-200"
     >
@@ -115,7 +118,12 @@ export default function PrConflictBanner({
           ? `${FORK_REASON}; resolve them on ${detail.headRef || "the fork"} itself.`
           : "This branch can't merge until they're resolved."}
       </span>
-      {step.kind === "confirm" ? (
+      {pending && (
+        <span role="status" className="shrink-0 text-red-100">
+          Handing the conflicts to an agent…
+        </span>
+      )}
+      {step.kind === "confirm" && (
         <>
           <span className="shrink-0 font-medium text-amber-200">{step.reason} Send anyway?</span>
           <button type="button" onClick={() => void run(true)} className={secondary}>
@@ -125,7 +133,47 @@ export default function PrConflictBanner({
             Cancel
           </button>
         </>
-      ) : (
+      )}
+      {(step.kind === "done" || step.kind === "again") && (
+        <>
+          <span role="status" className="shrink-0 text-emerald-300">
+            {doneMessage(step.result)}
+          </span>
+          <button
+            type="button"
+            onClick={() => requestOpenWorkspace({ id: step.result.workspaceId })}
+            className={secondary}
+          >
+            Open workspace
+          </button>
+        </>
+      )}
+      {step.kind === "done" && (
+        <button
+          type="button"
+          onClick={() => setStep({ kind: "again", result: step.result })}
+          title="Hand the conflicts to the agent again"
+          className={secondary}
+        >
+          Send again
+        </button>
+      )}
+      {step.kind === "again" && (
+        <>
+          <span className="shrink-0 font-medium text-amber-200">Send the instructions again?</span>
+          <button type="button" onClick={() => void run(false)} className={secondary}>
+            Yes, send again
+          </button>
+          <button
+            type="button"
+            onClick={() => setStep({ kind: "done", result: step.result })}
+            className={secondary}
+          >
+            Cancel
+          </button>
+        </>
+      )}
+      {(step.kind === "idle" || step.kind === "pending" || step.kind === "error") && (
         <button
           type="button"
           onClick={() => void run(false)}
@@ -139,18 +187,6 @@ export default function PrConflictBanner({
         >
           {pending ? "Handing off…" : "Resolve conflicts"}
         </button>
-      )}
-      {step.kind === "done" && (
-        <>
-          <span className="shrink-0 text-emerald-300">{doneMessage(step.result)}</span>
-          <button
-            type="button"
-            onClick={() => requestOpenWorkspace({ id: step.result.workspaceId })}
-            className={secondary}
-          >
-            Open workspace
-          </button>
-        </>
       )}
       {step.kind === "error" && (
         <span role="alert" className="basis-full text-red-400">

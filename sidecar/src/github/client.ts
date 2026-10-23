@@ -340,7 +340,9 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
-    mergeStateStatus: pr.mergeStateStatus ?? undefined,
+    // DIRTY is the merge state's name for conflicts, and may be reported
+    // when `mergeable` isn't.
+    hasConflicts: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     mergeMethods: allowedMergeMethods(repo),
     autoMergeEnabled: Boolean(pr.autoMergeRequest),
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),

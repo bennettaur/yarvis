@@ -699,10 +699,15 @@ describe("azure client", () => {
       );
       return az.prDetail({ project: "Shop", repo: "web", prId: 7 });
     };
-    expect((await detailFor("conflicts")).mergeable).toBe("CONFLICTING");
-    expect((await detailFor("succeeded")).mergeable).toBe("MERGEABLE");
+    const conflicts = await detailFor("conflicts");
+    expect(conflicts.mergeable).toBe("CONFLICTING");
+    expect(conflicts.hasConflicts).toBe(true);
+    expect((await detailFor("succeeded")).hasConflicts).toBe(false);
     expect((await detailFor("queued")).mergeable).toBe("UNKNOWN");
-    expect((await detailFor("conflicts")).mergeStateStatus).toBeUndefined();
+    // A merge a branch policy refused can't merge either, but has nothing to resolve.
+    const rejected = await detailFor("rejectedByPolicy");
+    expect(rejected.mergeable).toBe("CONFLICTING");
+    expect(rejected.hasConflicts).toBe(false);
   });
 
   it("posts a right-side line comment thread", async () => {

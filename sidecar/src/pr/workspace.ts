@@ -10,7 +10,7 @@ import {
   startKickOff,
 } from "../workspaces/service.ts";
 import type { PrCodeSource } from "./source.ts";
-import type { PrDetail, PrRef } from "./types.ts";
+import type { PrRef } from "./types.ts";
 
 /**
  * Opening a workspace on a pull request someone else raised.
@@ -61,8 +61,6 @@ export interface PrWorkspaceOptions {
    * decides what to do with it.
    */
   brief?: string;
-  /** The PR's detail when the caller has already read it, saving a second provider call. */
-  detail?: PrDetail;
 }
 
 /** Workspace name for a PR, e.g. `PR #42 · Rename the API`. The title is bounded
@@ -93,7 +91,7 @@ export async function startWorkspaceForPr(
   db: Db,
   config: Config,
   source: PrCodeSource,
-  { kickOff = startKickOff, brief, detail: knownDetail }: PrWorkspaceOptions = {},
+  { kickOff = startKickOff, brief }: PrWorkspaceOptions = {},
 ): Promise<PrWorkspaceResult> {
   const locator = locatorForRef(source.ref);
 
@@ -107,7 +105,7 @@ export async function startWorkspaceForPr(
     );
   }
 
-  const detail = knownDetail ?? (await source.detail());
+  const detail = await source.detail();
   if (detail.fromFork) {
     throw new PrWorkspaceRefusal(
       "this pull request comes from a fork, so its branch is not in the repository",

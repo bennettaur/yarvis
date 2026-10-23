@@ -512,6 +512,9 @@ export class AzureDevOpsClient {
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
+      // Not `mergeable`: a merge a branch policy rejected maps to CONFLICTING
+      // there, but has nothing to resolve.
+      hasConflicts: pr.mergeStatus === "conflicts",
       // Azure's completion/auto-complete flow isn't wired to the review UI yet,
       // so the merge controls stay hidden for Azure PRs.
       mergeMethods: [],

@@ -14,8 +14,13 @@ import type { AttentionItemRow } from "../db/schema.ts";
  * the last waiting signal is a turn under way, and a pending permission prompt
  * is a dialog the typed text would answer instead of reaching the agent.
  *
- * This is a guess that errs towards asking: a session killed mid-turn also
- * reads as busy until it next finishes one.
+ * This is a guess, not a guard. It errs towards asking: a session killed
+ * mid-turn reads as busy until it next finishes one, and so does a workspace
+ * where another Claude session was run by hand at the workspace root, since
+ * its transcript lands in the same project folder. It cannot see the other
+ * dialogs an agent shows (plan approval, a question, a menu), which raise no
+ * hook, so typing can still answer one of those. A caller should only ask it
+ * about a session it knows is running.
  */
 
 /**
@@ -28,7 +33,7 @@ export const TRANSCRIPT_SETTLE_MS = 10_000;
 /** What the user is told when the agent looks busy. */
 export const AGENT_WORKING_REASON = "The agent is working on something.";
 export const AGENT_PERMISSION_REASON =
-  "The agent is waiting on a permission prompt, which the instructions would answer instead of reaching it.";
+  "The agent is waiting on a permission prompt. Answer it in the workspace first, then try again.";
 
 /**
  * The decision itself, separated from where its inputs come from. `items` are

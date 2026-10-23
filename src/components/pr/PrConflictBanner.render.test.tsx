@@ -15,6 +15,8 @@ interface SentRequest {
 const sent: SentRequest[] = [];
 /** What the sidecar answers the next resolve requests with, in order. */
 let replies: { status: number; body: unknown }[] = [];
+/** When set, replies wait on it. */
+let holdReply: Promise<void> | null = null;
 
 // The transport is stubbed rather than lib/pr/conflicts, so the path and body
 // that client builds stay under test.
@@ -36,6 +38,7 @@ mock.module("../../lib/api", () => ({
   getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (holdReply) await holdReply;
     const reply = replies.shift() ?? { status: 200, body: null };
     return new Response(JSON.stringify(reply.body), { status: reply.status });
   },
@@ -87,6 +90,7 @@ const detail = (over: Partial<PrDetail> = {}) =>
     headRef: "feat",
     fromFork: false,
     mergeable: "CONFLICTING",
+    hasConflicts: true,
     ...over,
   }) as PrDetail;
 
@@ -97,6 +101,7 @@ const opened: OpenWorkspaceRequest[] = [];
 beforeEach(() => {
   sent.length = 0;
   replies = [];
+  holdReply = null;
   opened.length = 0;
   unsubscribe = onOpenWorkspace((r) => opened.push(r));
 });
@@ -131,7 +136,7 @@ describe("PrConflictBanner", () => {
       await renderToHtml(
         createElement(PrConflictBanner, {
           prRef: ref,
-          detail: detail({ mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }),
+          detail: detail({ mergeable: "UNKNOWN", hasConflicts: true }),
         }),
       ),
     ).toContain("Conflicts with main");
@@ -147,11 +152,17 @@ describe("PrConflictBanner", () => {
 
   it("shows nothing for a mergeable PR or one still being computed", async () => {
     const clean = await renderToHtml(
-      createElement(PrConflictBanner, { prRef: ref, detail: detail({ mergeable: "MERGEABLE" }) }),
+      createElement(PrConflictBanner, {
+        prRef: ref,
+        detail: detail({ mergeable: "MERGEABLE", hasConflicts: false }),
+      }),
     );
     expect(clean).not.toContain("Conflicts with");
     const computing = await renderToHtml(
-      createElement(PrConflictBanner, { prRef: ref, detail: detail({ mergeable: "UNKNOWN" }) }),
+      createElement(PrConflictBanner, {
+        prRef: ref,
+        detail: detail({ mergeable: "UNKNOWN", hasConflicts: false }),
+      }),
     );
     expect(computing).not.toContain("Conflicts with");
   });
@@ -159,8 +170,8 @@ describe("PrConflictBanner", () => {
   // GitHub works mergeability out lazily, so the first read after a push often
   // can't say; one more look settles it without polling.
   it("refetches the detail once while mergeability is being computed", async () => {
-    primeCache(prDetailKey(ref), detail({ mergeable: "UNKNOWN" }));
-    await mount(detail({ mergeable: "UNKNOWN" }), ref, 20);
+    primeCache(prDetailKey(ref), detail({ mergeable: "UNKNOWN", hasConflicts: false }));
+    await mount(detail({ mergeable: "UNKNOWN", hasConflicts: false }), ref, 20);
     let reloads = 0;
     await waitFor(() => {
       void cachedFetch(prDetailKey(ref), async () => {
@@ -259,5 +270,55 @@ describe("PrConflictBanner", () => {
     button(host, "Resolve conflicts")?.click();
     await waitFor(() => host.querySelector('[role="alert"]') !== null, "the error");
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("not registered");
+  });
+
+  // A pending permission prompt is refused by the sidecar outright; there is
+  // nothing to confirm past.
+  it("offers no way past a permission prompt", async () => {
+    replies = [
+      {
+        status: 400,
+        body: { error: "The agent is waiting on a permission prompt. Answer it first." },
+      },
+    ];
+    const host = await mount(detail());
+    button(host, "Resolve conflicts")?.click();
+    await waitFor(() => host.querySelector('[role="alert"]') !== null, "the error");
+    expect(host.textContent).toContain("permission prompt");
+    expect(button(host, "Send anyway")).toBeUndefined();
+  });
+
+  it("sends once for a double click", async () => {
+    let release = () => {};
+    // Hold the request open so the second click lands while it is in flight.
+    holdReply = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    replies = [{ status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } }];
+    const host = await mount(detail());
+    button(host, "Resolve conflicts")?.click();
+    await waitFor(() => button(host, "Handing off…")?.disabled === true, "the busy button");
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Handing the conflicts");
+    button(host, "Handing off…")?.click();
+    release();
+    await waitFor(() => (host.textContent ?? "").includes("Sent to the agent"), "the result");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("asks before sending a second time", async () => {
+    replies = [
+      { status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } },
+      { status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } },
+    ];
+    const host = await mount(detail());
+    button(host, "Resolve conflicts")?.click();
+    await waitFor(() => button(host, "Send again") !== undefined, "the result");
+    expect(button(host, "Resolve conflicts")).toBeUndefined();
+
+    button(host, "Send again")?.click();
+    await waitFor(() => button(host, "Yes, send again") !== undefined, "the confirmation");
+    expect(sent).toHaveLength(1);
+    button(host, "Yes, send again")?.click();
+    await waitFor(() => sent.length === 2, "the second send");
   });
 });
