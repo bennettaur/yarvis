@@ -107,6 +107,7 @@ describe("PrFileList comment counts", () => {
     additions: 0,
     deletions: 0,
     mergeable: "MERGEABLE",
+    hasConflicts: false,
     mergeMethods: [],
     autoMergeEnabled: false,
     canEnableAutoMerge: false,

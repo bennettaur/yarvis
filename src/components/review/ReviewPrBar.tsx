@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { usePrDetail } from "../../lib/pr/cache";
+import { refKey } from "../../lib/pr/ref";
 import type { PrSummary } from "../../lib/pr/types";
 import {
   type ReviewWorkspacePr,
@@ -7,6 +8,7 @@ import {
   removeReviewPr,
 } from "../../lib/reviewWorkspaces/api";
 import { prWebUrl } from "../../lib/reviewWorkspaces/open";
+import PrConflictBanner from "../pr/PrConflictBanner";
 import {
   derivePrUiStatus,
   PrActionButtons,
@@ -203,6 +205,7 @@ export default function ReviewPrBar({
           />
         )}
       </div>
+      <PrConflictBanner key={refKey(pr.ref)} prRef={pr.ref} detail={detail} />
       {actions.error && <p className="mt-1 text-xs text-red-400">{actions.error}</p>}
       {confirmingRemove && (
         <ConfirmDialog

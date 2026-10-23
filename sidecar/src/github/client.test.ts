@@ -868,6 +868,20 @@ describe("github client", () => {
     expect(toPrDetail({ number: 7, isCrossRepository: true }).fromFork).toBe(true);
     expect(toPrDetail({ number: 7 }).fromFork).toBe(false);
   });
+
+  // DIRTY is how GitHub's merge state names conflicts; the review header reads both.
+  it("reports conflicts from either the mergeable verdict or the merge state", () => {
+    expect(toPrDetail({ number: 7, mergeable: "CONFLICTING" }).hasConflicts).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }).hasConflicts,
+    ).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "MERGEABLE", mergeStateStatus: "BEHIND" }).hasConflicts,
+    ).toBe(false);
+    const computing = toPrDetail({ number: 7 });
+    expect(computing.mergeable).toBe("UNKNOWN");
+    expect(computing.hasConflicts).toBe(false);
+  });
 });
 
 /**

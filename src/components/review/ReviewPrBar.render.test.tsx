@@ -102,4 +102,20 @@ describe("ReviewPrBar", () => {
     expect(removed).toEqual(["pr1"]);
     expect(changed).toBe(1);
   });
+
+  it("puts a conflict with the PR's base, and the way to resolve it, on the bar", async () => {
+    const host = await mount(false, {
+      mergeable: "CONFLICTING",
+      hasConflicts: true,
+      baseRef: "main",
+    });
+    expect(host.textContent).toContain("Conflicts with main");
+    expect(button(host, "Resolve conflicts")).toBeDefined();
+  });
+
+  it("leaves a PR whose mergeability is unknown as it was", async () => {
+    const host = await mount();
+    expect(host.textContent).not.toContain("Conflicts with");
+    expect(button(host, "Resolve conflicts")).toBeUndefined();
+  });
 });
