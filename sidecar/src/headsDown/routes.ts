@@ -21,6 +21,7 @@ import {
   listPasses,
   listQuestions,
   listUnattendedTools,
+  passCallSummaries,
   setToolUnattended,
   startRun,
   stopRun,
@@ -148,7 +149,20 @@ export function createHeadsDownRoutes(config: Config): Hono {
   // Calls the decision model approved on the user's behalf, so they can see what ran without them.
   router.get("/auto-approvals", async (c) => c.json(await listAutoApprovals(db())));
 
-  router.get("/passes", async (c) => c.json(await listPasses(db(), 50)));
+  // Each pass with how many calls it made and which failed, so a failure reads without opening it.
+  router.get("/passes", async (c) => {
+    const passes = await listPasses(db(), 50);
+    const summaries = await passCallSummaries(
+      db(),
+      passes.flatMap((p) => (p.chatSessionId ? [p.chatSessionId] : [])),
+    );
+    return c.json(
+      passes.map((p) => ({
+        ...p,
+        ...((p.chatSessionId && summaries.get(p.chatSessionId)) || { calls: 0, failedCalls: [] }),
+      })),
+    );
+  });
 
   // A pass with its transcript: the hidden chat session it ran in.
   router.get("/passes/:id", async (c) => {

@@ -72,6 +72,18 @@ const PASS = {
   error: null,
 };
 
+const FAILED_PASS = {
+  ...PASS,
+  id: "p0",
+  chatSessionId: "c0",
+  startedAt: "2026-10-19T09:00:00.000Z",
+  finishedAt: "2026-10-19T09:05:00.000Z",
+  notes: null,
+  error: "Overloaded (status 529)",
+  calls: 5,
+  failedCalls: [{ name: "post_message", server: "Slack", error: "channel_not_found" }],
+};
+
 const CONFIG = {
   minSleepMinutes: 5,
   maxSleepMinutes: 120,
@@ -154,7 +166,7 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM]);
-    if (path === "/api/heads-down/passes") return json([PASS]);
+    if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(savedConfig);
     if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
@@ -182,7 +194,7 @@ mock.module("../../lib/api", () => ({
 }));
 
 const HeadsDownPanel = (await import("./HeadsDownPanel")).default;
-const { applyPassEvent } = await import("./useLivePass");
+const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -231,6 +243,21 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Posts the review request the user asked for");
   });
 
+  it("shows it is sleeping between passes", async () => {
+    const host = await mount();
+
+    expect(host.textContent).toContain("Sleeping until");
+    expect(host.querySelector('[data-state="sleeping"]')).not.toBeNull();
+  });
+
+  it("shows what a failed pass did and which calls failed", async () => {
+    const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
+
+    expect(text).toContain("Overloaded (status 529)");
+    expect(text).toContain("5 tool calls · 1 failed");
+    expect(text).toContain("Slack/post_message: channel_not_found");
+  });
+
   it("sends the option the user picked", async () => {
     const host = await mount();
     buttonNamed(host, "#billing-reviews").click();
@@ -275,6 +302,23 @@ describe("HeadsDownPanel live", () => {
 
     expect(host.textContent).toContain("Working now");
     expect(host.textContent).toContain("list_work_streams");
+    expect(host.querySelector('[data-state="working"]')).not.toBeNull();
+  });
+
+  it("shows its latest thought folded to a line", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "reasoning", text: "Check the billing PR first.\nThen the docs." },
+      },
+    ];
+    const host = await mount();
+    await waitForText(host, "Thinking:");
+
+    expect(host.querySelector("details")?.open).toBe(false);
+    expect(host.textContent).toContain("Check the billing PR first.");
   });
 });
 
@@ -374,7 +418,7 @@ describe("HeadsDownSettings", () => {
 
 describe("applyPassEvent", () => {
   it("builds the live pass from its tool calls and results", () => {
-    let live: LivePass = { passId: "p", activity: [], thinking: "", text: "" };
+    let live: LivePass = newLivePass("p");
     live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
     live = applyPassEvent(live, { type: "tool_result", id: "c1", status: "ok", result: "[]" });
     live = applyPassEvent(live, { type: "delta", text: "Done." });
@@ -391,6 +435,17 @@ describe("applyPassEvent", () => {
       },
     ]);
     expect(live.text).toBe("Done.");
+  });
+
+  it("keeps only the latest stretch of reasoning", () => {
+    let live: LivePass = newLivePass("p");
+    live = applyPassEvent(live, { type: "reasoning", text: "First " });
+    live = applyPassEvent(live, { type: "reasoning", text: "idea." });
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ thought: "First idea.", thinking: false });
+
+    live = applyPassEvent(live, { type: "reasoning", text: "Second." });
+    expect(live).toMatchObject({ thought: "Second.", thinking: true });
   });
 });
 

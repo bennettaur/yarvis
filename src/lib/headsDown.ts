@@ -24,6 +24,10 @@ export interface HeadsDownPass {
   sleepMinutes: number | null;
   sleepReason: string | null;
   error: string | null;
+  /** How many tool calls the pass made. Only on the pass list. */
+  calls?: number;
+  /** The calls that failed, with the start of their error. Only on the pass list. */
+  failedCalls?: { name: string; server: string | null; error: string | null }[];
 }
 
 export interface HeadsDownState {
@@ -139,7 +143,7 @@ export type PassEvent =
       result?: string;
       durationMs?: number;
     }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; transient?: boolean }
   | { type: "done"; text: string }
   | { type: "attention"; reason?: string };
 

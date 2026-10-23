@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
+import { addMessage as addChatMessage, createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { askUser } from "./attention.ts";
+import { startPass, startRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -148,5 +150,34 @@ describe("/api/heads-down", () => {
       headers: auth,
     });
     expect(res.status).toBe(404);
+  });
+
+  it("lists each pass with how many calls it made and which failed", async () => {
+    const run = await startRun(db, null);
+    const session = await createSession(db, "Heads down", { hidden: true });
+    const pass = await startPass(db, run.id, session.id);
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [
+        { id: "1", name: "list_work_streams", status: "ok", result: "[]" },
+        {
+          id: "2",
+          name: "post_message",
+          server: "Slack",
+          status: "error",
+          result: "channel_not_found",
+        },
+      ],
+    });
+
+    const [listed] = (await get("/passes")) as unknown[];
+
+    expect(listed).toMatchObject({
+      id: pass.id,
+      calls: 2,
+      failedCalls: [{ name: "post_message", server: "Slack", error: "channel_not_found" }],
+    });
   });
 });

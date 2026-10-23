@@ -2,7 +2,7 @@ import type { LanguageModel } from "ai";
 import { runAgentTurn } from "../chat/agent.ts";
 import { builtinToolMetadataByFamily } from "../chat/builtinTools.ts";
 import { getChatBudget } from "../chat/config.ts";
-import { createSession } from "../chat/service.ts";
+import { addMessage as addChatMessage, createSession, getMessages } from "../chat/service.ts";
 import { MAX_REQUEST_CHARS } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -17,9 +17,10 @@ import {
   isWithinWorkingHours,
 } from "./config.ts";
 import { publish } from "./hub.ts";
+import { type AttemptRecord, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
-import { buildPassPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
+import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -29,6 +30,7 @@ import {
   lastUserActivityAt,
   listQuestions,
   markMessagesSeen,
+  passToolCalls,
   startPass,
   unseenMessages,
   unspentApprovals,
@@ -71,6 +73,57 @@ export const STOPPED_BY_USER = "stopped by you";
 /** How long a pass may run before it is stopped. */
 export const PASS_TIMEOUT_MS = 20 * 60_000;
 
+const TIMED_OUT = `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
+
+/**
+ * Retries per model call on a rate limit or server error, on top of the first
+ * try. The AI SDK backs off 2s, 4s, 8s…, so five covers about a minute of a
+ * provider shedding load.
+ */
+const PASS_MODEL_RETRIES = 5;
+
+/**
+ * How long to wait before picking a pass up again after the provider failed it
+ * mid-stream, where the AI SDK doesn't retry. One entry per retry.
+ */
+const PASS_RETRY_DELAYS_MS = [30_000, 120_000];
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * Saves what a turn did when it ended without saving it itself, which a turn
+ * that fails or is stopped never does. Without this a pass that failed after
+ * twenty calls shows nothing at all.
+ */
+async function keepAttempt(
+  db: Db,
+  sessionId: string,
+  record: AttemptRecord,
+  ending: string,
+): Promise<void> {
+  if (record.activity.length === 0 && !record.text.trim()) return;
+  const messages = await getMessages(db, sessionId);
+  if (messages.at(-1)?.role === "assistant") return;
+  await addChatMessage(db, {
+    sessionId,
+    role: "assistant",
+    content: [record.text.trim(), `(${ending})`].filter(Boolean).join("\n\n"),
+    toolCalls: record.activity,
+  });
+}
+
 export interface PassResult {
   passId: string;
   sleepMinutes: number;
@@ -98,13 +151,14 @@ function passToolIds(): string[] {
 
 /**
  * Runs one pass of the heads-down loop and decides how long to sleep after it.
- * `model` replaces the configured one, for tests.
+ * `model` replaces the configured one and `retryDelaysMs` the waits between
+ * retries, for tests.
  */
 export async function runPass(
   config: Config,
   db: Db,
   run: HeadsDownRun,
-  options: { model?: LanguageModel } = {},
+  options: { model?: LanguageModel; retryDelaysMs?: readonly number[] } = {},
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
@@ -126,6 +180,11 @@ export async function runPass(
   ]);
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
+  // A failed pass left no notes, so this one is told what it got through instead.
+  const lastFailure =
+    last?.error && last.chatSessionId
+      ? { error: last.error, activity: await passToolCalls(db, last.chatSessionId) }
+      : null;
 
   const session = await createSession(db, `Heads down · ${now.toISOString()}`, { hidden: true });
   const pass = await startPass(db, run.id, session.id);
@@ -142,6 +201,14 @@ export async function runPass(
     abort.abort();
   });
   let promptSent = false;
+  let attempt = newAttemptRecord();
+  const timedOut = () => abort.signal.aborted && !stoppedByUser;
+  const ending = (e: string) =>
+    stoppedByUser
+      ? "Stopped by you here."
+      : timedOut()
+        ? "Ran out of time here."
+        : `Failed here: ${e}`;
   try {
     // Stopped while the pass was getting ready: its abort wasn't registered yet.
     if ((await getActiveRun(db))?.id !== run.id) {
@@ -153,51 +220,77 @@ export async function runPass(
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
     mountTools(session.id, passToolIds());
-    for await (const event of runAgentTurn({
-      config,
-      db,
-      model,
-      sessionId: session.id,
-      message: buildPassPrompt({
-        now,
-        run,
-        withinWorkingHours,
-        minutesSinceUserReplied,
-        messages,
-        earlierMessages: earlier,
-        answers,
-        approvedCalls,
-        openQuestions,
-        lastNotes: last?.notes ?? null,
-      }),
-      userMetadata: { source: "heads-down" },
-      signal: abort.signal,
-      approval: passApprovalHooks(
+    let message = buildPassPrompt({
+      now,
+      run,
+      withinWorkingHours,
+      minutesSinceUserReplied,
+      messages,
+      earlierMessages: earlier,
+      answers,
+      approvedCalls,
+      openQuestions,
+      lastNotes: last?.notes ?? null,
+      lastFailure,
+    });
+    // Every call made this pass, across retries, for the retry prompt.
+    const made: AttemptRecord["activity"] = [];
+    for (let retry = 0; ; retry++) {
+      error = null;
+      attempt = newAttemptRecord();
+      let transient = false;
+      for await (const event of runAgentTurn({
+        config,
         db,
-        run,
-        changed,
-        // With nothing the user said this run, no call can be shown to fit it.
-        userRequest
-          ? {
-              config,
-              db,
-              userRequest,
-              signal: abort.signal,
-            }
-          : undefined,
-      ),
-      confirmBuiltins: PASS_CONFIRMED_TOOLS,
-      instructions: PASS_INSTRUCTIONS,
-      extraTools: buildPassTools(db, outcome, changed),
-      budget,
-    })) {
-      promptSent = true;
-      publish({ type: "pass-event", passId: pass.id, event });
-      if (event.type === "error") error = event.message;
+        model,
+        sessionId: session.id,
+        message,
+        userMetadata: { source: "heads-down" },
+        signal: abort.signal,
+        approval: passApprovalHooks(
+          db,
+          run,
+          changed,
+          // With nothing the user said this run, no call can be shown to fit it.
+          userRequest
+            ? {
+                config,
+                db,
+                userRequest,
+                signal: abort.signal,
+              }
+            : undefined,
+        ),
+        confirmBuiltins: PASS_CONFIRMED_TOOLS,
+        instructions: PASS_INSTRUCTIONS,
+        extraTools: buildPassTools(db, outcome, changed),
+        budget,
+        maxRetries: PASS_MODEL_RETRIES,
+      })) {
+        promptSent = true;
+        publish({ type: "pass-event", passId: pass.id, event });
+        recordEvent(attempt, event);
+        if (event.type === "error") {
+          error = event.message;
+          transient = event.transient === true;
+        }
+      }
+      made.push(...attempt.activity);
+      if (error === null) break;
+      await keepAttempt(db, session.id, attempt, ending(error));
+      const delay = (options.retryDelaysMs ?? PASS_RETRY_DELAYS_MS)[retry];
+      if (outcome.finished || abort.signal.aborted || !transient || delay === undefined) break;
+      console.warn(`[heads-down] pass hit a provider error, retrying in ${delay / 1000}s:`, error);
+      await wait(delay, abort.signal);
+      if (abort.signal.aborted) break;
+      message = buildRetryPrompt(error, made);
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
     console.error("[heads-down] pass failed:", error);
+    await keepAttempt(db, session.id, attempt, ending(error)).catch((saveError) =>
+      console.error("[heads-down] saving the failed pass's transcript failed:", saveError),
+    );
   } finally {
     clearTimeout(timer);
     setPassAbort(null);
@@ -216,18 +309,23 @@ export async function runPass(
   // closing text, or fails on a later step, hasn't lost anything.
   // A stop the user asked for is their doing, not a failure.
   if (outcome.finished || stoppedByUser) error = null;
-  else if (abort.signal.aborted)
-    error ??= `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
+  // The turn reports a timeout as a plain stop, which reads as the user's doing.
+  else if (timedOut()) error = TIMED_OUT;
   else error ??= "the pass ended without calling finish_pass";
-  const awake = await listStreams(db, { awakeAt: new Date() });
+  // The pass is recorded whatever happens here: a failure to read the streams
+  // just loses the idle reasons, not the record.
+  const awake = await listStreams(db, { awakeAt: new Date() }).catch((e) => {
+    console.error("[heads-down] reading streams for the sleep failed:", e);
+    return null;
+  });
   const sleep = chooseSleep(
     {
       // A failed pass sleeps as if idle, so a broken provider isn't retried every few minutes.
       requestedMinutes: error ? headsDownConfig.idleSleepMinutes : outcome.sleepMinutes,
       withinWorkingHours,
       // A stream that is active but snoozed (wakeAt ahead) can't be pushed now either.
-      openStreams: awake.length,
-      allWaiting: awake.every((s) => s.status !== "active"),
+      openStreams: awake?.length ?? 0,
+      allWaiting: awake?.every((s) => s.status !== "active") ?? true,
       userAway: minutesSinceUserReplied >= headsDownConfig.userAwayAfterMinutes,
     },
     headsDownConfig,
