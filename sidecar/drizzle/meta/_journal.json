@@ -281,6 +281,13 @@
       "when": 1792592427248,
       "tag": "0039_complex_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1792632201915,
+      "tag": "0040_green_secret_warriors",
+      "breakpoints": true
     }
   ]
 }
