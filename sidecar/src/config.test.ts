@@ -134,20 +134,26 @@ describe("parseEndpointOverride", () => {
 });
 
 describe("parseEndpoints", () => {
-  it("reads both pairs of overrides", () => {
+  it("reads both pairs of overrides and the JIRA one", () => {
     expect(
       parseEndpoints({
         YARVIS_GITHUB_API_URL: "http://127.0.0.1:1",
         YARVIS_GITHUB_GRAPHQL_URL: "http://127.0.0.1:1/graphql",
         YARVIS_GOOGLE_CALENDAR_API_URL: "http://127.0.0.1:2/calendar/v3",
         YARVIS_GOOGLE_TOKEN_URL: "http://127.0.0.1:2/token",
+        YARVIS_JIRA_API_URL: "http://127.0.0.1:3",
       }),
     ).toEqual({
       githubApi: "http://127.0.0.1:1",
       githubGraphql: "http://127.0.0.1:1/graphql",
       googleCalendar: "http://127.0.0.1:2/calendar/v3",
       googleToken: "http://127.0.0.1:2/token",
+      jiraApi: "http://127.0.0.1:3",
     });
+  });
+
+  it("refuses a JIRA override that isn't on this machine", () => {
+    expect(parseEndpoints({ YARVIS_JIRA_API_URL: "https://evil.example" }).jiraApi).toBeUndefined();
   });
 
   it("ignores half a pair, so the other half can't send the token to the real service", () => {

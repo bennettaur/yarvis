@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { REPLIES, SAFE_TOOLS } from "./script";
+import { REPLIES, SAFE_TOOLS, VOICE_TRANSCRIPT } from "./script";
 import { startFakeLlm } from "./server";
 
 let server: Server;
@@ -23,17 +23,18 @@ const CREATE_TASK_TOOL = [{ type: "function", function: { name: "create_task" } 
  * preload swaps `fetch` for happy-dom's, which refuses cross-origin requests.
  */
 function complete(body: object): Promise<string> {
+  return post(url, JSON.stringify(body)).then((b) => b.toString("utf8"));
+}
+
+function post(to: string, body: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const req = request(url, { method: "POST" }, (res) => {
-      let text = "";
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => {
-        text += chunk;
-      });
-      res.on("end", () => resolve(text));
+    const req = request(to, { method: "POST" }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
     });
     req.on("error", reject);
-    req.end(JSON.stringify(body));
+    req.end(body);
   });
 }
 
@@ -147,6 +148,40 @@ describe("fake LLM", () => {
       tools: [{ type: "function", function: { name: "delegate" } }],
     });
     expect(reply.toolCall).toBeUndefined();
+  });
+
+  it("hears the scripted transcript in any recording, and answers it with a task", async () => {
+    const audioUrl = url.replace("/chat/completions", "/audio/transcriptions");
+    const { text } = JSON.parse((await post(audioUrl, "not really audio")).toString("utf8"));
+    expect(text).toBe(VOICE_TRANSCRIPT);
+
+    const { toolCall } = await streamed({
+      messages: [{ role: "user", content: text }],
+      tools: CREATE_TASK_TOOL,
+    });
+    expect(JSON.parse(toolCall.arguments).title).toBe("Send Priya the load-time chart");
+  });
+
+  it("speaks as a WAV of silence about as long as the words", async () => {
+    const speechUrl = url.replace("/chat/completions", "/audio/speech");
+    const speak = (input: string) => post(speechUrl, JSON.stringify({ model: "tts", input }));
+    const short = await speak("Got it.");
+    const long = await speak("Got it. The task is on this week's list, ready before the review.");
+    expect(short.subarray(0, 4).toString("ascii")).toBe("RIFF");
+    expect(long.length).toBeGreaterThan(short.length);
+  });
+
+  it("answers a PR line question rather than the screen-summary reply its prompt also matches", async () => {
+    const { text } = await streamed({
+      messages: [
+        {
+          role: "user",
+          content:
+            "A reviewer is looking at lines 4–4 of a file.\n\nTheir question: Why is the card form lazy here?",
+        },
+      ],
+    });
+    expect(text).toContain("One gap: a customer with");
   });
 
   it("answers a non-streaming request with a whole completion", async () => {

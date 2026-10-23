@@ -140,6 +140,25 @@ describe("FakeTerminals", () => {
     expect(screen("tab")).toContain("Done. The payment step");
   });
 
+  it("takes a bracketed paste in Claude Code as one message", async () => {
+    const { fake, screen } = setUpTerminals();
+    fake.attach("tab");
+    fake.write("tab", "claude\r");
+    await settle();
+    expect(screen("tab")).toContain("\x1b[?2004h");
+
+    const comments = "Please address the following 2 review comments:\r\r1. a.ts:4\r   fix it";
+    fake.write("tab", `\x1b[200~${comments}\x1b[201~`);
+    await settle();
+    expect(screen("tab")).toContain("[Pasted text #1 +3 lines]");
+    expect(screen("tab")).not.toContain("I'll work through");
+
+    fake.write("tab", "\r");
+    await settle();
+    expect(screen("tab")).toContain("Both comments are addressed.");
+    expect(screen("tab")).not.toContain("Done. The payment step");
+  });
+
   it("starts an agent session that exists before anything attaches", async () => {
     const { fake, screen } = setUpTerminals();
     fake.startAgent("ws1");

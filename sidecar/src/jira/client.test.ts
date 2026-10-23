@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
+import { createJiraClient, isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
 
 const BASE = "https://acme.atlassian.net";
 
@@ -61,6 +61,38 @@ describe("isAllowedJiraBaseUrl", () => {
     expect(isAllowedJiraBaseUrl("not a url")).toBe(false);
     // A lookalike host that merely contains the suffix mid-string is rejected.
     expect(isAllowedJiraBaseUrl("https://atlassian.net.evil.com")).toBe(false);
+  });
+});
+
+describe("createJiraClient", () => {
+  /** Runs one search through the factory and returns the URL requested and the issue's link. */
+  async function searchThrough(endpoints: { jiraApi?: string } | undefined) {
+    const requested: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      requested.push(String(url));
+      return new Response(JSON.stringify({ issues: [{ key: "PROJ-45", fields: issueFields() }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    try {
+      const jira = createJiraClient({ endpoints }, BASE, "me@acme.com", "token");
+      const [issue] = await jira.searchIssues("assignee = currentUser()");
+      return { url: requested[0], link: issue!.url };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  it("sends requests to the site when nothing overrides it", async () => {
+    const { url } = await searchThrough(undefined);
+    expect(url).toStartWith(`${BASE}/rest/api/3/search/jql`);
+  });
+
+  it("sends requests to an overridden API but links to the real site", async () => {
+    const { url, link } = await searchThrough({ jiraApi: "http://127.0.0.1:4020" });
+    expect(url).toStartWith("http://127.0.0.1:4020/rest/api/3/search/jql");
+    expect(link).toBe("https://acme.atlassian.net/browse/PROJ-45");
   });
 });
 
