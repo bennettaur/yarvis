@@ -82,6 +82,24 @@ const CONFIG = {
   model: null,
 };
 
+const PROVIDERS = [
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    available: true,
+    models: [
+      { id: "claude-opus-5-5", capabilities: ["chat"] },
+      { id: "claude-haiku-5-5", capabilities: ["chat"] },
+    ],
+  },
+];
+
+/** The saved heads-down config the page loads; a test may replace it. */
+let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
+  provider: string | null;
+  model: string | null;
+} = CONFIG;
+
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
 
@@ -138,7 +156,8 @@ mock.module("../../lib/api", () => ({
     if (path === "/api/work-streams") return json([STREAM]);
     if (path === "/api/heads-down/passes") return json([PASS]);
     if (path === "/api/heads-down/messages") return json([]);
-    if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/config") return json(savedConfig);
+    if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
     if (path === "/api/heads-down/auto-approvals") {
       return json([
         {
@@ -180,6 +199,7 @@ afterEach(() => {
   clearResourceCache();
   writes.length = 0;
   streamFrames = [];
+  savedConfig = CONFIG;
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -271,6 +291,83 @@ describe("HeadsDownSettings", () => {
       method: "PUT",
       path: "/api/heads-down/allowed-tools/mcp%3Aslack%3Aread_channel",
       body: { allowed: false },
+    });
+  });
+
+  it("saves the model passes run on", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("");
+    expect(model.disabled).toBe(true);
+
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    expect(model.value).toBe("claude-opus-5-5");
+    model.value = "claude-haiku-5-5";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+    });
+  });
+
+  it("goes back to the default chat model", async () => {
+    savedConfig = { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("anthropic");
+    expect(model.value).toBe("claude-haiku-5-5");
+    expect(host.textContent).not.toContain("passes will fail");
+
+    provider.value = "";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: null, model: null },
+    });
+  });
+
+  it("keeps showing a saved model that left the catalogue", async () => {
+    savedConfig = { ...CONFIG, provider: "openai", model: "gpt-x" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("openai");
+    expect(provider.selectedOptions[0]?.textContent).toBe("openai (unavailable)");
+    expect(model.value).toBe("gpt-x");
+    expect(host.textContent).toContain("passes will fail until you pick another");
+
+    buttonNamed(host, "Save").click();
+    await settle();
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: savedConfig,
     });
   });
 });
