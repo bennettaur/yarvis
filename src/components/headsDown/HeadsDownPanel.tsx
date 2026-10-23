@@ -22,6 +22,7 @@ import {
 } from "../../lib/headsDown";
 import { combineResources, useCachedResource } from "../../lib/resourceCache";
 import RefreshingIndicator from "../RefreshingIndicator";
+import AgentMark from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
@@ -98,19 +99,21 @@ function RunHeader({
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
       {run ? (
         <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-              Heads down since {new Date(run.startedAt).toLocaleString()}
+          <div className="flex min-w-0 items-start gap-3">
+            <AgentMark state={working ? "working" : "sleeping"} />
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-emerald-300">
+                Heads down since {new Date(run.startedAt).toLocaleString()}
+              </div>
+              {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
+              <p className={`mt-1 text-xs ${working ? "text-cyan-300" : "text-zinc-500"}`}>
+                {working
+                  ? "Working now"
+                  : state.nextPassAt
+                    ? `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`
+                    : "Starting its first pass"}
+              </p>
             </div>
-            {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
-            <p className="mt-1 text-xs text-zinc-500">
-              {working
-                ? "Working now"
-                : state.nextPassAt
-                  ? `Next pass at ${new Date(state.nextPassAt).toLocaleTimeString()}`
-                  : "Starting its first pass"}
-            </p>
           </div>
           <button
             type="button"
@@ -129,10 +132,13 @@ function RunHeader({
             void runAction(() => startHeadsDown(focus.trim()));
           }}
         >
-          <p className="text-sm text-zinc-300">
-            Heads-down mode keeps your work streams moving while you focus elsewhere. It starts work
-            on tickets, chases CI and reviews, and asks you only what it has to.
-          </p>
+          <div className="flex items-start gap-3">
+            <AgentMark state="off" />
+            <p className="text-sm text-zinc-300">
+              Heads-down mode keeps your work streams moving while you focus elsewhere. It starts
+              work on tickets, chases CI and reviews, and asks you only what it has to.
+            </p>
+          </div>
           <div className="flex gap-2">
             <input
               value={focus}

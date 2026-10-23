@@ -6,20 +6,38 @@ import { type PassEvent, streamHeadsDown } from "../../lib/headsDown";
 export interface LivePass {
   passId: string;
   activity: ToolActivity[];
-  thinking: string;
+  /** The latest stretch of reasoning: what it thought before its last call or reply. */
+  thought: string;
+  /** Reasoning is still streaming into `thought`; the next stretch replaces it. */
+  thinking: boolean;
   text: string;
+  /** The provider error the turn just hit; the pass may be about to try again. */
+  error: string | null;
+}
+
+export function newLivePass(passId: string): LivePass {
+  return { passId, activity: [], thought: "", thinking: false, text: "", error: null };
 }
 
 /** Folds one streamed event into the live pass. */
 export function applyPassEvent(live: LivePass, event: PassEvent): LivePass {
   switch (event.type) {
     case "delta":
-      return { ...live, text: live.text + event.text };
+      return { ...live, text: live.text + event.text, thinking: false, error: null };
     case "reasoning":
-      return { ...live, thinking: live.thinking + event.text };
+      return {
+        ...live,
+        thought: live.thinking ? live.thought + event.text : event.text,
+        thinking: true,
+        error: null,
+      };
+    case "error":
+      return { ...live, thinking: false, error: event.message };
     case "tool_call":
       return {
         ...live,
+        thinking: false,
+        error: null,
         activity: [
           ...live.activity,
           {
@@ -70,7 +88,7 @@ export function useLivePass(onChanged: () => void): LivePass | null {
         onChangedRef.current();
         for await (const event of streamHeadsDown(controller.signal)) {
           if (event.type === "pass-started") {
-            setLive({ passId: event.passId, activity: [], thinking: "", text: "" });
+            setLive(newLivePass(event.passId));
           } else if (event.type === "pass-event") {
             setLive((current) =>
               current && current.passId === event.passId
