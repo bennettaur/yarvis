@@ -14,10 +14,9 @@ const TERMINAL_STATES = new Set(["merged", "closed", "completed", "abandoned"]);
 export function prConflictState(detail: PrDetail | null): PrConflictState {
   if (!detail) return "none";
   if (TERMINAL_STATES.has(detail.state.toLowerCase())) return "none";
-  // GitHub can report DIRTY while `mergeable` is still settling, so either
-  // naming conflicts is enough.
-  if (detail.mergeable === "CONFLICTING") return "conflicts";
-  if ((detail.mergeStateStatus ?? "").toUpperCase() === "DIRTY") return "conflicts";
+  // The sidecar decides what counts, per provider; `mergeable` alone would
+  // read an Azure policy rejection as conflicts.
+  if (detail.hasConflicts) return "conflicts";
   if (detail.mergeable === "UNKNOWN") return "computing";
   return "none";
 }

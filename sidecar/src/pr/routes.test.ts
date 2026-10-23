@@ -400,7 +400,7 @@ describe("POST /api/pr/workspace", () => {
       expect(body.outcome).toBe("created");
       const [row] =
         await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
-      expect(row?.pending_issue_prompt).toContain("`git merge origin/main`");
+      expect(row?.pending_issue_prompt).toContain("Resolve the merge conflicts on pull request #1");
     });
 
     it("400s a fork with the reason the button gives", async () => {

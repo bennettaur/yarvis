@@ -870,13 +870,17 @@ describe("github client", () => {
   });
 
   // DIRTY is how GitHub's merge state names conflicts; the review header reads both.
-  it("carries the merge state beside the mergeable verdict", () => {
-    const detail = toPrDetail({ number: 7, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
-    expect(detail.mergeable).toBe("CONFLICTING");
-    expect(detail.mergeStateStatus).toBe("DIRTY");
+  it("reports conflicts from either the mergeable verdict or the merge state", () => {
+    expect(toPrDetail({ number: 7, mergeable: "CONFLICTING" }).hasConflicts).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }).hasConflicts,
+    ).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "MERGEABLE", mergeStateStatus: "BEHIND" }).hasConflicts,
+    ).toBe(false);
     const computing = toPrDetail({ number: 7 });
     expect(computing.mergeable).toBe("UNKNOWN");
-    expect(computing.mergeStateStatus).toBeUndefined();
+    expect(computing.hasConflicts).toBe(false);
   });
 });
 
