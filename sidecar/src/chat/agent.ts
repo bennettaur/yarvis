@@ -6,7 +6,13 @@ type StreamTextOptions = Parameters<typeof streamText>[0];
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { ChatMessageMetadata, ToolActivity } from "../db/schema.ts";
-import { clientError, describeError, errorDetail, redactSecrets } from "../llm/errors.ts";
+import {
+  clientError,
+  describeError,
+  errorDetail,
+  isTransientError,
+  redactSecrets,
+} from "../llm/errors.ts";
 import { type ApprovalHooks, assembleAgentToolset } from "../mcp/chatTools.ts";
 import type { McpClientTool } from "../mcp/connectionManager.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -225,7 +231,13 @@ export type AgentEvent =
       durationMs?: number;
     }
   | { type: "attention"; reason?: string }
-  | { type: "error"; message: string; detail?: string }
+  | {
+      type: "error";
+      message: string;
+      detail?: string;
+      /** The provider failed on a bad moment (rate limit, overload, dropped connection), so trying again later may work. */
+      transient?: boolean;
+    }
   | { type: "done"; text: string; finishReason?: string; steps?: number };
 
 export interface AgentTurnParams {
@@ -278,6 +290,11 @@ export interface AgentTurnParams {
   instructions?: string;
   /** Tools only this surface offers, active on every step alongside the rest. */
   extraTools?: Record<string, Tool>;
+  /**
+   * How many times each model call is retried, with backoff, when the provider
+   * fails it with a rate limit or a server error. Defaults to the AI SDK's 2.
+   */
+  maxRetries?: number;
 }
 
 /**
@@ -311,6 +328,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     instructions,
     extraTools = {},
     confirmBuiltins,
+    maxRetries,
   } = params;
   const budget: ChatConfig = { ...DEFAULT_CHAT_CONFIG, ...params.budget };
 
@@ -437,6 +455,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
     // Cancel the upstream call if the consumer disconnects instead of draining
     // the provider with no reader.
     abortSignal: signal,
+    maxRetries,
     // The AI SDK delivers provider/streaming failures here instead of throwing
     // from `textStream`; without this the stream would end silently and the
     // caller would render nothing.
@@ -565,7 +584,12 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
         return;
       }
     }
-    yield { type: "error", message: clientError(streamError), detail };
+    yield {
+      type: "error",
+      message: clientError(streamError),
+      detail,
+      transient: isTransientError(streamError),
+    };
     return;
   }
 
