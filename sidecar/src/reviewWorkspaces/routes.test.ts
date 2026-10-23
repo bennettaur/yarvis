@@ -400,7 +400,9 @@ describe("setup", () => {
       branch: "feature",
       headSha: (await prRow(prId)).headSha,
       withheldEnv: ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH", "GIT_SSH_COMMAND"],
+      sandboxNotes: expect.stringContaining("setup script runs without a sandbox"),
       consent: null,
+      consentHeadSha: null,
       status: null,
       log: null,
     });
@@ -428,8 +430,13 @@ describe("setup", () => {
     expect(events.at(-1)).toMatchObject({ type: "done", phase: "setup", status: "succeeded" });
     expect(readFileSync(join(worktreePath, "setup-ran.txt"), "utf8")).toBe("hello\n");
 
+    expect((await prRow(prId)).setupHeadSha).toBe(headSha);
+
     const declined = await setup(wsId, prId, { grant: false });
-    expect(((await declined.json()) as { setupConsent: string }).setupConsent).toBe("declined");
+    expect(await declined.json()).toMatchObject({
+      setupConsent: "declined",
+      setupHeadSha: headSha,
+    });
   });
 
   it("runs one of two grants made at once", async () => {

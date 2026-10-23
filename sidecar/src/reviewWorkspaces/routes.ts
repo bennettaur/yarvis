@@ -9,6 +9,8 @@ import type { PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
+import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
+import type { MutationTestingDeps } from "./mutationTesting.ts";
 import { follow, type ReviewProgressEvent } from "./progress.ts";
 import {
   addReviewPr,
@@ -94,6 +96,8 @@ export interface ReviewWorkspaceRouteOptions {
   deps?: (db: Db) => ReviewDeps;
   /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
   verification?: VerificationDeps;
+  /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
+  mutation?: MutationTestingDeps;
 }
 
 /**
@@ -350,6 +354,7 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+  mountMutationTestingRoutes(router, { config, db, deps, fail, mutation: options.mutation });
 
   return router;
 }
