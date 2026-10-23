@@ -234,6 +234,11 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
   **Mutation testing**, which opens that tab (see
   [Mutation testing](#mutation-testing)).
 
+When the PR conflicts with its base, a red **Conflicts with <base>** banner
+sits under the bar with **Resolve conflicts**, which hands the merge to a
+coding agent in the PR's workspace. It works the same as on the PRs tab; see
+[Resolve merge conflicts](pr-review.md#resolve-merge-conflicts).
+
 **Unified** / **Split** in the top bar sets how every diff tab lays out.
 
 ### Review several PRs together

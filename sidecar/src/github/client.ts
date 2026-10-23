@@ -340,6 +340,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
+    mergeStateStatus: pr.mergeStateStatus ?? undefined,
     mergeMethods: allowedMergeMethods(repo),
     autoMergeEnabled: Boolean(pr.autoMergeRequest),
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
@@ -779,7 +780,7 @@ query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
-      number title body state isDraft additions deletions mergeable
+      number title body state isDraft additions deletions mergeable mergeStateStatus
       autoMergeRequest{ enabledAt }
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}

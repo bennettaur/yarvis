@@ -679,6 +679,32 @@ describe("azure client", () => {
     expect(detail.headSha).toBe("abc");
   });
 
+  // The review header's conflict banner reads the detail, not the status.
+  it("reports conflicts on the PR detail in the shared vocabulary", async () => {
+    const detailFor = async (mergeStatus: string | undefined) => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([
+          {
+            match: (u) => /\/pullRequests\/7$/.test(u.split("?")[0]!),
+            body: {
+              pullRequestId: 7,
+              mergeStatus,
+              repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            },
+          },
+          { match: () => true, body: { value: [] } },
+        ]),
+      );
+      return az.prDetail({ project: "Shop", repo: "web", prId: 7 });
+    };
+    expect((await detailFor("conflicts")).mergeable).toBe("CONFLICTING");
+    expect((await detailFor("succeeded")).mergeable).toBe("MERGEABLE");
+    expect((await detailFor("queued")).mergeable).toBe("UNKNOWN");
+    expect((await detailFor("conflicts")).mergeStateStatus).toBeUndefined();
+  });
+
   it("posts a right-side line comment thread", async () => {
     let posted: any = null;
     const fetchImpl = (async (url: string, init: any) => {

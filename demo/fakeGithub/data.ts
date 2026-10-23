@@ -38,6 +38,8 @@ export interface FakePull {
   reviewThreads: { path: string; line: number; author: string; body: string }[];
   /** The diff. A PR without files shows none, and its +/- counts are zero. */
   files: FakeFile[];
+  /** The branch conflicts with its base; GitHub reports it CONFLICTING and DIRTY. */
+  conflicting?: boolean;
 }
 
 /**
@@ -191,6 +193,7 @@ export const PULLS: FakePull[] = [
     draft: false,
     headRef: "feat/payment-step",
     baseRef: "main",
+    conflicting: true,
     createdAt: hoursAgo(5),
     updatedAt: hoursAgo(1),
     requestedReviewers: [],
