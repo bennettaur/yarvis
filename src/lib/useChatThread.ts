@@ -15,6 +15,7 @@ import {
 } from "./chat";
 import { type DisplayError, formatError } from "./errors";
 import { setToolSettings } from "./mcp";
+import { explainStreamDrop, isConnectionDrop } from "./streamDrop";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
@@ -288,6 +289,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       let failed = false;
       let thought = "";
       const ran: ToolActivity[] = [];
+      const startedAt = Date.now();
+      let lastEvent = { type: "none", at: startedAt };
       try {
         for await (const evt of streamChat(
           {
@@ -304,6 +307,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           },
           { signal: controller.signal },
         )) {
+          lastEvent = { type: evt.type, at: Date.now() };
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
@@ -362,6 +366,18 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           setError({ message: "Turn stopped. Nothing was saved for it.", tone: "notice" });
         } else {
           setError(formatError(e));
+          if (isConnectionDrop(e)) {
+            // The explanation needs a health check, which must not hold the
+            // turn open; it replaces the bare error unless a new turn started.
+            void explainStreamDrop({
+              error: e,
+              startedAt,
+              lastEventType: lastEvent.type,
+              lastEventAt: lastEvent.at,
+            }).then((explained) => {
+              if (!inFlight.current && currentSession.current === activeId) setError(explained);
+            });
+          }
         }
       } finally {
         inFlight.current = null;
