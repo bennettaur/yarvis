@@ -35,15 +35,14 @@ export function buildPassTools(
   return {
     announce_merge: tool({
       description:
-        "Call right before you merge a PR, whether you merge it with a tool or tell a workspace's session to. It shows the user an alert about the merge; it doesn't merge anything or wait for them. Judge the risk first, and ask the user with ask_user instead when it is high or you can't tell.",
+        "Call when a merge can go ahead now, right before you merge the PR, whether with a tool or by telling a workspace's session to. Not while the merge still waits on the user's approval: announce it on the pass that makes it. It pops up an alert over whatever the user has open; it doesn't merge anything or wait for them. Judge the risk from the files the PR changes first, and ask with ask_user instead when it is high or you can't tell.",
       inputSchema: z.object({
         repo: z
           .string()
           .regex(/^[\w.-]+\/[\w.-]+$/)
           .describe("The PR's repo, as owner/name"),
         number: z.number().int().positive(),
-        title: z.string().max(300).optional(),
-        url: z.string().url().max(500).optional(),
+        title: z.string().max(300).optional().describe("The PR's title"),
         risk: z.enum(["low", "medium", "high"]),
         why: z
           .string()
@@ -52,8 +51,10 @@ export function buildPassTools(
           .describe("Why you are merging it now, and why that risk level"),
       }),
       execute: async (merge) => {
-        await announceMerge(db, merge);
+        // Added before the alert is written, so a merge call made in the same
+        // step finds it and the backstop doesn't raise a second alert.
         announcedMerges.add(mergeKey(merge.repo, merge.number));
+        await announceMerge(db, merge);
         return { ok: true, message: "The user has been shown this merge." };
       },
     }),

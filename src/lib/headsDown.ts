@@ -80,22 +80,34 @@ export interface HeadsDownConfig {
   guidance: string | null;
 }
 
+export type MergeRisk = "low" | "medium" | "high" | "unknown";
+
+const MERGE_RISKS: readonly MergeRisk[] = ["low", "medium", "high", "unknown"];
+
 /** A merge a pass announced, carried on its attention item's payload. */
 export interface MergeAnnouncement {
   /** "owner/repo", or empty when the merge call didn't name one. */
   repo: string;
-  number: number;
+  /** Null when a workspace's session was told to merge, and the PR isn't known. */
+  number: number | null;
+  workspaceId?: string | null;
+  /** The PR's own title, as the pass read it. */
   title?: string | null;
-  url?: string | null;
-  /** "unknown" when it merged without announcing it first. */
-  risk: "low" | "medium" | "high" | "unknown";
+  /** The pass's own judgment; "unknown" when it merged without announcing it first. */
+  risk: MergeRisk;
   why: string;
 }
 
 /** The merge an attention item announces, if it is a heads-down merge alert. */
-export function mergeAnnouncementOf(payload: unknown): MergeAnnouncement | null {
-  const merge = (payload as { headsDownMerge?: MergeAnnouncement } | null)?.headsDownMerge;
-  return merge && typeof merge.number === "number" ? merge : null;
+export function mergeAnnouncementOf(item: {
+  source: string;
+  sessionKey: string | null;
+  payload?: unknown;
+}): MergeAnnouncement | null {
+  if (item.source !== "system" || !item.sessionKey?.startsWith("heads-down-merge:")) return null;
+  const merge = (item.payload as { headsDownMerge?: MergeAnnouncement } | null)?.headsDownMerge;
+  if (!merge || !MERGE_RISKS.includes(merge.risk)) return null;
+  return typeof merge.number === "number" || merge.number === null ? merge : null;
 }
 
 export type WorkStreamStatus =

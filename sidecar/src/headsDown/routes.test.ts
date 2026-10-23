@@ -148,6 +148,8 @@ describe("/api/heads-down", () => {
     expect(await get("/config")).toMatchObject({ guidance: "Merging is fine on my repos." });
     expect((await put({ ...valid, guidance: "   " })).status).toBe(200);
     expect(await get("/config")).toMatchObject({ guidance: null });
+    expect((await put({ ...valid, guidance: "x".repeat(4001) })).status).toBe(400);
+    expect((await put({ ...valid, guidance: null })).status).toBe(200);
     // A client that doesn't send it can still save.
     expect((await put(valid)).status).toBe(200);
   });

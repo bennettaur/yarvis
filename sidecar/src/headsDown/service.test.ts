@@ -7,8 +7,9 @@ import { readDecision } from "../memory/decisions.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { createStream, linkToStream } from "../workStreams/service.ts";
+import { announceMerge } from "./attention.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
-import { decideCall, mergeCallTarget, passApprovalHooks } from "./policy.ts";
+import { decideCall, isMergeInstruction, mergeCallTarget, passApprovalHooks } from "./policy.ts";
 import {
   addMessage,
   answeredSince,
@@ -278,16 +279,29 @@ describe("what a pass may do", () => {
     });
   });
 
-  it("raises the merge alert for a merge call the pass didn't announce, once", async () => {
-    const run = await startRun(db, null);
-    const tool = "mcp:github:merge_pull_request";
-    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
-              VALUES (${tool}, 'mcp', 'merge_pull_request', 'h', true)`;
-    const args = { owner: "acme", repo: "billing", pullNumber: 12 };
-    const hooks = passApprovalHooks(db, run, () => {});
-    await hooks.onRequest({ toolCallId: "merge-1", id: tool, args, reason: null });
-    await hooks.onRequest({ toolCallId: "merge-2", id: tool, args, reason: null });
+  const mergeTool = "mcp:github:merge_pull_request";
+  const mergeArgs = { owner: "acme", repo: "billing", pullNumber: 12 };
 
+  async function allowUnattended(tool: string) {
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
+              VALUES (${tool}, 'mcp', ${tool.slice(tool.lastIndexOf(":") + 1)}, 'h', true)`;
+  }
+
+  async function userApproves(tool: string, args: unknown) {
+    const approval = await askQuestion(db, {
+      kind: "approval",
+      question: `Heads-down mode wants to run ${tool}.`,
+      action: tool,
+      toolArgs: args,
+    });
+    await answerQuestion(db, memory, approval.id, { choice: "approve" });
+  }
+
+  it("raises the merge alert for a merge call the pass didn't announce, once a pass", async () => {
+    const run = await startRun(db, null);
+    await allowUnattended(mergeTool);
+    const hooks = passApprovalHooks(db, run, () => {});
+    await hooks.onRequest({ toolCallId: "merge-1", id: mergeTool, args: mergeArgs, reason: null });
     expect(await waitForApproval("merge-1", { timeoutMs: 1000 })).toBe(true);
     const items = await sql`SELECT title, kind, nav_target, payload FROM attention_items`;
     expect([...items]).toEqual([
@@ -295,34 +309,136 @@ describe("what a pass may do", () => {
         title: "Heads down is merging acme/billing#12",
         kind: "info",
         nav_target: { type: "pr", owner: "acme", repo: "billing", number: 12 },
-        payload: { headsDownMerge: expect.objectContaining({ risk: "unknown", number: 12 }) },
+        payload: {
+          headsDownMerge: expect.objectContaining({
+            risk: "unknown",
+            number: 12,
+            why: expect.stringContaining("Merging with merge_pull_request"),
+          }),
+        },
       },
     ]);
+
+    // Dismissed by the user, then retried in the same pass: no second popup.
+    await sql`UPDATE attention_items SET status = 'dismissed'`;
+    await hooks.onRequest({ toolCallId: "merge-2", id: mergeTool, args: mergeArgs, reason: null });
+    expect(await sql`SELECT 1 FROM attention_items WHERE status = 'pending'`).toHaveLength(0);
   });
 
-  it("doesn't alert again for a merge the pass announced, or one waiting on approval", async () => {
+  it("doesn't alert for a merge the pass announced, even when the call leaves out the repo", async () => {
     const run = await startRun(db, null);
-    const tool = "mcp:github:merge_pull_request";
-    const args = { owner: "acme", repo: "billing", pullNumber: 12 };
     // Not allowed unattended, so it becomes an approval and doesn't run.
     await passApprovalHooks(db, run, () => {}).onRequest({
       toolCallId: "merge-3",
-      id: tool,
-      args,
+      id: mergeTool,
+      args: mergeArgs,
       reason: null,
     });
     expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
 
-    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
-              VALUES (${tool}, 'mcp', 'merge_pull_request', 'h', true)`;
-    const announced = new Set(["acme/billing#12"]);
-    await passApprovalHooks(db, run, () => {}, undefined, announced).onRequest({
-      toolCallId: "merge-4",
-      id: tool,
-      args,
+    await allowUnattended(mergeTool);
+    const announcedMerges = new Set(["acme/billing#12"]);
+    const hooks = passApprovalHooks(db, run, () => {}, { announcedMerges });
+    await hooks.onRequest({ toolCallId: "merge-4", id: mergeTool, args: mergeArgs, reason: null });
+    await hooks.onRequest({
+      toolCallId: "merge-5",
+      id: mergeTool,
+      args: { pullNumber: 12 },
       reason: null,
     });
     expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+  });
+
+  it("leaves an alert an earlier pass raised for the PR as it is", async () => {
+    const run = await startRun(db, null);
+    await allowUnattended(mergeTool);
+    await announceMerge(db, { repo: "acme/billing", number: 12, risk: "high", why: "migration" });
+
+    await passApprovalHooks(db, run, () => {}).onRequest({
+      toolCallId: "merge-6",
+      id: mergeTool,
+      args: mergeArgs,
+      reason: null,
+    });
+    const items = await sql`SELECT payload FROM attention_items`;
+    expect(items.map((i) => i.payload.headsDownMerge.risk)).toEqual(["high"]);
+  });
+
+  it("alerts for a merge the user approved on an earlier pass", async () => {
+    const run = await startRun(db, null);
+    await userApproves(mergeTool, mergeArgs);
+
+    await passApprovalHooks(db, run, () => {}).onRequest({
+      toolCallId: "merge-7",
+      id: mergeTool,
+      args: mergeArgs,
+      reason: null,
+    });
+    expect(await waitForApproval("merge-7", { timeoutMs: 1000 })).toBe(true);
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(1);
+  });
+
+  it("asks before a merge outside working hours, even through a tool allowed unattended", async () => {
+    const run = await startRun(db, null);
+    await allowUnattended(mergeTool);
+    await allowUnattended("mcp:github:get_pull_request");
+    const outside = { withinWorkingHours: false };
+
+    expect(await decideCall(db, run, mergeTool, mergeArgs, outside)).toBe("ask");
+    expect(await decideCall(db, run, mergeTool, mergeArgs)).toBe("run");
+    expect(await decideCall(db, run, "mcp:github:get_pull_request", mergeArgs, outside)).toBe(
+      "run",
+    );
+    // The user's own approval is their go-ahead at any hour.
+    await userApproves(mergeTool, mergeArgs);
+    expect(await decideCall(db, run, mergeTool, mergeArgs, outside)).toBe("run");
+  });
+
+  it("asks before telling a session to merge outside working hours, but not before other steering", async () => {
+    const run = await startRun(db, null);
+    await seedWorkspace(new Date(Date.now() - 60 * 60_000));
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    const outside = { withinWorkingHours: false };
+    const merge = { workspaceId, instruction: "Squash-merge the PR now that CI is green" };
+
+    expect(await decideCall(db, run, "send_workspace_instruction", merge, outside)).toBe("ask");
+    expect(await decideCall(db, run, "send_workspace_instruction", merge)).toBe("run");
+    expect(
+      await decideCall(
+        db,
+        run,
+        "send_workspace_instruction",
+        { workspaceId, instruction: "resolve the merge conflicts and commit" },
+        outside,
+      ),
+    ).toBe("run");
+  });
+
+  it("alerts when it tells a session to merge without announcing a merge first", async () => {
+    const run = await startRun(db, null);
+    await seedWorkspace(new Date(Date.now() - 60 * 60_000));
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    const args = { workspaceId, instruction: "Merge PR #12" };
+
+    await passApprovalHooks(db, run, () => {}, {
+      announcedMerges: new Set(["acme/billing#12"]),
+    }).onRequest({ toolCallId: "ws-1", id: "send_workspace_instruction", args, reason: null });
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+
+    await passApprovalHooks(db, run, () => {}).onRequest({
+      toolCallId: "ws-2",
+      id: "send_workspace_instruction",
+      args,
+      reason: null,
+    });
+    const [item] = await sql`SELECT title, nav_target, payload FROM attention_items`;
+    expect(item).toMatchObject({
+      title: "Heads down told a workspace to merge a PR",
+      nav_target: { type: "workspace", workspaceId },
+      payload: { headsDownMerge: { risk: "unknown", number: null, workspaceId } },
+    });
   });
 
   it("tells the model plainly when a tool isn't available, without filing a question", async () => {
@@ -365,6 +481,22 @@ describe("merge alerts", () => {
     });
   });
 
+  it("keeps the higher risk when a PR is announced again", async () => {
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+    const announce = (risk: "low" | "high", why: string) =>
+      tools.announce_merge.execute!({ repo: "acme/infra", number: 7, risk, why }, {
+        toolCallId: "t",
+        messages: [],
+      } as never);
+    await announce("high", "touches the load balancer");
+    await announce("low", "looks small");
+
+    const items = await sql`SELECT payload FROM attention_items`;
+    expect(items.map((i) => i.payload.headsDownMerge)).toEqual([
+      expect.objectContaining({ risk: "high", why: "touches the load balancer" }),
+    ]);
+  });
+
   it("finds the PR a merge-like MCP call merges, and ignores calls that only ask about one", () => {
     expect(
       mergeCallTarget("mcp:github:merge_pull_request", {
@@ -377,8 +509,31 @@ describe("merge alerts", () => {
       mergeCallTarget("mcp:gh:mergePR", { url: "https://github.com/acme/web/pull/3" }),
     ).toEqual({ repo: "acme/web", number: 3 });
     expect(mergeCallTarget("mcp:gh:merge", { pr_number: "9" })).toEqual({ repo: "", number: 9 });
-    expect(mergeCallTarget("mcp:gh:get_mergeability", { pullNumber: 1 })).toBeNull();
+    expect(mergeCallTarget("mcp:ado:complete_pull_request", { pullRequestId: 4 })).toEqual({
+      repo: "",
+      number: 4,
+    });
+    expect(mergeCallTarget("mcp:gitlab:merge_merge_request", { merge_request_iid: 5 })).toEqual({
+      repo: "",
+      number: 5,
+    });
+    for (const name of [
+      "get_mergeability",
+      "get_merge_status",
+      "list_merged_pull_requests",
+      "merge_base",
+    ]) {
+      expect(mergeCallTarget(`mcp:gh:${name}`, { pullNumber: 1 })).toBeNull();
+    }
     expect(mergeCallTarget("mcp:gh:merge_pull_request", { owner: "acme" })).toBeNull();
     expect(mergeCallTarget("archive_workspace", { pullNumber: 1 })).toBeNull();
+  });
+
+  it("tells an instruction to merge a PR from one about merge conflicts or the base branch", () => {
+    expect(isMergeInstruction("Squash-merge the PR now that CI is green")).toBe(true);
+    expect(isMergeInstruction("merge #12")).toBe(true);
+    expect(isMergeInstruction("Resolve the merge conflicts in the PR and push")).toBe(false);
+    expect(isMergeInstruction("merge main into the PR branch and push")).toBe(false);
+    expect(isMergeInstruction("fix CI")).toBe(false);
   });
 });

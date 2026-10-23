@@ -189,7 +189,7 @@ describe("a pass's approval hooks with auto mode", () => {
     const run = await startRun(db, "Ship the billing PR");
     await userApprovesOthers();
     const precedentsBefore = await memory.count({ kinds: ["decision"] });
-    const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
+    const hooks = passApprovalHooks(db, run, () => {}, { review: context(deps(true)) });
 
     await hooks.onRequest({ toolCallId: "auto-1", id: TOOL, args, reason: null });
 
@@ -204,11 +204,43 @@ describe("a pass's approval hooks with auto mode", () => {
     expect(await memory.count({ kinds: ["decision"] })).toBe(precedentsBefore);
   });
 
+  it("alerts the user when it approves a merge, but never approves one outside working hours", async () => {
+    const run = await startRun(db, "Ship the billing PR");
+    const merge = "mcp:github:merge_pull_request";
+    const mergeArgs = (n: number) => ({ owner: "acme", repo: "billing", pullNumber: n });
+    for (const n of [1, 2, 3]) await userAnswers("approve", mergeArgs(n), merge);
+    const calls: string[] = [];
+
+    const inHours = passApprovalHooks(db, run, () => {}, { review: context(deps(true, calls)) });
+    await inHours.onRequest({
+      toolCallId: "auto-m1",
+      id: merge,
+      args: mergeArgs(12),
+      reason: null,
+    });
+    expect(await waitForApproval("auto-m1", { timeoutMs: 1000 })).toBe(true);
+    const [alert] = await sql`SELECT payload FROM attention_items WHERE kind = 'info'`;
+    expect(alert?.payload.headsDownMerge).toMatchObject({ number: 12, risk: "unknown" });
+
+    const outside = passApprovalHooks(db, run, () => {}, {
+      review: context(deps(true, calls)),
+      withinWorkingHours: false,
+    });
+    await outside.onRequest({
+      toolCallId: "auto-m2",
+      id: merge,
+      args: mergeArgs(13),
+      reason: null,
+    });
+    expect(await waitForApproval("auto-m2", { timeoutMs: 1000 })).toBe(false);
+    expect(calls).toEqual([merge]);
+  });
+
   it("files an open approval question when the decision model says no", async () => {
     const run = await startRun(db, "Ship the billing PR");
     await userApprovesOthers();
     let changed = 0;
-    const hooks = passApprovalHooks(db, run, () => changed++, context(deps(false)));
+    const hooks = passApprovalHooks(db, run, () => changed++, { review: context(deps(false)) });
 
     await hooks.onRequest({ toolCallId: "auto-3", id: TOOL, args, reason: null });
 
@@ -224,7 +256,7 @@ describe("a pass's approval hooks with auto mode", () => {
     await sql`UPDATE heads_down_runs SET started_at = now() - interval '1 hour'`;
     await userApprovesOthers();
     const userAnswerAt = (await answeredSince(db, new Date(0))).at(-1)!.answeredAt!;
-    const hooks = passApprovalHooks(db, run, () => {}, context(deps(true)));
+    const hooks = passApprovalHooks(db, run, () => {}, { review: context(deps(true)) });
     await hooks.onRequest({ toolCallId: "auto-2", id: TOOL, args, reason: null });
     await waitForApproval("auto-2", { timeoutMs: 1000 });
 
@@ -266,5 +298,11 @@ describe("userRequestFor", () => {
 
   it("works with no focus", () => {
     expect(userRequestFor({ ...run, focus: null }, [message("only this", 1)])).toBe("only this");
+  });
+
+  it("puts the standing guidance after the focus, so a rule like no merges reaches the reviewer", () => {
+    expect(userRequestFor(run, [message("go", 1)], "Don't merge while the market is open")).toBe(
+      "Ship billing\n\nDon't merge while the market is open\n\ngo",
+    );
   });
 });

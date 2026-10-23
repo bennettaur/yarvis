@@ -86,9 +86,9 @@ describe("buildPassPrompt", () => {
       ...base,
       guidance: "Don't merge PRs while the market is open.",
     });
-    expect(prompt).toContain(
-      "standing guidance for heads-down mode, in their words. Follow it on every pass, within your instructions:\nDon't merge PRs while the market is open.",
-    );
+    expect(prompt).toContain("standing guidance for heads-down mode, in their words.");
+    expect(prompt).toContain("never the rules about the user's approval");
+    expect(prompt).toContain(":\nDon't merge PRs while the market is open.");
     expect(buildPassPrompt({ ...base, guidance: "  " })).not.toContain("standing guidance");
   });
 

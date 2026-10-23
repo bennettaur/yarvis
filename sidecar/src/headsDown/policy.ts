@@ -9,7 +9,13 @@ import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
 import { getRepo } from "../workspaces/service.ts";
-import { announceMerge, askUser, mergeKey } from "./attention.ts";
+import {
+  announceMerge,
+  askUser,
+  hasPendingMergeAlert,
+  mergeKey,
+  wasAnnounced,
+} from "./attention.ts";
 import {
   approvalQuestion,
   approvalSituation,
@@ -175,34 +181,73 @@ async function startsPlannedWork(db: Db, tool: string, args: unknown): Promise<b
 
 export type CallDecision = "run" | "ask" | "refuse" | "denied" | "stopped";
 
+export interface DecideOptions {
+  /**
+   * Outside working hours a merge waits for the user, even through a tool they
+   * let run unattended or a session the loop may steer. Defaults to true.
+   */
+  withinWorkingHours?: boolean;
+}
+
 /** Whether a pass may make this call now. `tool` is a built-in's name or an MCP tool's registry id. */
 export async function decideCall(
   db: Db,
   run: HeadsDownRun,
   tool: string,
   args: unknown,
+  { withinWorkingHours = true }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
   // Stopped here or on another instance: nothing more runs, whatever the pass is still doing.
   if ((await getActiveRun(db))?.id !== run.id) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  if (WORKSPACE_TOOLS.has(tool)) {
+  const outOfHoursMerge = !withinWorkingHours && isMergeCall(tool, args);
+  if (WORKSPACE_TOOLS.has(tool) && !outOfHoursMerge) {
     const workspaceId = stringArg(args, "workspaceId");
     if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
   }
-  if (tool.startsWith("mcp:") && (await isToolUnattended(db, tool))) return "run";
-  // Grants are good for this run only, and for a day: what was approved may not hold later.
+  if (tool.startsWith("mcp:") && !outOfHoursMerge && (await isToolUnattended(db, tool))) {
+    return "run";
+  }
+  // Grants are good for this run only, and for a day: what was approved may
+  // not hold later. The user's own approval is their go-ahead at any hour.
   const since = new Date(Math.max(run.startedAt.getTime(), Date.now() - APPROVAL_TTL_MS));
   if (await spendApproval(db, tool, args, since)) return "run";
   if (await deniedApprovalExists(db, tool, args, run.startedAt)) return "denied";
   return "ask";
 }
 
-/** Argument names MCP tools use for a PR's number. */
-const PR_NUMBER_ARGS = ["pullNumber", "pull_number", "prNumber", "pr_number", "number", "pr"];
+/** Argument names MCP tools use for a PR's number, GitHub's, Azure's and GitLab's. */
+const PR_NUMBER_ARGS = [
+  "pullNumber",
+  "pull_number",
+  "prNumber",
+  "pr_number",
+  "pullRequestId",
+  "merge_request_iid",
+  "mergeRequestIid",
+  "iid",
+  "number",
+  "pr",
+];
 
 const PR_URL = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
+
+/** Tool names that merge a PR: `merge_pull_request`, `mergePullRequest`, `merge`, … */
+const MERGE_TOOL =
+  /^(merge|squash_merge|accept_merge_request|complete_pull_request)|merge_?(pull_?request|pr|merge_?request|mr)$/i;
+
+/** Tools that only read about merges, like `get_merge_status` or `list_merged_prs`. */
+const READS_ABOUT_MERGES = /^(get|list|search|check|can|is|has)|status|base|mergeab|merged/i;
+
+/** A positive whole number from an argument given as a number or as digits. */
+function prNumberArg(args: unknown, key: string): number | null {
+  const raw = numberArg(args, key) ?? stringArg(args, key);
+  if (raw === null) return null;
+  const value = typeof raw === "number" ? raw : Number(raw.trim());
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
 
 /**
  * The PR an MCP call merges, when it looks like a merge: a tool named like
@@ -215,68 +260,114 @@ export function mergeCallTarget(
 ): { repo: string; number: number } | null {
   if (!tool.startsWith("mcp:")) return null;
   const name = tool.slice(tool.lastIndexOf(":") + 1);
-  // "merge_pull_request" merges; "get_mergeability" only asks about it.
-  if (!/merge/i.test(name) || /mergeab/i.test(name)) return null;
+  if (!MERGE_TOOL.test(name) || READS_ABOUT_MERGES.test(name)) return null;
 
   for (const key of ["url", "prUrl", "pr_url", "pullRequestUrl"]) {
     const match = stringArg(args, key)?.match(PR_URL);
     if (match) return { repo: `${match[1]}/${match[2]}`, number: Number(match[3]) };
   }
-  let number: number | null = null;
-  for (const key of PR_NUMBER_ARGS) {
-    const value = numberArg(args, key) ?? Number(stringArg(args, key) ?? Number.NaN);
-    if (Number.isInteger(value) && value > 0) {
-      number = value;
-      break;
-    }
-  }
-  if (number === null) return null;
+  const number = PR_NUMBER_ARGS.map((key) => prNumberArg(args, key)).find((n) => n !== null);
+  if (number == null) return null;
   const owner = stringArg(args, "owner");
   const repo = stringArg(args, "repo") ?? stringArg(args, "repository");
   if (owner && repo) return { repo: `${owner}/${repo}`, number };
   return { repo: repo?.includes("/") ? repo : "", number };
 }
 
-/** Raises the merge alert for a merge call the pass didn't announce first. */
+/**
+ * Whether an instruction to a workspace's session asks it to merge a PR.
+ * "Resolve the merge conflicts" or "merge main into the branch" doesn't.
+ */
+export function isMergeInstruction(instruction: string | null): boolean {
+  if (!instruction) return false;
+  const text = instruction.replace(
+    /merge conflicts?|merge (in )?(the )?(main|master|base|origin)\b/gi,
+    "",
+  );
+  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PR|pull request)\b|#\d+/i.test(text);
+}
+
+/** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
+export function isMergeCall(tool: string, args: unknown): boolean {
+  if (tool === "send_workspace_instruction") {
+    return isMergeInstruction(stringArg(args, "instruction"));
+  }
+  return mergeCallTarget(tool, args) !== null;
+}
+
+/** Marks keys the backstop added, so they don't count as the pass announcing a merge. */
+const BACKSTOP = "backstop:";
+
+/**
+ * Raises the merge alert for a merge the pass didn't announce first: an MCP
+ * merge call, or an instruction telling a workspace's session to merge. It
+ * never replaces an alert already up for the same PR.
+ */
 async function alertUnannouncedMerge(
   db: Db,
   tool: string,
   args: unknown,
   announcedMerges: Set<string>,
 ): Promise<void> {
+  if (tool === "send_workspace_instruction") {
+    if (!isMergeInstruction(stringArg(args, "instruction"))) return;
+    // The session's PR isn't named, so any merge the pass announced covers it.
+    if ([...announcedMerges].some((key) => !key.startsWith(BACKSTOP))) return;
+    const workspaceId = stringArg(args, "workspaceId");
+    const key = `${BACKSTOP}workspace:${workspaceId}`;
+    if (announcedMerges.has(key)) return;
+    announcedMerges.add(key);
+    await announceMerge(db, {
+      repo: "",
+      number: null,
+      workspaceId,
+      risk: "unknown",
+      why: "Told a workspace's session to merge without announcing it first, so it didn't say how risky it is.",
+    });
+    return;
+  }
   const target = mergeCallTarget(tool, args);
   if (!target) return;
-  const key = mergeKey(target.repo, target.number);
+  if (wasAnnounced(announcedMerges, target.repo, target.number)) return;
+  const key = `${BACKSTOP}${mergeKey(target.repo, target.number)}`;
   if (announcedMerges.has(key)) return;
   announcedMerges.add(key);
+  if (await hasPendingMergeAlert(db, target.repo, target.number)) return;
+  const toolName = tool.slice(tool.lastIndexOf(":") + 1);
   await announceMerge(db, {
     ...target,
     risk: "unknown",
-    why: `Merged with ${tool} without announcing it first, so it didn't say how risky it is.`,
+    why: `Merging with ${toolName} without announcing it first, so it didn't say how risky it is.`,
   });
+}
+
+export interface PassHookOptions {
+  /** Absent when the user said nothing this run to judge a call against. */
+  review?: PassReviewContext;
+  /** The merges this pass announced (see `mergeKey`); the backstop adds its own. */
+  announcedMerges?: Set<string>;
+  withinWorkingHours?: boolean;
 }
 
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
- * the decision model may settle it (`autoApprove.ts`). `review` is absent when
- * the user said nothing this run to judge a call against. A merge call that
- * runs without the pass having announced it (`announcedMerges`) still raises
- * the merge alert.
+ * the decision model may settle it (`autoApprove.ts`). A merge outside working
+ * hours always goes to the user. A merge that runs without the pass having
+ * announced it still raises the merge alert.
  */
 export function passApprovalHooks(
   db: Db,
   run: HeadsDownRun,
   onChanged: () => void,
-  review?: PassReviewContext,
-  announcedMerges: Set<string> = new Set(),
+  { review, announcedMerges = new Set(), withinWorkingHours = true }: PassHookOptions = {},
 ): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
-        const decision = await decideCall(db, run, id, args);
+        const decision = await decideCall(db, run, id, args, { withinWorkingHours });
         approved = decision === "run";
         if (decision === "refuse") return { deniedMessage: REFUSED };
         if (decision === "denied") return { deniedMessage: DENIED };
@@ -284,18 +375,20 @@ export function passApprovalHooks(
         if (decision !== "ask") return undefined;
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
-        // A failed review is a no, never a reason to drop the question.
-        const reason = review
-          ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
-              (e) => {
-                console.error(
-                  "[heads-down] auto approval failed:",
-                  e instanceof Error ? e.message : e,
-                );
-                return null;
-              },
-            )
-          : null;
+        // A failed review is a no, never a reason to drop the question. A
+        // merge outside working hours is never the decision model's to allow.
+        const reason =
+          review && (withinWorkingHours || !isMergeCall(id, args))
+            ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
+                (e) => {
+                  console.error(
+                    "[heads-down] auto approval failed:",
+                    e instanceof Error ? e.message : e,
+                  );
+                  return null;
+                },
+              )
+            : null;
         let autoApproved = false;
         if (reason !== null) {
           await recordAutoApproval(db, { action: id, args, question, situation, reason });
@@ -321,6 +414,8 @@ export function passApprovalHooks(
         // Decided before the wrapper starts waiting; the registry keeps an
         // early decision for it, and a failure above still settles the call.
         resolveApproval(toolCallId, approved);
+        // After resolving, so a slow or failed alert never holds up the call;
+        // covers calls the user allowed and ones the decision model approved.
         if (approved) {
           await alertUnannouncedMerge(db, id, args, announcedMerges).catch((e) =>
             console.error("[heads-down] merge alert failed:", e instanceof Error ? e.message : e),

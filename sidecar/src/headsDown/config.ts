@@ -56,7 +56,9 @@ const SETTINGS_KEY = "headsDown";
 
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   const stored = await readSection<Partial<HeadsDownConfig>>(SETTINGS_KEY);
-  return { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
+  const config = { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
+  // Hand-edited settings can hold anything; every pass reads the guidance.
+  return { ...config, guidance: typeof config.guidance === "string" ? config.guidance : null };
 }
 
 export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {
