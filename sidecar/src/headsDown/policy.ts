@@ -9,7 +9,7 @@ import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
 import { getRepo } from "../workspaces/service.ts";
-import { askUser } from "./attention.ts";
+import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import {
   approvalQuestion,
   approvalSituation,
@@ -199,17 +199,77 @@ export async function decideCall(
   return "ask";
 }
 
+/** Argument names MCP tools use for a PR's number. */
+const PR_NUMBER_ARGS = ["pullNumber", "pull_number", "prNumber", "pr_number", "number", "pr"];
+
+const PR_URL = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
+
+/**
+ * The PR an MCP call merges, when it looks like a merge: a tool named like
+ * `merge_pull_request` with a PR number or URL in its arguments. `repo` is
+ * empty when the arguments don't name one.
+ */
+export function mergeCallTarget(
+  tool: string,
+  args: unknown,
+): { repo: string; number: number } | null {
+  if (!tool.startsWith("mcp:")) return null;
+  const name = tool.slice(tool.lastIndexOf(":") + 1);
+  // "merge_pull_request" merges; "get_mergeability" only asks about it.
+  if (!/merge/i.test(name) || /mergeab/i.test(name)) return null;
+
+  for (const key of ["url", "prUrl", "pr_url", "pullRequestUrl"]) {
+    const match = stringArg(args, key)?.match(PR_URL);
+    if (match) return { repo: `${match[1]}/${match[2]}`, number: Number(match[3]) };
+  }
+  let number: number | null = null;
+  for (const key of PR_NUMBER_ARGS) {
+    const value = numberArg(args, key) ?? Number(stringArg(args, key) ?? Number.NaN);
+    if (Number.isInteger(value) && value > 0) {
+      number = value;
+      break;
+    }
+  }
+  if (number === null) return null;
+  const owner = stringArg(args, "owner");
+  const repo = stringArg(args, "repo") ?? stringArg(args, "repository");
+  if (owner && repo) return { repo: `${owner}/${repo}`, number };
+  return { repo: repo?.includes("/") ? repo : "", number };
+}
+
+/** Raises the merge alert for a merge call the pass didn't announce first. */
+async function alertUnannouncedMerge(
+  db: Db,
+  tool: string,
+  args: unknown,
+  announcedMerges: Set<string>,
+): Promise<void> {
+  const target = mergeCallTarget(tool, args);
+  if (!target) return;
+  const key = mergeKey(target.repo, target.number);
+  if (announcedMerges.has(key)) return;
+  announcedMerges.add(key);
+  await announceMerge(db, {
+    ...target,
+    risk: "unknown",
+    why: `Merged with ${tool} without announcing it first, so it didn't say how risky it is.`,
+  });
+}
+
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
  * the decision model may settle it (`autoApprove.ts`). `review` is absent when
- * the user said nothing this run to judge a call against.
+ * the user said nothing this run to judge a call against. A merge call that
+ * runs without the pass having announced it (`announcedMerges`) still raises
+ * the merge alert.
  */
 export function passApprovalHooks(
   db: Db,
   run: HeadsDownRun,
   onChanged: () => void,
   review?: PassReviewContext,
+  announcedMerges: Set<string> = new Set(),
 ): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
@@ -261,6 +321,11 @@ export function passApprovalHooks(
         // Decided before the wrapper starts waiting; the registry keeps an
         // early decision for it, and a failure above still settles the call.
         resolveApproval(toolCallId, approved);
+        if (approved) {
+          await alertUnannouncedMerge(db, id, args, announcedMerges).catch((e) =>
+            console.error("[heads-down] merge alert failed:", e instanceof Error ? e.message : e),
+          );
+        }
       }
     },
   };

@@ -76,6 +76,26 @@ export interface HeadsDownConfig {
   userAwayAfterMinutes: number;
   provider: string | null;
   model: string | null;
+  /** The user's standing rules for every pass on this machine. Null for none. */
+  guidance: string | null;
+}
+
+/** A merge a pass announced, carried on its attention item's payload. */
+export interface MergeAnnouncement {
+  /** "owner/repo", or empty when the merge call didn't name one. */
+  repo: string;
+  number: number;
+  title?: string | null;
+  url?: string | null;
+  /** "unknown" when it merged without announcing it first. */
+  risk: "low" | "medium" | "high" | "unknown";
+  why: string;
+}
+
+/** The merge an attention item announces, if it is a heads-down merge alert. */
+export function mergeAnnouncementOf(payload: unknown): MergeAnnouncement | null {
+  const merge = (payload as { headsDownMerge?: MergeAnnouncement } | null)?.headsDownMerge;
+  return merge && typeof merge.number === "number" ? merge : null;
 }
 
 export type WorkStreamStatus =

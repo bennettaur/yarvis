@@ -86,6 +86,7 @@ beforeEach(async () => {
     userAwayAfterMinutes: 120,
     provider: null,
     model: null,
+    guidance: null,
   });
 });
 

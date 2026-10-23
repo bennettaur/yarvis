@@ -7,7 +7,8 @@ import { readDecision } from "../memory/decisions.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { createStream, linkToStream } from "../workStreams/service.ts";
-import { decideCall, passApprovalHooks } from "./policy.ts";
+import { buildPassTools, newPassOutcome } from "./passTools.ts";
+import { decideCall, mergeCallTarget, passApprovalHooks } from "./policy.ts";
 import {
   addMessage,
   answeredSince,
@@ -277,6 +278,53 @@ describe("what a pass may do", () => {
     });
   });
 
+  it("raises the merge alert for a merge call the pass didn't announce, once", async () => {
+    const run = await startRun(db, null);
+    const tool = "mcp:github:merge_pull_request";
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
+              VALUES (${tool}, 'mcp', 'merge_pull_request', 'h', true)`;
+    const args = { owner: "acme", repo: "billing", pullNumber: 12 };
+    const hooks = passApprovalHooks(db, run, () => {});
+    await hooks.onRequest({ toolCallId: "merge-1", id: tool, args, reason: null });
+    await hooks.onRequest({ toolCallId: "merge-2", id: tool, args, reason: null });
+
+    expect(await waitForApproval("merge-1", { timeoutMs: 1000 })).toBe(true);
+    const items = await sql`SELECT title, kind, nav_target, payload FROM attention_items`;
+    expect([...items]).toEqual([
+      {
+        title: "Heads down is merging acme/billing#12",
+        kind: "info",
+        nav_target: { type: "pr", owner: "acme", repo: "billing", number: 12 },
+        payload: { headsDownMerge: expect.objectContaining({ risk: "unknown", number: 12 }) },
+      },
+    ]);
+  });
+
+  it("doesn't alert again for a merge the pass announced, or one waiting on approval", async () => {
+    const run = await startRun(db, null);
+    const tool = "mcp:github:merge_pull_request";
+    const args = { owner: "acme", repo: "billing", pullNumber: 12 };
+    // Not allowed unattended, so it becomes an approval and doesn't run.
+    await passApprovalHooks(db, run, () => {}).onRequest({
+      toolCallId: "merge-3",
+      id: tool,
+      args,
+      reason: null,
+    });
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
+              VALUES (${tool}, 'mcp', 'merge_pull_request', 'h', true)`;
+    const announced = new Set(["acme/billing#12"]);
+    await passApprovalHooks(db, run, () => {}, undefined, announced).onRequest({
+      toolCallId: "merge-4",
+      id: tool,
+      args,
+      reason: null,
+    });
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+  });
+
   it("tells the model plainly when a tool isn't available, without filing a question", async () => {
     const run = await startRun(db, null);
     const hooks = passApprovalHooks(db, run, () => {});
@@ -290,5 +338,47 @@ describe("what a pass may do", () => {
     expect(result).toEqual({ deniedMessage: expect.stringContaining("Not available") });
     expect(await waitForApproval("call-2", { timeoutMs: 1000 })).toBe(false);
     expect(await sql`SELECT 1 FROM heads_down_questions`).toHaveLength(0);
+  });
+});
+
+describe("merge alerts", () => {
+  it("shows an announced merge in the bell with its risk, and remembers it for the pass", async () => {
+    const announced = new Set<string>();
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced);
+    await tools.announce_merge.execute!(
+      {
+        repo: "acme/infra",
+        number: 7,
+        title: "Bump the load balancer timeout",
+        risk: "high",
+        why: "The user approved it after I asked.",
+      },
+      { toolCallId: "t1", messages: [] } as never,
+    );
+
+    expect([...announced]).toEqual(["acme/infra#7"]);
+    const [item] = await sql`SELECT title, body, payload FROM attention_items`;
+    expect(item).toMatchObject({
+      title: "Heads down is merging acme/infra#7",
+      body: "Bump the load balancer timeout\nThe user approved it after I asked.",
+      payload: { headsDownMerge: { risk: "high", repo: "acme/infra", number: 7 } },
+    });
+  });
+
+  it("finds the PR a merge-like MCP call merges, and ignores calls that only ask about one", () => {
+    expect(
+      mergeCallTarget("mcp:github:merge_pull_request", {
+        owner: "acme",
+        repo: "billing",
+        pullNumber: 12,
+      }),
+    ).toEqual({ repo: "acme/billing", number: 12 });
+    expect(
+      mergeCallTarget("mcp:gh:mergePR", { url: "https://github.com/acme/web/pull/3" }),
+    ).toEqual({ repo: "acme/web", number: 3 });
+    expect(mergeCallTarget("mcp:gh:merge", { pr_number: "9" })).toEqual({ repo: "", number: 9 });
+    expect(mergeCallTarget("mcp:gh:get_mergeability", { pullNumber: 1 })).toBeNull();
+    expect(mergeCallTarget("mcp:gh:merge_pull_request", { owner: "acme" })).toBeNull();
+    expect(mergeCallTarget("archive_workspace", { pullNumber: 1 })).toBeNull();
   });
 });

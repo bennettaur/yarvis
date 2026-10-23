@@ -12,6 +12,7 @@ import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
+import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
@@ -476,6 +477,13 @@ export default function App() {
       />
 
       <AttentionAutoClear />
+
+      <MergeAlert
+        onOpen={(item) => {
+          void markAttention(item.id, "read");
+          navigateTo(item.navTarget, item.title);
+        }}
+      />
 
       <AlarmTakeover />
 

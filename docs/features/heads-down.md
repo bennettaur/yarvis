@@ -69,6 +69,22 @@ instructions, and any MCP tool you haven't listed for heads-down mode. Text it
 reads in tickets, messages and pages can tell it what is going on, never what
 to do.
 
+## Merging PRs
+
+It doesn't merge outside your working hours unless your standing guidance,
+focus or messages say it may. Before a merge it judges how risky it is.
+Infrastructure and config changes, database migrations, auth, and backend
+changes that deploy on merge count as risky, and so does anything it can't
+judge. For those it asks you first and waits for a yes. Mobile changes are
+lower risk, since nothing ships until a release.
+
+Every merge pops up an alert over whatever page you have open, with the PR,
+the risk and why it is merging. The merge doesn't wait on the alert. Press
+**Got it** to put it away, or **Open PR** to look at the PR. The alert is
+also in the attention bell. If it merges through an MCP tool without
+announcing the merge first, you still get the alert, marked
+**Risk not assessed**.
+
 ## When it needs you
 
 Questions and approvals show under **Needs you** on the Heads down page and in
@@ -149,18 +165,22 @@ Under **Pace and working hours** on the page:
 - The model passes run on. **Default chat model** follows whatever your chats
   use. A change applies from the next pass. If the model you picked leaves the
   catalogue or its provider loses its key, passes fail until you pick another.
+- **Standing guidance**: rules every pass follows, in your own words. For
+  example, "don't merge PRs while the market is open" on a work laptop, or
+  "merging is fine on my repos" on a personal one. It can't override asking
+  you for approval.
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
-- Your working hours. Outside them it sleeps longer and doesn't tag anyone in
-  a message. Pick **Any time is fine to tag people** to drop the limit. These
+- Your working hours. Outside them it sleeps longer, doesn't tag anyone in
+  a message, and doesn't merge PRs. Pick **Any time is fine to tag people** to drop the limit. These
   are kept per machine, so a work laptop can keep office hours and another can
   tag people at any time.
 - The MCP tools it may use without asking. You add one from its approval
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The pace and working hours are stored in `~/.yarvis/settings.json` under
+The guidance, pace and working hours are stored in `~/.yarvis/settings.json` under
 `headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
 

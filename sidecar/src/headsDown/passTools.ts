@@ -2,11 +2,12 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import { streamExists, updateStream } from "../workStreams/service.ts";
-import { askUser } from "./attention.ts";
+import { announceMerge, askUser, mergeKey } from "./attention.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
- * them, and ending the pass with notes and a sleep length.
+ * them, telling them about a merge, and ending the pass with notes and a
+ * sleep length.
  */
 
 /** What `finish_pass` asked for, read by the loop once the pass is over. */
@@ -21,8 +22,42 @@ export function newPassOutcome(): PassOutcome {
   return { finished: false, notes: null, sleepMinutes: null, reason: null };
 }
 
-export function buildPassTools(db: Db, outcome: PassOutcome, onAsked: () => void) {
+/**
+ * `announcedMerges` collects the PRs this pass announced (see `mergeKey`), so
+ * the approval hooks can tell a merge it didn't announce.
+ */
+export function buildPassTools(
+  db: Db,
+  outcome: PassOutcome,
+  onAsked: () => void,
+  announcedMerges: Set<string>,
+) {
   return {
+    announce_merge: tool({
+      description:
+        "Call right before you merge a PR, whether you merge it with a tool or tell a workspace's session to. It shows the user an alert about the merge; it doesn't merge anything or wait for them. Judge the risk first, and ask the user with ask_user instead when it is high or you can't tell.",
+      inputSchema: z.object({
+        repo: z
+          .string()
+          .regex(/^[\w.-]+\/[\w.-]+$/)
+          .describe("The PR's repo, as owner/name"),
+        number: z.number().int().positive(),
+        title: z.string().max(300).optional(),
+        url: z.string().url().max(500).optional(),
+        risk: z.enum(["low", "medium", "high"]),
+        why: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe("Why you are merging it now, and why that risk level"),
+      }),
+      execute: async (merge) => {
+        await announceMerge(db, merge);
+        announcedMerges.add(mergeKey(merge.repo, merge.number));
+        return { ok: true, message: "The user has been shown this merge." };
+      },
+    }),
+
     ask_user: tool({
       description:
         "Ask the user something only they can answer. They answer on the Heads down page, maybe hours later; you don't wait. Their answer reaches a later pass. Give a streamId and that stream is marked waiting on them. Offer options when the answer is a choice, so it can be stored as a decision and reused.",

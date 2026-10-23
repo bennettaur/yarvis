@@ -217,6 +217,7 @@ export async function runPass(
       : timedOut()
         ? "Ran out of time here."
         : `Failed here: ${e}`;
+  const announcedMerges = new Set<string>();
   try {
     // Stopped while the pass was getting ready: its abort wasn't registered yet.
     if ((await getActiveRun(db))?.id !== run.id) {
@@ -231,6 +232,7 @@ export async function runPass(
     let message = buildPassPrompt({
       now,
       run,
+      guidance: headsDownConfig.guidance,
       withinWorkingHours,
       minutesSinceUserReplied,
       messages,
@@ -268,10 +270,11 @@ export async function runPass(
                 signal: abort.signal,
               }
             : undefined,
+          announcedMerges,
         ),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: PASS_INSTRUCTIONS,
-        extraTools: buildPassTools(db, outcome, changed),
+        extraTools: buildPassTools(db, outcome, changed, announcedMerges),
         budget,
         maxRetries: PASS_MODEL_RETRIES,
       })) {

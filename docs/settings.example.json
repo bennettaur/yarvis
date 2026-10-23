@@ -52,7 +52,8 @@
     "workingHours": { "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00" },
     "userAwayAfterMinutes": 120,
     "provider": null,
-    "model": null
+    "model": null,
+    "guidance": null
   },
   "voiceConfig": {
     "sttProvider": "",

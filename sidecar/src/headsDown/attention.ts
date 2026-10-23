@@ -47,3 +47,43 @@ export async function dismissOpenQuestions(db: Db): Promise<void> {
     if (await dismissQuestion(db, question.id)) await settleQuestionAttention(db, question.id);
   }
 }
+
+/** How risky a merge is, as the pass judged it; "unknown" when it merged without saying. */
+export type MergeRisk = "low" | "medium" | "high" | "unknown";
+
+export interface MergeAnnouncement {
+  /** "owner/repo". */
+  repo: string;
+  number: number;
+  title?: string | null;
+  url?: string | null;
+  risk: MergeRisk;
+  why: string;
+}
+
+/** Identifies a PR across announce_merge and the merge call itself. */
+export function mergeKey(repo: string, number: number): string {
+  return `${repo.trim().toLowerCase()}#${number}`;
+}
+
+/**
+ * Tells the user a pass is merging a PR. The item carries the merge in its
+ * payload, which is what makes the app pop it up over whatever page is open.
+ */
+export async function announceMerge(db: Db, merge: MergeAnnouncement): Promise<void> {
+  const [owner, name] = merge.repo.split("/");
+  const item = await createAttention(db, {
+    source: "system",
+    // One item per PR: announcing the same merge again updates it.
+    sessionKey: `heads-down-merge:${mergeKey(merge.repo, merge.number)}`,
+    kind: "info",
+    title: `Heads down is merging ${merge.repo}#${merge.number}`,
+    body: [merge.title, merge.why].filter(Boolean).join("\n"),
+    navTarget:
+      owner && name
+        ? { type: "pr", owner, repo: name, number: merge.number }
+        : { type: "heads-down" },
+    payload: { headsDownMerge: merge },
+  });
+  publishAttention(item);
+}

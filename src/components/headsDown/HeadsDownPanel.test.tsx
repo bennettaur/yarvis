@@ -92,6 +92,7 @@ const CONFIG = {
   userAwayAfterMinutes: 120,
   provider: null,
   model: null,
+  guidance: null,
 };
 
 const PROVIDERS = [
@@ -363,6 +364,29 @@ describe("HeadsDownSettings", () => {
       method: "PUT",
       path: "/api/heads-down/config",
       body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+    });
+  });
+
+  it("saves the standing guidance every pass follows", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = host.querySelector<HTMLTextAreaElement>('[aria-label="Standing guidance"]');
+    if (!field) throw new Error("no guidance field");
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+      field,
+      "Don't merge during market hours",
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, guidance: "Don't merge during market hours" },
     });
   });
 
