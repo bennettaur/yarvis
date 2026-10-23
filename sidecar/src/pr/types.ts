@@ -219,6 +219,12 @@ export interface PrDetail {
   /** GraphQL/Azure mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
   mergeable: string;
   /**
+   * GitHub's `mergeStateStatus` ("CLEAN", "DIRTY", "BEHIND", "BLOCKED", …).
+   * "DIRTY" means conflicts too, and can be what GitHub reports while
+   * `mergeable` is still settling. Absent on Azure, which has no equivalent.
+   */
+  mergeStateStatus?: string;
+  /**
    * Merge methods the repo permits, so the UI only offers valid ones. Empty
    * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
    */

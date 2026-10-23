@@ -19,6 +19,7 @@ import {
   saveInsight,
 } from "./insights.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
+import { resolveConflictsForPr } from "./resolveConflicts.ts";
 import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
 import { type PrRef, parseRefKey, refKey } from "./types.ts";
@@ -457,6 +458,35 @@ export function createPrRoutes(config: Config): Hono {
       // A refusal names something the reviewer can fix; anything else is the
       // provider or the database failing, which the rest of this file answers
       // 502 for.
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
+    }
+  });
+
+  /**
+   * Hands the pull request's merge conflicts to a coding agent: typed at the
+   * prompt of the agent already running in its workspace, or as the brief of a
+   * session started in it, or of a workspace created for it (see
+   * `resolveConflictsForPr`). An agent that looks busy is not interrupted
+   * unless `confirm` is set; the answer says so with `needs_confirm`. 201 means
+   * a workspace was created, as for `/workspace`.
+   */
+  router.post("/resolve-conflicts", async (c) => {
+    const parsed = z
+      .object({ ref: prRef, confirm: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const source = sourceFor(parsed.data.ref);
+    if ("error" in source) return c.json({ error: source.error }, 400);
+
+    try {
+      const result = await resolveConflictsForPr(db(), config, source, {
+        confirm: parsed.data.confirm,
+      });
+      return c.json(result, result.outcome === "created" ? 201 : 200);
+    } catch (e) {
+      console.error("[pr] could not hand the conflicts to an agent:", describeError(e));
       const refused = e instanceof PrWorkspaceRefusal;
       return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }

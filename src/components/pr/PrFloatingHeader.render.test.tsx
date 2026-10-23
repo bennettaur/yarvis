@@ -144,6 +144,20 @@ describe("PrFloatingHeader merge controls", () => {
   });
 });
 
+describe("PrFloatingHeader conflicts", () => {
+  it("leads with the conflict and the button to resolve it", async () => {
+    const html = await render(detail({ mergeable: "CONFLICTING" }));
+    expect(html).toContain("Conflicts with main");
+    expect(html).toContain("Resolve conflicts");
+  });
+
+  it("says nothing about conflicts on a mergeable PR", async () => {
+    const html = await render(detail());
+    expect(html).not.toContain("Conflicts with");
+    expect(html).not.toContain("Resolve conflicts");
+  });
+});
+
 describe("PrFloatingHeader loading state", () => {
   // A stack layer swaps the pull request instantly and then waits on a provider
   // round trip. The summary already carries a title, so the only sign the page

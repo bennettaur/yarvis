@@ -233,6 +233,40 @@ Some rules that follow from how it works:
   a workspace created some other way, the link appears after the next PR poll
   (within a minute).
 
+### Resolve merge conflicts
+
+When a PR conflicts with its base branch, a red **Conflicts with <base>** banner
+appears under the header. GitHub's `CONFLICTING` and `DIRTY` and Azure
+DevOps's `conflicts` all count. GitHub works mergeability out lazily, so when
+it hasn't decided yet the page asks once more after a few seconds and shows
+nothing in the meantime.
+
+**Resolve conflicts** in the banner hands the job to a coding agent:
+
+- **The PR's workspace has an agent running:** the instructions are typed at
+  its prompt. If the agent looks busy (its transcript moved on since it last
+  finished a turn, or a permission prompt is up), you're asked first: "The
+  agent is working on something. Send anyway?"
+- **The workspace has no agent running:** the instructions are written to its
+  `.yarvis/brief.md` and an agent is started on them.
+- **The PR has no workspace:** one is created on the PR's branch, as
+  **Start workspace** does, and its first session starts on the instructions.
+  The app switches to it.
+- **The PR comes from a fork:** the button is disabled, for the same reason
+  Start workspace is.
+
+After a send, **Open workspace** jumps to it. Progress and errors show in the
+banner.
+
+The agent is told to merge `origin/<base>` into the PR's branch (a merge, not
+a rebase, so nothing needs a force-push), using a `merge-default-branch` skill
+if one is available. For a stacked PR it merges the PR's actual base, not the
+default branch. It resolves each conflict by working out what both sides
+meant, runs the repo's checks and tests, commits a normal merge commit, pushes
+to the PR's branch, and reports what it resolved and anything it's unsure of.
+The PR's title is quoted to it as data, not instructions. As with any send,
+Yarvis confirms delivery, not that the work is done.
+
 ### See where a PR sits in its stack
 
 A PR that is part of a stack gets a **Stack** section above **Checks**. It

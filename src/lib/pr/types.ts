@@ -149,6 +149,11 @@ export interface PrDetail {
   deletions: number;
   mergeable: string;
   /**
+   * GitHub's merge state ("CLEAN", "DIRTY", "BEHIND", …); "DIRTY" means
+   * conflicts. Absent on Azure.
+   */
+  mergeStateStatus?: string;
+  /**
    * Merge methods the repo permits, so the UI only offers valid ones. Empty
    * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
    */

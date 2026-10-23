@@ -447,6 +447,11 @@ Safety rules:
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
 
+A PR's **Resolve conflicts** button uses the same path (see
+[Resolve merge conflicts](pr-review.md#resolve-merge-conflicts)). When the
+workspace has no agent running, it overwrites `.yarvis/brief.md` with the
+merge instructions and starts one on them.
+
 ### Asking what a workspace is up to
 
 Ask "what was I doing in my workspaces?" or "where did the billing-api session

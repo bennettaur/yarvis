@@ -104,6 +104,13 @@ export interface SendSessionInstructionInput {
 export const AGENT_NOT_RECOGNISED_ERROR =
   "the configured agent is not what is reading that session's prompt";
 
+/**
+ * The core's refusal when the workspace has no agent tab at all — nothing a
+ * fresh spawn would collide with. Must match the message in
+ * `send_session_instruction` in `src-tauri/src/pty.rs`.
+ */
+export const NO_AGENT_SESSION_ERROR = "no agent session is running for that workspace";
+
 /** Injectable sender so the workspace tool is testable without the core. */
 export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Promise<void>;
 
