@@ -17,7 +17,7 @@ import {
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
-import type { ReviewDecision } from "../pr/types.ts";
+import type { PrRef, ReviewDecision } from "../pr/types.ts";
 import type { RepoTracker } from "../workspaces/tracker.ts";
 
 /**
@@ -1905,3 +1905,77 @@ export const agentRuns = pgTable(
 
 export type AgentRunRow = typeof agentRuns.$inferSelect;
 export type NewAgentRunRow = typeof agentRuns.$inferInsert;
+
+/**
+ * A review workspace: a named set of pull requests checked out side by side for
+ * review. Separate from `workspaces`, which are for doing work — nothing here
+ * has a branch to push, an agent session, or a repo it must be registered for.
+ */
+export const reviewWorkspaces = pgTable("review_workspaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  /** "active" | "archiving" | "archived". */
+  status: text("status").$type<"active" | "archiving" | "archived">().notNull().default("active"),
+  /** Why the last archive left something behind, if it did. */
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+});
+
+/**
+ * One pull request in a review workspace, with the detached worktree it is
+ * checked out in and the commits the review reads. The shas are what every
+ * diff and file read uses, so a refresh that moves the head moves them together.
+ */
+export const reviewWorkspacePrs = pgTable(
+  "review_workspace_prs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    /** `refKey` of `ref`, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<PrRef>().notNull(),
+    /** Cached from the provider at the last clone or refresh. */
+    title: text("title").notNull().default(""),
+    author: text("author"),
+    headRef: text("head_ref"),
+    baseRef: text("base_ref"),
+    /** Stable colour for this PR in the workspace: the lowest index unused when added. */
+    colorIndex: integer("color_index").notNull(),
+    position: integer("position").notNull(),
+    /** "pending" | "cloning" | "ready" | "error". */
+    status: text("status")
+      .$type<"pending" | "cloning" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    error: text("error"),
+    worktreePath: text("worktree_path").notNull(),
+    /**
+     * "pending" | "checking-out" | "ready" | "error". Separate from `status`
+     * because review reads come from git objects and start as soon as the shas
+     * are known; only what needs files on disk (setup, code navigation) waits
+     * for the checkout.
+     */
+    worktreeStatus: text("worktree_status")
+      .$type<"pending" | "checking-out" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    headSha: text("head_sha"),
+    baseSha: text("base_sha"),
+    mergeBaseSha: text("merge_base_sha"),
+    /** Null until the user answers; whether the PR's setup script may run. */
+    setupConsent: text("setup_consent").$type<"granted" | "declined">(),
+    /** "running" | "succeeded" | "failed" | "skipped" (no script to run). */
+    setupStatus: text("setup_status").$type<"running" | "succeeded" | "failed" | "skipped">(),
+    /** Capped tail of the last setup run. */
+    setupLog: text("setup_log"),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("review_workspace_prs_ws_ref_idx").on(t.workspaceId, t.refKey)],
+);
+
+export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
+export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;

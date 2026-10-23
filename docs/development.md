@@ -304,6 +304,8 @@ sidecar/        Bun + TS service (Hono)
   src/omni/        Omni UI generation and saved layouts
   src/workspaces/  repo registry, worktree provisioning, base-branch sync,
                    teardown, self-review comments, gh-stack bridge, file editor
+  src/reviewWorkspaces/ PRs checked out for review: blobless clones, a detached
+                   worktree per PR, local diffs and file reads, setup consent
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held
