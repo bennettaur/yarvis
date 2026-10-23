@@ -11,12 +11,22 @@ export interface LivePass {
   /** Reasoning is still streaming into `thought`; the next stretch replaces it. */
   thinking: boolean;
   text: string;
-  /** The provider error the turn just hit; the pass may be about to try again. */
+  /** The error the turn just ended on. */
   error: string | null;
+  /** The error looks temporary, so the pass tries again shortly. */
+  retrying: boolean;
 }
 
 export function newLivePass(passId: string): LivePass {
-  return { passId, activity: [], thought: "", thinking: false, text: "", error: null };
+  return {
+    passId,
+    activity: [],
+    thought: "",
+    thinking: false,
+    text: "",
+    error: null,
+    retrying: false,
+  };
 }
 
 /** Folds one streamed event into the live pass. */
@@ -32,7 +42,12 @@ export function applyPassEvent(live: LivePass, event: PassEvent): LivePass {
         error: null,
       };
     case "error":
-      return { ...live, thinking: false, error: event.message };
+      return {
+        ...live,
+        thinking: false,
+        error: event.message,
+        retrying: event.transient === true,
+      };
     case "tool_call":
       return {
         ...live,

@@ -142,7 +142,9 @@ export default function PassList({
           </div>
           {live.error && (
             <p className="mb-2 text-xs text-amber-300">
-              The model provider failed: {live.error}. It tries again if the error looks temporary.
+              {live.retrying
+                ? `The model provider failed (${live.error}). Trying again shortly.`
+                : live.error}
             </p>
           )}
           {live.thought && <LatestThought text={live.thought} thinking={live.thinking} />}

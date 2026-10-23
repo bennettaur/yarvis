@@ -124,11 +124,9 @@ export function buildPassPrompt(ctx: PassContext): string {
     );
   }
   if (ctx.lastFailure) {
-    const did =
-      ctx.lastFailure.activity.length > 0
-        ? ` Before that it made these calls, between <recalled-content-${nonce}> tags. Check where things stand before repeating any that went through:\n${fence(describeActivity(ctx.lastFailure.activity), nonce)}`
-        : " It made no calls before that.";
-    sections.push(`The last pass failed before it finished: ${ctx.lastFailure.error}.${did}`);
+    sections.push(
+      `The last pass failed before it finished. Its error and the calls it made first are between <recalled-content-${nonce}> tags. Check where things stand before repeating any call that went through:\n${fence(failureRecord(ctx.lastFailure.error, ctx.lastFailure.activity), nonce)}`,
+    );
   }
   sections.push("Start the pass.");
   return sections.join("\n\n");
@@ -141,9 +139,15 @@ export function buildPassPrompt(ctx: PassContext): string {
  */
 export function buildRetryPrompt(error: string, activity: ToolActivity[]): string {
   const nonce = newNonce();
-  const did =
-    activity.length > 0
-      ? `The calls made so far this pass, between <recalled-content-${nonce}> tags:\n${fence(describeActivity(activity), nonce)}`
-      : "No calls were made yet.";
-  return `The pass stopped part-way on a provider error: ${error}. Carry on from where it got to, without repeating calls that went through, and end with finish_pass as usual. ${did}`;
+  return `The pass stopped part-way on a provider error. Carry on from where it got to, without repeating calls that went through, and end with finish_pass as usual. The error and the calls made so far this pass are between <recalled-content-${nonce}> tags:\n${fence(failureRecord(error, activity), nonce)}`;
+}
+
+/**
+ * A failure's error and the calls made before it. Both are fenced by the
+ * caller: a provider can echo request text in its error, and arguments and
+ * results quote what other people wrote.
+ */
+function failureRecord(error: string, activity: ToolActivity[]): string {
+  const calls = activity.length > 0 ? describeActivity(activity) : "No calls were made.";
+  return `Error: ${error}\n${calls}`;
 }

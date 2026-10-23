@@ -100,7 +100,8 @@ function RunHeader({
       {run ? (
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
-            <AgentMark state={working ? "working" : "sleeping"} />
+            {/* With no next pass scheduled yet, the first one is starting. */}
+            <AgentMark state={working || !state.nextPassAt ? "working" : "sleeping"} />
             <div className="min-w-0">
               <div className="text-sm font-medium text-emerald-300">
                 Heads down since {new Date(run.startedAt).toLocaleString()}

@@ -67,9 +67,11 @@ export function describeActivity(activity: ToolActivity[]): string {
         ? ""
         : clip(typeof a.args === "string" ? a.args : JSON.stringify(a.args));
     const call = `${a.server ? `${a.server}/` : ""}${a.name}(${args})`;
+    const outcome = a.result ? ` → ${clip(a.result)}` : "";
     if (a.status === "ok") return `- done: ${call}`;
-    if (a.status === "denied") return `- not run, waiting on the user: ${call}`;
-    return `- failed: ${call}${a.result ? ` → ${clip(a.result)}` : ""}`;
+    // Queued for the user's approval, refused, or denied; the result says which.
+    if (a.status === "denied") return `- not run: ${call}${outcome}`;
+    return `- failed: ${call}${outcome}`;
   });
   if (activity.length > MAX_LINES) lines.push(`- and ${activity.length - MAX_LINES} more calls`);
   return lines.join("\n");

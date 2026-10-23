@@ -236,7 +236,8 @@ describe("a heads-down pass", () => {
     await runPass(config, db, run, { model: next });
 
     const prompt = JSON.stringify(next.doStreamCalls[0]?.prompt);
-    expect(prompt).toContain("The last pass failed before it finished: invalid request");
+    expect(prompt).toContain("The last pass failed before it finished");
+    expect(prompt).toContain("Error: invalid request");
     expect(prompt).toContain("done: ask_user");
   });
 

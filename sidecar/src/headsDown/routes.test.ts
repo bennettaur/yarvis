@@ -172,7 +172,7 @@ describe("/api/heads-down", () => {
       ],
     });
 
-    const [listed] = await get("/passes");
+    const [listed] = (await get("/passes")) as unknown[];
 
     expect(listed).toMatchObject({
       id: pass.id,
