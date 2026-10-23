@@ -42,7 +42,15 @@ import { setPassAbort } from "./wake.ts";
  * steps finding them. Anything else (an MCP Slack server, say) it can still
  * search for and mount itself.
  */
-const PASS_FAMILIES = ["workStreams", "workspaces", "jira", "prReview", "browser"];
+const PASS_FAMILIES = [
+  "workStreams",
+  "workspaces",
+  "jira",
+  "prReview",
+  "browser",
+  "calendar",
+  "alarms",
+];
 
 /**
  * What the user asked for in this run, in their own words, for the decision

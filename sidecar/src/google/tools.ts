@@ -20,7 +20,7 @@ export function buildCalendarTools(db: Db, config: Config) {
   return {
     list_calendar_events: tool({
       description:
-        "The user's upcoming calendar events (primary calendar), soonest first. Use it when a request depends on their schedule — what meetings are coming, when a deadline actually lands, whether there is room for something.",
+        "The user's upcoming calendar events (primary calendar), soonest first. Use it when a request depends on their schedule — what meetings are coming, when a deadline actually lands, whether there is room for something. Each event carries the user's own RSVP (response, null when the event has no guests) and whether their attendance is optional.",
       inputSchema: z.object({
         days: z
           .number()
@@ -53,6 +53,8 @@ export function buildCalendarTools(db: Db, config: Config) {
               allDay: e.allDay,
               location: e.location,
               meetLink: e.meetLink,
+              response: e.response,
+              optional: e.optional,
             })),
           };
         } catch (e) {

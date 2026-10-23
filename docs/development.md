@@ -121,18 +121,19 @@ to the next free pair. The second port is Vite's HMR socket, used when
 `TAURI_DEV_HOST` is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it
 is taken. Because macOS
 derives the app data directory from the identifier, each instance gets its own
-`alarms.json` and control socket. The window title shows the name.
+control socket. The window title shows the name.
 
 Use `dev:instance` rather than setting `YARVIS_INSTANCE` on a plain
 `bun run tauri dev`. The variable alone makes the process skip the hotkeys and
 background workers, but it keeps the main bundle identifier, so it shares the
-main instance's alarms and control socket.
+main instance's control socket.
 
 ### What the instances share
 
 Both instances read the **same secrets item** and the **same
 `~/.yarvis/settings.json`**. By default they also share the database, so the
-second instance sees your real data. That is usually what you want.
+second instance sees your real data, alarms included. That is usually what you
+want. Only the instance running background workers rings alarms.
 `YARVIS_CLAUDE_COMMAND` changes the agent command for one instance without
 touching the shared file.
 
@@ -258,11 +259,11 @@ src-tauri/      Rust core (Tauri v2)
   src/sidecar.rs        sidecar supervisor
   src/pty.rs            terminal and workspace agent sessions
   src/control.rs        fixed-method socket the sidecar drives sessions through
-  src/alarms.rs         full-screen alarm scheduler
+  src/alarms.rs         rings a due alarm: full-screen takeover, notification, sound
   src/clipboard.rs      clipboard read/write and in-memory clip history
 sidecar/        Bun + TS service (Hono)
   src/core/        client for the Rust core's control socket (sessions, saving
-                   OAuth credentials and a signed-in GitHub token)
+                   OAuth credentials and a signed-in GitHub token, ringing alarms)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution and the model catalog (catalog.ts)
@@ -290,6 +291,7 @@ sidecar/        Bun + TS service (Hono)
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
   src/azureBoards/ Azure Boards work item client, routes, HTML to Markdown
   src/google/      Google Calendar OAuth, reads, and create
+  src/alarms/      alarms: the list, when each is due, and the agent's alarm tools
   src/omni/        Omni UI generation and saved layouts
   src/workspaces/  repo registry, worktree provisioning, base-branch sync,
                    teardown, self-review comments, gh-stack bridge, file editor

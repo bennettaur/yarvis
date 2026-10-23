@@ -40,6 +40,12 @@ most urgent first:
 - **Messages:** if it has tools that read your chat, it checks the channels you
   asked it to watch. A message that needs your answer becomes a stream that
   waits on you. A request for work becomes a ticket.
+- **Meetings:** if Google Calendar is connected, a few times a day it reads
+  your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
+  for each one you're going to that doesn't have one: ones you accepted, and
+  ones with no guest list. It skips ones you declined. When it can't tell, because
+  you haven't replied, said maybe, or are optional, it asks you ("Are you going
+  to Design review at 2pm?") and sets the alarm on a later pass if you say yes.
 
 Each pass ends by choosing how long to sleep. It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
@@ -49,6 +55,8 @@ that needs attention wakes it early.
 
 ## What it does without asking
 
+- Setting an alarm, and cancelling one it set. It can't cancel an alarm you
+  set yourself.
 - Filing a JIRA ticket.
 - Starting work on a ticket you put on a work stream in a chat, and starting a
   session on one of your tasks.

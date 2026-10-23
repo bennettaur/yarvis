@@ -64,6 +64,13 @@ export interface CalendarEvent {
   /** Google Meet / video link when present. */
   meetLink: string | null;
   htmlLink: string | null;
+  /**
+   * The user's own RSVP, or null on an event with no guest list (one they
+   * put on their calendar for themselves).
+   */
+  response: "accepted" | "tentative" | "declined" | "needsAction" | null;
+  /** The organizer marked the user's attendance optional. */
+  optional: boolean;
 }
 
 type FetchFn = typeof fetch;
@@ -105,6 +112,9 @@ function meetLink(item: any): string | null {
 /** Normalizes a Calendar API event resource into our flat shape. */
 export function toCalendarEvent(item: any): CalendarEvent {
   const allDay = Boolean(item.start?.date && !item.start?.dateTime);
+  const self = Array.isArray(item.attendees)
+    ? item.attendees.find((a: any) => a?.self === true)
+    : undefined;
   return {
     id: item.id,
     title: item.summary ?? "(no title)",
@@ -114,6 +124,8 @@ export function toCalendarEvent(item: any): CalendarEvent {
     location: item.location ?? null,
     meetLink: meetLink(item),
     htmlLink: item.htmlLink ?? null,
+    response: self?.responseStatus ?? null,
+    optional: self?.optional === true,
   };
 }
 
@@ -200,6 +212,16 @@ export class GoogleCalendarClient {
     if (!res.ok) throw new Error(`google calendar events -> ${res.status}`);
     const data = (await res.json()) as { items?: any[] };
     return (data.items ?? []).map(toCalendarEvent);
+  }
+
+  /** One event on the primary calendar, or null when there is no such event. */
+  async getEvent(accessToken: string, id: string): Promise<CalendarEvent | null> {
+    const res = await this.fetchImpl(`${this.eventsUrl}/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 404 || res.status === 410) return null;
+    if (!res.ok) throw new Error(`google calendar event -> ${res.status}`);
+    return toCalendarEvent(await res.json());
   }
 
   /**

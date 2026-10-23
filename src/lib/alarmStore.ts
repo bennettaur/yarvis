@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import {
   type Alarm,
+  followAlarmChanges,
   acknowledgeAlarm as invokeAcknowledge,
   cancelAlarm as invokeCancel,
   createAlarm as invokeCreate,
@@ -10,10 +11,10 @@ import {
 } from "./alarms";
 
 /**
- * Shared live view of the Rust core's alarm list. The core owns alarm state; a
- * single poll plus an `alarm-fired` listener feeds every subscriber, so the
- * alarms page, the attention panel, the takeover overlay, and any number of
- * calendar widgets all read the same list without multiplying IPC traffic.
+ * Shared live view of the alarm list, which the sidecar owns. One change
+ * stream, a backstop poll and an `alarm-fired` listener feed every subscriber,
+ * so the alarms page, the attention panel, the takeover overlay, and any number
+ * of calendar widgets all read the same list without multiplying requests.
  *
  * Mutations go through here rather than `lib/alarms` directly so the list
  * refreshes as soon as the user acts, instead of on the next poll.
@@ -38,17 +39,18 @@ const firedThisRun = new Set<string>();
 const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unlistenFired: (() => void) | undefined;
+let stopFollowing: (() => void) | undefined;
 
 /**
  * Whole-list identity. Every field an alarm carries is rendered somewhere, so
- * comparing all of them means a change the core makes can't be swallowed — a
+ * comparing all of them means a change the sidecar makes can't be swallowed — a
  * narrower key would silently strand consumers on a stale array.
  */
 function fingerprint(list: Alarm[]): string {
   return JSON.stringify(list);
 }
 
-/** Forgets ids the core no longer reports as firing, so the set stays bounded. */
+/** Forgets ids the sidecar no longer reports as firing, so the set stays bounded. */
 function pruneFiredThisRun(): void {
   if (firedThisRun.size === 0) return;
   const stillFiring = new Set(alarms.filter((a) => a.status === "fired").map((a) => a.id));
@@ -81,7 +83,7 @@ function recomputeDerived(): boolean {
   return changed;
 }
 
-function applyCoreList(next: Alarm[]): void {
+function applyList(next: Alarm[]): void {
   const listChanged = fingerprint(next) !== fingerprint(alarms);
   if (listChanged) alarms = next;
   pruneFiredThisRun();
@@ -103,8 +105,9 @@ export async function refreshAlarms(): Promise<void> {
     const next = await listAlarms();
     // A poll issued before a dismissal can resolve after it. Applying that
     // older list would put the alarm back in the queue and re-raise the
-    // takeover the user just dismissed.
-    if (seq === refreshSeq) applyCoreList(next);
+    // takeover the user just dismissed. A body that isn't a list keeps the
+    // last known one, as a failed read does.
+    if (seq === refreshSeq && Array.isArray(next)) applyList(next);
   } catch {
     // Leave the last known list in place; the periodic refresh will retry.
   }
@@ -116,7 +119,7 @@ function handleFired(alarm: Alarm): void {
   // arrives, so raise the overlay straight off the payload. Waiting on the
   // refresh would strand the user in a pinned window with no alarm UI whenever
   // that one `list_alarms` call fails.
-  applyCoreList(
+  applyList(
     alarms.some((a) => a.id === alarm.id)
       ? alarms.map((a) => (a.id === alarm.id ? alarm : a))
       : [...alarms, alarm],
@@ -133,6 +136,7 @@ function subscribe(notify: () => void): () => void {
     const generation = ++listenGeneration;
     void refreshAlarms();
     pollTimer = setInterval(() => void refreshAlarms(), POLL_MS);
+    stopFollowing = followAlarmChanges(() => void refreshAlarms());
     onAlarmFired(handleFired).then((unlisten) => {
       // The last subscriber can leave while `listen` is still resolving — its
       // teardown had no unlisten to call yet, so drop the listener here rather
@@ -147,13 +151,15 @@ function subscribe(notify: () => void): () => void {
     if (listeners.size === 0) {
       clearInterval(pollTimer);
       pollTimer = undefined;
+      stopFollowing?.();
+      stopFollowing = undefined;
       unlistenFired?.();
       unlistenFired = undefined;
     }
   };
 }
 
-/** Every alarm the core knows about, in creation order. */
+/** Every alarm the sidecar lists, in creation order. */
 export function useAlarms(): Alarm[] {
   return useSyncExternalStore(subscribe, () => alarms);
 }
