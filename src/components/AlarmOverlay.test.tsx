@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { fakeAlarms } from "../test/alarmFixture";
 import { mountForInteraction, renderToHtml } from "../test/render";
 
 /**
@@ -12,7 +12,7 @@ import { mountForInteraction, renderToHtml } from "../test/render";
  */
 
 const opened: string[] = [];
-const invoked: Array<{ command: string; args: unknown }> = [];
+const acknowledged: string[] = [];
 
 mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async (url: string) => {
@@ -20,10 +20,10 @@ mock.module("@tauri-apps/plugin-opener", () => ({
   },
 }));
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: unknown) => {
-    invoked.push({ command, args });
-    return nativeInvoke(command);
+mock.module("../lib/alarms", () => ({
+  ...fakeAlarms,
+  acknowledgeAlarm: async (id: string) => {
+    acknowledged.push(id);
   },
 }));
 
@@ -41,7 +41,7 @@ const baseAlarm: Alarm = {
 describe("AlarmOverlay", () => {
   beforeEach(() => {
     opened.length = 0;
-    invoked.length = 0;
+    acknowledged.length = 0;
   });
 
   it("shows a Join meeting button for meeting alarms", async () => {
@@ -94,7 +94,7 @@ describe("AlarmOverlay", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(opened).toEqual(["https://meet.google.com/abc"]);
-    expect(invoked).toContainEqual({ command: "acknowledge_alarm", args: { id: "a1" } });
+    expect(acknowledged).toEqual(["a1"]);
 
     unmount();
   });

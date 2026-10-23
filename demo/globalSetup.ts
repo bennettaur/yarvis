@@ -16,5 +16,6 @@ export default async function globalSetup() {
   process.env.DEMO_APP_URL = stack.appUrl;
   process.env.DEMO_SIDECAR_PORT = String(stack.sidecarPort);
   process.env.DEMO_SIDECAR_TOKEN = stack.sidecarToken;
+  process.env.DEMO_DATABASE_URL = stack.databaseUrl;
   return stack.stop;
 }

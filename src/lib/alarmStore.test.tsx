@@ -1,14 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import {
-  alarmInvoke,
-  alarmListen,
-  fireAlarm,
-  resetCoreAlarms,
-  setCoreAlarms,
-  UNHANDLED,
-} from "../test/alarmFixture";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { fakeAlarms, fireAlarm, resetAlarms, setAlarms } from "../test/alarmFixture";
 import { mountForInteraction } from "../test/render";
 import type { Alarm } from "./alarms";
 
@@ -21,30 +13,26 @@ import type { Alarm } from "./alarms";
  */
 
 let failNextList = false;
-/** Holds the next `list_alarms` open so a later read can overtake it. */
+/** Holds the next `listAlarms` open so a later read can overtake it. */
 let delayNextListMs = 0;
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: Record<string, unknown>) => {
-    if (command === "list_alarms" && failNextList) {
+mock.module("./alarms", () => ({
+  ...fakeAlarms,
+  listAlarms: async () => {
+    if (failNextList) {
       failNextList = false;
-      throw new Error("list_alarms failed");
+      throw new Error("listAlarms failed");
     }
-    const result = alarmInvoke(command, args ?? {});
-    if (command === "list_alarms" && delayNextListMs > 0) {
+    const result = await fakeAlarms.listAlarms();
+    if (delayNextListMs > 0) {
       const ms = delayNextListMs;
       delayNextListMs = 0;
       // The list is snapshotted before the wait, so this call resolves with
-      // what the core held when it was issued — the whole point of the race.
+      // what the sidecar held when it was issued — the whole point of the race.
       await new Promise((resolve) => setTimeout(resolve, ms));
     }
-    return result === UNHANDLED ? nativeInvoke(command) : result;
+    return result;
   },
-}));
-
-mock.module("@tauri-apps/api/event", () => ({
-  listen: async (event: string, handler: (e: { payload: Alarm }) => void) =>
-    alarmListen(event, handler),
 }));
 
 const { acknowledgeAlarm, refreshAlarms, snoozeAlarm, useAlarmTakeoverQueue, useRingingAlarms } =
@@ -81,7 +69,7 @@ afterEach(() => {
   delayNextListMs = 0;
 });
 
-afterAll(resetCoreAlarms);
+afterAll(resetAlarms);
 
 /** Mounts the probe and returns readers for the two lists. */
 async function mountProbe() {
@@ -95,7 +83,7 @@ async function mountProbe() {
 describe("alarm takeover queue", () => {
   it("keeps every alarm that fired and advances as each is dismissed", async () => {
     const at = Date.now();
-    setCoreAlarms([scheduled("same-a", at), scheduled("same-b", at)]);
+    setAlarms([scheduled("same-a", at), scheduled("same-b", at)]);
 
     const probe = await mountProbe();
     fireAlarm("same-a");
@@ -117,7 +105,7 @@ describe("alarm takeover queue", () => {
   });
 
   it("lists an alarm left firing by a previous run without taking the screen over", async () => {
-    setCoreAlarms([{ ...scheduled("stale", Date.now() - 60_000), status: "fired" }]);
+    setAlarms([{ ...scheduled("stale", Date.now() - 60_000), status: "fired" }]);
 
     const probe = await mountProbe();
 
@@ -127,9 +115,9 @@ describe("alarm takeover queue", () => {
 
   it("raises the overlay from the event even when the follow-up read fails", async () => {
     // The core has already fullscreened and pinned the window by the time the
-    // event lands, so a failed `list_alarms` must not leave the user with a
+    // event lands, so a failed `listAlarms` must not leave the user with a
     // takeover and nothing to dismiss it with.
-    setCoreAlarms([scheduled("offline", Date.now())]);
+    setAlarms([scheduled("offline", Date.now())]);
     const probe = await mountProbe();
 
     failNextList = true;
@@ -140,7 +128,7 @@ describe("alarm takeover queue", () => {
   });
 
   it("takes a snoozed alarm out of both lists and back in when it re-fires", async () => {
-    setCoreAlarms([scheduled("snoozed", Date.now())]);
+    setAlarms([scheduled("snoozed", Date.now())]);
     const probe = await mountProbe();
     fireAlarm("snoozed");
     await settle();
@@ -160,7 +148,7 @@ describe("alarm takeover queue", () => {
   });
 
   it("ignores a read that resolves after a newer one", async () => {
-    setCoreAlarms([scheduled("racy", Date.now())]);
+    setAlarms([scheduled("racy", Date.now())]);
     const probe = await mountProbe();
     fireAlarm("racy");
     await settle();

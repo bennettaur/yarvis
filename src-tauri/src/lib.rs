@@ -120,6 +120,8 @@ pub fn run() {
             if let Err(e) = pty::raise_fd_limit() {
                 eprintln!("[pty] raising the file descriptor limit failed: {e}");
             }
+            // Before the control channel, which the sidecar rings alarms through.
+            alarms::init(app.handle());
             // Bind the control channel before spawning the sidecar so its socket
             // path is available to inject into the sidecar's environment.
             if let Err(e) = control::init(app.handle()) {
@@ -127,9 +129,6 @@ pub fn run() {
             }
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
-            }
-            if let Err(e) = alarms::init(app.handle()) {
-                eprintln!("[alarms] init failed: {e}");
             }
             clipboard::init(app.handle());
             #[cfg(desktop)]
@@ -171,11 +170,7 @@ pub fn run() {
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
             sidecar::get_sidecar_log_path,
-            alarms::list_alarms,
-            alarms::create_alarm,
-            alarms::cancel_alarm,
-            alarms::acknowledge_alarm,
-            alarms::snooze_alarm,
+            alarms::release_alarm,
             clipboard::clipboard_history,
             clipboard::clipboard_clear_history,
             clipboard::clipboard_write,

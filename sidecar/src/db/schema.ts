@@ -1857,3 +1857,37 @@ export type ScheduledJob = typeof scheduledJobs.$inferSelect;
 export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
 export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
 export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
+
+export const alarmStatus = pgEnum("alarm_status", [
+  "scheduled",
+  "fired",
+  "acknowledged",
+  "cancelled",
+]);
+
+/** Who set an alarm: the user in the app, a chat turn, or a heads-down pass. */
+export const alarmSource = pgEnum("alarm_source", ["app", "chat", "heads-down"]);
+
+/**
+ * An alarm that takes over the screen when it fires. The sidecar decides when
+ * one is due; the Rust core rings it and takes over the window, since only it
+ * can (see `alarms/scheduler.ts` and `src-tauri/src/alarms.rs`).
+ */
+export const alarms = pgTable(
+  "alarms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    label: text("label").notNull(),
+    fireAt: timestamp("fire_at", { withTimezone: true }).notNull(),
+    sound: boolean("sound").notNull().default(true),
+    /** Join URL for a meeting alarm, so the takeover can offer "Join meeting". */
+    meetLink: text("meet_link"),
+    status: alarmStatus("status").notNull().default("scheduled"),
+    source: alarmSource("source").notNull().default("app"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("alarms_status_fire_at_idx").on(t.status, t.fireAt)],
+);
+
+export type AlarmRow = typeof alarms.$inferSelect;

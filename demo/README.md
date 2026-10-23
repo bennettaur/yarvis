@@ -148,7 +148,7 @@ target, and ripples on click. Typing goes one key at a time.
 | `hover(locator)` | Moves the cursor without clicking. |
 | `pause(ms)` | Holds still so a viewer can take in the screen. |
 | `shot(name, { target, cursor })` | Saves the next numbered PNG. Pass `target` to capture one element. The cursor is hidden unless `cursor: true`. |
-| `fireAlarm(alarm)` | Rings an alarm, as the core's scheduler would. |
+| `fireAlarm(alarm)` | Rings an alarm: writes it to the demo database as fired, then sends the event the core would. |
 | `emit(event, payload)` | Fires any other native event the UI listens for. |
 
 To type into a terminal, click it (`demo.click(page.locator(".xterm").first())`),

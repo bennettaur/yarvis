@@ -246,10 +246,10 @@ impl SettingsState {
         }
     }
 
-    /// Persists the current settings, reporting failure to the caller — unlike
-    /// the alarm store this mirrors, every write here is one the user asked for
-    /// and is told about, so a silent failure would report a change as saved
-    /// that then reverts on the next launch.
+    /// Persists the current settings, reporting failure to the caller. Every
+    /// write here is one the user asked for and is told about, so a silent
+    /// failure would report a change as saved that then reverts on the next
+    /// launch.
     ///
     /// The sidecar keeps its own top-level sections in this file
     /// (`sidecar/src/settings/store.ts`), which `Settings` doesn't model, so the

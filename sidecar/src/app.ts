@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
 import { createSpecialistRoutes } from "./agents/routes.ts";
+import { createAlarmRoutes } from "./alarms/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
@@ -174,6 +175,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
+  app.route("/api/alarms", createAlarmRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
   app.route("/api/pr-models", createPrModelRoutes(config));

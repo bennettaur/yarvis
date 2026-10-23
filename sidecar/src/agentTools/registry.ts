@@ -51,6 +51,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   azureBoards: "search",
   prReview: "search",
   calendar: "search",
+  alarms: "search",
   browser: "search",
   help: "search",
 };

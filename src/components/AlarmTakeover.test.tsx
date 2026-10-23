@@ -1,15 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import {
-  alarmInvoke,
-  alarmListen,
-  fireAlarm,
-  resetCoreAlarms,
-  setCoreAlarms,
-  UNHANDLED,
-} from "../test/alarmFixture";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { fakeAlarms, fireAlarm, resetAlarms, setAlarms } from "../test/alarmFixture";
 import { mountForInteraction } from "../test/render";
 
 /**
@@ -20,17 +12,7 @@ import { mountForInteraction } from "../test/render";
  * remount-per-alarm key, and the waiting count in one pass.
  */
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: Record<string, unknown>) => {
-    const result = alarmInvoke(command, args ?? {});
-    return result === UNHANDLED ? nativeInvoke(command) : result;
-  },
-}));
-
-mock.module("@tauri-apps/api/event", () => ({
-  listen: async (event: string, handler: (e: { payload: Alarm }) => void) =>
-    alarmListen(event, handler),
-}));
+mock.module("../lib/alarms", () => fakeAlarms);
 
 const AlarmTakeover = (await import("./AlarmTakeover")).default;
 
@@ -52,7 +34,7 @@ afterEach(() => {
   unmount = null;
 });
 
-afterAll(resetCoreAlarms);
+afterAll(resetAlarms);
 
 async function mountTakeover(): Promise<HTMLElement> {
   const mounted = await mountForInteraction(createElement(AlarmTakeover), 50);
@@ -70,7 +52,7 @@ const clickButton = async (host: HTMLElement, text: string) => {
 describe("AlarmTakeover", () => {
   it("works through every alarm that fired in the same tick", async () => {
     const at = Date.now();
-    setCoreAlarms([scheduled("tick-a", "Standup", at), scheduled("tick-b", "Retro", at)]);
+    setAlarms([scheduled("tick-a", "Standup", at), scheduled("tick-b", "Retro", at)]);
     const host = await mountTakeover();
 
     fireAlarm("tick-a");
@@ -93,7 +75,7 @@ describe("AlarmTakeover", () => {
   });
 
   it("stays out of the way for an alarm left firing by a previous run", async () => {
-    setCoreAlarms([
+    setAlarms([
       { ...scheduled("left-over", "Yesterday", Date.now() - 86_400_000), status: "fired" },
     ]);
     const host = await mountTakeover();
@@ -105,7 +87,7 @@ describe("AlarmTakeover", () => {
 
   it("hands the screen back to the next alarm when one is snoozed", async () => {
     const at = Date.now();
-    setCoreAlarms([scheduled("snooze-a", "First", at), scheduled("snooze-b", "Second", at)]);
+    setAlarms([scheduled("snooze-a", "First", at), scheduled("snooze-b", "Second", at)]);
     const host = await mountTakeover();
 
     fireAlarm("snooze-a");

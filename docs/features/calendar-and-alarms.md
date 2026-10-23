@@ -59,6 +59,16 @@ spoke. Yarvis can create events, but it can't move or delete them. The Google
 client has no method for either, and no tool offers one. Moving or cancelling a
 meeting stays with you, in your own calendar.
 
+It can also set alarms, without asking, since an alarm only rings on your
+machine and you can cancel it:
+
+> Look through my meetings this week and set alarms for all the ones I've accepted.
+
+> Wake me at 3pm to call the bank.
+
+A meeting alarm it sets is the same one **Set alarm** makes, so the calendar
+shows it as set.
+
 ## Alarms
 
 ### Set an alarm
@@ -70,8 +80,13 @@ meeting stays with you, in your own calendar.
 - **From the Alarms tab:** in the **New alarm** section, enter a label and a
   time, and press **Set**. **Test in 5s** fires a test alarm.
 
-Alarms are not armed automatically. Each morning, press **Set alarms for all**
-in the Agenda view. The assistant can't set alarms yet.
+- **From the assistant:** ask it in a chat (see above). In
+  [heads-down mode](heads-down.md) it checks your coming meetings a few times a
+  day and sets alarms for the ones you're going to, asking you about the ones it
+  isn't sure of.
+
+Otherwise alarms are not armed automatically. Each morning, press **Set alarms
+for all** in the Agenda view.
 
 ### When an alarm fires
 
@@ -95,6 +110,10 @@ once you've handled them all.
   what's **Upcoming** (with Cancel).
 - An alarm whose time passed while Yarvis was closed fires as soon as the app
   starts.
-- Alarms are stored in `alarms.json` in the app's data folder, not in Postgres,
-  so they work without a database.
+- Alarms are stored in Postgres, so they need the database. Alarms from older
+  versions, which kept them in `alarms.json` in the app's data folder, are
+  copied over on first start, and the file is renamed to
+  `alarms.json.imported`.
+- Only the main instance rings alarms. A second instance sharing the database
+  lists them but leaves the ringing to the main one.
 - The sound uses macOS system sounds through `afplay`.

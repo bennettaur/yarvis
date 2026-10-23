@@ -1,34 +1,17 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../../lib/alarms";
-import {
-  alarmInvoke,
-  alarmListen,
-  resetCoreAlarms,
-  setCoreAlarms,
-  UNHANDLED,
-} from "../../test/alarmFixture";
-import { nativeInvoke } from "../../test/nativeInvoke";
+import { fakeAlarms, resetAlarms, setAlarms } from "../../test/alarmFixture";
 import { mountForInteraction } from "../../test/render";
 
 /**
  * Covers the alarm half of the attention panel (issue #201's "add something to
- * the attention stream"). Alarms live in the Rust core rather than the sidecar's
+ * the attention stream"). Alarms have their own table rather than living in the
  * attention table, so the Ringing section is fed by the alarm store — this pins
  * that it lists every unhandled alarm and dismisses them one at a time.
  */
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: Record<string, unknown>) => {
-    const result = alarmInvoke(command, args ?? {});
-    return result === UNHANDLED ? nativeInvoke(command) : result;
-  },
-}));
-
-mock.module("@tauri-apps/api/event", () => ({
-  listen: async (event: string, handler: (e: { payload: Alarm }) => void) =>
-    alarmListen(event, handler),
-}));
+mock.module("../../lib/alarms", () => fakeAlarms);
 
 const AttentionPanel = (await import("./AttentionPanel")).default;
 
@@ -52,7 +35,7 @@ afterEach(() => {
   openedAlarms = 0;
 });
 
-afterAll(resetCoreAlarms);
+afterAll(resetAlarms);
 
 async function mountPanel(): Promise<HTMLElement> {
   const mounted = await mountForInteraction(
@@ -75,7 +58,7 @@ async function mountPanel(): Promise<HTMLElement> {
 
 describe("AttentionPanel ringing alarms", () => {
   it("lists every unhandled alarm and dismisses them one at a time", async () => {
-    setCoreAlarms([fired("att-a", "Morning coffee"), fired("att-b", "Retro")]);
+    setAlarms([fired("att-a", "Morning coffee"), fired("att-b", "Retro")]);
     const host = await mountPanel();
 
     expect(host.innerHTML).toContain("Ringing");
@@ -95,7 +78,7 @@ describe("AttentionPanel ringing alarms", () => {
   });
 
   it("sends the user to the alarms page when a row is clicked", async () => {
-    setCoreAlarms([fired("att-open", "Standup")]);
+    setAlarms([fired("att-open", "Standup")]);
     const host = await mountPanel();
 
     const row = Array.from(host.querySelectorAll("button")).find((b) =>
@@ -109,7 +92,7 @@ describe("AttentionPanel ringing alarms", () => {
   });
 
   it("omits the ringing section entirely when nothing has fired", async () => {
-    setCoreAlarms([{ ...fired("quiet", "Later"), status: "scheduled" }]);
+    setAlarms([{ ...fired("quiet", "Later"), status: "scheduled" }]);
     const host = await mountPanel();
 
     expect(host.innerHTML).not.toContain("Ringing");
