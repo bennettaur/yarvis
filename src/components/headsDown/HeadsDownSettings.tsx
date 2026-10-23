@@ -40,7 +40,7 @@ function NumberField({
 }
 
 /**
- * How often heads-down mode looks at the work, and when the user works. The
+ * Which model heads-down passes run on, how often it looks at the work, and when the user works. The
  * working hours are also when it may tag people, and they are kept per machine.
  */
 export default function HeadsDownSettings({
@@ -58,11 +58,12 @@ export default function HeadsDownSettings({
   const [lastHours, setLastHours] = useState<WorkingHours>(config.workingHours ?? DEFAULT_HOURS);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  // Null until the catalogue loads, so a saved model isn't called unavailable meanwhile.
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
 
   useEffect(() => {
     listProviders("chat")
-      .then(setProviders)
+      .then((catalog) => setProviders(catalog.filter((p) => p.models.length > 0)))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
@@ -81,18 +82,26 @@ export default function HeadsDownSettings({
   };
 
   const modelsFor = (providerId: string) =>
-    providers.find((p) => p.id === providerId)?.models ?? [];
+    providers?.find((p) => p.id === providerId)?.models ?? [];
   // A saved model whose provider or catalogue entry is gone still shows, so the
   // picker doesn't claim a different model than the one passes are set to use.
   const savedProviderMissing =
-    draft.provider !== null && !providers.some((p) => p.id === draft.provider);
+    draft.provider !== null && !providers?.some((p) => p.id === draft.provider);
   const savedModelMissing =
     draft.model !== null && !modelsFor(draft.provider ?? "").some((m) => m.id === draft.model);
 
+  // A pass on a model it can't resolve fails rather than falling back to the default.
+  const stale =
+    providers !== null &&
+    (savedProviderMissing ||
+      savedModelMissing ||
+      providers.some((p) => p.id === draft.provider && !p.available));
+
   const setProvider = (provider: string) => {
-    const model = provider ? (modelsFor(provider)[0]?.id ?? null) : null;
-    setDraft((d) => ({ ...d, provider: model ? provider : null, model }));
+    const model = modelsFor(provider)[0]?.id;
+    setDraft((d) => (model ? { ...d, provider, model } : { ...d, provider: null, model: null }));
   };
+  const unavailable = providers ? " (unavailable)" : "";
 
   const toggleDay = (day: number) => {
     if (!hours) return;
@@ -138,9 +147,12 @@ export default function HeadsDownSettings({
           >
             <option value="">Default chat model</option>
             {savedProviderMissing && draft.provider && (
-              <option value={draft.provider}>{draft.provider} (unavailable)</option>
+              <option value={draft.provider}>
+                {draft.provider}
+                {unavailable}
+              </option>
             )}
-            {providers.map((p) => (
+            {providers?.map((p) => (
               <option key={p.id} value={p.id} disabled={!p.available}>
                 {p.label}
                 {p.available ? "" : " (no key)"}
@@ -154,7 +166,12 @@ export default function HeadsDownSettings({
             onChange={(e) => set("model", e.target.value)}
             className={SELECT}
           >
-            {savedModelMissing && draft.model && <option value={draft.model}>{draft.model}</option>}
+            {savedModelMissing && draft.model && (
+              <option value={draft.model}>
+                {draft.model}
+                {unavailable}
+              </option>
+            )}
             {modelsFor(draft.provider ?? "").map((m) => (
               <option key={m.id} value={m.id}>
                 {m.id}
@@ -162,6 +179,12 @@ export default function HeadsDownSettings({
             ))}
           </select>
         </div>
+        {stale && (
+          <p className="text-xs text-amber-400">
+            This model is no longer in the catalogue or its provider has no key, so passes will fail
+            until you pick another.
+          </p>
+        )}
         <p className="text-xs text-zinc-500">
           Every pass is a full agent turn, so a cheaper model keeps the cost down. The change
           applies from the next pass.

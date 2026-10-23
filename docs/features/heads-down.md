@@ -119,7 +119,8 @@ you stopped shows as stopped, not failed.
 Under **Pace and working hours** on the page:
 
 - The model passes run on. **Default chat model** follows whatever your chats
-  use. A change applies from the next pass.
+  use. A change applies from the next pass. If the model you picked leaves the
+  catalogue or its provider loses its key, passes fail until you pick another.
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
