@@ -30,7 +30,8 @@ export { buildScreenContextMessage } from "./agent.ts";
  * A turn can send nothing for minutes: a slow tool, an approval nobody has
  * answered yet, a model thinking without streaming its reasoning. Bun closes a
  * socket that is silent for its `idleTimeout` (255s, `server.ts`), so the
- * stream pings well inside that.
+ * stream pings well inside that. The cost is that the idle timeout no longer
+ * ends a turn that hangs forever; only the user's Stop does.
  */
 const HEARTBEAT_MS = 25_000;
 
@@ -171,18 +172,18 @@ export function createChatRoutes(config: Config): Hono {
 
       const heartbeat = setInterval(() => void safeWrite({ type: "ping" }), HEARTBEAT_MS);
 
+      const startedAt = Date.now();
+      let lastEvent = { type: "start", at: startedAt };
       // The client going away is either the user pressing Stop or the
       // connection dropping, and the sidecar can't tell which. Log it either
       // way, so a turn that failed with only a browser "Load failed" leaves
       // something to match it against.
-      const startedAt = Date.now();
-      let lastEvent = { type: "start", at: startedAt };
-      let finished = false;
       const onDisconnect = () => {
-        if (finished) return;
         const now = Date.now();
+        const turnSeconds = Math.round((now - startedAt) / 1000);
+        const quietSeconds = Math.round((now - lastEvent.at) / 1000);
         console.warn(
-          `[chat] client closed the stream mid-turn (a Stop or a dropped connection) session=${sessionId} after=${Math.round((now - startedAt) / 1000)}s lastEvent=${lastEvent.type} ${Math.round((now - lastEvent.at) / 1000)}s earlier`,
+          `[chat] client closed the stream mid-turn (a Stop or a dropped connection) session=${sessionId} after=${turnSeconds}s lastEvent=${lastEvent.type} ${quietSeconds}s earlier`,
         );
       };
       c.req.raw.signal.addEventListener("abort", onDisconnect, { once: true });
@@ -258,9 +259,10 @@ export function createChatRoutes(config: Config): Hono {
           }
         }
       } finally {
-        finished = true;
         clearInterval(heartbeat);
         c.req.raw.signal.removeEventListener("abort", onDisconnect);
+        // A ping queued just before the turn ended settles before the stream closes.
+        await writeChain;
       }
     });
   });

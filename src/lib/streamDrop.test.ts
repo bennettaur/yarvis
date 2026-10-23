@@ -5,8 +5,7 @@ const START = 1_000_000;
 const context = {
   error: new TypeError("Load failed"),
   startedAt: START,
-  lastEventType: "tool_call",
-  lastEventAt: START + 5_000,
+  lastEvent: { type: "tool_call", at: START + 5_000 },
   now: START + 265_000,
 };
 
@@ -48,5 +47,13 @@ describe("describeStreamDrop", () => {
     expect(shown.detail).toContain("Turn ran for: 4m 25s");
     expect(shown.detail).toContain("Last event received: tool_call, 4m 20s before the drop");
     expect(shown.detail).toContain("did not restart");
+  });
+
+  it("says plainly when the stream dropped before sending anything", () => {
+    const shown = describeStreamDrop(
+      { ...context, lastEvent: { type: "none", at: START } },
+      { status: "ok", service: "s", uptimeMs: 3_600_000 },
+    );
+    expect(shown.detail).toContain("Last event received: none\n");
   });
 });

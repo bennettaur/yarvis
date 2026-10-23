@@ -81,6 +81,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   // stream, which the sidecar reads as the client going away and uses to cancel
   // the upstream call, so a stopped turn stops costing tokens.
   const inFlight = useRef<AbortController | null>(null);
+  // The most recent turn, still running or not, so late async work from an
+  // earlier one can tell it has been superseded.
+  const latestTurn = useRef<AbortController | null>(null);
   // The session on screen now, for async work that must not land in a thread the
   // user has since left.
   const currentSession = useRef<string | null>(null);
@@ -285,6 +288,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       const context = getContext?.();
       const controller = new AbortController();
       inFlight.current = controller;
+      latestTurn.current = controller;
       let acc = "";
       let failed = false;
       let thought = "";
@@ -307,7 +311,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           },
           { signal: controller.signal },
         )) {
-          lastEvent = { type: evt.type, at: Date.now() };
+          // A heartbeat says the connection was alive, not what the turn was
+          // doing, and the drop explanation needs the latter.
+          if (evt.type !== "ping") lastEvent = { type: evt.type, at: Date.now() };
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
@@ -367,15 +373,13 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         } else {
           setError(formatError(e));
           if (isConnectionDrop(e)) {
-            // The explanation needs a health check, which must not hold the
-            // turn open; it replaces the bare error unless a new turn started.
-            void explainStreamDrop({
-              error: e,
-              startedAt,
-              lastEventType: lastEvent.type,
-              lastEventAt: lastEvent.at,
-            }).then((explained) => {
-              if (!inFlight.current && currentSession.current === activeId) setError(explained);
+            // The explanation waits on a health check, so it lands after the
+            // turn ends. It replaces the bare error unless a newer turn has
+            // started or the user has switched sessions.
+            void explainStreamDrop({ error: e, startedAt, lastEvent }).then((explained) => {
+              if (latestTurn.current === controller && currentSession.current === activeId) {
+                setError(explained);
+              }
             });
           }
         }

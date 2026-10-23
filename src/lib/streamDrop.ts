@@ -20,29 +20,32 @@ export interface StreamDropContext {
   error: TypeError;
   /** When the turn was sent, in epoch ms. */
   startedAt: number;
-  /** The last event the stream delivered before it dropped; "none" if it sent nothing. */
-  lastEventType: string;
-  lastEventAt: number;
+  /** The last event the turn sent before the drop, heartbeats aside; type "none" if it sent nothing. */
+  lastEvent: { type: string; at: number };
+  /** Defaults to `Date.now()`; tests pin it. */
   now?: number;
 }
 
 /**
- * Where the Rust core writes the sidecar's output. Settings → Diagnostics only
- * shows what the running sidecar has logged, so a crash or restart wipes it
- * there. The folder is named for the bundle id, which a dev instance changes.
+ * Where to find the log the Rust core keeps of the sidecar's output.
+ * Diagnostics lists only what the running sidecar has logged, so a crash or
+ * restart clears it there, but the section also shows this file's path.
  */
-const SIDECAR_LOG_FILE = "sidecar.log, in the app's folder under ~/Library/Logs";
+const SIDECAR_LOG_LOCATION = "sidecar.log (Settings → Diagnostics shows its full path)";
 
-function seconds(ms: number): string {
+/** A dead sidecar refuses the connection at once; a hung one would never answer. */
+const HEALTH_TIMEOUT_MS = 3_000;
+
+function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
 /**
- * Explains a chat stream that was cut off. The browser only says "Load failed",
- * which gives the user nothing to act on, so this checks whether the sidecar is
- * still up and whether it restarted during the turn, and records how far the
- * turn got.
+ * Explains a chat stream that was cut off. The browser only reports a generic
+ * fetch failure ("Load failed" in WebKit), which gives the user nothing to act
+ * on, so this checks whether the sidecar is still up and whether it restarted
+ * during the turn, and records how far the turn got.
  */
 export function describeStreamDrop(
   context: StreamDropContext,
@@ -50,31 +53,41 @@ export function describeStreamDrop(
 ): DisplayError {
   const now = context.now ?? Date.now();
   const elapsed = now - context.startedAt;
+  const { lastEvent } = context;
   const lines = [
     `Browser error: ${context.error.name}: ${context.error.message}`,
-    `Turn ran for: ${seconds(elapsed)}`,
-    `Last event received: ${context.lastEventType}, ${seconds(now - context.lastEventAt)} before the drop`,
+    `Turn ran for: ${formatElapsed(elapsed)}`,
+    lastEvent.type === "none"
+      ? "Last event received: none"
+      : `Last event received: ${lastEvent.type}, ${formatElapsed(now - lastEvent.at)} before the drop`,
   ];
 
   let message: string;
   if (health instanceof Error) {
     lines.push(`Sidecar now: not answering (${health.message})`);
-    message = `Lost the connection to the sidecar mid-turn, and it isn't answering now. It may have crashed; its output is in ${SIDECAR_LOG_FILE}.`;
+    message = `Lost the connection to the sidecar mid-turn, and it isn't answering now. It may have crashed; check ${SIDECAR_LOG_LOCATION}.`;
   } else if (health.uptimeMs < elapsed) {
-    lines.push(`Sidecar now: up, restarted ${seconds(health.uptimeMs)} ago`);
-    message = `The sidecar restarted during this turn, which cut the reply off. Saving keys in Settings restarts it; otherwise look for a crash in ${SIDECAR_LOG_FILE}.`;
+    lines.push(`Sidecar now: up, restarted ${formatElapsed(health.uptimeMs)} ago`);
+    message = `The sidecar restarted during this turn, which cut the reply off. Saving API keys or other secrets in Settings restarts it; if you didn't, check ${SIDECAR_LOG_LOCATION} for a crash.`;
   } else {
-    lines.push(`Sidecar now: up for ${seconds(health.uptimeMs)}, so it did not restart`);
+    lines.push(`Sidecar now: up for ${formatElapsed(health.uptimeMs)}, so it did not restart`);
     message =
-      "The connection to the sidecar dropped mid-turn. Settings → Diagnostics has a line for it under [chat].";
+      'The connection to the sidecar dropped mid-turn, though the sidecar kept running. Settings → Diagnostics may show a matching "[chat] client closed the stream" warning.';
   }
   return { message, detail: lines.join("\n") };
 }
 
 /** `describeStreamDrop` with the sidecar's current health fetched for it. */
 export async function explainStreamDrop(context: StreamDropContext): Promise<DisplayError> {
-  const health = await getHealth().catch((e: unknown) =>
-    e instanceof Error ? e : new Error(String(e)),
+  const timeout = new Promise<Error>((resolve) =>
+    setTimeout(
+      () => resolve(new Error(`no answer within ${HEALTH_TIMEOUT_MS / 1000}s`)),
+      HEALTH_TIMEOUT_MS,
+    ),
   );
+  const health = await Promise.race([
+    getHealth().catch((e: unknown) => (e instanceof Error ? e : new Error(String(e)))),
+    timeout,
+  ]);
   return describeStreamDrop(context, health);
 }
