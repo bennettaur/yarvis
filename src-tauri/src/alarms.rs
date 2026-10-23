@@ -340,4 +340,36 @@ mod tests {
 
         assert!(firing_ids(&handle).is_empty());
     }
+
+    #[test]
+    fn firing_the_same_alarm_twice_is_one_takeover() {
+        // The sidecar retries a fire it didn't hear back about; one release
+        // must still end it.
+        let app = app();
+        let handle = app.handle().clone();
+        fire(&handle, alarm("a"));
+        fire(&handle, alarm("a"));
+
+        release(&handle, "a");
+
+        assert!(firing_ids(&handle).is_empty());
+        assert!(handle
+            .state::<AlarmState>()
+            .stops
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn releasing_an_alarm_that_never_rang_does_nothing() {
+        // The sidecar releases on every status change, ringing or not.
+        let app = app();
+        let handle = app.handle().clone();
+        fire(&handle, alarm("a"));
+
+        release(&handle, "unknown");
+
+        assert_eq!(firing_ids(&handle), vec!["a".to_string()]);
+    }
 }

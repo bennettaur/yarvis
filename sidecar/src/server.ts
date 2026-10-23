@@ -1,5 +1,5 @@
 import { syncBuiltins } from "./agentTools/registry.ts";
-import { importLegacyAlarms } from "./alarms/legacyImport.ts";
+import { importLegacyAlarmsOnStart } from "./alarms/legacyImport.ts";
 import { startAlarmScheduler } from "./alarms/scheduler.ts";
 import { createApp } from "./app.ts";
 import { browserBridge } from "./browser/bridge.ts";
@@ -85,19 +85,7 @@ writeDiscovery({
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
-      // Every instance had its own alarms.json, so each copies its own, background workers or not.
-      const legacyAlarms = process.env.YARVIS_LEGACY_ALARMS_PATH;
-      if (legacyAlarms) {
-        try {
-          const count = await importLegacyAlarms(
-            getDb(config.databaseUrl as string).db,
-            legacyAlarms,
-          );
-          if (count > 0) console.log(`[sidecar] imported ${count} alarms from alarms.json`);
-        } catch (e) {
-          console.error("[sidecar] alarm import failed:", redactSecrets(String(e)));
-        }
-      }
+      await importLegacyAlarmsOnStart(config);
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.

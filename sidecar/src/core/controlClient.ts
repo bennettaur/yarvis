@@ -181,7 +181,7 @@ export async function saveGitHubToken(token: string): Promise<void> {
   await rpc("github.saveToken", { token });
 }
 
-/** Whether a core is listening, so callers can skip work only it can do (alarms in tests). */
+/** Whether a core is listening. False under `sidecar:dev` and in tests, where nothing can ring an alarm. */
 export function hasCoreChannel(): boolean {
   return Boolean(process.env.YARVIS_CORE_SOCK);
 }

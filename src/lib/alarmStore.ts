@@ -105,9 +105,8 @@ export async function refreshAlarms(): Promise<void> {
     const next = await listAlarms();
     // A poll issued before a dismissal can resolve after it. Applying that
     // older list would put the alarm back in the queue and re-raise the
-    // takeover the user just dismissed. A body that isn't a list keeps the
-    // last known one, as a failed read does.
-    if (seq === refreshSeq && Array.isArray(next)) applyList(next);
+    // takeover the user just dismissed.
+    if (seq === refreshSeq) applyList(next);
   } catch {
     // Leave the last known list in place; the periodic refresh will retry.
   }
