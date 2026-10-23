@@ -60,11 +60,27 @@ const starSchema = z.object({
   url: z.string().nullish(),
 });
 
-const commentSchema = z.object({
-  path: filePath,
-  line: z.number().int().min(1),
-  body: z.string().min(1),
-  side: z.enum(["RIGHT", "LEFT"]).optional(),
+const commentSchema = z
+  .object({
+    path: filePath,
+    line: z.number().int().min(1),
+    body: z.string().min(1).max(65_536),
+    side: z.enum(["RIGHT", "LEFT"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+  })
+  // A thread's context holds one side's start and end, so a range can't cross
+  // from the old file into the new one here the way it can on GitHub.
+  .refine(
+    (c) => c.startSide == null || c.startSide === (c.side ?? "RIGHT"),
+    "a range must stay on one side",
+  )
+  .refine((c) => c.startLine == null || c.startLine < c.line, "startLine must come before line");
+
+const replySchema = z.object({
+  body: z.string().trim().min(1).max(65_536),
+  /** The comment being answered; the client defaults to the thread's first. */
+  parentCommentId: z.number().int().min(1).optional(),
 });
 
 /**
@@ -356,6 +372,57 @@ export function createAzureRoutes(config: Config): Hono {
       return upstreamError(c, e);
     }
   });
+
+  /** The PR plus the thread a thread route addresses, or why they're invalid. */
+  function parseThreadParams(c: Context): { ref: AzureRef; threadId: number } | { error: unknown } {
+    const { project = "", repo = "", prId = "", threadId = "" } = c.req.param();
+    const ref = parsePrParams(project, repo, prId);
+    if ("error" in ref) return ref;
+    // Digits only, so nothing but a plain number reaches the upstream path.
+    if (!/^\d{1,10}$/.test(threadId) || Number(threadId) < 1) return { error: "bad thread id" };
+    return { ref, threadId: Number(threadId) };
+  }
+
+  // Reply to an existing comment thread.
+  router.post("/pr/:project/:repo/:prId/threads/:threadId/replies", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const params = parseThreadParams(c);
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = replySchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { ref, threadId } = params;
+    try {
+      await az.replyToThread(ref, threadId, parsed.data.body, parsed.data.parentCommentId);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "azure",
+        payload: { ref: refKey({ provider: "azure", org: az.org, ...ref }), reply: true },
+      });
+      return c.json({ ok: true }, 201);
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
+  for (const [action, resolved] of [
+    ["resolve", true],
+    ["unresolve", false],
+  ] as const) {
+    router.post(`/pr/:project/:repo/:prId/threads/:threadId/${action}`, async (c) => {
+      const az = requireClient(c);
+      if (az instanceof Response) return az;
+      const params = parseThreadParams(c);
+      if ("error" in params) return c.json({ error: params.error }, 400);
+      const { ref, threadId } = params;
+      try {
+        await az.setThreadResolved(ref, threadId, resolved);
+        return c.json({ ok: true });
+      } catch (e) {
+        return upstreamError(c, e);
+      }
+    });
+  }
 
   // --- Saved filters (database only) ---
 

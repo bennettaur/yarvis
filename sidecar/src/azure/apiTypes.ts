@@ -85,18 +85,26 @@ export interface AzureFilePosition {
 export interface AzureThreadContext {
   filePath?: string;
   rightFileStart?: AzureFilePosition;
+  rightFileEnd?: AzureFilePosition;
   leftFileStart?: AzureFilePosition;
+  leftFileEnd?: AzureFilePosition;
 }
 
 export interface AzureComment {
+  /** Numbered from 1 within its thread. */
+  id?: number;
   commentType?: string;
   author?: AzureUser;
   content?: string;
   publishedDate?: string;
+  isDeleted?: boolean;
 }
 
 export interface AzureThread {
+  id?: number;
+  /** "active" | "pending" | "fixed" | "wontFix" | "closed" | "byDesign" | "unknown". */
   status?: string;
+  isDeleted?: boolean;
   threadContext?: AzureThreadContext | null;
   comments?: AzureComment[];
 }

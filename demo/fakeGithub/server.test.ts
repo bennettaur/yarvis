@@ -36,6 +36,24 @@ describe("fake GitHub", () => {
     expect(data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup).toBeDefined();
   });
 
+  it("keeps a thread reply and its resolve state for the next detail read", () => {
+    const thread = () =>
+      graphql("query { repository { pullRequest { reviewThreads } } }", { number: 477 }).data
+        .repository.pullRequest.reviewThreads.nodes[0];
+    const id = thread().id;
+
+    graphql("mutation { addPullRequestReviewThreadReply }", { id, body: "on it" });
+    graphql("mutation { resolveReviewThread }", { id });
+    expect(thread().isResolved).toBe(true);
+    expect(thread().comments.nodes.at(-1)).toMatchObject({
+      body: "on it",
+      author: { login: VIEWER },
+    });
+
+    graphql("mutation { unresolveReviewThread }", { id });
+    expect(thread().isResolved).toBe(false);
+  });
+
   it("fills aliased lookups from their numbered variables", () => {
     const { data } = graphql("query { pr0: repository { pullRequest { headRefName } } }", {
       o0: "acme",
