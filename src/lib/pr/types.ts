@@ -165,6 +165,13 @@ export interface PrDetail {
   reviewThreads: ReviewThread[];
   /** True when the PR has more review threads than `reviewThreads` holds. */
   reviewThreadsTruncated?: boolean;
+  /**
+   * Comments on the PR itself rather than on a line, oldest first. GitHub
+   * only: Azure's general comments are threads with no file, in `reviewThreads`.
+   */
+  conversation?: ReviewComment[];
+  /** True when the PR has more conversation comments than `conversation` holds. */
+  conversationTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
 }

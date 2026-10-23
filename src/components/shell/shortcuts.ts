@@ -63,6 +63,16 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     ],
   },
   {
+    title: "Review",
+    shortcuts: [
+      { keys: ["Ctrl", "Tab"], description: "Next tab (⌃⇧Tab for the previous one)" },
+      { keys: ["Mod", "Alt", "→"], description: "Next tab (⌘⌥← for the previous one)" },
+      { keys: ["Mod", "W"], description: "Close the tab" },
+      { keys: ["Mod", "\\"], description: "Move the tab to the other side" },
+      { keys: ["Alt", "J"], description: "Next changed file (⌥K for the previous one)" },
+    ],
+  },
+  {
     title: "Anywhere on the machine",
     shortcuts: [
       { keys: ["Ctrl", "Shift", "Space"], description: "Summon Omni Chat" },

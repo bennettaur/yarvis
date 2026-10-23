@@ -27,6 +27,8 @@ export interface MonacoDiffViewProps {
   onLineAction?: (action: LineAction) => void;
   /** A line of the modified side, scrolled to and centred whenever it changes. */
   revealLine?: number;
+  /** Changed to reveal `revealLine` again when it hasn't changed itself. */
+  revealKey?: number;
   /** A go-to-definition that lands in another file. */
   onOpenLocation?: OpenLocationHandler;
 }
@@ -76,6 +78,7 @@ function DiffEditor({
   zones,
   onLineAction,
   revealLine,
+  revealKey,
   onOpenLocation,
 }: MonacoDiffViewProps & { monaco: MonacoApi }) {
   const container = useRef<HTMLDivElement>(null);
@@ -163,7 +166,9 @@ function DiffEditor({
     const editor = diff.getModifiedEditor();
     editor.revealLineInCenter(revealLine);
     editor.setPosition({ lineNumber: revealLine, column: 1 });
-  }, [diff, held, revealLine]);
+    // `revealKey` is read by its change alone.
+    void revealKey;
+  }, [diff, held, revealLine, revealKey]);
 
   const placed = useMemo<PlacedZone[]>(() => {
     if (!diff || !zones?.length) return [];
