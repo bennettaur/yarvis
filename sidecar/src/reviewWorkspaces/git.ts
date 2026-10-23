@@ -23,7 +23,14 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type RunBytesResult, type RunOptions, run, runBytes } from "../workspaces/exec.ts";
+import {
+  type CappedRunResult,
+  type RunBytesResult,
+  type RunOptions,
+  run,
+  runBytes,
+  runCapped,
+} from "../workspaces/exec.ts";
 import { CONTROL_CHARACTERS, isBinary, MAX_FILE_BYTES } from "../workspaces/files.ts";
 import {
   existingWorktree,
@@ -34,6 +41,7 @@ import {
   parseRawNumstat,
   splitNulFields,
 } from "../workspaces/git.ts";
+import type { CappedGitRunner } from "./definitions.ts";
 
 /** Reads stdout as bytes; injectable like {@link GitRunner}. */
 export type GitBytesRunner = (
@@ -46,6 +54,8 @@ export interface ReviewGit {
   network: GitRunner;
   local: GitRunner;
   bytes: GitBytesRunner;
+  /** Local, with output cut off at a byte cap or a timeout rather than failing (a search). */
+  search: CappedGitRunner;
 }
 
 /** How to authenticate to the provider over https. */
@@ -68,6 +78,7 @@ export interface Spawners {
     opts: RunOptions,
   ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   runBytes: (args: string[], opts: RunOptions) => Promise<RunBytesResult>;
+  runCapped?: (args: string[], opts: RunOptions & { maxBytes: number }) => Promise<CappedRunResult>;
 }
 
 /**
@@ -173,6 +184,8 @@ export function reviewGit(
     network: (args, opts) => spawners.run(["git", ...args], { ...opts, env: networkEnv }),
     local: (args, opts) => spawners.run(["git", ...args], { ...opts, env: localEnv }),
     bytes: (args, opts) => spawners.runBytes(["git", ...args], { ...opts, env: localEnv }),
+    search: (args, opts) =>
+      (spawners.runCapped ?? runCapped)(["git", ...args], { ...opts, env: localEnv }),
   };
 }
 
@@ -569,13 +582,18 @@ export async function readFileAt(
   sha: string,
   path: string,
   maxBytes = MAX_FILE_BYTES,
+  { fetchMissing = true }: { fetchMissing?: boolean } = {},
 ): Promise<FileAtSide | null> {
   assertSafeRepoPath(path);
   const entry = await treeEntry(runners.local, clonePath, sha, path);
   if (entry?.type !== "blob") return null;
 
   const present = await runners.local(["cat-file", "-e", entry.object], { cwd: clonePath });
-  if (present.exitCode !== 0) await fetchBlobs(runners, clonePath, [entry.object]);
+  if (present.exitCode !== 0) {
+    // A caller that promised never to reach the network reads a missing blob as no file.
+    if (!fetchMissing) return null;
+    await fetchBlobs(runners, clonePath, [entry.object]);
+  }
   const size = Number(
     (await git(runners.local, ["cat-file", "-s", entry.object], clonePath)).trim(),
   );

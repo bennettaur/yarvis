@@ -8,6 +8,7 @@ import { clientError, describeError } from "../llm/errors.ts";
 import type { PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
+import { isValidSymbol } from "./definitions.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -31,6 +32,7 @@ import {
   reviewDiff,
   reviewFile,
   reviewSetupInfo,
+  reviewSymbolSearch,
   reviewTree,
   touchReviewWorkspace,
 } from "./service.ts";
@@ -90,6 +92,12 @@ const setupSchema = z.object({
   headSha: z.string().nullable().default(null),
 });
 const idSchema = z.string().uuid();
+/** The path is checked as a repo path by the search itself; the symbol only here. */
+const symbolQuerySchema = z.object({
+  path: z.string().min(1).max(4096),
+  symbol: z.string().refine(isValidSymbol, "symbol must be a single identifier"),
+  line: z.coerce.number().int().positive().optional(),
+});
 
 export interface ReviewWorkspaceRouteOptions {
   /** Replaces the provider and git dependencies, for tests. */
@@ -288,6 +296,30 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+
+  // Code navigation for any language: `?path=&line=&symbol=`, where
+  // `path` is the file asking and `symbol` the identifier under the cursor.
+  for (const kind of ["definitions", "references"] as const) {
+    router.get(`/:id/prs/:prId/${kind}`, async (c) => {
+      const parsed = symbolQuerySchema.safeParse(c.req.query());
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      try {
+        return c.json(
+          await reviewSymbolSearch(
+            db(),
+            config,
+            c.req.param("id"),
+            c.req.param("prId"),
+            kind,
+            parsed.data,
+            deps(),
+          ),
+        );
+      } catch (e) {
+        return fail(c, e);
+      }
+    });
+  }
 
   router.get("/:id/prs/:prId/setup", async (c) => {
     try {

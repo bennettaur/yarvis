@@ -325,6 +325,61 @@ describe("ready before checkout", () => {
   });
 });
 
+describe("code navigation", () => {
+  const search = (wsId: string, prId: string, kind: string, query: Record<string, string>) =>
+    call("GET", `/${wsId}/prs/${prId}/${kind}?${new URLSearchParams(query)}`);
+
+  it("finds definitions and references at the head commit", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const { headSha } = await prRow(prId);
+
+    const defs = await search(wsId, prId, "definitions", {
+      path: "src/new.ts",
+      symbol: "b",
+      line: "1",
+    });
+    expect(defs.status).toBe(200);
+    expect(await defs.json()).toEqual({
+      headSha,
+      truncated: false,
+      matches: [{ path: "src/a.ts", line: 2, column: 14, preview: "export const b = 3;" }],
+    });
+
+    const refs = await search(wsId, prId, "references", { path: "src/a.ts", symbol: "a" });
+    expect(((await refs.json()) as { matches: unknown[] }).matches).toEqual([
+      { path: "src/a.ts", line: 1, column: 14, preview: "export const a = 2;" },
+    ]);
+  });
+
+  it("refuses a symbol that isn't an identifier, and a path that climbs", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    for (const symbol of ["", "a-b", "--open-files-in-pager=sh", "a b", "a.b", "x*"]) {
+      const res = await search(wsId, prId, "definitions", { path: "src/a.ts", symbol });
+      expect({ symbol, status: res.status }).toEqual({ symbol, status: 400 });
+    }
+    for (const path of ["../outside.ts", "/etc/passwd", "src/../../x.ts", "src//a.ts", ""]) {
+      const res = await search(wsId, prId, "references", { path, symbol: "a" });
+      expect({ path, status: res.status }).toEqual({ path, status: 400 });
+    }
+    const badLine = await search(wsId, prId, "definitions", {
+      path: "src/a.ts",
+      symbol: "a",
+      line: "x",
+    });
+    expect(badLine.status).toBe(400);
+  });
+
+  it("waits for the checkout, which is what puts every head blob on disk", async () => {
+    checkoutGate = gate();
+    const { wsId, prId } = await startWorkspace();
+    await until(async () => (await prRow(prId)).status === "ready", "ready");
+    const res = await search(wsId, prId, "definitions", { path: "src/a.ts", symbol: "a" });
+    expect(res.status).toBe(409);
+    checkoutGate.open();
+    await progress(wsId, prId);
+  });
+});
+
 describe("refresh", () => {
   it("moves to the new head, and reads answer from it rather than the cache", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
