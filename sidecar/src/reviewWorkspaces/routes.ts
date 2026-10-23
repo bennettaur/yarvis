@@ -1,6 +1,7 @@
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import { agentRunRegistry } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
@@ -31,6 +32,12 @@ import {
   reviewTree,
   touchReviewWorkspace,
 } from "./service.ts";
+import {
+  defaultVerificationDeps,
+  latestVerification,
+  startVerification,
+  type VerificationDeps,
+} from "./verification.ts";
 
 /**
  * One identity segment of a PR ref. Each one becomes a folder name under the
@@ -85,6 +92,8 @@ const idSchema = z.string().uuid();
 export interface ReviewWorkspaceRouteOptions {
   /** Replaces the provider and git dependencies, for tests. */
   deps?: (db: Db) => ReviewDeps;
+  /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
+  verification?: VerificationDeps;
 }
 
 /**
@@ -297,6 +306,44 @@ export function createReviewWorkspaceRoutes(
           c.req.param("prId"),
           parsed.data,
           deps(),
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Starts the PR's verification report, or answers with the run already
+  // going for it. The run is followed on `/api/agent-runs/:runId/events`.
+  router.post("/:id/prs/:prId/verification", async (c) => {
+    try {
+      const started = await startVerification(
+        db(),
+        config,
+        c.req.param("id"),
+        c.req.param("prId"),
+        deps(),
+        options.verification ?? defaultVerificationDeps(config),
+      );
+      return c.json(started, started.existing ? 200 : 202);
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // The PR's latest verification run (any head), and whether it was made
+  // against the head the PR is at now.
+  router.get("/:id/prs/:prId/verification", async (c) => {
+    const registry = options.verification?.run?.registry ?? agentRunRegistry;
+    try {
+      return c.json(
+        await latestVerification(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          deps(),
+          (id) => registry.isLive(id),
         ),
       );
     } catch (e) {

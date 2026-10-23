@@ -2,7 +2,52 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/plugin.json";
+import changeSummary from "../../claude-plugins/yarvis-review/agents/change-summary.md" with {
+  type: "text",
+};
+import commentReviewer from "../../claude-plugins/yarvis-review/agents/comment-reviewer.md" with {
+  type: "text",
+};
+import completenessReviewer from "../../claude-plugins/yarvis-review/agents/completeness-reviewer.md" with {
+  type: "text",
+};
+import complexityReviewer from "../../claude-plugins/yarvis-review/agents/complexity-reviewer.md" with {
+  type: "text",
+};
+import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
+  type: "text",
+};
+import riskReviewer from "../../claude-plugins/yarvis-review/agents/risk-reviewer.md" with {
+  type: "text",
+};
+import testReviewer from "../../claude-plugins/yarvis-review/agents/test-reviewer.md" with {
+  type: "text",
+};
 import reviewReadme from "../../claude-plugins/yarvis-review/README.md" with { type: "text" };
+import inputsAndTrust from "../../claude-plugins/yarvis-review/shared/inputs-and-trust.md" with {
+  type: "text",
+};
+import verificationReport from "../../claude-plugins/yarvis-review/skills/verification-report/SKILL.md" with {
+  type: "text",
+};
+
+/** Where a review agent's source takes the shared inputs-and-trust section. */
+export const INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:inputs-and-trust -->";
+
+/**
+ * A review agent with the shared section spliced in. Claude Code agent files
+ * have no include, and the system prompt a run appends never reaches its
+ * subagents, so each agent carries the trust rules itself; keeping them in
+ * one file is what stops seven copies drifting apart. Throws at load when an
+ * agent lacks the marker, so a missing guardrail can't ship.
+ */
+export function withInputsAndTrust(agent: string, shared: string = inputsAndTrust): string {
+  const parts = agent.split(INPUTS_AND_TRUST_MARKER);
+  if (parts.length !== 2) {
+    throw new Error(`a review agent must contain ${INPUTS_AND_TRUST_MARKER} exactly once`);
+  }
+  return parts.join(shared.trim());
+}
 
 /**
  * The Claude Code plugins Yarvis ships to its headless runs.
@@ -22,6 +67,14 @@ const PLUGINS = {
   "yarvis-review": {
     ".claude-plugin/plugin.json": `${JSON.stringify(reviewManifest, null, 2)}\n`,
     "README.md": reviewReadme,
+    "agents/change-summary.md": withInputsAndTrust(changeSummary),
+    "agents/risk-reviewer.md": withInputsAndTrust(riskReviewer),
+    "agents/completeness-reviewer.md": withInputsAndTrust(completenessReviewer),
+    "agents/test-reviewer.md": withInputsAndTrust(testReviewer),
+    "agents/complexity-reviewer.md": withInputsAndTrust(complexityReviewer),
+    "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),
+    "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
+    "skills/verification-report/SKILL.md": verificationReport,
   },
 } satisfies Record<string, Record<string, string>>;
 

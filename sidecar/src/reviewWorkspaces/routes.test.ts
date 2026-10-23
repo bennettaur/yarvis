@@ -1,18 +1,29 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import postgres from "postgres";
+import type { AgentRunEvent } from "../agentRuns/events.ts";
+import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
-import type { PrRef } from "../pr/types.ts";
+import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
+import { RunRegistry } from "../lib/runRegistry.ts";
+import type { PrDetail, PrRef } from "../pr/types.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
-import type { PrMeta, ReviewDeps } from "./service.ts";
+import { type PrMeta, type ReviewDeps, reviewPatches } from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -557,5 +568,296 @@ describe("removing and archiving", () => {
     await Bun.sleep(100);
     expect((await prRow(pr?.id as string)).status).toBe("cloning");
     expect(existsSync(join(config.workspacesRoot, ".review", ws?.id as string))).toBe(false);
+  });
+});
+
+describe("verification report", () => {
+  const pass = { status: "pass", findings: [] };
+  const at = (title: string, line: number) => ({
+    title,
+    detail: "d",
+    severity: "medium",
+    path: "src/a.ts",
+    line,
+  });
+  const report = {
+    summary: `${"word ".repeat(200)}end.`,
+    mustRead: [
+      { path: "src/a.ts", reason: "the change" },
+      { path: "src/elsewhere.ts", reason: "not changed by the PR" },
+    ],
+    risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
+    // The same problem from two checks: the server keeps the specialist's (tests).
+    completeness: { status: "issues", findings: [at("b is never read", 2)] },
+    tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
+    complexity: pass,
+    performance: pass,
+    comments: pass,
+  };
+  let budget: number;
+  const detail = {
+    title: "Feature work",
+    body: "Changes a and renames old.",
+    author: "octocat",
+    headRef: "feature",
+    baseRef: "main",
+    checks: [],
+    reviewThreads: [],
+  } as unknown as PrDetail;
+
+  let fakeDir: string;
+  let registry: RunRegistry<AgentRunEvent>;
+  let verificationApp: Hono;
+
+  /**
+   * A `claude` that records its stdin and argv, waits for `release`, then
+   * ends the run with the report as its structured output.
+   */
+  function setUpFake() {
+    fakeDir = mkdtempSync(join(tmpdir(), "yarvis-verification-fake-"));
+    writeFileSync(
+      join(fakeDir, "result.jsonl"),
+      `${JSON.stringify(resultLine({ structured_output: report }))}\n`,
+    );
+    const program = fakeClaude(
+      fakeDir,
+      "claude",
+      `cat > "${fakeDir}/stdin.txt"
+printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+cat "${fakeDir}/result.jsonl"`,
+    );
+    registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+    verificationApp = new Hono().route(
+      "/rw",
+      createReviewWorkspaceRoutes(config, {
+        deps,
+        verification: {
+          loadDetail: async () => detail,
+          settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
+          run: { program, registry, instance: "test" },
+        },
+      }),
+    );
+  }
+
+  const release = () => writeFileSync(join(fakeDir, "release"), "");
+
+  async function verify(method: string, wsId: string, prId: string): Promise<Response> {
+    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, { method });
+  }
+
+  async function latest(wsId: string, prId: string) {
+    return (await (await verify("GET", wsId, prId)).json()) as {
+      run: {
+        id: string;
+        status: string;
+        targetKey: string;
+        live: boolean;
+        result: typeof report;
+      } | null;
+      current: boolean;
+      headSha: string;
+      size: { files: number; changedLines: number; large: boolean } | null;
+    };
+  }
+
+  /** A run row as another run, kind or PR would have left it. */
+  async function insertRun(
+    kind: string,
+    refKey: string,
+    headSha: string,
+    minutesAgo: number,
+    status = "succeeded",
+  ) {
+    const [row] = await db
+      .insert(agentRuns)
+      .values({
+        kind,
+        targetKey: `${refKey}@${headSha}`,
+        status,
+        instance: "test",
+        meta: { refKey, headSha },
+        startedAt: new Date(Date.now() - minutesAgo * 60_000),
+      })
+      .returning({ id: agentRuns.id });
+    return row?.id as string;
+  }
+
+  const contextDirs = () =>
+    new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("yarvis-verification-")));
+
+  beforeEach(async () => {
+    await sql`TRUNCATE agent_runs`;
+    budget = 0.5;
+    setUpFake();
+  });
+
+  afterEach(() => {
+    release();
+    rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  it("refuses to start before the checkout is ready", async () => {
+    checkoutGate = gate();
+    const { wsId, prId } = await startWorkspace();
+    await until(async () => (await prRow(prId)).status === "ready", "ready");
+    const res = await verify("POST", wsId, prId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("checking-out");
+  });
+
+  it("starts one run for concurrent requests, and serves it against the current head", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
+
+    const responses = await Promise.all([verify("POST", wsId, prId), verify("POST", wsId, prId)]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
+    const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
+      runId: string;
+      existing: boolean;
+    }[];
+    const runId = bodies[0]?.runId as string;
+    expect(bodies[1]?.runId).toBe(runId);
+    expect(bodies.map((b) => b.existing).sort()).toEqual([false, true]);
+    expect(await db.select().from(agentRuns)).toHaveLength(1);
+
+    // While it runs: the checkout is the working directory, the prepared
+    // context is readable, and the settings chose the model and budget.
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
+    expect(readFileSync(join(contextDir, "changes.diff"), "utf8")).toContain(
+      "diff --git a/src/a.ts",
+    );
+    expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    expect(
+      args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
+    ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
+    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
+    const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
+    expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
+    // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
+    expect(prompt).not.toContain("Changes a and renames old.");
+
+    const running = await latest(wsId, prId);
+    const headSha = sh(worktreePath, "rev-parse", "HEAD").trim();
+    expect(running).toMatchObject({
+      run: { id: runId, status: "running", live: true },
+      current: true,
+      size: { large: false },
+    });
+    expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
+
+    release();
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
+    const done = await latest(wsId, prId);
+    expect(done.run?.live).toBe(false);
+    // Held to the word cap the diff size gives (the floor, for this small PR).
+    expect(done.run?.result.summary).toBe(`${"word ".repeat(10).trim()}…`);
+    expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
+    expect(done.run?.result.tests.findings).toHaveLength(1);
+    expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
+    await until(async () => !existsSync(contextDir), "the context folder to go");
+
+    // What the server took out is on the run, to be audited.
+    await until(async () => {
+      const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
+      const meta = (row?.meta ?? {}) as { droppedDuplicates?: unknown };
+      return Array.isArray(meta.droppedDuplicates);
+    }, "the audit");
+    const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
+    expect(row?.meta).toMatchObject({
+      refKey: "gh:o/r/1",
+      headSha,
+      droppedMustReads: ["src/elsewhere.ts"],
+      droppedDuplicates: [
+        {
+          section: "completeness",
+          keptIn: "tests",
+          title: "b is never read",
+          path: "src/a.ts",
+        },
+      ],
+    });
+
+    // A push moves the PR on; the old report is still served, marked stale.
+    remote.pushToPr("src/a.ts", "export const a = 5;\n");
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId }, current: false });
+  });
+
+  it("serves the PR's newest run, ignoring other kinds and other PRs", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    await insertRun("verification-report", "gh:o/r/1", "old", 30);
+    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20);
+    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10);
+    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
+    await insertRun("verification-report", "gh:o/r/10", headSha, 5);
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: newest, live: false },
+      current: true,
+      lastSucceeded: { run: { id: newest }, headSha, current: true },
+    });
+  });
+
+  it("keeps the last good report in view when a re-run fails", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30);
+    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, "failed");
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: failed, status: "failed" },
+      current: true,
+      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+    });
+  });
+
+  it("removes the context folder and records nothing when the run can't start", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    budget = 0;
+    const before = contextDirs();
+    const res = await verify("POST", wsId, prId);
+    expect(res.status).toBe(500);
+    expect(contextDirs()).toEqual(before);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+});
+
+describe("patches for an agent run", () => {
+  it("leaves out binary, oversized and over-budget files, in path order", async () => {
+    const { prId } = await readyWorkspace();
+    const row = await prRow(prId);
+    const all = await reviewPatches(config, row, deps(), {
+      maxFileBytes: 4096,
+      maxTotalBytes: 1_000_000,
+    });
+    const paths = all.patches.map((p) => p.file.path);
+    expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+    const omitted = Object.fromEntries(all.patches.map((p) => [p.file.path, p.omitted]));
+    expect(omitted).toMatchObject({
+      "image.bin": "binary",
+      "big.txt": "too-large",
+      "huge.txt": "too-large",
+      "src/a.ts": null,
+    });
+    expect(all.headSha).toBe(row.headSha as string);
+
+    // Room for the first included patch only: the rest are listed, not read.
+    const first = all.patches.find((p) => p.patch !== null);
+    if (!first?.patch) throw new Error("no patch was included");
+    const tight = await reviewPatches(config, row, deps(), {
+      maxFileBytes: 4096,
+      maxTotalBytes: first.patch.length,
+    });
+    const included = tight.patches.filter((p) => p.patch !== null).map((p) => p.file.path);
+    expect(included).toEqual([first.file.path]);
+    expect(tight.patches.find((p) => p.file.path === "src/a.ts")?.omitted).toBe("over-budget");
   });
 });

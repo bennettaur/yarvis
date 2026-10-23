@@ -31,6 +31,10 @@
     "guide": null,
     "ask": null
   },
+  "prVerification": {
+    "model": "sonnet",
+    "maxBudgetUsd": 2
+  },
   "wipConfig": {
     "sources": {
       "myPrs": true,

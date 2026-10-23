@@ -2,7 +2,13 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { selectionSchema } from "../llm/complexityRoutes.ts";
-import { getPrModelConfig, savePrModelConfig } from "./models.ts";
+import {
+  getPrModelConfig,
+  getVerificationRunConfig,
+  savePrModelConfig,
+  saveVerificationRunConfig,
+  verificationRunConfigSchema,
+} from "./models.ts";
 
 /**
  * PR review model routes, mounted under /api/pr-models. Kept apart from
@@ -24,6 +30,18 @@ export function createPrModelRoutes(_config: Config): Hono {
     const parsed = saveSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     return c.json(await savePrModelConfig(parsed.data));
+  });
+
+  // The verification report's Claude Code model and spend ceiling.
+  router.get("/verification", async (c) => c.json(await getVerificationRunConfig()));
+
+  router.patch("/verification", async (c) => {
+    const parsed = verificationRunConfigSchema
+      .partial()
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveVerificationRunConfig(parsed.data));
   });
 
   return router;

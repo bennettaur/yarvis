@@ -15,6 +15,7 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
+import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
@@ -83,6 +84,13 @@ writeDiscovery({
 })
   .then(removeDiscoveryOnExit)
   .catch((e) => console.error("[browser] could not write the discovery file:", e));
+
+try {
+  const removed = sweepVerificationContextDirs();
+  if (removed > 0) console.log(`[verification] removed ${removed} leftover context folders`);
+} catch (e) {
+  console.error("[verification] could not sweep leftover context folders:", e);
+}
 
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
