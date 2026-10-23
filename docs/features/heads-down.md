@@ -118,6 +118,8 @@ you stopped shows as stopped, not failed.
 
 Under **Pace and working hours** on the page:
 
+- The model passes run on. **Default chat model** follows whatever your chats
+  use. A change applies from the next pass.
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
@@ -138,7 +140,8 @@ use is kept in the database with the tool's other consent, not in that file.
 - It only acts through the tools Yarvis has. Reading Slack through the Chrome
   extension works, but the extension can't post, so asking for a review on
   Slack needs a Slack MCP server that you allow for heads-down mode.
-- Passes run on your default chat model and cost what a chat turn of that size
-  costs. The sleep settings are how you control that.
+- Passes run on the model you picked under **Pace and working hours**, or your
+  default chat model, and cost what a chat turn of that size costs. A cheaper
+  model and the sleep settings are how you control that.
 - It runs on one instance of the app. Another instance sharing the same
   database leaves it to the first.

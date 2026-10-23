@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listProviders, type ProviderInfo } from "../../lib/chat";
 import {
   type AllowedTool,
   type HeadsDownConfig,
@@ -9,6 +10,7 @@ import {
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DEFAULT_HOURS: WorkingHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
+const SELECT = "min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1";
 
 function NumberField({
   label,
@@ -56,6 +58,13 @@ export default function HeadsDownSettings({
   const [lastHours, setLastHours] = useState<WorkingHours>(config.workingHours ?? DEFAULT_HOURS);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+
+  useEffect(() => {
+    listProviders("chat")
+      .then(setProviders)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
 
   useEffect(() => {
     setDraft(config);
@@ -69,6 +78,20 @@ export default function HeadsDownSettings({
   const setHours = (next: WorkingHours) => {
     setLastHours(next);
     set("workingHours", next);
+  };
+
+  const modelsFor = (providerId: string) =>
+    providers.find((p) => p.id === providerId)?.models ?? [];
+  // A saved model whose provider or catalogue entry is gone still shows, so the
+  // picker doesn't claim a different model than the one passes are set to use.
+  const savedProviderMissing =
+    draft.provider !== null && !providers.some((p) => p.id === draft.provider);
+  const savedModelMissing =
+    draft.model !== null && !modelsFor(draft.provider ?? "").some((m) => m.id === draft.model);
+
+  const setProvider = (provider: string) => {
+    const model = provider ? (modelsFor(provider)[0]?.id ?? null) : null;
+    setDraft((d) => ({ ...d, provider: model ? provider : null, model }));
   };
 
   const toggleDay = (day: number) => {
@@ -104,6 +127,47 @@ export default function HeadsDownSettings({
 
   return (
     <div className="space-y-3">
+      <div className="space-y-1 text-sm text-zinc-300">
+        Model passes run on
+        <div className="flex gap-2">
+          <select
+            aria-label="Heads-down provider"
+            value={draft.provider ?? ""}
+            onChange={(e) => setProvider(e.target.value)}
+            className={SELECT}
+          >
+            <option value="">Default chat model</option>
+            {savedProviderMissing && draft.provider && (
+              <option value={draft.provider}>{draft.provider} (unavailable)</option>
+            )}
+            {providers.map((p) => (
+              <option key={p.id} value={p.id} disabled={!p.available}>
+                {p.label}
+                {p.available ? "" : " (no key)"}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Heads-down model"
+            value={draft.model ?? ""}
+            disabled={!draft.provider}
+            onChange={(e) => set("model", e.target.value)}
+            className={SELECT}
+          >
+            {savedModelMissing && draft.model && <option value={draft.model}>{draft.model}</option>}
+            {modelsFor(draft.provider ?? "").map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+          </select>
+        </div>
+        <p className="text-xs text-zinc-500">
+          Every pass is a full agent turn, so a cheaper model keeps the cost down. The change
+          applies from the next pass.
+        </p>
+      </div>
+
       <NumberField
         label="Shortest sleep between passes (min)"
         value={draft.minSleepMinutes}
