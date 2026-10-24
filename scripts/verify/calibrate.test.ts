@@ -147,6 +147,19 @@ describe("summarize", () => {
     );
   });
 
+  it("counts escapes by the report's risk tier, to show when the assessment let one through", () => {
+    const text = summarize(
+      [
+        outcome({ escapedVia: [9] }),
+        outcome({ pr: pr(2), report: { ...data("agent"), riskTier: "standard" } }),
+      ],
+      30,
+    );
+    expect(text).toContain("### By risk tier");
+    expect(text).toContain("| low | 1 | 1 | 100% |");
+    expect(text).toContain("| standard | 1 | 0 | 0% |");
+  });
+
   it("doesn't credit a verdict given for an older commit", () => {
     const text = summarize([outcome({ report: data("auto", "old") })], 30);
     expect(text).toContain("| stale report | 1 | 0 | 0% |");

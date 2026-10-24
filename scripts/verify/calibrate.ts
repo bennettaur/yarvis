@@ -124,6 +124,16 @@ export function summarize(outcomes: Outcome[], days: number): string {
 
   const lines = [`## Verification calibration, last ${days} days`, ""];
   lines.push(...table("By verdict", tally(measured, verdictOf)));
+  // Escapes in a tier the assessment called low are the ones to watch: they
+  // mean the assessment, not the floor, let a risky change through.
+  lines.push(
+    ...table(
+      "By risk tier",
+      tally(measured, (o) =>
+        verdictOf(o) === o.report?.verdict ? o.report.riskTier : verdictOf(o),
+      ),
+    ),
+  );
   lines.push(
     ...table(
       "By how it was approved",

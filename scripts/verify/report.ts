@@ -292,7 +292,10 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
       ? `${inline(review.verdictReason)} Raised by: ${why.join(", ")}.`
       : inline(review.verdictReason);
   const tier = riskTier(review, facts);
-  const riskReasons = [...review.risk.reasons, ...facts.tier.reasons].join("; ");
+  // Each source labeled, since they can disagree: "assessed low" next to
+  // "floor high" says the paths won, where an unlabeled list reads as a muddle.
+  const floorReasons = facts.tier.reasons.length ? `: ${facts.tier.reasons.join("; ")}` : "";
+  const riskReasons = `assessed ${review.risk.tier}: ${review.risk.reasons.join("; ")}; floor ${facts.tier.tier}${floorReasons}`;
 
   const lines = [
     REPORT_MARKER,
@@ -469,5 +472,5 @@ if (import.meta.main) {
   for (const old of previous) {
     ghApi(`repos/{owner}/{repo}/issues/comments/${old.id}`, ["-X", "DELETE"]);
   }
-  console.log(`Posted: ${data.verdict} (${facts.tier.tier} risk)`);
+  console.log(`Posted: ${data.verdict} (${data.riskTier} risk)`);
 }

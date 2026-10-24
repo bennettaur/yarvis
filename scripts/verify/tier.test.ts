@@ -80,3 +80,91 @@ describe("classify", () => {
     expect(result.reasons).toEqual(["dependencies (bun.lock)"]);
   });
 });
+
+describe("the floor's tripwires on added lines", () => {
+  const changed = (path: string, addedText: string | null) => ({
+    path,
+    additions: 1,
+    deletions: 0,
+    addedText,
+  });
+
+  it("raises anything that runs a process, in any area", () => {
+    for (const [path, text] of [
+      ["src/components/Foo.tsx", 'import { spawnSync } from "node:child_process";'],
+      ["sidecar/src/memory/recall.ts", "Bun.spawn(['git', 'status'])"],
+      ["src-tauri/src/alarms.rs", 'let out = Command::new("say").arg("hi").output();'],
+    ] as const) {
+      expect(classify([changed(path, text)]).reasons).toEqual([`runs a process (${path})`]);
+    }
+  });
+
+  it("raises a call to a command that writes a secret or reaches a shell", () => {
+    for (const text of [
+      'invoke("set_secret", { key, value })',
+      'invoke<void>("pty_write", { id, data })',
+    ]) {
+      expect(classify([changed("src/lib/x.ts", text)]).tier).toBe("high");
+    }
+  });
+
+  it("raises a change to what runs without asking", () => {
+    expect(
+      classify([changed("src/lib/x.ts", 'setToolSettings(id, { approval: "auto" })')]).tier,
+    ).toBe("high");
+  });
+
+  it("puts reading secrets, outside URLs and deletes at standard", () => {
+    expect(
+      classify([changed("sidecar/src/x.ts", "const t = config.secrets?.githubToken;")]).tier,
+    ).toBe("standard");
+    expect(classify([changed("src/lib/x.ts", 'fetch("https://api.example.com/v1")')]).tier).toBe(
+      "standard",
+    );
+    expect(classify([changed("sidecar/src/x.ts", "rmSync(dir, { recursive: true })")]).tier).toBe(
+      "standard",
+    );
+  });
+
+  it("leaves a plain UI change low", () => {
+    expect(
+      classify([changed("src/components/Foo.tsx", '<div className="p-2">{title}</div>')]).tier,
+    ).toBe("low");
+  });
+
+  it("can't scan a diff GitHub didn't send, so counts it as standard", () => {
+    expect(classify([changed("sidecar/src/big.ts", null)]).reasons).toEqual([
+      "a diff too big to scan (sidecar/src/big.ts)",
+    ]);
+  });
+
+  it("skips tests and files that aren't source", () => {
+    expect(classify([changed("src/a.test.ts", "Bun.spawn(['x'])")]).tier).toBe("low");
+    expect(classify([changed("docs/x.md", "eval(")]).tier).toBe("low");
+  });
+});
+
+describe("the floor's paths", () => {
+  it("covers the files that store secrets, run commands, or decide what runs unasked", () => {
+    for (const path of [
+      "src-tauri/src/mcp.rs",
+      "src-tauri/src/custom_providers.rs",
+      "sidecar/src/workspaces/exec.ts",
+      "sidecar/src/workspaces/claudeSettings.ts",
+      "sidecar/src/chat/toolReview.ts",
+      "sidecar/src/telegram/otpGate.ts",
+      "sidecar/src/mcp/oauth.ts",
+      "sidecar/src/agents/definitions/planner.md",
+      "extension/background.js",
+      "scripts/browser/host.ts",
+    ]) {
+      expect(classify([file(path)]).tier).toBe("high");
+    }
+  });
+
+  it("counts an agent definition's lines toward size, though it is markdown", () => {
+    // Already high by path; this checks the lines are counted, via the reason.
+    const result = classify([file("sidecar/src/agents/definitions/planner.md", 900)]);
+    expect(result.reasons).toContain("900 changed lines of code");
+  });
+});

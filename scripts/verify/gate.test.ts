@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   type AutoMergeContext,
+  addedTextOf,
   approveRefusal,
   autoMergeBlockers,
   type Comment,
@@ -281,5 +282,15 @@ describe("mergePath", () => {
 
   it("ignores reviews that didn't approve", () => {
     expect(mergePath([{ ...approval("Auto-approved: x", true), state: "COMMENTED" }])).toBe("none");
+  });
+});
+
+describe("addedTextOf", () => {
+  it("keeps a patch's added lines", () => {
+    expect(addedTextOf("@@ -1 +1,2 @@\n-old\n+new\n+more\n context")).toBe("new\nmore");
+  });
+
+  it("can't read a patch GitHub left out", () => {
+    expect(addedTextOf(undefined)).toBeNull();
   });
 });

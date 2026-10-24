@@ -4,6 +4,7 @@ import {
   formatRanges,
   mergeLineHits,
   parseAddedLines,
+  parseAddedText,
   parseLcov,
 } from "./diffCoverage.ts";
 
@@ -97,5 +98,13 @@ describe("diffCoverage", () => {
 
   it("has no ratio when nothing executable changed", () => {
     expect(diffCoverage(new Map(), hits, [".ts"]).ratio).toBeNull();
+  });
+});
+
+describe("parseAddedText", () => {
+  it("joins each file's added lines, and only those", () => {
+    const text = parseAddedText(DIFF);
+    expect(text.get("src/a.ts")).toBe("  one();\n  two();\n  three();\n  four();");
+    expect(text.has("src/gone.ts")).toBe(false);
   });
 });

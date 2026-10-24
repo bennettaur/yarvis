@@ -8,9 +8,11 @@ description: Verify that a Yarvis pull request is ready to merge and post a veri
 The report replaces a first read of the PR, so it must take less time to read
 than the diff. `scripts/verify/` does the measuring and posting; your job is
 the judgment. The CI gate (`scripts/verify/gate.ts`) reads the posted report and
-auto-merges only a low-risk PR with a clean report. It recomputes the risk tier
-itself, and `report.ts` caps your verdict by that tier, so nothing you write can
-make a risky PR merge on its own.
+auto-merges only a low-risk PR with a clean report. It recomputes a floor under
+the risk tier itself, from risky paths, size and tripwires on the added lines,
+and your verdict is capped by the stricter of that and your own risk
+assessment. Outside that floor, your assessment is what keeps a risky change
+from merging unread, so make it honestly and err high.
 
 ## Rules that hold throughout
 
