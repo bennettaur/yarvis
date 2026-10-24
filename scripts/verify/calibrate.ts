@@ -22,7 +22,7 @@ import {
   mergePath,
   parseTrusted,
 } from "./gate.ts";
-import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
+import { parseSignedReport, REPORT_MARKER, type ReportData } from "./report.ts";
 
 export interface MergedPr {
   number: number;
@@ -72,7 +72,7 @@ export function latestReport(comments: ReportComment[], trusted: number[]): Repo
     (c) => c.body.includes(REPORT_MARKER) && c.authorId !== null && trusted.includes(c.authorId),
   );
   const latest = reports[reports.length - 1];
-  return latest ? parseReportData(latest.body) : null;
+  return latest ? (parseSignedReport(latest.body)?.data ?? null) : null;
 }
 
 interface Tally {

@@ -41,7 +41,9 @@ describe("findEscapes", () => {
 });
 
 const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => ({
-  version: 1,
+  version: 2,
+  repo: "bennettaur/yarvis",
+  pr: 1,
   headSha,
   verdict,
   blockers: 0,
@@ -52,7 +54,7 @@ const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => (
 
 function reportBody(report: ReportData) {
   const block = Buffer.from(JSON.stringify(report)).toString("base64");
-  return `${REPORT_MARKER}\n<!-- yarvis-verify-data ${block} -->`;
+  return `${REPORT_MARKER}\n<!-- yarvis-verify-data ${block} -->\n<!-- yarvis-verify-sig c2ln -->`;
 }
 
 function reportComment(authorId: number | null, report: ReportData) {

@@ -122,8 +122,8 @@ PR without running any of its code.
 The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
 PR comment from users with write access, and acts as the yarvis GitHub App:
 
-- **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, for the PR's current head.
-  The workflow sets a `Verification report` commit status on that commit. The
+- **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, signed by a key in
+  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow sets a `Verification report` commit status on that commit. The
   status is always a success: it records that a current report exists, and its
   description carries the verdict. If the PR is a maintainer's, not a draft,
   low risk, and the report has no concerns, the bot also approves it and turns
@@ -169,7 +169,31 @@ settings:
 - `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
   auto-approves. `enforce` lets a passing report approve. `/approve` works in
   both. Before switching to `enforce`, make `Verification report` a required
-  status check in the `Protect Main` ruleset.
+  status check in the `Protect Main` ruleset. Once it is required, nothing
+  merges, `/approve` included, without a signed report for the current head.
+- `VERIFY_ALLOWED_SIGNERS` (variable): the public keys allowed to sign, one
+  OpenSSH allowed_signers line each. With none, the gate accepts no report.
+
+#### Signing reports
+
+`verify:report` signs each report's data block, which names the repo, the PR
+and the commit, with your git SSH signing key (`user.signingkey`, through
+`gpg.ssh.program`, so a key in 1Password works). Set `yarvis.verifySigningKey`
+to use a different key. The gate checks the signature with `ssh-keygen -Y
+verify`, so a report posted with a stolen GitHub token, or by a test running
+under your `gh` login, isn't accepted unless it was also signed on your
+machine. Each key is limited to one namespace, so a key allowed to approve
+merges can't sign a report.
+
+To allow your key, print its line and add it to the variable:
+
+```bash
+bun run --silent verify:signers
+gh variable set VERIFY_ALLOWED_SIGNERS --body "$(bun run --silent verify:signers)"
+```
+
+The second command replaces the variable's whole value, so use it only for
+the first key; otherwise add the line in the repo's settings.
 
 ### When an auto-merge breaks main
 
