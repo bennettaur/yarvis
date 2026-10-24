@@ -89,7 +89,13 @@ export function renderAgentReview(input: AgentReviewInput, privateKey: string): 
       ? "🤖 Merge reviewer: approve"
       : "🤖 Merge reviewer: needs a human";
   // Model-written, so shown as code: no link, image or @-mention in it renders.
-  const reason = `\`${data.reason.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
+  // All whitespace becomes one space, since any line ending (a bare \r too)
+  // would end the code span, and angle brackets are swapped out besides.
+  const reason = `\`${data.reason
+    .replace(/\s+/g, " ")
+    .replace(/`/g, "'")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")}\``;
   return [
     AGENT_REVIEW_MARKER,
     `## ${title}`,

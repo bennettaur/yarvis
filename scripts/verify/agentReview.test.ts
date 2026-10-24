@@ -72,7 +72,23 @@ describe("an agent review from the sidecar", () => {
   });
 
   it("shows the model-written reason as code, so nothing in it renders", () => {
-    expect(reviewBody).toContain("`The flagged branch is covered by the new test <script>.`");
+    expect(reviewBody).toContain("`The flagged branch is covered by the new test ‹script›.`");
+  });
+
+  it("keeps a line ending of any kind from closing the code span", () => {
+    const body = renderAgentReview(
+      {
+        repo: "bennettaur/yarvis",
+        pr: 7,
+        headSha: "b".repeat(40),
+        reportPayload,
+        decision: "reject",
+        reason: "x\r> ![a](https://example.test/?d=1)\u2028y",
+      },
+      key,
+    );
+    const reasonLine = body.split("\n").find((line) => line.startsWith("`"));
+    expect(reasonLine).toBe("`x › ![a](https://example.test/?d=1) y`");
   });
 });
 
@@ -144,6 +160,12 @@ describe("signatureChecks, with real keys", () => {
     expect(checks.isReportSigned("report", reportSig)).toBe(true);
     const asReview = signPayload("report", AGENT_REVIEW_NAMESPACE, maintainer);
     expect(checks.isReviewSigned("report", asReview)).toBe(false);
+  });
+
+  it("only takes reports from a verify-pr principal, whatever else a key is listed as", () => {
+    const renamed = `some-other-name ${sshPublicKey(key)}`;
+    const signature = Buffer.from(sshSign("report", REPORT_NAMESPACE, key)).toString("base64");
+    expect(signatureChecks(renamed).isReportSigned("report", signature)).toBe(false);
   });
 
   it("keeps the reviewer's key off reports even when its line has no namespace limit", () => {

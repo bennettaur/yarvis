@@ -13,7 +13,7 @@
  */
 
 import { generateKeyPairSync } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { sshPublicKey } from "../../sidecar/src/verify/sshsig.ts";
@@ -25,12 +25,12 @@ if (import.meta.main) {
     options: { out: { type: "string", default: "merge-reviewer.key" } },
   });
   const out = resolve(values.out as string);
-  if (existsSync(out)) throw new Error(`${out} already exists; move it or pass --out`);
 
   const privateKey = generateKeyPairSync("ed25519")
     .privateKey.export({ format: "der", type: "pkcs8" })
     .toString("base64");
-  writeFileSync(out, `${privateKey}\n`, { mode: 0o600 });
+  // "wx" refuses an existing file or symlink, which 0o600 wouldn't apply to.
+  writeFileSync(out, `${privateKey}\n`, { mode: 0o600, flag: "wx" });
   console.log(
     `Private key written to ${out}. Paste it into Settings → Credentials, then delete it.\n`,
   );

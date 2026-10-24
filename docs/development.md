@@ -222,7 +222,7 @@ comment, and the gate approves on it in enforce mode only when:
 Each review also counts for only six hours after it was signed, and a signed
 reject of a report stands even if an approve of the same report is posted
 after it. Reviews must be signed by the principal `yarvis-merge-reviewer` and
-reports by any other, so even an allowed_signers line missing its
+reports by `verify-pr` (or `verify-pr-<name>` for another maintainer), so even an allowed_signers line missing its
 `namespaces=` limit can't let one key do the other's job.
 
 Its key lives in Yarvis's Settings → Credentials. `bun run verify:agent-key`
