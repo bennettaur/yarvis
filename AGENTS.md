@@ -191,10 +191,11 @@ back to ad-hoc.
   sidecar writes that set an MCP server's command, a tool's approval, a
   scheduled job, or a custom provider's URL. Only `src/lib/api.ts` reads the
   sidecar token. Every `invoke` names its command as a string literal.
-  `scripts/verify/nativeBridge.ts` holds these rules and fails CI on a break,
-  which is what lets the rest of `src/` count as low risk when a PR is
-  verified. A file that imports `privilegedCommands.ts` chooses what its calls
-  do, so it is high risk too and must be listed in
+  `scripts/verify/nativeBridge.ts` holds these rules, and its test fails CI when
+  a file breaks them, which is what lets the rest of `src/` count as low risk
+  when a PR is verified. These are a check against mistakes, not against a
+  hostile author. A file that imports `privilegedCommands.ts` chooses what its
+  calls do, so it is high risk too and must be listed in
   `PRIVILEGED_FRONTEND_IMPORTERS` in `scripts/verify/tier.ts`. A new call of
   that kind goes in `privilegedCommands.ts` and on `nativeBridge.ts`'s lists.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing

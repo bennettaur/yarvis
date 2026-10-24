@@ -15,9 +15,9 @@ permissions:
   contents: read
 
 # One run per PR and comment kind at a time. GitHub keeps only the newest
-# pending run in a group, so sharing one would let a report drop an /approve.
+# pending run in a group, so sharing one would let one kind drop another.
 concurrency:
-  group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || 'report' }}
+  group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || contains(github.event.comment.body, '<!-- yarvis-agent-review -->') && 'agent-review' || 'report' }}
   cancel-in-progress: false
 
 jobs:

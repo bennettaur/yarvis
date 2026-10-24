@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { sshSign } from "./sshsig.ts";
 
 /**
@@ -19,12 +20,14 @@ const REPORT_DATA =
   /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*<!-- yarvis-verify-sig [A-Za-z0-9+/=]+ -->\s*$/;
 
 /** The parts of a verification report's signed data the reviewer checks. */
-export interface ReportData {
-  repo: string;
-  pr: number;
-  headSha: string;
-  verdict: "auto" | "agent" | "human";
-}
+const ReportData = z.object({
+  version: z.literal(2),
+  repo: z.string(),
+  pr: z.number().int().positive(),
+  headSha: z.string(),
+  verdict: z.enum(["auto", "agent", "human"]),
+});
+export type ReportData = z.infer<typeof ReportData>;
 
 export interface ParsedReport {
   data: ReportData;
@@ -42,17 +45,11 @@ export function parseReport(body: string): ParsedReport | null {
   const match = body.match(REPORT_DATA);
   if (!match) return null;
   try {
-    const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
-    if (
-      data?.version !== 2 ||
-      typeof data.repo !== "string" ||
-      typeof data.pr !== "number" ||
-      typeof data.headSha !== "string" ||
-      !["auto", "agent", "human"].includes(data.verdict)
-    ) {
-      return null;
-    }
-    return { data, payload: match[1], text: body.slice(0, match.index).trim() };
+    const parsed = ReportData.safeParse(
+      JSON.parse(Buffer.from(match[1], "base64").toString("utf8")),
+    );
+    if (!parsed.success) return null;
+    return { data: parsed.data, payload: match[1], text: body.slice(0, match.index).trim() };
   } catch {
     return null;
   }
@@ -67,6 +64,8 @@ export interface AgentReviewInput {
   decision: "approve" | "reject";
   /** One or two sentences, shown on the PR and kept in the signed data. */
   reason: string;
+  /** When it is signed; the gate refuses one signed hours earlier. */
+  now?: Date;
 }
 
 /** The comment's markdown, ending in its signed data block. */
@@ -76,6 +75,7 @@ export function renderAgentReview(input: AgentReviewInput, privateKey: string): 
     repo: input.repo,
     pr: input.pr,
     headSha: input.headSha,
+    issuedAt: (input.now ?? new Date()).toISOString(),
     reportDigest: createHash("sha256").update(input.reportPayload).digest("hex"),
     decision: input.decision,
     reason: input.reason.slice(0, 300),
@@ -88,8 +88,8 @@ export function renderAgentReview(input: AgentReviewInput, privateKey: string): 
     input.decision === "approve"
       ? "🤖 Merge reviewer: approve"
       : "🤖 Merge reviewer: needs a human";
-  // The reason is model-written: keep it on one line and out of HTML.
-  const reason = data.reason.replace(/\r?\n/g, " ").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Model-written, so shown as code: no link, image or @-mention in it renders.
+  const reason = `\`${data.reason.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
   return [
     AGENT_REVIEW_MARKER,
     `## ${title}`,

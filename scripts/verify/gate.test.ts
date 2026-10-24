@@ -10,6 +10,7 @@ import {
   approveRefusal,
   autoMergeBlockers,
   type Comment,
+  commentKind,
   decideAgentReview,
   decideReport,
   type GitHubUser,
@@ -83,7 +84,7 @@ function decide(overrides: Partial<Parameters<typeof decideReport>[0]> = {}) {
     files: lowRiskFiles,
     trusted: [BENNETTAUR.id],
     mode: "enforce",
-    isSigned: fakeIsSigned,
+    isReportSigned: fakeIsSigned,
     now: NOW,
     ...overrides,
   });
@@ -359,6 +360,7 @@ describe("decideAgentReview", () => {
       repo: REPO,
       pr: 7,
       headSha: HEAD,
+      issuedAt: SIGNED_AT,
       reportDigest: reportDigest(reportPayload),
       decision: "approve",
       reason: "The major finding is handled in the follow-up commit.",
@@ -386,6 +388,7 @@ describe("decideAgentReview", () => {
       mode: "enforce",
       isReportSigned: fakeIsSigned,
       isReviewSigned: fakeIsSigned,
+      now: NOW,
       ...overrides,
     });
   }
@@ -449,6 +452,60 @@ describe("decideAgentReview", () => {
     });
   });
 
+  it("ignores a review posted by someone untrusted, or under a taken-over login", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    for (const user of [SOMEONE, { login: "bennettaur", id: 12345 }]) {
+      const review = { ...agentReviewComment(report), user };
+      expect(decideReview({ comment: review, comments: [report, review] })).toEqual({
+        skip: "posted by someone who isn't trusted",
+      });
+    }
+  });
+
+  it("lets a later review win, so an earlier approve's late run does nothing", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const approve = agentReviewComment(report);
+    const reject = agentReviewComment(report, { decision: "reject", reason: "No." });
+    expect(decideReview({ comment: approve, comments: [report, approve, reject] })).toEqual({
+      skip: "a newer agent review exists",
+    });
+  });
+
+  it("keeps a reject standing even if the approve is re-posted after it", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const reject = agentReviewComment(report, { decision: "reject", reason: "No." });
+    const reposted = agentReviewComment(report);
+    expect(decideReview({ comment: reposted, comments: [report, reject, reposted] })).toEqual({
+      skip: "a review of this same report rejected it",
+    });
+  });
+
+  it("refuses a review signed long ago", () => {
+    expect(decideReview({ now: new Date("2026-10-25T12:00:00.000Z") })).toEqual({
+      skip: "the agent review can't be acted on: it was signed 24 hours ago",
+    });
+  });
+
+  it("refuses when the report it rests on isn't current and signed", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const review = agentReviewComment(report);
+    expect(decideReview({ isReportSigned: () => false })).toEqual({
+      skip: "the signature isn't from a key in VERIFY_ALLOWED_SIGNERS",
+    });
+    expect(decideReview({ comment: review, comments: [review] })).toEqual({
+      skip: "no report from a trusted user",
+    });
+    const moved = reportComment(BENNETTAUR, { ...agentReport, pr: 8 });
+    const reviewOfMoved = agentReviewComment(moved);
+    expect(decideReview({ comment: reviewOfMoved, comments: [moved, reviewOfMoved] })).toEqual({
+      skip: "signed for bennettaur/yarvis#8, not this PR",
+    });
+  });
+
+  it("doesn't merge a draft", () => {
+    expect(acted(decideReview({ pr: makePr({ draft: true }) })).status).toContain("PR is a draft");
+  });
+
   it("refuses when the current report has blockers or the author isn't trusted", () => {
     const report = reportComment(BENNETTAUR, { ...agentReport, blockers: 1 });
     const review = agentReviewComment(report);
@@ -462,11 +519,25 @@ describe("decideAgentReview", () => {
 });
 
 describe("mergePath and agent approvals", () => {
+  const bot = (body: string) => ({ state: "APPROVED", body, byBot: true, byMaintainer: false });
+
   it("reads the bot's agent approval as its own path", () => {
+    expect(mergePath([bot(`${AGENT_APPROVAL_PREFIX} x`)])).toBe("agent");
+  });
+
+  it("puts /approve ahead of an agent approval, and an agent approval ahead of auto", () => {
     expect(
-      mergePath([
-        { state: "APPROVED", body: `${AGENT_APPROVAL_PREFIX} x`, byBot: true, byMaintainer: false },
-      ]),
-    ).toBe("agent");
+      mergePath([bot(`${AGENT_APPROVAL_PREFIX} x`), bot("Approved by @b with /approve at a.")]),
+    ).toBe("/approve");
+    expect(mergePath([bot("Auto-approved: x"), bot(`${AGENT_APPROVAL_PREFIX} x`)])).toBe("agent");
+  });
+});
+
+describe("commentKind", () => {
+  it("routes each kind of comment to its own handler", () => {
+    expect(commentKind("/approve")).toBe("approve");
+    expect(commentKind(`${AGENT_REVIEW_MARKER}\n${REPORT_MARKER}`)).toBe("agent-review");
+    expect(commentKind(`${REPORT_MARKER}\nreport`)).toBe("report");
+    expect(commentKind("LGTM")).toBeNull();
   });
 });
