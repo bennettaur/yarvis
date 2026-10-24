@@ -12,16 +12,14 @@
  */
 
 import { readFileSync } from "node:fs";
-import { allowedSignerLine, localSigner, REPORT_NAMESPACE } from "./signing.ts";
+import { allowedSignerLine, localSigner, publicKeyLiteral, REPORT_NAMESPACE } from "./signing.ts";
 
 /** The principal a maintainer's report key goes by, in logs and allowed_signers. */
 const REPORT_PRINCIPAL = "verify-pr";
 
 if (import.meta.main) {
   const { key } = localSigner();
-  const literal = key.replace(/^key::/, "");
-  const publicKey = /^(ssh-|ecdsa-|sk-)/.test(literal)
-    ? literal
-    : readFileSync(key.endsWith(".pub") ? key : `${key}.pub`, "utf8");
+  const publicKey =
+    publicKeyLiteral(key) ?? readFileSync(key.endsWith(".pub") ? key : `${key}.pub`, "utf8");
   console.log(allowedSignerLine(REPORT_PRINCIPAL, publicKey, REPORT_NAMESPACE));
 }

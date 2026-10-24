@@ -187,6 +187,14 @@ under your `gh` login, isn't accepted unless it was also signed on your
 machine. Each key is limited to one namespace, so a key allowed to approve
 merges can't sign a report.
 
+What a signature proves is narrower than it sounds. It shows the report was
+signed on a machine holding your key, after 1Password let that session use
+it. It doesn't show the report came from an honest `/verify-pr` run: a
+prompt-injected agent in a session 1Password has approved could sign other
+text. The gate's own tier and checks are the backstop, so approve 1Password
+for the shortest time it offers. A signed report also counts for only six
+hours after it was signed, so an old one can't be re-posted later to merge.
+
 To allow your key, print its line and add it to the variable:
 
 ```bash
