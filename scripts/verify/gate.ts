@@ -347,7 +347,9 @@ export function decideAgentReview(input: {
   const reasons: string[] = [];
   if (!trusted.includes(pr.user.id)) reasons.push("PR author is not a maintainer");
   if (pr.draft) reasons.push("PR is a draft");
-  if (gateTier(pr, input.files) === "high") reasons.push("high-risk change");
+  if (stricterTier(gateTier(pr, input.files), report.data.riskTier) === "high") {
+    reasons.push("high-risk change");
+  }
   if (report.data.blockers > 0) reasons.push("report has blocker findings");
   if (reasons.length > 0) {
     return {

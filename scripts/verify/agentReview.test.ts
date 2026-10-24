@@ -100,6 +100,7 @@ describe("a report from the gate's side", () => {
         summary: "s",
         verdict: "agent",
         verdictReason: "r",
+        risk: { tier: "standard", reasons: ["Changes how recall ranks memories"] },
         dimensions: Object.fromEntries(
           ["goal", "tests", "reliability", "security", "complexity", "maintainability", "ui"].map(
             (k) => [k, { status: "pass", note: "ok" }],
