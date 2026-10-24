@@ -79,7 +79,9 @@ and can't be a custom header on either kind.
 
 ### Use it
 
-The Tool manager sets two things per tool.
+The Tool manager groups tools by where they come from: built-in, then one
+group per MCP server. Each group starts collapsed; click its name to open it.
+It sets two things per tool.
 
 How the tool is offered:
 

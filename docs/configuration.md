@@ -295,8 +295,9 @@ The tabs in **Settings**, in order:
    integration fields (Azure org URL, JIRA URL and email, Google client id).
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
-3. **Tools & MCP.** MCP servers Yarvis connects to, Yarvis's own MCP endpoint,
-   the Tool manager, and the decision model behind auto mode.
+3. **Tools & MCP.** The decision model behind auto mode, MCP servers Yarvis
+   connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
+   groups start collapsed.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
 5. **PR review.** The Needs review search, the Reviewing lookback, and the
