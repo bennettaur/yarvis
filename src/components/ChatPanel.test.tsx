@@ -33,6 +33,9 @@ let created = 0;
 let scripted: unknown[] = [];
 /** Bodies of every chat request, so a test can see what was re-sent. */
 let sent: Array<Record<string, unknown>> = [];
+/** What `/health` answers after a dropped stream, and how long it takes. */
+let health: realApi.HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
+let healthDelayMs = 0;
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -42,6 +45,11 @@ const json = (body: unknown) =>
 
 mock.module("../lib/api", () => ({
   ...realApi,
+  getHealth: async () => {
+    await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
+    if (health instanceof Error) throw health;
+    return health;
+  },
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path.startsWith("/api/chat/providers")) return json(providers);
     if (path === "/api/chat/sessions" && init?.method === "POST") {
@@ -82,6 +90,10 @@ mock.module("../lib/chat", () => ({
       if ((event as { type?: string }).type === "wait") {
         await new Promise((resolve) => setTimeout(resolve, 200));
         continue;
+      }
+      // The connection failing underneath the turn, as WebKit reports it.
+      if ((event as { type?: string }).type === "drop") {
+        throw new TypeError((event as { message?: string }).message ?? "Load failed");
       }
       if ((event as { type?: string }).type === "hang") {
         await new Promise((_resolve, reject) => {
@@ -154,6 +166,8 @@ afterEach(() => {
   created = 0;
   scripted = [];
   sent = [];
+  health = { status: "ok", service: "s", uptimeMs: 3_600_000 };
+  healthDelayMs = 0;
   localStorage.clear();
 });
 
@@ -496,5 +510,62 @@ describe("useChatThread", () => {
     expect(thread?.error?.message).toContain("Turn stopped");
     // Nothing was persisted for it, so the partial reply goes with it.
     expect(thread?.messages.some((m) => m.content.includes("half a th"))).toBe(false);
+  });
+
+  it("explains a dropped stream by the last real event, not a heartbeat", async () => {
+    scripted = [
+      { type: "tool_call", id: "t1", name: "search_jira" },
+      { type: "ping" },
+      { type: "drop" },
+    ];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("grab my tickets");
+    await settle();
+
+    expect(thread?.error?.message).toContain("dropped mid-turn");
+    expect(thread?.error?.detail).toContain("Last event received: tool_call");
+  });
+
+  it("says the sidecar restarted when it came back up during the turn", async () => {
+    scripted = [{ type: "wait" }, { type: "drop" }];
+    health = { status: "ok", service: "s", uptimeMs: 0 };
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("what's on today");
+    await settle();
+
+    expect(thread?.error?.message).toContain("restarted during this turn");
+  });
+
+  it("leaves a newer turn's outcome alone when a late explanation arrives", async () => {
+    scripted = [{ type: "drop" }];
+    healthDelayMs = 300;
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("first try");
+    scripted = [{ type: "error", message: "model not found (status 404)" }];
+    await thread?.send("second try");
+    await settle(400);
+
+    expect(thread?.error?.message).toBe("model not found (status 404)");
+  });
+
+  it("formats other TypeErrors as usual", async () => {
+    scripted = [{ type: "drop", message: "undefined is not an object" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("hello");
+    await settle();
+
+    expect(thread?.error?.message).toBe("undefined is not an object");
   });
 });
