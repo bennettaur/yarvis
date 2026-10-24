@@ -40,8 +40,9 @@ function NumberField({
 }
 
 /**
- * Which model heads-down passes run on, how often it looks at the work, and when the user works. The
- * working hours are also when it may tag people, and they are kept per machine.
+ * Which model heads-down passes run on, the user's standing guidance, how often it looks at the
+ * work, and when the user works. The working hours are also when it may tag people and merge, and
+ * they are kept per machine.
  */
 export default function HeadsDownSettings({
   config,
@@ -190,6 +191,22 @@ export default function HeadsDownSettings({
           applies from the next pass.
         </p>
       </div>
+
+      <label className="block space-y-1 text-sm text-zinc-300">
+        Standing guidance
+        <textarea
+          value={draft.guidance ?? ""}
+          onChange={(e) => set("guidance", e.target.value || null)}
+          rows={4}
+          maxLength={4000}
+          placeholder="e.g. Don't merge PRs between 9:30 and 16:00 ET. Merging is fine on my personal repos at any time."
+          aria-label="Standing guidance"
+          className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+        />
+        <span className="block text-xs text-zinc-500">
+          Every pass follows this, on this machine only. It can't override asking you for approval.
+        </span>
+      </label>
 
       <NumberField
         label="Shortest sleep between passes (min)"

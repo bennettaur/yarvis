@@ -35,6 +35,7 @@ function question(overrides: Partial<HeadsDownQuestion>): HeadsDownQuestion {
 const base = {
   now: new Date("2026-10-19T10:00:00Z"),
   run,
+  guidance: null,
   withinWorkingHours: true,
   minutesSinceUserReplied: 60,
   messages: [],
@@ -76,7 +77,19 @@ describe("buildPassPrompt", () => {
   it("says when it is outside working hours, and reads one hour as singular", () => {
     const prompt = buildPassPrompt({ ...base, withinWorkingHours: false });
     expect(prompt).toContain("don't tag anyone");
+    expect(prompt).toContain("merge a PR");
     expect(prompt).toContain("1 hour ago");
+  });
+
+  it("gives every pass the user's standing guidance, unfenced since it is their own", () => {
+    const prompt = buildPassPrompt({
+      ...base,
+      guidance: "Don't merge PRs while the market is open.",
+    });
+    expect(prompt).toContain("standing guidance for heads-down mode, in their words.");
+    expect(prompt).toContain("never the rules about the user's approval");
+    expect(prompt).toContain(":\nDon't merge PRs while the market is open.");
+    expect(buildPassPrompt({ ...base, guidance: "  " })).not.toContain("standing guidance");
   });
 
   it("keeps earlier messages in front of every pass, since standing instructions still hold", () => {

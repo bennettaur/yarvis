@@ -69,6 +69,28 @@ instructions, and any MCP tool you haven't listed for heads-down mode. Text it
 reads in tickets, messages and pages can tell it what is going on, never what
 to do.
 
+## Merging PRs
+
+It doesn't merge outside your working hours. A merge it tries then, through
+an MCP tool or by telling a workspace's session to merge, waits for your
+approval, even with a tool you allowed for heads-down mode and even with auto
+mode on. It only tries one when your standing guidance, focus or messages say
+it may.
+
+Before a merge it judges how risky it is from the files the PR changes.
+Infrastructure and config changes, database migrations, auth, and backend
+changes that deploy on merge count as risky, and so does anything it can't
+judge. For those it asks you first and waits for a yes. Mobile changes are
+lower risk, since nothing ships until a release.
+
+Every merge pops up an alert over whatever page you have open, with the PR,
+the PR's title, how risky heads-down mode judged it and why it is merging.
+The merge doesn't wait on the alert. Press **Got it** (or Escape) to put it
+away, or **Open PR** to look at the PR. The alert is also in the attention
+bell. If it merges through an MCP tool, or tells a workspace's session to
+merge, without announcing the merge first, you still get the alert, marked
+**Risk not assessed**.
+
 ## When it needs you
 
 Questions and approvals show under **Needs you** on the Heads down page and in
@@ -149,18 +171,23 @@ Under **Pace and working hours** on the page:
 - The model passes run on. **Default chat model** follows whatever your chats
   use. A change applies from the next pass. If the model you picked leaves the
   catalogue or its provider loses its key, passes fail until you pick another.
+- **Standing guidance**: rules every pass follows, in your own words. For
+  example, "don't merge PRs while the market is open" on a work laptop, or
+  "merging is fine on my repos" on a personal one. It can't override asking
+  you for approval.
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
-- Your working hours. Outside them it sleeps longer and doesn't tag anyone in
-  a message. Pick **Any time is fine to tag people** to drop the limit. These
-  are kept per machine, so a work laptop can keep office hours and another can
-  tag people at any time.
+- Your working hours. Outside them it sleeps longer, doesn't tag anyone in
+  a message, and asks before merging a PR. Pick **Any time is fine to tag
+  people** to drop all three limits, merges included. These are kept per
+  machine, so a work laptop can keep office hours and another can tag people
+  and merge at any time.
 - The MCP tools it may use without asking. You add one from its approval
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The pace and working hours are stored in `~/.yarvis/settings.json` under
+The guidance, pace and working hours are stored in `~/.yarvis/settings.json` under
 `headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
 

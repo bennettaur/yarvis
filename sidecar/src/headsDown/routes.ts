@@ -41,6 +41,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const MAX_STREAM_QUEUE = 500;
 const HEARTBEAT_MS = 25_000;
 
+/** A page of rules at most: every pass carries the guidance in its prompt. */
+const MAX_GUIDANCE_CHARS = 4000;
+
 const configSchema = z
   .object({
     minSleepMinutes: z
@@ -72,6 +75,14 @@ const configSchema = z
       .max(7 * 24 * 60),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
+    // Optional so a client that doesn't know about it can still save the rest.
+    guidance: z
+      .string()
+      .trim()
+      .max(MAX_GUIDANCE_CHARS)
+      .transform((g) => g || null)
+      .nullable()
+      .default(null),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");

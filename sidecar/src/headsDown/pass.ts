@@ -54,17 +54,20 @@ const PASS_FAMILIES = [
 
 /**
  * What the user asked for in this run, in their own words, for the decision
- * model to judge a call against: the focus and their messages, newest last.
+ * model to judge a call against: the focus, their standing guidance, and their
+ * messages, newest last.
  */
 export function userRequestFor(
   run: HeadsDownRun,
   messages: { body: string; createdAt: Date }[],
+  guidance: string | null = null,
 ): string {
-  // The reviewer reads only so much, and keeps the start. The focus goes
-  // first, then as many messages as fit, newest kept: the latest instruction
-  // ("stop posting in #billing") is the one that must not be cut.
+  // The reviewer reads only so much, and keeps the start. The focus and the
+  // guidance go first, then as many messages as fit, newest kept: the latest
+  // instruction ("stop posting in #billing") is the one that must not be cut.
   const focus = run.focus ? run.focus.slice(0, MAX_REQUEST_CHARS / 2) : null;
-  let budget = MAX_REQUEST_CHARS - (focus?.length ?? 0);
+  const rules = guidance?.trim() ? guidance.trim().slice(0, MAX_REQUEST_CHARS / 4) : null;
+  let budget = MAX_REQUEST_CHARS - (focus?.length ?? 0) - (rules?.length ?? 0);
   const kept: string[] = [];
   const newestFirst = [...messages].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   for (const message of newestFirst) {
@@ -72,7 +75,7 @@ export function userRequestFor(
     kept.unshift(message.body);
     budget -= message.body.length + 2;
   }
-  return [focus, ...kept].filter(Boolean).join("\n\n");
+  return [focus, rules, ...kept].filter(Boolean).join("\n\n");
 }
 
 /** The sleep reason recorded for a pass the user stopped; the page shows it as stopped. */
@@ -217,13 +220,17 @@ export async function runPass(
       : timedOut()
         ? "Ran out of time here."
         : `Failed here: ${e}`;
+  const announcedMerges = new Set<string>();
   try {
     // Stopped while the pass was getting ready: its abort wasn't registered yet.
     if ((await getActiveRun(db))?.id !== run.id) {
       stoppedByUser = true;
       throw new Error("stopped before it started");
     }
-    const userRequest = userRequestFor(run, [...earlier, ...messages]);
+    const saidMessages = [...earlier, ...messages];
+    // Guidance alone, with nothing said this run, mustn't turn on auto-approval.
+    const userSaidSomething = Boolean(run.focus) || saidMessages.length > 0;
+    const userRequest = userRequestFor(run, saidMessages, headsDownConfig.guidance);
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
@@ -231,6 +238,7 @@ export async function runPass(
     let message = buildPassPrompt({
       now,
       run,
+      guidance: headsDownConfig.guidance,
       withinWorkingHours,
       minutesSinceUserReplied,
       messages,
@@ -255,12 +263,9 @@ export async function runPass(
         message,
         userMetadata: { source: "heads-down" },
         signal: abort.signal,
-        approval: passApprovalHooks(
-          db,
-          run,
-          changed,
+        approval: passApprovalHooks(db, run, changed, {
           // With nothing the user said this run, no call can be shown to fit it.
-          userRequest
+          review: userSaidSomething
             ? {
                 config,
                 db,
@@ -268,10 +273,12 @@ export async function runPass(
                 signal: abort.signal,
               }
             : undefined,
-        ),
+          announcedMerges,
+          withinWorkingHours,
+        }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: PASS_INSTRUCTIONS,
-        extraTools: buildPassTools(db, outcome, changed),
+        extraTools: buildPassTools(db, outcome, changed, announcedMerges),
         budget,
         maxRetries: PASS_MODEL_RETRIES,
       })) {

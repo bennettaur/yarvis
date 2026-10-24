@@ -74,7 +74,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, chat_sessions, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, chat_sessions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-pass-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
   // Any time counts as working hours, so the sleep doesn't depend on when the test runs.
@@ -86,6 +86,7 @@ beforeEach(async () => {
     userAwayAfterMinutes: 120,
     provider: null,
     model: null,
+    guidance: null,
   });
 });
 
@@ -239,6 +240,44 @@ describe("a heads-down pass", () => {
     expect(prompt).toContain("The last pass failed before it finished");
     expect(prompt).toContain("Error: invalid request");
     expect(prompt).toContain("done: ask_user");
+  });
+
+  it("hands the pass the user's guidance, and shows the merge it announces", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+      guidance: "Merging docs PRs in acme/docs is fine any time.",
+    });
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("m1", "announce_merge", {
+          repo: "acme/docs",
+          number: 4,
+          risk: "low",
+          why: "Docs only",
+        }),
+        toolCall("m2", "finish_pass", { sleepMinutes: 30, reason: "merged" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model });
+
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(
+      "Merging docs PRs in acme/docs is fine any time.",
+    );
+    const [item] = await sql`SELECT title, payload FROM attention_items WHERE kind = 'info'`;
+    expect(item).toMatchObject({
+      title: "Heads down is merging acme/docs#4",
+      payload: { headsDownMerge: { risk: "low", number: 4 } },
+    });
   });
 
   it("records a pass for a run already stopped as stopped by the user, not failed", async () => {

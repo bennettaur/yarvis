@@ -125,6 +125,35 @@ describe("/api/heads-down", () => {
     ).toBe(400);
   });
 
+  it("saves the standing guidance, and treats a blank one as none", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, guidance: "  Merging is fine on my repos.  " })).status).toBe(
+      200,
+    );
+    expect(await get("/config")).toMatchObject({ guidance: "Merging is fine on my repos." });
+    expect((await put({ ...valid, guidance: "   " })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ guidance: null });
+    expect((await put({ ...valid, guidance: "x".repeat(4001) })).status).toBe(400);
+    expect((await put({ ...valid, guidance: null })).status).toBe(200);
+    // A client that doesn't send it can still save.
+    expect((await put(valid)).status).toBe(200);
+  });
+
   it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {
     await sql`TRUNCATE agent_tools`;
     await sql`INSERT INTO agent_tools (id, source, name, content_hash)

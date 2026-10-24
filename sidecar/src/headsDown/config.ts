@@ -34,6 +34,11 @@ export interface HeadsDownConfig {
   /** The model passes run on. Null uses the default chat model. */
   provider: string | null;
   model: string | null;
+  /**
+   * The user's standing rules for every pass on this machine, in their own
+   * words (ex. "don't merge PRs while the market is open"). Null for none.
+   */
+  guidance: string | null;
 }
 
 export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
@@ -44,13 +49,16 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   userAwayAfterMinutes: 120,
   provider: null,
   model: null,
+  guidance: null,
 };
 
 const SETTINGS_KEY = "headsDown";
 
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   const stored = await readSection<Partial<HeadsDownConfig>>(SETTINGS_KEY);
-  return { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
+  const config = { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
+  // Hand-edited settings can hold anything; every pass reads the guidance.
+  return { ...config, guidance: typeof config.guidance === "string" ? config.guidance : null };
 }
 
 export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {
