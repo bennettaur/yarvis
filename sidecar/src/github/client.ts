@@ -1945,6 +1945,34 @@ export class GitHubClient {
   }
 
   /**
+   * Every file a PR changes, not just `prFiles`'s first page, and whether the
+   * API stopped listing before the end, which it does at 3,000 files.
+   */
+  async allPrFiles(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ files: PrFile[]; incomplete: boolean }> {
+    const files: PrFile[] = [];
+    for (let page = 1; page <= 30; page++) {
+      const batch = await this.api<any[]>(
+        `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      files.push(
+        ...batch.map((f) => ({
+          filename: f.filename,
+          status: f.status,
+          additions: f.additions ?? 0,
+          deletions: f.deletions ?? 0,
+          patch: f.patch ?? null,
+        })),
+      );
+      if (batch.length < 100) return { files, incomplete: false };
+    }
+    return { files, incomplete: true };
+  }
+
+  /**
    * A PR's or issue's conversation comments, oldest first, with each author's
    * numeric ID, which unlike a login can't be re-registered after a rename.
    * Stops after 1,000, far past any real conversation.

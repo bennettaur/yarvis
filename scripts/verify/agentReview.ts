@@ -24,6 +24,8 @@ const AgentReviewData = z.object({
   repo: z.string(),
   pr: z.number().int().positive(),
   headSha: z.string(),
+  /** When it was signed, ISO 8601, so a re-posted old review can be refused. */
+  issuedAt: z.string().datetime(),
   /** SHA-256 of the signed report's data block (its base64 text), in hex. */
   reportDigest: z.string().regex(/^[0-9a-f]{64}$/),
   decision: z.enum(["approve", "reject"]),
