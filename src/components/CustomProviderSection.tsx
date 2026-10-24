@@ -5,16 +5,16 @@ import {
   type CustomProviderApiKind,
   type CustomProviderInput,
   type CustomProviderSecretStatus,
-  createCustomProvider,
   deleteCustomProvider,
   listCustomProviders,
-  updateCustomProvider,
 } from "../lib/customProviders";
 import { restartSidecar } from "../lib/keychain";
 import {
+  createCustomProvider,
   deleteAllCustomProviderSecrets,
   deleteCustomProviderSecret,
   setCustomProviderSecret,
+  updateCustomProvider,
 } from "../lib/privilegedCommands";
 import { MaskedInput } from "./MaskedInput";
 

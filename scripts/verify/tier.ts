@@ -26,24 +26,46 @@ interface PathRule {
 }
 
 /**
- * The only frontend files that may call Tauri commands that write a secret,
- * switch the secret store, set the agent's launch command, or reach a shell.
- * `nativeBridge.test.ts` holds the rest of `src/` to that, which is what lets
- * the frontend otherwise count as low risk.
+ * The only frontend files that may make calls that can leak a secret or run a
+ * command (listed in `nativeBridge.ts`). It holds the rest of `src/` to that,
+ * which is what lets the frontend otherwise count as low risk.
  */
-export const PRIVILEGED_FRONTEND_FILES = ["src/lib/privilegedCommands.ts", "src/lib/pty.ts"];
+export const PRIVILEGED_FRONTEND_FILES = ["src/lib/privilegedCommands.ts", "src/lib/api.ts"];
+
+/**
+ * The files that import `privilegedCommands.ts`. They choose the values its
+ * calls run with, such as the command a new MCP server starts, so a change to
+ * one is as risky as a change to it. `nativeBridge.ts` fails CI when a file
+ * imports it without being listed here.
+ */
+export const PRIVILEGED_FRONTEND_IMPORTERS = [
+  "src/components/AgentSection.tsx",
+  "src/components/CustomProviderSection.tsx",
+  "src/components/EmbeddingsSection.tsx",
+  "src/components/KeychainSection.tsx",
+  "src/components/McpServerSection.tsx",
+  "src/components/ScheduledJobsPanel.tsx",
+  "src/components/SecretBackendSection.tsx",
+  "src/components/TelegramSection.tsx",
+  "src/components/TerminalPanel.tsx",
+  "src/components/ToolManagerSection.tsx",
+  "src/components/onboarding/setupSteps.tsx",
+  "src/lib/useChatThread.ts",
+];
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const PRIVILEGED_FRONTEND_PATTERN = new RegExp(
-  `^(${PRIVILEGED_FRONTEND_FILES.map(escapeRegExp).join("|")})$`,
-);
+const exactly = (paths: string[]) => new RegExp(`^(${paths.map(escapeRegExp).join("|")})$`);
 
 /** Paths where a mistake leaks secrets, widens what the agent may do, or loses data. */
 const HIGH_RISK_PATHS: PathRule[] = [
   {
-    pattern: PRIVILEGED_FRONTEND_PATTERN,
-    reason: "frontend calls to privileged Tauri commands",
+    pattern: exactly(PRIVILEGED_FRONTEND_FILES),
+    reason: "frontend calls that can leak a secret or run a command",
+  },
+  {
+    pattern: exactly(PRIVILEGED_FRONTEND_IMPORTERS),
+    reason: "frontend code that chooses what a privileged call does",
   },
   // The verifier must not be able to approve a change to itself.
   { pattern: /^\.github\//, reason: "CI or repo config" },

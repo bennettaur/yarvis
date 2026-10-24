@@ -1,6 +1,6 @@
 /**
- * The rules that keep the frontend's privileged Tauri commands in the files
- * `tier.ts` marks high risk, so the rest of `src/` can count as low risk.
+ * The rules that keep the frontend's privileged calls in the files `tier.ts`
+ * marks high risk, so the rest of `src/` can count as low risk.
  * `nativeBridge.test.ts` applies them to `src/` in CI. They guard against
  * mistakes, not a hostile author: obfuscated code can get past any static
  * check, and only trusted authors' PRs can auto-merge.
@@ -8,15 +8,18 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { PRIVILEGED_FRONTEND_IMPORTERS } from "./tier.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
 const PRIVILEGED = "src/lib/privilegedCommands.ts";
-const PTY = "src/lib/pty.ts";
+/** Holds the sidecar's bearer token, which unlocks every sidecar route. */
+const API = "src/lib/api.ts";
 
 /**
  * Commands that write a secret, switch the secret store, set the agent's launch
- * command, or type into or launch a shell, each with the one file that may call it.
+ * command, type into a shell or hand over the sidecar token, each with the one
+ * file that may call it.
  */
 export const PRIVILEGED_COMMANDS: Record<string, string> = {
   set_secret: PRIVILEGED,
@@ -31,9 +34,8 @@ export const PRIVILEGED_COMMANDS: Record<string, string> = {
   delete_embeddings_secret: PRIVILEGED,
   set_secret_backend: PRIVILEGED,
   set_agent: PRIVILEGED,
-  pty_attach: PTY,
-  pty_write: PTY,
-  pty_start_claude: PTY,
+  pty_write: PRIVILEGED,
+  get_sidecar_info: API,
 };
 
 /**
@@ -41,6 +43,8 @@ export const PRIVILEGED_COMMANDS: Record<string, string> = {
  * any file: status reads, alarms, the clipboard, terminal housekeeping and
  * plain settings. The Jira and Azure DevOps URLs are host-checked where the
  * sidecar uses them, so changing one can't send a token elsewhere.
+ * `pty_attach` opens a plain shell with no input, and `pty_start_claude`
+ * launches the configured agent, whose command only `set_agent` decides.
  */
 export const ORDINARY_COMMANDS = [
   "get_secret_status",
@@ -48,7 +52,6 @@ export const ORDINARY_COMMANDS = [
   "list_custom_provider_secret_status",
   "list_mcp_secret_status",
   "get_embeddings_secret_status",
-  "get_sidecar_info",
   "restart_sidecar",
   "get_sidecar_log_path",
   "list_alarms",
@@ -59,6 +62,8 @@ export const ORDINARY_COMMANDS = [
   "clipboard_history",
   "clipboard_clear_history",
   "clipboard_write",
+  "pty_attach",
+  "pty_start_claude",
   "pty_resize",
   "pty_kill",
   "pty_exists",
@@ -75,6 +80,29 @@ export const ORDINARY_COMMANDS = [
   "set_color_theme",
   "set_terminal_font_size",
 ];
+
+/**
+ * Sidecar writes that decide what runs or where a credential goes: an MCP
+ * server's command, which tools ask before running, a scheduled job's prompt
+ * and directory, and a custom provider's URL, which receives its key. Matched
+ * on the path a call names, with `${...}` standing for an id.
+ */
+export const PRIVILEGED_ROUTES: RegExp[] = [
+  /^\/api\/mcp\/servers(\/\$\{[^}]+\})?$/,
+  /^\/api\/mcp\/tools\/(?!search$)[^/]+$/,
+  /^\/api\/jobs\/agent-jobs(\/\$\{[^}]+\})?$/,
+  /^\/api\/custom-providers(\/\$\{[^}]+\})?$/,
+];
+
+/**
+ * A sidecar call with a literal path and a write method, in the two shapes the
+ * frontend uses: `sidecarFetch(path, { method })` and `jobsRequest(path, method)`.
+ */
+const SIDECAR_WRITE =
+  /\b(?:sidecarFetch|jobsRequest)(?:<[^(]*>)?\(\s*(["'`])(\/api\/[^"'`]*)\1\s*,\s*(?:\{[^}]*?\bmethod:\s*["'](\w+)["']|["'](\w+)["'])/g;
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH"]);
+
+const PRIVILEGED_IMPORT = /from\s+["'](?:\.\.?\/)+(?:lib\/)?privilegedCommands["']/;
 
 /** Tauri plugins, each with the one file that wraps it. */
 const PLUGIN_OWNERS: Record<string, string> = {
@@ -151,6 +179,29 @@ export function bridgeViolations(sources: Source[]): string[] {
       const owner = PRIVILEGED_COMMANDS[command];
       if (owner && owner !== path)
         violations.push(`${path} calls ${command}, which belongs in ${owner}`);
+    }
+
+    for (const [, , route, objectMethod, argMethod] of text.matchAll(SIDECAR_WRITE)) {
+      const method = (objectMethod ?? argMethod).toUpperCase();
+      if (
+        path !== PRIVILEGED &&
+        WRITE_METHODS.has(method) &&
+        PRIVILEGED_ROUTES.some((r) => r.test(route))
+      ) {
+        violations.push(`${path} writes ${method} ${route}, which belongs in ${PRIVILEGED}`);
+      }
+    }
+
+    // An importer chooses the values a privileged call runs with, so it has to
+    // be on the high-risk list too.
+    if (PRIVILEGED_IMPORT.test(text) && !PRIVILEGED_FRONTEND_IMPORTERS.includes(path)) {
+      violations.push(
+        `${path} imports privilegedCommands but isn't in PRIVILEGED_FRONTEND_IMPORTERS`,
+      );
+    }
+
+    if (path !== API && /\bsidecarInfo\b/.test(text)) {
+      violations.push(`${path} reads the sidecar token, which only ${API} may`);
     }
 
     for (const [, plugin] of text.matchAll(/["'](@tauri-apps\/plugin-[^"']+)["']/g)) {

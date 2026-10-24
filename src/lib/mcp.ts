@@ -117,26 +117,6 @@ export async function listMcpServers(): Promise<McpServer[]> {
   return res.json();
 }
 
-export async function createMcpServer(input: McpServerInput): Promise<McpServer> {
-  const res = await sidecarFetch("/api/mcp/servers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  await ensureOk(res, "create mcp server");
-  return res.json();
-}
-
-export async function updateMcpServer(id: string, patch: McpServerUpdate): Promise<McpServer> {
-  const res = await sidecarFetch(`/api/mcp/servers/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  await ensureOk(res, "update mcp server");
-  return res.json();
-}
-
 export async function deleteMcpServer(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
   if (res.status !== 204) await ensureOk(res, "delete mcp server");
@@ -174,23 +154,6 @@ export async function disconnectMcpOAuth(id: string): Promise<void> {
 export async function listAgentTools(): Promise<RegistryTool[]> {
   const res = await sidecarFetch("/api/mcp/tools");
   await ensureOk(res, "list agent tools");
-  return res.json();
-}
-
-/**
- * Updates what the user controls about a tool — how it is exposed to the model,
- * whether calling it asks first, or both. Fields left out are unchanged.
- */
-export async function setToolSettings(
-  id: string,
-  settings: { policy?: ToolPolicy; approval?: ToolApproval },
-): Promise<RegistryTool> {
-  const res = await sidecarFetch(`/api/mcp/tools/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
-  await ensureOk(res, "set tool settings");
   return res.json();
 }
 

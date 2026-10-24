@@ -185,13 +185,18 @@ back to ad-hoc.
   sidecar's HTTP API exactly as before. Everything else the sidecar owns —
   actual data (chat history, memories, workspaces, PR/issue caches) — lives in
   Postgres.
-- The frontend calls Tauri commands that write a secret, switch the secret
-  store or set the agent's launch command only from
-  `src/lib/privilegedCommands.ts`, and ones that type into or launch a shell
-  only from `src/lib/pty.ts`. Every `invoke` names its command as a string
-  literal. `scripts/verify/nativeBridge.ts` holds the rules and its test enforces them, and it is what
-  lets the rest of `src/` count as low risk when a PR is verified. A new
-  command of that kind goes in one of those two files and in the test's list.
+- Every frontend call that can leak a secret or run a command lives in
+  `src/lib/privilegedCommands.ts`: Tauri commands that write a secret, switch
+  the secret store, set the agent's launch command or type into a shell, and
+  sidecar writes that set an MCP server's command, a tool's approval, a
+  scheduled job, or a custom provider's URL. Only `src/lib/api.ts` reads the
+  sidecar token. Every `invoke` names its command as a string literal.
+  `scripts/verify/nativeBridge.ts` holds these rules and fails CI on a break,
+  which is what lets the rest of `src/` count as low risk when a PR is
+  verified. A file that imports `privilegedCommands.ts` chooses what its calls
+  do, so it is high risk too and must be listed in
+  `PRIVILEGED_FRONTEND_IMPORTERS` in `scripts/verify/tier.ts`. A new call of
+  that kind goes in `privilegedCommands.ts` and on `nativeBridge.ts`'s lists.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
   one Keychain item, the same `~/.yarvis/settings.json`, and, unless told
   otherwise, one database. Anything singular to the machine or to that shared

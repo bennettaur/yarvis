@@ -93,7 +93,7 @@ export interface RunOutcome {
   detail?: string;
 }
 
-async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+export async function jobsRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await sidecarFetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -109,26 +109,17 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
 }
 
 export const listScheduledJobs = async (): Promise<ScheduledJobStatus[]> =>
-  (await request<{ jobs: ScheduledJobStatus[] }>("/api/jobs/agent-jobs")).jobs;
-
-export const createScheduledJob = async (input: ScheduledJobInput): Promise<ScheduledJob> =>
-  (await request<{ job: ScheduledJob }>("/api/jobs/agent-jobs", "POST", input)).job;
-
-export const updateScheduledJob = async (
-  id: string,
-  input: ScheduledJobInput,
-): Promise<ScheduledJob> =>
-  (await request<{ job: ScheduledJob }>(`/api/jobs/agent-jobs/${id}`, "PUT", input)).job;
+  (await jobsRequest<{ jobs: ScheduledJobStatus[] }>("/api/jobs/agent-jobs")).jobs;
 
 export const deleteScheduledJob = (id: string): Promise<{ deleted: boolean }> =>
-  request(`/api/jobs/agent-jobs/${id}`, "DELETE");
+  jobsRequest(`/api/jobs/agent-jobs/${id}`, "DELETE");
 
 export const listScheduledJobRuns = async (id: string): Promise<ScheduledJobRun[]> =>
-  (await request<{ runs: ScheduledJobRun[] }>(`/api/jobs/agent-jobs/${id}/runs`)).runs;
+  (await jobsRequest<{ runs: ScheduledJobRun[] }>(`/api/jobs/agent-jobs/${id}/runs`)).runs;
 
 /** Runs a job now, schedule or not. "busy" means a copy is already in flight. */
 export const runScheduledJob = (id: string): Promise<RunOutcome> =>
-  request(`/api/jobs/agent-jobs/${id}/run`, "POST", {});
+  jobsRequest(`/api/jobs/agent-jobs/${id}/run`, "POST", {});
 
 /** A blank job, for the editor's "new job" state. */
 export function emptyJobInput(): ScheduledJobInput {

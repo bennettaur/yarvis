@@ -34,9 +34,6 @@ export interface PtyOutput {
 export const attachPty = (id: string, cols: number, rows: number, cwd?: string) =>
   invoke<PtySnapshot>("pty_attach", { id, cols, rows, cwd });
 
-/** Sends user input to the session's shell. */
-export const writePty = (id: string, data: string) => invoke("pty_write", { id, data });
-
 /** Resizes the session's PTY to match the terminal viewport. */
 export const resizePty = (id: string, cols: number, rows: number) =>
   invoke("pty_resize", { id, cols, rows });

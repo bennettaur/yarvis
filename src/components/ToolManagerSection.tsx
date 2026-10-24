@@ -5,10 +5,10 @@ import {
   listMcpServers,
   type McpServer,
   type RegistryTool,
-  setToolSettings,
   type ToolApproval,
   type ToolPolicy,
 } from "../lib/mcp";
+import { setToolSettings } from "../lib/privilegedCommands";
 import ErrorNotice from "./ErrorNotice";
 
 const POLICY_HINTS: Record<ToolPolicy, string> = {

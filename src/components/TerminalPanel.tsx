@@ -3,15 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { TERMINAL_THEMES } from "../lib/palette";
-import {
-  attachPty,
-  killPty,
-  onPtyExit,
-  onPtyOutput,
-  type PtyOutput,
-  resizePty,
-  writePty,
-} from "../lib/pty";
+import { writePty } from "../lib/privilegedCommands";
+import { attachPty, killPty, onPtyExit, onPtyOutput, type PtyOutput, resizePty } from "../lib/pty";
 import {
   getTerminalFontSize,
   onTerminalFontSize,
