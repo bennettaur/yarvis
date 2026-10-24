@@ -27,6 +27,7 @@ import {
   type LineHits,
   mergeLineHits,
   parseAddedLines,
+  parseAddedText,
   parseLcov,
 } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
@@ -151,11 +152,16 @@ if (import.meta.main) {
   const head = git(root, ["rev-parse", "HEAD"]);
   const base = git(root, ["merge-base", values.base as string, "HEAD"]);
 
-  const files = parseNumstat(gitDiff(root, ["--numstat", base, head]));
+  const unified = gitDiff(root, ["-U0", base, head]);
+  const addedText = parseAddedText(unified);
+  const files = parseNumstat(gitDiff(root, ["--numstat", base, head])).map((file) => ({
+    ...file,
+    addedText: addedText.get(file.path) ?? "",
+  }));
   const addedOrModified = gitDiff(root, ["--name-only", "--diff-filter=AM", base, head])
     .split("\n")
     .filter(Boolean);
-  const added = parseAddedLines(gitDiff(root, ["-U0", base, head]));
+  const added = parseAddedLines(unified);
 
   const measuredRun = values.static
     ? null
