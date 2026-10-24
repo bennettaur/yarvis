@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
+import type { RegistryTool, ToolSource } from "../lib/mcp";
 import { mountForInteraction } from "../test/render";
 import ToolManagerSection from "./ToolManagerSection";
 
-function tool(id: string, source: "builtin" | "mcp", serverId: string | null = null) {
+function tool(id: string, source: ToolSource, serverId: string | null = null): RegistryTool {
   return {
     id,
     source,
@@ -19,7 +20,12 @@ function tool(id: string, source: "builtin" | "mcp", serverId: string | null = n
   };
 }
 
-const TOOLS = [tool("remember", "builtin"), tool("recall", "builtin"), tool("search", "mcp", "s1")];
+const TOOLS = [
+  tool("remember", "builtin"),
+  tool("recall", "builtin"),
+  tool("search", "mcp", "s1"),
+  { ...tool("fetch", "mcp", "s1"), approval: "auto" as const },
+];
 const SERVERS = [{ id: "s1", name: "Docs server" }];
 
 // Real exports spread back in: `mock.module` replaces the module for the whole process.
@@ -53,8 +59,10 @@ describe("ToolManagerSection", () => {
     expect(groups.every((g) => !g.open)).toBe(true);
     const summaries = groups.map((g) => g.querySelector("summary")?.textContent);
     expect(summaries[0]).toContain("Built-in");
-    expect(summaries[0]).toContain("2 tools");
+    expect(summaries[0]).toMatch(/2 tools$/);
+    expect(summaries[0]).not.toContain("auto-approved");
     expect(summaries[1]).toContain("Docs server");
-    expect(summaries[1]).toContain("1 tool");
+    expect(summaries[1]).toContain("2 tools");
+    expect(summaries[1]).toMatch(/1 auto-approved$/);
   });
 });

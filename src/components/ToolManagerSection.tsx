@@ -27,8 +27,8 @@ const APPROVAL_HINTS: Record<ToolApproval, string> = {
  * MCP-sourced — grouped by source, and lets the user set each tool's policy
  * (always mounted, available via search, or disabled) and, for MCP tools,
  * whether calling one asks first. Changes take effect on the next chat turn; no
- * restart needed. Each group starts collapsed so the list doesn't bury the
- * rest of the Tools tab.
+ * restart needed. Each group starts collapsed so a server with dozens of tools
+ * doesn't turn the tab into a long scroll.
  *
  * Auto-approval is offered for MCP tools only. A built-in's confirmation is
  * decided by how the turn was composed — a spoken turn was never proof-read —
@@ -139,14 +139,26 @@ function ToolGroup({
 }) {
   if (tools.length === 0) return null;
   const allAuto = tools.every((t) => t.approval === "auto");
+  // Shown in the header so a collapsed group still says which tools skip the prompt.
+  const autoCount = tools.filter((t) => t.source === "mcp" && t.approval === "auto").length;
   return (
     <details className="group">
-      <summary className="mb-2 flex cursor-pointer items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-        <span className="text-zinc-600 transition-transform group-open:rotate-90">▶</span>
+      <summary className="mb-2 flex cursor-pointer list-none items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <span
+          aria-hidden="true"
+          className="text-zinc-600 transition-transform group-open:rotate-90"
+        >
+          ▶
+        </span>
         {title}
         <span className="font-normal normal-case text-zinc-600">
           · {tools.length} {tools.length === 1 ? "tool" : "tools"}
         </span>
+        {autoCount > 0 && (
+          <span className="font-normal normal-case text-amber-500">
+            · {autoCount} auto-approved
+          </span>
+        )}
       </summary>
       {onSetGroupApproval && (
         <button
