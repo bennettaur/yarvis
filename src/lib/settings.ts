@@ -65,12 +65,6 @@ export const getSettings = () => invoke<Settings>("get_settings");
 export const setMaxPtySessions = (value: number | null) =>
   invoke<Settings>("set_max_pty_sessions", { value });
 
-/** Sets the agent's tab title and launch command, clearing either back to its
- * default with `null` or a blank string. Takes effect on the next agent session
- * started — no restart. Rejects a value spanning more than one line. */
-export const setAgent = (name: string | null, command: string | null) =>
-  invoke<Settings>("set_agent", { name, command });
-
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */
 export const saveColorTheme = (value: string | null) =>
@@ -119,17 +113,3 @@ export interface BackendSwitch {
   settings: Settings;
   copied: Copied;
 }
-
-/**
- * Points the app at a different secret store, copying the stored secrets into
- * it first. Rejects when the new store can't be reached, leaving the current
- * one selected — so a failure here is safe to show and retry. The old store's
- * copy is left behind untouched.
- *
- * `vault` and `item` are required for `"onepassword"` and ignored otherwise.
- */
-export const setSecretBackend = (
-  backend: SecretBackend,
-  vault: string | null,
-  item: string | null,
-) => invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });

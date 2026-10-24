@@ -223,20 +223,8 @@ export async function getMcpEndpoint(): Promise<McpEndpoint> {
   return res.json();
 }
 
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
+/* ---------- Secret status (writes are in privilegedCommands.ts) ---------- */
 
 export function listMcpSecretStatus(): Promise<McpSecretStatus[]> {
   return invoke<McpSecretStatus[]>("list_mcp_secret_status");
-}
-
-export function setMcpSecret(serverId: string, slot: McpSecretSlot, value: string): Promise<void> {
-  return invoke("set_mcp_secret", { serverId, slot, value });
-}
-
-export function deleteMcpSecret(serverId: string, slot: McpSecretSlot): Promise<void> {
-  return invoke("delete_mcp_secret", { serverId, slot });
-}
-
-export function deleteAllMcpSecrets(serverId: string): Promise<void> {
-  return invoke("delete_mcp_all_secrets", { serverId });
 }
