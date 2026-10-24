@@ -29,7 +29,7 @@ import type {
   ToolPolicy,
 } from "./mcp";
 import type { EmbeddingsSecretSlot } from "./memory";
-import { jobsRequest, type ScheduledJob, type ScheduledJobInput } from "./scheduledJobs";
+import type { ScheduledJob, ScheduledJobInput } from "./scheduledJobs";
 import type { BackendSwitch, SecretBackend, Settings } from "./settings";
 
 /* ---------- App secrets ---------- */
@@ -185,11 +185,24 @@ export async function updateCustomProvider(
 
 /* ---------- What scheduled jobs run ---------- */
 
-export const createScheduledJob = async (input: ScheduledJobInput): Promise<ScheduledJob> =>
-  (await jobsRequest<{ job: ScheduledJob }>("/api/jobs/agent-jobs", "POST", input)).job;
+/** Errors read the same as `scheduledJobs.ts`'s own requests, which the job editor shows. */
+async function saveJob(path: string, method: "POST" | "PUT", input: ScheduledJobInput) {
+  const res = await sidecarFetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `${method} ${path} → ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+    );
+  }
+  return ((await res.json()) as { job: ScheduledJob }).job;
+}
 
-export const updateScheduledJob = async (
-  id: string,
-  input: ScheduledJobInput,
-): Promise<ScheduledJob> =>
-  (await jobsRequest<{ job: ScheduledJob }>(`/api/jobs/agent-jobs/${id}`, "PUT", input)).job;
+export const createScheduledJob = (input: ScheduledJobInput): Promise<ScheduledJob> =>
+  saveJob("/api/jobs/agent-jobs", "POST", input);
+
+export const updateScheduledJob = (id: string, input: ScheduledJobInput): Promise<ScheduledJob> =>
+  saveJob(`/api/jobs/agent-jobs/${id}`, "PUT", input);

@@ -93,7 +93,7 @@ export interface RunOutcome {
   detail?: string;
 }
 
-export async function jobsRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const res = await sidecarFetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -109,17 +109,17 @@ export async function jobsRequest<T>(path: string, method = "GET", body?: unknow
 }
 
 export const listScheduledJobs = async (): Promise<ScheduledJobStatus[]> =>
-  (await jobsRequest<{ jobs: ScheduledJobStatus[] }>("/api/jobs/agent-jobs")).jobs;
+  (await request<{ jobs: ScheduledJobStatus[] }>("/api/jobs/agent-jobs")).jobs;
 
 export const deleteScheduledJob = (id: string): Promise<{ deleted: boolean }> =>
-  jobsRequest(`/api/jobs/agent-jobs/${id}`, "DELETE");
+  request(`/api/jobs/agent-jobs/${id}`, "DELETE");
 
 export const listScheduledJobRuns = async (id: string): Promise<ScheduledJobRun[]> =>
-  (await jobsRequest<{ runs: ScheduledJobRun[] }>(`/api/jobs/agent-jobs/${id}/runs`)).runs;
+  (await request<{ runs: ScheduledJobRun[] }>(`/api/jobs/agent-jobs/${id}/runs`)).runs;
 
 /** Runs a job now, schedule or not. "busy" means a copy is already in flight. */
 export const runScheduledJob = (id: string): Promise<RunOutcome> =>
-  jobsRequest(`/api/jobs/agent-jobs/${id}/run`, "POST", {});
+  request(`/api/jobs/agent-jobs/${id}/run`, "POST", {});
 
 /** A blank job, for the editor's "new job" state. */
 export function emptyJobInput(): ScheduledJobInput {

@@ -95,14 +95,17 @@ export const PRIVILEGED_ROUTES: RegExp[] = [
 ];
 
 /**
- * A sidecar call with a literal path and a write method, in the two shapes the
- * frontend uses: `sidecarFetch(path, { method })` and `jobsRequest(path, method)`.
+ * A `sidecarFetch` call with a literal path, and the rest of the call up to the
+ * `);` that ends it, where the method is looked for. That finds the method
+ * wherever it sits among the options, `headers` and all.
  */
-const SIDECAR_WRITE =
-  /\b(?:sidecarFetch|jobsRequest)(?:<[^(]*>)?\(\s*(["'`])(\/api\/[^"'`]*)\1\s*,\s*(?:\{[^}]*?\bmethod:\s*["'](\w+)["']|["'](\w+)["'])/g;
+const SIDECAR_CALL = /\bsidecarFetch(?:<[^(]*>)?\(\s*(["'`])(\/api\/[^"'`]*)\1([\s\S]*?)\);/g;
+const METHOD_OPTION = /\bmethod:\s*["'](\w+)["']/;
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
-const PRIVILEGED_IMPORT = /from\s+["'](?:\.\.?\/)+(?:lib\/)?privilegedCommands["']/;
+/** A static or dynamic import of the module, with or without its extension. */
+const PRIVILEGED_IMPORT =
+  /(?:\bfrom\s+|\bimport\s*\(\s*)["'](?:\.\.?\/)+(?:lib\/)?privilegedCommands(?:\.ts)?["']/;
 
 /** Tauri plugins, each with the one file that wraps it. */
 const PLUGIN_OWNERS: Record<string, string> = {
@@ -181,8 +184,10 @@ export function bridgeViolations(sources: Source[]): string[] {
         violations.push(`${path} calls ${command}, which belongs in ${owner}`);
     }
 
-    for (const [, , route, objectMethod, argMethod] of text.matchAll(SIDECAR_WRITE)) {
-      const method = (objectMethod ?? argMethod).toUpperCase();
+    for (const [, , path_, rest] of text.matchAll(SIDECAR_CALL)) {
+      const method = (rest.match(METHOD_OPTION)?.[1] ?? "GET").toUpperCase();
+      // A query string still reaches the same route.
+      const route = path_.split("?")[0];
       if (
         path !== PRIVILEGED &&
         WRITE_METHODS.has(method) &&
