@@ -25,6 +25,7 @@
     "sidecar:typecheck": "bun run --cwd sidecar typecheck",
     "verify:collect": "bun run scripts/verify/collect.ts",
     "verify:report": "bun run scripts/verify/report.ts",
+    "verify:calibrate": "bun run scripts/verify/calibrate.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format .",
