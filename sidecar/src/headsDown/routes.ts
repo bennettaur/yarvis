@@ -170,7 +170,10 @@ export function createHeadsDownRoutes(config: Config): Hono {
     return c.json(
       passes.map((p) => ({
         ...p,
-        ...((p.chatSessionId && summaries.get(p.chatSessionId)) || { calls: 0, failedCalls: [] }),
+        ...((p.chatSessionId && summaries.get(p.chatSessionId)) || {
+          callCount: 0,
+          failedCalls: [],
+        }),
       })),
     );
   });

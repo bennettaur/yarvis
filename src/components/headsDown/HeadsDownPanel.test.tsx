@@ -80,8 +80,16 @@ const FAILED_PASS = {
   finishedAt: "2026-10-19T09:05:00.000Z",
   notes: null,
   error: "Overloaded (status 529)",
-  calls: 5,
-  failedCalls: [{ name: "post_message", server: "Slack", error: "channel_not_found" }],
+  callCount: 5,
+  failedCalls: [
+    { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+    {
+      name: "send_workspace_instruction",
+      server: null,
+      error: "The turn ended before this finished.",
+      noResult: true,
+    },
+  ],
 };
 
 const CONFIG = {
@@ -255,8 +263,9 @@ describe("HeadsDownPanel", () => {
     const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
 
     expect(text).toContain("Overloaded (status 529)");
-    expect(text).toContain("5 tool calls · 1 failed");
+    expect(text).toContain("5 tool calls · 1 failed · 1 with no result");
     expect(text).toContain("Slack/post_message: channel_not_found");
+    expect(text).toContain("send_workspace_instruction: no result");
   });
 
   it("sends the option the user picked", async () => {
@@ -320,6 +329,22 @@ describe("HeadsDownPanel live", () => {
 
     expect(host.querySelector("details")?.open).toBe(false);
     expect(host.textContent).toContain("Check the billing PR first.");
+  });
+
+  it("says it will try again only when the sidecar says it is retrying", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "error", message: "Overloaded", transient: true },
+      },
+      { type: "pass-retrying", passId: "p2", retryAt: "2026-10-19T10:00:30.000Z" },
+    ];
+    const host = await mount();
+    await waitForText(host, "Trying again shortly.");
+
+    expect(host.textContent).toContain("Overloaded Trying again shortly.");
   });
 });
 
@@ -466,10 +491,20 @@ describe("applyPassEvent", () => {
     live = applyPassEvent(live, { type: "reasoning", text: "First " });
     live = applyPassEvent(live, { type: "reasoning", text: "idea." });
     live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
-    expect(live).toMatchObject({ thought: "First idea.", thinking: false });
+    expect(live).toMatchObject({ thought: "First idea.", isThinking: false });
 
     live = applyPassEvent(live, { type: "reasoning", text: "Second." });
-    expect(live).toMatchObject({ thought: "Second.", thinking: true });
+    expect(live).toMatchObject({ thought: "Second.", isThinking: true });
+  });
+
+  it("shows an error without promising a retry, and clears it once work carries on", () => {
+    let live: LivePass = { ...newLivePass("p"), retrying: true };
+    live = applyPassEvent(live, { type: "error", message: "Overloaded", transient: true });
+    expect(live).toMatchObject({ error: "Overloaded", retrying: false });
+
+    live = { ...live, retrying: true };
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ error: null, retrying: false });
   });
 });
 

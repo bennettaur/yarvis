@@ -1,5 +1,5 @@
 import type { AgentEvent } from "../chat/agent.ts";
-import type { ToolActivity } from "../db/schema.ts";
+import { CUT_SHORT_RESULT, type ToolActivity } from "../db/schema.ts";
 
 /**
  * What a pass did, kept even when it fails. A turn that ends on an error saves
@@ -7,7 +7,6 @@ import type { ToolActivity } from "../db/schema.ts";
  * saves it itself. The record is also what tells a retry, or the next pass,
  * which calls already went through.
  */
-
 export interface AttemptRecord {
   text: string;
   activity: ToolActivity[];
@@ -44,16 +43,25 @@ export function recordEvent(record: AttemptRecord, event: AgentEvent): void {
   }
 }
 
+/**
+ * A call whose turn ended before its result came back. It may still have
+ * taken effect, so it is neither done nor failed.
+ */
+export function hasNoResult(call: Pick<ToolActivity, "status" | "result">): boolean {
+  return call.status === "pending" || call.result === CUT_SHORT_RESULT;
+}
+
 /** Longest a call's arguments or error are quoted back to a pass. */
 const QUOTED_CHARS = 200;
 
-function clip(text: string): string {
+/** Flattens text to one line, cut at `max` characters. */
+export function clip(text: string, max = QUOTED_CHARS): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > QUOTED_CHARS ? `${flat.slice(0, QUOTED_CHARS)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 /** Most calls listed back to a pass; past this only the count is given. */
-const MAX_LINES = 60;
+const MAX_LISTED_CALLS = 60;
 
 /**
  * One line per call, for a pass picking up after a failure: what was called,
@@ -61,18 +69,19 @@ const MAX_LINES = 60;
  * people wrote, so callers fence the result.
  */
 export function describeActivity(activity: ToolActivity[]): string {
-  const lines = activity.slice(0, MAX_LINES).map((a) => {
-    const args =
-      a.args === undefined
-        ? ""
-        : clip(typeof a.args === "string" ? a.args : JSON.stringify(a.args));
+  const lines = activity.slice(0, MAX_LISTED_CALLS).map((a) => {
+    const rawArgs = typeof a.args === "string" ? a.args : JSON.stringify(a.args);
+    const args = a.args === undefined ? "" : clip(rawArgs);
     const call = `${a.server ? `${a.server}/` : ""}${a.name}(${args})`;
-    const outcome = a.result ? ` → ${clip(a.result)}` : "";
     if (a.status === "ok") return `- done: ${call}`;
+    if (hasNoResult(a)) return `- unknown (no result came back; check before repeating): ${call}`;
+    const outcome = a.result ? ` → ${clip(a.result)}` : "";
     // Queued for the user's approval, refused, or denied; the result says which.
     if (a.status === "denied") return `- not run: ${call}${outcome}`;
     return `- failed: ${call}${outcome}`;
   });
-  if (activity.length > MAX_LINES) lines.push(`- and ${activity.length - MAX_LINES} more calls`);
+  if (activity.length > MAX_LISTED_CALLS) {
+    lines.push(`- and ${activity.length - MAX_LISTED_CALLS} more calls`);
+  }
   return lines.join("\n");
 }
