@@ -18,6 +18,7 @@ function reportBody(data: Record<string, unknown>): string {
       pr: 7,
       headSha: HEAD,
       verdict: "agent",
+      riskTier: "standard",
       blockers: 0,
       majors: 1,
       flagged: [],
@@ -88,7 +89,7 @@ describe("read_pr_for_merge_review", () => {
     )) as Record<string, any>;
     expect(result.warning).toBeString();
     expect(result.pr.description).toMatch(/^<pr-content-[0-9a-f]+>/);
-    expect(result.report).toMatchObject({ verdict: "agent", current: true });
+    expect(result.report).toMatchObject({ verdict: "agent", riskTier: "standard", current: true });
     expect(result.report.text).not.toContain("yarvis-verify-data");
     // One tag for all of it, so the warning names every fence.
     expect(result.files[0].diff).toMatch(/^<pr-content-[0-9a-f]+>/);

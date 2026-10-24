@@ -26,6 +26,8 @@ const ReportData = z.object({
   pr: z.number().int().positive(),
   headSha: z.string(),
   verdict: z.enum(["auto", "agent", "human"]),
+  /** The report's signed risk tier, which the reviewer weighs its approval against. */
+  riskTier: z.enum(["low", "standard", "high"]),
 });
 export type ReportData = z.infer<typeof ReportData>;
 

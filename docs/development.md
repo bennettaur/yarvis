@@ -217,7 +217,8 @@ comment, and the gate approves on it in enforce mode only when:
 - it names the PR, its current commit and the exact latest signed report, so
   a new report needs a new review;
 - that report's verdict is `agent` with no blocking finding, the change isn't
-  high risk by the gate's own tier, the author is trusted and it isn't a draft.
+  high risk by the stricter of the gate's own floor and the report's signed
+  tier, the author is trusted and it isn't a draft.
 
 Each review also counts for only six hours after it was signed, and a signed
 reject of a report stands even if an approve of the same report is posted

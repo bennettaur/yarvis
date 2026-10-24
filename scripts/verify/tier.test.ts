@@ -63,7 +63,7 @@ describe("classify", () => {
     ]) {
       expect(classify([file(path)]).tier).toBe("high");
     }
-    expect(classify([file("sidecar/src/agents/definitions/planner.md")]).tier).toBe("low");
+    expect(classify([file("sidecar/src/memory/recall.ts")]).tier).toBe("low");
   });
 
   it("keeps the verifier's own tests high risk", () => {
