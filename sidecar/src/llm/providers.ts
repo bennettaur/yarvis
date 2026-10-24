@@ -84,7 +84,7 @@ function builtInProviders(config: Config, rows: ProviderModelRow[]): ProviderInf
  */
 function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): ProviderInfo {
   const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
-  const capability = row.apiKind === "ollama-systemone" ? "decision" : "chat";
+  const capability = row.apiKind === "systemone" ? "decision" : "chat";
   const models = catalogFor(
     id,
     rows,
@@ -180,7 +180,7 @@ export function pickDefaultModel(
  * An endpoint on an Ollama server. The provider's base URL is the server root,
  * since chat and decision calls reach different paths on it.
  */
-export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat" | "/v1/systemone"): string {
+export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
@@ -194,14 +194,14 @@ export interface OllamaChatTarget {
   model: string;
 }
 
-/** Where to reach a model through an Ollama server's System One API, `/v1/systemone`. */
+/** Where to reach a model through the System One API, at `<base URL>/v1/systemone`. */
 export interface SystemOneTarget {
   url: string;
   headers: Record<string, string>;
   model: string;
 }
 
-function ollamaHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
+function jsonHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -219,22 +219,22 @@ function ollamaChatTargetFor(
   if (row.apiKind !== "ollama") return null;
   return {
     url: ollamaUrl(row.baseUrl, "/api/chat"),
-    headers: ollamaHeaders(config, row),
+    headers: jsonHeaders(config, row),
     model: modelId,
   };
 }
 
-/** Where to reach a model served by an Ollama System One provider, or null for any other provider. */
+/** Where to reach a model served by a System One provider, or null for any other provider. */
 export async function systemOneTargetFor(
   config: Config,
   providerId: ProviderId,
   modelId: string,
 ): Promise<SystemOneTarget | null> {
   const row = await findCustomProvider(providerId);
-  if (row?.apiKind !== "ollama-systemone") return null;
+  if (row?.apiKind !== "systemone") return null;
   return {
-    url: ollamaUrl(row.baseUrl, "/v1/systemone"),
-    headers: ollamaHeaders(config, row),
+    url: `${row.baseUrl.replace(/\/+$/, "")}/v1/systemone`,
+    headers: jsonHeaders(config, row),
     model: modelId,
   };
 }
@@ -273,7 +273,7 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
       // The base URL names the Ollama server itself, which decision calls reach
       // at `/api/chat`; a chat turn goes through its OpenAI-compatible `/v1`.
       return createOpenAI({ ...options, baseURL: ollamaUrl(row.baseUrl, "/v1") }).chat(modelId);
-    case "ollama-systemone":
+    case "systemone":
       throw new Error("a System One model answers decision questions only, not chat");
     default:
       throw new Error(`unsupported apiKind: ${row.apiKind}`);

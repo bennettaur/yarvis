@@ -110,14 +110,14 @@ describe("custom provider routes", () => {
     expect(res.status).toBe(201);
   });
 
-  it("accepts an ollama-systemone-kind provider", async () => {
+  it("accepts a systemone-kind provider", async () => {
     const res = await app.request("/api/custom-providers", {
       method: "POST",
       headers: jsonAuth,
       body: JSON.stringify({
         name: "system one",
         baseUrl: "http://localhost:11434",
-        apiKind: "ollama-systemone",
+        apiKind: "systemone",
       }),
     });
     expect(res.status).toBe(201);

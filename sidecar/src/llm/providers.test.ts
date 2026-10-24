@@ -101,7 +101,7 @@ describe("availableProviders", () => {
     const row = await createCustomProvider({
       name: "system one",
       baseUrl: "http://localhost:11434",
-      apiKind: "ollama-systemone",
+      apiKind: "systemone",
       models: ["nimble"],
       headerNames: [],
     });

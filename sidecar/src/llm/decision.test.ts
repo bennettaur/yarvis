@@ -70,7 +70,7 @@ describe("decide through System One", () => {
     const row = await createCustomProvider({
       name: "system one",
       baseUrl: "http://127.0.0.1:11434/",
-      apiKind: "ollama-systemone",
+      apiKind: "systemone",
       models: ["nimble"],
       headerNames: [],
     });

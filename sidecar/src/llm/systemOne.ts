@@ -35,7 +35,7 @@ const responseSchema = z.object({
 });
 
 /**
- * One call to Ollama's System One API (https://docs.ollama.com/api/systemone),
+ * One call to the System One API (spec: https://docs.ollama.com/api/systemone),
  * which answers typed questions about a shared state instead of generating
  * text. Returns each question's probability of yes, by name. Throws on a
  * non-OK status, a reply that is not System One's shape, or a missing answer.
