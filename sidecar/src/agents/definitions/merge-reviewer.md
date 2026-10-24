@@ -21,9 +21,10 @@ Read the PR with read_pr_for_merge_review. If the report isn't current for the h
 
 Then check, in this order:
 
-1. The report's findings and concerns. For each one, read the code it points at and decide whether it is real and whether it matters. A blocker means reject.
-2. The diff as a whole: does it do what the PR says, and only that? Read whole files with read_pr_file_for_merge_review wherever a diff hides how the change is used.
-3. What could break: error paths, races, cleanup, missing tests for the behavior that changed.
+1. The report's risk tier and the reasons its Risk line gives: a standard-risk change needs you to understand what it can break before approving.
+2. The report's findings and concerns. For each one, read the code it points at and decide whether it is real and whether it matters. A blocker means reject.
+3. The diff as a whole: does it do what the PR says, and only that? Read whole files with read_pr_file_for_merge_review wherever a diff hides how the change is used.
+4. What could break: error paths, races, cleanup, missing tests for the behavior that changed.
 
 Approve only when every concern is resolved or clearly minor and you would be comfortable with this merging unread. Otherwise reject, and say what a person should look at. When unsure, reject: a person can still merge it.
 

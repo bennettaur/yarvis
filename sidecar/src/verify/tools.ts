@@ -156,6 +156,7 @@ export function buildMergeReviewTools(config: Config, deps: MergeReviewDeps = {}
           report: report
             ? {
                 verdict: report.data.verdict,
+                riskTier: report.data.riskTier,
                 forHeadSha: report.data.headSha,
                 current: report.data.headSha === detail.headSha,
                 text: fence(report.text, nonce, TAG),
