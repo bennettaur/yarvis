@@ -14,6 +14,7 @@ import {
   MAX_ARGS_CHARS,
   recentUserRequest,
   renderTranscript,
+  SYSTEM_ONE_CONFIDENCE,
 } from "./toolReview.ts";
 
 let dir: string;
@@ -290,6 +291,48 @@ describe("createToolCallReviewer", () => {
     const { fetchImpl } = answering(null, 500);
     const reviewer = await createToolCallReviewer(config, "Write my notes", fetchImpl);
     expect(await reviewer?.(call)).toBe(false);
+  });
+
+  describe("on a System One model", () => {
+    async function systemOneDecisionModel() {
+      const row = await createCustomProvider({
+        name: "system one",
+        baseUrl: "http://127.0.0.1:11434",
+        apiKind: "ollama-systemone",
+        models: ["nimble"],
+        headerNames: [],
+      });
+      return { provider: `custom:${row.id}`, model: "nimble" };
+    }
+
+    function answeringProbabilities(p: Record<string, number>) {
+      return (async () =>
+        Response.json({
+          answers: Object.fromEntries(Object.entries(p).map(([k, v]) => [k, { noul: v }])),
+        })) as unknown as typeof fetch;
+    }
+
+    it("approves only when it is confident on every question", async () => {
+      await saveDecisionModelConfig({
+        model: await systemOneDecisionModel(),
+        autoApproveTools: true,
+      });
+      const sure = { alignsWithRequest: 0.95, dangerous: 0.05, destructive: 0.05 };
+      const approve = await createToolCallReviewer(
+        config,
+        "Write my notes",
+        answeringProbabilities(sure),
+      );
+      expect(await approve?.(call)).toBe(true);
+
+      const unsure = { ...sure, dangerous: 1 - SYSTEM_ONE_CONFIDENCE + 0.01 };
+      const ask = await createToolCallReviewer(
+        config,
+        "Write my notes",
+        answeringProbabilities(unsure),
+      );
+      expect(await ask?.(call)).toBe(false);
+    });
   });
 
   it("asks the user without a review when the arguments are too long to see whole", async () => {

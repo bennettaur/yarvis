@@ -4,7 +4,8 @@ import type { Config } from "../config.ts";
 import { readSection, withSection } from "../settings/store.ts";
 import type { ModelSelection } from "./complexity.ts";
 import { ollamaChat } from "./ollamaChat.ts";
-import { availableProviders, resolveModelWithOllama } from "./providers.ts";
+import { availableProviders, resolveModelWithOllama, systemOneTargetFor } from "./providers.ts";
+import { type SystemOneNoulQuestion, systemOneAsk } from "./systemOne.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
@@ -88,7 +89,16 @@ export interface DecisionRequest<T> {
   schema: z.ZodType<T>;
   /** Cancels the call along with the turn it serves. */
   signal?: AbortSignal;
-  /** Injected by tests in place of the network. Used on the Ollama path. */
+  /**
+   * The same judgement as yes/no questions, for a System One model, which
+   * can't answer to a schema. `toAnswer` gets each question's probability of
+   * yes. A request without this fails on a System One model.
+   */
+  systemOne?: {
+    questions: Record<string, SystemOneNoulQuestion>;
+    toAnswer: (probabilities: Record<string, number>) => T;
+  };
+  /** Injected by tests in place of the network. Used on the Ollama paths. */
   fetchImpl?: typeof fetch;
 }
 
@@ -107,6 +117,20 @@ export async function decide<T>(
       (s): s is AbortSignal => s !== undefined,
     ),
   );
+  const systemOne = await systemOneTargetFor(config, selection.provider, selection.model);
+  if (systemOne) {
+    if (!request.systemOne) throw new Error("this decision can't be asked of a System One model");
+    const probabilities = await systemOneAsk({
+      target: systemOne,
+      state: request.prompt,
+      questions: request.systemOne.questions,
+      timeoutMs: DECISION_TIMEOUT_MS,
+      signal,
+      fetchImpl: request.fetchImpl,
+    });
+    return request.systemOne.toAnswer(probabilities);
+  }
+
   const { model, ollama } = await resolveModelWithOllama(
     config,
     selection.provider,

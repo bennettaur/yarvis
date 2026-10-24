@@ -19,8 +19,16 @@ import { readSection, withSection } from "../settings/store.ts";
  * - `ollama`       → Ollama's native API (`/api/chat`), whose JSON-schema
  *                    `format` is what decision models answer through. Chat
  *                    turns use the same server's OpenAI-compatible `/v1`.
+ * - `ollama-systemone` → Ollama's System One API (`/v1/systemone`), which
+ *                    answers typed questions instead of generating text. Its
+ *                    models serve the decision model only, never chat.
  */
-export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama";
+export type CustomProviderApiKind =
+  | "openai"
+  | "openai-chat"
+  | "anthropic"
+  | "ollama"
+  | "ollama-systemone";
 
 export interface CustomProviderRow {
   id: string;
