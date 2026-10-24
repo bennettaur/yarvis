@@ -40,6 +40,18 @@ export interface FakePull {
   files: FakeFile[];
   /** The branch conflicts with its base; GitHub reports it CONFLICTING and DIRTY. */
   conflicting?: boolean;
+  /** The head commit as a full sha; `sha-<number>` stands in when unset. */
+  headSha?: string;
+  /**
+   * The viewer's own last review, made at an older commit than the head, and
+   * how many commits the author pushed after it: what "since your review" reads.
+   */
+  viewerReview?: {
+    state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED";
+    commit: string;
+    submittedAt: string;
+    commitsSince: number;
+  };
 }
 
 /**
@@ -72,6 +84,14 @@ export const PULLS: FakePull[] = [
     updatedAt: hoursAgo(2),
     requestedReviewers: [VIEWER],
     reviews: { "sam-okafor": "APPROVED" },
+    // Asked to look again: the viewer requested changes two pushes ago.
+    headSha: "4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39",
+    viewerReview: {
+      state: "CHANGES_REQUESTED",
+      commit: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07",
+      submittedAt: hoursAgo(20),
+      commitsSince: 2,
+    },
     checks: [
       { name: "build", conclusion: "SUCCESS" },
       { name: "unit tests", conclusion: "SUCCESS" },

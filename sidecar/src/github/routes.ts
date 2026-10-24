@@ -4,7 +4,9 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { retireGuide } from "../pr/guides.ts";
-import { refKey } from "../pr/types.ts";
+import { seenCommitFields } from "../pr/reviewMarks.ts";
+import { type PrRef, refKey } from "../pr/types.ts";
+import { markReviewed, seenHead } from "../reviewWorkspaces/reviewMarks.ts";
 import { createGitHubClient, reviewExternalId } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { githubErrorResponse, missingTokenResponse } from "./errors.ts";
@@ -72,6 +74,7 @@ const commentSchema = z
     side: z.enum(["RIGHT", "LEFT"]).optional(),
     startLine: z.number().int().min(1).optional(),
     startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+    ...seenCommitFields,
   })
   // Within one file a range runs downwards. Across the two (a range starting in
   // the old file and ending in the new) the numbers aren't comparable, so only
@@ -101,6 +104,7 @@ const replySchema = z.object({ body: z.string().trim().min(1).max(65_536) });
 const reviewSchema = z.object({
   event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
   body: z.string().max(65_536).optional(),
+  ...seenCommitFields,
 });
 
 /**
@@ -157,6 +161,29 @@ export function createGithubRoutes(config: Config): Hono {
   const db = () => getDb(config.databaseUrl as string).db;
   const client = () =>
     config.secrets.githubToken ? createGitHubClient(config, config.secrets.githubToken) : null;
+
+  /**
+   * Records where the user reviewed: the head the page said it was showing,
+   * else the commit GitHub attached the review or comment to.
+   */
+  const recordSeen = async (
+    ref: PrRef,
+    seen: { headSha?: string; baseSha?: string; mergeBaseSha?: string },
+    providerSha: string | null,
+    source: "review" | "comment",
+  ) => {
+    const headSha = seenHead(seen.headSha, providerSha);
+    if (!headSha) return;
+    // The page's base and merge-base belong to the head it sent, not to GitHub's.
+    const own = headSha === seen.headSha;
+    await markReviewed(db(), config, {
+      ref,
+      headSha,
+      baseSha: own ? seen.baseSha : null,
+      mergeBaseSha: own ? seen.mergeBaseSha : null,
+      source,
+    });
+  };
 
   // --- Live GitHub queries (require a token) ---
 
@@ -319,13 +346,14 @@ export function createGithubRoutes(config: Config): Hono {
       return c.json({ error: "request changes requires a body" }, 400);
     }
     try {
-      const { nodeId } = await gh.submitReview(
+      const { nodeId, commitId } = await gh.submitReview(
         params.owner,
         params.repo,
         params.number,
         parsed.data.event,
         parsed.data.body,
       );
+      await recordSeen({ provider: "github", ...params }, parsed.data, commitId, "review");
       // Approving or requesting changes ends the reviewer's pass over this PR,
       // so its guide has done its job. A plain comment does not — the review is
       // still open.
@@ -457,7 +485,14 @@ export function createGithubRoutes(config: Config): Hono {
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      await gh.postComment(params.owner, params.repo, params.number, parsed.data);
+      const { headSha, baseSha, mergeBaseSha, ...comment } = parsed.data;
+      const { commitId } = await gh.postComment(params.owner, params.repo, params.number, comment);
+      await recordSeen(
+        { provider: "github", ...params },
+        { headSha, baseSha, mergeBaseSha },
+        commitId,
+        "comment",
+      );
       void emitEvent(db(), {
         type: "pr.commented",
         source: "github",

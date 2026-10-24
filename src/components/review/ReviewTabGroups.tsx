@@ -1,5 +1,5 @@
 import { type DragEvent, memo, type ReactNode, useCallback, useRef, useState } from "react";
-import { renderTab, tabTitle } from "./tabs/registry";
+import { renderTab, TAB_GLYPH, tabTitle, tabTooltip } from "./tabs/registry";
 import {
   closeTab,
   focusTab,
@@ -11,7 +11,13 @@ import {
   type TabGroup,
   type TabLayout,
 } from "./tabs/tabLayout";
-import { type PrColor, type TabContext, type TabSpec, tabId } from "./tabs/types";
+import {
+  type DynamicTabKind,
+  type PrColor,
+  type TabContext,
+  type TabSpec,
+  tabId,
+} from "./tabs/types";
 
 /** Namespaced so a drop from anything else on the page is ignored. */
 const TAB_DRAG_MIME = "application/x-yarvis-review-tab";
@@ -219,7 +225,8 @@ function GroupView({
           const owner = ownerOf(spec.prId);
           const active = group.activeId === id;
           const title = tabTitle(spec);
-          const full = "path" in spec ? spec.path : title;
+          const full = tabTooltip(spec);
+          const glyph = isStaticTab(spec) ? undefined : TAB_GLYPH[spec.kind as DynamicTabKind];
           return (
             // biome-ignore lint/a11y/noStaticElementInteractions: drag handlers on the wrapper; the inner buttons own click and keyboard activation.
             <div
@@ -280,7 +287,7 @@ function GroupView({
                 {showOwner && owner && (
                   <span className={`shrink-0 font-medium ${owner.color.text}`}>{owner.label}</span>
                 )}
-                {spec.kind === "diff" && <span className="shrink-0 text-sky-400">±</span>}
+                {glyph && <span className={`shrink-0 ${glyph.className}`}>{glyph.glyph}</span>}
                 <span className={`truncate ${isStaticTab(spec) ? "" : "font-mono"}`}>{title}</span>
               </button>
               <button

@@ -282,6 +282,17 @@ to the PR's branch, and reports what it resolved and anything it's unsure of.
 The PR's title and branch names are quoted to it as data, not instructions. As with any send,
 Yarvis confirms delivery, not that the work is done.
 
+### See what changed since your review
+
+Yarvis remembers where you last reviewed each PR: the commit you were looking
+at when you approved, requested changes or posted a comment here, or when you
+reviewed it on GitHub (or voted on it in Azure DevOps). When the PR has moved
+on since, a note under the header says so — **3 new commits since your
+review**, or that it was force-pushed — with **See what changed in a review
+workspace**. That opens the PR in a [review workspace](review-workspaces.md) on
+its **Since last review** tab, which shows what the author changed since,
+leaving out what came in from the base branch.
+
 ### See where a PR sits in its stack
 
 A PR that is part of a stack gets a **Stack** section above **Checks**. It

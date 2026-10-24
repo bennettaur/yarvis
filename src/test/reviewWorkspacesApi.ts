@@ -16,8 +16,9 @@ type VerificationApi = typeof import("../lib/reviewWorkspaces/verification");
 type AgentRunsApi = typeof import("../lib/agentRuns");
 type MutationApi = typeof import("../lib/reviewWorkspaces/mutation");
 type MutationConfigApi = typeof import("../lib/pr/mutationTestingConfig");
+type SinceReviewApi = typeof import("../lib/reviewWorkspaces/sinceReview");
 type Overrides = Partial<
-  ReviewApi & VerificationApi & AgentRunsApi & MutationApi & MutationConfigApi
+  ReviewApi & VerificationApi & AgentRunsApi & MutationApi & MutationConfigApi & SinceReviewApi
 >;
 
 // Copied, not kept as the module namespaces: those are live, so once the mocks
@@ -28,6 +29,7 @@ const verification = { ...(await import("../lib/reviewWorkspaces/verification"))
 const agentRuns = { ...(await import("../lib/agentRuns")) };
 const mutation = { ...(await import("../lib/reviewWorkspaces/mutation")) };
 const mutationConfig = { ...(await import("../lib/pr/mutationTestingConfig")) };
+const sinceReview = { ...(await import("../lib/reviewWorkspaces/sinceReview")) };
 let overrides: Overrides = {};
 
 export function stubReviewApi(next: Overrides): void {
@@ -52,6 +54,7 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
   answerReviewSetup: through(review, "answerReviewSetup"),
   removeReviewPr: through(review, "removeReviewPr"),
   refreshReviewPr: through(review, "refreshReviewPr"),
+  followReviewPrProgress: through(review, "followReviewPrProgress"),
   archiveReviewWorkspace: through(review, "archiveReviewWorkspace"),
   reviewChangedFiles: through(review, "reviewChangedFiles"),
   reviewTree: through(review, "reviewTree"),
@@ -75,6 +78,11 @@ mock.module("../lib/reviewWorkspaces/mutation", () => ({
   startMutationTesting: through(mutation, "startMutationTesting"),
   cancelMutationTesting: through(mutation, "cancelMutationTesting"),
   followMutationProgress: through(mutation, "followMutationProgress"),
+}));
+
+mock.module("../lib/reviewWorkspaces/sinceReview", () => ({
+  ...sinceReview,
+  markReviewedHere: through(sinceReview, "markReviewedHere"),
 }));
 
 mock.module("../lib/pr/mutationTestingConfig", () => ({

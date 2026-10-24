@@ -22,6 +22,7 @@ export default function ReviewPanel({
 }) {
   const [selected, setSelected] = useState<string | null>(readSelectedWorkspace);
   const [focusPrId, setFocusPrId] = useState<string | undefined>(undefined);
+  const [focusTab, setFocusTab] = useState<OpenReviewRequest["tab"]>(undefined);
 
   const select = useCallback((id: string | null) => {
     setSelected(id);
@@ -32,10 +33,14 @@ export default function ReviewPanel({
     if (!requested) return;
     select(requested.workspaceId);
     setFocusPrId(requested.prId);
+    setFocusTab(requested.tab);
     onRequestConsumed();
   }, [requested, select, onRequestConsumed]);
 
-  const clearFocus = useCallback(() => setFocusPrId(undefined), []);
+  const clearFocus = useCallback(() => {
+    setFocusPrId(undefined);
+    setFocusTab(undefined);
+  }, []);
 
   if (!selected) return <ReviewWorkspaceList onSelect={select} />;
   return (
@@ -43,6 +48,7 @@ export default function ReviewPanel({
       key={selected}
       workspaceId={selected}
       focusPrId={focusPrId}
+      focusTab={focusTab}
       onFocusHandled={clearFocus}
       onBack={() => select(null)}
       onArchived={() => {

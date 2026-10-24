@@ -2077,3 +2077,41 @@ export const mutationRuns = pgTable(
 );
 
 export type MutationRunRow = typeof mutationRuns.$inferSelect;
+
+/**
+ * Where the user last reviewed a pull request: the head commit they were
+ * looking at, so "what changed since I last reviewed" has a starting point.
+ *
+ * Keyed by `refKey` rather than by review workspace, because a review is of
+ * the pull request — one submitted from the classic page, from a review
+ * workspace or on the provider's own site all count. `source` says which:
+ *  - `review`   a review submitted (or a vote cast) through Yarvis;
+ *  - `comment`  a line comment posted through Yarvis;
+ *  - `manual`   the user's own "Mark reviewed here";
+ *  - `provider` read back from the provider (the viewer's reviews and the
+ *               commit each was made on), so a review done elsewhere counts.
+ * Provider rows are deduplicated per commit; the others are an append-only log,
+ * of which only the latest is normally read.
+ */
+export const prReviewMarks = pgTable(
+  "pr_review_marks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha"),
+    /** Known when the mark was recorded against a checkout that had resolved it. */
+    mergeBaseSha: text("merge_base_sha"),
+    source: text("source", { enum: ["review", "comment", "manual", "provider"] }).notNull(),
+    /** For a `provider` mark, when the review was submitted there. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("pr_review_marks_ref_idx").on(t.refKey, t.createdAt.desc()),
+    uniqueIndex("pr_review_marks_provider_idx")
+      .on(t.refKey, t.headSha)
+      .where(sql`${t.source} = 'provider'`),
+  ],
+);
+
+export type PrReviewMark = typeof prReviewMarks.$inferSelect;

@@ -5,7 +5,7 @@ import { agentRunRegistry } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import type { PrRef } from "../pr/types.ts";
+import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { isValidSymbol } from "./definitions.ts";
@@ -13,6 +13,14 @@ import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
 import { follow, type ReviewProgressEvent } from "./progress.ts";
+import {
+  markReviewPrHere,
+  reviewCommitDiff,
+  reviewCommits,
+  reviewLastReview,
+  reviewSinceReview,
+  reviewSinceReviewFile,
+} from "./reviewMarks.ts";
 import {
   addReviewPr,
   answerReviewSetup,
@@ -291,6 +299,106 @@ export function createReviewWorkspaceRoutes(
       assertSafeRepoPath(path);
       return c.json(
         await reviewDiff(db(), config, c.req.param("id"), c.req.param("prId"), path, deps()),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // The latest review mark (recorded here, from the classic page, or read
+  // back from the provider), with its commit fetched and pinned in the clone.
+  router.get("/:id/prs/:prId/last-review", async (c) => {
+    try {
+      return c.json(
+        await reviewLastReview(db(), config, c.req.param("id"), c.req.param("prId"), deps()),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // "Mark reviewed here": a manual mark at the checkout's head.
+  router.post("/:id/prs/:prId/review-mark", async (c) => {
+    try {
+      return c.json(
+        await markReviewPrHere(db(), config, c.req.param("id"), c.req.param("prId"), deps()),
+        201,
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // What the PR's own change did since the last review, or since `?from=<sha>`.
+  router.get("/:id/prs/:prId/since-review", async (c) => {
+    const from = c.req.query("from");
+    if (from !== undefined && !COMMIT_SHA_PATTERN.test(from)) {
+      return c.json({ error: "from must be a full commit sha" }, 400);
+    }
+    try {
+      return c.json(
+        await reviewSinceReview(db(), config, c.req.param("id"), c.req.param("prId"), deps(), from),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  router.get("/:id/prs/:prId/since-review/file", async (c) => {
+    const from = c.req.query("from");
+    const path = c.req.query("path") ?? "";
+    if (from !== undefined && !COMMIT_SHA_PATTERN.test(from)) {
+      return c.json({ error: "from must be a full commit sha" }, 400);
+    }
+    try {
+      assertSafeRepoPath(path);
+      return c.json(
+        await reviewSinceReviewFile(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          path,
+          deps(),
+          from,
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  router.get("/:id/prs/:prId/commits", async (c) => {
+    const from = c.req.query("from");
+    if (from !== undefined && !COMMIT_SHA_PATTERN.test(from)) {
+      return c.json({ error: "from must be a full commit sha" }, 400);
+    }
+    try {
+      return c.json(
+        await reviewCommits(db(), config, c.req.param("id"), c.req.param("prId"), deps(), from),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // One commit's own diff: its files, or with `?path=` that file's two sides.
+  router.get("/:id/prs/:prId/commits/:sha/diff", async (c) => {
+    const sha = c.req.param("sha");
+    const path = c.req.query("path");
+    if (!COMMIT_SHA_PATTERN.test(sha)) return c.json({ error: "not a commit sha" }, 400);
+    try {
+      if (path !== undefined) assertSafeRepoPath(path);
+      return c.json(
+        await reviewCommitDiff(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          sha,
+          path,
+          deps(),
+        ),
       );
     } catch (e) {
       return fail(c, e);

@@ -1,0 +1,494 @@
+/**
+ * Review marks as a review workspace uses them: the last review of a PR, the
+ * commit it was at kept alive in the review clone, and the reads built on it —
+ * what changed since (files and commits), one file's interdiff, the PR's
+ * commits and one commit's own diff.
+ *
+ * The git is in `sinceReview.ts`; this resolves which commits to compare, from
+ * the PR row and its marks, and caches the answers by sha.
+ */
+
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import type { Config } from "../config.ts";
+import type { Db } from "../db/client.ts";
+import type { PrReviewMark } from "../db/schema.ts";
+import {
+  latestReviewMark,
+  providerMarks,
+  type ReviewMarkInput,
+  type ReviewMarkResponse,
+  recordReviewMark,
+  setMarkMergeBase,
+  toMarkResponse,
+} from "../pr/reviewMarks.ts";
+import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
+import { MAX_FILE_BYTES } from "../workspaces/files.ts";
+import { stringsSize } from "./cache.ts";
+import { type FileAtSide, fileDiffBetween, type ReviewChangedFile } from "./git.ts";
+import {
+  cache,
+  cachedFileAt,
+  changedFiles,
+  defaultReviewDeps,
+  getReviewPr,
+  type ReadyPr,
+  type ReviewDeps,
+  ReviewWorkspaceError,
+  refDomKey,
+  requireReadyPr,
+  reviewClonePath,
+  withCloneLock,
+} from "./service.ts";
+import {
+  commitsSince,
+  fastForward,
+  fileSince,
+  filesSince,
+  listCommits,
+  MAX_COUNTED_FILES,
+  mergeBaseOf,
+  overCap,
+  parentOf,
+  pinReviewedCommit,
+  type ReviewCommit,
+  type SinceEntry,
+  type SinceFile,
+  type SinceFileView,
+  type SinceRange,
+} from "./sinceReview.ts";
+
+/**
+ * Pins `sha` in the PR repo's review clone, when there is one: a mark made
+ * from the classic page is still worth keeping alive for the next review
+ * workspace. Null when there is no clone; false when the commit can't be had.
+ */
+async function pinInClone(
+  config: Config,
+  ref: PrRef,
+  sha: string,
+  deps: ReviewDeps,
+): Promise<boolean | null> {
+  const clonePath = reviewClonePath(config, ref);
+  if (!existsSync(join(clonePath, ".git"))) return null;
+  const runners = deps.git({ credentials: deps.credentialsFor(ref) });
+  return withCloneLock(clonePath, () => pinReviewedCommit(runners, clonePath, refDomKey(ref), sha));
+}
+
+/**
+ * Records a mark for a review or comment that has already gone through, and
+ * pins its commit in the background. Never throws: the review is posted
+ * whatever happens here, so a failure is logged rather than reported as the
+ * review failing.
+ */
+export async function markReviewed(
+  db: Db,
+  config: Config,
+  input: ReviewMarkInput,
+  deps: ReviewDeps = defaultReviewDeps(db, config),
+): Promise<PrReviewMark | null> {
+  try {
+    const mark = await recordReviewMark(db, input);
+    void pinInClone(config, input.ref, input.headSha, deps).catch((e) =>
+      console.warn("[review-workspaces] could not keep the reviewed commit:", e),
+    );
+    return mark;
+  } catch (e) {
+    console.warn("[review-workspaces] could not record the review mark:", e);
+    return null;
+  }
+}
+
+/** The sha a review route should record: what the page showed, else what the provider used. */
+export function seenHead(claimed: string | undefined, fallback: string | null): string | null {
+  if (claimed && COMMIT_SHA_PATTERN.test(claimed)) return claimed;
+  return fallback && COMMIT_SHA_PATTERN.test(fallback) ? fallback : null;
+}
+
+export interface LastReview {
+  mark: ReviewMarkResponse | null;
+  /** The review clone has the mark's commit (fetching and pinning it if it had to); null before the PR is cloned. */
+  shaExists: boolean | null;
+  /** The commit the checkout is at. */
+  headSha: string | null;
+  /** The mark is at the checkout's head: nothing to see since. */
+  upToDate: boolean;
+}
+
+/** The PR's latest mark, after reading the viewer's provider-side reviews in. */
+async function latestMark(db: Db, ref: PrRef, deps: ReviewDeps): Promise<PrReviewMark | null> {
+  await providerMarks.sync(db, ref, deps.markProvider?.(ref) ?? null);
+  return latestReviewMark(db, ref);
+}
+
+export async function reviewLastReview(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+): Promise<LastReview> {
+  const pr = await getReviewPr(db, workspaceId, prId);
+  const mark = await latestMark(db, pr.ref, deps);
+  if (!mark) return { mark: null, shaExists: null, headSha: pr.headSha, upToDate: false };
+  const shaExists =
+    pr.status === "ready" ? await pinInClone(config, pr.ref, mark.headSha, deps) : null;
+  return {
+    mark: toMarkResponse(mark),
+    shaExists,
+    headSha: pr.headSha,
+    upToDate: mark.headSha === pr.headSha,
+  };
+}
+
+/** "Mark reviewed here": a manual mark at the commit the checkout is at. */
+export async function markReviewPrHere(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+): Promise<ReviewMarkResponse> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const mark = await recordReviewMark(db, {
+    ref: ready.pr.ref,
+    headSha: ready.headSha,
+    baseSha: ready.pr.baseSha,
+    mergeBaseSha: ready.mergeBaseSha,
+    source: "manual",
+  });
+  await withCloneLock(ready.clonePath, () =>
+    pinReviewedCommit(ready.runners, ready.clonePath, refDomKey(ready.pr.ref), ready.headSha),
+  );
+  return toMarkResponse(mark);
+}
+
+/**
+ * The commits to compare: the reviewed head (`from`, else the last mark's) and
+ * its merge-base, against the checkout's. The reviewed commit is fetched and
+ * pinned first. Its merge-base is the mark's when it recorded one; otherwise
+ * it is worked out against today's base tip, which gives the same answer for a
+ * base that has only moved forward since — and is stored on the mark.
+ */
+async function resolveRange(
+  db: Db,
+  ready: ReadyPr,
+  deps: ReviewDeps,
+  from: string | undefined,
+): Promise<{ range: SinceRange; mark: PrReviewMark | null }> {
+  const mark = from ? null : await latestMark(db, ready.pr.ref, deps);
+  const fromHead = from ?? mark?.headSha;
+  if (!fromHead) {
+    throw new ReviewWorkspaceError("no review of this pull request is recorded yet", 404);
+  }
+  const present = await withCloneLock(ready.clonePath, () =>
+    pinReviewedCommit(ready.runners, ready.clonePath, refDomKey(ready.pr.ref), fromHead),
+  );
+  if (!present) {
+    throw new ReviewWorkspaceError(
+      `the reviewed commit ${fromHead.slice(0, 12)} can no longer be fetched`,
+      404,
+    );
+  }
+  let fromMergeBase = mark?.mergeBaseSha ?? null;
+  if (fromMergeBase) {
+    const has = await ready.runners.local(["cat-file", "-e", `${fromMergeBase}^{commit}`], {
+      cwd: ready.clonePath,
+    });
+    if (has.exitCode !== 0) fromMergeBase = null;
+  }
+  if (!fromMergeBase) {
+    fromMergeBase = await mergeBaseOf(
+      ready.runners,
+      ready.clonePath,
+      ready.pr.baseSha ?? ready.mergeBaseSha,
+      fromHead,
+    );
+    if (!fromMergeBase) {
+      throw new ReviewWorkspaceError("the reviewed commit shares no history with the base", 409);
+    }
+    if (mark) await setMarkMergeBase(db, mark.id, fromMergeBase);
+  }
+  return {
+    range: {
+      fromHead,
+      fromMergeBase,
+      toHead: ready.headSha,
+      toMergeBase: ready.mergeBaseSha,
+    },
+    mark,
+  };
+}
+
+const rangeKey = (clonePath: string, r: SinceRange) =>
+  `${clonePath}:${r.fromMergeBase}..${r.fromHead}:${r.toMergeBase}..${r.toHead}`;
+
+function sinceEntries(ready: ReadyPr, range: SinceRange): Promise<SinceEntry[]> {
+  return cache.get(
+    `since:${rangeKey(ready.clonePath, range)}`,
+    () =>
+      filesSince(ready.runners, ready.clonePath, range, (from, to) =>
+        changedFiles(ready.runners, ready.clonePath, from, to),
+      ),
+    (entries) => stringsSize(entries.map((e) => e.path)) + entries.length * 128,
+  );
+}
+
+function sinceView(ready: ReadyPr, range: SinceRange, entry: SinceEntry): Promise<SinceFileView> {
+  return cache.get(
+    `since-file:${rangeKey(ready.clonePath, range)}:${entry.path}`,
+    () => fileSince(ready.runners, range, entry, (sha, path) => cachedFileAt(ready, sha, path)),
+    (view) =>
+      (view.original?.content.length ?? 0) +
+      (view.modified?.content.length ?? 0) +
+      view.patch.length +
+      128,
+  );
+}
+
+const unreadable = (entry: SinceEntry) => entry.binary || overCap(entry.sizes);
+
+export interface SinceReview {
+  fromHeadSha: string;
+  toHeadSha: string;
+  fromMergeBase: string;
+  toMergeBase: string;
+  /** History was rewritten: the reviewed head isn't in today's head (a rebase or force-push). */
+  rebased: boolean;
+  /** The merge-base moved: a rebase onto, or a merge of, a newer base. */
+  baseMoved: boolean;
+  /** The mark this compares from; null when the caller named `from` itself. */
+  mark: ReviewMarkResponse | null;
+  files: SinceFile[];
+  /** More files changed than were counted; the rest list with zero counts. */
+  filesTruncated: boolean;
+  /** Today's commits, each flagged with whether it is new since the review. */
+  commits: ReviewCommit[];
+  /** Reviewed commits with no counterpart in today's head: dropped or rewritten. */
+  removedCommits: ReviewCommit[];
+  commitsTruncated: boolean;
+}
+
+/**
+ * What changed in the PR's own change since the last review (or since
+ * `from`): the files whose change differs, with interdiff line counts, and the
+ * commits. Upstream changes brought in by a rebase or merge are left out; see
+ * `sinceReview.ts` for how.
+ */
+export async function reviewSinceReview(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+  from?: string,
+): Promise<SinceReview> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const { range, mark } = await resolveRange(db, ready, deps, from);
+  const entries = await sinceEntries(ready, range);
+  const files: SinceFile[] = [];
+  let counted = 0;
+  // Serial on purpose, like `reviewPatches`: each view is a few local git calls.
+  for (const entry of entries) {
+    const skip = unreadable(entry);
+    const view = !skip && counted < MAX_COUNTED_FILES ? await sinceView(ready, range, entry) : null;
+    if (view) counted++;
+    files.push({
+      path: entry.path,
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+      status: entry.status,
+      additions: view?.additions ?? 0,
+      deletions: view?.deletions ?? 0,
+      binary: entry.binary,
+      tooLarge: !entry.binary && overCap(entry.sizes),
+    });
+  }
+  const commits = await cache.get(
+    `since-commits:${rangeKey(ready.clonePath, range)}`,
+    () => commitsSince(ready.runners, ready.clonePath, range),
+    (c) => (c.commits.length + c.removed.length) * 256,
+  );
+  return {
+    fromHeadSha: range.fromHead,
+    toHeadSha: range.toHead,
+    fromMergeBase: range.fromMergeBase,
+    toMergeBase: range.toMergeBase,
+    rebased: !(await fastForward(ready.runners, ready.clonePath, range)),
+    baseMoved: range.fromMergeBase !== range.toMergeBase,
+    mark: mark ? toMarkResponse(mark) : null,
+    files,
+    filesTruncated: entries.filter((e) => !unreadable(e)).length > counted,
+    commits: commits.commits,
+    removedCommits: commits.removed,
+    commitsTruncated: commits.truncated,
+  };
+}
+
+/** One file's interdiff since the last review (or `from`); 404 unless the file is listed there. */
+export async function reviewSinceReviewFile(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  path: string,
+  deps: ReviewDeps,
+  from?: string,
+): Promise<SinceFileView & { fromHeadSha: string; toHeadSha: string; tooLarge: boolean }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const { range } = await resolveRange(db, ready, deps, from);
+  const entry = (await sinceEntries(ready, range)).find((e) => e.path === path);
+  if (!entry) {
+    throw new ReviewWorkspaceError(`${path} hasn't changed since the review`, 404);
+  }
+  const shas = { fromHeadSha: range.fromHead, toHeadSha: range.toHead };
+  if (unreadable(entry)) {
+    return {
+      ...shas,
+      path: entry.path,
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+      status: entry.status,
+      mode: "direct",
+      original: null,
+      modified: null,
+      patch: "",
+      additions: 0,
+      deletions: 0,
+      tooLarge: !entry.binary,
+    };
+  }
+  return { ...shas, ...(await sinceView(ready, range, entry)), tooLarge: false };
+}
+
+function prCommits(ready: ReadyPr) {
+  return cache.get(
+    `commits:${ready.clonePath}:${ready.mergeBaseSha}..${ready.headSha}`,
+    () => listCommits(ready.runners, ready.clonePath, ready.mergeBaseSha, ready.headSha),
+    (c) => c.commits.length * 256,
+  );
+}
+
+export interface PrCommits {
+  headSha: string;
+  mergeBaseSha: string;
+  /** The reviewed head `isNew` is measured from; null when nothing is recorded. */
+  fromHeadSha: string | null;
+  commits: ReviewCommit[];
+  truncated: boolean;
+}
+
+/**
+ * The PR's commits, `merge-base..head`, newest first. With a last review (or
+ * `from`), each says whether it is new since; without one, none is.
+ */
+export async function reviewCommits(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+  from?: string,
+): Promise<PrCommits> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const base = { headSha: ready.headSha, mergeBaseSha: ready.mergeBaseSha };
+  let range: SinceRange | null = null;
+  try {
+    range = (await resolveRange(db, ready, deps, from)).range;
+  } catch (e) {
+    // No mark, or a reviewed commit that's gone, still leaves a list worth showing.
+    if (!(e instanceof ReviewWorkspaceError) || from) throw e;
+  }
+  if (!range) {
+    const { commits, truncated } = await prCommits(ready);
+    return {
+      ...base,
+      fromHeadSha: null,
+      commits: commits.map((c) => ({ ...c, isNew: false })),
+      truncated,
+    };
+  }
+  const since = await cache.get(
+    `since-commits:${rangeKey(ready.clonePath, range)}`,
+    () => commitsSince(ready.runners, ready.clonePath, range),
+    (c) => (c.commits.length + c.removed.length) * 256,
+  );
+  return {
+    ...base,
+    fromHeadSha: range.fromHead,
+    commits: since.commits,
+    truncated: since.truncated,
+  };
+}
+
+export interface CommitFiles {
+  sha: string;
+  parentSha: string;
+  files: ReviewChangedFile[];
+}
+
+export interface CommitFileDiff {
+  sha: string;
+  parentSha: string;
+  path: string;
+  oldPath?: string;
+  status: ReviewChangedFile["status"];
+  /** The file at the commit's first parent; null when the commit added it. */
+  original: FileAtSide | null;
+  /** The file at the commit; null when the commit deleted it. */
+  modified: FileAtSide | null;
+  patch: string;
+  tooLarge: boolean;
+}
+
+/**
+ * One of the PR's commits, diffed against its first parent: its files, or with
+ * `path` that file's two versions and patch. Only a commit in the PR's own
+ * `merge-base..head` is read, so a sha from the request can't name anything
+ * else in the clone.
+ */
+export async function reviewCommitDiff(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  sha: string,
+  path: string | undefined,
+  deps: ReviewDeps,
+): Promise<CommitFiles | CommitFileDiff> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const commit = (await prCommits(ready)).commits.find((c) => c.sha === sha);
+  if (!commit) throw new ReviewWorkspaceError("that commit isn't part of this pull request", 404);
+  const parentSha = parentOf(commit);
+  const files = await changedFiles(ready.runners, ready.clonePath, parentSha, sha);
+  if (path === undefined) {
+    return {
+      sha,
+      parentSha,
+      files: files.map(({ oldSize: _old, newSize: _new, ...file }) => file),
+    };
+  }
+  const file = files.find((f) => f.path === path);
+  if (!file) throw new ReviewWorkspaceError(`${path} isn't changed by that commit`, 404);
+  const base = {
+    sha,
+    parentSha,
+    path,
+    ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+    status: file.status,
+  };
+  if (file.binary || file.oldSize > MAX_FILE_BYTES || file.newSize > MAX_FILE_BYTES) {
+    return { ...base, original: null, modified: null, patch: "", tooLarge: !file.binary };
+  }
+  const [original, modified, patch] = await Promise.all([
+    file.status === "added"
+      ? Promise.resolve(null)
+      : cachedFileAt(ready, parentSha, file.oldPath ?? path),
+    file.status === "deleted" ? Promise.resolve(null) : cachedFileAt(ready, sha, path),
+    cache.get(
+      `diff:${ready.clonePath}:${parentSha}..${sha}:${path}`,
+      () =>
+        fileDiffBetween(ready.runners.local, ready.clonePath, parentSha, sha, path, file.oldPath),
+      (p) => p.length + 64,
+    ),
+  ]);
+  return { ...base, original, modified, patch, tooLarge: false };
+}

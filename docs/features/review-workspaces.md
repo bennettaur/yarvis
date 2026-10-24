@@ -51,11 +51,18 @@ title:
   in the diff. The number beside Comments counts the open threads. Images in
   comments load straight from wherever they are hosted, as they do in the PRs
   tab, so opening the tab lets those hosts see the request.
+- **Since last review** opens what changed since you last reviewed the PR (see
+  [Since last review](#since-last-review)). When there are commits you haven't
+  seen, it says how many.
 - **Changed files** is a tree of what the PR changes, with how many you've
   viewed. Each file has a viewed checkbox, its comment count (amber while a
   thread is open), and a **must read** marker when the
   [verification report](#verification-report) names it. Clicking a file opens
   its diff.
+- **Commits** lists the PR's commits, newest first. A green dot marks a commit
+  that is new since your last review, and the section opens by itself when
+  there are any. Clicking a commit opens it as a tab: the files it touched on
+  the left, and the diff of the one you pick against the commit's parent.
 - **All files** is the whole tree at the PR's head, collapsed by default, with
   a filter box: every word you type must appear in the path. Files the PR
   changes are marked and open as diffs; anything else opens whole.
@@ -194,12 +201,67 @@ from the PR, its tests or a model is shown as plain text. A path is a link to
 the diff only when the PR changes that file. A pass made for an older head
 says so, with **Re-run**.
 
+### Since last review
+
+For a re-review: what the author did since you last looked, without wading
+through the whole PR again.
+
+**Where you last reviewed** is recorded for you. Submitting a review (approve,
+request changes or comment) or posting a line comment through Yarvis records
+the commit you were looking at, from a review workspace or the PRs tab. Your
+own reviews on GitHub, and your votes on Azure DevOps, count too: GitHub says
+which commit each review was made on, and an Azure vote is matched to the push
+it came after. **⋯ → Mark reviewed here** in the PR bar records the checkout's
+commit by hand, for when you read the PR without leaving a review. The latest
+of all of these is your last review. The commit is kept in the review clone,
+so a force-push or a clean-up of the clone doesn't lose it.
+
+The **Since last review** tab shows:
+
+- A summary line: how many new commits, how many files, and whether the PR was
+  rebased onto a newer base, force-pushed, or had its base merged in.
+- A space for an agent's summary of what changed, which is coming in a later
+  release.
+- The files whose change differs from the one you reviewed: **Changed again**,
+  **Newly changed** (the PR didn't touch it before), or **Reverted** (the PR no
+  longer changes it), with the lines added and removed since. Clicking one opens
+  it as a **Δ** tab.
+- The new commits, which open as commit tabs, and any commits you reviewed that
+  a force-push has since dropped.
+
+Changes that came in from the base branch are left out. If the author rebased
+onto a newer `main`, or merged `main` in, the files `main` changed don't show
+up, and a file both changed shows only the author's part. Yarvis compares the
+PR's own change then (from its merge-base to the commit you reviewed) with its
+own change now, rather than the two commits directly. A **Δ** tab shows the
+file as you reviewed it, moved onto today's base, beside the file now, so both
+sides carry the same upstream lines and only the author's edits differ. When
+upstream rewrote the very lines the PR changed, that can't be done cleanly; the
+left side is then the file exactly as you reviewed it, and a note above the
+diff says that some differences come from the base branch. A commit is only
+"new" if it brings a change you haven't seen: a commit a rebase re-created with
+the same change counts as one you've seen.
+
+When you've caught up, **Mark reviewed here** at the bottom of the tab moves
+your starting point to the checkout's commit. Open **Δ** tabs keep comparing
+against the review they were opened from.
+
+### New commits pushed
+
+The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
+while the app is in view. When someone has pushed past the commit the checkout
+is at, a **New commits pushed — Refresh** banner appears under the bar.
+**Refresh** fetches the new commits and moves the checkout, showing the fetch's
+progress as it goes. Your tabs stay open and show the new commits once it is
+done, and the banner then offers **See what changed since you last reviewed**.
+
 ### Tabs
 
-Description, reviewers, checks, comments and the agent tabs stay pinned to the
-left of the strip, in that order, and each one opens once per PR: opening it
-again brings the open tab forward. Files and diffs open to the right of them,
-and also open only once. Opening a file that is already open jumps to the line
+Description, reviewers, checks, comments, since last review and the agent tabs
+stay pinned to the left of the strip, in that order, and each one opens once
+per PR: opening it again brings the open tab forward. Files, diffs (**±**),
+since-review files (**Δ**) and commits (**●**) open to the right of them, and
+also open only once. Opening a file that is already open jumps to the line
 asked for.
 
 - Drag a tab to reorder it. Static tabs stay where they are pinned.
@@ -230,6 +292,8 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
 - **Guided review** and **Verification**, which open those tabs (see
   [Guided review](#guided-review) and [Verification report](#verification-report)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
+  **Mark reviewed here**, which records the checkout's commit as where you
+  last reviewed (see [Since last review](#since-last-review)),
   **Remove from workspace**, which takes the PR and its checkout out, and
   **Mutation testing**, which opens that tab (see
   [Mutation testing](#mutation-testing)).
@@ -299,4 +363,6 @@ has an indigo underline when the view is split.
 Each repo is cloned once, without file contents until they are needed, under
 your workspaces folder in `.review-repos/`. Each PR gets its own checkout at
 the PR's head under `.review/<workspace>/`. Neither is a coding workspace's
-clone, so reviewing never touches your own branches.
+clone, so reviewing never touches your own branches. Commits you reviewed are
+kept in the clone under `refs/yarvis/reviewed/`; where you last reviewed each
+PR is in the database, so it is the same in every workspace and on the PRs tab.

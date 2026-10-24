@@ -8,12 +8,21 @@ import {
 } from "../../lib/pr/api";
 import { invalidate, invalidatePrReview, prDetailKey, prStackKey } from "../../lib/pr/cache";
 import { refDisplayRepo, refKey, refNumber, refProviderName } from "../../lib/pr/ref";
-import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
+import type {
+  CheckItem,
+  MergeMethod,
+  PrDetail,
+  PrRef,
+  PrSummary,
+  SeenCommits,
+} from "../../lib/pr/types";
+import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import { openExternal } from "../../lib/url";
 import CopyLinkButton from "../CopyLinkButton";
 import OpenInReviewWorkspace from "../review/OpenInReviewWorkspace";
 import PrConflictBanner from "./PrConflictBanner";
 import PrWorkspaceAction from "./PrWorkspaceAction";
+import SinceReviewNote from "./SinceReviewNote";
 
 /**
  * The high-level lifecycle states the UI shows in the floating header.
@@ -295,9 +304,11 @@ function MergeMenu({
  * buttons, while each places the error line where its layout has room.
  *
  * The handlers invalidate the PR cache so the cached detail (which fed the
- * draft / mergeable state) is refetched after a publish or vote.
+ * draft / mergeable state) is refetched after a publish or vote. `seen` is the
+ * head the surface is showing, which a review records as where the user
+ * reviewed.
  */
-export function usePrActions(prRef: PrRef) {
+export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   // Publishing, approving or merging changes both how this pull request reads
   // and how its layer reads in a stack, so the two caches are dropped together.
   const invalidatePr = (ref: PrRef) => {
@@ -316,8 +327,9 @@ export function usePrActions(prRef: PrRef) {
     setPending(action);
     setError(null);
     try {
-      await applyReviewAction(prRef, action, body);
+      await applyReviewAction(prRef, action, body, seen);
       invalidatePr(prRef);
+      if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -546,7 +558,8 @@ export default function PrFloatingHeader({
   onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
 }) {
   const prRef: PrRef = pr.ref;
-  const actions = usePrActions(prRef);
+  // The classic page shows the provider's diff, which is at the detail's head.
+  const actions = usePrActions(prRef, { headSha: detail?.headSha });
   const [starPending, setStarPending] = useState(false);
   // The summary's title can be empty when the entry came from the workspace
   // poller cache, which doesn't store PR titles, so prefer the detail's.
@@ -611,6 +624,7 @@ export default function PrFloatingHeader({
         />
       </div>
       <PrConflictBanner key={refKey(prRef)} prRef={prRef} detail={detail} />
+      <SinceReviewNote prRef={prRef} title={title} detail={detail} />
       {actions.error && <p className="mt-2 text-xs text-red-400">{actions.error}</p>}
     </div>
   );

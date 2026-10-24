@@ -29,6 +29,7 @@ export interface AzureConnectionData {
 }
 
 export interface AzureUser {
+  id?: string;
   displayName?: string;
 }
 
@@ -107,10 +108,25 @@ export interface AzureThread {
   isDeleted?: boolean;
   threadContext?: AzureThreadContext | null;
   comments?: AzureComment[];
+  /**
+   * What a system thread records. A vote leaves one whose
+   * `CodeReviewThreadType` is `VoteUpdate`, authored by the voter.
+   */
+  properties?: Record<string, { $value?: unknown } | undefined>;
+  /** Identities a system thread's properties refer to by index. */
+  identities?: Record<string, { id?: string } | undefined>;
 }
 
+/**
+ * One push to a pull request. `sourceRefCommit` is the head it was pushed at
+ * and `commonRefCommit` the merge-base Azure computed for it.
+ */
 export interface AzureIteration {
   id: number;
+  createdDate?: string;
+  sourceRefCommit?: AzureCommitRef;
+  targetRefCommit?: AzureCommitRef;
+  commonRefCommit?: AzureCommitRef;
 }
 
 /**

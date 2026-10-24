@@ -67,6 +67,25 @@ describe("fake GitHub", () => {
     expect(data.pr1.pullRequest).toBeNull();
   });
 
+  it("has the viewer's review at an older commit, and how far the head moved since", () => {
+    const pr = PULLS[0];
+    const { data } = graphql("query { repository { pullRequest { reviews } } }", {
+      number: pr.number,
+    });
+    const own = data.repository.pullRequest.reviews.nodes.find(
+      (n: { commit?: unknown }) => n.commit,
+    );
+    expect(own.commit.oid).toBe(pr.viewerReview?.commit);
+    expect(data.repository.pullRequest.headRefOid).toBe(pr.headSha);
+    const compare = get(
+      `/repos/acme/checkout-web/compare/${pr.viewerReview?.commit}...${pr.headSha}`,
+    ).json as { ahead_by: number };
+    expect(compare.ahead_by).toBe(pr.viewerReview?.commitsSince ?? -1);
+    expect(get(`/repos/acme/checkout-web/compare/${"a".repeat(40)}...${pr.headSha}`).status).toBe(
+      404,
+    );
+  });
+
   it("serves a PR's files with their patches", () => {
     const files = get("/repos/acme/checkout-web/pulls/477/files").json as { patch: string }[];
     expect(files.length).toBeGreaterThan(0);

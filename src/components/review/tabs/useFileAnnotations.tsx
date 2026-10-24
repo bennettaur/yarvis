@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { usePrDetail } from "../../../lib/pr/cache";
-import type { PrRef } from "../../../lib/pr/types";
+import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import InsightBlock from "../../pr/InsightCards";
 import { LineCommentBlock, useLineComments } from "../../pr/LineComments";
 import type { ThreadActions } from "../../pr/useThreadActions";
@@ -35,6 +35,7 @@ export function useFileAnnotations({
   headContent,
   headSha,
   canComment,
+  seen,
 }: {
   prRef: PrRef;
   path: string;
@@ -43,6 +44,8 @@ export function useFileAnnotations({
   headSha: string;
   /** Providers take line comments only on files the PR changes. */
   canComment: boolean;
+  /** The checkout's commits, recorded as where the user reviewed when they comment. */
+  seen?: SeenCommits;
 }): FileAnnotations {
   const detail = usePrDetail(prRef);
   const { inline, outdated } = useMemo(
@@ -54,7 +57,7 @@ export function useFileAnnotations({
     () => ({ filename: path, status: "", additions: 0, deletions: 0, patch: null }),
     [path],
   );
-  const comments = useLineComments(prRef, file, inline);
+  const comments = useLineComments(prRef, file, inline, seen);
   const outdatedActions = useThreadActions(prRef, outdated);
   const insights = useReviewInsights(prRef);
   const [notice, setNotice] = useState<string | null>(null);

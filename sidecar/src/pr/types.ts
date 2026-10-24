@@ -52,6 +52,32 @@ export function parseRefKey(key: string): PrRef | null {
   return null;
 }
 
+/**
+ * A review the signed-in user made on the provider's side, and the commit it
+ * was made against. What a "since your last review" read starts from when the
+ * review didn't go through Yarvis.
+ */
+export interface ViewerReview {
+  headSha: string;
+  /** The merge-base the provider computed for that push, when it reports one (Azure). */
+  mergeBaseSha?: string;
+  /** ISO time the review was submitted. */
+  submittedAt: string;
+}
+
+/** A full commit id, sha-1 or sha-256: anything else is refused before it reaches git or a URL. */
+export const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** How a pull request's current head relates to an earlier commit of it. */
+export interface CommitsSince {
+  /** The provider still has the earlier commit. */
+  exists: boolean;
+  /** Commits on the head that the earlier commit doesn't have; null when unknown. */
+  commits: number | null;
+  /** The head no longer contains the earlier commit: a force-push or rebase. */
+  rewritten: boolean;
+}
+
 export interface PrSummary {
   number: number;
   title: string;

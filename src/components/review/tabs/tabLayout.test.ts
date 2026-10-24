@@ -268,6 +268,38 @@ describe("persistence", () => {
     expect(layout.groups.map((g) => g.key)).toEqual(["a", "b"]);
   });
 
+  it("keeps interdiff and commit tabs, with the commit they name, and drops malformed ones", () => {
+    const from = "a".repeat(40);
+    const sha = "b".repeat(40);
+    const since: TabSpec = { kind: "since-file", prId: "a", path: "x.ts", from };
+    const commit: TabSpec = { kind: "commit", prId: "a", sha, subject: "Fix it" };
+    const layout = open(desc(), since, commit, { kind: "since-review", prId: "a" });
+    const loaded = parseLayout(serializeLayout(layout));
+    expect(ids(loaded)).toEqual([
+      "description:a",
+      "since-review:a",
+      `since-file:a:x.ts`,
+      `commit:a:${sha}`,
+    ]);
+    expect(loaded.groups[0]!.tabs[2]).toEqual(since);
+    expect(loaded.groups[0]!.tabs[3]).toEqual(commit);
+
+    const damaged = parseLayout(
+      JSON.stringify({
+        groups: [
+          {
+            tabs: [
+              { kind: "since-file", prId: "a", path: "x.ts", from: "main" },
+              { kind: "commit", prId: "a", sha: "HEAD" },
+              { kind: "commit", prId: "a", sha },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(ids(damaged)).toEqual([`commit:a:${sha}`]);
+  });
+
   it("starts empty on anything unreadable", () => {
     expect(parseLayout("{not json")).toEqual(emptyLayout());
     expect(parseLayout("[]")).toEqual(emptyLayout());

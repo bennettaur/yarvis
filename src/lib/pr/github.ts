@@ -116,7 +116,7 @@ export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
   get<{ content: string }>(
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
   );
-export const ghPostComment = (ref: PrRef, comment: NewComment) =>
+export const ghPostComment = (ref: PrRef, comment: NewComment & Record<string, unknown>) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
 export const ghReplyToThread = (ref: PrRef, threadId: string, body: string) =>
   send<{ ok: boolean }>(
@@ -137,7 +137,8 @@ export const ghSubmitReview = (
   ref: PrRef,
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
   body?: string,
-) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body });
+  seen: Record<string, string> = {},
+) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body, ...seen });
 
 export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });

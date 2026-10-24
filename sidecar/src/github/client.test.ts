@@ -1194,18 +1194,23 @@ describe("review contributions", () => {
     expect(read.truncated).toBe(true);
   });
 
-  it("returns the submitted review's node id", async () => {
+  it("returns the submitted review's node id and the commit it was made on", async () => {
+    const commit = "a".repeat(40);
     const gh = new GitHubClient(
       "t",
-      fakeFetch({ "/repos/o/r/pulls/1/reviews": { id: 9, node_id: "PRR_9" } }),
+      fakeFetch({ "/repos/o/r/pulls/1/reviews": { id: 9, node_id: "PRR_9", commit_id: commit } }),
     );
-    expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({ nodeId: "PRR_9" });
+    expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({
+      nodeId: "PRR_9",
+      commitId: commit,
+    });
   });
 
   it("still succeeds when the submit reply has no readable node id", async () => {
     const empty = (async () => new Response("", { status: 200 })) as unknown as typeof fetch;
     expect(await new GitHubClient("t", empty).submitReview("o", "r", 1, "APPROVE")).toEqual({
       nodeId: null,
+      commitId: null,
     });
   });
 });

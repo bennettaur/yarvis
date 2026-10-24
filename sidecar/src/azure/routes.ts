@@ -6,7 +6,9 @@ import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { describeError } from "../llm/errors.ts";
 import { retireGuide } from "../pr/guides.ts";
+import { seenCommitFields } from "../pr/reviewMarks.ts";
 import { refKey } from "../pr/types.ts";
+import { markReviewed, seenHead } from "../reviewWorkspaces/reviewMarks.ts";
 import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
@@ -68,6 +70,7 @@ const commentSchema = z
     side: z.enum(["RIGHT", "LEFT"]).optional(),
     startLine: z.number().int().min(1).optional(),
     startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+    ...seenCommitFields,
   })
   // A thread's context holds one side's start and end, so a range can't cross
   // from the old file into the new one here the way it can on GitHub.
@@ -93,6 +96,7 @@ const voteSchema = z.object({
     .int()
     .refine((v) => [-10, -5, 0, 5, 10].includes(v), "invalid vote"),
   body: z.string().max(65_536).optional(),
+  ...seenCommitFields,
 });
 
 /** Azure DevOps PR dashboard routes, mounted under /api/azure. */
@@ -172,6 +176,31 @@ export function createAzureRoutes(config: Config): Hono {
     if (!Number.isInteger(prId) || prId < 1) return { error: "bad pull request id" };
     return { project: parsed.data.project, repo: parsed.data.repo, prId };
   }
+
+  /**
+   * Records where the user reviewed: the head the page said it was showing,
+   * else the PR's head as Azure reports it. Azure attaches neither a vote nor
+   * a thread to a commit, so the fallback is a read of its own; a failed read
+   * leaves no mark rather than failing the vote that already went through.
+   */
+  const recordSeen = async (
+    az: AzureDevOpsClient,
+    ref: AzureRef,
+    seen: { headSha?: string; baseSha?: string; mergeBaseSha?: string },
+    source: "review" | "comment",
+  ) => {
+    const fallback = seen.headSha ? null : await az.headSha(ref).catch(() => null);
+    const headSha = seenHead(seen.headSha, fallback);
+    if (!headSha) return;
+    const own = headSha === seen.headSha;
+    await markReviewed(db(), config, {
+      ref: { provider: "azure", org: az.org, ...ref },
+      headSha,
+      baseSha: own ? seen.baseSha : null,
+      mergeBaseSha: own ? seen.mergeBaseSha : null,
+      source,
+    });
+  };
 
   // --- Live Azure DevOps queries (require a token + org URL) ---
 
@@ -332,6 +361,8 @@ export function createAzureRoutes(config: Config): Hono {
     }
     try {
       await az.submitVote(ref, parsed.data.vote, parsed.data.body);
+      // Resetting a vote to "no vote" isn't a review of anything.
+      if (parsed.data.vote !== 0) await recordSeen(az, ref, parsed.data, "review");
       // A vote either way ends the reviewer's pass over this PR, so its guide
       // has done its job. Azure has no "comment without voting" here, so unlike
       // GitHub there is no case to exclude.
@@ -358,7 +389,9 @@ export function createAzureRoutes(config: Config): Hono {
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      await az.postComment(ref, parsed.data);
+      const { headSha, baseSha, mergeBaseSha, ...comment } = parsed.data;
+      await az.postComment(ref, comment);
+      await recordSeen(az, ref, { headSha, baseSha, mergeBaseSha }, "comment");
       void emitEvent(db(), {
         type: "pr.commented",
         source: "azure",

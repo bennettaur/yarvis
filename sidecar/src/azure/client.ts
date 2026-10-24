@@ -11,6 +11,7 @@
 
 import type {
   CheckItem,
+  CommitsSince,
   NewComment,
   PrDetail,
   PrFile,
@@ -20,6 +21,7 @@ import type {
   ReviewerState,
   ReviewThread,
   Viewer,
+  ViewerReview,
 } from "../pr/types.ts";
 import type {
   AzureChanges,
@@ -475,6 +477,76 @@ export class AzureDevOpsClient {
     const base = pr.lastMergeTargetCommit?.commitId;
     if (base && head) commitCache.set(key, { base, head, ts: Date.now() });
     return { base, head };
+  }
+
+  /** The PR's head commit as Azure last merged it, or null before it has one. */
+  async headSha(ref: AzureRef): Promise<string | null> {
+    return (await this.commitPair(ref)).head ?? null;
+  }
+
+  /**
+   * The commits the viewer voted on. Azure keeps no commit on a vote, so each
+   * vote is matched to the push it followed: a vote leaves a `VoteUpdate`
+   * system thread stamped with the voter and the time, and each iteration
+   * records when it was pushed and at which head. A vote reset to "no vote"
+   * isn't a review and is skipped.
+   */
+  async viewerVotes(ref: AzureRef): Promise<ViewerReview[]> {
+    const [viewerId, threads, iterations] = await Promise.all([
+      this.resolveViewerId(),
+      this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`),
+      this.get<AzureList<AzureIteration>>(
+        `${this.repoBase(ref)}/pullRequests/${ref.prId}/iterations`,
+      ),
+    ]);
+    const pushes = (iterations.value ?? [])
+      .flatMap((it) =>
+        it.sourceRefCommit?.commitId && it.createdDate
+          ? [{ at: Date.parse(it.createdDate), iteration: it }]
+          : [],
+      )
+      .sort((a, b) => a.at - b.at);
+    const votes: ViewerReview[] = [];
+    for (const thread of threads.value ?? []) {
+      const props = thread.properties ?? {};
+      if (props.CodeReviewThreadType?.$value !== "VoteUpdate") continue;
+      if (Number(props.CodeReviewVoteResult?.$value) === 0) continue;
+      const comment = thread.comments?.[0];
+      const votedBy = props.CodeReviewVotedByIdentity?.$value;
+      const voter =
+        (votedBy != null ? thread.identities?.[String(votedBy)]?.id : undefined) ??
+        comment?.author?.id;
+      if (voter !== viewerId || !comment?.publishedDate) continue;
+      const at = Date.parse(comment.publishedDate);
+      const push = pushes.filter((p) => p.at <= at).at(-1)?.iteration;
+      const headSha = push?.sourceRefCommit?.commitId;
+      if (!headSha) continue;
+      votes.push({
+        headSha,
+        ...(push.commonRefCommit?.commitId ? { mergeBaseSha: push.commonRefCommit.commitId } : {}),
+        submittedAt: comment.publishedDate,
+      });
+    }
+    return votes.sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
+  }
+
+  /**
+   * How far the PR has moved on from `sha`. The PR's own commit list (newest
+   * first) answers while `sha` is still in it; once a force-push has dropped
+   * it, only whether the repository still has the commit can be said.
+   */
+  async commitsSince(ref: AzureRef, sha: string): Promise<CommitsSince> {
+    const list = await this.get<AzureList<{ commitId?: string }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/commits?$top=500`,
+    );
+    const index = (list.value ?? []).findIndex((c) => c.commitId === sha);
+    if (index >= 0) return { exists: true, commits: index, rewritten: false };
+    const res = await this.fetchImpl(
+      this.withVersion(`${this.repoBase(ref)}/commits/${encodeURIComponent(sha)}`, API_VERSION),
+      { headers: { Authorization: this.authHeader(), Accept: "application/json" } },
+    );
+    if (!res.ok && res.status !== 404) throw new Error(`azure GET commit -> ${res.status}`);
+    return { exists: res.ok, commits: null, rewritten: true };
   }
 
   /** Lightweight per-row status: one call, no policy evaluations. */

@@ -3,8 +3,10 @@ import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
+import { useLastReview, usePrCommits } from "../../lib/reviewWorkspaces/sinceReview";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
+import CommitsList from "./nav/CommitsList";
 import { prColor } from "./prColors";
 import { STATIC_TAB_LABEL } from "./tabs/registry";
 import type { PrColor, StaticTabKind, TabSpec } from "./tabs/types";
@@ -35,7 +37,13 @@ export function cloneStatusText(pr: ReviewWorkspacePr, lastLog: string | null): 
   return null;
 }
 
-const NAV_ITEMS: StaticTabKind[] = ["description", "reviewers", "checks", "comments"];
+const NAV_ITEMS: StaticTabKind[] = [
+  "description",
+  "reviewers",
+  "checks",
+  "comments",
+  "since-review",
+];
 
 function Item({
   label,
@@ -121,6 +129,15 @@ function PrGroup({
   const [collapsed, setCollapsed] = useState(false);
   const { data: detail } = usePrDetail(pr.ref);
   const changed = useReviewChangedFiles(workspaceId, pr);
+  const last = useLastReview(workspaceId, pr);
+  const mark = last.data?.mark;
+  const commits = usePrCommits(
+    workspaceId,
+    pr,
+    mark && last.data?.shaExists !== false ? mark.headSha : null,
+  );
+  const commitList = commits.data?.commits ?? null;
+  const newCommits = commitList?.filter((c) => c.isNew).length ?? 0;
   const openThreads = (detail?.reviewThreads ?? []).filter((t) => !t.isResolved).length;
   const status = cloneStatusText(pr, progress);
   const failed = pr.status === "error" || pr.worktreeStatus === "error";
@@ -167,6 +184,13 @@ function PrGroup({
                   <span className="rounded bg-amber-900/40 px-1.5 text-xs text-amber-200">
                     {openThreads}
                   </span>
+                ) : kind === "since-review" && newCommits ? (
+                  <span
+                    className="rounded bg-emerald-900/40 px-1.5 text-xs text-emerald-200"
+                    title={`${newCommits} new since your last review`}
+                  >
+                    {newCommits} new
+                  </span>
                 ) : undefined
               }
             />
@@ -188,6 +212,26 @@ function PrGroup({
               activePath={active?.kind === "diff" ? activePath : null}
               openTab={openTab}
             />
+          </Section>
+          <Section
+            title="Commits"
+            count={commitList?.length}
+            defaultOpen={newCommits > 0}
+            key={newCommits > 0 ? "commits-new" : "commits"}
+          >
+            {commitList ? (
+              <CommitsList
+                prId={pr.id}
+                commits={commitList}
+                truncated={commits.data?.truncated ?? false}
+                activeSha={active?.prId === pr.id && active.kind === "commit" ? active.sha : null}
+                openTab={openTab}
+              />
+            ) : (
+              <p className="px-3 py-1 text-xs text-zinc-500">
+                {commits.error ?? (pr.headSha ? "Loading…" : "Waiting for the clone…")}
+              </p>
+            )}
           </Section>
           <Section title="All files" defaultOpen={false}>
             <AllFilesTree

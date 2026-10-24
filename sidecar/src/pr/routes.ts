@@ -9,6 +9,7 @@ import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -20,9 +21,16 @@ import {
 } from "./insights.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
 import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
+import {
+  latestReviewMark,
+  providerMarks,
+  type ReviewMarkProvider,
+  reviewMarkProvider,
+  toMarkResponse,
+} from "./reviewMarks.ts";
 import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
-import { type PrRef, parseRefKey, refKey } from "./types.ts";
+import { COMMIT_SHA_PATTERN, type CommitsSince, type PrRef, parseRefKey, refKey } from "./types.ts";
 import { PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
 
 /**
@@ -124,7 +132,12 @@ function toGuideResponse(guide: PrGuideRow, headSha: string) {
   };
 }
 
-export function createPrRoutes(config: Config): Hono {
+export interface PrRouteOptions {
+  /** Replaces the provider the review marks read back from, for tests. */
+  markProvider?: (ref: PrRef) => ReviewMarkProvider | null;
+}
+
+export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Hono {
   const router = new Hono();
 
   router.use("*", async (c, next) => {
@@ -394,6 +407,10 @@ export function createPrRoutes(config: Config): Hono {
       console.error("[pr] posting an insight failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
     }
+    // The answer was asked about, and posted on, the head the insight records.
+    if (COMMIT_SHA_PATTERN.test(insight.headSha)) {
+      await markReviewed(dbh, config, { ref, headSha: insight.headSha, source: "comment" });
+    }
     const stamped = await markInsightPosted(dbh, insight.id);
     // The comment is already on the provider at this point. If the row went
     // away underneath us the stamp has nowhere to land, and answering with a
@@ -434,6 +451,38 @@ export function createPrRoutes(config: Config): Hono {
       comment,
     );
   }
+
+  /**
+   * The user's last review of a pull request — recorded through Yarvis or read
+   * back from the provider — and how far the PR has moved on since, for the
+   * classic page's "new commits since your review" note. `head` is the head the
+   * page has loaded; without it the provider is asked. `since` is null when the
+   * provider couldn't say.
+   */
+  router.get("/review-mark", async (c) => {
+    const parsed = prRef.safeParse(parseRefQuery(c.req.query()));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const head = c.req.query("head");
+    if (head !== undefined && !COMMIT_SHA_PATTERN.test(head)) {
+      return c.json({ error: "head must be a full commit sha" }, 400);
+    }
+    const ref = parsed.data;
+    const provider = (options.markProvider ?? ((r) => reviewMarkProvider(config, r)))(ref);
+    await providerMarks.sync(db(), ref, provider);
+    const mark = await latestReviewMark(db(), ref);
+    if (!mark) return c.json({ mark: null, headSha: head ?? null, since: null });
+
+    let headSha = head ?? null;
+    let since: CommitsSince | null = null;
+    try {
+      headSha ??= provider ? await provider.headSha(ref) : null;
+      if (headSha === mark.headSha) since = { exists: true, commits: 0, rewritten: false };
+      else if (headSha && provider) since = await provider.commitsSince(ref, mark.headSha, headSha);
+    } catch (e) {
+      console.warn("[pr] could not compare against the last review:", describeError(e));
+    }
+    return c.json({ mark: toMarkResponse(mark), headSha, since });
+  });
 
   /**
    * Opens a workspace on this pull request's branch, so the reviewer can edit

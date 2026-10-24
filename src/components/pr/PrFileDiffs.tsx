@@ -76,7 +76,7 @@ export function DiffBody({
   insights?: InsightsController;
   headSha?: string;
 }) {
-  const comments = useLineComments(prRef, file, threads);
+  const comments = useLineComments(prRef, file, threads, { headSha });
   const ask = useAskSelection(file.filename, expansion.rows, insights);
   const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 

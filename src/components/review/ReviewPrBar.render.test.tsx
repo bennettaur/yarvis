@@ -113,6 +113,58 @@ describe("ReviewPrBar", () => {
     expect(button(host, "Resolve conflicts")).toBeDefined();
   });
 
+  it("says when new commits were pushed past the checkout", async () => {
+    const host = await mount(false, { headSha: "b".repeat(40) });
+    expect(host.textContent).not.toContain("New commits pushed");
+    unmount();
+    const behind = await mountForInteraction(
+      createElement(ReviewPrBar, {
+        workspaceId: "ws",
+        pr: { ...pr, headSha: "a".repeat(40) },
+        color: prColor(0),
+        readOnly: false,
+        openTab: () => {},
+        onChanged: () => {},
+      }),
+    );
+    unmount = behind.unmount;
+    expect(behind.host.textContent).toContain("New commits pushed");
+    expect(button(behind.host, "Refresh")).toBeDefined();
+  });
+
+  it("marks the checkout reviewed from the menu", async () => {
+    const marked: string[] = [];
+    stubReviewApi({
+      markReviewedHere: async (_ws, prId) => {
+        marked.push(prId);
+        return {
+          headSha: "a".repeat(40),
+          baseSha: null,
+          mergeBaseSha: null,
+          source: "manual",
+          createdAt: "",
+        };
+      },
+    });
+    primeCache(prDetailKey(ref), detail({ headSha: "a".repeat(40) }));
+    const mounted = await mountForInteraction(
+      createElement(ReviewPrBar, {
+        workspaceId: "ws",
+        pr: { ...pr, headSha: "a".repeat(40) },
+        color: prColor(0),
+        readOnly: false,
+        openTab: () => {},
+        onChanged: () => {},
+      }),
+    );
+    unmount = mounted.unmount;
+    button(mounted.host, "More for this PR")?.click();
+    await waitFor(() => button(mounted.host, "Mark reviewed here") !== undefined, "the menu");
+    button(mounted.host, "Mark reviewed here")?.click();
+    await waitFor(() => mounted.host.textContent?.includes("Marked reviewed at") ?? false, "done");
+    expect(marked).toEqual(["pr1"]);
+  });
+
   it("leaves a PR whose mergeability is unknown as it was", async () => {
     const host = await mount();
     expect(host.textContent).not.toContain("Conflicts with");

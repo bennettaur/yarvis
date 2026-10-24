@@ -194,6 +194,17 @@ export interface PrFile {
  * A line comment the user wants to post. A multi-line comment names its first
  * line in `startLine`; `line` is always the last.
  */
+/**
+ * The commits the page was showing when the user reviewed or commented. Sent
+ * along so the sidecar records the review at what was looked at — the "since
+ * your last review" starting point — rather than wherever the PR has moved to.
+ */
+export interface SeenCommits {
+  headSha?: string | null;
+  baseSha?: string | null;
+  mergeBaseSha?: string | null;
+}
+
 export interface NewComment {
   path: string;
   line: number;

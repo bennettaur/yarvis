@@ -133,7 +133,7 @@ function toGraphqlPull(pr: FakePull) {
     repository: { name: REPO, owner: { login: OWNER } },
     baseRefName: pr.baseRef,
     headRefName: pr.headRef,
-    headRefOid: `sha-${pr.number}`,
+    headRefOid: pr.headSha ?? `sha-${pr.number}`,
     isCrossRepository: false,
     additions: pr.files.reduce((n, f) => n + f.additions, 0),
     deletions: pr.files.reduce((n, f) => n + f.deletions, 0),
@@ -149,9 +149,21 @@ function toGraphqlPull(pr: FakePull) {
     latestReviews: {
       nodes: Object.entries(pr.reviews).map(([login, state]) => ({ author: { login }, state })),
     },
-    // The viewer's own reviews, for the Reviewing list.
+    // The viewer's own reviews: their states for the Reviewing list, and the
+    // commit and time of each for "since your last review".
     reviews: {
-      nodes: pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : [],
+      nodes: [
+        ...(pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : []),
+        ...(pr.viewerReview
+          ? [
+              {
+                state: pr.viewerReview.state,
+                submittedAt: pr.viewerReview.submittedAt,
+                commit: { oid: pr.viewerReview.commit },
+              },
+            ]
+          : []),
+      ],
     },
     reviewThreads: {
       nodes: pr.reviewThreads.map((t, i) => {
@@ -298,6 +310,16 @@ function handleRest({ method, url, body }: FakeRequest): FakeResponse {
     };
   }
   if (/^\/pulls\/\d+\/(reviews|comments)$/.test(repoPath)) return { status: 201, json: { id: 1 } };
+  // How far a PR's head is past the viewer's review of it; any other pair is unknown.
+  const compared = repoPath.match(/^\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/);
+  if (compared) {
+    const pr = PULLS.find(
+      (p) => p.viewerReview?.commit === compared[1] && p.headSha === compared[2],
+    );
+    return pr?.viewerReview
+      ? { json: { status: "ahead", ahead_by: pr.viewerReview.commitsSince } }
+      : { status: 404, json: { message: "Not Found" } };
+  }
   // Finding a workspace branch's PR: none of the demo's branches have one.
   if (repoPath === "/pulls") return { json: [] };
   const checksPullNumber = matchNumber(/^\/commits\/sha-(\d+)\/check-runs$/);

@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { seenAt } from "../../../lib/reviewWorkspaces/sinceReview";
 import LoadingIndicator from "../../LoadingIndicator";
 import { MonacoFileView } from "../editor";
 import { useReviewNavigation } from "../navigation";
@@ -36,6 +37,7 @@ export default memo(function FileTab({
     headContent: content,
     headSha: ctx.pr.headSha ?? "",
     canComment: changedFile !== undefined && changedFile.status !== "deleted",
+    seen: seenAt(ctx.pr),
   });
 
   let body: React.ReactNode;

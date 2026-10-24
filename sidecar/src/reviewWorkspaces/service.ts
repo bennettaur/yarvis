@@ -31,6 +31,7 @@ import {
 } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { redactSecrets } from "../llm/errors.ts";
+import { type ReviewMarkProvider, reviewMarkProvider } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
@@ -128,6 +129,11 @@ export interface ReviewDeps {
   /** The registered repo's setup script for this PR's repo, if there is one. */
   setupScriptFor(ref: PrRef): Promise<string | null>;
   git(options: ReviewGitOptions): ReviewGit;
+  /**
+   * Where the viewer's own provider-side reviews are read from, for the
+   * last-review mark; null (or absent) when the provider isn't configured.
+   */
+  markProvider?(ref: PrRef): ReviewMarkProvider | null;
 }
 
 function locatorFor(ref: PrRef): PrLocator {
@@ -207,6 +213,7 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
       return registered?.setupScript?.trim() ? registered.setupScript : null;
     },
     git: reviewGit,
+    markProvider: (ref) => reviewMarkProvider(config, ref),
   };
 }
 
@@ -251,7 +258,7 @@ export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: s
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
-function refDomKey(ref: PrRef): string {
+export function refDomKey(ref: PrRef): string {
   return refKey(ref).replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
@@ -469,7 +476,7 @@ export async function getReviewPr(
  * Checkouts and reads don't hold it, so one PR's slow checkout never queues
  * another PR's fetch behind it.
  */
-const withCloneLock = createKeyedLock();
+export const withCloneLock = createKeyedLock();
 
 /** Where a PR's head commit is fetched from. */
 export function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
@@ -752,9 +759,9 @@ export async function archiveReviewWorkspace(
  * Review reads, keyed by sha. 64 MB holds the changed-file lists, trees and
  * open files of a good few large PRs; past that the least recently read go.
  */
-const cache = new ShaCache(64 * 1024 * 1024);
+export const cache = new ShaCache(64 * 1024 * 1024);
 
-function changedFiles(
+export function changedFiles(
   runners: ReviewGit,
   clonePath: string,
   mergeBaseSha: string,
@@ -767,7 +774,7 @@ function changedFiles(
   );
 }
 
-interface ReadyPr {
+export interface ReadyPr {
   pr: ReviewWorkspacePr;
   clonePath: string;
   runners: ReviewGit;
@@ -775,7 +782,7 @@ interface ReadyPr {
   mergeBaseSha: string;
 }
 
-async function requireReadyPr(
+export async function requireReadyPr(
   db: Db,
   config: Config,
   workspaceId: string,
@@ -785,7 +792,7 @@ async function requireReadyPr(
   return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
 }
 
-function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
+export function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }
@@ -863,7 +870,7 @@ export async function reviewFile(
  * false` reads only what the clone already has: a blob it lacks reads as no
  * file, and that answer isn't cached, since a fetching read could still find it.
  */
-function cachedFileAt(
+export function cachedFileAt(
   ready: ReadyPr,
   sha: string,
   path: string,
