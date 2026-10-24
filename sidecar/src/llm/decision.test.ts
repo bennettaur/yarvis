@@ -106,6 +106,29 @@ describe("decide through System One", () => {
     });
   });
 
+  it("sends the provider's API key and custom headers", async () => {
+    const selection = await systemOneSelection();
+    const id = selection.provider.slice("custom:".length);
+    const withSecrets: Config = {
+      ...config,
+      customProviderSecrets: { [id]: { apiKey: "sk-test", headers: { "X-Team": "core" } } },
+    };
+    let headers: Record<string, string> = {};
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      headers = init.headers as Record<string, string>;
+      return Response.json({ answers: { ok: { noul: 0.9 } } });
+    }) as unknown as typeof fetch;
+
+    await decide(withSecrets, selection, {
+      system: "s",
+      prompt: "p",
+      schema,
+      systemOne,
+      fetchImpl,
+    });
+    expect(headers).toMatchObject({ Authorization: "Bearer sk-test", "X-Team": "core" });
+  });
+
   it("throws when an answer is missing", async () => {
     const selection = await systemOneSelection();
     const fetchImpl = (async () => Response.json({ answers: {} })) as unknown as typeof fetch;

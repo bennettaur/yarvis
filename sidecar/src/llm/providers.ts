@@ -14,7 +14,6 @@ import {
   type ProviderModelRow,
   withCapability,
 } from "./catalog.ts";
-import type { SystemOneTarget } from "./systemOne.ts";
 
 /**
  * Provider identifiers.
@@ -190,6 +189,13 @@ export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat" | "/v1/syst
  * unlike its OpenAI-compatible endpoint can hold the output to a JSON schema.
  */
 export interface OllamaChatTarget {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+}
+
+/** Where to reach a model through an Ollama server's System One API, `/v1/systemone`. */
+export interface SystemOneTarget {
   url: string;
   headers: Record<string, string>;
   model: string;

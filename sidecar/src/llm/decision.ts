@@ -5,7 +5,7 @@ import { readSection, withSection } from "../settings/store.ts";
 import type { ModelSelection } from "./complexity.ts";
 import { ollamaChat } from "./ollamaChat.ts";
 import { availableProviders, resolveModelWithOllama, systemOneTargetFor } from "./providers.ts";
-import { type SystemOneNoulQuestion, systemOneAsk } from "./systemOne.ts";
+import { type SystemOneDecision, systemOneAsk } from "./systemOne.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
@@ -91,13 +91,10 @@ export interface DecisionRequest<T> {
   signal?: AbortSignal;
   /**
    * The same judgement as yes/no questions, for a System One model, which
-   * can't answer to a schema. `toAnswer` gets each question's probability of
-   * yes. A request without this fails on a System One model.
+   * can't answer to a schema. A request without this fails on a System One
+   * model.
    */
-  systemOne?: {
-    questions: Record<string, SystemOneNoulQuestion>;
-    toAnswer: (probabilities: Record<string, number>) => T;
-  };
+  systemOne?: SystemOneDecision<T>;
   /** Injected by tests in place of the network. Used on the Ollama paths. */
   fetchImpl?: typeof fetch;
 }
@@ -117,18 +114,18 @@ export async function decide<T>(
       (s): s is AbortSignal => s !== undefined,
     ),
   );
-  const systemOne = await systemOneTargetFor(config, selection.provider, selection.model);
-  if (systemOne) {
+  const systemOneTarget = await systemOneTargetFor(config, selection.provider, selection.model);
+  if (systemOneTarget) {
     if (!request.systemOne) throw new Error("this decision can't be asked of a System One model");
     const probabilities = await systemOneAsk({
-      target: systemOne,
+      target: systemOneTarget,
       state: request.prompt,
       questions: request.systemOne.questions,
       timeoutMs: DECISION_TIMEOUT_MS,
       signal,
       fetchImpl: request.fetchImpl,
     });
-    return request.systemOne.toAnswer(probabilities);
+    return request.schema.parse(request.systemOne.toAnswer(probabilities));
   }
 
   const { model, ollama } = await resolveModelWithOllama(

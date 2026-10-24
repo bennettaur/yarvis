@@ -110,10 +110,13 @@ its model `decision`. Only an Ollama on this machine works; one elsewhere on
 your network is refused like any other private address.
 
 Ollama's System One models (such as `nimble`) work too: pick the **Ollama
-System One** protocol instead, with the same root URL. Their models are tagged
-`decision` for you and are never offered for chat. A System One model answers
-each of the three questions below with how likely the answer is yes, and only
-counts an answer the permissive way when it is at least 80% sure.
+System One** protocol instead, with the same root URL, or `https://ollama.com`
+and your Ollama API key for a cloud model. Their models are tagged `decision`
+for you and are never offered for chat. A System One model answers each of the
+three questions below with how likely the answer is yes, and a call runs
+without a prompt only when it is at least 80% sure the call matches your
+request and is neither risky nor destructive. It gives no written reason, so
+it is a weaker check than a model that explains itself.
 
 Before any tool set to **Ask** raises the approval bar, the decision model reads
 your message this turn, the recent conversation (tool results included, and

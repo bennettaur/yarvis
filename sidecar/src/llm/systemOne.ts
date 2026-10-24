@@ -1,17 +1,21 @@
 import { z } from "zod";
 import { guardedFetch } from "../lib/guardedFetch.ts";
+import type { SystemOneTarget } from "./providers.ts";
 
-/** Where to reach a System One model: an Ollama server's `/v1/systemone`. */
-export interface SystemOneTarget {
-  url: string;
-  headers: Record<string, string>;
-  model: string;
-}
-
-/** A yes/no question. Its answer is the probability that the answer is yes. */
+/**
+ * A yes/no question (the API calls it `noul`), answered with the probability
+ * of yes. `criteria` says what each answer means, so the model doesn't guess.
+ */
 export interface SystemOneNoulQuestion {
   type: "noul";
   instructions: string;
+  criteria?: { true: string; false: string };
+}
+
+/** A judgement as named yes/no questions, and how their probabilities become the answer. */
+export interface SystemOneDecision<T, K extends string = string> {
+  questions: Record<K, SystemOneNoulQuestion>;
+  toAnswer(probabilities: Record<K, number>): T;
 }
 
 export interface SystemOneRequest {
