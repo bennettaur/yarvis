@@ -1944,6 +1944,37 @@ export class GitHubClient {
     await this.mutate(`/repos/${owner}/${repo}/issues/${number}`, "PATCH", input);
   }
 
+  /**
+   * A PR's or issue's conversation comments, oldest first, with each author's
+   * numeric ID, which unlike a login can't be re-registered after a rename.
+   * Stops after 1,000, far past any real conversation.
+   */
+  async issueComments(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ id: number; body: string; authorId: number | null; author: string }[]> {
+    const comments: any[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const batch = await this.api<any[]>(
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+      );
+      comments.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return comments.map((c) => ({
+      id: c.id,
+      body: c.body ?? "",
+      authorId: typeof c.user?.id === "number" ? c.user.id : null,
+      author: c.user?.login ?? "",
+    }));
+  }
+
+  /** The numeric ID of the account this client's token belongs to. */
+  async authenticatedUserId(): Promise<number> {
+    return (await this.api<{ id: number }>("/user")).id;
+  }
+
   /** Posts a comment on an issue. */
   async addIssueComment(owner: string, repo: string, number: number, body: string): Promise<void> {
     await this.mutate(`/repos/${owner}/${repo}/issues/${number}/comments`, "POST", { body });
