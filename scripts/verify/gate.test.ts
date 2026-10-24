@@ -414,6 +414,14 @@ describe("decideAgentReview", () => {
     expect(acted(decideReview({ mode: "shadow" })).approve).toBe(false);
   });
 
+  it("never approves a change the report assessed as high risk", () => {
+    const report = reportComment(BENNETTAUR, { ...agentReport, riskTier: "high" });
+    const review = agentReviewComment(report);
+    expect(acted(decideReview({ comment: review, comments: [report, review] })).status).toContain(
+      "high-risk change",
+    );
+  });
+
   it("never approves a high-risk change", () => {
     const files = [{ path: "src-tauri/src/keychain.rs", additions: 1, deletions: 0 }];
     expect(acted(decideReview({ files })).status).toContain("high-risk change");
