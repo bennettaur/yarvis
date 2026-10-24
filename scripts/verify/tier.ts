@@ -45,7 +45,7 @@ const HIGH_RISK_PATHS: PathRule[] = [
   // An agent review can approve standard-risk changes, so these must be high.
   {
     pattern:
-      /^(sidecar\/src\/verify\/|sidecar\/src\/agents\/(definitions\/merge-reviewer\.md|catalog\.ts|run\.ts)$|sidecar\/src\/chat\/destructiveTools\.ts$|sidecar\/src\/lib\/fencing\.ts$|sidecar\/src\/github\/client\.ts$|src-tauri\/src\/(sidecar|lib)\.rs$)/,
+      /^(sidecar\/src\/verify\/|sidecar\/src\/agents\/(definitions\/merge-reviewer\.md|catalog\.ts|run\.ts|frontmatter\.ts|tools\.ts)$|sidecar\/src\/chat\/(destructiveTools|builtinTools|agent)\.ts$|sidecar\/src\/(lib\/fencing|github\/client|config)\.ts$|src-tauri\/src\/(sidecar|lib)\.rs$)/,
     reason: "the verification layer itself",
   },
   // Instructions and hooks the verifying agent itself loads.

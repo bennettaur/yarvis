@@ -166,6 +166,12 @@ type SignatureCheck = (payload: string, signature: string) => boolean;
 
 /** The principal the merge reviewer's key goes by in `VERIFY_ALLOWED_SIGNERS`. */
 export const AGENT_PRINCIPAL = "yarvis-merge-reviewer";
+/**
+ * Report keys go by `verify-pr`, or `verify-pr-<name>` for a second
+ * maintainer's. A list of allowed names, not "anything but the reviewer", so
+ * the reviewer's key listed under some other name still can't sign a report.
+ */
+const REPORT_PRINCIPAL = /^verify-pr(-[A-Za-z0-9_.-]+)?$/;
 
 /**
  * The two signature checks the gate makes. Each namespace is tied to its own
@@ -180,7 +186,7 @@ export function signatureChecks(allowedSigners: string): {
   return {
     isReportSigned: (payload, signature) => {
       const principal = verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners);
-      return principal !== null && principal !== AGENT_PRINCIPAL;
+      return principal !== null && REPORT_PRINCIPAL.test(principal);
     },
     isReviewSigned: (payload, signature) =>
       verifiedSigner(payload, signature, AGENT_REVIEW_NAMESPACE, allowedSigners) ===
