@@ -277,6 +277,8 @@ describe("userRequestFor", () => {
     status: "active",
     startedAt: new Date(0),
     stoppedAt: null,
+    pausedAt: null,
+    stopAt: null,
   } as const;
   const message = (body: string, minute: number) => ({
     body,

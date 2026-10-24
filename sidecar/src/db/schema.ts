@@ -1492,6 +1492,12 @@ export const workStreams = pgTable(
     wakeAt: timestamp("wake_at", { withTimezone: true }),
     /** Append-only, so a stream carries why it is where it is across passes. */
     notes: jsonb("notes").$type<WorkStreamNote[]>().notNull().default([]),
+    /**
+     * Set while the user has paused the stream: heads-down mode leaves it
+     * alone until they resume it. Kept apart from `status`, so resuming picks
+     * up where the stream was.
+     */
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
@@ -1595,6 +1601,13 @@ export const headsDownRuns = pgTable(
     status: headsDownRunStatus("status").notNull().default("active"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+    /**
+     * Set while the user has paused the run: no pass runs, but the run, its
+     * questions and its messages stay, so resuming carries on where it was.
+     */
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    /** When the loop stops the run on its own, if the user set a time. */
+    stopAt: timestamp("stop_at", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("heads_down_runs_one_active_idx").on(t.status).where(sql`${t.status} = 'active'`),
