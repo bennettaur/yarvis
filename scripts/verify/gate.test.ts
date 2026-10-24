@@ -1,9 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import {
+  AGENT_APPROVAL_PREFIX,
+  AGENT_REVIEW_MARKER,
+  type AgentReviewData,
+  reportDigest,
+} from "./agentReview.ts";
+import {
   type AutoMergeContext,
   approveRefusal,
   autoMergeBlockers,
   type Comment,
+  decideAgentReview,
   decideReport,
   type GitHubUser,
   gateTier,
@@ -335,5 +342,131 @@ describe("mergePath", () => {
 
   it("ignores reviews that didn't approve", () => {
     expect(mergePath([{ ...approval("Auto-approved: x", true), state: "COMMENTED" }])).toBe("none");
+  });
+});
+
+describe("decideAgentReview", () => {
+  const agentReport: ReportData = { ...cleanReport, verdict: "agent", majors: 1 };
+
+  function agentReviewComment(
+    report: Comment,
+    overrides: Partial<AgentReviewData> = {},
+    sign: (payload: string) => string = fakeSign,
+  ): Comment {
+    const reportPayload = report.body.match(/yarvis-verify-data ([A-Za-z0-9+/=]+)/)?.[1] ?? "";
+    const data: AgentReviewData = {
+      version: 1,
+      repo: REPO,
+      pr: 7,
+      headSha: HEAD,
+      reportDigest: reportDigest(reportPayload),
+      decision: "approve",
+      reason: "The major finding is handled in the follow-up commit.",
+      ...overrides,
+    };
+    const block = Buffer.from(JSON.stringify(data)).toString("base64");
+    return {
+      id: nextId++,
+      body: `${AGENT_REVIEW_MARKER}\nApproved.\n<!-- yarvis-agent-review-data ${block} -->\n<!-- yarvis-agent-review-sig ${sign(block)} -->`,
+      html_url: "https://example.test/r",
+      user: BENNETTAUR,
+    };
+  }
+
+  function decideReview(overrides: Partial<Parameters<typeof decideAgentReview>[0]> = {}) {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const comment = overrides.comment ?? agentReviewComment(report);
+    return decideAgentReview({
+      comment,
+      comments: overrides.comments ?? [report, comment],
+      repo: REPO,
+      pr: makePr(),
+      files: [{ path: "sidecar/src/memory/recall.ts", additions: 10, deletions: 0 }],
+      trusted: [BENNETTAUR.id],
+      mode: "enforce",
+      isReportSigned: fakeIsSigned,
+      isReviewSigned: fakeIsSigned,
+      ...overrides,
+    });
+  }
+
+  it("approves a standard-risk PR whose report asked for an agent and got one", () => {
+    expect(decideReview()).toEqual({
+      status: "Report: agent, approved by review and set to auto-merge",
+      approve: true,
+    });
+  });
+
+  it("only sets the status in shadow mode", () => {
+    expect(acted(decideReview({ mode: "shadow" })).approve).toBe(false);
+  });
+
+  it("never approves a high-risk change", () => {
+    const files = [{ path: "src-tauri/src/keychain.rs", additions: 1, deletions: 0 }];
+    expect(acted(decideReview({ files })).status).toContain("high-risk change");
+  });
+
+  it("needs a signature from a key allowed for agent reviews", () => {
+    expect(decideReview({ isReviewSigned: () => false })).toEqual({
+      skip: "the agent review isn't signed by a key allowed for agent reviews",
+    });
+  });
+
+  it("only counts a review of the exact report that is current", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const review = agentReviewComment(report);
+    const newer = reportComment(BENNETTAUR, { ...agentReport, majors: 2 });
+    expect(decideReview({ comment: review, comments: [report, review, newer] })).toEqual({
+      skip: "the agent review read a different report than the latest one",
+    });
+  });
+
+  it("only acts when the report asked for an agent's review", () => {
+    const report = reportComment(BENNETTAUR, { ...cleanReport, verdict: "human" });
+    const review = agentReviewComment(report);
+    expect(decideReview({ comment: review, comments: [report, review] })).toEqual({
+      skip: "the report's verdict is human, not agent",
+    });
+  });
+
+  it("does nothing when the review rejects the PR", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const review = agentReviewComment(report, { decision: "reject", reason: "Untested branch." });
+    expect(decideReview({ comment: review, comments: [report, review] })).toEqual({
+      skip: "the agent review rejected it: Untested branch.",
+    });
+  });
+
+  it("refuses a review for an older commit or another PR", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const stale = agentReviewComment(report, { headSha: "f".repeat(40) });
+    expect(decideReview({ comment: stale, comments: [report, stale] })).toEqual({
+      skip: "the agent review is for an older commit",
+    });
+    const moved = agentReviewComment(report, { pr: 8 });
+    expect(decideReview({ comment: moved, comments: [report, moved] })).toEqual({
+      skip: "the agent review is for another PR",
+    });
+  });
+
+  it("refuses when the current report has blockers or the author isn't trusted", () => {
+    const report = reportComment(BENNETTAUR, { ...agentReport, blockers: 1 });
+    const review = agentReviewComment(report);
+    expect(acted(decideReview({ comment: review, comments: [report, review] })).status).toContain(
+      "report has blocker findings",
+    );
+    expect(acted(decideReview({ pr: makePr({ user: SOMEONE }) })).status).toContain(
+      "PR author is not a maintainer",
+    );
+  });
+});
+
+describe("mergePath and agent approvals", () => {
+  it("reads the bot's agent approval as its own path", () => {
+    expect(
+      mergePath([
+        { state: "APPROVED", body: `${AGENT_APPROVAL_PREFIX} x`, byBot: true, byMaintainer: false },
+      ]),
+    ).toBe("agent");
   });
 });

@@ -49,7 +49,8 @@ export interface RevertInput {
 export function decideRevert(input: RevertInput): RevertDecision {
   const { pr } = input;
   if (!pr) return { action: "skip", reason: "no merged PR made this commit" };
-  if (input.path !== "auto") {
+  // Merges the bot approved on its own, whether on a report or an agent's review.
+  if (input.path !== "auto" && input.path !== "agent") {
     return { action: "skip", reason: `PR #${pr.number} wasn't auto-merged` };
   }
   if (input.alreadyReverted) return { action: "skip", reason: "a revert already exists" };

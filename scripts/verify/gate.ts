@@ -24,9 +24,15 @@
  */
 
 import { readFileSync } from "node:fs";
+import {
+  AGENT_APPROVAL_PREFIX,
+  AGENT_REVIEW_MARKER,
+  parseSignedAgentReview,
+  reportDigest,
+} from "./agentReview.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
-import { parseSignedReport, REPORT_MARKER, type ReportData } from "./report.ts";
-import { REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
+import { parseSignedReport, REPORT_MARKER, type ReportData, type SignedReport } from "./report.ts";
+import { AGENT_REVIEW_NAMESPACE, REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
 import { type ChangedFile, classify, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
@@ -40,7 +46,7 @@ export const AUTO_APPROVAL_PREFIX = "Auto-approved:";
 export const APPROVE_COMMAND_PREFIX = "Approved by @";
 
 /** How a merged PR got its approval. */
-export type MergePath = "auto" | "/approve" | "human" | "none";
+export type MergePath = "auto" | "agent" | "/approve" | "human" | "none";
 
 export interface ApprovalReview {
   state: string;
@@ -66,6 +72,7 @@ export function mergePath(reviews: ApprovalReview[]): MergePath {
   if (approvals.some((review) => !review.byBot && review.byMaintainer)) return "human";
   const bot = approvals.filter((review) => review.byBot);
   if (bot.some((review) => review.body.startsWith(APPROVE_COMMAND_PREFIX))) return "/approve";
+  if (bot.some((review) => review.body.startsWith(AGENT_APPROVAL_PREFIX))) return "agent";
   if (bot.some((review) => review.body.startsWith(AUTO_APPROVAL_PREFIX))) return "auto";
   return "none";
 }
@@ -215,6 +222,108 @@ export function decideReport(input: {
     return { status: "Report: auto. Shadow mode, so not merging", approve: false };
   }
   return { status: "Report: auto. Approved and set to auto-merge", approve: true };
+}
+
+/**
+ * The newest report a trusted user posted, if it is signed by an allowed key
+ * and is for this PR's current commit; otherwise why not.
+ */
+export function currentReport(input: {
+  comments: Comment[];
+  repo: string;
+  pr: PullRequest;
+  trusted: number[];
+  isSigned: (payload: string, signature: string) => boolean;
+}): SignedReport | { skip: string } {
+  const reports = input.comments.filter(
+    (c) => c.body.includes(REPORT_MARKER) && input.trusted.includes(c.user.id),
+  );
+  const latest = reports[reports.length - 1];
+  if (!latest) return { skip: "no report from a trusted user" };
+  const signed = parseSignedReport(latest.body);
+  if (!signed || !input.isSigned(signed.payload, signed.signature)) {
+    return { skip: "the latest report isn't signed by an allowed key" };
+  }
+  const { data } = signed;
+  if (data.repo !== input.repo || data.pr !== input.pr.number) {
+    return { skip: "the latest report is for another PR" };
+  }
+  if (data.headSha !== input.pr.head.sha) {
+    return { skip: "the latest report is for an older commit" };
+  }
+  return signed;
+}
+
+/**
+ * What to do about the Yarvis merge reviewer's comment, or why to do
+ * nothing. It can approve only a PR whose current, signed report asked for
+ * an agent's review, only below high risk, and only for the exact report it
+ * read: a new report needs a new review.
+ */
+export function decideAgentReview(input: {
+  comment: Comment;
+  comments: Comment[];
+  repo: string;
+  pr: PullRequest;
+  files: ChangedFile[];
+  trusted: number[];
+  mode: Mode;
+  isReportSigned: (payload: string, signature: string) => boolean;
+  isReviewSigned: (payload: string, signature: string) => boolean;
+}): ReportDecision | { skip: string } {
+  const { comment, pr, trusted } = input;
+  const isTrusted = (c: Comment) => trusted.includes(c.user.id);
+  if (!isTrusted(comment)) return { skip: "posted by someone who isn't trusted" };
+  const reviews = input.comments.filter(
+    (c) => c.body.includes(AGENT_REVIEW_MARKER) && isTrusted(c),
+  );
+  if (reviews[reviews.length - 1]?.id !== comment.id) {
+    return { skip: "a newer agent review exists" };
+  }
+
+  const review = parseSignedAgentReview(comment.body);
+  if (!review) return { skip: "no readable, signed agent review" };
+  if (!input.isReviewSigned(review.payload, review.signature)) {
+    return { skip: "the agent review isn't signed by a key allowed for agent reviews" };
+  }
+  if (review.data.repo !== input.repo || review.data.pr !== pr.number) {
+    return { skip: "the agent review is for another PR" };
+  }
+  if (review.data.headSha !== pr.head.sha) {
+    return { skip: "the agent review is for an older commit" };
+  }
+
+  const report = currentReport({ ...input, isSigned: input.isReportSigned });
+  if ("skip" in report) return report;
+  if (review.data.reportDigest !== reportDigest(report.payload)) {
+    return { skip: "the agent review read a different report than the latest one" };
+  }
+  if (report.data.verdict !== "agent") {
+    return { skip: `the report's verdict is ${report.data.verdict}, not agent` };
+  }
+  if (review.data.decision !== "approve") {
+    return { skip: `the agent review rejected it: ${review.data.reason}` };
+  }
+
+  const blockers: string[] = [];
+  if (!trusted.includes(pr.user.id)) blockers.push("PR author is not a maintainer");
+  if (pr.draft) blockers.push("PR is a draft");
+  const tier = gateTier(pr, input.files);
+  if (tier === "high") blockers.push("high-risk change");
+  if (report.data.blockers > 0) blockers.push("report has blocker findings");
+  if (blockers.length > 0) {
+    return {
+      status: `Report: agent, reviewed. Not auto-merging: ${blockers.join("; ")}`,
+      approve: false,
+    };
+  }
+  if (input.mode === "shadow") {
+    return {
+      status: "Report: agent, approved by review. Shadow mode, so not merging",
+      approve: false,
+    };
+  }
+  return { status: "Report: agent, approved by review and set to auto-merge", approve: true };
 }
 
 /** Reads `/approve`, or `/approve <sha>` naming the commit the maintainer reviewed. */
@@ -403,6 +512,47 @@ function handleReport(
   setStatus(pr.head.sha, decision.status, event.comment.html_url);
 }
 
+function handleAgentReview(
+  event: CommentEvent,
+  pr: PullRequest,
+  trusted: number[],
+  mode: Mode,
+  allowedSigners: string,
+) {
+  const comments = ghApiPages<Comment>(
+    `repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`,
+  );
+  const files = changedFiles(pr.number);
+  if (fetchPr(pr.number).head.sha !== pr.head.sha) {
+    console.log("[verify] the head moved while reading the PR; a new review is needed");
+    return;
+  }
+  const decision = decideAgentReview({
+    comment: event.comment,
+    comments,
+    repo: process.env.GH_REPO ?? "",
+    pr,
+    files,
+    trusted,
+    mode,
+    isReportSigned: (payload, signature) =>
+      verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners) !== null,
+    isReviewSigned: (payload, signature) =>
+      verifiedSigner(payload, signature, AGENT_REVIEW_NAMESPACE, allowedSigners) !== null,
+  });
+  if ("skip" in decision) {
+    console.log(`[verify] ignoring this agent review: ${decision.skip}`);
+    return;
+  }
+  if (decision.approve) {
+    approveAndMerge(
+      pr,
+      `${AGENT_APPROVAL_PREFIX} the merge reviewer approved ${pr.head.sha.slice(0, 7)} after its verification report asked for a review.`,
+    );
+  }
+  setStatus(pr.head.sha, decision.status, event.comment.html_url);
+}
+
 if (import.meta.main) {
   const event = JSON.parse(
     readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8"),
@@ -424,6 +574,8 @@ if (import.meta.main) {
   const approve = parseApprove(event.comment.body);
   if (approve) {
     handleApprove(event, pr, approve.sha, trusted);
+  } else if (event.comment.body.includes(AGENT_REVIEW_MARKER)) {
+    handleAgentReview(event, pr, trusted, mode, allowedSigners);
   } else if (event.comment.body.includes(REPORT_MARKER)) {
     handleReport(event, pr, trusted, mode, allowedSigners);
   }
