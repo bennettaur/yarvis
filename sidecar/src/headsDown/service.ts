@@ -42,20 +42,38 @@ export async function getActiveRun(db: Db): Promise<HeadsDownRun | null> {
   return row ?? null;
 }
 
-/** Turns heads-down mode on, or updates the focus of the run already going. */
-export async function startRun(db: Db, focus: string | null): Promise<HeadsDownRun> {
+export interface StartRunOptions {
+  /** When the run stops on its own. Null clears it; left out keeps the one set. */
+  stopAt?: Date | null;
+}
+
+/**
+ * Turns heads-down mode on, or updates the run already going: its focus, when
+ * one is given, and its stop time.
+ */
+export async function startRun(
+  db: Db,
+  focus: string | null,
+  { stopAt }: StartRunOptions = {},
+): Promise<HeadsDownRun> {
   const active = await getActiveRun(db);
   if (active) {
-    if (focus === null) return active;
+    if (focus === null && stopAt === undefined) return active;
     const [row] = await db
       .update(headsDownRuns)
-      .set({ focus })
+      .set({
+        ...(focus !== null ? { focus } : {}),
+        ...(stopAt !== undefined ? { stopAt } : {}),
+      })
       .where(eq(headsDownRuns.id, active.id))
       .returning();
     return row!;
   }
   try {
-    const [row] = await db.insert(headsDownRuns).values({ focus }).returning();
+    const [row] = await db
+      .insert(headsDownRuns)
+      .values({ focus, stopAt: stopAt ?? null })
+      .returning();
     return row!;
   } catch (e) {
     // Two starts at once: the one-active-run index turned the second away, so
@@ -73,6 +91,55 @@ export async function stopRun(db: Db): Promise<HeadsDownRun | null> {
     .where(eq(headsDownRuns.status, "active"))
     .returning();
   return row ?? null;
+}
+
+/** Pauses the active run, keeping when it was first paused. Null when nothing is running. */
+export async function pauseRun(db: Db): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ pausedAt: sql`coalesce(${headsDownRuns.pausedAt}, now())` })
+    .where(eq(headsDownRuns.status, "active"))
+    .returning();
+  return row ?? null;
+}
+
+/** Resumes the active run. Null when nothing is running or it wasn't paused. */
+export async function resumeRun(db: Db): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ pausedAt: null })
+    .where(and(eq(headsDownRuns.status, "active"), isNotNull(headsDownRuns.pausedAt)))
+    .returning();
+  return row ?? null;
+}
+
+/** Sets or clears when the active run stops. Null when nothing is running. */
+export async function setStopAt(db: Db, stopAt: Date | null): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ stopAt })
+    .where(eq(headsDownRuns.status, "active"))
+    .returning();
+  return row ?? null;
+}
+
+/**
+ * How close to the stop time counts as reached. Timers can fire a little
+ * early, and a cycle that just misses it would start a whole pass.
+ */
+const STOP_TIME_TOLERANCE_MS = 1000;
+
+/** How long until the run's stop time, 0 once it has come, or Infinity when it has none. */
+export function msUntilStop(run: HeadsDownRun | null, now = Date.now()): number {
+  if (!run?.stopAt) return Infinity;
+  const ms = run.stopAt.getTime() - now;
+  return ms <= STOP_TIME_TOLERANCE_MS ? 0 : ms;
+}
+
+/** Whether a run may run passes now: still the active run, not paused, and before its stop time. */
+export async function mayRunPasses(db: Db, runId: string): Promise<boolean> {
+  const active = await getActiveRun(db);
+  return active?.id === runId && active.pausedAt === null && msUntilStop(active) > 0;
 }
 
 export async function addMessage(db: Db, body: string): Promise<HeadsDownMessage> {

@@ -1,7 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { streamExists, updateStream } from "../workStreams/service.ts";
+import { getStream, updateStream } from "../workStreams/service.ts";
+import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 
 /**
@@ -73,8 +74,10 @@ export function buildPassTools(
         action: z.string().max(100).optional().describe("The tool the question is about, if any"),
       }),
       execute: async ({ question, situation, streamId, options, action }) => {
-        if (streamId && !(await streamExists(db, streamId))) {
-          return { error: "no work stream with that id" };
+        if (streamId) {
+          const stream = await getStream(db, streamId);
+          if (!stream) return { error: "no work stream with that id" };
+          if (stream.pausedAt) return { error: STREAM_PAUSED };
         }
         const asked = await askUser(db, {
           kind: "question",

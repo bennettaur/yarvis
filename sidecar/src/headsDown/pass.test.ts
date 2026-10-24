@@ -9,8 +9,16 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
-import { runPass, STOPPED_BY_USER } from "./pass.ts";
-import { addMessage, listPasses, passCallSummaries, startRun, unseenMessages } from "./service.ts";
+import { setHeadsDownStopTime } from "./control.ts";
+import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
+import {
+  addMessage,
+  listPasses,
+  passCallSummaries,
+  pauseRun,
+  startRun,
+  unseenMessages,
+} from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -58,6 +66,31 @@ function streamingModel(...steps: StreamPart[][]): MockLanguageModelV3 {
     },
   });
 }
+
+/**
+ * A model that streams nothing until the pass aborts it, or until `closeAfterMs`
+ * when it ends the turn without finishing the pass.
+ */
+function hangingModel(closeAfterMs = 5_000): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
+    doStream: async ({ abortSignal }) => ({
+      stream: new ReadableStream<StreamPart>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            controller.enqueue(finish("stop"));
+            controller.close();
+          }, closeAfterMs);
+          abortSignal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            controller.error(abortSignal.reason);
+          });
+        },
+      }),
+    }),
+  });
+}
+
+const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const toolCall = (id: string, name: string, input: unknown): StreamPart =>
   ({ type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) }) as never;
@@ -289,5 +322,58 @@ describe("a heads-down pass", () => {
     const [pass] = await listPasses(db);
     expect(pass?.error).toBeNull();
     expect(result.sleepReason).toBe(STOPPED_BY_USER);
+  });
+
+  it("records a pass for a paused run as stopped by the user, not failed", async () => {
+    const run = await startRun(db, null);
+    await pauseRun(db);
+
+    const result = await runPass(config, db, run, { model: streamingModel([finish("stop")]) });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    expect(result.sleepReason).toBe(STOPPED_BY_USER);
+  });
+
+  it("doesn't start a pass a moment before the run's stop time", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 500) });
+
+    const result = await runPass(config, db, run, { model: hangingModel() });
+
+    expect(result.sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("ends a pass at the run's stop time, as reaching it rather than failing", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 1_500) });
+
+    const result = await runPass(config, db, run, { model: hangingModel() });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    expect(result.sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("ends a pass at a stop time set while it runs", async () => {
+    const run = await startRun(db, null);
+    const passing = runPass(config, db, run, { model: hangingModel() });
+    await sleepMs(200);
+
+    await setHeadsDownStopTime(db, new Date(Date.now() + 1_200));
+
+    expect((await passing).sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("lets a pass run on when its stop time is cleared while it runs", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 1_500) });
+    const passing = runPass(config, db, run, { model: hangingModel(2_500) });
+    await sleepMs(200);
+
+    await setHeadsDownStopTime(db, null);
+
+    // It went on until the model ended the turn, past the old stop time.
+    const result = await passing;
+    expect(result.sleepReason).not.toBe(REACHED_STOP_TIME);
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeString();
   });
 });
