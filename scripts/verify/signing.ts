@@ -31,8 +31,15 @@ function withScratch<T>(use: (dir: string) => T): T {
   }
 }
 
-function gitConfig(key: string): string {
-  return run("git", ["config", "--get", key], { allowFailure: true }).stdout.trim();
+/** A git config value, with a leading `~` expanded as git does for paths. */
+function gitConfigPath(key: string): string {
+  return run("git", ["config", "--get", "--type=path", key], { allowFailure: true }).stdout.trim();
+}
+
+/** The public key line in a signing key setting, or `null` if it names a file. */
+export function publicKeyLiteral(key: string): string | null {
+  const literal = key.replace(/^key::/, "").trim();
+  return /^(ssh-|ecdsa-|sk-)/.test(literal) ? literal : null;
 }
 
 /**
@@ -41,13 +48,13 @@ function gitConfig(key: string): string {
  * for one) or plain `ssh-keygen`.
  */
 export function localSigner(): { program: string; key: string } {
-  const key = gitConfig("yarvis.verifySigningKey") || gitConfig("user.signingkey");
+  const key = gitConfigPath("yarvis.verifySigningKey") || gitConfigPath("user.signingkey");
   if (!key) {
     throw new Error(
       "no signing key: set git's SSH user.signingkey, or yarvis.verifySigningKey to a public key",
     );
   }
-  return { program: gitConfig("gpg.ssh.program") || "ssh-keygen", key };
+  return { program: gitConfigPath("gpg.ssh.program") || "ssh-keygen", key };
 }
 
 /**
@@ -60,12 +67,16 @@ export function signPayload(payload: string, namespace: string, signer = localSi
     const payloadFile = join(dir, "payload");
     writeFileSync(payloadFile, payload);
     let keyFile = signer.key;
-    const literal = signer.key.replace(/^key::/, "");
-    if (/^(ssh-|ecdsa-|sk-)/.test(literal)) {
+    // For a key given as a public key line, the private half is in the agent;
+    // `-U` says so, as git does when it signs a commit.
+    const agentOnly: string[] = [];
+    const literal = publicKeyLiteral(signer.key);
+    if (literal) {
       keyFile = join(dir, "key.pub");
       writeFileSync(keyFile, `${literal}\n`);
+      agentOnly.push("-U");
     }
-    run(signer.program, ["-Y", "sign", "-n", namespace, "-f", keyFile, payloadFile]);
+    run(signer.program, ["-Y", "sign", "-n", namespace, "-f", keyFile, ...agentOnly, payloadFile]);
     return Buffer.from(readFileSync(`${payloadFile}.sig`, "utf8")).toString("base64");
   });
 }

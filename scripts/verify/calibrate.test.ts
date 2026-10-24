@@ -45,6 +45,7 @@ const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => (
   repo: "bennettaur/yarvis",
   pr: 1,
   headSha,
+  issuedAt: "2026-10-24T00:00:00.000Z",
   verdict,
   riskTier: "low",
   blockers: 0,

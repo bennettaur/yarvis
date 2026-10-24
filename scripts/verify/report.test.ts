@@ -159,6 +159,7 @@ describe("renderReport", () => {
 
   it("names the repo, PR and commit in what gets signed", () => {
     const { data, payload } = renderReport(makeReview(), makeFacts(), TARGET);
+    expect(data.issuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(data).toMatchObject({
       version: 2,
       repo: "bennettaur/yarvis",
