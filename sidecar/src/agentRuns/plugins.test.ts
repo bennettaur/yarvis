@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { INPUTS_AND_TRUST_MARKER, withInputsAndTrust, writePluginCopy } from "./plugins.ts";
+import {
+  INPUTS_AND_TRUST_MARKER,
+  REREVIEW_INPUTS_AND_TRUST_MARKER,
+  withInputsAndTrust,
+  writePluginCopy,
+} from "./plugins.ts";
 
 describe("writing out a shipped plugin", () => {
   it("writes the bundled yarvis-review plugin as Claude Code expects to find it", () => {
@@ -21,6 +26,10 @@ describe("writing out a shipped plugin", () => {
   it("ships every file in the plugin's source folder, agents with the shared section", () => {
     const source = join(import.meta.dir, "../../claude-plugins/yarvis-review");
     const shared = readFileSync(join(source, "shared/inputs-and-trust.md"), "utf8").trim();
+    const rereviewShared = readFileSync(
+      join(source, "shared/rereview-inputs-and-trust.md"),
+      "utf8",
+    ).trim();
     const copy = writePluginCopy("yarvis-review");
     try {
       const sourceFiles = readdirSync(source, { recursive: true, withFileTypes: true })
@@ -31,11 +40,15 @@ describe("writing out a shipped plugin", () => {
         .sort();
       expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
-      expect(agents).toHaveLength(7);
+      expect(agents).toHaveLength(8);
       for (const path of sourceFiles) {
         const shipped = readFileSync(join(copy.dir, path), "utf8");
         const original = readFileSync(join(source, path), "utf8");
-        if (path.startsWith("agents/")) {
+        if (path === "agents/rereviewer.md") {
+          expect(shipped).toBe(original.replace(REREVIEW_INPUTS_AND_TRUST_MARKER, rereviewShared));
+          expect(shipped).toContain("interdiff.diff");
+          expect(shipped).not.toContain(REREVIEW_INPUTS_AND_TRUST_MARKER);
+        } else if (path.startsWith("agents/")) {
           expect(shipped).toBe(original.replace(INPUTS_AND_TRUST_MARKER, shared));
           expect(shipped).toContain("## Inputs and trust");
           expect(shipped).not.toContain(INPUTS_AND_TRUST_MARKER);

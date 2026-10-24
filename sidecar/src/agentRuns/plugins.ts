@@ -17,6 +17,9 @@ import complexityReviewer from "../../claude-plugins/yarvis-review/agents/comple
 import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
   type: "text",
 };
+import rereviewer from "../../claude-plugins/yarvis-review/agents/rereviewer.md" with {
+  type: "text",
+};
 import riskReviewer from "../../claude-plugins/yarvis-review/agents/risk-reviewer.md" with {
   type: "text",
 };
@@ -27,6 +30,9 @@ import reviewReadme from "../../claude-plugins/yarvis-review/README.md" with { t
 import inputsAndTrust from "../../claude-plugins/yarvis-review/shared/inputs-and-trust.md" with {
   type: "text",
 };
+import rereviewInputsAndTrust from "../../claude-plugins/yarvis-review/shared/rereview-inputs-and-trust.md" with {
+  type: "text",
+};
 import verificationReport from "../../claude-plugins/yarvis-review/skills/verification-report/SKILL.md" with {
   type: "text",
 };
@@ -35,16 +41,26 @@ import verificationReport from "../../claude-plugins/yarvis-review/skills/verifi
 export const INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:inputs-and-trust -->";
 
 /**
+ * The same for the re-review agent, whose inputs are a since-review's rather
+ * than the whole PR's.
+ */
+export const REREVIEW_INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:rereview-inputs-and-trust -->";
+
+/**
  * A review agent with the shared section spliced in. Claude Code agent files
  * have no include, and the system prompt a run appends never reaches its
  * subagents, so each agent carries the trust rules itself; keeping them in
  * one file is what stops seven copies drifting apart. Throws at load when an
  * agent lacks the marker, so a missing guardrail can't ship.
  */
-export function withInputsAndTrust(agent: string, shared: string = inputsAndTrust): string {
-  const parts = agent.split(INPUTS_AND_TRUST_MARKER);
+export function withInputsAndTrust(
+  agent: string,
+  shared: string = inputsAndTrust,
+  marker: string = INPUTS_AND_TRUST_MARKER,
+): string {
+  const parts = agent.split(marker);
   if (parts.length !== 2) {
-    throw new Error(`a review agent must contain ${INPUTS_AND_TRUST_MARKER} exactly once`);
+    throw new Error(`a review agent must contain ${marker} exactly once`);
   }
   return parts.join(shared.trim());
 }
@@ -74,6 +90,11 @@ const PLUGINS = {
     "agents/complexity-reviewer.md": withInputsAndTrust(complexityReviewer),
     "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
+    "agents/rereviewer.md": withInputsAndTrust(
+      rereviewer,
+      rereviewInputsAndTrust,
+      REREVIEW_INPUTS_AND_TRUST_MARKER,
+    ),
     "skills/verification-report/SKILL.md": verificationReport,
   },
 } satisfies Record<string, Record<string, string>>;
