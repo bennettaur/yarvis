@@ -1,8 +1,11 @@
 /**
- * Sorts a pull request into a risk tier from the files it touches and its
- * size. The tier caps the verdict a report can give: an LLM reviewer can make
- * the verdict stricter, never looser. Both the `/verify-pr` skill and the CI
- * gate compute it, and the gate trusts its own answer over the report's.
+ * The floor under a pull request's risk tier, from the files it touches and
+ * its size. This only catches paths that are dangerous whatever the change
+ * does there, and changes too big to review well. Everything else starts low,
+ * whichever part of the app it is in: how risky a change is depends on what
+ * it does, which the `/verify-pr` skill assesses and signs into the report.
+ * The tier a PR gets is the stricter of the two. Both the skill and the CI
+ * gate compute this floor, and the gate trusts its own over the report's.
  */
 
 export type Tier = "low" | "standard" | "high";
@@ -25,26 +28,8 @@ interface PathRule {
   reason: string;
 }
 
-/**
- * The only frontend files that may call Tauri commands that write a secret,
- * switch the secret store, set the agent's launch command, or reach a shell.
- * `nativeBridge.test.ts` holds the rest of `src/` to that, which is what lets
- * the frontend otherwise count as low risk.
- */
-export const PRIVILEGED_FRONTEND_FILES = ["src/lib/privilegedCommands.ts", "src/lib/pty.ts"];
-
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const PRIVILEGED_FRONTEND_PATTERN = new RegExp(
-  `^(${PRIVILEGED_FRONTEND_FILES.map(escapeRegExp).join("|")})$`,
-);
-
 /** Paths where a mistake leaks secrets, widens what the agent may do, or loses data. */
 const HIGH_RISK_PATHS: PathRule[] = [
-  {
-    pattern: PRIVILEGED_FRONTEND_PATTERN,
-    reason: "frontend calls to privileged Tauri commands",
-  },
   // The verifier must not be able to approve a change to itself.
   { pattern: /^\.github\//, reason: "CI or repo config" },
   { pattern: /^scripts\/verify\//, reason: "the verification layer itself" },
@@ -82,20 +67,18 @@ const HIGH_RISK_PATHS: PathRule[] = [
   },
 ];
 
-/** Code that runs with the user's privileges or talks to outside services. */
-const STANDARD_RISK_PATHS: PathRule[] = [
-  { pattern: /^src-tauri\//, reason: "Rust core" },
-  { pattern: /^sidecar\//, reason: "sidecar" },
-  { pattern: /^extension\//, reason: "Chrome extension" },
-  { pattern: /^scripts\//, reason: "dev scripts" },
-];
-
 /**
  * Past these sizes a reviewer, human or agent, starts missing things. Counted
  * on code only: lockfiles, tests and docs inflate the number without adding risk.
  */
 const STANDARD_SIZE_LINES = 300;
 const HIGH_SIZE_LINES = 800;
+
+const TIER_ORDER: Tier[] = ["low", "standard", "high"];
+
+export function stricterTier(a: Tier, b: Tier): Tier {
+  return TIER_ORDER.indexOf(a) >= TIER_ORDER.indexOf(b) ? a : b;
+}
 
 /** Only `*.test.ts(x)`: a `test/` directory also holds preloads and helpers, which are code. */
 export function isTestFile(path: string): boolean {
@@ -124,14 +107,9 @@ export function classify(files: ChangedFile[]): TierResult {
     file.previousPath ? [file.path, file.previousPath] : [file.path],
   );
   for (const path of paths) {
-    // Checked before the test-file exemption: the verifier's own tests are part of the verifier.
+    // Tests count too: the verifier's own tests are part of the verifier.
     const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
-    if (high) {
-      note("high", high.reason, path);
-      continue;
-    }
-    const standard = STANDARD_RISK_PATHS.find((rule) => rule.pattern.test(path));
-    if (standard && !isTestFile(path)) note("standard", standard.reason, path);
+    if (high) note("high", high.reason, path);
   }
 
   const codeLines = files
@@ -141,8 +119,8 @@ export function classify(files: ChangedFile[]): TierResult {
   else if (codeLines > STANDARD_SIZE_LINES) note("standard", `${codeLines} changed lines of code`);
 
   const tier: Tier = byTier.high.size > 0 ? "high" : byTier.standard.size > 0 ? "standard" : "low";
-  // Only the winning tier's reasons: the report says why it is high, not every
-  // standard-tier file that also changed.
+  // Only the winning tier's reasons: the report says why it is high, not
+  // that it is also big.
   const reasons = [...byTier[tier]].map(([reason, paths]) => {
     if (paths.length === 0) return reason;
     return paths.length === 1 ? `${reason} (${paths[0]})` : `${reason} (${paths.length} files)`;

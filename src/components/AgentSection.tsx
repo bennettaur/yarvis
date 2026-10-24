@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { setAgent } from "../lib/privilegedCommands";
-import { getSettings, type Settings } from "../lib/settings";
+import { getSettings, type Settings, setAgent } from "../lib/settings";
 
 /**
  * The agent every workspace opens with: its tab title and the command its

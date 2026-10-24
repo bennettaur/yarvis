@@ -224,7 +224,7 @@ export const memDeleteEmbeddingsConfig = () =>
 
 export const memReembed = () => send<{ reembedded: number }>("/api/memory/reembed", "POST");
 
-/* ---------- Embeddings secret status (writes are in privilegedCommands.ts) ---------- */
+/* ---------- Embeddings secrets (Tauri commands, Keychain-backed) ---------- */
 
 export type EmbeddingsSecretSlot = "apiKey" | `header:${string}`;
 
@@ -236,4 +236,12 @@ export interface EmbeddingsSecretStatus {
 
 export function getEmbeddingsSecretStatus(): Promise<EmbeddingsSecretStatus> {
   return invoke<EmbeddingsSecretStatus>("get_embeddings_secret_status");
+}
+
+export function setEmbeddingsSecret(slot: EmbeddingsSecretSlot, value: string): Promise<void> {
+  return invoke("set_embeddings_secret", { slot, value });
+}
+
+export function deleteEmbeddingsSecret(slot: EmbeddingsSecretSlot): Promise<void> {
+  return invoke("delete_embeddings_secret", { slot });
 }

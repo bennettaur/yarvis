@@ -44,6 +44,7 @@ const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => (
   version: 1,
   headSha,
   verdict,
+  riskTier: "low",
   blockers: 0,
   majors: 0,
   flagged: [],

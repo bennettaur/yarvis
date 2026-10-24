@@ -18,6 +18,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
     summary: "Adds a drag handle to the workspace list divider.",
     verdict: "auto",
     verdictReason: "Small, tested, UI only.",
+    risk: { tier: "low", reasons: ["Layout only; calls nothing new"] },
     dimensions: {
       goal: pass,
       tests: pass,
@@ -124,6 +125,17 @@ describe("finalVerdict", () => {
     const review = makeReview({ findings: [{ severity: "blocker", title: "x", detail: "…" }] });
     const facts = makeFacts({ tier: { tier: "standard", reasons: [] } });
     expect(finalVerdict(review, facts).verdict).toBe("human");
+  });
+
+  it("takes the assessed risk when it is stricter than the paths'", () => {
+    const review = makeReview({ risk: { tier: "high", reasons: ["Writes a secret from the UI"] } });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("human");
+    expect(renderReport(review, makeFacts()).data.riskTier).toBe("high");
+  });
+
+  it("never lets an assessed low risk lower the paths' tier", () => {
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+    expect(renderReport(makeReview(), facts).data.riskTier).toBe("high");
   });
 
   it("can be made stricter by the reviewer", () => {

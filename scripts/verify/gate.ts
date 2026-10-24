@@ -24,7 +24,7 @@
 import { readFileSync } from "node:fs";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
-import { type ChangedFile, classify, type Tier } from "./tier.ts";
+import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
 const STATUS_CONTEXT = "Verification report";
@@ -160,7 +160,9 @@ export function decideReport(input: {
     prAuthor: pr.user,
     draft: pr.draft,
     trusted,
-    tier: gateTier(pr, input.files),
+    // The report's tier rests on its assessment of what the change does; the
+    // gate's own from the paths is a floor under it that the report can't lower.
+    tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
   if (blockers.length > 0) {
     return {

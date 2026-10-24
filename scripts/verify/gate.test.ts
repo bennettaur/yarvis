@@ -21,6 +21,7 @@ const cleanReport: ReportData = {
   version: 1,
   headSha: HEAD,
   verdict: "auto",
+  riskTier: "low",
   blockers: 0,
   majors: 0,
   flagged: [],
@@ -117,6 +118,14 @@ describe("decideReport", () => {
     const decision = decide({ comment, comments: [comment] });
     expect(decision?.approve).toBe(false);
     expect(decision?.status).toContain("verdict is human");
+  });
+
+  it("refuses when the report's assessed risk is above low, though the paths are low", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, riskTier: "standard" });
+    expect(decide({ comment, comments: [comment] })).toMatchObject({
+      approve: false,
+      status: expect.stringContaining("standard-risk change"),
+    });
   });
 
   it("refuses when the gate's own tier is higher than low", () => {
