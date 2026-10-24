@@ -166,6 +166,29 @@ characters. The note says what's wrong, or what you checked, never praise.
 
 Coverage is rated by `report.ts` from the facts, so you don't rate it.
 
+## 6b. Assess the risk
+
+Rate how much harm the change could do if it is wrong, from what it does, not
+from where it is. A change to a settings screen can be the riskiest in the PR.
+Read the diff for what each change can reach, and use the security reviewer's
+findings:
+
+- **high**: it reads, writes or moves a secret or credential; launches or
+  types into a shell, a process or an agent session; changes what an agent may
+  do without asking, or which tools need approval; touches auth, permissions,
+  signing, CI or the verifier; deletes or migrates data; or sends data to a
+  host it didn't before.
+- **standard**: a bug in it would lose or corrupt the user's data, break a
+  flow they rely on, or misbehave under load or concurrency: state and
+  storage, background work, external API calls, error handling.
+- **low**: a bug in it would be visible and harmless: layout, copy, styling,
+  a self-contained view, tests, docs, or a refactor whose tests show nothing
+  changed.
+
+Give one to four short reasons, each naming the change that sets the tier.
+The report takes the stricter of this and the changed paths' tier, so you can
+raise a PR's tier but not lower it.
+
 ## 7. Prove UI changes
 
 When the PR changes what the app renders (`src/components/`, `src/App.tsx`,
@@ -197,6 +220,7 @@ Write `$TMPDIR/verify/<N>/review.json`:
   "summary": "one or two sentences on what the PR does and how it does it",
   "verdict": "auto | agent | human",
   "verdictReason": "one sentence",
+  "risk": { "tier": "low | standard | high", "reasons": ["what sets the tier, in under 140 characters"] },
   "dimensions": {
     "goal": { "status": "pass", "note": "..." },
     "tests": { "status": "pass", "note": "..." },

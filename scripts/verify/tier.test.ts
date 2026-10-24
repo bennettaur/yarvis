@@ -38,10 +38,11 @@ describe("classify", () => {
     }
   });
 
-  it("treats sidecar and Rust code as standard risk, but not their tests", () => {
-    expect(classify([file("sidecar/src/memory/recall.ts")]).tier).toBe("standard");
-    expect(classify([file("src-tauri/src/alarms.rs")]).tier).toBe("standard");
-    expect(classify([file("sidecar/src/memory/recall.test.ts")]).tier).toBe("low");
+  it("presumes nothing about an area: frontend, sidecar and Rust code all start low", () => {
+    // What the change does decides the rest, in the report's signed assessment.
+    for (const path of ["src/App.tsx", "sidecar/src/memory/recall.ts", "src-tauri/src/alarms.rs"]) {
+      expect(classify([file(path)]).tier).toBe("low");
+    }
   });
 
   it("raises the tier by size, counting code but not tests or lockfiles", () => {
@@ -54,8 +55,8 @@ describe("classify", () => {
     expect(classify([file("scripts/verify/gate.test.ts")]).tier).toBe("high");
   });
 
-  it("treats test preloads and helpers as code, not tests", () => {
-    expect(classify([file("sidecar/src/test/setup.ts")]).tier).toBe("standard");
+  it("counts test preloads and helpers as code toward size, not as tests", () => {
+    expect(classify([file("sidecar/src/test/setup.ts", 301)]).tier).toBe("standard");
   });
 
   it("classifies the old path of a renamed file", () => {
@@ -77,13 +78,5 @@ describe("classify", () => {
     const result = classify([file("sidecar/src/memory/recall.ts"), file("bun.lock")]);
     expect(result.tier).toBe("high");
     expect(result.reasons).toEqual(["dependencies (bun.lock)"]);
-  });
-});
-
-describe("frontend privileged commands", () => {
-  it("makes the files that may call secret or shell commands high risk, and nothing else", () => {
-    expect(classify([file("src/lib/privilegedCommands.ts")]).tier).toBe("high");
-    expect(classify([file("src/lib/pty.ts")]).tier).toBe("high");
-    expect(classify([file("src/lib/settings.ts"), file("src/App.tsx")]).tier).toBe("low");
   });
 });

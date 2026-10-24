@@ -136,22 +136,26 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   push made after you read the diff isn't approved with it. Anything else after
   `/approve` is ignored.
 
-Only low-risk PRs can merge on a report alone. `scripts/verify/tier.ts` decides
-the tier, from both sides of any rename:
+Only low-risk PRs can merge on a report alone. A PR's tier is the stricter of
+two things:
 
-- **High:** CI and repo config, the verifier itself, agent instructions and
-  hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
-  config, secrets and shell access, app permissions, sidecar request handling,
-  agent tool approvals, the MCP server, settings, migrations, dependencies,
-  what the Chrome extension may do, the two frontend files allowed to call
-  secret or shell commands (`src/lib/privilegedCommands.ts` and
-  `src/lib/pty.ts`), or more than 800 changed lines of code.
-- **Standard:** any other change to the Rust core, the sidecar, the extension
-  or dev scripts, or more than 300 changed lines of code.
+- **The risk assessment** in the report: how much harm the change could do,
+  judged from what it does, whatever part of the app it is in. A UI change
+  that writes a secret, launches a command, changes which tools ask before
+  running, or sends data somewhere new is high risk. One that only moves
+  things around on screen is low. The `/verify-pr` skill makes this call and
+  signs it into the report.
+- **A floor from the changed paths** (`scripts/verify/tier.ts`, from both
+  sides of any rename), which the assessment can't lower. It is high for CI
+  and repo config, the verifier itself, agent instructions and hooks
+  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
+  secrets and shell access, app permissions, sidecar request handling, agent
+  tool approvals, the MCP server, settings, migrations, dependencies, what
+  the Chrome extension may do, or more than 800 changed lines of code. More
+  than 300 lines is standard. Anything else starts low: no area is presumed
+  safe or risky.
 
-Tests, docs and lockfiles don't count toward the line limits. The rest of the
-frontend is low risk because `scripts/verify/nativeBridge.test.ts`, which runs
-in CI, fails when any other file calls one of those commands.
+Tests, docs and lockfiles don't count toward the line limits.
 
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository
