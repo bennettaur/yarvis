@@ -1453,7 +1453,11 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
   }
 
-  writeClaudeSettings(detail.rootPath, detail.id);
+  writeClaudeSettings(
+    detail.rootPath,
+    detail.id,
+    detail.repos.map((wr) => wr.repo.primaryClonePath),
+  );
   writeMcpConfig(detail.rootPath, detail.id);
 }
 

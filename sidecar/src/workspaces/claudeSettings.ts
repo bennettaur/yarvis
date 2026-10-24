@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
 /**
@@ -205,6 +206,75 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 }
 
 /**
+ * The paths outside the workspace root that git writes to when a session
+ * commits in one of the workspace's worktrees: each repo's primary clone holds
+ * the shared `.git` directory (objects, refs, the worktree's index), and
+ * Claude Code puts the worktrees it isolates subagents in under the clone's
+ * `.claude/worktrees`. Claude Code's sandbox only lets a session write inside
+ * the directory it started in, so without these every commit, rebase and push
+ * leaves the sandbox and asks the user.
+ */
+export function sandboxWritePaths(clonePaths: readonly string[]): string[] {
+  return clonePaths.flatMap((clone) => [`${clone}/.git`, `${clone}/.claude/worktrees`]);
+}
+
+/**
+ * The parts of a clone's `.git` the sandbox still may not write. Its config
+ * (through `core.fsmonitor`, `core.hooksPath` and the like) and its hooks
+ * decide what runs on the next git command in any of the clone's worktrees,
+ * including the ones Yarvis runs outside the sandbox, so a session that
+ * followed a planted instruction could otherwise escape it. A command that
+ * does need to write the config, such as `git push -u`, asks instead.
+ */
+export function sandboxDenyWritePaths(clonePaths: readonly string[]): string[] {
+  return clonePaths.flatMap((clone) => [
+    `${clone}/.git/config`,
+    // Denied too, so git fails to take the lock rather than leaving it behind.
+    `${clone}/.git/config.lock`,
+    `${clone}/.git/hooks`,
+  ]);
+}
+
+/**
+ * Replaces our entries in one `sandbox.filesystem` list, keeping the user's
+ * own. Every primary clone lives in the same `.repos` directory, so an entry
+ * under one of the current clones' parent directories is one we wrote; that
+ * also drops the paths of a repo no longer in the workspace.
+ */
+function withOurPaths(prior: unknown, reposDirs: readonly string[], ours: string[]): unknown[] {
+  const entries = Array.isArray(prior) ? prior : [];
+  const usersOwn = entries.filter(
+    (entry) => typeof entry !== "string" || !reposDirs.some((dir) => entry.startsWith(dir)),
+  );
+  return [...usersOwn, ...ours];
+}
+
+/** The settings' `sandbox` key with our clone paths in it, or as it was when there are none. */
+function withSandboxPaths(
+  existing: Record<string, unknown>,
+  clonePaths: readonly string[],
+): Record<string, unknown> | undefined {
+  const sandbox =
+    existing.sandbox && typeof existing.sandbox === "object"
+      ? (existing.sandbox as Record<string, unknown>)
+      : undefined;
+  if (clonePaths.length === 0) return sandbox;
+  const filesystem =
+    sandbox?.filesystem && typeof sandbox.filesystem === "object"
+      ? (sandbox.filesystem as Record<string, unknown>)
+      : {};
+  const reposDirs = [...new Set(clonePaths.map((clone) => `${dirname(clone)}/`))];
+  return {
+    ...sandbox,
+    filesystem: {
+      ...filesystem,
+      allowWrite: withOurPaths(filesystem.allowWrite, reposDirs, sandboxWritePaths(clonePaths)),
+      denyWrite: withOurPaths(filesystem.denyWrite, reposDirs, sandboxDenyWritePaths(clonePaths)),
+    },
+  };
+}
+
+/**
  * Merges our hooks into any existing settings: the three attention hooks, which
  * include the permission hook, the hooks that settle held permission prompts,
  * and the SessionStart/SessionEnd pair that registers the session. Unrelated
@@ -213,7 +283,8 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
  * re-provisioning never stacks duplicates.
  *
- * Also strips the `skills.paths`/`agents.paths` an earlier version wrote to
+ * Also lets the sandbox write to each repo's clone (`sandboxWritePaths`), and
+ * strips the `skills.paths`/`agents.paths` an earlier version wrote to
  * register each repo's `.claude` dirs. Claude Code ignores those keys, so the
  * repos' skills and agents are copied into the workspace root instead (see
  * `claudeAssets.ts`); left behind, the paths would only mislead a reader.
@@ -221,6 +292,7 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 export function buildClaudeSettings(
   workspaceId: string,
   existing: Record<string, unknown> = {},
+  clonePaths: readonly string[] = [],
 ): Record<string, unknown> {
   const fallbackSessionKey = `ws-claude:${workspaceId}`;
   const command = (kind: AttentionHookKind) => ({
@@ -270,6 +342,9 @@ export function buildClaudeSettings(
     },
   };
 
+  const sandbox = withSandboxPaths(existing, clonePaths);
+  if (sandbox) settings.sandbox = sandbox;
+
   for (const key of ["skills", "agents"]) dropPathsKey(settings, key);
 
   return settings;
@@ -283,7 +358,11 @@ export function buildClaudeSettings(
  * a project settings file here covers them. Best-effort: a corrupt existing file is overwritten and any failure is
  * logged, never fatal to provisioning.
  */
-export function writeClaudeSettings(rootPath: string, workspaceId: string): void {
+export function writeClaudeSettings(
+  rootPath: string,
+  workspaceId: string,
+  clonePaths: readonly string[],
+): void {
   try {
     const dir = `${rootPath}/.claude`;
     const file = `${dir}/settings.json`;
@@ -303,7 +382,10 @@ export function writeClaudeSettings(rootPath: string, workspaceId: string): void
     }
 
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, `${JSON.stringify(buildClaudeSettings(workspaceId, existing), null, 2)}\n`);
+    writeFileSync(
+      file,
+      `${JSON.stringify(buildClaudeSettings(workspaceId, existing, clonePaths), null, 2)}\n`,
+    );
   } catch (e) {
     console.error("[workspaces] failed to write .claude/settings.json:", e);
   }
