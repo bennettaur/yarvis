@@ -12,19 +12,22 @@
  *
  * Everything here is deterministic. The report was written by a model reading
  * text a PR author controls, so the gate takes only its verdict and its
- * assessed risk tier, and only from a report a trusted user posted. It
+ * assessed risk tier, and only from a report a trusted user posted and signed
+ * with a key in VERIFY_ALLOWED_SIGNERS, for this PR's current commit. It
  * recomputes a floor under that tier from the PR's files and their added
  * lines, which the report's tier can raise but never lower.
  *
  * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO,
  * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USER_IDS
- * (comma-separated numeric GitHub user IDs). IDs rather than logins, since a
- * login freed by a rename can be registered by someone else.
+ * (comma-separated numeric GitHub user IDs; IDs rather than logins, since a
+ * login freed by a rename can be registered by someone else), and
+ * VERIFY_ALLOWED_SIGNERS (an OpenSSH allowed_signers file).
  */
 
 import { readFileSync } from "node:fs";
 import { ghApi, ghApiPages, run } from "./exec.ts";
-import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
+import { parseSignedReport, REPORT_MARKER, type ReportData } from "./report.ts";
+import { REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
 import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
@@ -133,28 +136,46 @@ export interface ReportDecision {
 }
 
 /**
- * What to do about a report comment, or `null` to do nothing. A report for an
- * older commit sets no status at all, since a success status on the new head
- * would satisfy the required check without a report for it.
+ * What to do about a report comment, or why to do nothing. A report that
+ * isn't signed, or is for another PR or an older commit, sets no status at
+ * all: a success status on the head would satisfy the required check without
+ * a current, signed report behind it.
+ *
+ * @param isSigned whether `signature` is a valid signature over `payload` by
+ *   an allowed key. Passed in so tests needn't make real signatures.
  */
 export function decideReport(input: {
   comment: Comment;
   comments: Comment[];
+  repo: string;
   pr: PullRequest;
   files: ChangedFile[];
   trusted: number[];
   mode: Mode;
-}): ReportDecision | null {
+  isSigned: (payload: string, signature: string) => boolean;
+}): ReportDecision | { skip: string } {
   const { comment, pr, trusted } = input;
   const isTrusted = (c: Comment) => trusted.includes(c.user.id);
-  if (!isTrusted(comment)) return null;
+  if (!isTrusted(comment)) return { skip: "posted by someone who isn't trusted" };
 
   // Act only on the newest trusted report, in case an older one's run is late.
   const reports = input.comments.filter((c) => c.body.includes(REPORT_MARKER) && isTrusted(c));
-  if (reports[reports.length - 1]?.id !== comment.id) return null;
+  if (reports[reports.length - 1]?.id !== comment.id) return { skip: "a newer report exists" };
 
-  const report = parseReportData(comment.body);
-  if (!report || report.headSha !== pr.head.sha) return null;
+  const signed = parseSignedReport(comment.body);
+  if (!signed) return { skip: "no readable, signed data block" };
+  if (!input.isSigned(signed.payload, signed.signature)) {
+    return { skip: "the signature isn't from a key in VERIFY_ALLOWED_SIGNERS" };
+  }
+  const report = signed.data;
+  if (report.repo !== input.repo || report.pr !== pr.number) {
+    return { skip: `signed for ${report.repo}#${report.pr}, not this PR` };
+  }
+  if (report.headSha !== pr.head.sha) {
+    return {
+      skip: `for ${report.headSha.slice(0, 7)}, but the head is ${pr.head.sha.slice(0, 7)}`,
+    };
+  }
 
   const blockers = autoMergeBlockers({
     report,
@@ -334,7 +355,13 @@ function handleApprove(
   react(event.comment.id, "rocket");
 }
 
-function handleReport(event: CommentEvent, pr: PullRequest, trusted: number[], mode: Mode) {
+function handleReport(
+  event: CommentEvent,
+  pr: PullRequest,
+  trusted: number[],
+  mode: Mode,
+  allowedSigners: string,
+) {
   const comments = ghApiPages<Comment>(
     `repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`,
   );
@@ -344,9 +371,19 @@ function handleReport(event: CommentEvent, pr: PullRequest, trusted: number[], m
     console.log("[verify] the head moved while reading the PR; a new report is needed");
     return;
   }
-  const decision = decideReport({ comment: event.comment, comments, pr, files, trusted, mode });
-  if (!decision) {
-    console.log("[verify] not the newest current trusted report; nothing to do");
+  const decision = decideReport({
+    comment: event.comment,
+    comments,
+    repo: process.env.GH_REPO ?? "",
+    pr,
+    files,
+    trusted,
+    mode,
+    isSigned: (payload, signature) =>
+      verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners) !== null,
+  });
+  if ("skip" in decision) {
+    console.log(`[verify] ignoring this report: ${decision.skip}`);
     return;
   }
   if (decision.approve) {
@@ -369,6 +406,10 @@ if (import.meta.main) {
     console.warn("[verify] VERIFY_TRUSTED_USER_IDS has no numeric IDs, so nobody is trusted");
   }
   const mode: Mode = process.env.VERIFY_MODE === "enforce" ? "enforce" : "shadow";
+  const allowedSigners = process.env.VERIFY_ALLOWED_SIGNERS ?? "";
+  if (!allowedSigners.trim()) {
+    console.warn("[verify] VERIFY_ALLOWED_SIGNERS is empty, so no report can be accepted");
+  }
   const pr = fetchPr(event.issue.number);
   if (pr.state !== "open") process.exit(0);
 
@@ -376,6 +417,6 @@ if (import.meta.main) {
   if (approve) {
     handleApprove(event, pr, approve.sha, trusted);
   } else if (event.comment.body.includes(REPORT_MARKER)) {
-    handleReport(event, pr, trusted, mode);
+    handleReport(event, pr, trusted, mode, allowedSigners);
   }
 }
