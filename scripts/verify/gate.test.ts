@@ -18,11 +18,14 @@ const BENNETTAUR = { login: "bennettaur", id: 2670128 };
 const SOMEONE = { login: "someone", id: 99 };
 const HEAD = "abc1234def5678abc1234def5678abc1234def56";
 const REPO = "bennettaur/yarvis";
+const SIGNED_AT = "2026-10-24T12:00:00.000Z";
+const NOW = new Date("2026-10-24T12:30:00.000Z");
 const cleanReport: ReportData = {
   version: 2,
   repo: REPO,
   pr: 7,
   headSha: HEAD,
+  issuedAt: SIGNED_AT,
   verdict: "auto",
   blockers: 0,
   majors: 0,
@@ -74,6 +77,7 @@ function decide(overrides: Partial<Parameters<typeof decideReport>[0]> = {}) {
     trusted: [BENNETTAUR.id],
     mode: "enforce",
     isSigned: fakeIsSigned,
+    now: NOW,
     ...overrides,
   });
 }
@@ -139,6 +143,18 @@ describe("decideReport", () => {
     const comment = reportComment(BENNETTAUR, { ...cleanReport, pr: 8 });
     expect(decide({ comment, comments: [comment] })).toEqual({
       skip: "signed for bennettaur/yarvis#8, not this PR",
+    });
+  });
+
+  it("refuses a signed report re-posted long after it was signed", () => {
+    expect(decide({ now: new Date("2026-10-25T12:00:00.000Z") })).toEqual({
+      skip: "the report can't be acted on: it was signed 24 hours ago",
+    });
+  });
+
+  it("refuses a report dated in the future, past clock skew", () => {
+    expect(decide({ now: new Date("2026-10-24T11:00:00.000Z") })).toEqual({
+      skip: "the report can't be acted on: it was signed in the future",
     });
   });
 

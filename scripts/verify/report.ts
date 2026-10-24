@@ -111,6 +111,8 @@ const ReportData = z.object({
   repo: z.string(),
   pr: z.number().int().positive(),
   headSha: z.string(),
+  /** When it was signed, ISO 8601, so a re-posted old report can be refused. */
+  issuedAt: z.string().datetime(),
   verdict: Verdict,
   blockers: z.number().int().nonnegative(),
   majors: z.number().int().nonnegative(),
@@ -266,12 +268,13 @@ export interface ReportTarget {
 
 /**
  * The report's markdown, ending in its data block, and that block's base64
- * text: the exact string `signReport` signs.
+ * text: the exact string `signing.ts`'s `signPayload` signs.
  */
 export function renderReport(
   review: Review,
   facts: Facts,
   target: ReportTarget,
+  now: Date = new Date(),
 ): { body: string; data: ReportData; payload: string } {
   const { verdict, why } = finalVerdict(review, facts);
   const coverage = coverageStatus(facts.coverage);
@@ -383,6 +386,7 @@ export function renderReport(
     repo: target.repo,
     pr: target.pr,
     headSha: facts.head,
+    issuedAt: now.toISOString(),
     verdict,
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,

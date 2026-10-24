@@ -70,6 +70,25 @@ export function mergePath(reviews: ApprovalReview[]): MergePath {
   return "none";
 }
 
+/**
+ * How long a signed report or review counts for. A trusted account can
+ * re-post an old signed comment, so without a limit one that was right once,
+ * or posted in shadow mode, could be brought back to merge later. Six hours
+ * covers a slow CI queue.
+ */
+export const MAX_SIGNED_AGE_MS = 6 * 60 * 60 * 1000;
+/** Clock skew allowed between the signing machine and the runner. */
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/** Why a signed time is outside the window the gate accepts, or `null` if it's inside. */
+export function staleness(issuedAt: string, now: Date): string | null {
+  const age = now.getTime() - Date.parse(issuedAt);
+  if (Number.isNaN(age)) return "it has no readable signing time";
+  if (age > MAX_SIGNED_AGE_MS) return `it was signed ${Math.round(age / 3_600_000)} hours ago`;
+  if (age < -MAX_CLOCK_SKEW_MS) return "it was signed in the future";
+  return null;
+}
+
 /** The pull request files API stops listing files here. */
 const MAX_LISTED_FILES = 3000;
 
@@ -152,6 +171,7 @@ export function decideReport(input: {
   trusted: number[];
   mode: Mode;
   isSigned: (payload: string, signature: string) => boolean;
+  now: Date;
 }): ReportDecision | { skip: string } {
   const { comment, pr, trusted } = input;
   const isTrusted = (c: Comment) => trusted.includes(c.user.id);
@@ -170,6 +190,8 @@ export function decideReport(input: {
   if (report.repo !== input.repo || report.pr !== pr.number) {
     return { skip: `signed for ${report.repo}#${report.pr}, not this PR` };
   }
+  const stale = staleness(report.issuedAt, input.now);
+  if (stale) return { skip: `the report can't be acted on: ${stale}` };
   if (report.headSha !== pr.head.sha) {
     return {
       skip: `for ${report.headSha.slice(0, 7)}, but the head is ${pr.head.sha.slice(0, 7)}`,
@@ -366,6 +388,7 @@ function handleReport(
     mode,
     isSigned: (payload, signature) =>
       verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners) !== null,
+    now: new Date(),
   });
   if ("skip" in decision) {
     console.log(`[verify] ignoring this report: ${decision.skip}`);
