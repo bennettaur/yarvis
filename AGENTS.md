@@ -295,15 +295,26 @@ back to ad-hoc.
   the clone's git data is not trusted either. `sandboxPaths.ts` grants only
   what that workspace's own commits need and denies what decides which program
   git runs or what other workspaces see (config, hooks, submodule git folders,
-  `commondir`, replace refs, packed refs). That still leaves the index
-  writable, which is enough to stage a fake submodule whose git folder sets
-  `core.fsmonitor`, so every git the sidecar starts, `gh` included, runs with
-  `hardenedGitEnv` from `git.ts`: command-scope config outranks every config
-  file and reaches the git processes started for submodules. Anything new that
-  spawns git outside `defaultGitRunner` owes the same env. `integrity.ts` looks
-  for the traces such a session leaves, and Yarvis refuses to merge or push for
-  a workspace while any are there, since a hardened Yarvis doesn't protect the
-  user's own terminal.
+  `commondir`, replace refs, packed refs, tags). Claude Code's sandbox also
+  refuses writes to a worktree's existing `.git` file, which is what keeps a
+  session from pointing the worktree at a git folder of its own; nothing in
+  Yarvis enforces that. Three rules follow:
+  - Every git the sidecar starts, `gh` included, runs with `hardenedGitEnv`
+    from `git.ts`. It switches off a short, named list of settings (the
+    fsmonitor and submodule recursion a staged fake submodule would use, and
+    replace refs), and command-scope config reaches the git processes started
+    for submodules. It is not a general barrier: a repo whose config an
+    attacker could write would still get its other settings honoured. Anything
+    new that spawns git outside `defaultGitRunner` owes the same env, and
+    status and diff calls also pass `--ignore-submodules=all`.
+  - A remote-tracking ref is always named in full (`remoteRef`), because a
+    short `origin/main` resolves a tag or a local branch of that name first.
+  - `integrity.ts` is best-effort detection of the traces such a session
+    leaves, for the user's own terminal, which nothing in Yarvis hardens.
+    Yarvis refuses to merge or push for a workspace while any are there, and
+    the check run right before (`checkBeforeWrite`) fails closed. It is not
+    what protects Yarvis's own git: a running session can act between a check
+    and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both

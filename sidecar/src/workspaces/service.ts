@@ -4,7 +4,7 @@
  * this module owns the database state and orchestration.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
@@ -72,7 +72,12 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
-import { checkRepoIntegrity, describeFindings, type IntegrityFinding } from "./integrity.ts";
+import {
+  checkBeforeWrite,
+  checkRepoIntegrity,
+  describeFindings,
+  type IntegrityFinding,
+} from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import type { RepoTracker } from "./tracker.ts";
@@ -1068,7 +1073,7 @@ async function syncOneRepo(
   // same primary clone.
   await withRepoLock(wr.repoId, () => fetchRemote(runner, wr.repo.primaryClonePath));
 
-  const findings = await checkRepoIntegrity(runner, wr.repo.primaryClonePath, wr.worktreePath);
+  const findings = await checkBeforeWrite(runner, wr.repo.primaryClonePath, wr.worktreePath);
   if (findings.length > 0) {
     await onTampered(findings);
     return skipped(
@@ -1959,10 +1964,11 @@ export async function raiseIntegrityAlert(
 }
 
 /**
- * Runs the integrity check on each of the workspace's ready repos, and flags
- * the workspace when anything turns up. Returns the findings, so a caller about
- * to push or merge can refuse. A check that fails to run finds nothing: it is a
- * tripwire, and the hardened git is what protects Yarvis itself.
+ * Runs the integrity check on each of the workspace's repos that has a
+ * worktree on disk, and flags the workspace when anything turns up. For the
+ * checkpoints that only report (provision, a session ending, archive): a check
+ * that fails to run finds nothing here, while the checks right before a push or
+ * merge (`checkBeforeWrite`) fail closed.
  */
 export async function checkWorkspaceIntegrity(
   db: Db,
@@ -1971,7 +1977,7 @@ export async function checkWorkspaceIntegrity(
 ): Promise<IntegrityFinding[]> {
   const findings: IntegrityFinding[] = [];
   for (const wr of detail.repos) {
-    if (wr.status !== "ready") continue;
+    if (!existsSync(wr.worktreePath)) continue;
     try {
       findings.push(
         ...(await checkRepoIntegrity(runner, wr.repo.primaryClonePath, wr.worktreePath)),

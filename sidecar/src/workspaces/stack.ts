@@ -22,7 +22,7 @@ import { redactSecrets } from "../llm/errors.ts";
 import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from "../pr/types.ts";
 import { type RunResult, run } from "./exec.ts";
 import { defaultGitRunner, type GitRunner, hardenedGitEnv } from "./git.ts";
-import { checkRepoIntegrity, describeFindings } from "./integrity.ts";
+import { checkBeforeWrite, describeFindings } from "./integrity.ts";
 import { parseRepoRemote, raiseIntegrityAlert } from "./service.ts";
 import { resolveWorktree } from "./worktrees.ts";
 
@@ -482,7 +482,7 @@ export async function mergeWorkspaceRepoStack(
     throw new Error(`the stack changed since you looked — it would now merge ${would}`);
   }
   // `gh stack merge` runs git in this worktree, so it is checked like a sync.
-  const findings = await checkRepoIntegrity(git, clonePath, worktreePath);
+  const findings = await checkBeforeWrite(git, clonePath, worktreePath);
   if (findings.length > 0) {
     const [workspace] = await db
       .select({ id: workspaces.id, name: workspaces.name })

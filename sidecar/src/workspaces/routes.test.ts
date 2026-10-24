@@ -71,9 +71,10 @@ const db = getDb(url).db;
 const auth = { Authorization: "Bearer test-token" };
 const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
-/** A no-op git runner; symbolic-ref answers so default-branch detection works. */
+/** A no-op git runner; ls-remote answers so default-branch detection works. */
 const fakeGit: GitRunner = async (args) => {
-  if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+  if (args[0] === "ls-remote")
+    return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
   // Create the worktree dir like real git would, so setup scripts have a cwd.
   // New branch: "worktree add -b <branch> <path> <base>" (path is args[4]).
@@ -1857,7 +1858,8 @@ describe("provision + archive (injected git runner)", () => {
     // show-ref exit 0 => the desired branch already exists, forcing a suffix.
     let addedBranch = "";
     const collidingGit: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
       if (args[0] === "worktree" && args[1] === "add") {
         addedBranch = args[3] ?? ""; // ["worktree","add","-b",<branch>,<path>,<base>]
@@ -2194,7 +2196,14 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: branchLeftBehind });
 
     const expected = `yarvis/collide-on-retry-${ws.id.slice(0, 8)}`;
-    expect(added).toEqual(["worktree", "add", "-b", expected, worktreePath, "origin/main"]);
+    expect(added).toEqual([
+      "worktree",
+      "add",
+      "-b",
+      expected,
+      worktreePath,
+      "refs/remotes/origin/main",
+    ]);
     expect((await getWorkspace(db, ws.id))?.repos[0]?.branch).toBe(expected);
   });
 

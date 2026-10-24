@@ -385,7 +385,6 @@ describe("sandbox paths", () => {
       `${GIT}/objects`,
       `${GIT}/refs/remotes`,
       `${GIT}/logs/refs/remotes`,
-      `${GIT}/refs/tags`,
       `${GIT}/refs/heads/yarvis/fix-it`,
       `${GIT}/refs/heads/yarvis/fix-it.lock`,
       `${GIT}/logs/refs/heads/yarvis/fix-it`,
@@ -394,6 +393,8 @@ describe("sandbox paths", () => {
   });
 
   it("keeps what decides what git runs, or what other workspaces see, out of reach", () => {
+    // Tags among them: git resolves `origin/main` to a tag of that name before
+    // the remote-tracking ref.
     expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.denyWrite).toEqual([
       `${GIT}/config`,
       `${GIT}/config.lock`,
@@ -402,6 +403,7 @@ describe("sandbox paths", () => {
       `${GIT}/modules`,
       `${GIT}/info`,
       `${GIT}/refs/replace`,
+      `${GIT}/refs/tags`,
       `${GIT}/objects/info`,
       `${GIT}/packed-refs`,
       `${GIT}/packed-refs.lock`,
@@ -420,7 +422,6 @@ describe("sandbox paths", () => {
       `${GIT}/objects`,
       `${GIT}/refs/remotes`,
       `${GIT}/logs/refs/remotes`,
-      `${GIT}/refs/tags`,
     ]);
   });
 

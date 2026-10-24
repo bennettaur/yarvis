@@ -4,15 +4,24 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultGitRunner, fileDiff, listChangedFiles, worktreeStatus } from "./git.ts";
-import { checkRepoIntegrity } from "./integrity.ts";
+import {
+  defaultGitRunner,
+  fileDiff,
+  type GitRunner,
+  listChangedFiles,
+  mergeBaseIntoWorktree,
+  worktreeStatus,
+} from "./git.ts";
+import { checkBeforeWrite, checkRepoIntegrity } from "./integrity.ts";
 import { ensureBranchRefDirs, resolveAdminName } from "./sandboxPaths.ts";
 
 /** Setup runs with no user config, so a signing or hook setting can't get in the way. */
@@ -55,6 +64,25 @@ function workspaceRepo() {
   return { root, clone, worktree };
 }
 
+/** Like `workspaceRepo`, but cloned from a bare remote, so `origin/main` exists. */
+function clonedWorkspaceRepo() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "yarvis-integrity-")));
+  roots.push(root);
+  const remote = join(root, "remote.git");
+  git(root, "init", "-q", "--bare", "-b", "main", remote);
+  const seed = join(root, "seed");
+  git(root, "clone", "-q", remote, seed);
+  writeFileSync(join(seed, "f"), "a\n");
+  git(seed, "add", "f");
+  git(seed, "commit", "-qm", "init");
+  git(seed, "push", "-q", "origin", "HEAD:main");
+  const clone = join(root, ".repos", "acme-api");
+  git(root, "clone", "-q", remote, clone);
+  const worktree = join(root, "ws", "api");
+  git(clone, "worktree", "add", "-q", "-b", "yarvis/fix", worktree, "origin/main");
+  return { root, seed, clone, worktree };
+}
+
 /**
  * What a hijacked session can do with a writable index: stage a fake submodule
  * whose git directory, somewhere it controls, runs a command on `git status`.
@@ -90,6 +118,30 @@ describe("hardened git", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it("reaches the git a declared submodule starts, even when .gitmodules says not to ignore it", async () => {
+    const { root, worktree } = workspaceRepo();
+    const child = join(root, "child");
+    git(root, "init", "-q", "-b", "main", child);
+    git(child, "commit", "-q", "--allow-empty", "-m", "c");
+    git(worktree, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "sub");
+    git(worktree, "config", "-f", ".gitmodules", "submodule.sub.ignore", "none");
+    const marker = join(root, "ran");
+    git(join(worktree, "sub"), "config", "core.fsmonitor", `touch ${marker}; false`);
+    writeFileSync(join(worktree, "sub", "dirty"), "x\n");
+
+    git(worktree, "status", "--short");
+    // The child's fsmonitor is real: plain git ran it.
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    // The env alone, with no --ignore-submodules on the command line, still
+    // reaches the child.
+    await defaultGitRunner(["status", "--short"], { cwd: worktree });
+    await defaultGitRunner(["diff", "HEAD"], { cwd: worktree });
+    await worktreeStatus(defaultGitRunner, worktree);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it("ignores a replace ref, so a planted one can't change what a commit holds", async () => {
     const { clone } = workspaceRepo();
     const original = git(clone, "rev-parse", "HEAD").trim();
@@ -118,6 +170,13 @@ describe("resolveAdminName", () => {
     git(clone, "worktree", "add", "-q", "-b", "yarvis/other", second);
     writeFileSync(join(worktree, ".git"), `gitdir: ${clone}/.git/worktrees/api1\n`);
     expect(resolveAdminName(clone, worktree)).toBe("api");
+  });
+
+  it("refuses a worktree path that is a symlink, which could stand in for another worktree", () => {
+    const { root, clone, worktree } = workspaceRepo();
+    const link = join(root, "ws", "linked");
+    symlinkSync(worktree, link);
+    expect(resolveAdminName(clone, link)).toBeNull();
   });
 
   it("answers null for a folder no worktree points back at", () => {
@@ -196,5 +255,86 @@ describe("checkRepoIntegrity", () => {
       (f) => f.problem,
     );
     expect(problems).toContain("the worktree's .git file points somewhere other than its clone");
+  });
+
+  it("finds a tag that shadows a remote branch, which Yarvis's merge ignores", async () => {
+    const { seed, clone, worktree } = clonedWorkspaceRepo();
+    writeFileSync(join(seed, "f"), "real\n");
+    git(seed, "commit", "-qam", "real");
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    git(clone, "fetch", "-q", "origin");
+
+    // What a session could do with writable tags and objects: a commit of its
+    // own, named so that `origin/main` finds it first.
+    writeFileSync(join(worktree, "f"), "planted\n");
+    git(worktree, "commit", "-qam", "planted");
+    const planted = git(worktree, "rev-parse", "HEAD").trim();
+    git(worktree, "reset", "-q", "--hard", "HEAD~1");
+    git(clone, "tag", "origin/main", planted);
+    // The shadow is real for anything that names the short ref.
+    expect(git(clone, "rev-parse", "origin/main").trim()).toBe(planted);
+
+    expect(await mergeBaseIntoWorktree(defaultGitRunner, worktree, "main")).toEqual({
+      result: "merged",
+    });
+    expect(readFileSync(join(worktree, "f"), "utf8")).toBe("real\n");
+
+    const findings = await checkRepoIntegrity(defaultGitRunner, clone, worktree);
+    expect(findings).toContainEqual({
+      problem: "a ref that shadows the remote branch origin/main",
+      where: "refs/tags/origin/main",
+    });
+  });
+
+  it("finds a worktree put on a branch another worktree has checked out", async () => {
+    const { clone, worktree } = workspaceRepo();
+    writeFileSync(join(clone, ".git", "worktrees", "api", "HEAD"), "ref: refs/heads/main\n");
+
+    const problems = (await checkRepoIntegrity(defaultGitRunner, clone, worktree)).map(
+      (f) => f.problem,
+    );
+    expect(problems).toContain(
+      "the worktree is on refs/heads/main, which another worktree has checked out",
+    );
+  });
+
+  it("finds a stopped rebase whose remaining steps run commands", async () => {
+    const { clone, worktree } = workspaceRepo();
+    const rebaseDir = join(clone, ".git", "worktrees", "api", "rebase-merge");
+    mkdirSync(rebaseDir);
+    writeFileSync(join(rebaseDir, "git-rebase-todo"), "pick abc123 one\nexec make deploy\n");
+
+    const problems = (await checkRepoIntegrity(defaultGitRunner, clone, worktree)).map(
+      (f) => f.problem,
+    );
+    expect(problems).toContain(
+      "a stopped rebase has steps that run commands (if you started it with --exec, finish or abort it)",
+    );
+  });
+});
+
+describe("checkBeforeWrite", () => {
+  it("counts a git command that fails as a finding, so a push doesn't go ahead unchecked", async () => {
+    const { clone, worktree } = workspaceRepo();
+    const failing: GitRunner = async () => ({ stdout: "", stderr: "boom", exitCode: 128 });
+
+    expect(await checkRepoIntegrity(failing, clone, worktree)).toEqual([]);
+    const findings = await checkBeforeWrite(failing, clone, worktree);
+    expect(findings.map((f) => f.problem)).toContain("couldn't check the refs");
+  });
+
+  it("counts a check that throws as a finding", async () => {
+    const { clone, worktree } = workspaceRepo();
+    const throwing: GitRunner = async () => {
+      throw new Error("spawn failed");
+    };
+    expect(await checkBeforeWrite(throwing, clone, worktree)).toEqual([
+      { problem: "the integrity check couldn't run (spawn failed)", where: worktree },
+    ]);
+  });
+
+  it("finds nothing in a clean repo", async () => {
+    const { clone, worktree } = workspaceRepo();
+    expect(await checkBeforeWrite(defaultGitRunner, clone, worktree)).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalPath } from "./git.ts";
 
@@ -11,7 +11,7 @@ import { canonicalPath } from "./git.ts";
  * is shared by every workspace on that repo, and its `.git` decides what git
  * runs, so the grant is no wider than this workspace's own commits need: its
  * worktree's admin directory, the object store, its own branch, and the
- * remote-tracking refs and tags a fetch rewrites. Everything that can make git
+ * remote-tracking refs a fetch rewrites. Everything that can make git
  * run code, or change what another workspace's git sees, is denied even where
  * an allowed path covers it.
  */
@@ -43,9 +43,15 @@ function isSafeBranch(branch: string): boolean {
  * back at this worktree. Matched from the admin side because a session can
  * rewrite the worktree's own `.git` file, but not the admin directory's
  * `gitdir`, which the sandbox is denied. Null when none, or more than one,
- * matches.
+ * matches, and when the worktree path is itself a symlink, which could stand in
+ * for another workspace's worktree.
  */
 export function resolveAdminName(clonePath: string, worktreePath: string): string | null {
+  try {
+    if (lstatSync(worktreePath).isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
   const adminRoot = join(clonePath, ".git", "worktrees");
   let names: string[];
   try {
@@ -72,12 +78,11 @@ export function sandboxAllowWrite(repos: readonly SandboxRepo[]): string[] {
     const git = `${clonePath}/.git`;
     const paths = [
       `${git}/objects`,
-      // Every fetch rewrites the remote-tracking refs and follows new tags. A
-      // planted remote ref is overwritten by the fetch Yarvis runs before it
-      // merges or cuts a worktree from one.
+      // Every fetch rewrites the remote-tracking refs. A planted one is
+      // overwritten by the fetch Yarvis runs before it merges or cuts a
+      // worktree from one, and Yarvis names them in full (`remoteRef`).
       `${git}/refs/remotes`,
       `${git}/logs/refs/remotes`,
-      `${git}/refs/tags`,
     ];
     if (isSafeBranch(branch)) {
       paths.push(
@@ -95,7 +100,9 @@ export function sandboxAllowWrite(repos: readonly SandboxRepo[]): string[] {
  * The sandbox's `denyWrite` entries for these repos: what decides which
  * program git runs (config, hooks, submodule git directories), where it looks
  * for the repo (`commondir`, a worktree's `gitdir`), and what every workspace
- * sees (replaced objects, packed refs, the shared excludes). The locks are
+ * sees (replaced objects, packed refs, the shared excludes, and tags, which
+ * outrank remote-tracking refs when git resolves a short name like
+ * `origin/main`, so a fetch that brings a new tag asks). The locks are
  * denied too, so git fails to take one rather than leaving it behind. Packing
  * refs therefore fails inside the sandbox; git does that as housekeeping after
  * a commit and reports it without failing the commit.
@@ -111,6 +118,7 @@ export function sandboxDenyWrite(repos: readonly SandboxRepo[]): string[] {
       "modules",
       "info",
       "refs/replace",
+      "refs/tags",
       "objects/info",
       "packed-refs",
       "packed-refs.lock",

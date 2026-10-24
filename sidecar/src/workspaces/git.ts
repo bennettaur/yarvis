@@ -41,14 +41,15 @@ const REMOTE_CHECK_TIMEOUT_MS = 30 * 1000;
 const REMOVAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * Config every git the sidecar starts runs with, so a clone's `.git` can't make
- * it run code. A workspace session's sandbox can write a worktree's index and
- * files, which is enough to stage a fake submodule whose own git directory sets
- * `core.fsmonitor`; a plain `git status` would then run that command outside the
- * sandbox. Config passed this way outranks every config file and reaches the
- * git processes git starts for submodules, and `gh` passes it on to the git it
- * drives. Replace refs are ignored so a planted `refs/replace/*` can't change
- * what a merge or push contains.
+ * Config every git the sidecar starts runs with. A workspace session's sandbox
+ * can write a worktree's index and files, which is enough to stage a fake
+ * submodule whose own git directory sets `core.fsmonitor`; a plain `git status`
+ * would then run that command outside the sandbox. These switch off the
+ * settings that attack uses. Config passed this way outranks every config file
+ * and reaches the git processes git starts for submodules, and `gh` passes it
+ * on to the git it drives. It covers these keys only, not every way a config
+ * file can name a program. Replace refs are ignored so a planted
+ * `refs/replace/*` can't change what a merge or push contains.
  */
 const HARDENED_GIT_CONFIG: [string, string][] = [
   ["core.fsmonitor", "false"],
@@ -83,6 +84,16 @@ export const defaultGitRunner: GitRunner = (args, opts) =>
     ...opts,
     env: { ...hardenedGitEnv(), GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
   });
+
+/**
+ * The fully qualified remote-tracking ref for `branch`. A short `origin/<branch>`
+ * resolves a tag or local branch of that name first, and a workspace session's
+ * sandbox may be able to create one, so the sidecar always names the remote ref
+ * in full.
+ */
+export function remoteRef(branch: string): string {
+  return `refs/remotes/origin/${branch}`;
+}
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
 async function git(
@@ -121,29 +132,23 @@ export async function remoteExists(runner: GitRunner, cloneUrl: string): Promise
 }
 
 /**
- * Detects the repo's default branch from `origin/HEAD`. Sets the symbolic ref
- * first if it's missing. Returns null if it still can't be determined so the
- * caller can fall back (e.g. to "main").
+ * Asks the remote which branch its HEAD points at. The local `origin/HEAD` isn't
+ * used: a workspace session's sandbox can write the clone's remote-tracking
+ * refs, and a fetch doesn't rewrite that one. Returns null when the remote can't
+ * be reached or doesn't say, so the caller can fall back (e.g. to "main").
  */
 export async function detectDefaultBranch(
   runner: GitRunner,
   primaryClonePath: string,
 ): Promise<string | null> {
-  const read = async (): Promise<string | null> => {
-    const result = await runner(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], {
-      cwd: primaryClonePath,
-    });
-    if (result.exitCode !== 0) return null;
-    // e.g. "origin/main" -> "main"
-    return result.stdout.trim().replace(/^origin\//, "") || null;
-  };
-
-  const first = await read();
-  if (first) return first;
-
-  // origin/HEAD can be unset (e.g. after a partial fetch); ask git to set it.
-  await runner(["remote", "set-head", "origin", "--auto"], { cwd: primaryClonePath });
-  return read();
+  const result = await runner(["ls-remote", "--symref", "origin", "HEAD"], {
+    cwd: primaryClonePath,
+    timeoutMs: REMOTE_CHECK_TIMEOUT_MS,
+  });
+  if (result.exitCode !== 0) return null;
+  // e.g. "ref: refs/heads/main\tHEAD"
+  const match = result.stdout.match(/^ref: refs\/heads\/(\S+)\tHEAD$/m);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -181,18 +186,17 @@ export async function branchSync(
   branch: string,
   baseBranch: string,
 ): Promise<BranchSync> {
-  const remoteBranch = `origin/${branch}`;
-  const base = `origin/${baseBranch}`;
+  const remoteBranch = remoteRef(branch);
+  const base = remoteRef(baseBranch);
 
   const count = async (range: string): Promise<number> => {
     const out = await git(runner, ["rev-list", "--count", range], worktreePath);
     return Number(out.trim()) || 0;
   };
 
-  const remoteCheck = await runner(
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteBranch}`],
-    { cwd: worktreePath },
-  );
+  const remoteCheck = await runner(["rev-parse", "--verify", "--quiet", remoteBranch], {
+    cwd: worktreePath,
+  });
   const hasRemote = remoteCheck.exitCode === 0;
 
   const baseBehind = await count(`HEAD..${base}`);
@@ -248,7 +252,7 @@ export async function worktreeStatus(
   // second "<original>\0" *after* the new path.
   const porcelain = await git(
     runner,
-    ["status", "--porcelain", "-z", "--untracked-files=no"],
+    ["status", "--porcelain", "-z", "--untracked-files=no", "--ignore-submodules=all"],
     worktreePath,
   );
   const fields = porcelain.split("\0").filter(Boolean);
@@ -310,7 +314,7 @@ export async function mergeBaseIntoWorktree(
   worktreePath: string,
   baseBranch: string,
 ): Promise<MergeOutcome> {
-  const result = await runner(["merge", "--no-edit", `origin/${baseBranch}`], {
+  const result = await runner(["merge", "--no-edit", remoteRef(baseBranch)], {
     cwd: worktreePath,
   });
   if (result.exitCode === 0) {
@@ -320,7 +324,11 @@ export async function mergeBaseIntoWorktree(
       : { result: "merged" };
   }
 
-  const conflicted = await git(runner, ["diff", "--name-only", "--diff-filter=U"], worktreePath);
+  const conflicted = await git(
+    runner,
+    ["diff", "--name-only", "--diff-filter=U", "--ignore-submodules=all"],
+    worktreePath,
+  );
   const files = conflicted.split("\n").filter(Boolean);
   if (files.length) return { result: "conflict", files };
 
@@ -496,7 +504,7 @@ export async function createWorktree(
   mkdirSync(dirname(worktreePath), { recursive: true });
   await git(
     runner,
-    ["worktree", "add", "-b", newBranch, worktreePath, `origin/${baseBranch}`],
+    ["worktree", "add", "-b", newBranch, worktreePath, remoteRef(baseBranch)],
     primaryClonePath,
   );
 }
@@ -732,7 +740,11 @@ export async function listChangedFiles(
 
   // name-status gives the change kind (A/M/D/R…).
   const nameStatus = splitNulFields(
-    await git(runner, ["diff", "--name-status", "-z", base], worktreePath),
+    await git(
+      runner,
+      ["diff", "--name-status", "-z", "--ignore-submodules=all", base],
+      worktreePath,
+    ),
   );
   let statusField = 0;
   while (statusField < nameStatus.length) {
@@ -754,7 +766,7 @@ export async function listChangedFiles(
 
   // numstat gives line counts ("-" for binary).
   const numstat = splitNulFields(
-    await git(runner, ["diff", "--numstat", "-z", base], worktreePath),
+    await git(runner, ["diff", "--numstat", "-z", "--ignore-submodules=all", base], worktreePath),
   );
   let countsField = 0;
   while (countsField < numstat.length) {
@@ -810,12 +822,16 @@ export async function fileDiff(
   path: string,
 ): Promise<string> {
   const base = await resolveDiffBase(runner, worktreePath, baseRef);
-  const tracked = await git(runner, ["diff", base, "--", path], worktreePath);
+  const tracked = await git(
+    runner,
+    ["diff", "--no-ext-diff", "--ignore-submodules=all", base, "--", path],
+    worktreePath,
+  );
   if (tracked.trim()) return tracked;
 
   // `git diff --no-index` exits 1 when the files differ — the normal outcome for
   // a new file — so only a code above 1 signals a real failure.
-  const untracked = await runner(["diff", "--no-index", "--", "/dev/null", path], {
+  const untracked = await runner(["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", path], {
     cwd: worktreePath,
   });
   if (untracked.exitCode > 1) {

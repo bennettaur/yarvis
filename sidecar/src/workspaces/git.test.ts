@@ -63,33 +63,29 @@ const GIT_TEST_ENV = {
 };
 
 describe("detectDefaultBranch", () => {
-  it("reads and strips the origin/HEAD symbolic ref", async () => {
+  it("asks the remote which branch its HEAD points at", async () => {
     const { runner, calls } = fakeRunner((args) =>
-      args[0] === "symbolic-ref" ? { stdout: "origin/main\n" } : {},
+      args[0] === "ls-remote" ? { stdout: "ref: refs/heads/trunk\tHEAD\n0123abcd\tHEAD\n" } : {},
     );
-    expect(await detectDefaultBranch(runner, "/repo")).toBe("main");
-    expect(calls[0]).toEqual(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"]);
-  });
-
-  it("sets origin/HEAD then retries when it is missing", async () => {
-    let firstRead = true;
-    const { runner, calls } = fakeRunner((args) => {
-      if (args[0] === "symbolic-ref") {
-        if (firstRead) {
-          firstRead = false;
-          return { exitCode: 1 };
-        }
-        return { stdout: "origin/trunk\n" };
-      }
-      return {};
-    });
     expect(await detectDefaultBranch(runner, "/repo")).toBe("trunk");
-    expect(calls.some((c) => c[0] === "remote" && c[1] === "set-head")).toBe(true);
+    expect(calls[0]).toEqual(["ls-remote", "--symref", "origin", "HEAD"]);
   });
 
-  it("returns null when the ref can't be determined", async () => {
-    const { runner } = fakeRunner(() => ({ exitCode: 1 }));
+  it("never reads the local origin/HEAD, which a session can write", async () => {
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "symbolic-ref" ? { stdout: "origin/planted\n" } : { exitCode: 1 },
+    );
     expect(await detectDefaultBranch(runner, "/repo")).toBeNull();
+    expect(calls.some((c) => c[0] === "symbolic-ref")).toBe(false);
+  });
+
+  it("returns null when the remote can't be reached or doesn't say", async () => {
+    expect(
+      await detectDefaultBranch(fakeRunner(() => ({ exitCode: 128 })).runner, "/repo"),
+    ).toBeNull();
+    expect(
+      await detectDefaultBranch(fakeRunner(() => ({ stdout: "0123abcd\tHEAD\n" })).runner, "/repo"),
+    ).toBeNull();
   });
 });
 
@@ -118,7 +114,14 @@ describe("createWorktree", () => {
     const worktreePath = join(parent, "service-a");
     await createWorktree(runner, "/repo", worktreePath, "yarvis/task", "main");
     expect(calls[0]).toEqual(["worktree", "prune"]);
-    expect(calls[1]).toEqual(["worktree", "add", "-b", "yarvis/task", worktreePath, "origin/main"]);
+    expect(calls[1]).toEqual([
+      "worktree",
+      "add",
+      "-b",
+      "yarvis/task",
+      worktreePath,
+      "refs/remotes/origin/main",
+    ]);
   });
 });
 
@@ -711,7 +714,14 @@ describe("fileDiff", () => {
     });
     expect(await fileDiff(runner, "/wt", "origin/main", "src/a.ts")).toContain("+new");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
-    expect(calls[1]).toEqual(["diff", "abc123", "--", "src/a.ts"]);
+    expect(calls[1]).toEqual([
+      "diff",
+      "--no-ext-diff",
+      "--ignore-submodules=all",
+      "abc123",
+      "--",
+      "src/a.ts",
+    ]);
   });
 
   it("falls back to a --no-index diff for an untracked file", async () => {
@@ -723,7 +733,7 @@ describe("fileDiff", () => {
     });
     const patch = await fileDiff(runner, "/wt", "origin/main", "new.ts");
     expect(patch).toContain("+brand new");
-    expect(calls[2]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
+    expect(calls[2]).toEqual(["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", "new.ts"]);
   });
 
   it("throws when --no-index fails for a real reason (exit > 1)", async () => {
@@ -742,9 +752,9 @@ describe("branchSync", () => {
       if (args[0] === "rev-parse") return { exitCode: 0 }; // origin/<branch> exists
       if (args[0] === "rev-list") {
         const range = args[2];
-        if (range === "HEAD..origin/main") return { stdout: "2\n" }; // base moved on
-        if (range === "origin/feature..HEAD") return { stdout: "3\n" }; // to push
-        if (range === "HEAD..origin/feature") return { stdout: "1\n" }; // to pull
+        if (range === "HEAD..refs/remotes/origin/main") return { stdout: "2\n" }; // base moved on
+        if (range === "refs/remotes/origin/feature..HEAD") return { stdout: "3\n" }; // to push
+        if (range === "HEAD..refs/remotes/origin/feature") return { stdout: "1\n" }; // to pull
       }
       return {};
     });
@@ -761,8 +771,8 @@ describe("branchSync", () => {
       if (args[0] === "rev-parse") return { exitCode: 1 }; // no origin/<branch> yet
       if (args[0] === "rev-list") {
         const range = args[2];
-        if (range === "HEAD..origin/main") return { stdout: "0\n" };
-        if (range === "origin/main..HEAD") return { stdout: "4\n" };
+        if (range === "HEAD..refs/remotes/origin/main") return { stdout: "0\n" };
+        if (range === "refs/remotes/origin/main..HEAD") return { stdout: "4\n" };
       }
       return {};
     });
@@ -796,7 +806,13 @@ describe("worktreeStatus", () => {
       inProgress: null,
     });
     // Untracked files never block a merge, so git is asked not to walk them.
-    expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--untracked-files=no"]);
+    expect(calls[0]).toEqual([
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=no",
+      "--ignore-submodules=all",
+    ]);
   });
 
   it("keeps paths git would have quoted, and takes the new path of a rename", async () => {
@@ -848,7 +864,7 @@ describe("mergeBaseIntoWorktree", () => {
   it("merges the remote base branch, never a local ref", async () => {
     const { runner, calls } = fakeRunner(() => ({ stdout: "Merge made by the 'ort' strategy.\n" }));
     expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({ result: "merged" });
-    expect(calls[0]).toEqual(["merge", "--no-edit", "origin/main"]);
+    expect(calls[0]).toEqual(["merge", "--no-edit", "refs/remotes/origin/main"]);
   });
 
   it("distinguishes an already-merged base from a real merge", async () => {

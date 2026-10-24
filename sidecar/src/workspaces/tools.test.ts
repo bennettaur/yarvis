@@ -49,7 +49,8 @@ const opts = { toolCallId: "test", messages: [] } as never;
 
 /** Mock git runner that makes provisioning succeed without touching a network. */
 const okRunner: GitRunner = async (args) => {
-  if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+  if (args[0] === "ls-remote")
+    return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   // No pre-existing branch, so provisioning keeps the intended branch name.
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
   return { stdout: "", stderr: "", exitCode: 0 };
@@ -562,7 +563,8 @@ describe("workspace tools", () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let started = false;
     const failRunner: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "add") {
         return { stdout: "", stderr: "boom", exitCode: 1 };
@@ -1099,7 +1101,8 @@ describe("workspace tools", () => {
     const { client, calls } = fakeGitHub();
     let started = false;
     const failRunner: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "add") {
         return { stdout: "", stderr: "boom", exitCode: 1 };
@@ -1474,7 +1477,8 @@ describe("workspace tools", () => {
     // registered afterwards, so it stays listed.
     let refusedPath = "";
     const refuseUnlessForced: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
         refusedPath = args[2] ?? "";
@@ -1553,7 +1557,7 @@ describe("workspace tools", () => {
     expect(result.workspaces[0]!.repos[0]!.pushed).toBe(true);
     // The base is merged from the remote-tracking ref, after a fetch.
     expect(calls.some((c) => c[0] === "fetch")).toBe(true);
-    expect(calls.some((c) => c[0] === "merge" && c[2] === "origin/main")).toBe(true);
+    expect(calls.some((c) => c[0] === "merge" && c[2] === "refs/remotes/origin/main")).toBe(true);
     expect(calls.some((c) => c[0] === "push")).toBe(true);
   });
 
