@@ -50,6 +50,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   githubIssues: "search",
   azureBoards: "search",
   prReview: "search",
+  mergeReview: "search",
   calendar: "search",
   browser: "search",
   help: "search",

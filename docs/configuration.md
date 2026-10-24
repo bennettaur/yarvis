@@ -34,6 +34,7 @@ reads one back.
 | Azure DevOps token | Azure PRs, Azure Boards | `AZURE_DEVOPS_TOKEN` |
 | JIRA API token | JIRA issues | `JIRA_API_TOKEN` |
 | Google client secret | Google Calendar | `GOOGLE_CLIENT_SECRET` |
+| Merge reviewer signing key | Signing the merge reviewer's PR approvals | `VERIFY_AGENT_SIGNING_KEY` |
 | Telegram bot token | The Telegram bot | `TELEGRAM_BOT_TOKEN` |
 | Telegram allowed chat ids | Who the bot answers | `TELEGRAM_ALLOWED_CHAT_IDS` |
 | Telegram OTP secret | The bot's optional second factor | `TELEGRAM_OTP_SECRET` |

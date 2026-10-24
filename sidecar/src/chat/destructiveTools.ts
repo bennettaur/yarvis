@@ -56,6 +56,8 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "azure_boards_update_work_item",
   "azure_boards_assign_work_item",
   "azure_boards_comment_on_work_item",
+  // Its approval lets the repo's CI merge the PR with nobody else reading it.
+  "post_merge_review",
   // Each launches an agent session, which can edit and push code on its own.
   "create_workspace_session",
   "create_scratch_workspace_session",

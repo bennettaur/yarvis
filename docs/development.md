@@ -205,6 +205,25 @@ gh variable set VERIFY_ALLOWED_SIGNERS --body "$(bun run --silent verify:signers
 The second command replaces the variable's whole value, so use it only for
 the first key; otherwise add the line in the repo's settings.
 
+### The merge reviewer
+
+A report's `agent` verdict means it looks right but someone should read the
+diff before it merges. That someone can be Yarvis's `merge-reviewer`
+specialist (see `docs/features/pr-review.md`). It posts a signed agent-review
+comment, and the gate approves on it in enforce mode only when:
+
+- the comment is from a trusted user and signed by a key allowed for agent
+  reviews (namespace `yarvis-agent-review`);
+- it names the PR, its current commit and the exact latest signed report, so
+  a new report needs a new review;
+- that report's verdict is `agent` with no blocking finding, the change isn't
+  high risk by the gate's own tier, the author is trusted and it isn't a draft.
+
+Its key lives in Yarvis's Settings → Credentials. `bun run verify:agent-key`
+makes one and prints its `VERIFY_ALLOWED_SIGNERS` line. The bot's approval on
+these starts `Agent-approved:`, which calibration reports as its own path and
+auto-revert treats like an auto-merge.
+
 ### When an auto-merge breaks main
 
 The `Verify revert` workflow (`.github/workflows/verify-revert.yml`) runs when

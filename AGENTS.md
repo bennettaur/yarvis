@@ -551,8 +551,11 @@ back to ad-hoc.
     itself. A tool that writes where other people can see it sits between those
     two cases: available, but only to a definition that also names it under
     `unattended:`, which Settings flags on the row as "acts unattended".
-    `project-manager` filing tickets is the one shipped grant — turning a
-    discussion into tickets is the job.
+    Two shipped definitions have a grant, each because the action is the job:
+    `project-manager` files tickets, and `merge-reviewer` posts a signed
+    approval a repo's CI can merge on. The second is narrowed again at the
+    tool: `post_merge_review` re-reads the PR and its report itself, and posts
+    only for a current report whose verdict asked for an agent.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
