@@ -53,29 +53,6 @@ export async function listCustomProviders(): Promise<CustomProvider[]> {
   return res.json();
 }
 
-export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProvider> {
-  const res = await sidecarFetch("/api/custom-providers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  await ensureOk(res, "create custom provider");
-  return res.json();
-}
-
-export async function updateCustomProvider(
-  id: string,
-  patch: CustomProviderUpdate,
-): Promise<CustomProvider> {
-  const res = await sidecarFetch(`/api/custom-providers/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  await ensureOk(res, "update custom provider");
-  return res.json();
-}
-
 export async function deleteCustomProvider(id: string): Promise<void> {
   const res = await sidecarFetch(`/api/custom-providers/${id}`, {
     method: "DELETE",

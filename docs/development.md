@@ -143,15 +143,17 @@ the tier, from both sides of any rename:
   hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
   config, secrets and shell access, app permissions, sidecar request handling,
   agent tool approvals, the MCP server, settings, migrations, dependencies,
-  what the Chrome extension may do, the two frontend files allowed to call
-  secret or shell commands (`src/lib/privilegedCommands.ts` and
-  `src/lib/pty.ts`), or more than 800 changed lines of code.
+  what the Chrome extension may do, the frontend's privileged calls
+  (`src/lib/privilegedCommands.ts`, `src/lib/api.ts` and the files that
+  import `privilegedCommands.ts`, listed in `tier.ts`), or more than 800
+  changed lines of code.
 - **Standard:** any other change to the Rust core, the sidecar, the extension
   or dev scripts, or more than 300 changed lines of code.
 
 Tests, docs and lockfiles don't count toward the line limits. The rest of the
-frontend is low risk because `scripts/verify/nativeBridge.test.ts`, which runs
-in CI, fails when any other file calls one of those commands.
+frontend is low risk because `scripts/verify/nativeBridge.ts` fails CI when
+any other file makes one of those calls, or imports `privilegedCommands.ts`
+without being listed.
 
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository

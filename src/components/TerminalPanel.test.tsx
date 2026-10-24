@@ -39,9 +39,6 @@ mock.module("../lib/pty", () => ({
       endOffset: endOffsetToReturn ?? scrollbackToReturn.length,
     };
   },
-  writePty: async (_id: string, data: string) => {
-    writes.push(data);
-  },
   resizePty: async () => {
     resizeCalls += 1;
   },
@@ -51,6 +48,16 @@ mock.module("../lib/pty", () => ({
     return () => {};
   },
   onPtyExit: async () => () => {},
+}));
+
+// Shell input lives with the other privileged calls; same spread-back reason as above.
+const realPrivileged = await import("../lib/privilegedCommands");
+
+mock.module("../lib/privilegedCommands", () => ({
+  ...realPrivileged,
+  writePty: async (_id: string, data: string) => {
+    writes.push(data);
+  },
 }));
 
 // Imported after the mock is registered so the component binds to the stubs.

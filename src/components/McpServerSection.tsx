@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   authorizeMcpServer,
-  createMcpServer,
   deleteMcpServer,
   disconnectMcpOAuth,
   getMcpServerStatus,
@@ -16,9 +15,14 @@ import {
   type RefreshResult,
   refreshMcpServer,
   type ServerStatus,
-  updateMcpServer,
 } from "../lib/mcp";
-import { deleteAllMcpSecrets, deleteMcpSecret, setMcpSecret } from "../lib/privilegedCommands";
+import {
+  createMcpServer,
+  deleteAllMcpSecrets,
+  deleteMcpSecret,
+  setMcpSecret,
+  updateMcpServer,
+} from "../lib/privilegedCommands";
 import { restartAndWait } from "../lib/restart";
 import { openExternal } from "../lib/url";
 import { StatusDot } from "./Dashboard";

@@ -80,10 +80,18 @@ describe("classify", () => {
   });
 });
 
-describe("frontend privileged commands", () => {
-  it("makes the files that may call secret or shell commands high risk, and nothing else", () => {
+describe("frontend privileged calls", () => {
+  it("makes the privileged files and their importers high risk, and nothing else", () => {
     expect(classify([file("src/lib/privilegedCommands.ts")]).tier).toBe("high");
-    expect(classify([file("src/lib/pty.ts")]).tier).toBe("high");
-    expect(classify([file("src/lib/settings.ts"), file("src/App.tsx")]).tier).toBe("low");
+    expect(classify([file("src/lib/api.ts")]).tier).toBe("high");
+    expect(classify([file("src/components/TerminalPanel.tsx")]).tier).toBe("high");
+    for (const path of [
+      "src/lib/settings.ts",
+      "src/App.tsx",
+      "src/lib/pty.ts",
+      "src/components/WorkspacesPanel.tsx",
+    ]) {
+      expect(classify([file(path)]).tier).toBe("low");
+    }
   });
 });

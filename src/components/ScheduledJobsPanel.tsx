@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
 import { listSpecialists, type Specialist } from "../lib/agents";
+import { createScheduledJob, updateScheduledJob } from "../lib/privilegedCommands";
 import { useCachedResource } from "../lib/resourceCache";
 import {
-  createScheduledJob,
   deleteScheduledJob,
   emptyJobInput,
   jobInputFrom,
@@ -12,7 +12,6 @@ import {
   type ScheduledJobInput,
   type ScheduledJobRun,
   type ScheduledJobStatus,
-  updateScheduledJob,
 } from "../lib/scheduledJobs";
 import JobEditor from "./jobs/JobEditor";
 import JobRunList from "./jobs/JobRunList";

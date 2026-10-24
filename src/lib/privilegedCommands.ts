@@ -1,17 +1,35 @@
 /**
- * Every frontend call to a Tauri command that writes a secret, switches the
- * secret store or sets the agent's launch command. Shell access is the other
- * privileged kind and lives in `pty.ts`. Keeping them here is what lets the
- * rest of the frontend count as low risk when a pull request is verified:
- * `scripts/verify/nativeBridge.test.ts` fails if any other file calls one of
- * these commands, and `scripts/verify/tier.ts` makes a change here high risk.
+ * Every frontend call that can leak a secret or run a command: Tauri commands
+ * that write a secret, switch the secret store, set the agent's launch command
+ * or type into a shell, and sidecar writes that decide what an MCP server or
+ * scheduled job runs, which tools need approval, or where a provider's key is
+ * sent. Keeping them here is what lets the rest of the frontend count as low
+ * risk when a pull request is verified: `scripts/verify/nativeBridge.ts`
+ * fails CI if any other file makes one of these calls or imports this one
+ * without being on its list, and `scripts/verify/tier.ts` makes this file and
+ * its importers high risk, since an importer chooses the values.
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { CustomProviderSecretSlot } from "./customProviders";
+import { ensureOk, sidecarFetch } from "./api";
+import type {
+  CustomProvider,
+  CustomProviderInput,
+  CustomProviderSecretSlot,
+  CustomProviderUpdate,
+} from "./customProviders";
 import type { SecretKey } from "./keychain";
-import type { McpSecretSlot } from "./mcp";
+import type {
+  McpSecretSlot,
+  McpServer,
+  McpServerInput,
+  McpServerUpdate,
+  RegistryTool,
+  ToolApproval,
+  ToolPolicy,
+} from "./mcp";
 import type { EmbeddingsSecretSlot } from "./memory";
+import type { ScheduledJob, ScheduledJobInput } from "./scheduledJobs";
 import type { BackendSwitch, SecretBackend, Settings } from "./settings";
 
 /* ---------- App secrets ---------- */
@@ -95,3 +113,96 @@ export function setSecretBackend(
 export function setAgent(name: string | null, command: string | null): Promise<Settings> {
   return invoke<Settings>("set_agent", { name, command });
 }
+
+/* ---------- Shell input ---------- */
+
+/** Sends user input to the session's shell. */
+export const writePty = (id: string, data: string) => invoke("pty_write", { id, data });
+
+/* ---------- What MCP servers run and which tools ask first ---------- */
+
+export async function createMcpServer(input: McpServerInput): Promise<McpServer> {
+  const res = await sidecarFetch("/api/mcp/servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  await ensureOk(res, "create mcp server");
+  return res.json();
+}
+
+export async function updateMcpServer(id: string, patch: McpServerUpdate): Promise<McpServer> {
+  const res = await sidecarFetch(`/api/mcp/servers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await ensureOk(res, "update mcp server");
+  return res.json();
+}
+
+/**
+ * Updates what the user controls about a tool — how it is exposed to the model,
+ * whether calling it asks first, or both. Fields left out are unchanged.
+ */
+export async function setToolSettings(
+  id: string,
+  settings: { policy?: ToolPolicy; approval?: ToolApproval },
+): Promise<RegistryTool> {
+  const res = await sidecarFetch(`/api/mcp/tools/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  await ensureOk(res, "set tool settings");
+  return res.json();
+}
+
+/* ---------- Where a custom provider's key is sent ---------- */
+
+export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProvider> {
+  const res = await sidecarFetch("/api/custom-providers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  await ensureOk(res, "create custom provider");
+  return res.json();
+}
+
+export async function updateCustomProvider(
+  id: string,
+  patch: CustomProviderUpdate,
+): Promise<CustomProvider> {
+  const res = await sidecarFetch(`/api/custom-providers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await ensureOk(res, "update custom provider");
+  return res.json();
+}
+
+/* ---------- What scheduled jobs run ---------- */
+
+/** Errors read the same as `scheduledJobs.ts`'s own requests, which the job editor shows. */
+async function saveJob(path: string, method: "POST" | "PUT", input: ScheduledJobInput) {
+  const res = await sidecarFetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `${method} ${path} → ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+    );
+  }
+  return ((await res.json()) as { job: ScheduledJob }).job;
+}
+
+export const createScheduledJob = (input: ScheduledJobInput): Promise<ScheduledJob> =>
+  saveJob("/api/jobs/agent-jobs", "POST", input);
+
+export const updateScheduledJob = (id: string, input: ScheduledJobInput): Promise<ScheduledJob> =>
+  saveJob(`/api/jobs/agent-jobs/${id}`, "PUT", input);

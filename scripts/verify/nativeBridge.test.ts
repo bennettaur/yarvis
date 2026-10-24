@@ -6,7 +6,7 @@ import {
   readFrontendSources,
   registeredCommands,
 } from "./nativeBridge.ts";
-import { PRIVILEGED_FRONTEND_FILES } from "./tier.ts";
+import { PRIVILEGED_FRONTEND_FILES, PRIVILEGED_FRONTEND_IMPORTERS } from "./tier.ts";
 
 const CORE = 'import { invoke } from "@tauri-apps/api/core";';
 const file = (text: string, path = "src/lib/other.ts") => [{ path, text }];
@@ -23,6 +23,20 @@ describe("the frontend's native bridge", () => {
     expect(registeredCommands()).toContain("set_secret");
     expect(registeredCommands().filter((command) => !classified.includes(command))).toEqual([]);
     expect(ORDINARY_COMMANDS.filter((command) => PRIVILEGED_COMMANDS[command])).toEqual([]);
+  });
+
+  it("lists exactly the files that import privilegedCommands, with none left over", () => {
+    // Any quoted module path naming it, broader than the rule's import pattern,
+    // so a form the rule misses still shows up here as a file missing from the list.
+    const importers = readFrontendSources()
+      .filter(
+        ({ path, text }) =>
+          path !== "src/lib/privilegedCommands.ts" &&
+          /["'`][^"'`\n]*privilegedCommands[^"'`\n]*["'`]/.test(text),
+      )
+      .map(({ path }) => path)
+      .sort();
+    expect([...PRIVILEGED_FRONTEND_IMPORTERS].sort()).toEqual(importers);
   });
 
   it("marks every file allowed a privileged command as high risk", () => {
@@ -75,6 +89,69 @@ describe("bridgeViolations", () => {
 
   it("allows listening for events from any file", () => {
     expect(bridgeViolations(file('import { listen } from "@tauri-apps/api/event";'))).toEqual([]);
+  });
+
+  it("flags a privileged sidecar write from any other file, in either call shape", () => {
+    expect(
+      bridgeViolations(file('sidecarFetch("/api/mcp/servers", { method: "POST", body: "{}" });')),
+    ).toEqual([
+      "src/lib/other.ts writes POST /api/mcp/servers, which belongs in src/lib/privilegedCommands.ts",
+    ]);
+    expect(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test, not a template
+      bridgeViolations(
+        file('sidecarFetch(`/api/jobs/agent-jobs/${id}`, { headers: { X: "1" }, method: "PUT" });'),
+      ),
+    ).toEqual([
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test, not a template
+      "src/lib/other.ts writes PUT /api/jobs/agent-jobs/${id}, which belongs in src/lib/privilegedCommands.ts",
+    ]);
+  });
+
+  it("sees a privileged write through a query string", () => {
+    expect(
+      bridgeViolations(file('sidecarFetch("/api/mcp/servers?x=1", { method: "POST" });')),
+    ).toHaveLength(1);
+  });
+
+  it("allows reads and ordinary writes on the same routes", () => {
+    for (const call of [
+      'sidecarFetch("/api/mcp/servers");',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test, not a template
+      'sidecarFetch(`/api/mcp/servers/${id}`, { method: "DELETE" });',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test, not a template
+      'sidecarFetch(`/api/mcp/servers/${id}/refresh`, { method: "POST" });',
+      'sidecarFetch("/api/mcp/tools/search", { method: "POST" });',
+    ]) {
+      expect(bridgeViolations(file(call))).toEqual([]);
+    }
+  });
+
+  it("flags an importer of privilegedCommands that isn't on the high-risk list", () => {
+    expect(
+      bridgeViolations(
+        file('import { setAgent } from "../lib/privilegedCommands";', "src/components/New.tsx"),
+      ),
+    ).toEqual([
+      "src/components/New.tsx imports privilegedCommands but isn't in PRIVILEGED_FRONTEND_IMPORTERS",
+    ]);
+  });
+
+  it("flags an importer that names the file's extension or imports it dynamically", () => {
+    for (const text of [
+      'import { setAgent } from "../lib/privilegedCommands.ts";',
+      'const privileged = await import("../lib/privilegedCommands");',
+    ]) {
+      expect(bridgeViolations(file(text, "src/components/New.tsx"))).toEqual([
+        "src/components/New.tsx imports privilegedCommands but isn't in PRIVILEGED_FRONTEND_IMPORTERS",
+      ]);
+    }
+  });
+
+  it("flags reading the sidecar token outside api.ts", () => {
+    expect(bridgeViolations(file('import { sidecarInfo } from "./api";'))).toEqual([
+      "src/lib/other.ts reads the sidecar token, which only src/lib/api.ts may",
+    ]);
   });
 
   it("flags a plugin imported outside the file that wraps it", () => {

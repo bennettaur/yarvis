@@ -111,15 +111,6 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
 export const listScheduledJobs = async (): Promise<ScheduledJobStatus[]> =>
   (await request<{ jobs: ScheduledJobStatus[] }>("/api/jobs/agent-jobs")).jobs;
 
-export const createScheduledJob = async (input: ScheduledJobInput): Promise<ScheduledJob> =>
-  (await request<{ job: ScheduledJob }>("/api/jobs/agent-jobs", "POST", input)).job;
-
-export const updateScheduledJob = async (
-  id: string,
-  input: ScheduledJobInput,
-): Promise<ScheduledJob> =>
-  (await request<{ job: ScheduledJob }>(`/api/jobs/agent-jobs/${id}`, "PUT", input)).job;
-
 export const deleteScheduledJob = (id: string): Promise<{ deleted: boolean }> =>
   request(`/api/jobs/agent-jobs/${id}`, "DELETE");
 

@@ -14,7 +14,7 @@ import {
   type ToolActivity,
 } from "./chat";
 import { type DisplayError, formatError } from "./errors";
-import { setToolSettings } from "./mcp";
+import { setToolSettings } from "./privilegedCommands";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
