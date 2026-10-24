@@ -1,6 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
+import {
+  ensureBranchRefDirs,
+  isOurSandboxEntry,
+  resolveAdminName,
+  type SandboxRepo,
+  sandboxAllowWrite,
+  sandboxDenyWrite,
+} from "./sandboxPaths.ts";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
@@ -205,73 +212,43 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
   else settings[key] = rest;
 }
 
-/**
- * The paths outside the workspace root that git writes to when a session
- * commits in one of the workspace's worktrees: each repo's primary clone holds
- * the shared `.git` directory (objects, refs, the worktree's index), and
- * Claude Code puts the worktrees it isolates subagents in under the clone's
- * `.claude/worktrees`. Claude Code's sandbox only lets a session write inside
- * the directory it started in, so without these every commit, rebase and push
- * leaves the sandbox and asks the user.
- */
-export function sandboxWritePaths(clonePaths: readonly string[]): string[] {
-  return clonePaths.flatMap((clone) => [`${clone}/.git`, `${clone}/.claude/worktrees`]);
-}
-
-/**
- * The parts of a clone's `.git` the sandbox still may not write. Its config
- * (through `core.fsmonitor`, `core.hooksPath` and the like) and its hooks
- * decide what runs on the next git command in any of the clone's worktrees,
- * including the ones Yarvis runs outside the sandbox, so a session that
- * followed a planted instruction could otherwise escape it. A command that
- * does need to write the config, such as `git push -u`, asks instead.
- */
-export function sandboxDenyWritePaths(clonePaths: readonly string[]): string[] {
-  return clonePaths.flatMap((clone) => [
-    `${clone}/.git/config`,
-    // Denied too, so git fails to take the lock rather than leaving it behind.
-    `${clone}/.git/config.lock`,
-    `${clone}/.git/hooks`,
-  ]);
-}
-
-/**
- * Replaces our entries in one `sandbox.filesystem` list, keeping the user's
- * own. Every primary clone lives in the same `.repos` directory, so an entry
- * under one of the current clones' parent directories is one we wrote; that
- * also drops the paths of a repo no longer in the workspace.
- */
-function withOurPaths(prior: unknown, reposDirs: readonly string[], ours: string[]): unknown[] {
-  const entries = Array.isArray(prior) ? prior : [];
-  const usersOwn = entries.filter(
-    (entry) => typeof entry !== "string" || !reposDirs.some((dir) => entry.startsWith(dir)),
+/** Our entries replace any we wrote before; everything else in the list is the user's. */
+function replaceOurEntries(existingEntries: unknown, ourEntries: string[]): unknown[] {
+  const usersOwn = (Array.isArray(existingEntries) ? existingEntries : []).filter(
+    (entry) => !isOurSandboxEntry(entry),
   );
-  return [...usersOwn, ...ours];
+  return [...usersOwn, ...ourEntries];
 }
 
-/** The settings' `sandbox` key with our clone paths in it, or as it was when there are none. */
-function withSandboxPaths(
+/**
+ * The settings' `sandbox` key with this workspace's clone paths in it (see
+ * `sandboxPaths.ts`), or undefined when there is nothing to write. Entries are
+ * recognised by shape, so a repo that left the workspace, including its last
+ * one, takes its paths with it.
+ */
+function sandboxWithClonePaths(
   existing: Record<string, unknown>,
-  clonePaths: readonly string[],
+  repos: readonly SandboxRepo[],
 ): Record<string, unknown> | undefined {
   const sandbox =
-    existing.sandbox && typeof existing.sandbox === "object"
+    existing.sandbox && typeof existing.sandbox === "object" && !Array.isArray(existing.sandbox)
       ? (existing.sandbox as Record<string, unknown>)
       : undefined;
-  if (clonePaths.length === 0) return sandbox;
+  if (!sandbox && repos.length === 0) return undefined;
   const filesystem =
-    sandbox?.filesystem && typeof sandbox.filesystem === "object"
-      ? (sandbox.filesystem as Record<string, unknown>)
+    sandbox?.filesystem &&
+    typeof sandbox.filesystem === "object" &&
+    !Array.isArray(sandbox.filesystem)
+      ? { ...(sandbox.filesystem as Record<string, unknown>) }
       : {};
-  const reposDirs = [...new Set(clonePaths.map((clone) => `${dirname(clone)}/`))];
-  return {
-    ...sandbox,
-    filesystem: {
-      ...filesystem,
-      allowWrite: withOurPaths(filesystem.allowWrite, reposDirs, sandboxWritePaths(clonePaths)),
-      denyWrite: withOurPaths(filesystem.denyWrite, reposDirs, sandboxDenyWritePaths(clonePaths)),
-    },
-  };
+  for (const [key, ours] of [
+    ["allowWrite", sandboxAllowWrite(repos)],
+    ["denyWrite", sandboxDenyWrite(repos)],
+  ] as const) {
+    const entries = replaceOurEntries(filesystem[key], ours);
+    if (entries.length > 0 || key in filesystem) filesystem[key] = entries;
+  }
+  return { ...sandbox, filesystem };
 }
 
 /**
@@ -283,8 +260,8 @@ function withSandboxPaths(
  * a prior Yarvis entry for an event is dropped before ours is re-added, so
  * re-provisioning never stacks duplicates.
  *
- * Also lets the sandbox write to each repo's clone (`sandboxWritePaths`), and
- * strips the `skills.paths`/`agents.paths` an earlier version wrote to
+ * Also lets the sandbox commit to each repo's clone, while keeping its git
+ * config, hooks and shared refs out of reach (`sandboxPaths.ts`), and strips the `skills.paths`/`agents.paths` an earlier version wrote to
  * register each repo's `.claude` dirs. Claude Code ignores those keys, so the
  * repos' skills and agents are copied into the workspace root instead (see
  * `claudeAssets.ts`); left behind, the paths would only mislead a reader.
@@ -292,7 +269,7 @@ function withSandboxPaths(
 export function buildClaudeSettings(
   workspaceId: string,
   existing: Record<string, unknown> = {},
-  clonePaths: readonly string[] = [],
+  repos: readonly SandboxRepo[] = [],
 ): Record<string, unknown> {
   const fallbackSessionKey = `ws-claude:${workspaceId}`;
   const command = (kind: AttentionHookKind) => ({
@@ -342,7 +319,7 @@ export function buildClaudeSettings(
     },
   };
 
-  const sandbox = withSandboxPaths(existing, clonePaths);
+  const sandbox = sandboxWithClonePaths(existing, repos);
   if (sandbox) settings.sandbox = sandbox;
 
   for (const key of ["skills", "agents"]) dropPathsKey(settings, key);
@@ -350,21 +327,44 @@ export function buildClaudeSettings(
   return settings;
 }
 
+/** What `writeClaudeSettings` needs from a workspace. */
+export interface WorkspaceForSettings {
+  id: string;
+  rootPath: string;
+  repos: readonly {
+    status: string;
+    branch: string;
+    worktreePath: string;
+    repo: { primaryClonePath: string };
+  }[];
+}
+
+/**
+ * The workspace's repos as the sandbox needs them. A worktree's admin
+ * directory is looked up in its clone, since git may have suffixed the name.
+ */
+function sandboxReposOf(detail: WorkspaceForSettings): SandboxRepo[] {
+  return detail.repos
+    .filter((wr) => wr.status !== "removed")
+    .map((wr) => ({
+      clonePath: wr.repo.primaryClonePath,
+      branch: wr.branch,
+      adminName: resolveAdminName(wr.repo.primaryClonePath, wr.worktreePath),
+    }));
+}
+
 /**
  * (Re)writes `.claude/settings.json` at the workspace root so a Claude Code
  * session launched there registers itself with Yarvis and signals when it
  * needs the user (blocked on a permission, idle waiting for input, or
- * finished). Both launch flows start Claude with cwd = the workspace root, so
- * a project settings file here covers them. Best-effort: a corrupt existing file is overwritten and any failure is
- * logged, never fatal to provisioning.
+ * finished), and so its sandbox can commit to the workspace's branches. Both
+ * launch flows start Claude with cwd = the workspace root, so a project
+ * settings file here covers them. Best-effort: a corrupt existing file is
+ * overwritten and any failure is logged, never fatal to provisioning.
  */
-export function writeClaudeSettings(
-  rootPath: string,
-  workspaceId: string,
-  clonePaths: readonly string[],
-): void {
+export function writeClaudeSettings(detail: WorkspaceForSettings): void {
   try {
-    const dir = `${rootPath}/.claude`;
+    const dir = `${detail.rootPath}/.claude`;
     const file = `${dir}/settings.json`;
     let existing: Record<string, unknown> = {};
     // Read-and-catch rather than existsSync-then-read: a separate existence check
@@ -381,10 +381,12 @@ export function writeClaudeSettings(
       }
     }
 
+    const repos = sandboxReposOf(detail);
+    for (const repo of repos) ensureBranchRefDirs(repo);
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       file,
-      `${JSON.stringify(buildClaudeSettings(workspaceId, existing, clonePaths), null, 2)}\n`,
+      `${JSON.stringify(buildClaudeSettings(detail.id, existing, repos), null, 2)}\n`,
     );
   } catch (e) {
     console.error("[workspaces] failed to write .claude/settings.json:", e);

@@ -134,13 +134,32 @@ Some details:
   Other keys and other MCP servers you have there stay.
 - **The sandbox can commit.** A worktree's git data lives in the repo's clone
   under `.repos/`, outside the workspace folder, which Claude Code's sandbox
-  doesn't let a session write to by default. Yarvis adds each clone's `.git`
-  folder, and the `.claude/worktrees` folder where Claude Code puts subagent
-  worktrees, to `sandbox.filesystem.allowWrite`. Commits, rebases and pushes
-  then run inside the sandbox instead of asking you each time. The clone's git
-  config and hooks stay out of reach (`sandbox.filesystem.denyWrite`), since
-  they decide what runs on the next git command, so a command that changes the
-  config, like `git push -u`, still asks. Paths you added yourself stay.
+  doesn't let a session write to by default. Yarvis adds what this workspace's
+  commits need to `sandbox.filesystem.allowWrite`: its worktree's folder under
+  `.git/worktrees`, the object store, its own branch, and the remote-tracking
+  refs and tags a fetch updates. Commits, rebases, fetches and pushes on the
+  workspace's branch then run inside the sandbox instead of asking you each
+  time. Paths you added yourself stay.
+- **What still asks.** The clone is shared by every workspace on that repo, and
+  parts of its `.git` decide what git runs, so these stay out of the sandbox's
+  reach (`sandbox.filesystem.denyWrite`): the git config, hooks, submodule git
+  folders, `commondir`, `info`, replace refs and packed refs. So a command that
+  writes them, like `git push -u` (which records the upstream in the config),
+  creating or deleting a branch, or adding a worktree (including the ones
+  Claude Code makes for subagents), asks as before. Git packs refs on its own
+  after some commits; inside the sandbox that step fails with a warning, and
+  the commit itself still goes through.
+- **Tampering checks.** A session can still stage a fake submodule whose git
+  folder runs a command the next time anything runs `git status` in that
+  worktree. Yarvis's own git runs with that switched off, but your terminal and
+  Claude Code's don't. So Yarvis checks the repo for submodules `.gitmodules`
+  doesn't declare or whose `.git` points outside the clone, replace refs, a
+  redirected `commondir`, and a worktree `.git` that points somewhere else. It
+  checks when the workspace is provisioned, when a Claude Code session in it
+  ends, before it merges or pushes for the workspace, and when you archive it.
+  Anything found raises an attention item naming what and where, and Yarvis
+  won't merge or push for that workspace until it's gone. Look before you run
+  git in that worktree yourself.
 - **`.yarvis/brief.md` is written last,** as the final step of provisioning.
 
 ### When provisioning fails

@@ -293,11 +293,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     const cwd = detail.rootPath;
     // A workspace provisioned before the session-registration hooks existed
     // gets them here, so the session about to start registers.
-    writeClaudeSettings(
-      detail.rootPath,
-      detail.id,
-      detail.repos.map((wr) => wr.repo.primaryClonePath),
-    );
+    writeClaudeSettings(detail);
     try {
       const session = await startClaude({
         workspaceId: detail.id,
@@ -1099,13 +1095,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           // An agent tab with no registered session most likely predates its
           // workspace's registration hooks. Writing them now means the next
           // session started there registers, including one the UI launches.
-          if (unrecognised) {
-            writeClaudeSettings(
-              detail.rootPath,
-              workspaceId,
-              detail.repos.map((wr) => wr.repo.primaryClonePath),
-            );
-          }
+          if (unrecognised) writeClaudeSettings(detail);
           return {
             error: message,
             workspaceId,

@@ -1713,6 +1713,13 @@ describe("provision + archive (injected git runner)", () => {
     // step may clobber the other's output.
     expect(settings.hooks.Stop).toBeDefined();
     expect(existsSync(join(claudeDir, "skills", "deploy"))).toBe(true);
+    // The sandbox may commit to the repo's clone, but not touch its config or hooks.
+    const clone = detail?.repos[0]?.repo.primaryClonePath;
+    expect(settings.sandbox.filesystem.allowWrite).toContain(`${clone}/.git/objects`);
+    expect(settings.sandbox.filesystem.allowWrite).toContain(
+      `${clone}/.git/refs/heads/${detail?.repos[0]?.branch}`,
+    );
+    expect(settings.sandbox.filesystem.denyWrite).toContain(`${clone}/.git/hooks`);
   });
 
   it("archives by removing worktrees and recording a summary", async () => {

@@ -41,14 +41,48 @@ const REMOTE_CHECK_TIMEOUT_MS = 30 * 1000;
 const REMOVAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * Real runner: shells out to `git` with a scrubbed env. `GIT_TERMINAL_PROMPT=0`
- * makes a missing-credential clone fail fast instead of hanging on a prompt the
- * headless sidecar can never answer. `LC_ALL=C` pins git's messages to English:
- * `scrubbedEnv` passes the user's locale through, and `mergeBaseIntoWorktree`
- * reads "Already up to date" out of that output.
+ * Config every git the sidecar starts runs with, so a clone's `.git` can't make
+ * it run code. A workspace session's sandbox can write a worktree's index and
+ * files, which is enough to stage a fake submodule whose own git directory sets
+ * `core.fsmonitor`; a plain `git status` would then run that command outside the
+ * sandbox. Config passed this way outranks every config file and reaches the
+ * git processes git starts for submodules, and `gh` passes it on to the git it
+ * drives. Replace refs are ignored so a planted `refs/replace/*` can't change
+ * what a merge or push contains.
+ */
+const HARDENED_GIT_CONFIG: [string, string][] = [
+  ["core.fsmonitor", "false"],
+  ["submodule.recurse", "false"],
+  ["protocol.file.allow", "never"],
+  ["diff.ignoreSubmodules", "all"],
+  ["status.submoduleSummary", "false"],
+];
+
+/** The env entries that apply `HARDENED_GIT_CONFIG` and ignore replace refs. */
+export function hardenedGitEnv(): Record<string, string> {
+  const env: Record<string, string> = {
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_CONFIG_COUNT: String(HARDENED_GIT_CONFIG.length),
+  };
+  HARDENED_GIT_CONFIG.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return env;
+}
+
+/**
+ * Real runner: shells out to `git` with a scrubbed env and `hardenedGitEnv`.
+ * `GIT_TERMINAL_PROMPT=0` makes a missing-credential clone fail fast instead of
+ * hanging on a prompt the headless sidecar can never answer. `LC_ALL=C` pins
+ * git's messages to English: `scrubbedEnv` passes the user's locale through,
+ * and `mergeBaseIntoWorktree` reads "Already up to date" out of that output.
  */
 export const defaultGitRunner: GitRunner = (args, opts) =>
-  run(["git", ...args], { ...opts, env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" } });
+  run(["git", ...args], {
+    ...opts,
+    env: { ...hardenedGitEnv(), GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+  });
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
 async function git(

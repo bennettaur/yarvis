@@ -372,71 +372,110 @@ describe("buildClaudeSettings", () => {
   });
 });
 
-describe("sandbox write paths", () => {
-  const CLONE = "/ws/.repos/acme-api";
-  type WithSandbox = {
-    sandbox?: {
-      enabled?: boolean;
-      filesystem?: { allowWrite?: unknown[]; denyWrite?: unknown[]; denyRead?: string[] };
-    };
-  };
+describe("sandbox paths", () => {
+  const GIT = "/ws/.repos/acme-api/.git";
+  const REPO = { clonePath: "/ws/.repos/acme-api", branch: "yarvis/fix-it", adminName: "api" };
+  type Filesystem = { allowWrite?: unknown[]; denyWrite?: unknown[]; denyRead?: string[] };
+  type WithSandbox = { sandbox?: { enabled?: boolean; filesystem?: Filesystem } };
+  const filesystemOf = (settings: Record<string, unknown>) =>
+    (settings as WithSandbox).sandbox?.filesystem;
 
-  it("lets the sandbox write each clone's git directory and subagent worktrees", () => {
-    const settings = buildClaudeSettings(WORKSPACE_ID, {}, [CLONE, "/ws/.repos/acme-web"]);
-    expect((settings as WithSandbox).sandbox?.filesystem?.allowWrite).toEqual([
-      `${CLONE}/.git`,
-      `${CLONE}/.claude/worktrees`,
-      "/ws/.repos/acme-web/.git",
-      "/ws/.repos/acme-web/.claude/worktrees",
+  it("lets the sandbox commit to this workspace's branch and worktree, and nothing else's", () => {
+    expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.allowWrite).toEqual([
+      `${GIT}/objects`,
+      `${GIT}/refs/remotes`,
+      `${GIT}/logs/refs/remotes`,
+      `${GIT}/refs/tags`,
+      `${GIT}/refs/heads/yarvis/fix-it`,
+      `${GIT}/refs/heads/yarvis/fix-it.lock`,
+      `${GIT}/logs/refs/heads/yarvis/fix-it`,
+      `${GIT}/worktrees/api`,
     ]);
   });
 
-  it("keeps the clone's git config and hooks out of the sandbox's reach", () => {
-    // They decide what runs on the next git command, including Yarvis's own.
-    const settings = buildClaudeSettings(WORKSPACE_ID, {}, [CLONE]) as WithSandbox;
-    expect(settings.sandbox?.filesystem?.denyWrite).toEqual([
-      `${CLONE}/.git/config`,
-      `${CLONE}/.git/config.lock`,
-      `${CLONE}/.git/hooks`,
+  it("keeps what decides what git runs, or what other workspaces see, out of reach", () => {
+    expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.denyWrite).toEqual([
+      `${GIT}/config`,
+      `${GIT}/config.lock`,
+      `${GIT}/hooks`,
+      `${GIT}/commondir`,
+      `${GIT}/modules`,
+      `${GIT}/info`,
+      `${GIT}/refs/replace`,
+      `${GIT}/objects/info`,
+      `${GIT}/packed-refs`,
+      `${GIT}/packed-refs.lock`,
+      `${GIT}/worktrees/api/commondir`,
+      `${GIT}/worktrees/api/gitdir`,
+      `${GIT}/worktrees/api/config.worktree`,
+      `${GIT}/worktrees/api/modules`,
+    ]);
+  });
+
+  it("grants no worktree or branch it can't place safely", () => {
+    const fs = filesystemOf(
+      buildClaudeSettings(WORKSPACE_ID, {}, [{ ...REPO, branch: "../../config", adminName: null }]),
+    );
+    expect(fs?.allowWrite).toEqual([
+      `${GIT}/objects`,
+      `${GIT}/refs/remotes`,
+      `${GIT}/logs/refs/remotes`,
+      `${GIT}/refs/tags`,
     ]);
   });
 
   it("keeps the user's own sandbox settings and paths", () => {
-    const settings = buildClaudeSettings(
-      WORKSPACE_ID,
-      {
-        sandbox: {
-          enabled: true,
-          filesystem: {
-            allowWrite: ["~/scratch"],
-            denyWrite: ["~/scratch/keep"],
-            denyRead: ["~/secrets"],
+    const fs = filesystemOf(
+      buildClaudeSettings(
+        WORKSPACE_ID,
+        {
+          sandbox: {
+            enabled: true,
+            filesystem: {
+              allowWrite: ["~/scratch", "/ws/.repos/notes.txt"],
+              denyWrite: ["~/scratch/keep"],
+              denyRead: ["~/secrets"],
+            },
           },
         },
+        [REPO],
+      ),
+    );
+    expect(fs?.denyRead).toEqual(["~/secrets"]);
+    expect(fs?.allowWrite?.slice(0, 2)).toEqual(["~/scratch", "/ws/.repos/notes.txt"]);
+    expect(fs?.denyWrite?.[0]).toBe("~/scratch/keep");
+  });
+
+  it("replaces its own paths, including an earlier version's, and drops a repo that left", () => {
+    const earlier = {
+      sandbox: {
+        filesystem: {
+          allowWrite: [`${GIT}`, "/ws/.repos/acme-api/.claude/worktrees", "/ws/.repos-backup/x"],
+        },
       },
-      [CLONE],
-    ) as WithSandbox;
-    expect(settings.sandbox?.enabled).toBe(true);
-    expect(settings.sandbox?.filesystem?.denyRead).toEqual(["~/secrets"]);
-    expect(settings.sandbox?.filesystem?.allowWrite).toEqual([
-      "~/scratch",
-      `${CLONE}/.git`,
-      `${CLONE}/.claude/worktrees`,
+    };
+    const before = buildClaudeSettings(WORKSPACE_ID, earlier, [
+      REPO,
+      { clonePath: "/ws/.repos/acme-web", branch: "main", adminName: "web" },
     ]);
-    expect(settings.sandbox?.filesystem?.denyWrite?.[0]).toBe("~/scratch/keep");
+    const after = filesystemOf(buildClaudeSettings(WORKSPACE_ID, before, [REPO]));
+    expect(after?.allowWrite).toEqual([
+      "/ws/.repos-backup/x",
+      ...(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.allowWrite ?? []),
+    ]);
+    expect(after?.denyWrite).toEqual(
+      filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.denyWrite,
+    );
   });
 
-  it("replaces its own paths on re-provision, dropping a repo that left the workspace", () => {
-    const before = buildClaudeSettings(WORKSPACE_ID, {}, [CLONE, "/ws/.repos/acme-web"]);
-    const after = buildClaudeSettings(WORKSPACE_ID, before, [CLONE]) as WithSandbox;
-    expect(after.sandbox?.filesystem?.allowWrite).toEqual([
-      `${CLONE}/.git`,
-      `${CLONE}/.claude/worktrees`,
-    ]);
-    expect(after.sandbox?.filesystem?.denyWrite).toHaveLength(3);
+  it("clears its paths when the workspace's last repo has gone", () => {
+    const before = buildClaudeSettings(WORKSPACE_ID, {}, [REPO]);
+    const after = filesystemOf(buildClaudeSettings(WORKSPACE_ID, before, []));
+    expect(after?.allowWrite).toEqual([]);
+    expect(after?.denyWrite).toEqual([]);
   });
 
-  it("adds no sandbox settings to a workspace with no repos", () => {
+  it("adds no sandbox settings to a workspace that never had repos", () => {
     expect((buildClaudeSettings(WORKSPACE_ID) as WithSandbox).sandbox).toBeUndefined();
   });
 });

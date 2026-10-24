@@ -291,6 +291,19 @@ back to ad-hoc.
   is used only after `resolveWorktree` in `workspaces/worktrees.ts` matches it
   against a fresh `git worktree list` of that repo's clone, and what is used is
   git's path, not the caller's.
+- A workspace session's sandbox can write part of its repo's shared clone, so
+  the clone's git data is not trusted either. `sandboxPaths.ts` grants only
+  what that workspace's own commits need and denies what decides which program
+  git runs or what other workspaces see (config, hooks, submodule git folders,
+  `commondir`, replace refs, packed refs). That still leaves the index
+  writable, which is enough to stage a fake submodule whose git folder sets
+  `core.fsmonitor`, so every git the sidecar starts, `gh` included, runs with
+  `hardenedGitEnv` from `git.ts`: command-scope config outranks every config
+  file and reaches the git processes started for submodules. Anything new that
+  spawns git outside `defaultGitRunner` owes the same env. `integrity.ts` looks
+  for the traces such a session leaves, and Yarvis refuses to merge or push for
+  a workspace while any are there, since a hardened Yarvis doesn't protect the
+  user's own terminal.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both

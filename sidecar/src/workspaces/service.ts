@@ -72,6 +72,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { checkRepoIntegrity, describeFindings, type IntegrityFinding } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import type { RepoTracker } from "./tracker.ts";
@@ -996,7 +997,8 @@ export async function syncWorkspaceWithBase(
     }
 
     try {
-      outcomes.push({ ...identity, ...(await syncOneRepo(runner, wr, push)) });
+      const flag = (findings: IntegrityFinding[]) => raiseIntegrityAlert(db, detail, findings);
+      outcomes.push({ ...identity, ...(await syncOneRepo(runner, wr, push, flag)) });
     } catch (e) {
       // Nothing here reaches past the merge: `syncOneRepo` handles its own push
       // failure, so anything thrown happened before the worktree was touched.
@@ -1049,8 +1051,9 @@ export function errorText(e: unknown): string {
 
 /**
  * The fetch/merge/push sequence for one workspace repo: refuse to touch a
- * worktree that is not on its own branch with a clean tree and no sequencer
- * operation open, then merge, then push what the remote is missing. Nothing past
+ * worktree whose clone fails the integrity check (`integrity.ts`), or that is
+ * not on its own branch with a clean tree and no sequencer operation open,
+ * then merge, then push what the remote is missing. Nothing past
  * the merge throws: once the worktree has been mutated, every outcome is
  * reported rather than raised, so a failure there can't be mistaken for a merge
  * that never ran.
@@ -1059,10 +1062,19 @@ async function syncOneRepo(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   push: boolean,
+  onTampered: (findings: IntegrityFinding[]) => Promise<void>,
 ): Promise<RepoSyncProgress> {
   // Under the repo lock so the fetch never races a worktree add/remove on the
   // same primary clone.
   await withRepoLock(wr.repoId, () => fetchRemote(runner, wr.repo.primaryClonePath));
+
+  const findings = await checkRepoIntegrity(runner, wr.repo.primaryClonePath, wr.worktreePath);
+  if (findings.length > 0) {
+    await onTampered(findings);
+    return skipped(
+      `the clone's git data has been changed in a way that could run code or alter what is pushed, so nothing was merged or pushed: ${describeFindings(findings)}`,
+    );
+  }
 
   const status = await worktreeStatus(runner, wr.worktreePath);
   if (status.inProgress) {
@@ -1453,11 +1465,7 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
     console.error("[workspaces] failed to write AGENTS.md/CLAUDE.md:", e);
   }
 
-  writeClaudeSettings(
-    detail.rootPath,
-    detail.id,
-    detail.repos.map((wr) => wr.repo.primaryClonePath),
-  );
+  writeClaudeSettings(detail);
   writeMcpConfig(detail.rootPath, detail.id);
 }
 
@@ -1663,7 +1671,10 @@ export async function provisionWorkspace(
 
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
-    if (after) writeWorkspaceFiles(after);
+    if (after) {
+      writeWorkspaceFiles(after);
+      await checkWorkspaceIntegrity(db, after, runner);
+    }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
     let status: Workspace["status"] = allReady ? "active" : "error";
     let error = allReady ? null : "one or more repos failed";
@@ -1911,6 +1922,68 @@ const archivals = new Map<string, Promise<ArchiveResult>>();
 /** Keeps a long git error from filling the attention row. */
 const ARCHIVE_ERROR_BODY_CAP = 500;
 
+/** Long enough to name what was found, short enough for the bell. */
+const INTEGRITY_BODY_CAP = 1000;
+
+/**
+ * Flags a workspace whose clone shows signs of tampering (see `integrity.ts`).
+ * One item per workspace: a second finding updates it rather than stacking.
+ * Best-effort, like the archive flag.
+ */
+export async function raiseIntegrityAlert(
+  db: Db,
+  workspace: { id: string; name: string },
+  findings: readonly IntegrityFinding[],
+): Promise<void> {
+  console.error(
+    `[workspaces] git integrity check failed for workspace ${workspace.id}: ${describeFindings(findings)}`,
+  );
+  try {
+    const item = await createAttention(db, {
+      source: "system",
+      sessionKey: `workspace-integrity:${workspace.id}`,
+      workspaceId: workspace.id,
+      kind: "error",
+      title: workspace.name,
+      body: `Yarvis won't push or merge for this workspace until you look at its git data — ${describeFindings(findings)}`.slice(
+        0,
+        INTEGRITY_BODY_CAP,
+      ),
+      navTarget: { type: "workspace", workspaceId: workspace.id },
+      payload: { integrityFindings: findings },
+    });
+    publish(item);
+  } catch (e) {
+    console.error("[workspaces] failed to raise integrity attention:", e);
+  }
+}
+
+/**
+ * Runs the integrity check on each of the workspace's ready repos, and flags
+ * the workspace when anything turns up. Returns the findings, so a caller about
+ * to push or merge can refuse. A check that fails to run finds nothing: it is a
+ * tripwire, and the hardened git is what protects Yarvis itself.
+ */
+export async function checkWorkspaceIntegrity(
+  db: Db,
+  detail: WorkspaceDetail,
+  runner: GitRunner = defaultGitRunner,
+): Promise<IntegrityFinding[]> {
+  const findings: IntegrityFinding[] = [];
+  for (const wr of detail.repos) {
+    if (wr.status !== "ready") continue;
+    try {
+      findings.push(
+        ...(await checkRepoIntegrity(runner, wr.repo.primaryClonePath, wr.worktreePath)),
+      );
+    } catch (e) {
+      console.error(`[workspaces] git integrity check could not run for ${wr.repo.name}:`, e);
+    }
+  }
+  if (findings.length > 0) await raiseIntegrityAlert(db, detail, findings);
+  return findings;
+}
+
 /**
  * Raises a failed archive on the attention stream. The teardown runs in the
  * background, so by the time it stops on a worktree it can't remove there may
@@ -2048,6 +2121,10 @@ async function removeWorktreesAndFinish(
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
+
+  // Checked while the worktrees still exist: removing them clears what was
+  // planted in them, but not what was planted in the shared clone.
+  await checkWorkspaceIntegrity(db, detail, runner);
 
   const errors: { repo: string; message: string }[] = [];
 
