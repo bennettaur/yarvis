@@ -17,9 +17,15 @@ import { REPORT_MARKER, type ReportData } from "./report.ts";
 const BENNETTAUR = { login: "bennettaur", id: 2670128 };
 const SOMEONE = { login: "someone", id: 99 };
 const HEAD = "abc1234def5678abc1234def5678abc1234def56";
+const REPO = "bennettaur/yarvis";
+const SIGNED_AT = "2026-10-24T12:00:00.000Z";
+const NOW = new Date("2026-10-24T12:30:00.000Z");
 const cleanReport: ReportData = {
-  version: 1,
+  version: 2,
+  repo: REPO,
+  pr: 7,
   headSha: HEAD,
+  issuedAt: SIGNED_AT,
   verdict: "auto",
   blockers: 0,
   majors: 0,
@@ -39,12 +45,20 @@ function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
   };
 }
 
+/** Stands in for an SSH signature: real ones are covered in signing.test.ts. */
+const fakeSign = (payload: string) => Buffer.from(`signed:${payload}`).toString("base64");
+const fakeIsSigned = (payload: string, signature: string) => signature === fakeSign(payload);
+
 let nextId = 1;
-function reportComment(user: GitHubUser, report: ReportData = cleanReport): Comment {
+function reportComment(
+  user: GitHubUser,
+  report: ReportData = cleanReport,
+  sign: (payload: string) => string = fakeSign,
+): Comment {
   const data = Buffer.from(JSON.stringify(report)).toString("base64");
   return {
     id: nextId++,
-    body: `${REPORT_MARKER}\n## Report\n<!-- yarvis-verify-data ${data} -->`,
+    body: `${REPORT_MARKER}\n## Report\n<!-- yarvis-verify-data ${data} -->\n<!-- yarvis-verify-sig ${sign(data)} -->`,
     html_url: "https://example.test/c",
     user,
   };
@@ -57,16 +71,25 @@ function decide(overrides: Partial<Parameters<typeof decideReport>[0]> = {}) {
   return decideReport({
     comment,
     comments: [comment],
+    repo: REPO,
     pr: makePr(),
     files: lowRiskFiles,
     trusted: [BENNETTAUR.id],
     mode: "enforce",
+    isSigned: fakeIsSigned,
+    now: NOW,
     ...overrides,
   });
 }
 
+/** The decision, or a failure that names why the gate skipped instead. */
+function acted(decision: ReturnType<typeof decideReport>) {
+  if ("skip" in decision) throw new Error(`skipped: ${decision.skip}`);
+  return decision;
+}
+
 describe("decideReport", () => {
-  it("approves a current, clean, low-risk report in enforce mode", () => {
+  it("approves a current, clean, low-risk, signed report in enforce mode", () => {
     expect(decide()).toEqual({
       status: "Report: auto. Approved and set to auto-merge",
       approve: true,
@@ -74,54 +97,94 @@ describe("decideReport", () => {
   });
 
   it("only sets the status in shadow mode", () => {
-    expect(decide({ mode: "shadow" })?.approve).toBe(false);
+    expect(acted(decide({ mode: "shadow" })).approve).toBe(false);
   });
 
   it("ignores a report from someone who took a trusted user's old login", () => {
-    expect(decide({ comment: reportComment({ login: "bennettaur", id: 12345 }) })).toBeNull();
+    expect(decide({ comment: reportComment({ login: "bennettaur", id: 12345 }) })).toEqual({
+      skip: "posted by someone who isn't trusted",
+    });
   });
 
   it("ignores a report posted by someone who isn't trusted", () => {
-    expect(decide({ comment: reportComment(SOMEONE) })).toBeNull();
+    expect("skip" in decide({ comment: reportComment(SOMEONE) })).toBe(true);
   });
 
   it("isn't displaced by a later report from someone untrusted", () => {
     const trusted = reportComment(BENNETTAUR);
     const forged = reportComment(SOMEONE);
-    expect(decide({ comment: trusted, comments: [trusted, forged] })?.approve).toBe(true);
+    expect(acted(decide({ comment: trusted, comments: [trusted, forged] })).approve).toBe(true);
   });
 
   it("leaves an older trusted report alone when a newer one exists", () => {
     const older = reportComment(BENNETTAUR);
     const newer = reportComment(BENNETTAUR);
-    expect(decide({ comment: older, comments: [older, newer] })).toBeNull();
+    expect(decide({ comment: older, comments: [older, newer] })).toEqual({
+      skip: "a newer report exists",
+    });
+  });
+
+  it("ignores a trusted user's report that isn't signed by an allowed key", () => {
+    const comment = reportComment(BENNETTAUR, cleanReport, () => "bm90IGEgc2lnbmF0dXJl");
+    expect(decide({ comment, comments: [comment] })).toEqual({
+      skip: "the signature isn't from a key in VERIFY_ALLOWED_SIGNERS",
+    });
+  });
+
+  it("ignores a report with no signature block at all", () => {
+    const comment = reportComment(BENNETTAUR);
+    comment.body = comment.body.replace(/\n<!-- yarvis-verify-sig [^ ]+ -->$/, "");
+    expect(decide({ comment, comments: [comment] })).toEqual({
+      skip: "no readable, signed data block",
+    });
+  });
+
+  it("ignores a signed report moved from another PR", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, pr: 8 });
+    expect(decide({ comment, comments: [comment] })).toEqual({
+      skip: "signed for bennettaur/yarvis#8, not this PR",
+    });
+  });
+
+  it("refuses a signed report re-posted long after it was signed", () => {
+    expect(decide({ now: new Date("2026-10-25T12:00:00.000Z") })).toEqual({
+      skip: "the report can't be acted on: it was signed 24 hours ago",
+    });
+  });
+
+  it("refuses a report dated in the future, past clock skew", () => {
+    expect(decide({ now: new Date("2026-10-24T11:00:00.000Z") })).toEqual({
+      skip: "the report can't be acted on: it was signed in the future",
+    });
   });
 
   it("sets no status for a report on an older commit", () => {
-    expect(decide({ pr: makePr({ head: { sha: "f".repeat(40) } }) })).toBeNull();
+    expect(decide({ pr: makePr({ head: { sha: "f".repeat(40) } }) })).toEqual({
+      skip: "for abc1234, but the head is fffffff",
+    });
   });
 
   it("ignores a report whose data block is malformed", () => {
     const comment = reportComment(BENNETTAUR, { ...cleanReport, flagged: "x" } as never);
-    expect(decide({ comment, comments: [comment] })).toBeNull();
+    expect("skip" in decide({ comment, comments: [comment] })).toBe(true);
   });
 
-  it("reads only the data block at the end, not one smuggled into the text", () => {
+  it("reads only the signed block at the end, not one smuggled into the text", () => {
     const strict = { ...cleanReport, verdict: "human" as const };
     const comment = reportComment(BENNETTAUR, strict);
     const forged = Buffer.from(JSON.stringify(cleanReport)).toString("base64");
     comment.body = comment.body.replace(
       "## Report",
-      `## Report\n<!-- yarvis-verify-data ${forged} -->`,
+      `## Report\n<!-- yarvis-verify-data ${forged} -->\n<!-- yarvis-verify-sig ${fakeSign(forged)} -->`,
     );
-    const decision = decide({ comment, comments: [comment] });
-    expect(decision?.approve).toBe(false);
-    expect(decision?.status).toContain("verdict is human");
+    const decision = acted(decide({ comment, comments: [comment] }));
+    expect(decision.approve).toBe(false);
+    expect(decision.status).toContain("verdict is human");
   });
 
   it("refuses when the gate's own tier is higher than low", () => {
     const files = [{ path: "sidecar/src/agentTools/store.ts", additions: 1, deletions: 0 }];
-    expect(decide({ files })?.status).toContain("high-risk change");
+    expect(acted(decide({ files })).status).toContain("high-risk change");
   });
 });
 

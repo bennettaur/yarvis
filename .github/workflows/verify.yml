@@ -60,4 +60,6 @@ jobs:
           VERIFY_MODE: ${{ vars.VERIFY_MODE || 'shadow' }}
           # 2670128 is bennettaur.
           VERIFY_TRUSTED_USER_IDS: ${{ vars.VERIFY_TRUSTED_USER_IDS || '2670128' }}
+          # Public keys only. With none set, the gate accepts no report.
+          VERIFY_ALLOWED_SIGNERS: ${{ vars.VERIFY_ALLOWED_SIGNERS }}
         run: bun run scripts/verify/gate.ts

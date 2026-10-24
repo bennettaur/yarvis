@@ -4,11 +4,14 @@ import {
   coverageStatus,
   finalVerdict,
   inline,
-  parseReportData,
+  parseSignedReport,
   REPORT_MARKER,
   Review,
   renderReport,
+  withSignature,
 } from "./report.ts";
+
+const TARGET = { repo: "bennettaur/yarvis", pr: 7 };
 
 const pass = { status: "pass" as const, note: "fine" };
 
@@ -132,10 +135,26 @@ describe("finalVerdict", () => {
 });
 
 describe("renderReport", () => {
-  it("round-trips its data block through the comment body", () => {
-    const { body, data } = renderReport(makeReview(), makeFacts());
+  it("round-trips its data block, signature and all, through the comment body", () => {
+    const { body, data, payload } = renderReport(makeReview(), makeFacts(), TARGET);
     expect(body.startsWith(REPORT_MARKER)).toBe(true);
-    expect(parseReportData(body)).toEqual(data);
+    expect(parseSignedReport(withSignature(body, "c2ln"))).toEqual({
+      data,
+      payload,
+      signature: "c2ln",
+    });
+  });
+
+  it("names the repo, PR and commit in what gets signed", () => {
+    const { data, payload } = renderReport(makeReview(), makeFacts(), TARGET);
+    expect(data.issuedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(data).toMatchObject({
+      version: 2,
+      repo: "bennettaur/yarvis",
+      pr: 7,
+      headSha: "b".repeat(40),
+    });
+    expect(JSON.parse(Buffer.from(payload, "base64").toString("utf8"))).toEqual(data);
   });
 
   it("lists failing checks, including coverage, in the data the gate reads", () => {
@@ -143,7 +162,7 @@ describe("renderReport", () => {
       dimensions: { ...makeReview().dimensions, tests: { status: "concern", note: "thin" } },
     });
     const facts = makeFacts({ coverage: { ...makeFacts().coverage, ratio: 0.2 } });
-    expect(renderReport(review, facts).data.flagged).toEqual(["tests", "coverage"]);
+    expect(renderReport(review, facts, TARGET).data.flagged).toEqual(["tests", "coverage"]);
   });
 
   it("shows the mutation score with the tests and lists surviving mutants in details", () => {
@@ -161,7 +180,7 @@ describe("renderReport", () => {
         skippedRanges: 2,
       },
     });
-    const { body, data } = renderReport(makeReview(), facts);
+    const { body, data } = renderReport(makeReview(), facts, TARGET);
     expect(body).toContain("50% of 10 mutants on changed lines caught (2 ranges not mutated)");
     const details = body.split("<details>")[1];
     // Numeric order, so line 9 comes before line 10.
@@ -173,7 +192,7 @@ describe("renderReport", () => {
     const facts = makeFacts({
       mutation: { score: null, killed: 0, survived: [], skippedRanges: 0 },
     });
-    const { body, data } = renderReport(makeReview(), facts);
+    const { body, data } = renderReport(makeReview(), facts, TARGET);
     expect(body).not.toContain("mutants");
     expect(data.flagged).not.toContain("mutation");
   });
@@ -186,7 +205,7 @@ describe("renderReport", () => {
         { severity: "minor", title: "Rename a variable", detail: "…" },
       ],
     });
-    const { body } = renderReport(review, makeFacts());
+    const { body } = renderReport(review, makeFacts(), TARGET);
     const [headline, details] = body.split("<details>");
     expect(headline).toContain("Races on unmount");
     expect(headline).not.toContain("Rename a variable");
@@ -243,9 +262,15 @@ describe("Review", () => {
   });
 });
 
-describe("parseReportData", () => {
-  it("returns null for a comment without a data block or with a broken one", () => {
-    expect(parseReportData(`${REPORT_MARKER}\nhand-written`)).toBeNull();
-    expect(parseReportData("<!-- yarvis-verify-data bm90IGpzb24= -->")).toBeNull();
+describe("parseSignedReport", () => {
+  it("returns null without a data block, without a signature, or with broken data", () => {
+    const { body } = renderReport(makeReview(), makeFacts(), TARGET);
+    expect(parseSignedReport(`${REPORT_MARKER}\nhand-written`)).toBeNull();
+    expect(parseSignedReport(body)).toBeNull();
+    expect(
+      parseSignedReport(
+        "<!-- yarvis-verify-data bm90IGpzb24= -->\n<!-- yarvis-verify-sig c2ln -->",
+      ),
+    ).toBeNull();
   });
 });
