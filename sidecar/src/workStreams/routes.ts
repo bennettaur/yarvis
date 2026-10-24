@@ -16,12 +16,13 @@ const status = z.enum(["active", "waiting-on-user", "waiting-on-others", "done",
 const patchSchema = z.object({
   status: status.optional(),
   priority: z.enum(["urgent", "high", "medium", "low"]).optional(),
+  paused: z.boolean().optional(),
 });
 
 /**
  * Routes for work streams, mounted under /api/work-streams. The UI reads them
- * to show what heads-down mode is pushing forward, and the user can reprioritize
- * or close a stream. Everything else, notes included, is written by the agent
+ * to show what heads-down mode is pushing forward, and the user can reprioritize,
+ * pause or close a stream. Everything else, notes included, is written by the agent
  * through its tools, so a note is always the agent's own.
  */
 export function createWorkStreamRoutes(config: Config): Hono {

@@ -5,11 +5,13 @@ import TurnActivity from "../TurnActivity";
 import AgentMark from "./AgentMark";
 import type { LivePass } from "./useLivePass";
 
-/** The sleep reason the sidecar records for a pass the user stopped (`headsDown/pass.ts`). */
+/** The sleep reasons the sidecar records for a pass cut short on purpose (`headsDown/pass.ts`). */
 const STOPPED_BY_USER = "stopped by you";
+const REACHED_STOP_TIME = "reached the stop time";
 
 function describeSleep(pass: HeadsDownPass): string | null {
   if (pass.sleepReason === STOPPED_BY_USER) return "Stopped by you";
+  if (pass.sleepReason === REACHED_STOP_TIME) return "Stopped at the stop time";
   if (pass.sleepMinutes === null) return null;
   return `Then slept ${pass.sleepMinutes} min${pass.sleepReason ? ` (${pass.sleepReason})` : ""}`;
 }

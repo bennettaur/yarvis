@@ -10,6 +10,8 @@ const RUN = {
   status: "active",
   startedAt: "2026-10-19T09:00:00.000Z",
   stoppedAt: null,
+  pausedAt: null as string | null,
+  stopAt: null as string | null,
 };
 
 const QUESTION = {
@@ -47,6 +49,7 @@ const STREAM = {
   nextAction: "Ask for review",
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
+  pausedAt: null,
   updatedAt: "2026-10-19T10:00:00.000Z",
   links: [
     {
@@ -113,6 +116,9 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
   model: string | null;
 } = CONFIG;
 
+/** The run the page loads; a test may replace it. */
+let currentRun = RUN;
+
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
 
@@ -159,7 +165,7 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down") {
       return json({
-        run: RUN,
+        run: currentRun,
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
@@ -194,7 +200,8 @@ mock.module("../../lib/api", () => ({
   },
 }));
 
-const HeadsDownPanel = (await import("./HeadsDownPanel")).default;
+const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
+const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
 
@@ -213,6 +220,7 @@ afterEach(() => {
   writes.length = 0;
   streamFrames = [];
   savedConfig = CONFIG;
+  currentRun = RUN;
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -285,6 +293,55 @@ describe("HeadsDownPanel", () => {
       },
       { method: "POST", path: "/api/heads-down/questions/q2/answer", body: { choice: "approve" } },
     ]);
+  });
+});
+
+describe("HeadsDownPanel pausing", () => {
+  it("pauses the run, and shows a paused one with the way to resume it", async () => {
+    const host = await mount();
+    buttonNamed(host, "Pause").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/pause", body: null });
+
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    currentRun = { ...RUN, pausedAt: "2026-10-19T12:00:00.000Z" };
+    const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
+    expect(text).toContain("Paused since");
+    expect(text).toContain("Resume");
+    expect(text).not.toContain("Sleeping until");
+  });
+
+  it("shows when the run stops, and clears it", async () => {
+    currentRun = { ...RUN, stopAt: "2026-10-19T23:00:00.000Z" };
+    const host = await mount();
+    expect(host.textContent).toContain("Stops at");
+    buttonNamed(host, "Clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/stop-at",
+      body: { stopAt: null },
+    });
+  });
+
+  it("pauses a single work stream", async () => {
+    const host = await mount();
+    const pause = host.querySelector<HTMLButtonElement>('[aria-label="Pause Ship the billing PR"]');
+    if (!pause) throw new Error("no pause button on the stream");
+    pause.click();
+    await settle(50);
+    expect(writes).toContainEqual({
+      method: "PATCH",
+      path: "/api/work-streams/s1",
+      body: { paused: true },
+    });
+  });
+
+  it("picks the next time the clock reads the stop time", () => {
+    const now = new Date(2026, 9, 19, 18, 0);
+    expect(new Date(nextOccurrence("19:00", now))).toEqual(new Date(2026, 9, 19, 19, 0));
+    expect(new Date(nextOccurrence("08:30", now))).toEqual(new Date(2026, 9, 20, 8, 30));
   });
 });
 

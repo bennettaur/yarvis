@@ -19,6 +19,24 @@ Press **Stop** on the page, or tell the assistant, to turn it off. Stopping
 also stops the pass that is running, and dismisses its open questions, since
 no pass would read the answers.
 
+## Pause it, or set when it stops
+
+**Pause** stops the pass that is running and runs no more until you press
+**Resume**. Unlike stopping, it keeps the run as it is: its focus, your
+messages, and the questions it asked you, which you can still answer while it
+is paused. The next pass after you resume reads them.
+
+To keep it going for a while after you leave, say until your teammates in
+another time zone sign off, set a stop time. Pick one next to **Go heads
+down**, or set, change or clear it on the page while it runs. A time already
+past today means that time tomorrow. At that time it stops, the same as
+pressing **Stop**, even in the middle of a pass or while paused. A pass it cuts
+short shows as having reached the stop time.
+
+You can also ask the assistant to pause it, resume it, or stop it at a given
+time. It asks you first before resuming it or changing when it stops, since
+both keep it running.
+
 ## What it does
 
 It works in passes. Each pass starts fresh, with no memory of the last one, so
@@ -139,6 +157,15 @@ keep it in mind for the rest of this run.
 **Work streams** lists each thread with what it's waiting on, its next step,
 and its tickets, workspaces, PRs and messages. Mark one **Done** or **Drop** it
 when it no longer matters.
+
+**Pause** a stream to have heads-down mode leave it alone while it pushes the
+others, say outside working hours when you only want some work chased. A
+paused stream keeps its status, notes and links. Passes don't see it, can't
+change it, and ask your approval before touching its tickets or workspaces.
+An MCP tool you allowed heads-down mode to use without asking isn't tied to a
+stream, so pausing one doesn't stop that tool: a pass is only told to leave the
+stream's work alone. **Resume** it and the next pass picks it up where it was.
+Only you pause and resume a stream, here or by asking the assistant.
 
 The Yarvis logo at the top of the page shows what it is doing: a spinning ring
 while a pass runs, dimmed while it sleeps until the next one, and grey when

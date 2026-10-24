@@ -6,8 +6,17 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
-import { dismissOpenQuestions, settleQuestionAttention } from "./attention.ts";
+import { settleQuestionAttention } from "./attention.ts";
 import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
+import {
+  NOT_RUNNING,
+  parseStopTime,
+  pauseHeadsDown,
+  resumeHeadsDown,
+  setHeadsDownStopTime,
+  startHeadsDown,
+  stopHeadsDown,
+} from "./control.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
 import {
   addMessage,
@@ -23,10 +32,8 @@ import {
   listUnattendedTools,
   passCallSummaries,
   setToolUnattended,
-  startRun,
-  stopRun,
 } from "./service.ts";
-import { abortHeadsDownPass, wakeHeadsDown } from "./wake.ts";
+import { wakeHeadsDown } from "./wake.ts";
 
 /**
  * Routes for the Heads down page, mounted under /api/heads-down: turn the
@@ -87,7 +94,17 @@ const configSchema = z
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
 
-const startSchema = z.object({ focus: z.string().trim().max(2000).optional() });
+/** A stop time as an ISO timestamp with an offset, or a local "HH:MM" (see `parseStopTime`). */
+const stopAtSchema = z.string().transform((s, ctx) => {
+  const at = parseStopTime(s);
+  if (!at) ctx.addIssue({ code: "custom", message: "give an ISO timestamp or HH:MM" });
+  return at ?? z.NEVER;
+});
+
+const startSchema = z.object({
+  focus: z.string().trim().max(2000).optional(),
+  stopAt: stopAtSchema.nullable().optional(),
+});
 
 const answerSchema = z
   .object({
@@ -111,28 +128,51 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const [run, questions] = await Promise.all([getActiveRun(db()), listQuestions(db())]);
     // This run's last pass: a pass from an earlier run says nothing about when this one looks next.
     const last = run ? await lastFinishedPass(db(), run.id) : null;
-    const nextPassAt =
-      last?.finishedAt && last.sleepMinutes !== null
-        ? new Date(last.finishedAt.getTime() + last.sleepMinutes * 60_000).toISOString()
+    const nextPass =
+      run && run.pausedAt === null && last?.finishedAt && last.sleepMinutes !== null
+        ? new Date(last.finishedAt.getTime() + last.sleepMinutes * 60_000)
         : null;
+    // A pass due after the stop time never runs: the run stops first.
+    const nextPassAt =
+      nextPass && !(run?.stopAt && run.stopAt <= nextPass) ? nextPass.toISOString() : null;
     return c.json({ run, lastPass: last, nextPassAt, openQuestionCount: questions.length });
   });
 
   router.post("/start", async (c) => {
     const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const run = await startRun(db(), parsed.data.focus || null);
-    changed();
-    wakeHeadsDown();
+    const run = await startHeadsDown(db(), parsed.data.focus || null, {
+      stopAt: parsed.data.stopAt,
+    });
+    if ("error" in run) return c.json({ error: run.error }, 400);
     return c.json(run);
   });
 
   router.post("/stop", async (c) => {
-    const run = await stopRun(db());
-    abortHeadsDownPass();
-    await dismissOpenQuestions(db());
-    changed();
+    const run = await stopHeadsDown(db());
     return c.json({ stopped: run !== null });
+  });
+
+  router.post("/pause", async (c) => {
+    const run = await pauseHeadsDown(db());
+    if (!run) return c.json({ error: NOT_RUNNING }, 409);
+    return c.json(run);
+  });
+
+  router.post("/resume", async (c) => {
+    const run = await resumeHeadsDown(db());
+    if (!run) return c.json({ error: "heads-down mode isn't paused" }, 409);
+    return c.json(run);
+  });
+
+  router.put("/stop-at", async (c) => {
+    const parsed = z
+      .object({ stopAt: stopAtSchema.nullable() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const run = await setHeadsDownStopTime(db(), parsed.data.stopAt);
+    if ("error" in run) return c.json({ error: run.error }, run.error === NOT_RUNNING ? 409 : 400);
+    return c.json(run);
   });
 
   router.get("/config", async (c) => c.json(await getHeadsDownConfig()));

@@ -12,6 +12,10 @@ export interface HeadsDownRun {
   status: "active" | "stopped";
   startedAt: string;
   stoppedAt: string | null;
+  /** Set while the user has paused it: no passes run until they resume. */
+  pausedAt: string | null;
+  /** When it stops on its own, if the user set a time. */
+  stopAt: string | null;
 }
 
 export interface HeadsDownPass {
@@ -150,6 +154,8 @@ export interface WorkStream {
   nextAction: string | null;
   waitingOn: string | null;
   wakeAt: string | null;
+  /** Set while the user has paused it: heads-down mode leaves it alone. */
+  pausedAt: string | null;
   updatedAt: string;
   links: WorkStreamLink[];
 }
@@ -198,10 +204,32 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
 
 export const getHeadsDownState = () => request<HeadsDownState>("/api/heads-down");
 
-export const startHeadsDown = (focus: string) =>
-  request<HeadsDownRun>("/api/heads-down/start", "POST", { focus });
+/**
+ * The next time the clock reads `hhmm` ("19:00"), as an ISO timestamp: today,
+ * or tomorrow once today's has passed. The sidecar reads an "HH:MM" from the
+ * chat the same way.
+ */
+export function nextOccurrence(hhmm: string, now = new Date()): string {
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  const at = new Date(now);
+  at.setHours(hours ?? 0, minutes ?? 0, 0, 0);
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1);
+  return at.toISOString();
+}
+
+/** Leaving `stopAt` out keeps the stop time of a run already going, rather than clearing it. */
+export const startHeadsDown = (focus: string, stopAt?: string) =>
+  request<HeadsDownRun>("/api/heads-down/start", "POST", stopAt ? { focus, stopAt } : { focus });
 
 export const stopHeadsDown = () => request<{ stopped: boolean }>("/api/heads-down/stop", "POST");
+
+export const pauseHeadsDown = () => request<HeadsDownRun>("/api/heads-down/pause", "POST");
+
+export const resumeHeadsDown = () => request<HeadsDownRun>("/api/heads-down/resume", "POST");
+
+/** Sets when the run stops on its own, as an ISO timestamp, or clears it with null. */
+export const setHeadsDownStopAt = (stopAt: string | null) =>
+  request<HeadsDownRun>("/api/heads-down/stop-at", "PUT", { stopAt });
 
 export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-down/config");
 
@@ -248,10 +276,14 @@ export const dismissQuestion = (id: string) =>
 
 export const listWorkStreams = () => request<WorkStream[]>("/api/work-streams");
 
-export const updateWorkStream = (
-  id: string,
-  patch: { status?: WorkStreamStatus; priority?: WorkStream["priority"] },
-) => request<WorkStream>(`/api/work-streams/${id}`, "PATCH", patch);
+export interface WorkStreamPatch {
+  status?: WorkStreamStatus;
+  priority?: WorkStream["priority"];
+  paused?: boolean;
+}
+
+export const updateWorkStream = (id: string, patch: WorkStreamPatch) =>
+  request<WorkStream>(`/api/work-streams/${id}`, "PATCH", patch);
 
 /** Live updates for the page; forward only, so a reconnect re-reads the lists. */
 export async function* streamHeadsDown(signal: AbortSignal): AsyncGenerator<HeadsDownStreamEvent> {

@@ -8,6 +8,8 @@ const run: HeadsDownRun = {
   status: "active",
   startedAt: new Date("2026-10-19T09:00:00Z"),
   stoppedAt: null,
+  pausedAt: null,
+  stopAt: null,
 };
 
 function question(overrides: Partial<HeadsDownQuestion>): HeadsDownQuestion {

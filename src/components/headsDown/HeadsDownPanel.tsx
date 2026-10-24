@@ -7,6 +7,7 @@ import {
   type HeadsDownMessage,
   type HeadsDownPass,
   type HeadsDownQuestion,
+  type HeadsDownRun,
   type HeadsDownState,
   listAllowedTools,
   listAutoApprovals,
@@ -14,7 +15,11 @@ import {
   listOpenQuestions,
   listPasses,
   listWorkStreams,
+  nextOccurrence,
+  pauseHeadsDown,
+  resumeHeadsDown,
   sendHeadsDownMessage,
+  setHeadsDownStopAt,
   setToolAllowed,
   startHeadsDown,
   stopHeadsDown,
@@ -56,7 +61,66 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Start and stop heads-down mode, and see when it runs next. */
+/** When the run stops on its own, and a way to set, change or clear it. */
+function StopTime({
+  stopAt,
+  disabled,
+  onSet,
+}: {
+  stopAt: string | null;
+  disabled: boolean;
+  onSet: (stopAt: string | null) => void;
+}) {
+  const [time, setTime] = useState("");
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+      <span>
+        {stopAt ? `Stops at ${new Date(stopAt).toLocaleString()}` : "Runs until you stop it"}
+      </span>
+      <input
+        type="time"
+        value={time}
+        onChange={(e) => setTime(e.target.value)}
+        aria-label="Stop at"
+        className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300"
+      />
+      <button
+        type="button"
+        disabled={disabled || !time}
+        onClick={() => {
+          onSet(nextOccurrence(time));
+          setTime("");
+        }}
+        className="text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+      >
+        {stopAt ? "Change" : "Set stop time"}
+      </button>
+      {stopAt && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onSet(null)}
+          className="text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The header's line about what happens next: paused, working, or when it looks again. */
+function describeNextPass(state: HeadsDownState, run: HeadsDownRun, working: boolean): string {
+  if (run.pausedAt !== null)
+    return "No passes until you resume it. Its streams and questions are kept.";
+  if (working) return "Working now";
+  if (state.nextPassAt) return `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`;
+  // The sidecar leaves out a next pass that would come after the stop time.
+  if (state.lastPass && run.stopAt) return "No more passes before it stops";
+  return "Starting its first pass";
+}
+
+/** Start, pause and stop heads-down mode, and see when it runs next and when it stops. */
 function RunHeader({
   state,
   working,
@@ -69,6 +133,7 @@ function RunHeader({
   onChanged: () => void;
 }) {
   const [focus, setFocus] = useState("");
+  const [stopTime, setStopTime] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = state?.run ?? null;
@@ -79,6 +144,7 @@ function RunHeader({
     try {
       await action();
       setFocus("");
+      setStopTime("");
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -101,36 +167,63 @@ function RunHeader({
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
             {/* With no next pass scheduled yet, the first one is starting. */}
-            <AgentMark state={working || !state.nextPassAt ? "working" : "sleeping"} />
+            <AgentMark
+              state={
+                run.pausedAt === null && (working || !state.nextPassAt) ? "working" : "sleeping"
+              }
+            />
             <div className="min-w-0">
-              <div className="text-sm font-medium text-emerald-300">
-                Heads down since {new Date(run.startedAt).toLocaleString()}
-              </div>
+              {run.pausedAt !== null ? (
+                <div className="flex items-center gap-2 text-sm font-medium text-sky-300">
+                  <span className="inline-block h-2 w-2 rounded-full bg-sky-400" />
+                  Paused since {new Date(run.pausedAt).toLocaleString()}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+                  Heads down since {new Date(run.startedAt).toLocaleString()}
+                </div>
+              )}
               {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
               <p className={`mt-1 text-xs ${working ? "text-cyan-300" : "text-zinc-500"}`}>
-                {working
-                  ? "Working now"
-                  : state.nextPassAt
-                    ? `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`
-                    : "Starting its first pass"}
+                {describeNextPass(state, run, working)}
               </p>
+              <StopTime
+                stopAt={run.stopAt}
+                disabled={busy}
+                onSet={(stopAt) => void runAction(() => setHeadsDownStopAt(stopAt))}
+              />
             </div>
           </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void runAction(stopHeadsDown)}
-            className="shrink-0 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-          >
-            Stop
-          </button>
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void runAction(run.pausedAt !== null ? resumeHeadsDown : pauseHeadsDown)
+              }
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {run.pausedAt !== null ? "Resume" : "Pause"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runAction(stopHeadsDown)}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Stop
+            </button>
+          </div>
         </div>
       ) : (
         <form
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void runAction(() => startHeadsDown(focus.trim()));
+            void runAction(() =>
+              startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined),
+            );
           }}
         >
           <div className="flex items-start gap-3">
@@ -147,6 +240,14 @@ function RunHeader({
               placeholder="What should it push on? (optional)"
               aria-label="Focus"
               className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+            />
+            <input
+              type="time"
+              value={stopTime}
+              onChange={(e) => setStopTime(e.target.value)}
+              aria-label="Stop at (optional)"
+              title="Stop at (optional)"
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-300"
             />
             <button
               type="submit"
