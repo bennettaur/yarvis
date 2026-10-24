@@ -219,8 +219,17 @@ comment, and the gate approves on it in enforce mode only when:
 - that report's verdict is `agent` with no blocking finding, the change isn't
   high risk by the gate's own tier, the author is trusted and it isn't a draft.
 
+Each review also counts for only six hours after it was signed, and a signed
+reject of a report stands even if an approve of the same report is posted
+after it. Reviews must be signed by the principal `yarvis-merge-reviewer` and
+reports by any other, so even an allowed_signers line missing its
+`namespaces=` limit can't let one key do the other's job.
+
 Its key lives in Yarvis's Settings → Credentials. `bun run verify:agent-key`
-makes one and prints its `VERIFY_ALLOWED_SIGNERS` line. The bot's approval on
+writes one to `merge-reviewer.key`, readable only by you, and prints its
+`VERIFY_ALLOWED_SIGNERS` line. Add that line beside your report key's line in
+the repo's settings rather than with `gh variable set`, which would replace
+it. Paste the key file's line into Settings, then delete the file. The bot's approval on
 these starts `Agent-approved:`, which calibration reports as its own path and
 auto-revert treats like an auto-merge.
 

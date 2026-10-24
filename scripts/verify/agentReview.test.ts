@@ -4,16 +4,22 @@
  * sides agree, with real signatures checked by the real ssh-keygen.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseReport, renderAgentReview } from "../../sidecar/src/verify/agentReview.ts";
-import { sshPublicKey } from "../../sidecar/src/verify/sshsig.ts";
+import { sshPublicKey, sshSign } from "../../sidecar/src/verify/sshsig.ts";
 import { parseSignedAgentReview, reportDigest } from "./agentReview.ts";
+import { run } from "./exec.ts";
+import { AGENT_PRINCIPAL, signatureChecks } from "./gate.ts";
 import { renderReport, withSignature } from "./report.ts";
 import {
   AGENT_REVIEW_NAMESPACE,
   allowedSignerLine,
   REPORT_NAMESPACE,
+  signPayload,
   verifiedSigner,
 } from "./signing.ts";
 
@@ -35,6 +41,7 @@ const reviewBody = renderAgentReview(
     reportPayload,
     decision: "approve",
     reason: "The flagged branch is covered by the new test <script>.",
+    now: new Date("2026-10-24T12:00:00.000Z"),
   },
   key,
 );
@@ -47,6 +54,7 @@ describe("an agent review from the sidecar", () => {
       repo: "bennettaur/yarvis",
       pr: 7,
       headSha: "b".repeat(40),
+      issuedAt: "2026-10-24T12:00:00.000Z",
       reportDigest: reportDigest(reportPayload),
       decision: "approve",
       reason: "The flagged branch is covered by the new test <script>.",
@@ -63,8 +71,8 @@ describe("an agent review from the sidecar", () => {
     expect(verifiedSigner(review.payload, review.signature, REPORT_NAMESPACE, allowed)).toBeNull();
   });
 
-  it("keeps the model-written reason out of the comment's HTML", () => {
-    expect(reviewBody).not.toContain("<script>");
+  it("shows the model-written reason as code, so nothing in it renders", () => {
+    expect(reviewBody).toContain("`The flagged branch is covered by the new test <script>.`");
   });
 });
 
@@ -112,5 +120,36 @@ describe("a report from the gate's side", () => {
       headSha: data.headSha,
       verdict: "agent",
     });
+  });
+});
+
+describe("signatureChecks, with real keys", () => {
+  const dir = mkdtempSync(join(tmpdir(), "checks-test-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const maintainerKey = join(dir, "maintainer");
+  run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", maintainerKey]);
+  const maintainerPub = readFileSync(`${maintainerKey}.pub`, "utf8");
+  const maintainer = { program: "ssh-keygen", key: maintainerKey };
+
+  it("takes a report from the maintainer's key and a review from the reviewer's, not the reverse", () => {
+    const checks = signatureChecks(
+      [allowedSignerLine("verify-pr", maintainerPub, REPORT_NAMESPACE), allowed].join("\n"),
+    );
+    const review = parseSignedAgentReview(reviewBody);
+    if (!review) throw new Error("no review");
+    expect(checks.isReviewSigned(review.payload, review.signature)).toBe(true);
+    expect(checks.isReportSigned(review.payload, review.signature)).toBe(false);
+
+    const reportSig = signPayload("report", REPORT_NAMESPACE, maintainer);
+    expect(checks.isReportSigned("report", reportSig)).toBe(true);
+    const asReview = signPayload("report", AGENT_REVIEW_NAMESPACE, maintainer);
+    expect(checks.isReviewSigned("report", asReview)).toBe(false);
+  });
+
+  it("keeps the reviewer's key off reports even when its line has no namespace limit", () => {
+    const unlimited = `${AGENT_PRINCIPAL} ${sshPublicKey(key)}`;
+    const checks = signatureChecks(unlimited);
+    const signature = Buffer.from(sshSign("report", REPORT_NAMESPACE, key)).toString("base64");
+    expect(checks.isReportSigned("report", signature)).toBe(false);
   });
 });

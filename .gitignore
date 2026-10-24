@@ -51,3 +51,6 @@ __pycache__/
 
 # TypeScript incremental build state
 *.tsbuildinfo
+
+# Made by verify:agent-key; never commit it
+merge-reviewer.key

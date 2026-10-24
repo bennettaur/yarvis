@@ -219,11 +219,16 @@ the repo's CI merge it, or reject, which leaves it for you.
 - Its decision is signed with the **Merge reviewer signing key** in Settings →
   Credentials, so the repo can tell it from a comment anyone with your token
   could post. Make the key with `bun run verify:agent-key` in the Yarvis repo,
-  and add the line it prints to the repo's `VERIFY_ALLOWED_SIGNERS` variable.
+  which writes it to a file for you to paste in, and add the line it prints
+  to the repo's `VERIFY_ALLOWED_SIGNERS` variable.
 - The repo's CI still decides: it won't merge a high-risk change on the
   reviewer's word, or a PR with a blocking finding.
-- It posts without asking first, like `project-manager` filing a ticket. That
-  is why it can only run as a specialist you delegate to.
+- A review works on one PR. Once it has read a PR it can't read or post on
+  any other, so text in one PR can't send it off to read another repo, and
+  it posts once.
+- As the specialist, it posts without asking first, like `project-manager`
+  filing a ticket: that grant is on the `merge-reviewer` definition. Anywhere
+  else, such as the chat itself, posting a merge review asks you first.
 
 ## Reference
 
