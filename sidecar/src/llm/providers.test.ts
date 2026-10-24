@@ -96,6 +96,24 @@ describe("availableProviders", () => {
     expect(custom?.available).toBe(true);
   });
 
+  // A System One model can't hold a conversation, so it must never be offered for chat.
+  it("tags a System One provider's models for decisions only", async () => {
+    const row = await createCustomProvider({
+      name: "system one",
+      baseUrl: "http://localhost:11434",
+      apiKind: "systemone",
+      models: ["nimble"],
+      headerNames: [],
+    });
+    const providers = await availableProviders(configWithSecrets());
+    expect(providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.models).toEqual([
+      { id: "nimble", capabilities: ["decision"] },
+    ]);
+    await expect(
+      resolveModel(configWithSecrets(), `${CUSTOM_PROVIDER_PREFIX}${row.id}`, "nimble"),
+    ).rejects.toThrow("not chat");
+  });
+
   it("marks a custom provider unavailable when it has no models", async () => {
     const row = await createCustomProvider({
       name: "empty",
