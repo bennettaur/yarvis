@@ -201,7 +201,7 @@ export interface SystemOneTarget {
   model: string;
 }
 
-function jsonHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
+function customProviderHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
   const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -219,7 +219,7 @@ function ollamaChatTargetFor(
   if (row.apiKind !== "ollama") return null;
   return {
     url: ollamaUrl(row.baseUrl, "/api/chat"),
-    headers: jsonHeaders(config, row),
+    headers: customProviderHeaders(config, row),
     model: modelId,
   };
 }
@@ -234,7 +234,7 @@ export async function systemOneTargetFor(
   if (row?.apiKind !== "systemone") return null;
   return {
     url: `${row.baseUrl.replace(/\/+$/, "")}/v1/systemone`,
-    headers: jsonHeaders(config, row),
+    headers: customProviderHeaders(config, row),
     model: modelId,
   };
 }

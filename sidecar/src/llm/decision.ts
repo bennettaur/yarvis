@@ -95,7 +95,7 @@ export interface DecisionRequest<T> {
    * model.
    */
   systemOne?: SystemOneDecision<T>;
-  /** Injected by tests in place of the network. Used on the Ollama paths. */
+  /** Injected by tests in place of the network. Used on the Ollama and System One paths. */
   fetchImpl?: typeof fetch;
 }
 
