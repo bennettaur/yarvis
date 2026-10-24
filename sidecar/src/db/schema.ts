@@ -81,6 +81,12 @@ export interface ToolActivity {
   durationMs?: number;
 }
 
+/**
+ * The result recorded for a call still running when its turn ended. Whether
+ * it took effect is unknown: the tool may have finished after the stream died.
+ */
+export const CUT_SHORT_RESULT = "The turn ended before this finished.";
+
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 

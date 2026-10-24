@@ -5,7 +5,7 @@ type StreamTextOptions = Parameters<typeof streamText>[0];
 
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { ChatMessageMetadata, ToolActivity } from "../db/schema.ts";
+import { type ChatMessageMetadata, CUT_SHORT_RESULT, type ToolActivity } from "../db/schema.ts";
 import {
   clientError,
   describeError,
@@ -237,6 +237,8 @@ export type AgentEvent =
       detail?: string;
       /** The provider failed on a bad moment (rate limit, overload, dropped connection), so trying again later may work. */
       transient?: boolean;
+      /** The turn saved its own assistant row, with its calls, before ending on this error. */
+      saved?: boolean;
     }
   | { type: "done"; text: string; finishReason?: string; steps?: number };
 
@@ -555,7 +557,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   // outcome as well as recording it: a surface that never hears back leaves the
   // call rendered as though it succeeded.
   for (const [id] of [...byId]) {
-    const entry = settle(id, "error", "The turn ended before this finished.");
+    const entry = settle(id, "error", CUT_SHORT_RESULT);
     if (entry) yield { type: "tool_result", id: entry.id, ...toolOutcome(entry) };
   }
 
@@ -624,7 +626,7 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
         toolCalls: activity,
       });
     }
-    yield { type: "error", message: reason };
+    yield { type: "error", message: reason, saved: activity.length > 0 };
     return;
   }
 

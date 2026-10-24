@@ -22,7 +22,7 @@ import {
 } from "../../lib/headsDown";
 import { combineResources, useCachedResource } from "../../lib/resourceCache";
 import RefreshingIndicator from "../RefreshingIndicator";
-import AgentMark from "./AgentMark";
+import AgentMark, { type AgentState } from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
@@ -95,19 +95,23 @@ function RunHeader({
     );
   }
 
+  // With no next pass scheduled yet, the first one is starting.
+  const agentState: AgentState = working || !state.nextPassAt ? "working" : "sleeping";
+
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
       {run ? (
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
-            {/* With no next pass scheduled yet, the first one is starting. */}
-            <AgentMark state={working || !state.nextPassAt ? "working" : "sleeping"} />
+            <AgentMark state={agentState} />
             <div className="min-w-0">
               <div className="text-sm font-medium text-emerald-300">
                 Heads down since {new Date(run.startedAt).toLocaleString()}
               </div>
               {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
-              <p className={`mt-1 text-xs ${working ? "text-cyan-300" : "text-zinc-500"}`}>
+              <p
+                className={`mt-1 text-xs ${agentState === "working" ? "text-cyan-300" : "text-zinc-500"}`}
+              >
                 {working
                   ? "Working now"
                   : state.nextPassAt

@@ -189,6 +189,32 @@ describe("isTransientError", () => {
     expect(isTransientError(retry)).toBe(true);
   });
 
+  it("is true for a request timeout or conflict", () => {
+    expect(isTransientError(Object.assign(new Error("timeout"), { statusCode: 408 }))).toBe(true);
+    expect(isTransientError(Object.assign(new Error("conflict"), { statusCode: 409 }))).toBe(true);
+  });
+
+  it("is false for a refused request even when its message mentions a rate limit", () => {
+    expect(
+      isTransientError(
+        Object.assign(new Error("rate limit settings invalid"), { statusCode: 400 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a host that doesn't resolve or has nothing listening", () => {
+    const dns = Object.assign(new Error("getaddrinfo ENOTFOUND api.example.invalid"), {
+      code: "ENOTFOUND",
+    });
+    expect(isTransientError(Object.assign(new Error("fetch failed"), { cause: dns }))).toBe(false);
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), {
+      code: "ECONNREFUSED",
+    });
+    expect(isTransientError(Object.assign(new Error("fetch failed"), { cause: refused }))).toBe(
+      false,
+    );
+  });
+
   it("is false for a request the provider will never accept", () => {
     expect(isTransientError(Object.assign(new Error("invalid model"), { statusCode: 400 }))).toBe(
       false,

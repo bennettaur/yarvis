@@ -11,6 +11,7 @@ import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
 import { runPass, STOPPED_BY_USER } from "./pass.ts";
 import { addMessage, listPasses, passCallSummaries, startRun, unseenMessages } from "./service.ts";
+import { abortHeadsDownPass } from "./wake.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -182,11 +183,11 @@ describe("a heads-down pass", () => {
     expect(model.doStreamCalls).toHaveLength(2);
 
     const summary = (await passCallSummaries(db, [pass!.chatSessionId!])).get(pass!.chatSessionId!);
-    expect(summary?.calls).toBe(2);
+    expect(summary?.callCount).toBe(2);
     expect(summary?.failedCalls.map((c) => c.name)).toEqual(["get_work_stream"]);
   });
 
-  it("picks a pass up again after a transient provider error, without redoing its calls", async () => {
+  it("picks a pass up again after a transient provider error, telling it which calls went through", async () => {
     const run = await startRun(db, null);
     const stream = await createStream(db, { title: "ship billing" });
     const model = streamingModel(
@@ -214,6 +215,69 @@ describe("a heads-down pass", () => {
     const retryPrompt = transcript.filter((m) => m.role === "user")[1]?.content;
     expect(retryPrompt).toContain("Overloaded");
     expect(retryPrompt).toContain("done: ask_user");
+    // The first attempt's calls are kept, then the retry's own.
+    const replies = transcript.filter((m) => m.role === "assistant");
+    expect(replies[0]?.content).toContain("Failed here: Overloaded");
+    expect(replies[0]?.toolCalls?.map((c) => c.name)).toEqual(["ask_user"]);
+    // The retry's first model call is the one that sees the list.
+    expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain("done: ask_user");
+    const summary = (await passCallSummaries(db, [pass!.chatSessionId!])).get(pass!.chatSessionId!);
+    expect(summary).toEqual({ callCount: 2, failedCalls: [] });
+  });
+
+  it("records the failure once its retries run out", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+
+    const result = await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    expect(model.doStreamCalls).toHaveLength(3);
+    const passes = await listPasses(db);
+    expect(passes).toHaveLength(1);
+    expect(passes[0]?.error).toContain("Overloaded");
+    expect(result.sleepMinutes).toBe(60);
+  });
+
+  it("doesn't retry or count as failed when the provider fails after finish_pass", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      [
+        toolCall("c1", "finish_pass", { notes: "All waiting.", sleepMinutes: 30, reason: "idle" }),
+        finish("tool-calls"),
+      ],
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+
+    await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    const [pass] = await listPasses(db);
+    expect(pass).toMatchObject({ notes: "All waiting.", error: null });
+  });
+
+  it("stops at once when the user stops it while it waits to retry", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+    const stop = setTimeout(abortHeadsDownPass, 200);
+
+    const started = Date.now();
+    const result = await runPass(config, db, run, { model, retryDelaysMs: [60_000] });
+    clearTimeout(stop);
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(result.sleepReason).toBe(STOPPED_BY_USER);
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    const transcript = await getMessages(db, pass!.chatSessionId!);
+    expect(transcript.filter((m) => m.role === "user")).toHaveLength(1);
   });
 
   it("tells the next pass what a failed one got through", async () => {
@@ -231,6 +295,7 @@ describe("a heads-down pass", () => {
         ],
         providerError(Object.assign(new Error("invalid request"), { statusCode: 400 })),
       ),
+      retryDelaysMs: [0, 0],
     });
 
     const next = streamingModel([finish("stop")]);

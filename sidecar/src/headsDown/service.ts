@@ -15,6 +15,7 @@ import {
 import type { Db } from "../db/client.ts";
 import {
   agentTools,
+  CUT_SHORT_RESULT,
   chatMessages,
   type HeadsDownMessage,
   type HeadsDownPass,
@@ -506,8 +507,9 @@ export async function passToolCalls(db: Db, chatSessionId: string): Promise<Tool
 const FAILED_CALL_CHARS = 300;
 
 export interface PassCallSummary {
-  calls: number;
-  failedCalls: { name: string; server: string | null; error: string | null }[];
+  callCount: number;
+  /** Calls that failed, or whose result never came back (`noResult`), so may have gone through. */
+  failedCalls: { name: string; server: string | null; error: string | null; noResult: boolean }[];
 }
 
 /**
@@ -525,13 +527,13 @@ export async function passCallSummaries(
   const rows = await db
     .select({
       sessionId: chatMessages.sessionId,
-      calls: sql<number>`jsonb_array_length(${calls})`,
-      // A call still pending when its turn ended never came back, so it failed too.
+      callCount: sql<number>`jsonb_array_length(${calls})`,
       failed: sql<PassCallSummary["failedCalls"] | null>`(
         select jsonb_agg(jsonb_build_object(
           'name', c->>'name',
           'server', c->>'server',
-          'error', left(c->>'result', ${FAILED_CALL_CHARS})
+          'error', left(c->>'result', ${FAILED_CALL_CHARS}),
+          'noResult', c->>'status' = 'pending' or c->>'result' = ${CUT_SHORT_RESULT}
         ))
         from jsonb_array_elements(${calls}) as c
         where c->>'status' in ('error', 'pending')
@@ -541,8 +543,8 @@ export async function passCallSummaries(
     .where(and(inArray(chatMessages.sessionId, chatSessionIds), eq(chatMessages.role, "assistant")))
     .orderBy(asc(chatMessages.createdAt));
   for (const row of rows) {
-    const summary = summaries.get(row.sessionId) ?? { calls: 0, failedCalls: [] };
-    summary.calls += row.calls;
+    const summary = summaries.get(row.sessionId) ?? { callCount: 0, failedCalls: [] };
+    summary.callCount += row.callCount;
     summary.failedCalls.push(...(row.failed ?? []));
     summaries.set(row.sessionId, summary);
   }
