@@ -50,6 +50,21 @@ describe("classify", () => {
     expect(classify([file("src/App.tsx", 10), file("src/App.test.tsx", 2000)]).tier).toBe("low");
   });
 
+  it("treats the merge reviewer's half of the verifier as high risk", () => {
+    for (const path of [
+      "sidecar/src/verify/tools.ts",
+      "sidecar/src/agents/definitions/merge-reviewer.md",
+      "sidecar/src/agents/run.ts",
+      "sidecar/src/chat/destructiveTools.ts",
+      "sidecar/src/lib/fencing.ts",
+      "sidecar/src/github/client.ts",
+      "src-tauri/src/sidecar.rs",
+    ]) {
+      expect(classify([file(path)]).tier).toBe("high");
+    }
+    expect(classify([file("sidecar/src/agents/definitions/planner.md")]).tier).toBe("standard");
+  });
+
   it("keeps the verifier's own tests high risk", () => {
     expect(classify([file("scripts/verify/gate.test.ts")]).tier).toBe("high");
   });

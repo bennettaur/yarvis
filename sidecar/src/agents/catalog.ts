@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
+import mergeReviewer from "./definitions/merge-reviewer.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
@@ -92,6 +93,7 @@ const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "definitions/workspace-recap.md", content: workspaceRecap },
   { path: "definitions/planner.md", content: planner },
   { path: "definitions/yarvis-guide.md", content: yarvisGuide },
+  { path: "definitions/merge-reviewer.md", content: mergeReviewer },
 ];
 
 /** `~/.yarvis/agents`, overridable so tests and a second instance can point elsewhere. */

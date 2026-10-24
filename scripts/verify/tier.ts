@@ -70,6 +70,14 @@ const HIGH_RISK_PATHS: PathRule[] = [
   // The verifier must not be able to approve a change to itself.
   { pattern: /^\.github\//, reason: "CI or repo config" },
   { pattern: /^scripts\/verify\//, reason: "the verification layer itself" },
+  // The merge reviewer's half: its prompt, its tools and signer, the grant that
+  // lets it post, the fencing it reads through, and how its key reaches it.
+  // An agent review can approve standard-risk changes, so these must be high.
+  {
+    pattern:
+      /^(sidecar\/src\/verify\/|sidecar\/src\/agents\/(definitions\/merge-reviewer\.md|catalog\.ts|run\.ts|frontmatter\.ts|tools\.ts)$|sidecar\/src\/chat\/(destructiveTools|builtinTools|agent)\.ts$|sidecar\/src\/(lib\/fencing|github\/client|config)\.ts$|src-tauri\/src\/(sidecar|lib)\.rs$)/,
+    reason: "the verification layer itself",
+  },
   // Instructions and hooks the verifying agent itself loads.
   { pattern: /^(\.claude\/|CLAUDE\.md$|AGENTS\.md$)/, reason: "agent instructions or hooks" },
   { pattern: /^lefthook\.yml$/, reason: "git hooks" },

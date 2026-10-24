@@ -14,24 +14,28 @@ on:
 permissions:
   contents: read
 
-# One run per PR and comment kind at a time. GitHub keeps only the newest
-# pending run in a group, so sharing one would let a report drop an /approve.
-concurrency:
-  group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || 'report' }}
-  cancel-in-progress: false
-
 jobs:
   gate:
     name: Verification gate
-    # The marker is REPORT_MARKER in scripts/verify/report.ts. Comments from
-    # anyone without write access never start a run, so they can't queue runs
-    # to delay or displace a real one. The gate still checks the trusted list.
+    # The markers are REPORT_MARKER in scripts/verify/report.ts and
+    # AGENT_REVIEW_MARKER in scripts/verify/agentReview.ts. Comments from
+    # anyone without write access skip the job, so they never join a
+    # concurrency group to delay or displace a real run. The gate still checks
+    # the trusted list.
     if: >-
       github.event.issue.pull_request &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (startsWith(github.event.comment.body, '/approve') ||
-       contains(github.event.comment.body, '<!-- yarvis-verify -->'))
+       contains(github.event.comment.body, '<!-- yarvis-verify -->') ||
+       contains(github.event.comment.body, '<!-- yarvis-agent-review -->'))
     runs-on: ubuntu-latest
+    # On the job, not the workflow, so only comments that pass the `if` above
+    # join a group. One run per PR and comment kind at a time: GitHub keeps
+    # only the newest pending run in a group, so sharing one would let one
+    # kind drop another.
+    concurrency:
+      group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || contains(github.event.comment.body, '<!-- yarvis-agent-review -->') && 'agent-review' || 'report' }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

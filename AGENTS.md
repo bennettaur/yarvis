@@ -191,10 +191,11 @@ back to ad-hoc.
   sidecar writes that set an MCP server's command, a tool's approval, a
   scheduled job, or a custom provider's URL. Only `src/lib/api.ts` reads the
   sidecar token. Every `invoke` names its command as a string literal.
-  `scripts/verify/nativeBridge.ts` holds these rules and fails CI on a break,
-  which is what lets the rest of `src/` count as low risk when a PR is
-  verified. A file that imports `privilegedCommands.ts` chooses what its calls
-  do, so it is high risk too and must be listed in
+  `scripts/verify/nativeBridge.ts` holds these rules, and its test fails CI when
+  a file breaks them, which is what lets the rest of `src/` count as low risk
+  when a PR is verified. These are a check against mistakes, not against a
+  hostile author. A file that imports `privilegedCommands.ts` chooses what its
+  calls do, so it is high risk too and must be listed in
   `PRIVILEGED_FRONTEND_IMPORTERS` in `scripts/verify/tier.ts`. A new call of
   that kind goes in `privilegedCommands.ts` and on `nativeBridge.ts`'s lists.
 - Several instances of the app can run at once (`bun run dev:instance`), sharing
@@ -563,8 +564,11 @@ back to ad-hoc.
     itself. A tool that writes where other people can see it sits between those
     two cases: available, but only to a definition that also names it under
     `unattended:`, which Settings flags on the row as "acts unattended".
-    `project-manager` filing tickets is the one shipped grant — turning a
-    discussion into tickets is the job.
+    Two shipped definitions have a grant, each because the action is the job:
+    `project-manager` files tickets, and `merge-reviewer` posts a signed
+    approval a repo's CI can merge on. The second is narrowed again at the
+    tool: `post_merge_review` re-reads the PR and its report itself, and posts
+    only for a current report whose verdict asked for an agent.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

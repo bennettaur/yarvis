@@ -36,6 +36,10 @@ describe("decideRevert", () => {
     expect(decide({ attempt: 1 })).toEqual({ action: "rerun" });
   });
 
+  it("reverts a PR the bot merged on the merge reviewer's approval", () => {
+    expect(decide({ path: "agent" })).toEqual({ action: "revert", pr });
+  });
+
   it("leaves PRs that weren't auto-merged, including ones merged with /approve", () => {
     expect(decide({ path: "/approve" }).action).toBe("skip");
     expect(decide({ path: "human" }).action).toBe("skip");

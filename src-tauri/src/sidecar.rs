@@ -348,6 +348,9 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, Str
     if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
         cmd.env("JIRA_API_TOKEN", token);
     }
+    if let Some(key) = secret_from_root(&secrets, "verify_agent_signing_key") {
+        cmd.env("VERIFY_AGENT_SIGNING_KEY", key);
+    }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);
     }

@@ -198,6 +198,32 @@ it.
 Merging a stack needs the `gh stack` CLI, so it lives in the workspace's Stack
 tab. See [Workspaces](workspaces.md).
 
+### Let the merge reviewer decide
+
+In a repo that uses Yarvis's verification layer, a PR's verification report
+can say it needs an agent's review rather than a person's. Ask the assistant
+to have the merge reviewer look at it ("have the merge reviewer check
+bennettaur/yarvis#123"). The reviewer reads the PR, the report and the code
+the report points at, then posts its decision on the PR: approve, which lets
+the repo's CI merge it, or reject, which leaves it for you.
+
+- It only decides PRs whose latest report, posted from your GitHub account,
+  is for the current commit and asked for an agent. Anything else it reports
+  back without posting.
+- Its decision is signed with the **Merge reviewer signing key** in Settings →
+  Credentials, so the repo can tell it from a comment anyone with your token
+  could post. Make the key with `bun run verify:agent-key` in the Yarvis repo,
+  which writes it to a file for you to paste in, and add the line it prints
+  to the repo's `VERIFY_ALLOWED_SIGNERS` variable.
+- The repo's CI still decides: it won't merge a high-risk change on the
+  reviewer's word, or a PR with a blocking finding.
+- A review works on one PR. Once it has read a PR it can't read or post on
+  any other, so text in one PR can't send it off to read another repo, and
+  it posts once.
+- As the specialist, it posts without asking first, like `project-manager`
+  filing a ticket: that grant is on the `merge-reviewer` definition. Anywhere
+  else, such as the chat itself, posting a merge review asks you first.
+
 ## Reference
 
 ### Settings → PR review
