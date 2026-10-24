@@ -167,6 +167,7 @@ main one:
 | Resuming interrupted kick-offs | Would start two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
 | Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
+| Alarm scheduler | Two processes would race to ring each alarm | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control+Shift+Space`, `Control+Shift+V`) | Only one process can hold a hotkey | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should do the work, or `0` on the

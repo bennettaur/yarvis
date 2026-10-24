@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
@@ -8,6 +8,7 @@ import {
   acknowledgeAlarm,
   cancelAlarm,
   createAlarm,
+  isAlarmChangeError,
   listAlarms,
   snoozeAlarm,
   toAlarm,
@@ -25,7 +26,14 @@ const createSchema = z.object({
   label: z.string().trim().min(1).max(300),
   fireAtMs: z.number().int().positive(),
   sound: z.boolean().optional(),
-  meetLink: z.string().url().max(2000).nullable().optional(),
+  // Opened by the Join button, so only a web link.
+  meetLink: z
+    .string()
+    .url()
+    .max(2000)
+    .refine((u) => /^https?:\/\//i.test(u), "meetLink must be an http(s) link")
+    .nullable()
+    .optional(),
 });
 
 const snoozeSchema = z.object({
@@ -63,24 +71,28 @@ export function createAlarmRoutes(config: Config): Hono {
 
   const NOT_FOUND = { error: "no alarm with that id" };
 
+  const respond = (c: Context, result: Awaited<ReturnType<typeof acknowledgeAlarm>> | null) => {
+    if (!result) return c.json(NOT_FOUND, 404);
+    if (!isAlarmChangeError(result)) return c.json(toAlarm(result));
+    if (result.error === "not-found") return c.json(NOT_FOUND, 404);
+    return c.json({ error: `the alarm is already ${result.status}` }, 409);
+  };
+
   router.post("/:id/acknowledge", async (c) => {
     const id = c.req.param("id");
-    const row = UUID.test(id) ? await acknowledgeAlarm(db(), id) : null;
-    return row ? c.json(toAlarm(row)) : c.json(NOT_FOUND, 404);
+    return respond(c, UUID.test(id) ? await acknowledgeAlarm(db(), id) : null);
   });
 
   router.post("/:id/cancel", async (c) => {
     const id = c.req.param("id");
-    const row = UUID.test(id) ? await cancelAlarm(db(), id) : null;
-    return row ? c.json(toAlarm(row)) : c.json(NOT_FOUND, 404);
+    return respond(c, UUID.test(id) ? await cancelAlarm(db(), id) : null);
   });
 
   router.post("/:id/snooze", async (c) => {
     const id = c.req.param("id");
     const parsed = snoozeSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message }, 400);
-    const row = UUID.test(id) ? await snoozeAlarm(db(), id, parsed.data.minutes) : null;
-    return row ? c.json(toAlarm(row)) : c.json(NOT_FOUND, 404);
+    return respond(c, UUID.test(id) ? await snoozeAlarm(db(), id, parsed.data.minutes) : null);
   });
 
   // Live updates. Forward only: a page that reconnects re-reads the list.

@@ -1,18 +1,23 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { fireAlarm } from "../core/controlClient.ts";
 import * as schema from "../db/schema.ts";
 import { subscribe } from "./hub.ts";
 import { importLegacyAlarms } from "./legacyImport.ts";
-import { createAlarmScheduler, MAX_WAIT_MS } from "./scheduler.ts";
+import { createAlarmScheduler, FIRE_RETRY_MS, MAX_WAIT_MS } from "./scheduler.ts";
 import {
   acknowledgeAlarm,
+  cancelAlarm,
   claimDueAlarms,
   createAlarm,
   findMeetingAlarm,
+  getAlarm,
+  isAlarmChangeError,
   listAlarms,
   listPendingAlarms,
   nextDueAt,
@@ -24,6 +29,12 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
 const inMinutes = (m: number) => new Date(Date.now() + m * 60_000);
+
+/** A row from a status change that is expected to succeed. */
+function changed(result: Awaited<ReturnType<typeof acknowledgeAlarm>>): schema.AlarmRow {
+  if (isAlarmChangeError(result)) throw new Error(`expected a row, got ${result.error}`);
+  return result;
+}
 
 beforeEach(async () => {
   await sql`TRUNCATE alarms`;
@@ -51,7 +62,7 @@ describe("alarm service", () => {
     const later = await createAlarm(db, { label: "later", fireAt: inMinutes(20), source: "app" });
     expect((await nextDueAt(db))?.getTime()).toBe(soon.fireAt.getTime());
 
-    await acknowledgeAlarm(db, soon.id);
+    await cancelAlarm(db, soon.id);
     expect((await nextDueAt(db))?.getTime()).toBe(later.fireAt.getTime());
   });
 
@@ -59,14 +70,41 @@ describe("alarm service", () => {
     const alarm = await createAlarm(db, { label: "a", fireAt: inMinutes(-1), source: "app" });
     await claimDueAlarms(db, new Date());
 
-    const snoozed = await snoozeAlarm(db, alarm.id, 5);
+    const snoozed = changed(await snoozeAlarm(db, alarm.id, 5));
 
-    expect(snoozed?.status).toBe("scheduled");
-    expect(snoozed!.fireAt.getTime()).toBeGreaterThan(inMinutes(4).getTime());
+    expect(snoozed.status).toBe("scheduled");
+    expect(snoozed.fireAt.getTime()).toBeGreaterThan(inMinutes(4).getTime());
   });
 
-  it("returns null for an alarm that doesn't exist", async () => {
-    expect(await acknowledgeAlarm(db, "00000000-0000-4000-8000-000000000000")).toBeNull();
+  it("reports an alarm that doesn't exist", async () => {
+    expect(await acknowledgeAlarm(db, "00000000-0000-4000-8000-000000000000")).toEqual({
+      error: "not-found",
+    });
+  });
+
+  it("won't bring back an alarm the user already dealt with", async () => {
+    const alarm = await createAlarm(db, { label: "a", fireAt: inMinutes(-1), source: "app" });
+    await claimDueAlarms(db, new Date());
+    changed(await cancelAlarm(db, alarm.id));
+
+    // A stale overlay's snooze or acknowledge, after a cancel in another window.
+    expect(await snoozeAlarm(db, alarm.id, 5)).toEqual({ error: "conflict", status: "cancelled" });
+    expect(await acknowledgeAlarm(db, alarm.id)).toEqual({
+      error: "conflict",
+      status: "cancelled",
+    });
+    expect((await getAlarm(db, alarm.id))?.status).toBe("cancelled");
+  });
+
+  it("only snoozes or acknowledges an alarm that is ringing", async () => {
+    const alarm = await createAlarm(db, { label: "a", fireAt: inMinutes(5), source: "app" });
+
+    expect(await snoozeAlarm(db, alarm.id, 5)).toEqual({ error: "conflict", status: "scheduled" });
+    expect(await acknowledgeAlarm(db, alarm.id)).toEqual({
+      error: "conflict",
+      status: "scheduled",
+    });
+    expect(changed(await cancelAlarm(db, alarm.id)).status).toBe("cancelled");
   });
 
   it("matches a meeting alarm by label and a near fire time", async () => {
@@ -80,11 +118,19 @@ describe("alarm service", () => {
     expect(await findMeetingAlarm(db, "Meeting: Retro", fireAt)).toBeNull();
   });
 
+  it("still matches a meeting alarm the user cancelled", async () => {
+    const fireAt = inMinutes(30);
+    const alarm = await createAlarm(db, { label: "Meeting: Standup", fireAt, source: "app" });
+    changed(await cancelAlarm(db, alarm.id));
+
+    expect((await findMeetingAlarm(db, "Meeting: Standup", fireAt))?.id).toBe(alarm.id);
+  });
+
   it("lists pending alarms soonest first", async () => {
     await createAlarm(db, { label: "later", fireAt: inMinutes(20), source: "app" });
     await createAlarm(db, { label: "sooner", fireAt: inMinutes(5), source: "chat" });
     const done = await createAlarm(db, { label: "done", fireAt: inMinutes(1), source: "app" });
-    await acknowledgeAlarm(db, done.id);
+    await cancelAlarm(db, done.id);
 
     expect((await listPendingAlarms(db)).map((a) => a.label)).toEqual(["sooner", "later"]);
   });
@@ -96,7 +142,7 @@ describe("alarm service", () => {
     });
     try {
       const alarm = await createAlarm(db, { label: "a", fireAt: inMinutes(5), source: "app" });
-      await acknowledgeAlarm(db, alarm.id);
+      await cancelAlarm(db, alarm.id);
     } finally {
       unsubscribe();
     }
@@ -141,19 +187,28 @@ describe("alarm scheduler", () => {
     expect(timers.at(-1)).toBe(MAX_WAIT_MS);
   });
 
-  it("keeps the alarm fired when the core can't ring it", async () => {
+  it("puts an alarm the core couldn't ring back on the schedule, and tries again soon", async () => {
     await createAlarm(db, { label: "due", fireAt: inMinutes(-1), source: "app" });
+    const timers: number[] = [];
+    let attempts = 0;
     const s = createAlarmScheduler({
       db,
       fire: async () => {
-        throw new Error("no core");
+        attempts++;
+        throw new Error("core restarting");
       },
-      setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      setTimer: (_fn, ms) => {
+        timers.push(ms);
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
     });
 
     await s.tick();
+    expect((await listAlarms(db))[0]?.status).toBe("scheduled");
+    expect(timers.at(-1)).toBe(FIRE_RETRY_MS);
 
-    expect((await listAlarms(db))[0]?.status).toBe("fired");
+    await s.tick();
+    expect(attempts).toBe(2);
   });
 });
 
@@ -164,7 +219,7 @@ describe("importLegacyAlarms", () => {
     dir = mkdtempSync(join(tmpdir(), "yarvis-alarms-import-"));
   });
 
-  afterAll(() => {
+  afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -181,6 +236,14 @@ describe("importLegacyAlarms", () => {
       },
       { id: "a2", label: "Old", fireAtMs: inMinutes(-60).getTime(), status: "acknowledged" },
       { id: "a3", label: 42, fireAtMs: 0, status: "scheduled" },
+      { id: "a4", label: "Bad sound", fireAtMs: 0, sound: "yes", status: "scheduled" },
+      {
+        id: "a5",
+        label: "Bad link",
+        fireAtMs: 0,
+        meetLink: "javascript:alert(1)",
+        status: "fired",
+      },
     ];
     writeFileSync(path, JSON.stringify(legacy));
 
@@ -206,5 +269,92 @@ describe("importLegacyAlarms", () => {
     writeFileSync(path, "{not json");
     expect(await importLegacyAlarms(db, path)).toBe(0);
     expect(readFileSync(path, "utf8")).toBe("{not json");
+  });
+
+  it("copies nothing when the file can't be renamed, so the next start can't copy twice", async () => {
+    const path = join(dir, "alarms.json");
+    writeFileSync(path, JSON.stringify([{ label: "A", fireAtMs: 1, status: "acknowledged" }]));
+    // A non-empty folder where the renamed file would go makes the rename fail.
+    mkdirSync(join(`${path}.imported`, "taken"), { recursive: true });
+
+    await expect(importLegacyAlarms(db, path)).rejects.toThrow();
+
+    expect(await listAlarms(db)).toEqual([]);
+  });
+});
+
+describe("alarms on the core", () => {
+  const requests: { method: string; params: Record<string, unknown> }[] = [];
+  let dir: string;
+  let server: net.Server;
+  const connections = new Set<net.Socket>();
+  const previous = process.env.YARVIS_CORE_SOCK;
+
+  // A stand-in for the Rust core's control socket: records each request and replies ok.
+  beforeEach(async () => {
+    requests.length = 0;
+    dir = mkdtempSync(join(tmpdir(), "yac-"));
+    const path = join(dir, "core.sock");
+    server = net.createServer((conn) => {
+      connections.add(conn);
+      conn.on("close", () => connections.delete(conn));
+      let buffer = "";
+      conn.setEncoding("utf8");
+      conn.on("data", (chunk: string) => {
+        buffer += chunk;
+        let idx = buffer.indexOf("\n");
+        while (idx >= 0) {
+          const msg = JSON.parse(buffer.slice(0, idx));
+          buffer = buffer.slice(idx + 1);
+          idx = buffer.indexOf("\n");
+          requests.push({ method: msg.method, params: msg.params });
+          conn.write(`${JSON.stringify({ id: msg.id, ok: true })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    process.env.YARVIS_CORE_SOCK = path;
+  });
+
+  afterEach(async () => {
+    if (previous === undefined) delete process.env.YARVIS_CORE_SOCK;
+    else process.env.YARVIS_CORE_SOCK = previous;
+    for (const conn of connections) conn.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("asks the core to ring a due alarm, then to stop once the user deals with it", async () => {
+    const alarm = await createAlarm(db, {
+      label: "Standup",
+      fireAt: inMinutes(-1),
+      meetLink: "https://meet.google.com/abc",
+      source: "app",
+    });
+    const scheduler = createAlarmScheduler({
+      db,
+      fire: fireAlarm,
+      setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    });
+
+    await scheduler.tick();
+    changed(await acknowledgeAlarm(db, alarm.id));
+
+    expect(requests.map((r) => r.method)).toEqual(["alarm.fire", "alarm.release"]);
+    expect(requests[0]?.params.alarm).toMatchObject({
+      id: alarm.id,
+      label: "Standup",
+      meetLink: "https://meet.google.com/abc",
+      status: "fired",
+    });
+    expect(requests[1]?.params).toEqual({ id: alarm.id });
+  });
+
+  it("doesn't ask the core about a change that didn't happen", async () => {
+    const alarm = await createAlarm(db, { label: "a", fireAt: inMinutes(5), source: "app" });
+
+    await snoozeAlarm(db, alarm.id, 5);
+
+    expect(requests).toEqual([]);
   });
 });

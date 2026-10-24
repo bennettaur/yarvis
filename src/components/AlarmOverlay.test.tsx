@@ -13,6 +13,7 @@ import { mountForInteraction, renderToHtml } from "../test/render";
 
 const opened: string[] = [];
 const acknowledged: string[] = [];
+let sidecarDown = false;
 
 mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async (url: string) => {
@@ -23,6 +24,7 @@ mock.module("@tauri-apps/plugin-opener", () => ({
 mock.module("../lib/alarms", () => ({
   ...fakeAlarms,
   acknowledgeAlarm: async (id: string) => {
+    if (sidecarDown) throw new Error("sidecar unreachable");
     acknowledged.push(id);
   },
 }));
@@ -42,6 +44,7 @@ describe("AlarmOverlay", () => {
   beforeEach(() => {
     opened.length = 0;
     acknowledged.length = 0;
+    sidecarDown = false;
   });
 
   it("shows a Join meeting button for meeting alarms", async () => {
@@ -95,6 +98,23 @@ describe("AlarmOverlay", () => {
 
     expect(opened).toEqual(["https://meet.google.com/abc"]);
     expect(acknowledged).toEqual(["a1"]);
+
+    unmount();
+  });
+
+  it("says so when the choice couldn't be recorded", async () => {
+    sidecarDown = true;
+    const { host, unmount } = await mountForInteraction(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 0 }),
+      50,
+    );
+
+    Array.from(host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Acknowledge")
+      ?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Couldn't reach Yarvis");
 
     unmount();
   });

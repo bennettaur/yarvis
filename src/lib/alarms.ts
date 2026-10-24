@@ -29,7 +29,13 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   return res.json() as Promise<T>;
 }
 
-export const listAlarms = () => request<Alarm[]>("");
+export async function listAlarms(): Promise<Alarm[]> {
+  const body = await request<unknown>("");
+  // Anything but a list (an error page a proxy turned into JSON, say) counts
+  // as a failed read, so the store keeps the list it had.
+  if (!Array.isArray(body)) throw new Error("GET /api/alarms didn't return a list");
+  return body as Alarm[];
+}
 
 export const createAlarm = (
   label: string,
@@ -42,16 +48,17 @@ export const createAlarm = (
  * Stops the alarm ringing on this machine first, so it goes quiet even when
  * the sidecar can't be reached to record what the user chose.
  */
-async function settle(id: string, action: string, body?: unknown): Promise<Alarm> {
+async function releaseAndRecord(id: string, action: string, body?: unknown): Promise<Alarm> {
   await invoke("release_alarm", { id }).catch(() => {});
   return request<Alarm>(`/${id}/${action}`, "POST", body);
 }
 
-export const cancelAlarm = (id: string) => settle(id, "cancel");
+export const cancelAlarm = (id: string) => releaseAndRecord(id, "cancel");
 
-export const acknowledgeAlarm = (id: string) => settle(id, "acknowledge");
+export const acknowledgeAlarm = (id: string) => releaseAndRecord(id, "acknowledge");
 
-export const snoozeAlarm = (id: string, minutes: number) => settle(id, "snooze", { minutes });
+export const snoozeAlarm = (id: string, minutes: number) =>
+  releaseAndRecord(id, "snooze", { minutes });
 
 /** Subscribe to alarm-fired events from the Rust core. */
 export const onAlarmFired = (cb: (alarm: Alarm) => void): Promise<UnlistenFn> =>
