@@ -138,6 +138,8 @@ export type ReportData = z.infer<typeof ReportData>;
 const isFlagged = (status: Status) => status === "fail" || status === "concern";
 
 export function coverageStatus(coverage: Facts["coverage"]): Status {
+  // A suite that ran no tests leaves its files with no evidence at all.
+  if (coverage.noTestsRan.length > 0) return "fail";
   if (coverage.notLoaded.length > 0) return coverage.ratio === null ? "fail" : "concern";
   if (coverage.ratio === null) return "n/a";
   if (coverage.ratio >= COVERAGE_PASS) return "pass";
@@ -251,6 +253,8 @@ function coverageNote(coverage: Facts["coverage"]): string {
     parts.push(`${fileCount(coverage.notLoaded.length)} no test loads`);
   if (coverage.unmeasured.length > 0)
     parts.push(`${fileCount(coverage.unmeasured.length)} not measured`);
+  if (coverage.noTestsRan.length > 0)
+    parts.push(`${fileCount(coverage.noTestsRan.length)} in a suite that ran no tests`);
   return parts.join(", ") || "no executable lines changed";
 }
 
@@ -375,6 +379,14 @@ export function renderReport(
   }
   if (facts.coverage.notLoaded.length > 0) {
     details.push("**Changed files no test loads**", "", bulletList(facts.coverage.notLoaded), "");
+  }
+  if (facts.coverage.noTestsRan.length > 0) {
+    details.push(
+      "**Changed files in a suite that ran no tests**",
+      "",
+      bulletList(facts.coverage.noTestsRan),
+      "",
+    );
   }
   if (facts.baseline.notDetecting.length > 0) {
     details.push(

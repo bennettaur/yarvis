@@ -114,7 +114,7 @@ it("is one", () => expect(a(1)).toBe(1));
     const out = join(root, "out");
     const result = collectCoverage(root, out, ["src/a.ts"]);
     expect(result.suites).toEqual(["frontend"]);
-    expect(result.measured("src/a.ts")).toBe(true);
+    expect(result.measurement("src/a.ts")).toBe("measured");
     const lines = result.hits.get("src/a.ts");
     expect(lines?.get(2)).toBeGreaterThan(0);
     expect(lines?.get(3)).toBe(0);
@@ -135,7 +135,7 @@ it("is one", () => expect(a(1)).toBe(1));
     const root = repo({ "src/a.ts": source["src/a.ts"] });
     const result = collectCoverage(root, join(root, "out"), ["src/a.ts"]);
     expect(result.suites).toEqual([]);
-    expect(result.measured("src/a.ts")).toBe(false);
+    expect(result.measurement("src/a.ts")).toBe("no-tests");
   });
 
   it("measures nothing for a suite whose preload crashed, though bun wrote lcov", () => {
@@ -146,7 +146,7 @@ it("is one", () => expect(a(1)).toBe(1));
     });
     const result = collectCoverage(root, join(root, "out"), ["src/a.ts"]);
     expect(result.suites).toEqual([]);
-    expect(result.measured("src/a.ts")).toBe(false);
+    expect(result.measurement("src/a.ts")).toBe("no-tests");
   });
 
   it("still measures one suite when the other crashed", () => {
@@ -159,7 +159,8 @@ it("is one", () => expect(a(1)).toBe(1));
     });
     const result = collectCoverage(root, join(root, "out"), ["src/a.ts", "sidecar/src/b.ts"]);
     expect(result.suites).toEqual(["frontend"]);
-    expect(result.measured("src/a.ts")).toBe(true);
-    expect(result.measured("sidecar/src/b.ts")).toBe(false);
+    expect(result.measurement("src/a.ts")).toBe("measured");
+    expect(result.measurement("sidecar/src/b.ts")).toBe("no-tests");
+    expect(result.measurement("src-tauri/src/x.rs")).toBe("not-run");
   });
 });

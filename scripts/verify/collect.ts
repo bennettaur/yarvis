@@ -25,6 +25,7 @@ import {
   type DiffCoverage,
   diffCoverage,
   type LineHits,
+  type Measurement,
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
@@ -92,8 +93,9 @@ function bunSuiteOf(path: string): string {
 export function collectCoverage(root: string, out: string, paths: string[]) {
   const hits: LineHits[] = [];
   const suites: string[] = [];
-  const ranSuites = new Set<string>();
-  let rustRan = false;
+  // Suite directories, plus "rust", by what their run produced.
+  const attempted = new Set<string>();
+  const ran = new Set<string>();
 
   const touchesRoot = paths.some((p) => /^(src|scripts|demo)\//.test(p));
   const touchesSidecar = paths.some((p) => p.startsWith("sidecar/"));
@@ -116,15 +118,14 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
       ],
       { cwd: suite ? join(root, suite) : root, allowFailure: true },
     );
+    attempted.add(suite);
     const lcov = join(dir, "lcov.info");
-    // A suite that ran no tests says nothing about coverage, and bun still
-    // writes lcov when a preload crashes. Without this check, every changed
-    // file in the suite would be reported as one no test loads.
+    // bun writes lcov even when a preload crashes, so only a JUnit report that lists tests counts.
     const ranTests = existsSync(junit) && parseJunit(readFileSync(junit, "utf8"), suite).length > 0;
     if (!existsSync(lcov) || !ranTests) return;
     hits.push(parseLcov(readFileSync(lcov, "utf8"), suite, root));
     suites.push(name);
-    ranSuites.add(suite);
+    ran.add(suite);
   };
 
   if (touchesRoot) bunCoverage("", "frontend", ["./src", "./scripts", "./demo"]);
@@ -139,14 +140,17 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
     });
     if (existsSync(lcov)) {
       hits.push(parseLcov(readFileSync(lcov, "utf8"), "", root));
-      rustRan = true;
+      ran.add("rust");
       suites.push("rust");
     }
   }
 
-  const measured = (path: string) =>
-    path.endsWith(".rs") ? rustRan : ranSuites.has(bunSuiteOf(path));
-  return { hits: mergeLineHits(...hits), measured, suites };
+  const measurement = (path: string): Measurement => {
+    const suite = path.endsWith(".rs") ? "rust" : bunSuiteOf(path);
+    if (ran.has(suite)) return "measured";
+    return attempted.has(suite) ? "no-tests" : "not-run";
+  };
+  return { hits: mergeLineHits(...hits), measurement, suites };
 }
 
 if (import.meta.main) {
@@ -197,7 +201,7 @@ if (import.meta.main) {
     coverage: diffCoverage(
       added,
       measuredRun?.hits ?? new Map(),
-      measuredRun?.measured ?? (() => false),
+      measuredRun?.measurement ?? (() => "not-run"),
     ),
     baseline: measuredRun
       ? runBaseline(root, base, addedOrModified)

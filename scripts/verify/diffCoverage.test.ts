@@ -72,6 +72,7 @@ describe("formatRanges", () => {
 });
 
 describe("diffCoverage", () => {
+  const tsOnly = (path: string) => (path.endsWith(".rs") ? "not-run" : "measured");
   const added = new Map([
     ["src/a.ts", new Set([4, 5, 6, 23])],
     ["src/untested.ts", new Set([1])],
@@ -81,7 +82,7 @@ describe("diffCoverage", () => {
   const hits = parseLcov("SF:src/a.ts\nDA:4,1\nDA:5,0\nDA:23,1\n", "", "/r");
 
   it("counts only executable added lines in source files", () => {
-    const result = diffCoverage(added, hits, (path) => !path.endsWith(".rs"));
+    const result = diffCoverage(added, hits, tsOnly);
     // Line 6 isn't in lcov, so it's not executable and not counted.
     expect(result.changedLines).toBe(3);
     expect(result.coveredLines).toBe(2);
@@ -89,19 +90,15 @@ describe("diffCoverage", () => {
   });
 
   it("reports a file no test imported separately from one with gaps", () => {
-    expect(diffCoverage(added, hits, (path) => !path.endsWith(".rs")).notLoaded).toEqual([
-      "src/untested.ts",
-    ]);
+    expect(diffCoverage(added, hits, tsOnly).notLoaded).toEqual(["src/untested.ts"]);
   });
 
   it("calls a language with no coverage run unmeasured rather than untested", () => {
-    expect(diffCoverage(added, hits, (path) => !path.endsWith(".rs")).unmeasured).toEqual([
-      "src-tauri/src/x.rs",
-    ]);
+    expect(diffCoverage(added, hits, tsOnly).unmeasured).toEqual(["src-tauri/src/x.rs"]);
   });
 
   it("has no ratio when nothing executable changed", () => {
-    expect(diffCoverage(new Map(), hits, () => true).ratio).toBeNull();
+    expect(diffCoverage(new Map(), hits, () => "measured").ratio).toBeNull();
   });
 });
 

@@ -52,6 +52,7 @@ function makeFacts(overrides: Partial<Facts> = {}): Facts {
       uncovered: [],
       notLoaded: [],
       unmeasured: [],
+      noTestsRan: [],
     },
     baseline: { detecting: 3, notDetecting: [], failingOnHead: [] },
     suites: ["frontend"],
@@ -241,6 +242,10 @@ describe("coverageStatus", () => {
   it("flags changed files no test loads, which the ratio can't see", () => {
     expect(coverageStatus(coverage(1, ["src/new.ts"]))).toBe("concern");
     expect(coverageStatus(coverage(null, ["src/new.ts"]))).toBe("fail");
+  });
+
+  it("fails when a suite the change needed ran no tests", () => {
+    expect(coverageStatus({ ...coverage(0.9), noTestsRan: ["sidecar/src/a.ts"] })).toBe("fail");
   });
 
   it("has nothing to say when no executable line changed", () => {
