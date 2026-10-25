@@ -183,8 +183,11 @@ describe("review marks in a review workspace", () => {
 
   it("lists commits with what is new since an explicit `from`, and diffs one", async () => {
     const { wsId, prId, headSha: first, base } = await readyPr();
+    await call("POST", `${base}/review-mark`);
     const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
     await refresh(wsId, prId);
+    // A later review makes `from` the only way back to the first.
+    await markReviewed(db, config, { ref, headSha: pushed, source: "review" }, deps());
 
     const listed = await getJson<{
       fromHeadSha: string;
@@ -229,8 +232,78 @@ describe("review marks in a review workspace", () => {
     // A commit outside the PR's own range, like the base branch's.
     const mainTip = sh(remote.work, "rev-parse", "main").trim();
     expect((await call("GET", `${base}/commits/${mainTip}/diff`)).status).toBe(404);
-    // A sha nobody has can't be compared from.
-    expect((await call("GET", `${base}/since-review?from=${"b".repeat(40)}`)).status).toBe(404);
+    // Only a commit a review was recorded at can be compared from, even a real one.
+    for (const path of ["since-review", "since-review/file", "commits"]) {
+      const query = path === "since-review/file" ? "path=src/a.ts&" : "";
+      for (const from of ["b".repeat(40), mainTip, headSha]) {
+        expect((await call("GET", `${base}/${path}?${query}from=${from}`)).status).toBe(400);
+      }
+    }
+  });
+
+  it("ignores a recorded merge-base that isn't one of the reviewed commit", async () => {
+    const { wsId, prId, headSha: reviewed, base } = await readyPr();
+    // main's tip is a commit, but not an ancestor of the PR head.
+    const mainTip = sh(remote.work, "rev-parse", "main").trim();
+    await markReviewed(
+      db,
+      config,
+      { ref, headSha: reviewed, mergeBaseSha: mainTip, source: "review" },
+      deps(),
+    );
+    remote.pushToPr("src/added.ts", "export const added = true;\n");
+    await refresh(wsId, prId);
+    const since = await getJson<{ fromMergeBase: string; files: { path: string }[] }>(
+      `${base}/since-review`,
+    );
+    expect(since.fromMergeBase).not.toBe(mainTip);
+    expect(since.files.map((f) => f.path)).toEqual(["src/added.ts"]);
+  });
+
+  it("lists binary and too-large files with no counts, and reads neither", async () => {
+    const { wsId, prId, base } = await readyPr();
+    await call("POST", `${base}/review-mark`);
+    remote.pushToPr("image.bin", "\u0000new bytes\u0000");
+    remote.pushToPr("huge.txt", `${"w".repeat(99)}\n`.repeat(20_001));
+    await refresh(wsId, prId);
+
+    const since = await getJson<{ files: Record<string, unknown>[] }>(`${base}/since-review`);
+    expect(since.files).toEqual([
+      expect.objectContaining({ path: "huge.txt", binary: false, tooLarge: true, additions: 0 }),
+      expect.objectContaining({ path: "image.bin", binary: true, tooLarge: false, additions: 0 }),
+    ]);
+    for (const [path, tooLarge] of [
+      ["huge.txt", true],
+      ["image.bin", false],
+    ] as const) {
+      expect(await getJson(`${base}/since-review/file?path=${path}`)).toMatchObject({
+        path,
+        mode: "direct",
+        original: null,
+        modified: null,
+        patch: "",
+        tooLarge,
+      });
+    }
+  });
+
+  it("a refresh pins every recorded review; removing the PR lets them go", async () => {
+    const { wsId, prId, headSha: reviewed, base } = await readyPr();
+    // Recorded from elsewhere, before this clone had any reason to keep it.
+    providerReviews = [{ headSha: reviewed, submittedAt: new Date().toISOString() }];
+    await getJson(`${base}/last-review`);
+    const pinned = refForReviewed("gh-o-r-1", reviewed);
+    const hasRef = () =>
+      Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", pinned], { cwd: clonePath() })
+        .exitCode === 0;
+    expect(hasRef()).toBe(false);
+
+    remote.pushToPr("src/a.ts", "export const a = 4;\n");
+    await refresh(wsId, prId);
+    expect(hasRef()).toBe(true);
+
+    expect((await call("DELETE", base)).status).toBeLessThan(300);
+    expect(hasRef()).toBe(false);
   });
 
   it("a mark recorded by a provider route pins its commit in the review clone", async () => {

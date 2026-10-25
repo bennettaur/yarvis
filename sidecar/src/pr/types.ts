@@ -121,6 +121,8 @@ export interface PrStatus {
   merged: boolean;
   mergeable: boolean | null;
   mergeableState: string;
+  /** The PR's head commit, so a poll can tell a new push without reading the whole PR; null when unknown. */
+  headSha: string | null;
   checks: ChecksSummary;
 }
 

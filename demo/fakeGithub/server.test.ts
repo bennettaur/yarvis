@@ -86,6 +86,20 @@ describe("fake GitHub", () => {
     );
   });
 
+  it("REST agrees with GraphQL on the head, and serves its checks under either form", () => {
+    const pr = PULLS[0];
+    const rest = get(`/repos/acme/checkout-web/pulls/${pr.number}`).json as {
+      head: { sha: string };
+    };
+    expect(rest.head.sha).toBe(pr.headSha ?? `sha-${pr.number}`);
+    for (const sha of [rest.head.sha, `sha-${pr.number}`]) {
+      const runs = get(`/repos/acme/checkout-web/commits/${sha}/check-runs`).json as {
+        check_runs: unknown[];
+      };
+      expect(runs.check_runs.length).toBe(pr.checks.length);
+    }
+  });
+
   it("serves a PR's files with their patches", () => {
     const files = get("/repos/acme/checkout-web/pulls/477/files").json as { patch: string }[];
     expect(files.length).toBeGreaterThan(0);

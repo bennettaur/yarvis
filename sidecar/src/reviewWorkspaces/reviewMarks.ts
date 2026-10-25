@@ -13,7 +13,9 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { PrReviewMark } from "../db/schema.ts";
+import { describeError } from "../llm/errors.ts";
 import {
+  findReviewMark,
   latestReviewMark,
   providerMarks,
   type ReviewMarkInput,
@@ -22,7 +24,7 @@ import {
   setMarkMergeBase,
   toMarkResponse,
 } from "../pr/reviewMarks.ts";
-import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
+import type { PrRef } from "../pr/types.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { stringsSize } from "./cache.ts";
 import { type FileAtSide, fileDiffBetween, type ReviewChangedFile } from "./git.ts";
@@ -32,6 +34,7 @@ import {
   changedFiles,
   defaultReviewDeps,
   getReviewPr,
+  keepReviewedCommit,
   type ReadyPr,
   type ReviewDeps,
   ReviewWorkspaceError,
@@ -42,9 +45,11 @@ import {
 } from "./service.ts";
 import {
   commitsSince,
+  ensureCommit,
   fastForward,
   fileSince,
   filesSince,
+  isAncestor,
   listCommits,
   MAX_COUNTED_FILES,
   mergeBaseOf,
@@ -52,6 +57,7 @@ import {
   parentOf,
   pinReviewedCommit,
   type ReviewCommit,
+  type SinceCommits,
   type SinceEntry,
   type SinceFile,
   type SinceFileView,
@@ -72,7 +78,7 @@ async function pinInClone(
   const clonePath = reviewClonePath(config, ref);
   if (!existsSync(join(clonePath, ".git"))) return null;
   const runners = deps.git({ credentials: deps.credentialsFor(ref) });
-  return withCloneLock(clonePath, () => pinReviewedCommit(runners, clonePath, refDomKey(ref), sha));
+  return keepReviewedCommit(runners, clonePath, ref, sha);
 }
 
 /**
@@ -90,24 +96,21 @@ export async function markReviewed(
   try {
     const mark = await recordReviewMark(db, input);
     void pinInClone(config, input.ref, input.headSha, deps).catch((e) =>
-      console.warn("[review-workspaces] could not keep the reviewed commit:", e),
+      console.warn("[review-workspaces] could not keep the reviewed commit:", describeError(e)),
     );
     return mark;
   } catch (e) {
-    console.warn("[review-workspaces] could not record the review mark:", e);
+    console.warn("[review-workspaces] could not record the review mark:", describeError(e));
     return null;
   }
 }
 
-/** The sha a review route should record: what the page showed, else what the provider used. */
-export function seenHead(claimed: string | undefined, fallback: string | null): string | null {
-  if (claimed && COMMIT_SHA_PATTERN.test(claimed)) return claimed;
-  return fallback && COMMIT_SHA_PATTERN.test(fallback) ? fallback : null;
-}
-
 export interface LastReview {
   mark: ReviewMarkResponse | null;
-  /** The review clone has the mark's commit (fetching and pinning it if it had to); null before the PR is cloned. */
+  /**
+   * The review clone has the mark's commit (fetching it if it had to; the
+   * next refresh pins it); null before the PR is cloned.
+   */
   shaExists: boolean | null;
   /** The commit the checkout is at. */
   headSha: string | null;
@@ -131,8 +134,16 @@ export async function reviewLastReview(
   const pr = await getReviewPr(db, workspaceId, prId);
   const mark = await latestMark(db, pr.ref, deps);
   if (!mark) return { mark: null, shaExists: null, headSha: pr.headSha, upToDate: false };
+  // A read: fetches the commit if it must, without the clone lock, and leaves
+  // pinning it to the refresh or the mark that records it.
   const shaExists =
-    pr.status === "ready" ? await pinInClone(config, pr.ref, mark.headSha, deps) : null;
+    pr.status === "ready"
+      ? await ensureCommit(
+          deps.git({ credentials: deps.credentialsFor(pr.ref) }),
+          reviewClonePath(config, pr.ref),
+          mark.headSha,
+        )
+      : null;
   return {
     mark: toMarkResponse(mark),
     shaExists,
@@ -165,37 +176,42 @@ export async function markReviewPrHere(
 
 /**
  * The commits to compare: the reviewed head (`from`, else the last mark's) and
- * its merge-base, against the checkout's. The reviewed commit is fetched and
- * pinned first. Its merge-base is the mark's when it recorded one; otherwise
- * it is worked out against today's base tip, which gives the same answer for a
- * base that has only moved forward since — and is stored on the mark.
+ * its merge-base, against the checkout's. `from` has to be a commit a review
+ * of this PR was recorded at, so a request can't make the clone fetch, or
+ * compare from, an arbitrary sha. The reviewed commit is fetched if the clone
+ * lacks it — without the clone lock, and without pinning it, which the mark's
+ * recording and each refresh do. Its merge-base is the mark's when it recorded
+ * one that is an ancestor of it; otherwise it is worked out against today's
+ * base tip, which gives the same answer for a base that has only moved
+ * forward since — and is stored on a mark that had none.
  */
 async function resolveRange(
   db: Db,
   ready: ReadyPr,
   deps: ReviewDeps,
   from: string | undefined,
-): Promise<{ range: SinceRange; mark: PrReviewMark | null }> {
-  const mark = from ? null : await latestMark(db, ready.pr.ref, deps);
-  const fromHead = from ?? mark?.headSha;
-  if (!fromHead) {
+): Promise<{ range: SinceRange; mark: PrReviewMark }> {
+  const mark = from
+    ? await findReviewMark(db, ready.pr.ref, from)
+    : await latestMark(db, ready.pr.ref, deps);
+  if (!mark) {
+    if (from) throw new ReviewWorkspaceError("from must be a commit a review was recorded at", 400);
     throw new ReviewWorkspaceError("no review of this pull request is recorded yet", 404);
   }
-  const present = await withCloneLock(ready.clonePath, () =>
-    pinReviewedCommit(ready.runners, ready.clonePath, refDomKey(ready.pr.ref), fromHead),
-  );
-  if (!present) {
+  const fromHead = mark.headSha;
+  if (!(await ensureCommit(ready.runners, ready.clonePath, fromHead))) {
     throw new ReviewWorkspaceError(
       `the reviewed commit ${fromHead.slice(0, 12)} can no longer be fetched`,
       404,
     );
   }
-  let fromMergeBase = mark?.mergeBaseSha ?? null;
-  if (fromMergeBase) {
-    const has = await ready.runners.local(["cat-file", "-e", `${fromMergeBase}^{commit}`], {
-      cwd: ready.clonePath,
-    });
-    if (has.exitCode !== 0) fromMergeBase = null;
+  let fromMergeBase = mark.mergeBaseSha;
+  // A recorded merge-base came from a client; it counts only if it is one.
+  if (
+    fromMergeBase &&
+    !(await isAncestor(ready.runners, ready.clonePath, fromMergeBase, fromHead))
+  ) {
+    fromMergeBase = null;
   }
   if (!fromMergeBase) {
     fromMergeBase = await mergeBaseOf(
@@ -207,7 +223,7 @@ async function resolveRange(
     if (!fromMergeBase) {
       throw new ReviewWorkspaceError("the reviewed commit shares no history with the base", 409);
     }
-    if (mark) await setMarkMergeBase(db, mark.id, fromMergeBase);
+    await setMarkMergeBase(db, mark.id, fromMergeBase);
   }
   return {
     range: {
@@ -246,6 +262,14 @@ function sinceView(ready: ReadyPr, range: SinceRange, entry: SinceEntry): Promis
   );
 }
 
+function sinceCommits(ready: ReadyPr, range: SinceRange): Promise<SinceCommits> {
+  return cache.get(
+    `since-commits:${rangeKey(ready.clonePath, range)}`,
+    () => commitsSince(ready.runners, ready.clonePath, range),
+    (c) => (c.commits.length + c.removed.length) * 256,
+  );
+}
+
 const unreadable = (entry: SinceEntry) => entry.binary || overCap(entry.sizes);
 
 export interface SinceReview {
@@ -257,8 +281,8 @@ export interface SinceReview {
   rebased: boolean;
   /** The merge-base moved: a rebase onto, or a merge of, a newer base. */
   baseMoved: boolean;
-  /** The mark this compares from; null when the caller named `from` itself. */
-  mark: ReviewMarkResponse | null;
+  /** The mark this compares from: the last review's, or the one `from` named. */
+  mark: ReviewMarkResponse;
   files: SinceFile[];
   /** More files changed than were counted; the rest list with zero counts. */
   filesTruncated: boolean;
@@ -267,6 +291,8 @@ export interface SinceReview {
   /** Reviewed commits with no counterpart in today's head: dropped or rewritten. */
   removedCommits: ReviewCommit[];
   commitsTruncated: boolean;
+  /** Too many commits to match rebased ones to what was reviewed: each rewritten commit reads as new. */
+  rebaseMatchSkipped: boolean;
 }
 
 /**
@@ -303,11 +329,7 @@ export async function reviewSinceReview(
       tooLarge: !entry.binary && overCap(entry.sizes),
     });
   }
-  const commits = await cache.get(
-    `since-commits:${rangeKey(ready.clonePath, range)}`,
-    () => commitsSince(ready.runners, ready.clonePath, range),
-    (c) => (c.commits.length + c.removed.length) * 256,
-  );
+  const commits = await sinceCommits(ready, range);
   return {
     fromHeadSha: range.fromHead,
     toHeadSha: range.toHead,
@@ -315,12 +337,13 @@ export async function reviewSinceReview(
     toMergeBase: range.toMergeBase,
     rebased: !(await fastForward(ready.runners, ready.clonePath, range)),
     baseMoved: range.fromMergeBase !== range.toMergeBase,
-    mark: mark ? toMarkResponse(mark) : null,
+    mark: toMarkResponse(mark),
     files,
     filesTruncated: entries.filter((e) => !unreadable(e)).length > counted,
     commits: commits.commits,
     removedCommits: commits.removed,
     commitsTruncated: commits.truncated,
+    rebaseMatchSkipped: commits.rebaseMatchSkipped,
   };
 }
 
@@ -347,7 +370,9 @@ export async function reviewSinceReviewFile(
       path: entry.path,
       ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
       status: entry.status,
-      mode: "direct",
+      // Nothing is carried for a file that can't be read: past a base move it
+      // is the reviewed file as it was, upstream lines and all.
+      mode: range.fromMergeBase === range.toMergeBase ? "direct" : "upstream-included",
       original: null,
       modified: null,
       patch: "",
@@ -406,11 +431,7 @@ export async function reviewCommits(
       truncated,
     };
   }
-  const since = await cache.get(
-    `since-commits:${rangeKey(ready.clonePath, range)}`,
-    () => commitsSince(ready.runners, ready.clonePath, range),
-    (c) => (c.commits.length + c.removed.length) * 256,
-  );
+  const since = await sinceCommits(ready, range);
   return {
     ...base,
     fromHeadSha: range.fromHead,

@@ -4,9 +4,9 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { retireGuide } from "../pr/guides.ts";
-import { seenCommitFields } from "../pr/reviewMarks.ts";
+import { type SeenCommits, seenCommitFields, seenMarkInput } from "../pr/reviewMarks.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
-import { markReviewed, seenHead } from "../reviewWorkspaces/reviewMarks.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { createGitHubClient, reviewExternalId } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { githubErrorResponse, missingTokenResponse } from "./errors.ts";
@@ -168,21 +168,12 @@ export function createGithubRoutes(config: Config): Hono {
    */
   const recordSeen = async (
     ref: PrRef,
-    seen: { headSha?: string; baseSha?: string; mergeBaseSha?: string },
+    seen: SeenCommits,
     providerSha: string | null,
     source: "review" | "comment",
   ) => {
-    const headSha = seenHead(seen.headSha, providerSha);
-    if (!headSha) return;
-    // The page's base and merge-base belong to the head it sent, not to GitHub's.
-    const own = headSha === seen.headSha;
-    await markReviewed(db(), config, {
-      ref,
-      headSha,
-      baseSha: own ? seen.baseSha : null,
-      mergeBaseSha: own ? seen.mergeBaseSha : null,
-      source,
-    });
+    const input = seenMarkInput(ref, seen, providerSha, source);
+    if (input) await markReviewed(db(), config, input);
   };
 
   // --- Live GitHub queries (require a token) ---

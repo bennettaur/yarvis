@@ -30,8 +30,8 @@ import {
   reviewWorkspaces,
 } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
-import { redactSecrets } from "../llm/errors.ts";
-import { type ReviewMarkProvider, reviewMarkProvider } from "../pr/reviewMarks.ts";
+import { describeError, redactSecrets } from "../llm/errors.ts";
+import { type ReviewMarkProvider, recentMarkShas, reviewMarkProvider } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
@@ -85,6 +85,7 @@ import {
   whenIdle,
 } from "./progress.ts";
 import { restoreGitState, snapshotGitState } from "./setupGuard.ts";
+import { ensureCommit, pinReviewedCommit, unpinReviewedCommits } from "./sinceReview.ts";
 
 /** A refusal with the HTTP status the route should answer with. */
 export class ReviewWorkspaceError extends Error {
@@ -478,6 +479,70 @@ export async function getReviewPr(
  */
 export const withCloneLock = createKeyedLock();
 
+/** How many of a PR's latest reviewed commits a sync keeps pinned. */
+const PINNED_REVIEWS = 20;
+
+/**
+ * Makes sure a reviewed commit is in the clone (fetching it outside the lock,
+ * since that is a network call) and pins it under the lock. False when the
+ * remote doesn't have it either.
+ */
+export async function keepReviewedCommit(
+  runners: ReviewGit,
+  clonePath: string,
+  ref: PrRef,
+  sha: string,
+): Promise<boolean> {
+  if (!(await ensureCommit(runners, clonePath, sha))) return false;
+  return withCloneLock(clonePath, () => pinReviewedCommit(runners, clonePath, refDomKey(ref), sha));
+}
+
+async function keepReviewedCommits(
+  db: Db,
+  runners: ReviewGit,
+  clonePath: string,
+  ref: PrRef,
+): Promise<void> {
+  for (const sha of await recentMarkShas(db, ref, PINNED_REVIEWS)) {
+    await keepReviewedCommit(runners, clonePath, ref, sha);
+  }
+}
+
+/**
+ * Drops the reviewed-commit refs of a PR leaving review, unless another active
+ * workspace still has it. Never fails the removal: refs left behind cost a
+ * little disk, nothing else.
+ */
+async function releaseReviewedCommits(
+  db: Db,
+  config: Config,
+  pr: ReviewWorkspacePr,
+  deps: ReviewDeps,
+): Promise<void> {
+  try {
+    const clonePath = reviewClonePath(config, pr.ref);
+    if (!existsSync(join(clonePath, ".git"))) return;
+    const [stillReviewed] = await db
+      .select({ id: reviewWorkspacePrs.id })
+      .from(reviewWorkspacePrs)
+      .innerJoin(reviewWorkspaces, eq(reviewWorkspaces.id, reviewWorkspacePrs.workspaceId))
+      .where(
+        and(
+          eq(reviewWorkspacePrs.refKey, pr.refKey),
+          ne(reviewWorkspacePrs.id, pr.id),
+          eq(reviewWorkspaces.status, "active"),
+        ),
+      )
+      .limit(1);
+    if (stillReviewed) return;
+    await withCloneLock(clonePath, () =>
+      unpinReviewedCommits(deps.git({}), clonePath, refDomKey(pr.ref)),
+    );
+  } catch (e) {
+    console.warn("[review-workspaces] could not release the reviewed commits:", describeError(e));
+  }
+}
+
 /** Where a PR's head commit is fetched from. */
 export function headSourceFor(ref: PrRef, meta: Pick<PrMeta, "headRef" | "fromFork">): HeadSource {
   if (ref.provider === "github") return { kind: "ref", ref: `refs/pull/${ref.number}/head` };
@@ -591,6 +656,14 @@ async function syncPr(
     log(`Could not prefetch the changed files: ${safeMessage(e)}`);
   }
 
+  // Where the reviews were is kept now rather than when "since last review" is
+  // read, so that read neither fetches nor writes a ref.
+  try {
+    await keepReviewedCommits(db, runners, clonePath, pr.ref);
+  } catch (e) {
+    log(`Could not keep the reviewed commits: ${safeMessage(e)}`);
+  }
+
   let checkoutError: string | null = null;
   try {
     await withCloneLock(clonePath, () =>
@@ -693,6 +766,7 @@ export async function removeReviewPr(
     throw new ReviewWorkspaceError("this pull request is still being updated", 409);
   }
   await removePrWorktree(config, pr, deps);
+  await releaseReviewedCommits(db, config, pr, deps);
   await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
   forgetRuns(pr.id);
 }
@@ -729,6 +803,7 @@ export async function archiveReviewWorkspace(
         await whenIdle(pr.id);
         forgetRuns(pr.id);
         await removePrWorktree(config, pr, deps);
+        await releaseReviewedCommits(db, config, pr, deps);
       } catch (e) {
         failures.push(safeMessage(e));
       }
@@ -792,7 +867,7 @@ export async function requireReadyPr(
   return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
 }
 
-export function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
+function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }

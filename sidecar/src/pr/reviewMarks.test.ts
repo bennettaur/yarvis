@@ -8,7 +8,9 @@ import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
 import {
+  createProviderMarkSync,
   latestReviewMark,
+  providerComparisons,
   providerMarks,
   type ReviewMarkProvider,
   recordReviewMark,
@@ -56,6 +58,7 @@ function stubFetch(routes: [string, unknown][]) {
 beforeEach(async () => {
   await sql`TRUNCATE pr_review_marks, events, pr_guides RESTART IDENTITY CASCADE`;
   providerMarks.forget();
+  providerComparisons.forget();
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -174,6 +177,42 @@ describe("provider-derived marks", () => {
     expect(await latestReviewMark(db, gh)).toMatchObject({ headSha: sha("3"), source: "manual" });
   });
 
+  it("a later review of the same commit moves its mark's date forward, never back", async () => {
+    await storeProviderMarks(db, gh, [
+      { headSha: sha("1"), submittedAt: "2026-01-01T00:00:00Z" },
+      { headSha: sha("1"), submittedAt: "2026-01-05T00:00:00Z" },
+    ]);
+    await storeProviderMarks(db, gh, [{ headSha: sha("1"), submittedAt: "2026-01-03T00:00:00Z" }]);
+    expect((await latestReviewMark(db, gh))?.createdAt.toISOString()).toBe(
+      "2026-01-05T00:00:00.000Z",
+    );
+    await storeProviderMarks(db, gh, [{ headSha: sha("1"), submittedAt: "2026-01-09T00:00:00Z" }]);
+    expect((await latestReviewMark(db, gh))?.createdAt.toISOString()).toBe(
+      "2026-01-09T00:00:00.000Z",
+    );
+    expect((await sql`select count(*)::int as n from pr_review_marks`)[0]?.n).toBe(1);
+  });
+
+  it("a failed read holds off the next for the failure TTL rather than retrying at once", async () => {
+    let asked = 0;
+    const failing: ReviewMarkProvider = {
+      viewerReviews: async () => {
+        asked++;
+        throw new Error("rate limited");
+      },
+      commitsSince: async () => ({ exists: true, commits: 0, rewritten: false }),
+      headSha: async () => null,
+    };
+    const held = createProviderMarkSync(60_000, 60_000);
+    await held.sync(db, gh, failing);
+    await held.sync(db, gh, failing);
+    expect(asked).toBe(1);
+    const retried = createProviderMarkSync(60_000, 0);
+    await retried.sync(db, gh, failing);
+    await retried.sync(db, gh, failing);
+    expect(asked).toBe(3);
+  });
+
   it("GitHub: the viewer's submitted reviews and their commits, drafts left out", async () => {
     stubFetch([
       [
@@ -268,6 +307,29 @@ describe("provider-derived marks", () => {
       { headSha: sha("1"), mergeBaseSha: sha("b"), submittedAt: "2026-01-02T12:00:00Z" },
     ]);
   });
+
+  it("Azure: a full commit page without the commit is an unknown count, not a rewrite", async () => {
+    const page = Array.from({ length: 500 }, (_, i) => ({
+      commitId: i.toString(16).padStart(40, "0"),
+    }));
+    stubFetch([["/commits?", { value: page }]]);
+    const client = new AzureDevOpsClient(
+      "pat-page",
+      "https://dev.azure.com/acme",
+      globalThis.fetch,
+    );
+    const ref = { project: "Shop", repo: "web", prId: 1 };
+    expect(await client.commitsSince(ref, sha("e"))).toEqual({
+      exists: true,
+      commits: null,
+      rewritten: false,
+    });
+    expect(await client.commitsSince(ref, page[3]?.commitId as string)).toEqual({
+      exists: true,
+      commits: 3,
+      rewritten: false,
+    });
+  });
 });
 
 describe("GET /review-mark", () => {
@@ -314,5 +376,18 @@ describe("GET /review-mark", () => {
 
   it("refuses a head that isn't a sha", async () => {
     expect((await query("&head=main")).status).toBe(400);
+  });
+
+  it("asks the provider how far the PR moved at most once a TTL, failures included", async () => {
+    let compared = 0;
+    provider.commitsSince = async () => {
+      compared++;
+      throw new Error("rate limited");
+    };
+    for (let i = 0; i < 3; i++) {
+      const res = await query(`&head=${sha("2")}`);
+      expect(await res.json()).toMatchObject({ headSha: sha("2"), since: null });
+    }
+    expect(compared).toBe(1);
   });
 });

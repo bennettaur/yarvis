@@ -915,7 +915,7 @@ const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      state merged mergeable mergeStateStatus
+      state merged mergeable mergeStateStatus headRefOid
       commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
         __typename
         ... on CheckRun { status conclusion }
@@ -1319,6 +1319,7 @@ export class GitHubClient {
           merged: Boolean(pr.merged),
           mergeable: restMergeable(pr.mergeable),
           mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
+          headSha: pr.headRefOid ?? null,
           checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
         };
       },
@@ -1345,6 +1346,7 @@ export class GitHubClient {
       merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
+      headSha: pr.head?.sha ?? null,
       checks: sumCheckSummaries(
         summarizeChecks(checks.check_runs ?? []),
         summarizeCommitStatuses(combined?.statuses ?? []),

@@ -23,6 +23,7 @@ import { type PrModelFeature, resolvePrModel } from "./models.ts";
 import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
 import {
   latestReviewMark,
+  providerComparisons,
   providerMarks,
   type ReviewMarkProvider,
   reviewMarkProvider,
@@ -472,16 +473,32 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     const mark = await latestReviewMark(db(), ref);
     if (!mark) return c.json({ mark: null, headSha: head ?? null, since: null });
 
-    let headSha = head ?? null;
-    let since: CommitsSince | null = null;
-    try {
-      headSha ??= provider ? await provider.headSha(ref) : null;
-      if (headSha === mark.headSha) since = { exists: true, commits: 0, rewritten: false };
-      else if (headSha && provider) since = await provider.commitsSince(ref, mark.headSha, headSha);
-    } catch (e) {
-      console.warn("[pr] could not compare against the last review:", describeError(e));
+    const atMark = (sha: string | null): CommitsSince | null =>
+      sha === mark.headSha ? { exists: true, commits: 0, rewritten: false } : null;
+    if (head === mark.headSha || !provider) {
+      return c.json({
+        mark: toMarkResponse(mark),
+        headSha: head ?? null,
+        since: atMark(head ?? null),
+      });
     }
-    return c.json({ mark: toMarkResponse(mark), headSha, since });
+    // Throttled like the sync above: the page asks again on every poll.
+    const compared = await providerComparisons.get(
+      `${refKey(ref)}:${mark.headSha}:${head ?? "-"}`,
+      async () => {
+        const headSha = head ?? (await provider.headSha(ref));
+        const since =
+          atMark(headSha) ??
+          (headSha ? await provider.commitsSince(ref, mark.headSha, headSha) : null);
+        return { headSha, since };
+      },
+      "could not compare against the last review",
+    );
+    return c.json({
+      mark: toMarkResponse(mark),
+      headSha: compared?.headSha ?? head ?? null,
+      since: compared?.since ?? null,
+    });
   });
 
   /**

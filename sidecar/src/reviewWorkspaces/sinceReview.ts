@@ -31,6 +31,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describeError } from "../llm/errors.ts";
 import { COMMIT_SHA_PATTERN } from "../pr/types.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { git, NETWORK_TIMEOUT_MS } from "../workspaces/git.ts";
@@ -41,11 +42,10 @@ import {
   fetchBlobs,
   parseTreeEntries,
   type ReviewGit,
-  readFileAt,
 } from "./git.ts";
 
 /** Where a reviewed commit is kept alive in the review clone. */
-export const REVIEWED_REF_PREFIX = "refs/yarvis/reviewed";
+const REVIEWED_REF_PREFIX = "refs/yarvis/reviewed";
 
 /** Commits listed per pull request; a PR with more is cut off and says so. */
 export const MAX_COMMITS = 250;
@@ -59,6 +59,19 @@ export const MAX_COUNTED_FILES = 300;
  * download and every rewritten commit simply counts as new.
  */
 const MAX_PATCH_ID_BLOBS = 5000;
+
+/**
+ * Commits either range may have for rebased commits to be matched: the match
+ * reads every one's full patch (`git log -p`). Past this, every rewritten
+ * commit counts as new and the answer says matching was skipped.
+ */
+const MAX_PATCH_ID_COMMITS = 500;
+
+/**
+ * Commits the "which are new" sets read. Far past {@link MAX_COMMITS}, so it
+ * only bounds a pathological range (a head that shares no recent history).
+ */
+const MAX_REV_LIST = 10_000;
 
 /** The tree of an empty repository, the parent a root commit is diffed against. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -83,11 +96,29 @@ async function hasCommit(runners: ReviewGit, clonePath: string, sha: string): Pr
 }
 
 /**
- * Makes sure `sha` is in the review clone and stays there: fetched by id when
- * the clone doesn't have it (a review made on the provider's site, of a commit
- * a force-push has since dropped), then held by a ref of its own so neither the
- * next refresh nor `git gc` can lose it. False when the remote doesn't have the
- * commit either. The caller holds the clone lock: this writes a ref.
+ * Makes sure `sha` is in the review clone, fetching it by id when it isn't (a
+ * review made on the provider's site, of a commit a force-push has since
+ * dropped). False when the remote doesn't have it either. Writes no ref, so it
+ * needs no clone lock: a read can call it without queueing behind a refresh.
+ */
+export async function ensureCommit(
+  runners: ReviewGit,
+  clonePath: string,
+  sha: string,
+): Promise<boolean> {
+  if (!COMMIT_SHA_PATTERN.test(sha)) return false;
+  if (await hasCommit(runners, clonePath, sha)) return true;
+  const fetched = await runners.network(
+    ["fetch", "--no-tags", "--no-write-fetch-head", "--recurse-submodules=no", "origin", sha],
+    { cwd: clonePath, timeoutMs: NETWORK_TIMEOUT_MS },
+  );
+  return fetched.exitCode === 0 && (await hasCommit(runners, clonePath, sha));
+}
+
+/**
+ * Holds `sha`, already in the clone (see {@link ensureCommit}), with a ref of
+ * its own so neither the next refresh nor `git gc` can lose it. False when the
+ * clone doesn't have it. The caller holds the clone lock: this writes a ref.
  */
 export async function pinReviewedCommit(
   runners: ReviewGit,
@@ -95,16 +126,28 @@ export async function pinReviewedCommit(
   prKey: string,
   sha: string,
 ): Promise<boolean> {
-  if (!COMMIT_SHA_PATTERN.test(sha)) return false;
-  if (!(await hasCommit(runners, clonePath, sha))) {
-    const fetched = await runners.network(
-      ["fetch", "--no-tags", "--no-write-fetch-head", "--recurse-submodules=no", "origin", sha],
-      { cwd: clonePath, timeoutMs: NETWORK_TIMEOUT_MS },
-    );
-    if (fetched.exitCode !== 0 || !(await hasCommit(runners, clonePath, sha))) return false;
-  }
+  if (!COMMIT_SHA_PATTERN.test(sha) || !(await hasCommit(runners, clonePath, sha))) return false;
   await git(runners.local, ["update-ref", refForReviewed(prKey, sha), sha], clonePath);
   return true;
+}
+
+/** Drops every reviewed-commit ref one PR holds. The caller holds the clone lock. */
+export async function unpinReviewedCommits(
+  runners: ReviewGit,
+  clonePath: string,
+  prKey: string,
+): Promise<void> {
+  const refs = await git(
+    runners.local,
+    ["for-each-ref", "--format=%(refname)", `${REVIEWED_REF_PREFIX}/${prKey}/`],
+    clonePath,
+  );
+  const deletes = refs
+    .split("\n")
+    .filter(Boolean)
+    .map((ref) => `delete ${ref}\n`)
+    .join("");
+  if (deletes) await git(runners.local, ["update-ref", "--stdin"], clonePath, undefined, deletes);
 }
 
 export async function mergeBaseOf(
@@ -118,7 +161,7 @@ export async function mergeBaseOf(
   return res.exitCode === 0 && sha ? sha : null;
 }
 
-async function isAncestor(
+export async function isAncestor(
   runners: ReviewGit,
   clonePath: string,
   ancestor: string,
@@ -180,7 +223,7 @@ export async function listCommits(
   return { commits: commits.slice(0, max), truncated: commits.length > max };
 }
 
-/** The commits in `head` that `exclude` doesn't reach. */
+/** The commits in `head` that `exclude` doesn't reach, newest first, at most {@link MAX_REV_LIST}. */
 async function revList(
   runners: ReviewGit,
   clonePath: string,
@@ -189,29 +232,82 @@ async function revList(
 ): Promise<Set<string>> {
   const out = await git(
     runners.local,
-    ["rev-list", head, ...exclude.map((sha) => `^${sha}`), "--"],
+    ["rev-list", `--max-count=${MAX_REV_LIST}`, head, ...exclude.map((sha) => `^${sha}`), "--"],
     clonePath,
   );
   return new Set(out.split("\n").filter(Boolean));
 }
 
-/** Downloads every blob the commits of `ranges` introduce, in one batch, unless there are too many. */
+/** How many commits `from..to` has, counting no further than `cap + 1`. */
+async function countCommits(
+  runners: ReviewGit,
+  clonePath: string,
+  from: string,
+  to: string,
+  cap: number,
+): Promise<number> {
+  const out = await git(
+    runners.local,
+    ["rev-list", "--count", `--max-count=${cap + 1}`, `${from}..${to}`, "--"],
+    clonePath,
+  );
+  return Number.parseInt(out.trim(), 10) || 0;
+}
+
+const NULL_OID = /^0+$/;
+const GITLINK_MODE = "160000";
+
+/**
+ * Downloads every blob the commits of `ranges` diff — both sides of each of
+ * their changes, so the first commit's parent's versions too — in one batch,
+ * unless more than `maxBlobs` are missing. `log --raw --no-renames` names
+ * them from the trees alone, without reading a blob.
+ */
 async function prefetchRanges(
   runners: ReviewGit,
   clonePath: string,
   ranges: [string, string][],
+  maxBlobs: number,
 ): Promise<boolean> {
-  const missing = new Set<string>();
+  const wanted = new Set<string>();
   for (const [from, to] of ranges) {
     const out = await git(
       runners.local,
-      ["rev-list", "--objects", "--missing=print", `${from}..${to}`, "--"],
+      [
+        "log",
+        "--raw",
+        "--no-abbrev",
+        "--no-renames",
+        "--no-merges",
+        "--format=",
+        `--max-count=${MAX_PATCH_ID_COMMITS}`,
+        `${from}..${to}`,
+        "--",
+      ],
       clonePath,
     );
-    for (const line of out.split("\n")) if (line.startsWith("?")) missing.add(line.slice(1).trim());
-    if (missing.size > MAX_PATCH_ID_BLOBS) return false;
+    for (const line of out.split("\n")) {
+      // `:<old mode> <new mode> <old oid> <new oid> <status>\t<path>`
+      if (!line.startsWith(":")) continue;
+      const [oldMode, newMode, oldOid, newOid] = line.slice(1).split(" ");
+      if (oldOid && oldMode !== GITLINK_MODE && !NULL_OID.test(oldOid)) wanted.add(oldOid);
+      if (newOid && newMode !== GITLINK_MODE && !NULL_OID.test(newOid)) wanted.add(newOid);
+    }
   }
-  await fetchBlobs(runners, clonePath, [...missing]);
+  if (wanted.size === 0) return true;
+  const checked = await git(
+    runners.local,
+    ["cat-file", "--batch-check=%(objectname)"],
+    clonePath,
+    undefined,
+    `${[...wanted].join("\n")}\n`,
+  );
+  const missing = checked
+    .split("\n")
+    .filter((line) => line.endsWith(" missing"))
+    .map((line) => line.slice(0, -" missing".length));
+  if (missing.length > maxBlobs) return false;
+  await fetchBlobs(runners, clonePath, missing);
   return true;
 }
 
@@ -237,17 +333,30 @@ async function patchIds(
   return ids;
 }
 
+export interface SinceCommits {
+  commits: ReviewCommit[];
+  removed: ReviewCommit[];
+  truncated: boolean;
+  /** Rebased commits weren't matched to the reviewed ones (too many to compare), so each reads as new. */
+  rebaseMatchSkipped: boolean;
+}
+
 /**
  * The PR's commits now, each flagged with whether it is new since `from` —
  * plus the reviewed commits that no longer have a counterpart (dropped or
  * rewritten by a force-push). A commit re-created by a rebase is matched to
- * the reviewed one with the same patch id and isn't new.
+ * the reviewed one with the same patch id and isn't new — unless either range
+ * is too big to match (`rebaseMatchSkipped`), when it reads as new. `limits`
+ * replaces the caps, for tests.
  */
 export async function commitsSince(
   runners: ReviewGit,
   clonePath: string,
   range: SinceRange,
-): Promise<{ commits: ReviewCommit[]; removed: ReviewCommit[]; truncated: boolean }> {
+  limits: { maxCommits?: number; maxBlobs?: number } = {},
+): Promise<SinceCommits> {
+  const maxCommits = limits.maxCommits ?? MAX_PATCH_ID_COMMITS;
+  const maxBlobs = limits.maxBlobs ?? MAX_PATCH_ID_BLOBS;
   const { commits, truncated } = await listCommits(
     runners,
     clonePath,
@@ -267,22 +376,32 @@ export async function commitsSince(
   // computing when reviewed commits have gone missing from the head.
   let oldByPatchId = new Map<string, string>();
   let newPatchIds = new Map<string, string>();
+  let rebaseMatchSkipped = false;
   if (gone.size > 0 && unseen.size > 0) {
     try {
-      const fetched = await prefetchRanges(runners, clonePath, [
+      const ranges: [string, string][] = [
         [range.fromMergeBase, range.fromHead],
         [range.toMergeBase, range.toHead],
-      ]);
+      ];
+      const sizes = await Promise.all(
+        ranges.map(([from, to]) => countCommits(runners, clonePath, from, to, maxCommits)),
+      );
+      const fetched =
+        sizes.every((n) => n <= maxCommits) &&
+        (await prefetchRanges(runners, clonePath, ranges, maxBlobs));
       if (fetched) {
         const old = await patchIds(runners, clonePath, range.fromMergeBase, range.fromHead);
         oldByPatchId = new Map(
           [...old].filter(([sha]) => gone.has(sha)).map(([sha, id]) => [id, sha]),
         );
         newPatchIds = await patchIds(runners, clonePath, range.toMergeBase, range.toHead);
+      } else {
+        rebaseMatchSkipped = true;
       }
     } catch (e) {
       // Equivalence is a refinement: without it a rebased commit just reads as new.
-      console.warn("[review-workspaces] could not match rebased commits:", e);
+      console.warn("[review-workspaces] could not match rebased commits:", describeError(e));
+      rebaseMatchSkipped = true;
     }
   }
 
@@ -304,7 +423,7 @@ export async function commitsSince(
         ).commits.flatMap((c) =>
           gone.has(c.sha) && !matched.has(c.sha) ? [{ ...c, isNew: false }] : [],
         );
-  return { commits: flagged, removed, truncated };
+  return { commits: flagged, removed, truncated, rebaseMatchSkipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -350,17 +469,31 @@ async function oidsAt(
 }
 
 /**
+ * A unified diff's lines, each saying whether it is inside a hunk: from an
+ * `@@` line until the next file's `diff --git`. Only outside one are `---` and
+ * `+++` file headers; inside, they are a removed `-- comment` or an added `++i`.
+ */
+function* diffLines(patch: string): Generator<{ line: string; inHunk: boolean }> {
+  let inHunk = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("diff --git ")) inHunk = false;
+    else if (line.startsWith("@@")) inHunk = true;
+    yield { line, inHunk };
+  }
+}
+
+/**
  * A patch's change with its positions taken out: the removed and added lines
  * of each hunk, in order, and the lines that say a file is binary or changed
  * mode. Two of these are equal when the same edit was made, wherever it landed.
  */
 export function changeSignature(patch: string): string {
   const kept: string[] = [];
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
+  for (const { line, inHunk } of diffLines(patch)) {
     if (line.startsWith("@@")) kept.push("@@");
-    else if (line.startsWith("+") || line.startsWith("-")) kept.push(line);
-    else if (
+    else if (inHunk) {
+      if (line.startsWith("+") || line.startsWith("-")) kept.push(line);
+    } else if (
       line.startsWith("Binary files") ||
       line.startsWith("new file mode") ||
       line.startsWith("deleted file mode") ||
@@ -439,35 +572,70 @@ export async function filesSince(
   ]);
   const beforeByPath = new Map(before.map((file) => [file.path, file]));
   const nowByPath = new Map(now.map((file) => [file.path, file]));
-  const both = [...nowByPath.keys()].filter((p) => beforeByPath.has(p));
-  const basePaths = [
-    ...new Set(both.flatMap((p) => [p, beforeByPath.get(p)?.oldPath, nowByPath.get(p)?.oldPath])),
-  ].filter((p): p is string => !!p);
+
+  // The same file then and now: by path, or across a rename one side has and
+  // the other doesn't (the PR renamed it since, or dropped its rename), so the
+  // move doesn't read as one file reverted and another newly changed.
+  const pairs: [was: ChangedFileWithSizes, is: ChangedFileWithSizes][] = [];
+  const pairedBefore = new Set<string>();
+  const pairedNow = new Set<string>();
+  const pair = (was: ChangedFileWithSizes | undefined, is: ChangedFileWithSizes) => {
+    if (!was || pairedBefore.has(was.path) || pairedNow.has(is.path)) return;
+    pairs.push([was, is]);
+    pairedBefore.add(was.path);
+    pairedNow.add(is.path);
+  };
+  for (const is of now) pair(beforeByPath.get(is.path), is);
+  const unpairedBefore = before.filter((was) => !pairedBefore.has(was.path));
+  for (const is of now) {
+    if (pairedNow.has(is.path)) continue;
+    pair(
+      unpairedBefore.find(
+        (was) =>
+          (is.oldPath && was.path === is.oldPath) || (was.oldPath && was.oldPath === is.path),
+      ),
+      is,
+    );
+  }
 
   const sameBase = range.fromMergeBase === range.toMergeBase;
+  const baseOf = (file: ChangedFileWithSizes) => file.oldPath ?? file.path;
   const [fromHeadOids, toHeadOids, fromBaseOids, toBaseOids] = await Promise.all([
-    oidsAt(runners, clonePath, range.fromHead, both),
-    oidsAt(runners, clonePath, range.toHead, both),
+    oidsAt(
+      runners,
+      clonePath,
+      range.fromHead,
+      pairs.map(([was]) => was.path),
+    ),
+    oidsAt(
+      runners,
+      clonePath,
+      range.toHead,
+      pairs.map(([, is]) => is.path),
+    ),
     sameBase
       ? Promise.resolve(new Map())
-      : oidsAt(runners, clonePath, range.fromMergeBase, basePaths),
+      : oidsAt(runners, clonePath, range.fromMergeBase, [
+          ...new Set(pairs.map(([was]) => baseOf(was))),
+        ]),
     sameBase
       ? Promise.resolve(new Map())
-      : oidsAt(runners, clonePath, range.toMergeBase, basePaths),
+      : oidsAt(runners, clonePath, range.toMergeBase, [
+          ...new Set(pairs.map(([, is]) => baseOf(is))),
+        ]),
   ]);
 
   const out: Awaited<ReturnType<typeof filesSince>> = [];
   const sizesOf = (...files: (ChangedFileWithSizes | undefined)[]) =>
     files.flatMap((f) => (f ? [f.oldSize, f.newSize] : []));
 
-  for (const path of both) {
-    const was = beforeByPath.get(path) as ChangedFileWithSizes;
-    const is = nowByPath.get(path) as ChangedFileWithSizes;
-    const headSame = fromHeadOids.get(path) === toHeadOids.get(path);
-    const basePath = is.oldPath ?? was.oldPath ?? path;
-    const baseSame = sameBase || fromBaseOids.get(basePath) === toBaseOids.get(basePath);
+  for (const [was, is] of pairs) {
+    const moved = was.path !== is.path || was.oldPath !== is.oldPath;
+    const headSame = fromHeadOids.get(was.path) === toHeadOids.get(is.path);
+    const baseSame = sameBase || fromBaseOids.get(baseOf(was)) === toBaseOids.get(baseOf(is));
     let differs: boolean;
-    if (baseSame) differs = !headSame || was.oldPath !== is.oldPath;
+    if (moved) differs = true;
+    else if (baseSame) differs = !headSame;
     else {
       const [a, b] = await Promise.all([
         zeroContextPatch(
@@ -475,30 +643,30 @@ export async function filesSince(
           clonePath,
           range.fromMergeBase,
           range.fromHead,
-          path,
+          was.path,
           was.oldPath,
         ),
-        zeroContextPatch(runners, clonePath, range.toMergeBase, range.toHead, path, is.oldPath),
+        zeroContextPatch(runners, clonePath, range.toMergeBase, range.toHead, is.path, is.oldPath),
       ]);
       differs = changeSignature(a) !== changeSignature(b);
     }
     if (!differs) continue;
     out.push({
-      path,
+      path: is.path,
       ...(is.oldPath ? { oldPath: is.oldPath } : {}),
       status: "modified",
       paths: {
-        reviewedBase: was.oldPath ?? path,
-        reviewedHead: path,
-        currentBase: is.oldPath ?? path,
-        currentHead: path,
+        reviewedBase: baseOf(was),
+        reviewedHead: was.path,
+        currentBase: baseOf(is),
+        currentHead: is.path,
       },
       sizes: sizesOf(was, is),
       binary: was.binary || is.binary,
     });
   }
   for (const [path, file] of nowByPath) {
-    if (beforeByPath.has(path)) continue;
+    if (pairedNow.has(path)) continue;
     // Untouched by the PR when reviewed: under whatever name the base had for it.
     const before = file.oldPath ?? path;
     out.push({
@@ -511,7 +679,7 @@ export async function filesSince(
     });
   }
   for (const [path, file] of beforeByPath) {
-    if (nowByPath.has(path)) continue;
+    if (pairedBefore.has(path)) continue;
     // Left alone now: today's head has it under the base's name.
     const base = file.oldPath ?? path;
     out.push({
@@ -619,8 +787,8 @@ async function carryOnto(
 export function countChanges(patch: string): { additions: number; deletions: number } {
   let additions = 0;
   let deletions = 0;
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
+  for (const { line, inHunk } of diffLines(patch)) {
+    if (!inHunk) continue;
     if (line.startsWith("+")) additions++;
     else if (line.startsWith("-")) deletions++;
   }
@@ -723,9 +891,4 @@ export async function fastForward(
 /** The commit a commit is diffed against: its first parent, or the empty tree for a root. */
 export function parentOf(commit: Pick<ReviewCommit, "parents">): string {
   return commit.parents[0] ?? EMPTY_TREE;
-}
-
-/** Reads a file at a commit for {@link fileSince}, or null when the path isn't there. */
-export function reader(runners: ReviewGit, clonePath: string): Read {
-  return (sha, path) => readFileAt(runners, clonePath, sha, path);
 }

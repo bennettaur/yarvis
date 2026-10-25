@@ -56,6 +56,9 @@ const COMMENT_TYPE_TEXT = 1;
 const THREAD_STATUS_ACTIVE = 1;
 const THREAD_STATUS_FIXED = 2;
 
+/** Commits `commitsSince` reads of a PR's list, newest first. */
+const COMMITS_PAGE = 500;
+
 // The PR's base/head commit pair is invariant for the life of an iteration, but
 // every per-file diff needs it. Cache it briefly so opening an N-file PR doesn't
 // re-fetch the PR once per file. Module-level because the client is constructed
@@ -489,7 +492,10 @@ export class AzureDevOpsClient {
    * vote is matched to the push it followed: a vote leaves a `VoteUpdate`
    * system thread stamped with the voter and the time, and each iteration
    * records when it was pushed and at which head. A vote reset to "no vote"
-   * isn't a review and is skipped.
+   * isn't a review and is skipped. A vote cast from a page loaded before the
+   * latest push is still matched to that push, so it can claim a commit the
+   * viewer never saw; the marks Yarvis records itself carry the page's head
+   * and don't have this problem.
    */
   async viewerVotes(ref: AzureRef): Promise<ViewerReview[]> {
     const [viewerId, threads, iterations] = await Promise.all([
@@ -533,14 +539,18 @@ export class AzureDevOpsClient {
   /**
    * How far the PR has moved on from `sha`. The PR's own commit list (newest
    * first) answers while `sha` is still in it; once a force-push has dropped
-   * it, only whether the repository still has the commit can be said.
+   * it, only whether the repository still has the commit can be said. A full
+   * page that doesn't have it says nothing either way — `sha` may just be
+   * older than the page — so that is an unknown count, not a rewrite.
    */
   async commitsSince(ref: AzureRef, sha: string): Promise<CommitsSince> {
     const list = await this.get<AzureList<{ commitId?: string }>>(
-      `${this.repoBase(ref)}/pullRequests/${ref.prId}/commits?$top=500`,
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/commits?$top=${COMMITS_PAGE}`,
     );
-    const index = (list.value ?? []).findIndex((c) => c.commitId === sha);
+    const commits = list.value ?? [];
+    const index = commits.findIndex((c) => c.commitId === sha);
     if (index >= 0) return { exists: true, commits: index, rewritten: false };
+    if (commits.length >= COMMITS_PAGE) return { exists: true, commits: null, rewritten: false };
     const res = await this.fetchImpl(
       this.withVersion(`${this.repoBase(ref)}/commits/${encodeURIComponent(sha)}`, API_VERSION),
       { headers: { Authorization: this.authHeader(), Accept: "application/json" } },
@@ -558,6 +568,7 @@ export class AzureDevOpsClient {
       merged: pr.status === "completed",
       mergeable: merge.mergeable,
       mergeableState: pr.mergeStatus ?? "unknown",
+      headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       checks: { total: 0, success: 0, failure: 0, pending: 0 },
     };
   }

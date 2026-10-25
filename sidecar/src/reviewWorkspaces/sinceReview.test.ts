@@ -15,12 +15,14 @@ import {
   changeSignature,
   commitsSince,
   countChanges,
+  ensureCommit,
   fastForward,
   fileSince,
   filesSince,
   pinReviewedCommit,
   refForReviewed,
   type SinceRange,
+  unpinReviewedCommits,
 } from "./sinceReview.ts";
 import { sh } from "./testRepo.ts";
 
@@ -129,6 +131,18 @@ describe("changeSignature", () => {
     expect(changeSignature(at(3, "new"))).toBe(changeSignature(at(13, "new")));
     expect(changeSignature(at(3, "new"))).not.toBe(changeSignature(at(3, "other")));
   });
+
+  it("keeps body lines that look like file headers", () => {
+    const patch = (body: string) =>
+      `diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n${body}\n`;
+    // A removed SQL comment, a removed YAML document start, an added `++i;`.
+    for (const body of ["--- old comment\n+x", "----\n+x", "-a\n+++i;"]) {
+      expect(changeSignature(patch(body))).not.toBe(changeSignature(patch("-a\n+x")));
+    }
+    // The next file's headers are headers again.
+    const two = `${patch("-- note")}diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-p\n+q\n`;
+    expect(changeSignature(two)).toBe("@@\n-- note\n@@\n-p\n+q");
+  });
 });
 
 describe("countChanges", () => {
@@ -137,6 +151,12 @@ describe("countChanges", () => {
       additions: 2,
       deletions: 1,
     });
+  });
+
+  it("counts body lines that start like headers", () => {
+    // Removes the SQL comment `-- old` and the YAML `---`; adds `++i;` and `-- new`.
+    const patch = "--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1,2 @@\n--- old\n----\n+++i;\n+-- new\n";
+    expect(countChanges(patch)).toEqual({ additions: 2, deletions: 2 });
   });
 });
 
@@ -281,10 +301,155 @@ describe("since review", () => {
     expect(x.patch).toContain("-export const x = 99;");
     expect(x.patch).toContain("+export const x = 1;");
   });
+
+  it("when upstream rewrote the PR's lines, or added the PR's file, the reviewed file shows as it was", async () => {
+    const f = fixture();
+    f.commit(
+      "feature",
+      { "src/a.ts": text(withLine(5, "pr")), "src/new.ts": "pr's new file\n" },
+      "pr work",
+    );
+    const reviewed = await f.sync();
+    // Upstream edits the PR's very line, and adds a file of the same name.
+    f.commit(
+      "main",
+      { "src/a.ts": text(withLine(5, "upstream")), "src/new.ts": "upstream's file\n" },
+      "upstream",
+    );
+    f.run("checkout", "-q", "feature");
+    f.run("reset", "-q", "--hard", "main");
+    f.commit(
+      "feature",
+      { "src/a.ts": text(withLine(5, "pr again")), "src/new.ts": "pr's file, again\n" },
+      "pr work, redone",
+    );
+    const now = await f.sync();
+
+    const result = await since(f, rangeOf(reviewed, now));
+    // A merge-file conflict: upstream and the PR both changed line 5.
+    const a = await result.view("src/a.ts");
+    expect(a.mode).toBe("upstream-included");
+    expect(a.original?.content).toBe(text(withLine(5, "pr")));
+    expect(a.patch).toContain("-pr\n");
+    expect(a.patch).toContain("+pr again");
+    // No file at the reviewed merge-base to carry from.
+    const added = await result.view("src/new.ts");
+    expect(added.mode).toBe("upstream-included");
+    expect(added.original?.content).toBe("pr's new file\n");
+  });
+
+  it("a file the PR newly touches after a base move shows only the PR's edit", async () => {
+    const f = fixture();
+    f.commit("feature", { "src/a.ts": text(withLine(5, "pr")) }, "pr work");
+    const reviewed = await f.sync();
+    f.commit("main", { "src/x.ts": "export const x = 2;\n" }, "upstream");
+    f.run("checkout", "-q", "feature");
+    f.run("-c", "core.editor=true", "rebase", "-q", "main");
+    f.commit("feature", { "src/x.ts": "export const x = 3;\n" }, "pr touches x");
+    const now = await f.sync();
+
+    const result = await since(f, rangeOf(reviewed, now));
+    expect(result.files).toEqual([{ path: "src/x.ts", status: "added" }]);
+    const x = await result.view("src/x.ts");
+    expect(x.mode).toBe("carried");
+    // The left side is today's base, so upstream's x = 2 isn't the author's.
+    expect(x.original?.content).toBe("export const x = 2;\n");
+    expect(x.patch).not.toContain("x = 1");
+    expect([x.additions, x.deletions]).toEqual([1, 1]);
+  });
+
+  it("a file the PR renamed since the review is one modified file, not a revert and an add", async () => {
+    const f = fixture();
+    f.commit("feature", { "src/a.ts": text(withLine(5, "pr")) }, "pr work");
+    const reviewed = await f.sync();
+    f.run("checkout", "-q", "feature");
+    f.run("mv", "src/a.ts", "src/renamed.ts");
+    f.commit("feature", { "src/renamed.ts": text(withLine(6, "more", withLine(5, "pr"))) }, "move");
+    const now = await f.sync();
+
+    const result = await since(f, rangeOf(reviewed, now));
+    expect(result.files).toEqual([{ path: "src/renamed.ts", status: "modified" }]);
+    const moved = await result.view("src/renamed.ts");
+    expect(moved.oldPath).toBe("src/a.ts");
+    expect(moved.original?.content).toBe(text(withLine(5, "pr")));
+    expect(moved.patch).toContain("+more");
+    expect([moved.additions, moved.deletions]).toEqual([1, 1]);
+  });
+
+  it("a binary file is listed but not read", async () => {
+    const f = fixture();
+    f.commit("feature", { "src/a.ts": text(withLine(5, "pr")) }, "pr work");
+    const reviewed = await f.sync();
+    f.commit("feature", { "logo.png": "\u0000\u0001binary\u0000" }, "add a binary");
+    const now = await f.sync();
+
+    const entries = await filesSince(f.runners, f.clonePath, rangeOf(reviewed, now), (a, b) =>
+      changedFilesBetween(f.runners, f.clonePath, a, b),
+    );
+    expect(entries).toEqual([expect.objectContaining({ path: "logo.png", binary: true })]);
+    const view = await fileSince(f.runners, rangeOf(reviewed, now), entries[0] as never, (sha, p) =>
+      readFileAt(f.runners, f.clonePath, sha, p),
+    );
+    expect(view.patch).toBe("");
+    expect([view.additions, view.deletions]).toEqual([0, 0]);
+  });
+
+  it("a partial rebase: the kept commit matches its old self, the rewritten one is new", async () => {
+    const f = fixture();
+    const c1 = f.commit("feature", { "src/a.ts": text(withLine(5, "one")) }, "one");
+    const c2 = f.commit(
+      "feature",
+      { "src/a.ts": text(withLine(15, "two", withLine(5, "one"))) },
+      "two",
+    );
+    const reviewed = await f.sync();
+    f.commit("main", { "src/x.ts": "export const x = 2;\n" }, "upstream");
+    f.run("checkout", "-q", "feature");
+    f.run("-c", "core.editor=true", "rebase", "-q", "main");
+    // The top commit is dropped and redone as a different change.
+    f.run("reset", "-q", "--hard", "HEAD~1");
+    const c1Rebased = f.run("rev-parse", "HEAD").trim();
+    const c2Redone = f.commit(
+      "feature",
+      { "src/a.ts": text(withLine(15, "two, redone", withLine(5, "one"))) },
+      "two, redone",
+    );
+    const now = await f.sync();
+
+    const { commits } = await since(f, rangeOf(reviewed, now));
+    expect(commits.commits.map((c) => [c.sha, c.isNew, c.rebasedFrom])).toEqual([
+      [c2Redone, true, undefined],
+      [c1Rebased, false, c1],
+    ]);
+    expect(commits.removed.map((c) => c.sha)).toEqual([c2]);
+    expect(commits.rebaseMatchSkipped).toBe(false);
+  });
+
+  it("too many commits, or blobs, to match a rebase: every rewritten commit reads as new", async () => {
+    const f = fixture();
+    const c1 = f.commit("feature", { "src/a.ts": text(withLine(15, "pr change")) }, "pr work");
+    const reviewed = await f.sync();
+    f.commit("main", { "src/a.ts": text(withLine(1, "upstream")) }, "upstream");
+    f.run("checkout", "-q", "feature");
+    f.run("-c", "core.editor=true", "rebase", "-q", "main");
+    const c1Rebased = f.run("rev-parse", "HEAD").trim();
+    const range = rangeOf(reviewed, await f.sync());
+
+    // Before anything reads them, the rebased commit's blobs are missing.
+    for (const limits of [{ maxBlobs: 0 }, { maxCommits: 0 }]) {
+      const result = await commitsSince(f.runners, f.clonePath, range, limits);
+      expect(result.rebaseMatchSkipped).toBe(true);
+      expect(result.commits).toEqual([expect.objectContaining({ sha: c1Rebased, isNew: true })]);
+      expect(result.removed.map((c) => c.sha)).toEqual([c1]);
+    }
+    const matched = await commitsSince(f.runners, f.clonePath, range);
+    expect(matched.rebaseMatchSkipped).toBe(false);
+    expect(matched.commits).toEqual([expect.objectContaining({ sha: c1Rebased, rebasedFrom: c1 })]);
+  });
 });
 
-describe("pinReviewedCommit", () => {
-  it("fetches a commit a force-push dropped and holds it with a ref", async () => {
+describe("keeping a reviewed commit", () => {
+  it("fetches a commit a force-push dropped, holds it with a ref, and lets it go", async () => {
     const f = fixture();
     const dropped = f.commit("feature", { "src/a.ts": text(withLine(5, "dropped")) }, "dropped");
     f.run("checkout", "-q", "feature");
@@ -294,14 +459,23 @@ describe("pinReviewedCommit", () => {
     f.run("push", "-q", f.bare, `${dropped}:refs/keep/dropped`);
     await f.sync();
 
+    // Pinning only holds what the clone has; fetching it is its own step.
+    expect(await pinReviewedCommit(f.runners, f.clonePath, "gh-o-r-1", dropped)).toBe(false);
+    expect(await ensureCommit(f.runners, f.clonePath, dropped)).toBe(true);
     expect(await pinReviewedCommit(f.runners, f.clonePath, "gh-o-r-1", dropped)).toBe(true);
     expect(sh(f.clonePath, "rev-parse", refForReviewed("gh-o-r-1", dropped)).trim()).toBe(dropped);
+
+    await pinReviewedCommit(f.runners, f.clonePath, "gh-o-r-2", dropped);
+    await unpinReviewedCommits(f.runners, f.clonePath, "gh-o-r-1");
+    const refs = sh(f.clonePath, "for-each-ref", "--format=%(refname)", "refs/yarvis/");
+    expect(refs.trim()).toBe(refForReviewed("gh-o-r-2", dropped));
   });
 
   it("says false for a commit nobody has, and refuses what isn't a sha", async () => {
     const f = fixture();
     await f.sync();
-    expect(await pinReviewedCommit(f.runners, f.clonePath, "k", "b".repeat(40))).toBe(false);
+    expect(await ensureCommit(f.runners, f.clonePath, "b".repeat(40))).toBe(false);
+    expect(await ensureCommit(f.runners, f.clonePath, "HEAD")).toBe(false);
     expect(await pinReviewedCommit(f.runners, f.clonePath, "k", "HEAD")).toBe(false);
   });
 });
