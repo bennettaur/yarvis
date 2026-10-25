@@ -165,7 +165,9 @@ agents are told so.
 Bulk is skimmed, not read: lockfiles, minified files, `dist/` and `vendor/`,
 and files the repo's `.gitattributes` marks `linguist-generated` or
 `linguist-vendored`. Those marks are read at the merge-base, so a PR can't
-mark its own code generated to get it skimmed. The summary agent reads the
+mark its own code generated to get it skimmed. For the same reason a file
+under `dist/` or `vendor/` is skimmed only if it already existed at the
+merge-base: one the PR adds there is read in full. The summary agent reads the
 first 200 lines of each bulk file to say what it is.
 
 On a big PR, one agent can't hold every diff at once, and what it read early

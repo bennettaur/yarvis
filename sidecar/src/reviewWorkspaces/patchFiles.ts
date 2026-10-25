@@ -62,22 +62,26 @@ const BUILD_OUTPUT = /(^|\/)dist\//;
 const VENDORED = /(^|\/)vendor\//;
 
 /**
- * Why a file is bulk to skim rather than code to read, or null. By path for
- * lockfiles, minified files, `dist/` and `vendor/`; otherwise by
- * `linguist-generated`/`linguist-vendored` in `.gitattributes` as the
- * merge-base has it (`markedAtBase`), so a PR can't wave its own file through
- * by marking it generated. `markedAtHead` only tells the index that the PR
- * added such a mark, which counts for nothing.
+ * Why a file is bulk to skim rather than code to read, or null. Lockfiles and
+ * minified files by their names. Otherwise only what the PR can't arrange
+ * itself: `linguist-generated`/`linguist-vendored` in `.gitattributes` as the
+ * merge-base has it (`markedAtBase`), or a file under `dist/` or `vendor/`
+ * that already existed at the merge-base (`existedAtBase`). A file the PR
+ * adds there is read in full, or a PR could hide its logic in
+ * `dist/evil.js`. The PR adding a generated mark of its own counts for
+ * nothing.
  */
 export function bulkKind(
   path: string,
   markedAtBase: ReadonlySet<string>,
+  existedAtBase: boolean,
 ): "lockfile" | "minified" | "build output" | "vendored" | "generated" | null {
   if (LOCKFILE.test(path)) return "lockfile";
   if (MINIFIED.test(path)) return "minified";
+  if (markedAtBase.has(path)) return "generated";
+  if (!existedAtBase) return null;
   if (BUILD_OUTPUT.test(path)) return "build output";
   if (VENDORED.test(path)) return "vendored";
-  if (markedAtBase.has(path)) return "generated";
   return null;
 }
 

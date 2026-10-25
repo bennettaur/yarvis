@@ -36,7 +36,7 @@ import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
-import { removeWorktree } from "../workspaces/git.ts";
+import { git, removeWorktree, splitNulFields } from "../workspaces/git.ts";
 import {
   assertSafeBranchName,
   findRepoForPr,
@@ -1107,10 +1107,33 @@ export async function classifyBulk(
         console.error("[review-workspaces] could not read .gitattributes:", describeError(e));
         return new Set<string>();
       });
-  const [atBase, atHead] = await Promise.all([marked(baseSha), marked(headSha)]);
+  // Which paths the merge-base already had; trees are local. When this can't
+  // be read, none count as existing, so path-only bulk is read in full.
+  const existing = cache
+    .get(
+      `base-paths:${ready.clonePath}:${baseSha}:${Bun.hash(paths.join("\0"))}`,
+      async () =>
+        new Set(
+          paths.length === 0
+            ? []
+            : splitNulFields(
+                await git(
+                  ready.runners.local,
+                  ["--literal-pathspecs", "ls-tree", "-z", "--name-only", baseSha, "--", ...paths],
+                  ready.clonePath,
+                ),
+              ),
+        ),
+      (s) => stringsSize([...s]) + 64,
+    )
+    .catch((e) => {
+      console.error("[review-workspaces] could not list the merge-base's files:", describeError(e));
+      return new Set<string>();
+    });
+  const [atBase, atHead, existed] = await Promise.all([marked(baseSha), marked(headSha), existing]);
   return new Map(
     paths.map((path) => {
-      const skim = bulkKind(path, atBase);
+      const skim = bulkKind(path, atBase, existed.has(path));
       return [path, { skim, markedByPr: !skim && atHead.has(path) }];
     }),
   );

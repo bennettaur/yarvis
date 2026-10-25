@@ -205,14 +205,23 @@ describe("the index", () => {
 describe("bulk", () => {
   it("is decided by path and by the merge-base's attributes, never the PR's own", () => {
     const atBase = new Set(["src/schema.gen.ts"]);
-    expect(bulkKind("web/package-lock.json", atBase)).toBe("lockfile");
-    expect(bulkKind("public/app.min.js", atBase)).toBe("minified");
-    expect(bulkKind("dist/index.js", atBase)).toBe("build output");
-    expect(bulkKind("third/vendor/x.go", atBase)).toBe("vendored");
-    expect(bulkKind("src/schema.gen.ts", atBase)).toBe("generated");
+    expect(bulkKind("web/package-lock.json", atBase, true)).toBe("lockfile");
+    expect(bulkKind("public/app.min.js", atBase, true)).toBe("minified");
+    expect(bulkKind("dist/index.js", atBase, true)).toBe("build output");
+    expect(bulkKind("third/vendor/x.go", atBase, true)).toBe("vendored");
+    expect(bulkKind("src/schema.gen.ts", atBase, false)).toBe("generated");
     // A directory called "generated" is not enough; only the attribute is.
-    expect(bulkKind("src/generated/core.ts", atBase)).toBeNull();
-    expect(bulkKind("src/core.ts", atBase)).toBeNull();
+    expect(bulkKind("src/generated/core.ts", atBase, true)).toBeNull();
+    expect(bulkKind("src/core.ts", atBase, true)).toBeNull();
+  });
+
+  it("never skims a file under dist/ or vendor/ that the merge-base didn't have", () => {
+    const none = new Set<string>();
+    expect(bulkKind("dist/evil.js", none, false)).toBeNull();
+    expect(bulkKind("vendor/evil.go", none, false)).toBeNull();
+    // Lockfiles and minified files keep their rule, new or not.
+    expect(bulkKind("package-lock.json", none, false)).toBe("lockfile");
+    expect(bulkKind("app.min.js", none, false)).toBe("minified");
   });
 
   it("marks bulk SKIM in the index, and a PR's own generated mark as read in full", async () => {
