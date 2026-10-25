@@ -17,7 +17,7 @@
  * reported as unmeasured, and CI's test run is the evidence instead.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { type BaselineResult, parseJunit, runBaseline } from "./baseline.ts";
@@ -85,9 +85,13 @@ export function parseNumstat(numstat: string): ChangedFile[] {
     });
 }
 
-/** The suite directory a changed file's tests run in: the sidecar's own, or the root's. */
-function bunSuiteOf(path: string): string {
-  return path.startsWith("sidecar/") ? "sidecar" : "";
+/** The directories the root suite's coverage run covers. */
+const ROOT_SUITE_PATHS = /^(src|scripts|demo)\//;
+
+/** The suite directory a changed file's tests run in, or `null` when no suite covers it. */
+function bunSuiteOf(path: string): string | null {
+  if (path.startsWith("sidecar/")) return "sidecar";
+  return ROOT_SUITE_PATHS.test(path) ? "" : null;
 }
 
 export function collectCoverage(root: string, out: string, paths: string[]) {
@@ -97,13 +101,16 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
   const attempted = new Set<string>();
   const ran = new Set<string>();
 
-  const touchesRoot = paths.some((p) => /^(src|scripts|demo)\//.test(p));
+  const touchesRoot = paths.some((p) => ROOT_SUITE_PATHS.test(p));
   const touchesSidecar = paths.some((p) => p.startsWith("sidecar/"));
   const touchesRust = paths.some((p) => p.startsWith("src-tauri/") && p.endsWith(".rs"));
 
   const bunCoverage = (suite: string, name: string, args: string[]) => {
     const dir = join(out, `coverage-${name}`);
     const junit = join(dir, "junit.xml");
+    // `--out` is reused when a PR is verified again, and a crashed run writes no
+    // JUnit report, so an old one left here would pass for this run's.
+    rmSync(dir, { recursive: true, force: true });
     // Failing tests are CI's to report; coverage of the passing ones is still useful.
     run(
       "bun",
@@ -147,6 +154,7 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
 
   const measurement = (path: string): Measurement => {
     const suite = path.endsWith(".rs") ? "rust" : bunSuiteOf(path);
+    if (suite === null) return "not-run";
     if (ran.has(suite)) return "measured";
     return attempted.has(suite) ? "no-tests" : "not-run";
   };

@@ -149,6 +149,23 @@ it("is one", () => expect(a(1)).toBe(1));
     expect(result.measurement("src/a.ts")).toBe("no-tests");
   });
 
+  it("ignores a JUnit report left by an earlier run into the same directory", () => {
+    const root = repo(source);
+    const out = join(root, "out");
+    expect(collectCoverage(root, out, ["src/a.ts"]).measurement("src/a.ts")).toBe("measured");
+    writeAll(root, {
+      "bunfig.toml": '[test]\npreload = ["./crash.ts"]\n',
+      "crash.ts": 'throw new Error("preload failed");\n',
+    });
+    expect(collectCoverage(root, out, ["src/a.ts"]).measurement("src/a.ts")).toBe("no-tests");
+  });
+
+  it("counts a root file no suite covers as not run", () => {
+    const root = repo(source);
+    const result = collectCoverage(root, join(root, "out"), ["src/a.ts", "vite.config.ts"]);
+    expect(result.measurement("vite.config.ts")).toBe("not-run");
+  });
+
   it("still measures one suite when the other crashed", () => {
     const root = repo({
       ...source,

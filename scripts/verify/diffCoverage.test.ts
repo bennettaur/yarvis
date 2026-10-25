@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   diffCoverage,
   formatRanges,
+  type LineHits,
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
@@ -99,6 +100,38 @@ describe("diffCoverage", () => {
 
   it("has no ratio when nothing executable changed", () => {
     expect(diffCoverage(new Map(), hits, () => "measured").ratio).toBeNull();
+  });
+
+  it("sorts files of one language by what their own suite's run produced", () => {
+    const added = parseAddedLines(
+      [
+        "diff --git a/src/a.ts b/src/a.ts",
+        "--- a/src/a.ts",
+        "+++ b/src/a.ts",
+        "@@ -0,0 +1 @@",
+        "+x",
+        "diff --git a/sidecar/src/b.ts b/sidecar/src/b.ts",
+        "--- a/sidecar/src/b.ts",
+        "+++ b/sidecar/src/b.ts",
+        "@@ -0,0 +1 @@",
+        "+y",
+        "diff --git a/sidecar/src/c.ts b/sidecar/src/c.ts",
+        "--- a/sidecar/src/c.ts",
+        "+++ b/sidecar/src/c.ts",
+        "@@ -0,0 +1 @@",
+        "+z",
+      ].join("\n"),
+    );
+    const hits: LineHits = new Map([["src/a.ts", new Map([[1, 1]])]]);
+    const result = diffCoverage(added, hits, (path) =>
+      path === "src/a.ts" ? "measured" : path.endsWith("b.ts") ? "no-tests" : "not-run",
+    );
+    expect(result).toMatchObject({
+      ratio: 1,
+      notLoaded: [],
+      noTestsRan: ["sidecar/src/b.ts"],
+      unmeasured: ["sidecar/src/c.ts"],
+    });
   });
 });
 
