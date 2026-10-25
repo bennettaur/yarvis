@@ -56,6 +56,7 @@ export const ORDINARY_COMMANDS = [
   "cancel_alarm",
   "acknowledge_alarm",
   "snooze_alarm",
+  "release_alarm",
   "clipboard_history",
   "clipboard_clear_history",
   "clipboard_write",

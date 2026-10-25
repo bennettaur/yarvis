@@ -91,6 +91,8 @@ const ReportData = z.object({
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
   flagged: z.array(z.string()),
+  /** The model that reviewed, so calibration can compare verdicts across models. */
+  model: z.string().optional(),
 });
 export type ReportData = z.infer<typeof ReportData>;
 
@@ -324,6 +326,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
       ),
       ...(isFlagged(coverage) ? ["coverage"] : []),
     ],
+    model: review.model,
   };
 
   const suites = facts.suites.join(", ") || "none";
