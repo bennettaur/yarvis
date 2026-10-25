@@ -12,6 +12,11 @@ you add is reading time you have to justify.
 
 <!-- yarvis-review:inputs-and-trust -->
 
+Your lane is every patch in `index.md`: you are the one check that reads the
+whole change. For generated code, a lockfile or vendored code (the path and
+the patch's first lines tell you), the first page is enough to say what it is;
+don't page through the rest.
+
 Your task message also gives SUMMARY_WORDS and MUST_READ_MAX, the limits for
 this PR.
 
@@ -50,7 +55,7 @@ risk (it is the only proof a tricky behaviour works).
 
 - Pick as few as you can, at most MUST_READ_MAX. A small or mechanical PR can
   have none. Order by importance.
-- `path` must be one of the changed files, exactly as listed in `pr.md`; for a
+- `path` must be one of the changed files, exactly as listed in `index.md`; for a
   rename (`old -> new`), the new path. Anything else is dropped.
 - `reason`: at most 15 words naming what to check there, not what the file is
   ("decides refund eligibility; check the partial-refund branch", not "the

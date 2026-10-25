@@ -10,6 +10,9 @@ the PR says, all of it, and nothing it shouldn't?
 
 <!-- yarvis-review:inputs-and-trust -->
 
+Your lane is every patch except generated code, lockfiles and vendored code:
+a missing piece can be anywhere, tests and docs included.
+
 ## Method
 
 1. From the title and description, list the goals the PR claims (privately; do

@@ -245,6 +245,23 @@ describe("a run", () => {
     expect(events.some((event) => event.type === "subagent")).toBe(true);
   });
 
+  it("finishes the answer with what the run read before storing it", async () => {
+    const handle = await startClaudeRun(
+      db,
+      runOptions(dir, {
+        outputSchema: countSchema,
+        finishOutput: (answer, activity) => ({
+          ...answer,
+          read: activity.reads.map((r) => r.path),
+        }),
+      }),
+      deps(replay("subagent-structured-output.jsonl")),
+    );
+    const outcome = await handle.done;
+    expect(outcome.output).toEqual({ count: 2, read: ["/work/repo/a.txt"] });
+    expect((await row(handle.id))?.result).toEqual({ count: 2, read: ["/work/repo/a.txt"] });
+  });
+
   it("records its process, so a sweep after a crash can find it", async () => {
     const program = fakeClaude(dir, "pid", "sleep 0.3; echo '{}'");
     const handle = await startClaudeRun(db, runOptions(dir), deps(program));

@@ -20,12 +20,15 @@ import { getDb } from "../db/client.ts";
 import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
+import type { Coverage } from "./coverage.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
+import { writePatchFiles } from "./patchFiles.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
-import { reviewSincePatches, reviewSinceReview } from "./reviewMarks.ts";
+import { reviewSinceReview, reviewSinceSources } from "./reviewMarks.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
-import { type PrMeta, type ReviewDeps, reviewPatches } from "./service.ts";
+import { type PrMeta, type ReviewDeps, reviewDiffFacts, reviewPatchSources } from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
+import type { VerificationSize } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -673,8 +676,9 @@ describe("verification report", () => {
   let verificationApp: Hono;
 
   /**
-   * A `claude` that records its stdin and argv, waits for `release`, then
-   * ends the run with the report as its structured output.
+   * A `claude` that records its stdin and argv, waits for `release`, reads
+   * src/a.ts's patch from a subagent, then ends the run with the report as its
+   * structured output.
    */
   function setUpFake() {
     fakeDir = mkdtempSync(join(tmpdir(), "yarvis-verification-fake-"));
@@ -682,12 +686,30 @@ describe("verification report", () => {
       join(fakeDir, "result.jsonl"),
       `${JSON.stringify(resultLine({ structured_output: report }))}\n`,
     );
+    const read = JSON.stringify({
+      type: "assistant",
+      parent_tool_use_id: "toolu_sub",
+      message: {
+        id: "msg_read",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_read",
+            name: "Read",
+            input: { file_path: "CONTEXT/patches/src/a.ts.diff" },
+          },
+        ],
+      },
+    });
     const program = fakeClaude(
       fakeDir,
       "claude",
       `cat > "${fakeDir}/stdin.txt"
 printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+ctx=""; prev=""
+for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
 cat "${fakeDir}/result.jsonl"`,
     );
     registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
@@ -717,11 +739,11 @@ cat "${fakeDir}/result.jsonl"`,
         status: string;
         targetKey: string;
         live: boolean;
-        result: typeof report;
+        result: typeof report & { coverage?: Coverage };
       } | null;
       current: boolean;
       headSha: string;
-      size: { files: number; changedLines: number; large: boolean } | null;
+      size: VerificationSize | null;
     };
   }
 
@@ -791,8 +813,15 @@ cat "${fakeDir}/result.jsonl"`,
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
     expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
-    expect(readFileSync(join(contextDir, "changes.diff"), "utf8")).toContain(
+    expect(readFileSync(join(contextDir, "patches/src/a.ts.diff"), "utf8")).toContain(
       "diff --git a/src/a.ts",
+    );
+    const indexFile = readFileSync(join(contextDir, "index.md"), "utf8");
+    expect(indexFile).toContain("- src/a.ts (modified, +2 -1): patches/src/a.ts.diff (");
+    expect(indexFile).toContain("- image.bin (added, binary): no patch (binary)");
+    // The 2 MB file is there, its patch whole: under the cap, nothing is cut.
+    expect(indexFile).toMatch(
+      /- huge\.txt \(added, \+20001 -0\): patches\/huge\.txt\.diff \(\d+ lines, \d+ KB\)\n/,
     );
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
     expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
@@ -810,7 +839,7 @@ cat "${fakeDir}/result.jsonl"`,
     expect(running).toMatchObject({
       run: { id: runId, status: "running", live: true },
       current: true,
-      size: { large: false },
+      size: { large: true, binary: ["image.bin"], truncated: [], budgetUsd: 0.5 },
     });
     expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
 
@@ -818,11 +847,24 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
     const done = await latest(wsId, prId);
     expect(done.run?.live).toBe(false);
-    // Held to the word cap the diff size gives (the floor, for this small PR).
-    expect(done.run?.result.summary).toBe(`${"word ".repeat(10).trim()}…`);
+    // Held to the word cap the diff size gives: the ceiling, since huge.txt's
+    // 20,000 lines are all in a patch the run reads.
+    expect(done.run?.result.summary).toBe(`${"word ".repeat(80).trim()}…`);
     expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
     expect(done.run?.result.tests.findings).toHaveLength(1);
     expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
+    // The server's count of what the run read: only a.ts's patch, by a subagent.
+    const coverage = done.run?.result.coverage;
+    expect(coverage?.total).toBe(7);
+    expect(coverage?.notExamined.map((n) => n.path).sort()).toEqual([
+      "big.txt",
+      "docs/gone.md",
+      "huge.txt",
+      "image.bin",
+      "latin1.txt",
+    ]);
+    // A rename with no line changes has nothing to read.
+    expect(coverage?.examined).toBe(2);
     await until(async () => !existsSync(contextDir), "the context folder to go");
 
     // What the server took out is on the run, to be audited.
@@ -957,12 +999,31 @@ describe("re-review summary", () => {
       join(fakeDir, "result.jsonl"),
       `${JSON.stringify(resultLine({ structured_output: answer }))}\n`,
     );
+    // The agent reads a.ts's interdiff, the one file changed since the review.
+    const read = JSON.stringify({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: {
+        id: "msg_read",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_read",
+            name: "Read",
+            input: { file_path: "CONTEXT/patches/src/a.ts.diff" },
+          },
+        ],
+      },
+    });
     const program = fakeClaude(
       fakeDir,
       "claude",
       `cat > "${fakeDir}/stdin.txt"
 printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+ctx=""; prev=""
+for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
 cat "${fakeDir}/result.jsonl"`,
     );
     registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
@@ -998,7 +1059,11 @@ cat "${fakeDir}/result.jsonl"`,
       targetKey: string;
       fromHeadSha: string;
       toHeadSha: string;
-      result: { verdict: string; comments: { threadId: string; providerId: string }[] } | null;
+      result: {
+        verdict: string;
+        comments: { threadId: string; providerId: string }[];
+        coverage?: Coverage;
+      } | null;
     } | null;
     fromHeadSha: string | null;
     headSha: string;
@@ -1068,8 +1133,11 @@ cat "${fakeDir}/result.jsonl"`,
     const context = readFileSync(join(contextDir, "rereview.md"), "utf8");
     expect(context).toContain("Make a 5.");
     expect(context).not.toContain("Rename b.");
-    expect(readFileSync(join(contextDir, "interdiff.diff"), "utf8")).toContain(
+    expect(readFileSync(join(contextDir, "patches/src/a.ts.diff"), "utf8")).toContain(
       "diff --git a/src/a.ts b/src/a.ts",
+    );
+    expect(readFileSync(join(contextDir, "index.md"), "utf8")).toContain(
+      "- src/a.ts (changed again, +1 -2): patches/src/a.ts.diff (",
     );
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("COMMENT_IDS=T1\n");
@@ -1082,6 +1150,7 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
     const done = await latest(wsId, prId);
     expect(done.run?.result?.verdict).toBe("ready_to_approve");
+    expect(done.run?.result?.coverage).toEqual({ examined: 1, total: 1, notExamined: [] });
     expect(done.run?.result?.comments).toMatchObject([{ threadId: "T1", providerId: "PRRT_mine" }]);
     expect(done.lastSucceeded).toMatchObject({ run: { id: done.run?.id }, current: true });
     await until(async () => !existsSync(contextDir), "the context folder to go");
@@ -1144,7 +1213,7 @@ cat "${fakeDir}/result.jsonl"`,
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 
-  it("reads each changed file's interdiff within the budgets, and the new commits' messages", async () => {
+  it("writes every changed file's interdiff, cutting only a huge one, and reads the new commits' messages", async () => {
     const { wsId, prId } = await reviewedThenPushed();
     remote.pushToPr("src/b.ts", `${"export const big = 1;\n".repeat(200)}`);
     sh(remote.work, "checkout", "-q", "feature");
@@ -1157,23 +1226,29 @@ cat "${fakeDir}/result.jsonl"`,
     await progress(wsId, prId);
 
     const since = await reviewSinceReview(db, config, wsId, prId, deps());
-    const read = (maxTotalBytes: number) =>
-      reviewSincePatches(db, config, wsId, prId, deps(), since, {
-        maxFileBytes: 2_000,
-        maxTotalBytes,
+    const { sources, messages } = await reviewSinceSources(db, config, wsId, prId, deps(), since);
+    const contextDir = mkdtempSync(join(tmpdir(), "yarvis-rereview-patches-test-"));
+    try {
+      const index = await writePatchFiles(contextDir, sources, {
+        tag: "interdiff",
+        header: (path) => `diff --git a/${path} b/${path}`,
+        // A cap small enough that b.ts's 200-line interdiff goes over it.
+        limits: { maxPatchBytes: 2_000, truncatedBytes: 500 },
       });
-    const size = (path: string, all: Awaited<ReturnType<typeof read>>) =>
-      all.patches.find((p) => p.file.path === path)?.patch?.length ?? 0;
-    const unbounded = await read(1_000_000);
-    const { patches, messages } = await read(
-      size("src/a.ts", unbounded) + size("src/c.ts", unbounded) - 1,
-    );
-    const byPath = Object.fromEntries(patches.map((p) => [p.file.path, p]));
-    expect(byPath["src/b.ts"]).toMatchObject({ patch: null, omitted: "too-large" });
-    expect(byPath["src/a.ts"]?.patch).toContain("+export const a = 5;");
-    // a.ts fits first (path order); c.ts would take the total past the budget.
-    expect(byPath["src/c.ts"]).toMatchObject({ patch: null, omitted: "over-budget" });
-    expect(byPath["src/c.ts"]?.file.additions).toBe(1);
+      expect(index.map((e) => e.path)).toEqual(sources.map((s) => s.path));
+      const byPath = Object.fromEntries(index.map((e) => [e.path, e]));
+      expect(byPath["src/b.ts"]).toMatchObject({ truncated: true, additions: 200 });
+      const read = (path: string) =>
+        readFileSync(join(contextDir, byPath[path]?.patchFile as string), "utf8");
+      expect(read("src/a.ts")).toContain("+     1  export const a = 5;");
+      expect(read("src/a.ts")).toContain("diff --git a/src/a.ts b/src/a.ts");
+      expect(read("src/b.ts")).toContain("it is cut off here");
+      // Nothing is left out for room: c.ts, after the big file, is there whole.
+      expect(byPath["src/c.ts"]).toMatchObject({ truncated: false, additions: 1 });
+      expect(read("src/c.ts")).toContain("export const c = 1;");
+    } finally {
+      rmSync(contextDir, { recursive: true, force: true });
+    }
     const fresh = since.commits.filter((c) => c.isNew);
     expect(fresh).toHaveLength(3);
     const added = fresh.find((c) => c.subject === "Add c");
@@ -1183,33 +1258,42 @@ cat "${fakeDir}/result.jsonl"`,
 });
 
 describe("patches for an agent run", () => {
-  it("leaves out binary, oversized and over-budget files, in path order", async () => {
-    const { prId } = await readyWorkspace();
-    const row = await prRow(prId);
-    const all = await reviewPatches(config, row, deps(), {
-      maxFileBytes: 4096,
-      maxTotalBytes: 1_000_000,
-    });
-    const paths = all.patches.map((p) => p.file.path);
-    expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
-    const omitted = Object.fromEntries(all.patches.map((p) => [p.file.path, p.omitted]));
-    expect(omitted).toMatchObject({
-      "image.bin": "binary",
-      "big.txt": "too-large",
-      "huge.txt": "too-large",
-      "src/a.ts": null,
-    });
-    expect(all.headSha).toBe(row.headSha as string);
+  let contextDir: string;
+  beforeEach(() => {
+    contextDir = mkdtempSync(join(tmpdir(), "yarvis-patches-test-"));
+  });
+  afterEach(() => rmSync(contextDir, { recursive: true, force: true }));
 
-    // Room for the first included patch only: the rest are listed, not read.
-    const first = all.patches.find((p) => p.patch !== null);
-    if (!first?.patch) throw new Error("no patch was included");
-    const tight = await reviewPatches(config, row, deps(), {
-      maxFileBytes: 4096,
-      maxTotalBytes: first.patch.length,
-    });
-    const included = tight.patches.filter((p) => p.patch !== null).map((p) => p.file.path);
-    expect(included).toEqual([first.file.path]);
-    expect(tight.patches.find((p) => p.file.path === "src/a.ts")?.omitted).toBe("over-budget");
+  it("gives every changed file a patch but a binary one, cutting only those past the cap", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const row = await prRow(prId);
+    const limits = { maxPatchBytes: 4096, truncatedBytes: 1024 };
+    const { sources, headSha } = await reviewPatchSources(
+      config,
+      row,
+      deps(),
+      limits.maxPatchBytes,
+    );
+    expect(headSha).toBe(row.headSha as string);
+    const index = await writePatchFiles(contextDir, sources, { tag: "diff", limits });
+    const paths = index.map((e) => e.path);
+    expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+    const changed = await reviewDiffFacts(db, config, wsId, prId, deps(), limits.maxPatchBytes);
+    // No file is dropped, for its size or for room.
+    expect(new Set(paths)).toEqual(new Set(changed.files.map((f) => f.path)));
+    const byPath = Object.fromEntries(index.map((e) => [e.path, e]));
+    expect(byPath["image.bin"]).toMatchObject({ patchFile: null, noPatch: "binary" });
+    for (const big of ["big.txt", "huge.txt"]) {
+      expect(byPath[big]).toMatchObject({ patchFile: `patches/${big}.diff`, truncated: true });
+      expect(byPath[big]?.bytes).toBeLessThan(limits.truncatedBytes + 1024);
+    }
+    for (const e of index.filter((e) => !e.binary && !e.truncated)) {
+      expect(e.patchFile).not.toBeNull();
+    }
+    expect(readFileSync(join(contextDir, "patches/src/a.ts.diff"), "utf8")).toContain(
+      "+     2  export const b = 3;",
+    );
+    // The warning before a run names the same cut-off files, without diffing the rest.
+    expect(changed.truncated.sort()).toEqual(["big.txt", "huge.txt"]);
   });
 });

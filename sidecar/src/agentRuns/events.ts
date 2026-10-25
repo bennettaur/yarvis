@@ -12,7 +12,15 @@
 export type AgentRunEvent =
   | { type: "status"; message: string }
   | { type: "text"; text: string; subagentId: string | null }
-  | { type: "tool"; id: string; name: string; summary: string; subagentId: string | null }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      summary: string;
+      subagentId: string | null;
+      /** A file tool's whole path, as given; `summary` shortens and caps it. */
+      path?: string;
+    }
   | {
       type: "subagent";
       phase: "start" | "stop";

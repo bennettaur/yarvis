@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { jsonSchemaArg } from "../agentRuns/service.ts";
 import type { PrRef, ReviewComment, ReviewThread } from "../pr/types.ts";
+import { headHunksOf, type PatchIndexEntry } from "./patchFiles.ts";
 import {
   buildRereviewMaterial,
+  checkedRereview,
   checkedViewer,
   clipSentences,
   commentLines,
@@ -13,10 +15,10 @@ import {
   type RereviewInput,
   type RereviewItem,
   type RereviewLimits,
+  rereviewAnswerSchema,
   rereviewSchema,
   sameIdentity,
 } from "./rereview.ts";
-import type { SincePatch } from "./reviewMarks.ts";
 
 const item = (id: string, overrides: Partial<RereviewItem> = {}): RereviewItem => ({
   id,
@@ -179,6 +181,57 @@ describe("the re-review schema", () => {
     expect(parsed.verdictReason).toBe("2 changes to review");
   });
 
+  it("lists a file the run never examined as needing review, whatever the answer said", () => {
+    const audit = emptyRereviewAudit();
+    const changed = new Set(["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]);
+    const lim = limits([item("T1", { path: "src/c.ts" })], { changedPaths: changed });
+    const raw = rereviewAnswerSchema(lim).parse(
+      answer({
+        verdict: "ready_to_approve",
+        // A fix cited in a file the agent never read doesn't account for it.
+        comments: [fixed("T1", "src/a.ts", 3)],
+        newChanges: [
+          { path: "src/b.ts", kind: "minor", reason: "Typo." },
+          { path: "src/d.ts", kind: "minor", reason: "Rename." },
+        ],
+      }),
+    );
+    const coverage = {
+      examined: 1,
+      total: 4,
+      notExamined: [
+        { path: "src/a.ts", reason: "its patch wasn't opened" },
+        { path: "src/b.ts", reason: "only 10 of its patch's 900 lines were read" },
+        { path: "src/c.ts", reason: "its patch wasn't opened" },
+      ],
+    };
+    const checked = checkedRereview(raw, lim, audit, coverage);
+    expect(checked.newChanges).toEqual([
+      {
+        path: "src/b.ts",
+        kind: "needs_review",
+        reason: "Not examined by the agent: only 10 of its patch's 900 lines were read.",
+      },
+      {
+        path: "src/a.ts",
+        kind: "needs_review",
+        reason: "Not examined by the agent: its patch wasn't opened.",
+      },
+      {
+        path: "src/c.ts",
+        kind: "needs_review",
+        reason: "Not examined by the agent: its patch wasn't opened.",
+      },
+      // Read and called minor: the agent's call stands.
+      { path: "src/d.ts", kind: "minor", reason: "Rename." },
+    ]);
+    expect(audit.unexaminedPaths).toEqual(["src/b.ts", "src/a.ts", "src/c.ts"]);
+    expect(audit.unclassifiedPaths).toEqual([]);
+    expect(checked.verdict).toBe("needs_another_look");
+    expect(checked.serverNote).toBe("3 changed files weren't examined.");
+    expect(checked.coverage).toEqual(coverage);
+  });
+
   it("dedupes the changes, needing review first, then caps them", () => {
     const paths = Array.from({ length: 40 }, (_, i) => `src/f${i}.ts`);
     const audit = emptyRereviewAudit();
@@ -310,23 +363,25 @@ const thread = (
   ...overrides,
 });
 
+/** A file's index entry: with its interdiff when `text` is given, else without one for `noPatch`. */
 const patch = (
   path: string,
   text: string | null,
-  omitted: SincePatch["omitted"] = null,
+  noPatch = "a version is over 2 MB, too large to compare",
   oldPath?: string,
-): SincePatch => ({
-  file: {
-    path,
-    ...(oldPath ? { oldPath } : {}),
-    status: "modified",
-    additions: 1,
-    deletions: 1,
-    binary: false,
-    tooLarge: false,
-  },
-  patch: text,
-  omitted,
+): PatchIndexEntry => ({
+  path,
+  ...(oldPath ? { oldPath } : {}),
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  binary: false,
+  patchFile: text === null ? null : `patches/${path}.diff`,
+  lines: text === null ? 0 : text.split("\n").length + 4,
+  bytes: text?.length ?? 0,
+  truncated: false,
+  noPatch: text === null ? noPatch : null,
+  hunks: text === null ? [] : headHunksOf(text),
 });
 
 const A_PATCH = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -2,3 +2,2 @@\n one\n-log(token)\n two\n";
@@ -394,7 +449,7 @@ function input(overrides: Partial<RereviewInput> = {}): RereviewInput {
       removedCommits: [],
     },
     reviewedAt: "2026-10-02T00:00:00Z",
-    patches: [patch("src/a.ts", A_PATCH), patch("src/big.ts", null, "over-budget")],
+    index: [patch("src/a.ts", A_PATCH), patch("src/big.ts", null)],
     messages: new Map([["c".repeat(40), `Stop logging\n\nBecause ${MARK}.`]]),
     ...overrides,
   };
@@ -455,7 +510,7 @@ describe("building the re-review's material", () => {
   });
 
   it("keeps PR-written text out of the prompt, fenced and flattened in the context", () => {
-    const { prompt, contextFile, diffFile } = buildRereviewMaterial(input(), "/ctx");
+    const { prompt, contextFile, indexFile } = buildRereviewMaterial(input(), "/ctx");
     expect(prompt).not.toContain(MARK);
     const unfenced = contextFile.replace(/<([a-z-]+-[0-9a-f]{12})>[\s\S]*?<\/\1>/g, "");
     expect(contextFile).toContain(MARK);
@@ -463,10 +518,13 @@ describe("building the re-review's material", () => {
     // A comment can't start a line of its own and pose as another thread.
     expect(contextFile).not.toMatch(/^### T9/m);
     expect(contextFile).toContain("Because INJECTED-MARK.");
-    expect(diffFile.split("\n")[0]).toContain("untrusted reference data");
-    expect(diffFile).toContain("-    b3  log(token)");
-    expect(contextFile).toContain("- src/a.ts (changed again, +1 -1): interdiff.diff line 3");
-    expect(contextFile).toContain("src/big.ts (changed again, +1 -1): no interdiff (left out");
+    expect(contextFile).toContain("Files whose change differs since the review: 2.");
+    expect(indexFile).toMatch(
+      /- src\/a\.ts \(changed again, \+1 -1\): patches\/src\/a\.ts\.diff \(\d+ lines/,
+    );
+    expect(indexFile).toContain(
+      "- src/big.ts (changed again, +1 -1): no patch (a version is over 2 MB, too large to compare)",
+    );
     expect(contextFile).toContain("1 thread resolved before the review");
   });
 
@@ -494,10 +552,14 @@ describe("building the re-review's material", () => {
     );
     const base = input();
     const files = Array.from({ length: 600 }, (_, i) =>
-      patch(`src/${"d".repeat(40)}${i}.ts`, null, "too-large"),
+      patch(`src/${"d".repeat(40)}${i}.ts`, null),
     );
-    const { limits: built, contextFile } = buildRereviewMaterial(
-      input({ detail: { ...base.detail, reviewThreads: long, conversation: [] }, patches: files }),
+    const {
+      limits: built,
+      contextFile,
+      indexFile,
+    } = buildRereviewMaterial(
+      input({ detail: { ...base.detail, reviewThreads: long, conversation: [] }, index: files }),
       "/ctx",
     );
     expect(contextFile).toContain("x".repeat(1499));
@@ -508,12 +570,13 @@ describe("building the re-review's material", () => {
     expect(contextFile).toContain(
       `${50 - built.items.length} of the reviewer's comments are left out`,
     );
-    expect(contextFile).toMatch(/\d+ files at the end of the list are left out/);
     expect(contextFile.length).toBeLessThan(130_000);
+    // No file is left out of the index for room.
+    for (const f of files) expect(indexFile).toContain(`- ${f.path} (`);
   });
 
   it("finds the head lines each interdiff hunk covers", () => {
-    expect(hunkRanges("@@ -1,2 +1,3 @@\n a\n@@ -10 +11,0 @@\n-x\n")).toEqual([
+    expect(hunkRanges(headHunksOf("@@ -1,2 +1,3 @@\n a\n@@ -10 +11,0 @@\n-x\n"))).toEqual([
       { start: 1, end: 3 },
       { start: 11, end: 11 },
     ]);
@@ -535,10 +598,10 @@ describe("a long thread", () => {
 });
 
 describe("what moved near a line comment", () => {
-  const patches = new Map<string, SincePatch>([
+  const patches = new Map<string, PatchIndexEntry>([
     ["src/a.ts", patch("src/a.ts", A_PATCH)],
-    ["src/old.ts", patch("src/new.ts", A_PATCH, null, "src/old.ts")],
-    ["src/big.ts", patch("src/big.ts", null, "too-large")],
+    ["src/old.ts", patch("src/new.ts", A_PATCH, undefined, "src/old.ts")],
+    ["src/big.ts", patch("src/big.ts", null)],
   ]);
   const at = (over: Partial<ReviewThread>) =>
     lineNote({ path: "src/a.ts", line: 3, side: "RIGHT", isOutdated: false, ...over }, patches);
@@ -547,7 +610,7 @@ describe("what moved near a line comment", () => {
     expect(at({ isOutdated: true, line: 3 })).toContain("outdated");
     expect(at({ line: null })).toContain("the comment has no line");
     expect(at({ path: "src/same.ts" })).toContain("is the same as when reviewed");
-    expect(at({ path: "src/big.ts" })).toContain("no interdiff included");
+    expect(at({ path: "src/big.ts" })).toContain("it has no interdiff");
     expect(at({ side: "LEFT" })).toContain("old side");
     expect(at({ line: 3 })).toContain("within 3 lines");
     expect(at({ line: 90 })).toContain("not near this line");
@@ -556,7 +619,7 @@ describe("what moved near a line comment", () => {
   it("finds a renamed file's patch by its old name", () => {
     const { contextFile } = buildRereviewMaterial(
       input({
-        patches: [patch("src/new.ts", A_PATCH, null, "src/old.ts")],
+        index: [patch("src/new.ts", A_PATCH, undefined, "src/old.ts")],
         detail: {
           ...input().detail,
           reviewThreads: [thread("R", [comment("mike", "Here.")], { path: "src/old.ts" })],

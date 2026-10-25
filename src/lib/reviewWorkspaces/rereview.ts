@@ -1,5 +1,6 @@
 import type { AgentRunStatus } from "../agentRuns";
 import { ensureOk, sidecarFetch } from "../api";
+import type { VerificationCoverage } from "./verification";
 
 /**
  * Client for a review PR's "What's changed" summary: an agent's judgement of
@@ -48,6 +49,11 @@ export interface Rereview {
   newChanges: RereviewChange[];
   /** Threads resolved before the review with nothing said since: not judged again. */
   settled?: { providerId: string; path: string | null; line: number | null }[];
+  /**
+   * Which changed files the agent read, counted by the sidecar; a file it
+   * didn't is among `newChanges` as needing review. Absent on older answers.
+   */
+  coverage?: VerificationCoverage;
 }
 
 /** A re-review run as the route returns it. */

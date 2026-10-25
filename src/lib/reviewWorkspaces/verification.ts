@@ -36,7 +36,17 @@ export interface VerificationMustRead {
   lines?: { start: number; end: number };
 }
 
-/** Mirrors the sidecar's `VerificationReport` (`reviewWorkspaces/verification.ts`). */
+/**
+ * Which changed files the run's agents read, counted by the sidecar from the
+ * run's Read calls (`reviewWorkspaces/coverage.ts`), not taken from them.
+ */
+export interface VerificationCoverage {
+  examined: number;
+  total: number;
+  notExamined: { path: string; reason: string }[];
+}
+
+/** Mirrors the sidecar's `CoveredReport` (`reviewWorkspaces/verification.ts`). */
 export interface VerificationReport {
   summary: string;
   mustRead: VerificationMustRead[];
@@ -51,6 +61,25 @@ export interface VerificationReport {
   complexity: VerificationCheck;
   performance: VerificationCheck;
   comments: VerificationCheck;
+  /** Absent on a report from before coverage was counted. */
+  coverage?: VerificationCoverage;
+}
+
+/** Mirrors the sidecar's `VerificationSize`: the facts a warning before a run states. */
+export interface VerificationSize {
+  files: number;
+  changedLines: number;
+  /** Big enough that the UI asks before starting. */
+  large: boolean;
+  /** Changed files with no text diff, so no patch for the agents. */
+  binary: string[];
+  /** Changed files whose diff is too large, so the agents see only its start. */
+  truncated: string[];
+  /** A rough estimate for the configured model. */
+  estimatedCostUsd: number;
+  budgetUsd: number;
+  /** The estimate is over the budget: the run may stop before it answers. */
+  overBudget: boolean;
 }
 
 /** The checks shown as one row each, in the order the report lists them. */
@@ -97,10 +126,10 @@ export interface LatestVerification {
     current: boolean;
   } | null;
   /**
-   * The PR's size, to warn before a run that will leave files out and cost
-   * more. Null until the PR is ready to read.
+   * The PR's size, to warn before a run that reads a lot or may outrun its
+   * budget. Null until the PR is ready to read.
    */
-  size: { files: number; changedLines: number; large: boolean } | null;
+  size: VerificationSize | null;
 }
 
 const path = (workspaceId: string, prId: string) =>

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
 import { invalidate } from "../../../lib/resourceCache";
-import { startVerification } from "../../../lib/reviewWorkspaces/verification";
+import {
+  startVerification,
+  type VerificationSize,
+} from "../../../lib/reviewWorkspaces/verification";
 import LoadingIndicator from "../../LoadingIndicator";
 import { Spinner } from "../../ThinkingIndicator";
 import {
@@ -52,6 +55,66 @@ export function useVerificationRun(prId: string, runId: string | null): RunProgr
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
+/** Paths named in a warning before the rest fold away. */
+const PATHS_SHOWN = 3;
+
+/** A list of paths in a sentence, the ones past {@link PATHS_SHOWN} behind a "more". */
+function PathList({ paths }: { paths: string[] }) {
+  const shown = paths.slice(0, PATHS_SHOWN);
+  const rest = paths.slice(PATHS_SHOWN);
+  return (
+    <>
+      <span className="font-mono text-xs">{shown.join(", ")}</span>
+      {rest.length > 0 && (
+        <details className="inline">
+          <summary className="inline cursor-pointer"> and {rest.length} more</summary>
+          <span className="block font-mono text-xs">{rest.join(", ")}</span>
+        </details>
+      )}
+    </>
+  );
+}
+
+/**
+ * What a run on this PR will and won't see, and what it may cost: the binary
+ * files that have no diff and the diffs cut off for their size, by name, and
+ * the estimate against the budget.
+ */
+export function SizeWarning({ size }: { size: VerificationSize }) {
+  const money = (usd: number) => `$${usd.toFixed(2)}`;
+  return (
+    <div className="space-y-1">
+      {size.large && (
+        <p>
+          This PR is large: {size.files} files, {size.changedLines} changed lines. The checks read
+          every file's diff, so the run takes longer and costs more than usual.
+        </p>
+      )}
+      {size.binary.length > 0 && (
+        <p>
+          {size.binary.length === 1
+            ? "1 binary file has"
+            : `${size.binary.length} binary files have`}{" "}
+          no diff to read: <PathList paths={size.binary} />
+        </p>
+      )}
+      {size.truncated.length > 0 && (
+        <p>
+          {size.truncated.length === 1 ? "1 diff is" : `${size.truncated.length} diffs are`} too
+          large and will be cut off, so the checks see only the start:{" "}
+          <PathList paths={size.truncated} />
+        </p>
+      )}
+      <p>
+        Estimated cost: about {money(size.estimatedCostUsd)}, against a budget of{" "}
+        {money(size.budgetUsd)}.
+        {size.overBudget &&
+          " The run may hit the budget and stop before it writes the report; raise it in Settings → PR review first."}
+      </p>
+    </div>
+  );
+}
+
 function CheckLine({ check }: { check: CheckProgress }) {
   const icon =
     check.state === "running" ? (
@@ -91,7 +154,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const [startedId, setStartedId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  // A large PR asks first: the run leaves files out and costs more.
+  // A large PR, or one the estimate says will outrun the budget, asks first.
   const [confirmingLarge, setConfirmingLarge] = useState(false);
 
   const run = latest.data?.run ?? null;
@@ -105,7 +168,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const size = latest.data?.size ?? null;
 
   const start = async (confirmed = false) => {
-    if (size?.large && !confirmed) {
+    if ((size?.large || size?.overBudget) && !confirmed) {
       setConfirmingLarge(true);
       return;
     }
@@ -200,10 +263,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             role="alert"
             className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"
           >
-            <p>
-              This PR is large: {size.files} files, {size.changedLines} changed lines. The run will
-              leave some files out and cost more than usual.
-            </p>
+            <SizeWarning size={size} />
             <div className="flex gap-2">
               <button
                 type="button"
@@ -232,9 +292,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
         {!run && !running && (
           <p className="text-sm text-zinc-400">
-            An agent reads the whole change and reports what it does, which files must be read, how
-            risky it is, and whether it is complete, tested, simple, fast and well commented. Checks
-            that pass say so in a line.
+            Agents read every changed file's diff and report what the change does, which files must
+            be read, how risky it is, and whether it is complete, tested, simple, fast and well
+            commented. Checks that pass say so in a line, and the report lists any file the checks
+            didn't read.
           </p>
         )}
 

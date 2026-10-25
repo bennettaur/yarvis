@@ -34,6 +34,27 @@ const MAX_TEXT_CHARS = 8_000;
 /** Longest tool summary: one line in a progress list. */
 const MAX_SUMMARY_CHARS = 160;
 
+/** Longest path kept whole; past this it is no path a file tool could open. */
+const MAX_PATH_CHARS = 4096;
+
+/** Most Read calls kept for a run; far past what any run makes. */
+const MAX_FILE_READS = 20_000;
+
+/** The tools that take one file's path. */
+const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/**
+ * One Read call, as the run made it: the path as given, the 1-based line it
+ * started at and how many lines it asked for (null for the tool's defaults),
+ * and whether the tool answered with an error.
+ */
+export interface FileRead {
+  path: string;
+  offset: number | null;
+  limit: number | null;
+  failed: boolean;
+}
+
 /** The tools Claude Code delegates through; it has used both names. */
 export const DELEGATION_TOOLS = ["Agent", "Task"] as const;
 const DELEGATION_TOOL_NAMES = new Set<string>(DELEGATION_TOOLS);
@@ -153,8 +174,19 @@ export class StreamJsonParser {
   private readonly taskToolUse = new Map<string, string>();
   /** Estimated cost per API message. Each content block repeats its message's usage. */
   private readonly messageCosts = new Map<string, number>();
+  /**
+   * Every Read call, by `tool_use` id, kept apart from the events: a run's
+   * event history is capped, and what a run read must be whole to say which
+   * files it never opened.
+   */
+  private readonly reads = new Map<string, FileRead>();
 
   constructor(private readonly cwd: string) {}
+
+  /** The run's Read calls so far, in the order it made them, main agent and subagents alike. */
+  get fileReads(): FileRead[] {
+    return [...this.reads.values()];
+  }
 
   /** What the run has spent so far, from the usage on its messages. */
   get estimatedCostUsd(): number {
@@ -296,12 +328,26 @@ export class StreamJsonParser {
           });
           events.push({ type: "subagent", phase: "start", id, ...delegation });
         } else {
+          const input = isObject(block.input) ? block.input : {};
+          const rawPath = FILE_TOOLS.has(name)
+            ? (asString(input.file_path) ?? asString(input.notebook_path))
+            : null;
+          const path = rawPath && rawPath.length <= MAX_PATH_CHARS ? rawPath : null;
+          if (name === "Read" && path && this.reads.size < MAX_FILE_READS) {
+            this.reads.set(id, {
+              path,
+              offset: asNumber(input.offset),
+              limit: asNumber(input.limit),
+              failed: false,
+            });
+          }
           events.push({
             type: "tool",
             id,
             name,
             summary: summarizeToolInput(name, block.input, this.cwd),
             subagentId,
+            ...(path ? { path: redactSecrets(path) } : {}),
           });
         }
       }
@@ -316,7 +362,10 @@ export class StreamJsonParser {
     for (const block of content) {
       if (!isObject(block) || block.type !== "tool_result") continue;
       const id = asString(block.tool_use_id);
-      if (!id || this.openDelegations.get(id)?.background !== false) continue;
+      if (!id) continue;
+      const read = this.reads.get(id);
+      if (read && block.is_error === true) read.failed = true;
+      if (this.openDelegations.get(id)?.background !== false) continue;
       const stop = this.stopDelegation(id, block.is_error === true);
       if (stop) events.push(stop);
     }

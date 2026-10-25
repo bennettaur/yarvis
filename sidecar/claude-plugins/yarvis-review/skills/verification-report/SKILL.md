@@ -8,8 +8,10 @@ description: Writes a pull request verification report by running the summary, r
 The report exists to make a review faster. A reviewer reads it before the code;
 anything in it that isn't worth their time is a failure.
 
-You coordinate. The checks do the reading; you don't review the code yourself
-and you don't add findings of your own.
+You coordinate. The checks do the reading: each one opens every patch in its
+own lane from REVIEW_CONTEXT's `index.md`, and Yarvis lists any changed file
+none of them read. You don't review the code yourself, you don't read the
+patches, and you don't add findings of your own.
 
 ## 1. Run every check at once
 

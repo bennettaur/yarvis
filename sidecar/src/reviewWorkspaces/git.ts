@@ -628,12 +628,50 @@ export async function fileDiffBetween(
   path: string,
   oldPath?: string,
 ): Promise<string> {
+  return git(runner, fileDiffArgs(from, to, path, oldPath), clonePath);
+}
+
+function fileDiffArgs(from: string, to: string, path: string, oldPath?: string): string[] {
   assertSafeRepoPath(path);
   if (oldPath) assertSafeRepoPath(oldPath);
   const paths = oldPath && oldPath !== path ? [oldPath, path] : [path];
-  return git(
-    runner,
-    ["--literal-pathspecs", "diff", ...SAFE_DIFF_FLAGS, "-M", `${from}..${to}`, "--", ...paths],
-    clonePath,
-  );
+  return [
+    "--literal-pathspecs",
+    "diff",
+    ...SAFE_DIFF_FLAGS,
+    "-M",
+    `${from}..${to}`,
+    "--",
+    ...paths,
+  ];
+}
+
+/** How long one capped file diff may take; a multi-megabyte generated file takes a few seconds. */
+const CAPPED_DIFF_TIMEOUT_MS = 60_000;
+
+/**
+ * {@link fileDiffBetween}, read only up to `maxBytes`: for a reader of every
+ * changed file, where one generated file's diff can run to hundreds of
+ * megabytes. `complete` is false when the output reached the cap or the time
+ * ran out, and the patch is then what had arrived, cut at a line.
+ */
+export async function fileDiffCapped(
+  runner: CappedGitRunner,
+  clonePath: string,
+  from: string,
+  to: string,
+  path: string,
+  oldPath: string | undefined,
+  maxBytes: number,
+): Promise<{ patch: string; complete: boolean }> {
+  const args = fileDiffArgs(from, to, path, oldPath);
+  const result = await runner(args, {
+    cwd: clonePath,
+    timeoutMs: CAPPED_DIFF_TIMEOUT_MS,
+    maxBytes,
+  });
+  if (result.stopped === null && result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed (${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  return { patch: result.stdout, complete: result.stopped === null };
 }

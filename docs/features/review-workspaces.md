@@ -149,18 +149,35 @@ marks its files viewed.
 
 ### Verification report
 
-**Verification** in the PR bar opens a tab where an agent (Claude Code,
-running on your machine against the PR's checkout) reads the whole change and
-reports: a summary, the files that must be read and why, the risk, and checks
-for completeness, tests, complexity, performance and comments. Its progress
-shows check by check while it runs, and **Cancel** stops it. Every file and
-line in the report opens the diff there.
+**Verification** in the PR bar opens a tab where agents (Claude Code,
+running on your machine against the PR's checkout) read every changed file's
+diff and report: a summary, the files that must be read and why, the risk, and
+checks for completeness, tests, complexity, performance and comments. Its
+progress shows check by check while it runs, and **Cancel** stops it. Every
+file and line in the report opens the diff there.
+
+No file is left out to save room. Each changed file's diff is given to the
+agents on its own, and each check is told to read every one in its area (the
+tests check reads the tests and the code they cover, for example). Only a
+binary file has no diff. A diff over 2 MB (a lockfile, a generated bundle) is
+cut to its first 256 KB, and the agents are told so.
+
+Yarvis then counts, from the files the agents actually opened, which changed
+files no check read in full. When there are any, the report opens with a
+**Not examined** section listing each one and why (never opened, only part of
+it read, a binary file, a diff cut off for its size). Click a path to open its
+diff. Nothing else in the report covers those files. When every file was read,
+the report says so in a line.
 
 - A report made for an older head says so, with **Re-run**.
 - If a re-run fails or is cancelled, the last good report stays below the
   notice.
-- On a large PR you are asked first: the run leaves some files out and costs
-  more.
+- On a large PR, or when the estimated cost is over the report's budget
+  (**Settings → PR review**), you are asked first. The warning names the
+  binary files and any diffs that will be cut off, and gives a rough cost
+  estimate against the budget. A run that reaches its budget stops without a
+  report, so raise the budget there before running a PR the estimate says is
+  over it.
 
 ### Mutation testing
 
@@ -295,6 +312,11 @@ Yarvis checks the agent's answer rather than taking it on trust:
 - Every file that changed since your review is accounted for. One the agent
   neither listed nor cited as a fix is listed as needing review ("not
   classified by the agent").
+- The agent gets every changed file's interdiff, none left out for room, and
+  Yarvis counts which ones it actually read. A file it didn't read in full is
+  listed as needing review ("not examined by the agent", with why), even when
+  the agent called it minor or cited a fix there. A file with a version over
+  2 MB has no interdiff and is listed the same way.
 - When it changed anything, the verdict's reason is Yarvis's own count, and a
   line under the summary says what it couldn't take as given.
 - **Ready to approve** never stands beside anything outstanding.

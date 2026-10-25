@@ -59,10 +59,10 @@ export function resultLine(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
-export function runOptions<T = unknown>(
+export function runOptions<T = unknown, R = T>(
   cwd: string,
-  overrides: Partial<ClaudeRunOptions<T>> = {},
-): ClaudeRunOptions<T> {
+  overrides: Partial<ClaudeRunOptions<T, R>> = {},
+): ClaudeRunOptions<T, R> {
   return {
     kind: "test-kind",
     targetKey: "gh:o/r/1",

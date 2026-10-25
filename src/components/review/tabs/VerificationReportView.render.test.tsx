@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
-import { renderToHtml, textOf } from "../../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../../test/render";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -70,6 +70,58 @@ describe("VerificationReportView", () => {
     const buttons = [...host.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(buttons.some((t) => t.includes("src/cache.ts"))).toBe(false);
     expect(host.textContent).toContain("src/cache.ts:10–40");
+  });
+
+  it("leads with the files the checks didn't read, each opening its diff", async () => {
+    const notExamined = Array.from({ length: 8 }, (_, i) => ({
+      path: `zz/f${i}.ts`,
+      reason: i === 0 ? "only 800 of its patch's 2400 lines were read" : "its patch wasn't opened",
+    }));
+    const opened: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: { ...report, coverage: { examined: 12, total: 20, notExamined } },
+        onOpen: { open: (path) => opened.push(path), canOpen: () => true },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      expect(text.indexOf("Not examined")).toBeLessThan(text.indexOf("Summary"));
+      expect(text).toContain("The checks didn't read 8 of the 20 changed files.");
+      expect(text).toContain("only 800 of its patch's 2400 lines were read");
+      // Past six, the rest fold away behind a count.
+      expect(
+        host.querySelector('section[aria-label="Not examined"] details')?.textContent,
+      ).toContain("2 more");
+      const first = [...host.querySelectorAll("button")].find((b) => b.textContent === "zz/f0.ts");
+      first?.click();
+      expect(opened).toEqual(["zz/f0.ts"]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says plainly when every file was read, and when it can't tell", async () => {
+    const all = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: { ...report, coverage: { examined: 20, total: 20, notExamined: [] } },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(all).toContain("The checks read all 20 changed files.");
+    expect(all).not.toContain("Not examined");
+    const old = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(old).toContain("doesn't record which files its checks read");
+    expect(old).not.toContain("read all");
   });
 
   it("gives a passing check one line and a failing one its findings", async () => {

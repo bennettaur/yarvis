@@ -63,7 +63,43 @@ describe("reading a captured run", () => {
       name: "Read",
       summary: "a.txt",
       subagentId: null,
+      path: "/work/repo/a.txt",
     });
+  });
+
+  it("keeps every Read call apart from the events, with its path whole", () => {
+    const parser = new StreamJsonParser("/work/repo");
+    for (const line of readFileSync(
+      join(import.meta.dir, "fixtures", "subagent-structured-output.jsonl"),
+      "utf8",
+    ).split("\n")) {
+      parser.parseLine(line);
+    }
+    expect(parser.fileReads).toEqual([
+      { path: "/work/repo/a.txt", offset: null, limit: null, failed: false },
+    ]);
+    // A path past the summary's cap is still kept whole.
+    const long = `/work/repo/${"d/".repeat(200)}x.ts`;
+    const id = "toolu_long";
+    parser.parseLine(
+      JSON.stringify({
+        type: "assistant",
+        parent_tool_use_id: "toolu_sub",
+        message: {
+          id: "msg_long",
+          content: [
+            { type: "tool_use", id, name: "Read", input: { file_path: long, offset: 5, limit: 9 } },
+          ],
+        },
+      }),
+    );
+    parser.parseLine(
+      JSON.stringify({
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true }] },
+      }),
+    );
+    expect(parser.fileReads.at(-1)).toEqual({ path: long, offset: 5, limit: 9, failed: true });
   });
 
   it("keeps the delegation tool and the structured-output tool out of the tool list", () => {

@@ -3,6 +3,7 @@ import {
   VERIFICATION_CHECKS,
   type VerificationCheck,
   type VerificationCheckKey,
+  type VerificationCoverage,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 
@@ -130,9 +131,63 @@ function CheckRow({
   );
 }
 
+/** Not-examined files shown before the rest fold away. */
+const NOT_EXAMINED_SHOWN = 6;
+
 /**
- * The report in the order a reviewer uses it: what the change is, which files
- * to read first, how risky it is, then the checks.
+ * Which changed files the checks didn't read, first and hard to miss: nothing
+ * below says anything about them. A report from before coverage was counted
+ * says it can't tell, rather than implying it read everything.
+ */
+function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: OpenLocation }) {
+  const { coverage } = report;
+  if (!coverage) {
+    return (
+      <p className="text-xs text-zinc-500">
+        This report doesn't record which files its checks read. Re-run it to find out.
+      </p>
+    );
+  }
+  if (coverage.notExamined.length === 0) {
+    return (
+      <p className="text-xs text-zinc-500">
+        The checks read all {coverage.total} changed {coverage.total === 1 ? "file" : "files"}.
+      </p>
+    );
+  }
+  const item = (entry: VerificationCoverage["notExamined"][number]) => (
+    <li key={entry.path} className="text-sm">
+      <Location path={entry.path} label="" className="text-xs" onOpen={onOpen} />
+      <p className="text-xs text-amber-200/70">{entry.reason}</p>
+    </li>
+  );
+  const shown = coverage.notExamined.slice(0, NOT_EXAMINED_SHOWN);
+  const rest = coverage.notExamined.slice(NOT_EXAMINED_SHOWN);
+  return (
+    <section
+      aria-label="Not examined"
+      className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3"
+    >
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-300">Not examined</h3>
+      <p className="text-xs text-amber-200">
+        The checks didn't read {coverage.notExamined.length} of the {coverage.total} changed files.
+        Nothing in this report covers them; review them yourself.
+      </p>
+      <ul className="space-y-1.5">{shown.map(item)}</ul>
+      {rest.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-amber-300">{rest.length} more</summary>
+          <ul className="mt-1.5 space-y-1.5">{rest.map(item)}</ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The report in the order a reviewer uses it: which files it didn't cover,
+ * what the change is, which files to read first, how risky it is, then the
+ * checks.
  */
 export default function VerificationReportView({
   report,
@@ -144,6 +199,8 @@ export default function VerificationReportView({
   const { risk } = report;
   return (
     <div className="space-y-5">
+      <Coverage report={report} onOpen={onOpen} />
+
       <Section title="Summary">
         <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
       </Section>

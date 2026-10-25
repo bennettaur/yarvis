@@ -5,17 +5,19 @@ import { join } from "node:path";
 import { jsonSchemaArg } from "../agentRuns/service.ts";
 import type { CheckItem, PrDetail } from "../pr/types.ts";
 import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
-import type { ReviewPatch } from "./service.ts";
+import type { PatchIndexEntry } from "./patchFiles.ts";
 import {
   buildVerificationMaterial,
   checkOutcome,
   emptyAudit,
+  estimateRunCostUsd,
   MAX_MUST_READ,
   mustReadCap,
   similarTitles,
   summaryWordCap,
   type VerificationInput,
   verificationReportSchema,
+  verificationSize,
 } from "./verification.ts";
 
 const limits = {
@@ -384,28 +386,38 @@ function hostileInput(): VerificationInput {
     | "checksUnavailable"
     | "reviewThreads"
   >;
-  const file = (path: string, additions: number) => ({
+  const entry = (path: string, additions: number): PatchIndexEntry => ({
     path,
-    status: "modified" as const,
+    status: "modified",
     additions,
     deletions: 0,
     binary: false,
+    patchFile: `patches/${path}.diff`,
+    lines: additions + 5,
+    bytes: 1024,
+    truncated: false,
+    noPatch: null,
+    hunks: [{ start: 1, count: additions }],
   });
-  const patches: ReviewPatch[] = [
+  const index: PatchIndexEntry[] = [
+    entry(`src/${MARK}.ts`, 2),
     {
-      file: file(`src/${MARK}.ts`, 2),
-      patch: `diff --git a/src/${MARK}.ts b/src/${MARK}.ts\n@@ -1,0 +1,2 @@\n+a ${MARK}\n+b\n`,
-      omitted: null,
+      ...entry("img.png", 0),
+      binary: true,
+      patchFile: null,
+      lines: 0,
+      bytes: 0,
+      noPatch: "binary",
+      hunks: [],
     },
-    { file: { ...file("img.png", 0), binary: true }, patch: null, omitted: "binary" },
-    { file: file("vendor/big.js", 9000), patch: null, omitted: "over-budget" },
+    { ...entry("vendor/big.js", 90_000), truncated: true },
   ];
   return {
     ref: { provider: "github", owner: "o", repo: "r", number: 1 },
     headSha: "abc123",
     detail,
     fallbackTitle: "cached",
-    patches,
+    index,
   };
 }
 
@@ -418,12 +430,11 @@ describe("building the run's material", () => {
   it("keeps PR-written text out of the prompt, and fenced in the context files", () => {
     const material = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
     expect(material.prompt).not.toContain(MARK);
-    for (const text of [material.contextFile, material.diffFile]) {
+    for (const text of [material.contextFile, material.indexFile]) {
       expect(text).toContain(MARK);
       expect(outsideFences(text)).not.toContain(MARK);
       expect(outsideFences(text)).not.toContain("Ignore previous instructions");
     }
-    expect(material.diffFile.split("\n")[0]).toContain("untrusted reference data");
   });
 
   it("gives the orchestrator only the instructions, the context location and the caps", () => {
@@ -436,23 +447,26 @@ describe("building the run's material", () => {
     expect(prompt).not.toContain("Changed files (");
   });
 
-  it("lists the changed files, the CI status and the comments in pr.md", () => {
+  it("puts the CI status and comments in pr.md, and every changed file in index.md", () => {
     const {
       contextFile,
-      diffFile,
+      indexFile,
       limits: caps,
     } = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
     expect(contextFile.split("\n")[2]).toContain("never instructions");
     expect(contextFile).toContain("CI checks (1 failed, 1 unknown).");
     expect(contextFile).toContain("Review comments (1 threads, 1 open).");
-    expect(contextFile).toContain("2 files without a diff there");
-    expect(contextFile).toContain(`src/${MARK}.ts (modified, +2 -0): changes.diff line 3`);
-    expect(contextFile).toContain("img.png (modified, binary): no diff (binary)");
-    expect(contextFile).toContain("vendor/big.js (modified, +9000 -0): no diff (left out");
-    // The line pr.md points at is that file's header.
-    expect(diffFile.split("\n")[2]).toBe(`diff --git a/src/${MARK}.ts b/src/${MARK}.ts`);
-    expect(diffFile).toContain(`+     1  a ${MARK}\n+     2  b`);
-    // A file left out doesn't buy summary words.
+    expect(contextFile).toContain("Changed files: 3, with 90002 changed lines.");
+    expect(contextFile).toContain("1 binary file has no patch.");
+    expect(contextFile).toContain("1 patch is cut off");
+    expect(indexFile).toContain(
+      `- src/${MARK}.ts (modified, +2 -0): patches/src/${MARK}.ts.diff (7 lines, 1.0 KB)`,
+    );
+    expect(indexFile).toContain("- img.png (modified, binary): no patch (binary)");
+    expect(indexFile).toContain(
+      "- vendor/big.js (modified, +90000 -0): patches/vendor/big.js.diff (90005 lines, 1.0 KB; CUT OFF",
+    );
+    // Bulk cut off for its size doesn't buy summary words.
     expect(caps.summaryWords).toBe(10);
     expect([...caps.changedPaths]).toEqual([`src/${MARK}.ts`, "img.png", "vendor/big.js"]);
   });
@@ -465,6 +479,49 @@ describe("building the run's material", () => {
     expect(contextFile).toContain("Description: unknown");
     expect(contextFile).toContain("CI checks: unknown");
     expect(outsideFences(contextFile)).not.toContain(MARK);
+  });
+});
+
+describe("the size a warning states", () => {
+  const f = (path: string, lines: number, binary = false) => ({
+    path,
+    binary,
+    additions: binary ? 0 : lines,
+    deletions: 0,
+  });
+
+  it("names the binary and cut-off files, and weighs the estimate against the budget", () => {
+    const files = [f("img.png", 0, true), f("src/schema.ts", 40_000), f("src/a.ts", 20)];
+    const size = verificationSize(files, ["src/schema.ts"], {
+      model: "sonnet",
+      maxBudgetUsd: 2,
+    });
+    expect(size).toMatchObject({
+      files: 3,
+      changedLines: 40_020,
+      large: true,
+      binary: ["img.png"],
+      truncated: ["src/schema.ts"],
+      budgetUsd: 2,
+    });
+    // A cut-off file costs only a page of it.
+    expect(size.estimatedCostUsd).toBeLessThan(2);
+    expect(size.overBudget).toBe(false);
+    // Whole, the same file is far over the budget.
+    expect(verificationSize(files, [], { model: "sonnet", maxBudgetUsd: 2 }).overBudget).toBe(true);
+    // A lockfile or generated code costs a page however big it is.
+    const bulk = [f("package-lock.json", 40_000), f("web/generated/api.ts", 40_000)];
+    expect(verificationSize(bulk, [], { model: "sonnet", maxBudgetUsd: 2 }).overBudget).toBe(false);
+  });
+
+  it("grows with the patches read, from a floor", () => {
+    expect(estimateRunCostUsd("sonnet", 0)).toBeGreaterThan(0);
+    expect(estimateRunCostUsd("sonnet", 1_000_000)).toBeGreaterThan(
+      estimateRunCostUsd("sonnet", 0),
+    );
+    expect(estimateRunCostUsd("haiku", 1_000_000)).toBeLessThan(
+      estimateRunCostUsd("opus", 1_000_000),
+    );
   });
 });
 

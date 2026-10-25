@@ -11,14 +11,18 @@ The verification report is the `verification-report` skill, which runs the
 agents in `agents/` (summary and must-reads, risk, completeness, tests,
 complexity, performance, comments) in parallel and assembles their answers.
 Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
-writes the PR's context and numbered diff to a directory the run may read, and
-removes duplicate findings across sections once the run answers.
+writes the PR's context, an `index.md` of every changed file and one numbered
+patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a
+directory the run may read. Once the run answers it removes duplicate
+findings across sections and adds which changed files no agent read
+(`reviewWorkspaces/coverage.ts`, from the run's Read calls).
 
 The "What's changed" re-review summary is the `rereviewer` agent alone, run as
 the main thread (`--agent yarvis-review:rereviewer`). Its run starts from
 `sidecar/src/reviewWorkspaces/rereview.ts`, which writes the reviewer's
-comments and the numbered interdiff since their last review, and checks the
-answer against them.
+comments and one numbered interdiff per file changed since their last review,
+laid out the same way, and checks the answer against them and against what
+the agent read.
 
 Every verification agent takes its inputs and trust rules from
 `shared/inputs-and-trust.md`, which `plugins.ts` puts in place of the
