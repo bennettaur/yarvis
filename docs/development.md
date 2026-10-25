@@ -205,6 +205,35 @@ gh variable set VERIFY_ALLOWED_SIGNERS --body "$(bun run --silent verify:signers
 The second command replaces the variable's whole value, so use it only for
 the first key; otherwise add the line in the repo's settings.
 
+### The merge reviewer
+
+A report's `agent` verdict means it looks right but someone should read the
+diff before it merges. That someone can be Yarvis's `merge-reviewer`
+specialist (see `docs/features/pr-review.md`). It posts a signed agent-review
+comment, and the gate approves on it in enforce mode only when:
+
+- the comment is from a trusted user and signed by a key allowed for agent
+  reviews (namespace `yarvis-agent-review`);
+- it names the PR, its current commit and the exact latest signed report, so
+  a new report needs a new review;
+- that report's verdict is `agent` with no blocking finding, the change isn't
+  high risk by the stricter of the gate's own floor and the report's signed
+  tier, the author is trusted and it isn't a draft.
+
+Each review also counts for only six hours after it was signed, and a signed
+reject of a report stands even if an approve of the same report is posted
+after it. Reviews must be signed by the principal `yarvis-merge-reviewer` and
+reports by `verify-pr` (or `verify-pr-<name>` for another maintainer), so even an allowed_signers line missing its
+`namespaces=` limit can't let one key do the other's job.
+
+Its key lives in Yarvis's Settings → Credentials. `bun run verify:agent-key`
+writes one to `merge-reviewer.key`, readable only by you, and prints its
+`VERIFY_ALLOWED_SIGNERS` line. Add that line beside your report key's line in
+the repo's settings rather than with `gh variable set`, which would replace
+it. Paste the key file's line into Settings, then delete the file. The bot's approval on
+these starts `Agent-approved:`, which calibration reports as its own path and
+auto-revert treats like an auto-merge.
+
 ### When an auto-merge breaks main
 
 The `Verify revert` workflow (`.github/workflows/verify-revert.yml`) runs when

@@ -25,9 +25,15 @@
  */
 
 import { readFileSync } from "node:fs";
+import {
+  AGENT_APPROVAL_PREFIX,
+  AGENT_REVIEW_MARKER,
+  parseSignedAgentReview,
+  reportDigest,
+} from "./agentReview.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
-import { parseSignedReport, REPORT_MARKER, type ReportData } from "./report.ts";
-import { REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
+import { parseSignedReport, REPORT_MARKER, type ReportData, type SignedReport } from "./report.ts";
+import { AGENT_REVIEW_NAMESPACE, REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
 import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
@@ -41,7 +47,7 @@ export const AUTO_APPROVAL_PREFIX = "Auto-approved:";
 export const APPROVE_COMMAND_PREFIX = "Approved by @";
 
 /** How a merged PR got its approval. */
-export type MergePath = "auto" | "/approve" | "human" | "none";
+export type MergePath = "auto" | "agent" | "/approve" | "human" | "none";
 
 export interface ApprovalReview {
   state: string;
@@ -67,6 +73,7 @@ export function mergePath(reviews: ApprovalReview[]): MergePath {
   if (approvals.some((review) => !review.byBot && review.byMaintainer)) return "human";
   const bot = approvals.filter((review) => review.byBot);
   if (bot.some((review) => review.body.startsWith(APPROVE_COMMAND_PREFIX))) return "/approve";
+  if (bot.some((review) => review.body.startsWith(AGENT_APPROVAL_PREFIX))) return "agent";
   if (bot.some((review) => review.body.startsWith(AUTO_APPROVAL_PREFIX))) return "auto";
   return "none";
 }
@@ -154,37 +161,62 @@ export interface ReportDecision {
   approve: boolean;
 }
 
+/** Checks a signature over a payload; injected so tests needn't make real ones. */
+type SignatureCheck = (payload: string, signature: string) => boolean;
+
+/** The principal the merge reviewer's key goes by in `VERIFY_ALLOWED_SIGNERS`. */
+export const AGENT_PRINCIPAL = "yarvis-merge-reviewer";
 /**
- * What to do about a report comment, or why to do nothing. A report that
- * isn't signed, or is for another PR or an older commit, sets no status at
- * all: a success status on the head would satisfy the required check without
- * a current, signed report behind it.
- *
- * @param isSigned whether `signature` is a valid signature over `payload` by
- *   an allowed key. Passed in so tests needn't make real signatures.
+ * Report keys go by `verify-pr`, or `verify-pr-<name>` for a second
+ * maintainer's. A list of allowed names, not "anything but the reviewer", so
+ * the reviewer's key listed under some other name still can't sign a report.
  */
-export function decideReport(input: {
-  comment: Comment;
+const REPORT_PRINCIPAL = /^verify-pr(-[A-Za-z0-9_.-]+)?$/;
+
+/**
+ * The two signature checks the gate makes. Each namespace is tied to its own
+ * principal as well as to the `namespaces=` limit on its allowed_signers
+ * line, so a line pasted without that limit still can't let the merge
+ * reviewer's key sign a report, or a report key sign an approval.
+ */
+export function signatureChecks(allowedSigners: string): {
+  isReportSigned: SignatureCheck;
+  isReviewSigned: SignatureCheck;
+} {
+  return {
+    isReportSigned: (payload, signature) => {
+      const principal = verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners);
+      return principal !== null && REPORT_PRINCIPAL.test(principal);
+    },
+    isReviewSigned: (payload, signature) =>
+      verifiedSigner(payload, signature, AGENT_REVIEW_NAMESPACE, allowedSigners) ===
+      AGENT_PRINCIPAL,
+  };
+}
+
+/**
+ * The newest report a trusted user posted, if it is signed by an allowed key,
+ * recent, and for this PR's current commit; otherwise why not. A report that
+ * fails any of these sets no status: a success status on the head would
+ * satisfy the required check without a current, signed report behind it.
+ */
+export function currentReport(input: {
   comments: Comment[];
   repo: string;
   pr: PullRequest;
-  files: ChangedFile[];
   trusted: number[];
-  mode: Mode;
-  isSigned: (payload: string, signature: string) => boolean;
+  isReportSigned: SignatureCheck;
   now: Date;
-}): ReportDecision | { skip: string } {
-  const { comment, pr, trusted } = input;
-  const isTrusted = (c: Comment) => trusted.includes(c.user.id);
-  if (!isTrusted(comment)) return { skip: "posted by someone who isn't trusted" };
-
-  // Act only on the newest trusted report, in case an older one's run is late.
-  const reports = input.comments.filter((c) => c.body.includes(REPORT_MARKER) && isTrusted(c));
-  if (reports[reports.length - 1]?.id !== comment.id) return { skip: "a newer report exists" };
-
-  const signed = parseSignedReport(comment.body);
+}): (SignedReport & { commentId: number }) | { skip: string } {
+  const { pr } = input;
+  const reports = input.comments.filter(
+    (c) => c.body.includes(REPORT_MARKER) && input.trusted.includes(c.user.id),
+  );
+  const latest = reports[reports.length - 1];
+  if (!latest) return { skip: "no report from a trusted user" };
+  const signed = parseSignedReport(latest.body);
   if (!signed) return { skip: "no readable, signed data block" };
-  if (!input.isSigned(signed.payload, signed.signature)) {
+  if (!input.isReportSigned(signed.payload, signed.signature)) {
     return { skip: "the signature isn't from a key in VERIFY_ALLOWED_SIGNERS" };
   }
   const report = signed.data;
@@ -198,8 +230,30 @@ export function decideReport(input: {
       skip: `for ${report.headSha.slice(0, 7)}, but the head is ${pr.head.sha.slice(0, 7)}`,
     };
   }
+  return { ...signed, commentId: latest.id };
+}
 
-  const blockers = autoMergeBlockers({
+/** What to do about a report comment, or why to do nothing. */
+export function decideReport(input: {
+  comment: Comment;
+  comments: Comment[];
+  repo: string;
+  pr: PullRequest;
+  files: ChangedFile[];
+  trusted: number[];
+  mode: Mode;
+  isReportSigned: SignatureCheck;
+  now: Date;
+}): ReportDecision | { skip: string } {
+  const { comment, pr, trusted } = input;
+  if (!trusted.includes(comment.user.id)) return { skip: "posted by someone who isn't trusted" };
+  const signed = currentReport(input);
+  if ("skip" in signed) return signed;
+  // Act only on the newest trusted report, in case an older one's run is late.
+  if (signed.commentId !== comment.id) return { skip: "a newer report exists" };
+  const report = signed.data;
+
+  const reasons = autoMergeBlockers({
     report,
     prAuthor: pr.user,
     draft: pr.draft,
@@ -208,9 +262,9 @@ export function decideReport(input: {
     // gate's own from the paths is a floor under it that the report can't lower.
     tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
-  if (blockers.length > 0) {
+  if (reasons.length > 0) {
     return {
-      status: `Report: ${report.verdict}. Not auto-merging: ${blockers.join("; ")}`,
+      status: `Report: ${report.verdict}. Not auto-merging: ${reasons.join("; ")}`,
       approve: false,
     };
   }
@@ -218,6 +272,107 @@ export function decideReport(input: {
     return { status: "Report: auto. Shadow mode, so not merging", approve: false };
   }
   return { status: "Report: auto. Approved and set to auto-merge", approve: true };
+}
+
+/**
+ * What to do about the Yarvis merge reviewer's comment, or why to do
+ * nothing. It can approve only a PR whose current, signed report asked for
+ * an agent's review, only below high risk, and only for the exact report it
+ * read: a new report needs a new review.
+ *
+ * Standard-risk PRs and major findings are allowed here, unlike on the
+ * report's own path, because judging those is what the reviewer is for. A
+ * blocker still needs a person.
+ */
+export function decideAgentReview(input: {
+  comment: Comment;
+  comments: Comment[];
+  repo: string;
+  pr: PullRequest;
+  files: ChangedFile[];
+  trusted: number[];
+  mode: Mode;
+  isReportSigned: SignatureCheck;
+  isReviewSigned: SignatureCheck;
+  now: Date;
+}): ReportDecision | { skip: string } {
+  const { comment, pr, trusted } = input;
+  const isTrusted = (c: Comment) => trusted.includes(c.user.id);
+  if (!isTrusted(comment)) return { skip: "posted by someone who isn't trusted" };
+  const reviews = input.comments.filter(
+    (c) => c.body.includes(AGENT_REVIEW_MARKER) && isTrusted(c),
+  );
+  if (reviews[reviews.length - 1]?.id !== comment.id) {
+    return { skip: "a newer agent review exists" };
+  }
+
+  const review = parseSignedAgentReview(comment.body);
+  if (!review) return { skip: "no readable, signed agent review" };
+  if (!input.isReviewSigned(review.payload, review.signature)) {
+    return { skip: "the agent review isn't signed by a key allowed for agent reviews" };
+  }
+  if (review.data.repo !== input.repo || review.data.pr !== pr.number) {
+    return { skip: "the agent review is for another PR" };
+  }
+  const stale = staleness(review.data.issuedAt, input.now);
+  if (stale) return { skip: `the agent review can't be acted on: ${stale}` };
+  if (review.data.headSha !== pr.head.sha) {
+    return { skip: "the agent review is for an older commit" };
+  }
+
+  const report = currentReport(input);
+  if ("skip" in report) return report;
+  const digest = reportDigest(report.payload);
+  if (review.data.reportDigest !== digest) {
+    return { skip: "the agent review read a different report than the latest one" };
+  }
+  if (report.data.verdict !== "agent") {
+    return { skip: `the report's verdict is ${report.data.verdict}, not agent` };
+  }
+  if (review.data.decision !== "approve") {
+    return { skip: `the agent review rejected it: ${review.data.reason}` };
+  }
+  // A signed reject of this same report stands, even if an approve was
+  // re-posted after it.
+  const rejected = reviews.some((c) => {
+    const other = parseSignedAgentReview(c.body);
+    return (
+      other?.data.decision === "reject" &&
+      other.data.reportDigest === digest &&
+      input.isReviewSigned(other.payload, other.signature)
+    );
+  });
+  if (rejected) return { skip: "a review of this same report rejected it" };
+
+  const reasons: string[] = [];
+  if (!trusted.includes(pr.user.id)) reasons.push("PR author is not a maintainer");
+  if (pr.draft) reasons.push("PR is a draft");
+  if (stricterTier(gateTier(pr, input.files), report.data.riskTier) === "high") {
+    reasons.push("high-risk change");
+  }
+  if (report.data.blockers > 0) reasons.push("report has blocker findings");
+  if (reasons.length > 0) {
+    return {
+      status: `Report: agent, reviewed. Not auto-merging: ${reasons.join("; ")}`,
+      approve: false,
+    };
+  }
+  if (input.mode === "shadow") {
+    return {
+      status: "Report: agent, approved by review. Shadow mode, so not merging",
+      approve: false,
+    };
+  }
+  return { status: "Report: agent, approved by review and set to auto-merge", approve: true };
+}
+
+/** Which handler a comment goes to, or `null` for none. */
+export function commentKind(body: string): "approve" | "agent-review" | "report" | null {
+  if (parseApprove(body)) return "approve";
+  // Checked before the report marker: a review quoting a report is still a review.
+  if (body.includes(AGENT_REVIEW_MARKER)) return "agent-review";
+  if (body.includes(REPORT_MARKER)) return "report";
+  return null;
 }
 
 /** Reads `/approve`, or `/approve <sha>` naming the commit the maintainer reviewed. */
@@ -377,7 +532,13 @@ function handleApprove(
   react(event.comment.id, "rocket");
 }
 
-function handleReport(
+/**
+ * Acts on a report or an agent review: reads the PR's comments and files,
+ * refuses if the head moved meanwhile (the files must describe the head being
+ * approved), decides, then approves and sets the status.
+ */
+function handleSigned(
+  kind: "report" | "agent-review",
   event: CommentEvent,
   pr: PullRequest,
   trusted: number[],
@@ -388,12 +549,11 @@ function handleReport(
     `repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`,
   );
   const files = changedFiles(pr.number);
-  // The files must describe the head being approved, so refuse if it moved meanwhile.
   if (fetchPr(pr.number).head.sha !== pr.head.sha) {
-    console.log("[verify] the head moved while reading the PR; a new report is needed");
+    console.log(`[verify] the head moved while reading the PR; a new ${kind} is needed`);
     return;
   }
-  const decision = decideReport({
+  const input = {
     comment: event.comment,
     comments,
     repo: process.env.GH_REPO ?? "",
@@ -401,18 +561,21 @@ function handleReport(
     files,
     trusted,
     mode,
-    isSigned: (payload, signature) =>
-      verifiedSigner(payload, signature, REPORT_NAMESPACE, allowedSigners) !== null,
+    ...signatureChecks(allowedSigners),
     now: new Date(),
-  });
+  };
+  const decision = kind === "report" ? decideReport(input) : decideAgentReview(input);
   if ("skip" in decision) {
-    console.log(`[verify] ignoring this report: ${decision.skip}`);
+    console.log(`[verify] ignoring this ${kind}: ${decision.skip}`);
     return;
   }
   if (decision.approve) {
+    const head = pr.head.sha.slice(0, 7);
     approveAndMerge(
       pr,
-      `${AUTO_APPROVAL_PREFIX} the verification report for ${pr.head.sha.slice(0, 7)} passed.`,
+      kind === "report"
+        ? `${AUTO_APPROVAL_PREFIX} the verification report for ${head} passed.`
+        : `${AGENT_APPROVAL_PREFIX} the merge reviewer approved ${head} after its verification report asked for a review.`,
     );
   }
   setStatus(pr.head.sha, decision.status, event.comment.html_url);
@@ -436,10 +599,10 @@ if (import.meta.main) {
   const pr = fetchPr(event.issue.number);
   if (pr.state !== "open") process.exit(0);
 
-  const approve = parseApprove(event.comment.body);
-  if (approve) {
-    handleApprove(event, pr, approve.sha, trusted);
-  } else if (event.comment.body.includes(REPORT_MARKER)) {
-    handleReport(event, pr, trusted, mode, allowedSigners);
+  const kind = commentKind(event.comment.body);
+  if (kind === "approve") {
+    handleApprove(event, pr, parseApprove(event.comment.body)?.sha, trusted);
+  } else if (kind) {
+    handleSigned(kind, event, pr, trusted, mode, allowedSigners);
   }
 }
