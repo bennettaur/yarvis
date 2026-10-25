@@ -11,9 +11,10 @@
  *   auto-merge the same way.
  *
  * Everything here is deterministic. The report was written by a model reading
- * text a PR author controls, so the gate takes nothing from it on trust except
- * the verdict, and only from a report a trusted user posted. It recomputes the
- * risk tier itself from the PR's files.
+ * text a PR author controls, so the gate takes only its verdict and its
+ * assessed risk tier, and only from a report a trusted user posted. It
+ * recomputes a floor under that tier from the PR's files and their added
+ * lines, which the report's tier can raise but never lower.
  *
  * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO,
  * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USER_IDS
@@ -24,7 +25,7 @@
 import { readFileSync } from "node:fs";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
-import { type ChangedFile, classify, type Tier } from "./tier.ts";
+import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
 const STATUS_CONTEXT = "Verification report";
@@ -160,7 +161,9 @@ export function decideReport(input: {
     prAuthor: pr.user,
     draft: pr.draft,
     trusted,
-    tier: gateTier(pr, input.files),
+    // The report's tier rests on its assessment of what the change does; the
+    // gate's own from the paths is a floor under it that the report can't lower.
+    tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
   if (blockers.length > 0) {
     return {
@@ -278,18 +281,30 @@ function approveAndMerge(pr: PullRequest, reason: string) {
   }
 }
 
-/** Both sides of a rename, so moving a file out of a high-risk path still counts. */
+/** The added lines in a file's patch, or `null` when GitHub sent none (too big, or binary). */
+export function addedTextOf(patch: string | undefined): string | null {
+  if (patch === undefined) return null;
+  return patch
+    .split("\n")
+    .filter((line) => line.startsWith("+"))
+    .map((line) => line.slice(1))
+    .join("\n");
+}
+
+/** The PR's files, with a rename's old path so moving a file out of a high-risk path still counts. */
 function changedFiles(prNumber: number): ChangedFile[] {
   return ghApiPages<{
     filename: string;
     previous_filename?: string;
     additions: number;
     deletions: number;
+    patch?: string;
   }>(`repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100`).map((file) => ({
     path: file.filename,
     previousPath: file.previous_filename,
     additions: file.additions,
     deletions: file.deletions,
+    addedText: addedTextOf(file.patch),
   }));
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   type AutoMergeContext,
+  addedTextOf,
   approveRefusal,
   autoMergeBlockers,
   type Comment,
@@ -21,6 +22,7 @@ const cleanReport: ReportData = {
   version: 1,
   headSha: HEAD,
   verdict: "auto",
+  riskTier: "low",
   blockers: 0,
   majors: 0,
   flagged: [],
@@ -117,6 +119,14 @@ describe("decideReport", () => {
     const decision = decide({ comment, comments: [comment] });
     expect(decision?.approve).toBe(false);
     expect(decision?.status).toContain("verdict is human");
+  });
+
+  it("refuses when the report's assessed risk is above low, though the paths are low", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, riskTier: "standard" });
+    expect(decide({ comment, comments: [comment] })).toMatchObject({
+      approve: false,
+      status: expect.stringContaining("standard-risk change"),
+    });
   });
 
   it("refuses when the gate's own tier is higher than low", () => {
@@ -272,5 +282,15 @@ describe("mergePath", () => {
 
   it("ignores reviews that didn't approve", () => {
     expect(mergePath([{ ...approval("Auto-approved: x", true), state: "COMMENTED" }])).toBe("none");
+  });
+});
+
+describe("addedTextOf", () => {
+  it("keeps a patch's added lines", () => {
+    expect(addedTextOf("@@ -1 +1,2 @@\n-old\n+new\n+more\n context")).toBe("new\nmore");
+  });
+
+  it("can't read a patch GitHub left out", () => {
+    expect(addedTextOf(undefined)).toBeNull();
   });
 });

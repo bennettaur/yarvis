@@ -44,6 +44,7 @@ const data = (verdict: ReportData["verdict"], headSha = "head"): ReportData => (
   version: 1,
   headSha,
   verdict,
+  riskTier: "low",
   blockers: 0,
   majors: 0,
   flagged: [],
@@ -144,6 +145,19 @@ describe("summarize", () => {
     expect(summarize([outcome({}), outcome({ pr: pr(2), report: other })], 30)).toContain(
       "| claude-sonnet-5-5 | 1 | 0 | 0% |",
     );
+  });
+
+  it("counts escapes by the report's risk tier, to show when the assessment let one through", () => {
+    const text = summarize(
+      [
+        outcome({ escapedVia: [9] }),
+        outcome({ pr: pr(2), report: { ...data("agent"), riskTier: "standard" } }),
+      ],
+      30,
+    );
+    expect(text).toContain("### By risk tier");
+    expect(text).toContain("| low | 1 | 1 | 100% |");
+    expect(text).toContain("| standard | 1 | 0 | 0% |");
   });
 
   it("doesn't credit a verdict given for an older commit", () => {

@@ -59,6 +59,27 @@ export function parseAddedLines(diff: string): AddedLines {
   return added;
 }
 
+/** Reads `git diff -U0` output into each file's added lines, joined, for the tripwires. */
+export function parseAddedText(diff: string): Map<string, string> {
+  const added = new Map<string, string[]>();
+  let current: string[] | null = null;
+  let previous = "";
+  for (const line of diff.split("\n")) {
+    const afterOldHeader = previous.startsWith("--- ");
+    previous = line;
+    if (line.startsWith("diff --git ")) {
+      current = null;
+    } else if (afterOldHeader && line.startsWith("+++ ")) {
+      const path = line.slice(4);
+      current = path === "/dev/null" ? null : [];
+      if (current) added.set(path.replace(/^b\//, ""), current);
+    } else if (current && line.startsWith("+")) {
+      current.push(line.slice(1));
+    }
+  }
+  return new Map([...added].map(([path, lines]) => [path, lines.join("\n")]));
+}
+
 /**
  * Reads an lcov file. `prefix` is the directory the suite ran from, relative
  * to the repo root, since bun writes paths relative to its working directory.

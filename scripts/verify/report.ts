@@ -14,6 +14,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
+import { stricterTier, type Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
@@ -59,6 +60,15 @@ export const Review = z.object({
   summary: z.string().min(1).max(300),
   verdict: Verdict,
   verdictReason: z.string().max(200),
+  /**
+   * How much harm the change could do, judged from what it does rather than
+   * where it is: see the skill's risk assessment step. It can only raise the
+   * tier the changed paths set, never lower it.
+   */
+  risk: z.object({
+    tier: z.enum(["low", "standard", "high"]),
+    reasons: z.array(z.string().max(140)).min(1).max(4),
+  }),
   dimensions: z.object({
     goal: Dimension,
     tests: Dimension,
@@ -104,6 +114,8 @@ const ReportData = z.object({
   version: z.literal(1),
   headSha: z.string(),
   verdict: Verdict,
+  /** The stricter of the changed paths' tier and the assessed one. */
+  riskTier: z.enum(["low", "standard", "high"]),
   blockers: z.number().int().nonnegative(),
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
@@ -151,6 +163,11 @@ function code(text: string): string {
   return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
 
+/** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
+export function riskTier(review: Review, facts: Facts): Tier {
+  return stricterTier(facts.tier.tier, review.risk.tier);
+}
+
 /**
  * The verdict a report may give, which is never looser than the risk tier
  * allows. Only a low-risk PR with nothing wrong is eligible to merge on its own.
@@ -165,8 +182,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
     }
   };
 
-  if (facts.tier.tier === "high") requireAtLeast("human", "high-risk change");
-  if (facts.tier.tier === "standard") requireAtLeast("agent", "standard-risk change");
+  const tier = riskTier(review, facts);
+  if (tier === "high") requireAtLeast("human", "high-risk change");
+  if (tier === "standard") requireAtLeast("agent", "standard-risk change");
   if (review.findings.some((f) => f.severity === "blocker")) {
     requireAtLeast("human", "blocking finding");
   }
@@ -273,15 +291,17 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     verdict !== review.verdict
       ? `${inline(review.verdictReason)} Raised by: ${why.join(", ")}.`
       : inline(review.verdictReason);
-  const riskReasons = facts.tier.reasons.length
-    ? ` (${inline(facts.tier.reasons.join("; "))})`
-    : "";
+  const tier = riskTier(review, facts);
+  // Each source labeled, since they can disagree: "assessed low" next to
+  // "floor high" says the paths won, where an unlabeled list reads as a muddle.
+  const floorReasons = facts.tier.reasons.length ? `: ${facts.tier.reasons.join("; ")}` : "";
+  const riskReasons = `assessed ${review.risk.tier}: ${review.risk.reasons.join("; ")}; floor ${facts.tier.tier}${floorReasons}`;
 
   const lines = [
     REPORT_MARKER,
     `## ${VERDICT_TITLE[verdict]}`,
     "",
-    `**Risk:** ${facts.tier.tier}${riskReasons} · **Head:** \`${facts.head.slice(0, 7)}\``,
+    `**Risk:** ${tier} (${inline(riskReasons)}) · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
     `**Goal:** ${inline(review.goal)}`,
     "",
@@ -359,6 +379,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     version: 1,
     headSha: facts.head,
     verdict,
+    riskTier: tier,
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,
     flagged: [
@@ -451,5 +472,5 @@ if (import.meta.main) {
   for (const old of previous) {
     ghApi(`repos/{owner}/{repo}/issues/comments/${old.id}`, ["-X", "DELETE"]);
   }
-  console.log(`Posted: ${data.verdict} (${facts.tier.tier} risk)`);
+  console.log(`Posted: ${data.verdict} (${data.riskTier} risk)`);
 }
