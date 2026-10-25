@@ -105,6 +105,69 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
 
+## Verifying a PR for merge
+
+The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
+short verification report on it. The report covers the goal, diff coverage,
+whether the new tests fail without the change, reliability, security,
+complexity, maintainability and UI. It runs locally, since it needs the test
+database and the demo harness. `scripts/verify/` holds the parts that measure
+and post.
+
+Only run it on another contributor's PR the way the skill says to. Their
+tests and scripts would run with your `gh` login, so the skill measures their
+PR without running any of its code.
+
+The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
+PR comment from users with write access, and acts as the yarvis GitHub App:
+
+- **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, for the PR's current head.
+  The workflow sets a `Verification report` commit status on that commit. The
+  status is always a success: it records that a current report exists, and its
+  description carries the verdict. If the PR is a maintainer's, not a draft,
+  low risk, and the report has no concerns, the bot also approves it and turns
+  on squash auto-merge. A push makes the report stale, so run `/verify-pr`
+  again.
+- **`/approve`** from a trusted user. The bot approves the current head and
+  turns on auto-merge, marking a draft ready first. This is how a maintainer
+  merges their own PR, since GitHub won't let them approve it. On an outside
+  contributor's PR, write `/approve <sha>` with the commit you reviewed, so a
+  push made after you read the diff isn't approved with it. Anything else after
+  `/approve` is ignored.
+
+Only low-risk PRs can merge on a report alone. `scripts/verify/tier.ts` decides
+the tier, from both sides of any rename:
+
+- **High:** CI and repo config, the verifier itself, agent instructions and
+  hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
+  config, secrets and shell access, app permissions, sidecar request handling,
+  agent tool approvals, the MCP server, settings, migrations, dependencies,
+  what the Chrome extension may do, the two frontend files allowed to call
+  secret or shell commands (`src/lib/privilegedCommands.ts` and
+  `src/lib/pty.ts`), or more than 800 changed lines of code.
+- **Standard:** any other change to the Rust core, the sidecar, the extension
+  or dev scripts, or more than 300 changed lines of code.
+
+Tests, docs and lockfiles don't count toward the line limits. The rest of the
+frontend is low risk because `scripts/verify/nativeBridge.test.ts`, which runs
+in CI, fails when any other file calls one of those commands.
+
+The workflow and the gate always run as they are on the default branch, so a
+change to either takes effect once it merges. They need these repository
+settings:
+
+- `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
+  yarvis GitHub App's client ID and private key. The app needs read and write
+  access to contents, pull requests, issues and commit statuses.
+- `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
+  IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
+  IDs, not logins, because a login freed by a rename can be taken by someone
+  else. Defaults to `2670128` (bennettaur).
+- `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
+  auto-approves. `enforce` lets a passing report approve. `/approve` works in
+  both. Before switching to `enforce`, make `Verification report` a required
+  status check in the `Protect Main` ruleset.
+
 ## Running more than one instance
 
 A branch under development can run beside the copy you use every day. Give the

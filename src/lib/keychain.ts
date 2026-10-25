@@ -92,19 +92,11 @@ export interface SecretStatus {
   present: boolean;
 }
 
-export function setSecret(key: SecretKey, value: string): Promise<void> {
-  return invoke("set_secret", { key, value });
-}
-
-export function deleteSecret(key: SecretKey): Promise<void> {
-  return invoke("delete_secret", { key });
+/** Restarts the sidecar so newly-stored secrets are injected into it. */
+export function restartSidecar(): Promise<void> {
+  return invoke("restart_sidecar");
 }
 
 export function listSecretStatus(): Promise<SecretStatus[]> {
   return invoke<SecretStatus[]>("list_secret_status");
-}
-
-/** Restarts the sidecar so newly-stored secrets are injected into it. */
-export function restartSidecar(): Promise<void> {
-  return invoke("restart_sidecar");
 }
