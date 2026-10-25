@@ -124,6 +124,8 @@ but it isn't notarized, so macOS blocks its first launch.
   speech-to-text and text-to-speech server for voice.
 - [Development](docs/development.md): architecture, commands, tests, running a
   second instance, nightly builds, and the project layout.
+- [How PRs merge through verification](docs/verification.md): the signed
+  verification report, the CI gate, the merge reviewer and `/approve`.
 - [Showcase deck](docs/showcase/yarvis-showcase.html): a slide deck on the
   weekly workflow. Open it in a browser.
 - [Showcase video source](video/README.md): the reel and walkthrough, rendered
