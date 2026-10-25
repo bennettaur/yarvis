@@ -21,9 +21,10 @@ import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { redactSecrets } from "../llm/errors.ts";
 import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from "../pr/types.ts";
 import { type RunResult, run } from "./exec.ts";
-import { defaultGitRunner, type GitRunner, hardenedGitEnv } from "./git.ts";
+import { defaultGitRunner, type GitRunner, hardenedGitEnv, refusedResult } from "./git.ts";
 import { checkBeforeWrite, describeFindings } from "./integrity.ts";
 import { parseRepoRemote, raiseIntegrityAlert } from "./service.ts";
+import { symlinkRefusal } from "./symlinkScan.ts";
 import { resolveWorktree } from "./worktrees.ts";
 
 /** Runs `gh <args>` in a worktree. Injectable so tests never shell out. */
@@ -56,13 +57,17 @@ const MERGE_TIMEOUT_MS = 5 * 60_000;
  * prompt when it is not attached to a terminal.
  */
 export function ghRunner(token: string | undefined): GhRunner {
-  return (args, opts) =>
-    run(["gh", ...args], {
+  return async (args, opts) => {
+    // `gh stack` drives git in the worktree, so it gets the same symlink scan
+    // and hardening as the sidecar's own git.
+    const refusal = symlinkRefusal(opts.cwd);
+    if (refusal) return refusedResult(refusal);
+    return run(["gh", ...args], {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs,
-      // The git `gh stack` drives in the worktree gets the same hardening as ours.
       env: { ...hardenedGitEnv(), GH_TOKEN: token, GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" },
     });
+  };
 }
 
 /** One branch as `gh stack view --json` reports it. */

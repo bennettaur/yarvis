@@ -309,6 +309,15 @@ back to ad-hoc.
     status and diff calls also pass `--ignore-submodules=all`.
   - A remote-tracking ref is always named in full (`remoteRef`), because a
     short `origin/main` resolves a tag or a local branch of that name first.
+  - Yarvis never runs git on a clone or worktree whose git data holds a
+    symlink: `defaultGitRunner` and `ghRunner` call `symlinkRefusal` first,
+    because the sidecar's git runs outside the sandbox and would write through
+    a link a session planted (moving another workspace's branch, or
+    overwriting one of the user's files). Anything new that spawns git owes the
+    same call. It is checked right before each command, so a session that is
+    still running can still plant one in between; the narrow grants in
+    `sandboxPaths.ts` (only the workspace's own refs' leaves, never a folder in
+    `refs`) are what keep it from making directory links there at all.
   - `integrity.ts` is best-effort detection of the traces such a session
     leaves, for the user's own terminal, which nothing in Yarvis hardens.
     Yarvis refuses to merge or push for a workspace while any are there, and

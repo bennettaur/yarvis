@@ -11,6 +11,7 @@ import {
   createWorktree,
   defaultGitRunner,
   detectDefaultBranch,
+  ensurePrimaryClone,
   existingWorktree,
   fetchBranch,
   fileDiff,
@@ -370,14 +371,55 @@ describe("listRemoteBranches", () => {
 });
 
 describe("addExistingBranchWorktree", () => {
-  it("prunes then adds a worktree on the bare branch name", async () => {
+  it("checks out the local branch when there is one", async () => {
     const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
     tmpDirs.push(parent);
     const { runner, calls } = fakeRunner(() => ({}));
     const worktreePath = join(parent, "service-a");
     await addExistingBranchWorktree(runner, "/repo", worktreePath, "feat/login");
     expect(calls[0]).toEqual(["worktree", "prune"]);
-    expect(calls[1]).toEqual(["worktree", "add", worktreePath, "feat/login"]);
+    expect(calls[1]).toEqual(["rev-parse", "--verify", "--quiet", "refs/heads/feat/login"]);
+    expect(calls[2]).toEqual(["worktree", "add", worktreePath, "feat/login"]);
+  });
+
+  it("tracks the remote branch, named in full, when there is no local one", async () => {
+    // A bare name would let git pick any remote's ref of that name.
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "rev-parse" ? { exitCode: 1 } : {},
+    );
+    const worktreePath = join(parent, "service-a");
+    await addExistingBranchWorktree(runner, "/repo", worktreePath, "feat/login");
+    expect(calls[2]).toEqual([
+      "worktree",
+      "add",
+      "--track",
+      "-b",
+      "feat/login",
+      worktreePath,
+      "refs/remotes/origin/feat/login",
+    ]);
+  });
+});
+
+describe("ensurePrimaryClone", () => {
+  it("turns off fetching tags, on a new clone and on one already there", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-clone-"));
+    tmpDirs.push(parent);
+    const existing = join(parent, "existing");
+    mkdirSync(join(existing, ".git"), { recursive: true });
+    const { runner, calls } = fakeRunner(() => ({}));
+    await ensurePrimaryClone(runner, "https://github.com/acme/api.git", existing);
+    expect(calls).toEqual([["config", "remote.origin.tagOpt", "--no-tags"]]);
+
+    const fresh = join(parent, "fresh");
+    const second = fakeRunner(() => ({}));
+    await ensurePrimaryClone(second.runner, "https://github.com/acme/api.git", fresh);
+    expect(second.calls).toEqual([
+      ["clone", "https://github.com/acme/api.git", fresh],
+      ["config", "remote.origin.tagOpt", "--no-tags"],
+    ]);
   });
 });
 

@@ -136,10 +136,11 @@ Some details:
   under `.repos/`, outside the workspace folder, which Claude Code's sandbox
   doesn't let a session write to by default. Yarvis adds what this workspace's
   commits need to `sandbox.filesystem.allowWrite`: its worktree's folder under
-  `.git/worktrees`, the object store, its own branch, and the remote-tracking
-  refs a fetch updates. Commits, rebases, fetches and pushes on the
-  workspace's branch then run inside the sandbox instead of asking you each
-  time. Paths you added yourself stay.
+  `.git/worktrees`, the object store, and its own branch and that branch's
+  remote-tracking ref. Commits, rebases and pushes on the workspace's branch
+  then run inside the sandbox instead of asking you each time. Paths you added
+  yourself stay. Yarvis also turns off fetching tags on each clone
+  (`remote.origin.tagOpt`), since nothing in Yarvis uses them.
 - **What still asks.** The clone is shared by every workspace on that repo, and
   parts of its `.git` decide what git runs, so these stay out of the sandbox's
   reach (`sandbox.filesystem.denyWrite`): the git config, hooks, submodule git
@@ -148,10 +149,21 @@ Some details:
   the remote branch, so a planted tag could change what that name means. So a
   command that writes any of these, like `git push -u` (which records the
   upstream in the config), creating or deleting a branch or a tag, a fetch that
-  brings in a new tag, or adding a worktree (including the ones Claude Code
-  makes for subagents), asks as before. Git packs refs on its own
+  updates other branches' remote-tracking refs (a plain `git fetch` usually
+  does), or adding a worktree (including the ones Claude Code makes for
+  subagents), asks as before. Git packs refs on its own
   after some commits; inside the sandbox that step fails with a warning, and
   the commit itself still goes through.
+- **No symlinks in a clone's git data.** Yarvis's own git runs outside the
+  sandbox, so a symlink a session left in the parts of `.git` it can write
+  would make Yarvis's fetch or merge write wherever the link points: another
+  workspace's branch, or any of your files. git never makes symlinks there
+  itself. Right before every git or `gh stack` command Yarvis runs on a clone or
+  one of its worktrees, it looks for one in the clone's top-level entries,
+  `refs`, `logs`, each worktree's folder under `.git/worktrees` and the object
+  store's folders. If it finds one, it refuses the command and raises the same
+  attention item as the checks below. Like them, it can't stop a session that
+  is still running from planting a link between the check and the command.
 - **Tampering checks.** A session can still stage a fake submodule whose git
   folder runs a command the next time anything runs `git status` in that
   worktree. Yarvis's own git runs with that switched off and names branches in
@@ -164,6 +176,7 @@ Some details:
   - a redirected `commondir`, a worktree `.git` that points somewhere else, and
     a worktree put on a branch another worktree has checked out
   - a stopped rebase whose remaining steps run commands
+  - a symlink in the clone's git data
 
   It checks when the workspace is provisioned, when a Claude Code session in it
   ends, before it merges or pushes for the workspace, and when you archive it.

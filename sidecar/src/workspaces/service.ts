@@ -5,7 +5,7 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, relative } from "node:path";
+import { basename, dirname, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
@@ -53,6 +53,7 @@ import {
   branchExists,
   branchSync,
   type ChangedFile,
+  canonicalPath,
   createWorktree,
   defaultGitRunner,
   detectDefaultBranch,
@@ -80,6 +81,7 @@ import {
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
+import { setSymlinkHandler } from "./symlinkScan.ts";
 import type { RepoTracker } from "./tracker.ts";
 import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
 
@@ -1961,6 +1963,37 @@ export async function raiseIntegrityAlert(
   } catch (e) {
     console.error("[workspaces] failed to raise integrity attention:", e);
   }
+}
+
+/** How often one clone's refusals may re-raise the alert, so a polled status doesn't hammer it. */
+const SYMLINK_ALERT_INTERVAL_MS = 60_000;
+
+/**
+ * Flags every workspace on a clone whose git data the runner refused for a
+ * symlink (`symlinkScan.ts`). The refusal itself happens in the runner whether
+ * or not this is registered; this only tells the user.
+ */
+export function registerSymlinkAlerts(db: Db): void {
+  const lastAlert = new Map<string, number>();
+  setSymlinkHandler((gitDir, findings) => {
+    const now = Date.now();
+    if (now - (lastAlert.get(gitDir) ?? 0) < SYMLINK_ALERT_INTERVAL_MS) return;
+    lastAlert.set(gitDir, now);
+    void (async () => {
+      const clonePath = dirname(gitDir);
+      const rows = await db
+        .select({ id: workspaces.id, name: workspaces.name, clonePath: repos.primaryClonePath })
+        .from(workspaceRepos)
+        .innerJoin(workspaces, eq(workspaces.id, workspaceRepos.workspaceId))
+        .innerJoin(repos, eq(repos.id, workspaceRepos.repoId));
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (seen.has(row.id) || canonicalPath(row.clonePath) !== clonePath) continue;
+        seen.add(row.id);
+        await raiseIntegrityAlert(db, row, findings);
+      }
+    })().catch((e) => console.error("[workspaces] flagging a symlink in git data failed:", e));
+  });
 }
 
 /**

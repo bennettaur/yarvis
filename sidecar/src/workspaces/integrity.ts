@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { canonicalPath, type GitRunner } from "./git.ts";
 import { resolveAdminName } from "./sandboxPaths.ts";
+import { scanGitDirForSymlinks } from "./symlinkScan.ts";
 
 /**
  * Checks a workspace repo for the changes a hijacked session could make to the
@@ -186,6 +187,9 @@ export async function checkRepoIntegrity(
   const read = reader(runner, findings, strict);
   // No clone yet (a repo still provisioning) means no git data to tamper with.
   if (!existsSync(join(clonePath, ".git"))) return findings;
+  // First, because Yarvis's runner refuses a clone with any, so the git reads
+  // below would only report that they couldn't run.
+  findings.push(...scanGitDirForSymlinks(join(clonePath, ".git")));
   const gitDir = canonicalPath(join(clonePath, ".git"));
 
   if (existsSync(join(gitDir, "commondir"))) {

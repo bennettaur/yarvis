@@ -195,6 +195,11 @@ describe("ensureBranchRefDirs", () => {
     ensureBranchRefDirs({ clonePath: clone, branch: "yarvis/fix", adminName: "api" });
     expect(existsSync(refDir)).toBe(true);
     expect(existsSync(join(clone, ".git", "logs", "refs", "heads", "yarvis"))).toBe(true);
+    // And the branch's remote-tracking ref's, so a push from the sandbox can update it.
+    expect(existsSync(join(clone, ".git", "refs", "remotes", "origin", "yarvis"))).toBe(true);
+    expect(existsSync(join(clone, ".git", "logs", "refs", "remotes", "origin", "yarvis"))).toBe(
+      true,
+    );
   });
 });
 

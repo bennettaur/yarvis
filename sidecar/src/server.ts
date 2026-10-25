@@ -19,7 +19,7 @@ import { createReadiness } from "./readiness.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
-import { resumeKickOffs } from "./workspaces/service.ts";
+import { registerSymlinkAlerts, resumeKickOffs } from "./workspaces/service.ts";
 
 // Before anything else logs: the buffer this fills is what the app's
 // Diagnostics view reads, and a line written during boot is exactly the one
@@ -98,6 +98,9 @@ if (config.databaseUrl) {
           console.error("[sidecar] alarm import failed:", redactSecrets(String(e)));
         }
       }
+      // Yarvis's git refuses a clone with a symlink in its git data either way;
+      // this raises the workspace alert when it does, on every instance.
+      registerSymlinkAlerts(getDb(config.databaseUrl as string).db);
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.

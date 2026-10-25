@@ -383,11 +383,12 @@ describe("sandbox paths", () => {
   it("lets the sandbox commit to this workspace's branch and worktree, and nothing else's", () => {
     expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.allowWrite).toEqual([
       `${GIT}/objects`,
-      `${GIT}/refs/remotes`,
-      `${GIT}/logs/refs/remotes`,
       `${GIT}/refs/heads/yarvis/fix-it`,
       `${GIT}/refs/heads/yarvis/fix-it.lock`,
       `${GIT}/logs/refs/heads/yarvis/fix-it`,
+      `${GIT}/refs/remotes/origin/yarvis/fix-it`,
+      `${GIT}/refs/remotes/origin/yarvis/fix-it.lock`,
+      `${GIT}/logs/refs/remotes/origin/yarvis/fix-it`,
       `${GIT}/worktrees/api`,
     ]);
   });
@@ -418,11 +419,7 @@ describe("sandbox paths", () => {
     const fs = filesystemOf(
       buildClaudeSettings(WORKSPACE_ID, {}, [{ ...REPO, branch: "../../config", adminName: null }]),
     );
-    expect(fs?.allowWrite).toEqual([
-      `${GIT}/objects`,
-      `${GIT}/refs/remotes`,
-      `${GIT}/logs/refs/remotes`,
-    ]);
+    expect(fs?.allowWrite).toEqual([`${GIT}/objects`]);
   });
 
   it("keeps the user's own sandbox settings and paths", () => {

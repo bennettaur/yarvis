@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node
 import { rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./exec.ts";
+import { symlinkRefusal } from "./symlinkScan.ts";
 
 export interface GitRunResult {
   stdout: string;
@@ -72,18 +73,29 @@ export function hardenedGitEnv(): Record<string, string> {
   return env;
 }
 
+/** What a runner answers in place of running git on a clone with a symlink in its git data. */
+export function refusedResult(reason: string): GitRunResult {
+  return { stdout: "", stderr: reason, exitCode: 128 };
+}
+
 /**
- * Real runner: shells out to `git` with a scrubbed env and `hardenedGitEnv`.
+ * Real runner: shells out to `git` with a scrubbed env and `hardenedGitEnv`,
+ * after refusing a clone whose git data has a symlink in it (`symlinkScan.ts`),
+ * since git outside the sandbox would write through it. Every git the sidecar
+ * runs on a clone or worktree comes through here, so no call can skip the scan.
  * `GIT_TERMINAL_PROMPT=0` makes a missing-credential clone fail fast instead of
  * hanging on a prompt the headless sidecar can never answer. `LC_ALL=C` pins
  * git's messages to English: `scrubbedEnv` passes the user's locale through,
  * and `mergeBaseIntoWorktree` reads "Already up to date" out of that output.
  */
-export const defaultGitRunner: GitRunner = (args, opts) =>
-  run(["git", ...args], {
+export const defaultGitRunner: GitRunner = async (args, opts) => {
+  const refusal = symlinkRefusal(opts.cwd);
+  if (refusal) return refusedResult(refusal);
+  return run(["git", ...args], {
     ...opts,
     env: { ...hardenedGitEnv(), GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
   });
+};
 
 /**
  * The fully qualified remote-tracking ref for `branch`. A short `origin/<branch>`
@@ -109,15 +121,22 @@ async function git(
   return result.stdout;
 }
 
-/** Clones the repo to `primaryClonePath` if it isn't already there. Idempotent. */
+/**
+ * Clones the repo to `primaryClonePath` if it isn't already there, and turns
+ * off fetching tags on every call, so a clone made before this setting gets it
+ * too. Idempotent. A workspace session's sandbox may not write tags, so a fetch
+ * inside it that brought a new one would fail; nothing in Yarvis reads tags.
+ */
 export async function ensurePrimaryClone(
   runner: GitRunner,
   cloneUrl: string,
   primaryClonePath: string,
 ): Promise<void> {
-  if (existsSync(`${primaryClonePath}/.git`)) return;
-  mkdirSync(dirname(primaryClonePath), { recursive: true });
-  await git(runner, ["clone", cloneUrl, primaryClonePath], undefined, NETWORK_TIMEOUT_MS);
+  if (!existsSync(`${primaryClonePath}/.git`)) {
+    mkdirSync(dirname(primaryClonePath), { recursive: true });
+    await git(runner, ["clone", cloneUrl, primaryClonePath], undefined, NETWORK_TIMEOUT_MS);
+  }
+  await git(runner, ["config", "remote.origin.tagOpt", "--no-tags"], primaryClonePath);
 }
 
 /**
@@ -510,11 +529,12 @@ export async function createWorktree(
 }
 
 /**
- * Creates a worktree at `worktreePath` checked out on an existing branch. Passing
- * the bare branch name lets git's DWIM create a local branch tracking
- * `origin/<branch>` when none exists locally, or reuse the local branch if it
- * does — so a branch pushed by someone else, or left by a prior workspace, is
- * picked up. Fetch `origin/<branch>` first (see `fetchBranch`). Prunes stale
+ * Creates a worktree at `worktreePath` checked out on an existing branch: the
+ * local branch if there is one (left by a prior workspace), or a new local
+ * branch tracking `origin/<branch>` (pushed by someone else). Fetch
+ * `origin/<branch>` first (see `fetchBranch`). A new branch's start point is
+ * named in full rather than left to git's guess from the bare name, which
+ * searches every remote and falls back to any ref of that name. Prunes stale
  * worktree metadata so a path freed by an out-of-band folder delete can be reused.
  */
 export async function addExistingBranchWorktree(
@@ -525,7 +545,14 @@ export async function addExistingBranchWorktree(
 ): Promise<void> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
   mkdirSync(dirname(worktreePath), { recursive: true });
-  await git(runner, ["worktree", "add", worktreePath, branch], primaryClonePath);
+  const local = await runner(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  const args =
+    local.exitCode === 0
+      ? ["worktree", "add", worktreePath, branch]
+      : ["worktree", "add", "--track", "-b", branch, worktreePath, remoteRef(branch)];
+  await git(runner, args, primaryClonePath);
 }
 
 /**

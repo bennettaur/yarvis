@@ -10,10 +10,13 @@ import { canonicalPath } from "./git.ts";
  * every commit, rebase and push leaves the sandbox and asks the user. The clone
  * is shared by every workspace on that repo, and its `.git` decides what git
  * runs, so the grant is no wider than this workspace's own commits need: its
- * worktree's admin directory, the object store, its own branch, and the
- * remote-tracking refs a fetch rewrites. Everything that can make git
- * run code, or change what another workspace's git sees, is denied even where
- * an allowed path covers it.
+ * worktree's admin directory, the object store, and its own branch and that
+ * branch's remote-tracking ref, which a push updates. A fetch that would update
+ * other remote-tracking refs asks. Everything that can make git run code, or
+ * change what another workspace's git sees, is denied even where an allowed
+ * path covers it. Yarvis's own git refuses a clone with a symlink in any of
+ * these places (`symlinkScan.ts`), since it runs outside the sandbox and would
+ * write through one.
  */
 
 /** One repo of a workspace, as the sandbox needs it. */
@@ -76,19 +79,17 @@ export function resolveAdminName(clonePath: string, worktreePath: string): strin
 export function sandboxAllowWrite(repos: readonly SandboxRepo[]): string[] {
   return repos.flatMap(({ clonePath, branch, adminName }) => {
     const git = `${clonePath}/.git`;
-    const paths = [
-      `${git}/objects`,
-      // Every fetch rewrites the remote-tracking refs. A planted one is
-      // overwritten by the fetch Yarvis runs before it merges or cuts a
-      // worktree from one, and Yarvis names them in full (`remoteRef`).
-      `${git}/refs/remotes`,
-      `${git}/logs/refs/remotes`,
-    ];
+    const paths = [`${git}/objects`];
     if (isSafeBranch(branch)) {
+      // Only the folders' leaves: a session that could create entries beside
+      // them could plant a symlink for a later fetch to write through.
       paths.push(
         `${git}/refs/heads/${branch}`,
         `${git}/refs/heads/${branch}.lock`,
         `${git}/logs/refs/heads/${branch}`,
+        `${git}/refs/remotes/origin/${branch}`,
+        `${git}/refs/remotes/origin/${branch}.lock`,
+        `${git}/logs/refs/remotes/origin/${branch}`,
       );
     }
     if (adminName && isSafeSegment(adminName)) paths.push(`${git}/worktrees/${adminName}`);
@@ -144,7 +145,7 @@ const OUR_SUFFIXES: RegExp[] = [
   /^\.claude\/worktrees$/,
   /^\.git\/(objects|objects\/info|refs\/remotes|logs\/refs\/remotes|refs\/tags|refs\/replace)$/,
   /^\.git\/(config|config\.lock|hooks|commondir|modules|info|packed-refs|packed-refs\.lock)$/,
-  /^\.git\/(refs|logs\/refs)\/heads\/.+$/,
+  /^\.git\/(refs|logs\/refs)\/(heads|remotes\/origin)\/.+$/,
   /^\.git\/worktrees\/[^/]+(\/(commondir|gitdir|config\.worktree|modules))?$/,
 ];
 
@@ -156,16 +157,22 @@ export function isOurSandboxEntry(entry: unknown): boolean {
 }
 
 /**
- * Creates the directories the branch's loose ref and reflog live in. The
- * sandbox may write the ref itself but not create the folders above it, and
- * packing refs removes a folder once it empties, so a branch named
- * `yarvis/<slug>` couldn't be committed to from inside the sandbox after one.
+ * Creates the directories the branch's loose refs and reflogs live in, for the
+ * branch and its remote-tracking ref. The sandbox may write those files but not
+ * create the folders above them, and packing refs removes a folder once it
+ * empties, so without this a commit or push from inside the sandbox couldn't
+ * write them.
  */
 export function ensureBranchRefDirs({ clonePath, branch }: SandboxRepo): void {
-  if (!isSafeBranch(branch) || !branch.includes("/")) return;
+  if (!isSafeBranch(branch)) return;
   const git = `${clonePath}/.git`;
   if (!existsSync(git)) return;
-  for (const base of [`${git}/refs/heads`, `${git}/logs/refs/heads`]) {
+  for (const base of [
+    `${git}/refs/heads`,
+    `${git}/logs/refs/heads`,
+    `${git}/refs/remotes/origin`,
+    `${git}/logs/refs/remotes/origin`,
+  ]) {
     mkdirSync(dirname(`${base}/${branch}`), { recursive: true });
   }
 }
