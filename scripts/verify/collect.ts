@@ -17,14 +17,15 @@
  * reported as unmeasured, and CI's test run is the evidence instead.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { type BaselineResult, runBaseline } from "./baseline.ts";
+import { type BaselineResult, parseJunit, runBaseline } from "./baseline.ts";
 import {
   type DiffCoverage,
   diffCoverage,
   type LineHits,
+  type Measurement,
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
@@ -84,37 +85,61 @@ export function parseNumstat(numstat: string): ChangedFile[] {
     });
 }
 
-function collectCoverage(root: string, out: string, paths: string[]) {
+/** The directories the root suite's coverage run covers. */
+const ROOT_SUITE_PATHS = /^(src|scripts|demo)\//;
+
+/** The suite directory a changed file's tests run in, or `null` when no suite covers it. */
+function bunSuiteOf(path: string): string | null {
+  if (path.startsWith("sidecar/")) return "sidecar";
+  return ROOT_SUITE_PATHS.test(path) ? "" : null;
+}
+
+export function collectCoverage(root: string, out: string, paths: string[]) {
   const hits: LineHits[] = [];
   const suites: string[] = [];
-  const measured: string[] = [];
+  // Suite directories, plus "rust", by what their run produced.
+  const attempted = new Set<string>();
+  const ran = new Set<string>();
 
-  const touchesRoot = paths.some((p) => /^(src|scripts|demo)\//.test(p));
+  const touchesRoot = paths.some((p) => ROOT_SUITE_PATHS.test(p));
   const touchesSidecar = paths.some((p) => p.startsWith("sidecar/"));
   const touchesRust = paths.some((p) => p.startsWith("src-tauri/") && p.endsWith(".rs"));
 
   const bunCoverage = (suite: string, name: string, args: string[]) => {
     const dir = join(out, `coverage-${name}`);
+    const junit = join(dir, "junit.xml");
+    // `--out` is reused when a PR is verified again, and a crashed run writes no
+    // JUnit report, so an old one left here would pass for this run's.
+    rmSync(dir, { recursive: true, force: true });
     // Failing tests are CI's to report; coverage of the passing ones is still useful.
     run(
       "bun",
-      ["test", ...args, "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${dir}`],
+      [
+        "test",
+        ...args,
+        "--coverage",
+        "--coverage-reporter=lcov",
+        `--coverage-dir=${dir}`,
+        "--reporter=junit",
+        `--reporter-outfile=${junit}`,
+      ],
       { cwd: suite ? join(root, suite) : root, allowFailure: true },
     );
+    attempted.add(suite);
     const lcov = join(dir, "lcov.info");
-    if (!existsSync(lcov)) return;
+    // bun writes lcov even when a preload crashes, so only a JUnit report that lists tests counts.
+    const ranTests = existsSync(junit) && parseJunit(readFileSync(junit, "utf8"), suite).length > 0;
+    if (!existsSync(lcov) || !ranTests) return;
     hits.push(parseLcov(readFileSync(lcov, "utf8"), suite, root));
     suites.push(name);
+    ran.add(suite);
   };
 
   if (touchesRoot) bunCoverage("", "frontend", ["./src", "./scripts", "./demo"]);
   if (touchesSidecar) bunCoverage("sidecar", "sidecar", []);
-  // Only once a suite actually wrote coverage: a run that crashed would
-  // otherwise report every changed file as one no test loads.
-  if (suites.length > 0) measured.push(".ts", ".tsx");
 
-  const hasLlvmCov = run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0;
-  if (touchesRust && hasLlvmCov) {
+  // Only asked when Rust changed: a machine with no cargo at all throws here.
+  if (touchesRust && run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0) {
     const lcov = join(out, "coverage-rust.info");
     run("cargo", ["llvm-cov", "--all-targets", "--lcov", "--output-path", lcov], {
       cwd: join(root, "src-tauri"),
@@ -122,12 +147,18 @@ function collectCoverage(root: string, out: string, paths: string[]) {
     });
     if (existsSync(lcov)) {
       hits.push(parseLcov(readFileSync(lcov, "utf8"), "", root));
-      measured.push(".rs");
+      ran.add("rust");
       suites.push("rust");
     }
   }
 
-  return { hits: mergeLineHits(...hits), measured, suites };
+  const measurement = (path: string): Measurement => {
+    const suite = path.endsWith(".rs") ? "rust" : bunSuiteOf(path);
+    if (suite === null) return "not-run";
+    if (ran.has(suite)) return "measured";
+    return attempted.has(suite) ? "no-tests" : "not-run";
+  };
+  return { hits: mergeLineHits(...hits), measurement, suites };
 }
 
 if (import.meta.main) {
@@ -175,7 +206,11 @@ if (import.meta.main) {
     head,
     files,
     tier: classify(files),
-    coverage: diffCoverage(added, measuredRun?.hits ?? new Map(), measuredRun?.measured ?? []),
+    coverage: diffCoverage(
+      added,
+      measuredRun?.hits ?? new Map(),
+      measuredRun?.measurement ?? (() => "not-run"),
+    ),
     baseline: measuredRun
       ? runBaseline(root, base, addedOrModified)
       : { detecting: 0, notDetecting: [], failingOnHead: [] },

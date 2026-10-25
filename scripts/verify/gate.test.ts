@@ -5,17 +5,22 @@ import {
   type AgentReviewData,
   reportDigest,
 } from "./agentReview.ts";
+import type { RunResult } from "./exec.ts";
 import {
   type AutoMergeContext,
   addedTextOf,
+  approveAndMerge,
   approveRefusal,
   autoMergeBlockers,
   type Comment,
   commentKind,
   decideAgentReview,
   decideReport,
+  type GitHub,
   type GitHubUser,
   gateTier,
+  handleApprove,
+  handleSigned,
   mergePath,
   type PullRequest,
   parseApprove,
@@ -356,35 +361,35 @@ describe("mergePath", () => {
   });
 });
 
+const agentReport: ReportData = { ...cleanReport, verdict: "agent", majors: 1 };
+
+function agentReviewComment(
+  report: Comment,
+  overrides: Partial<AgentReviewData> = {},
+  sign: (payload: string) => string = fakeSign,
+): Comment {
+  const reportPayload = report.body.match(/yarvis-verify-data ([A-Za-z0-9+/=]+)/)?.[1] ?? "";
+  const data: AgentReviewData = {
+    version: 1,
+    repo: REPO,
+    pr: 7,
+    headSha: HEAD,
+    issuedAt: SIGNED_AT,
+    reportDigest: reportDigest(reportPayload),
+    decision: "approve",
+    reason: "The major finding is handled in the follow-up commit.",
+    ...overrides,
+  };
+  const block = Buffer.from(JSON.stringify(data)).toString("base64");
+  return {
+    id: nextId++,
+    body: `${AGENT_REVIEW_MARKER}\nApproved.\n<!-- yarvis-agent-review-data ${block} -->\n<!-- yarvis-agent-review-sig ${sign(block)} -->`,
+    html_url: "https://example.test/r",
+    user: BENNETTAUR,
+  };
+}
+
 describe("decideAgentReview", () => {
-  const agentReport: ReportData = { ...cleanReport, verdict: "agent", majors: 1 };
-
-  function agentReviewComment(
-    report: Comment,
-    overrides: Partial<AgentReviewData> = {},
-    sign: (payload: string) => string = fakeSign,
-  ): Comment {
-    const reportPayload = report.body.match(/yarvis-verify-data ([A-Za-z0-9+/=]+)/)?.[1] ?? "";
-    const data: AgentReviewData = {
-      version: 1,
-      repo: REPO,
-      pr: 7,
-      headSha: HEAD,
-      issuedAt: SIGNED_AT,
-      reportDigest: reportDigest(reportPayload),
-      decision: "approve",
-      reason: "The major finding is handled in the follow-up commit.",
-      ...overrides,
-    };
-    const block = Buffer.from(JSON.stringify(data)).toString("base64");
-    return {
-      id: nextId++,
-      body: `${AGENT_REVIEW_MARKER}\nApproved.\n<!-- yarvis-agent-review-data ${block} -->\n<!-- yarvis-agent-review-sig ${sign(block)} -->`,
-      html_url: "https://example.test/r",
-      user: BENNETTAUR,
-    };
-  }
-
   function decideReview(overrides: Partial<Parameters<typeof decideAgentReview>[0]> = {}) {
     const report = reportComment(BENNETTAUR, agentReport);
     const comment = overrides.comment ?? agentReviewComment(report);
@@ -567,5 +572,204 @@ describe("addedTextOf", () => {
 
   it("can't read a patch GitHub left out", () => {
     expect(addedTextOf(undefined)).toBeNull();
+  });
+});
+
+interface Call {
+  path: string;
+  args?: string[];
+  input?: unknown;
+  /** False for reads, so tests can assert on what the gate changes. */
+  write: boolean;
+}
+
+function labelFor(command: string, args: string[]): string {
+  const query = args.find((arg) => arg.startsWith("query="));
+  if (!query) return [command, ...args].join(" ");
+  return query.includes("enablePullRequestAutoMerge") ? "graphql:enableAutoMerge" : "graphql:merge";
+}
+
+/**
+ * Records what the gate asks of GitHub. `pr` answers the PR read that
+ * re-checks the head, and `autoMerge` answers the auto-merge mutation.
+ */
+function fakeGitHub(
+  options: {
+    pr?: PullRequest;
+    comments?: Comment[];
+    files?: { filename: string; additions: number; deletions: number; patch?: string }[];
+    autoMerge?: RunResult;
+  } = {},
+) {
+  const calls: Call[] = [];
+  const ok = { stdout: "{}", stderr: "", status: 0 };
+  const gh: GitHub = {
+    api: <T>(path: string, args: string[] = [], input?: unknown): T => {
+      calls.push({ path, input, write: args.includes("POST") });
+      return (path.endsWith("/pulls/7") ? (options.pr ?? makePr()) : {}) as T;
+    },
+    pages: <T>(path: string): T[] => {
+      calls.push({ path, write: false });
+      if (path.includes("/comments")) return (options.comments ?? []) as T[];
+      return (options.files ?? [
+        { filename: "src/components/List.tsx", additions: 10, deletions: 0, patch: "+x" },
+      ]) as T[];
+    },
+    run: (command: string, args: string[]) => {
+      const path = labelFor(command, args);
+      calls.push({ path, args, write: true });
+      return path === "graphql:enableAutoMerge" ? (options.autoMerge ?? ok) : ok;
+    },
+  };
+  const paths = () => calls.map((call) => call.path);
+  const writes = () => calls.filter((call) => call.write).map((call) => call.path);
+  return { gh, calls, paths, writes };
+}
+
+describe("approveAndMerge", () => {
+  it("approves the head it was given, then turns on auto-merge", () => {
+    const { gh, calls, paths } = fakeGitHub();
+    approveAndMerge(gh, makePr(), "because");
+    expect(paths()).toEqual(["repos/{owner}/{repo}/pulls/7/reviews", "graphql:enableAutoMerge"]);
+    expect(calls[0].input).toEqual({ commit_id: HEAD, event: "APPROVE", body: "because" });
+  });
+
+  it("merges now when GitHub says there is nothing left to wait for", () => {
+    const { gh, calls, paths } = fakeGitHub({
+      autoMerge: { stdout: "", stderr: "Pull request is in clean status", status: 1 },
+    });
+    approveAndMerge(gh, makePr(), "because");
+    expect(paths().slice(1)).toEqual(["graphql:enableAutoMerge", "graphql:merge"]);
+    // Both mutations name the approved head, so a later push can't ride along.
+    for (const call of calls.slice(1)) {
+      expect(call.args).toContain(`sha=${HEAD}`);
+      expect(call.args).toContain("id=PR_1");
+    }
+  });
+
+  it("fails loudly, without merging, when auto-merge fails for any other reason", () => {
+    const { gh, paths } = fakeGitHub({
+      autoMerge: { stdout: "", stderr: "Auto merge is not allowed", status: 1 },
+    });
+    expect(() => approveAndMerge(gh, makePr(), "because")).toThrow("Auto merge is not allowed");
+    expect(paths()).not.toContain("graphql:merge");
+  });
+});
+
+describe("handleApprove", () => {
+  const approveEvent = (user: GitHubUser) => ({
+    issue: { number: 7, pull_request: {} },
+    comment: { id: 42, body: "/approve", html_url: "https://example.test/c", user },
+  });
+
+  it("approves, merges and reacts for a trusted commenter", () => {
+    const { gh, calls, paths } = fakeGitHub();
+    handleApprove(gh, approveEvent(BENNETTAUR), makePr(), undefined, [BENNETTAUR.id]);
+    expect(paths()).toEqual([
+      "repos/{owner}/{repo}/pulls/7/reviews",
+      "graphql:enableAutoMerge",
+      "repos/{owner}/{repo}/issues/comments/42/reactions",
+    ]);
+    expect(calls[2].input).toEqual({ content: "rocket" });
+  });
+
+  it("marks a draft ready before approving it", () => {
+    const { gh, paths } = fakeGitHub();
+    handleApprove(gh, approveEvent(BENNETTAUR), makePr({ draft: true }), undefined, [
+      BENNETTAUR.id,
+    ]);
+    expect(paths()[0]).toBe("gh pr ready 7");
+  });
+
+  it("refuses a stale sha with a reply to the trusted commenter, and approves nothing", () => {
+    const { gh, calls, paths } = fakeGitHub();
+    handleApprove(gh, approveEvent(BENNETTAUR), makePr(), "0000000", [BENNETTAUR.id]);
+    expect(paths()).toEqual([
+      "repos/{owner}/{repo}/issues/comments/42/reactions",
+      "repos/{owner}/{repo}/issues/7/comments",
+    ]);
+    expect(calls[0].input).toEqual({ content: "-1" });
+    expect(calls[1].input).toEqual({
+      body: "Not approved: the head is now abc1234, not 0000000.",
+    });
+  });
+
+  it("only reacts to someone who isn't trusted, so they can't make the bot post", () => {
+    const { gh, paths } = fakeGitHub();
+    handleApprove(gh, approveEvent(SOMEONE), makePr(), undefined, [BENNETTAUR.id]);
+    expect(paths()).toEqual(["repos/{owner}/{repo}/issues/comments/42/reactions"]);
+  });
+});
+
+describe("handleSigned", () => {
+  const ctx = {
+    trusted: [BENNETTAUR.id],
+    mode: "enforce" as const,
+    repo: REPO,
+    checks: { isReportSigned: fakeIsSigned, isReviewSigned: fakeIsSigned },
+    now: NOW,
+  };
+  const reportEvent = (comment: Comment) => ({ issue: { number: 7, pull_request: {} }, comment });
+
+  it("approves and sets the status for a current, clean report", () => {
+    const comment = reportComment(BENNETTAUR);
+    const { gh, calls, writes } = fakeGitHub({ comments: [comment] });
+    handleSigned(gh, "report", reportEvent(comment), makePr(), ctx);
+    expect(writes()).toEqual([
+      "repos/{owner}/{repo}/pulls/7/reviews",
+      "graphql:enableAutoMerge",
+      `repos/{owner}/{repo}/statuses/${HEAD}`,
+    ]);
+    expect(calls[calls.length - 1].input).toMatchObject({
+      state: "success",
+      target_url: comment.html_url,
+    });
+  });
+
+  it("does nothing when the head moved while it read the PR", () => {
+    const comment = reportComment(BENNETTAUR);
+    const { gh, paths } = fakeGitHub({
+      comments: [comment],
+      pr: makePr({ head: { sha: "f".repeat(40) } }),
+    });
+    handleSigned(gh, "report", reportEvent(comment), makePr(), ctx);
+    expect(paths()).toEqual([
+      "repos/{owner}/{repo}/issues/7/comments?per_page=100",
+      "repos/{owner}/{repo}/pulls/7/files?per_page=100",
+      "repos/{owner}/{repo}/pulls/7",
+    ]);
+  });
+
+  it("sets the status without approving when the gate's own tier is high", () => {
+    const comment = reportComment(BENNETTAUR);
+    const { gh, writes } = fakeGitHub({
+      comments: [comment],
+      files: [{ filename: "bun.lock", additions: 1, deletions: 1, patch: "+x" }],
+    });
+    handleSigned(gh, "report", reportEvent(comment), makePr(), ctx);
+    expect(writes()).toEqual([`repos/{owner}/{repo}/statuses/${HEAD}`]);
+  });
+
+  it("writes nothing for a report that isn't signed", () => {
+    const comment = reportComment(BENNETTAUR, cleanReport, () => "bm90IHNpZ25lZA==");
+    const { gh, writes } = fakeGitHub({ comments: [comment] });
+    handleSigned(gh, "report", reportEvent(comment), makePr(), ctx);
+    expect(writes()).toEqual([]);
+  });
+
+  it("approves on the merge reviewer's signed approval of an agent-verdict report", () => {
+    const report = reportComment(BENNETTAUR, agentReport);
+    const review = agentReviewComment(report);
+    const { gh, calls, writes } = fakeGitHub({ comments: [report, review] });
+    handleSigned(gh, "agent-review", reportEvent(review), makePr(), ctx);
+    expect(writes()).toEqual([
+      "repos/{owner}/{repo}/pulls/7/reviews",
+      "graphql:enableAutoMerge",
+      `repos/{owner}/{repo}/statuses/${HEAD}`,
+    ]);
+    const approval = calls.find((call) => call.path.endsWith("/reviews"))?.input as {
+      body: string;
+    };
+    expect(approval.body.startsWith(AGENT_APPROVAL_PREFIX)).toBe(true);
   });
 });

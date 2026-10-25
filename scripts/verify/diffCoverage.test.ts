@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   diffCoverage,
   formatRanges,
+  type LineHits,
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
@@ -72,6 +73,7 @@ describe("formatRanges", () => {
 });
 
 describe("diffCoverage", () => {
+  const tsOnly = (path: string) => (path.endsWith(".rs") ? "not-run" : "measured");
   const added = new Map([
     ["src/a.ts", new Set([4, 5, 6, 23])],
     ["src/untested.ts", new Set([1])],
@@ -81,7 +83,7 @@ describe("diffCoverage", () => {
   const hits = parseLcov("SF:src/a.ts\nDA:4,1\nDA:5,0\nDA:23,1\n", "", "/r");
 
   it("counts only executable added lines in source files", () => {
-    const result = diffCoverage(added, hits, [".ts", ".tsx"]);
+    const result = diffCoverage(added, hits, tsOnly);
     // Line 6 isn't in lcov, so it's not executable and not counted.
     expect(result.changedLines).toBe(3);
     expect(result.coveredLines).toBe(2);
@@ -89,15 +91,47 @@ describe("diffCoverage", () => {
   });
 
   it("reports a file no test imported separately from one with gaps", () => {
-    expect(diffCoverage(added, hits, [".ts", ".tsx"]).notLoaded).toEqual(["src/untested.ts"]);
+    expect(diffCoverage(added, hits, tsOnly).notLoaded).toEqual(["src/untested.ts"]);
   });
 
   it("calls a language with no coverage run unmeasured rather than untested", () => {
-    expect(diffCoverage(added, hits, [".ts", ".tsx"]).unmeasured).toEqual(["src-tauri/src/x.rs"]);
+    expect(diffCoverage(added, hits, tsOnly).unmeasured).toEqual(["src-tauri/src/x.rs"]);
   });
 
   it("has no ratio when nothing executable changed", () => {
-    expect(diffCoverage(new Map(), hits, [".ts"]).ratio).toBeNull();
+    expect(diffCoverage(new Map(), hits, () => "measured").ratio).toBeNull();
+  });
+
+  it("sorts files of one language by what their own suite's run produced", () => {
+    const added = parseAddedLines(
+      [
+        "diff --git a/src/a.ts b/src/a.ts",
+        "--- a/src/a.ts",
+        "+++ b/src/a.ts",
+        "@@ -0,0 +1 @@",
+        "+x",
+        "diff --git a/sidecar/src/b.ts b/sidecar/src/b.ts",
+        "--- a/sidecar/src/b.ts",
+        "+++ b/sidecar/src/b.ts",
+        "@@ -0,0 +1 @@",
+        "+y",
+        "diff --git a/sidecar/src/c.ts b/sidecar/src/c.ts",
+        "--- a/sidecar/src/c.ts",
+        "+++ b/sidecar/src/c.ts",
+        "@@ -0,0 +1 @@",
+        "+z",
+      ].join("\n"),
+    );
+    const hits: LineHits = new Map([["src/a.ts", new Map([[1, 1]])]]);
+    const result = diffCoverage(added, hits, (path) =>
+      path === "src/a.ts" ? "measured" : path.endsWith("b.ts") ? "no-tests" : "not-run",
+    );
+    expect(result).toMatchObject({
+      ratio: 1,
+      notLoaded: [],
+      noTestsRan: ["sidecar/src/b.ts"],
+      unmeasured: ["sidecar/src/c.ts"],
+    });
   });
 });
 

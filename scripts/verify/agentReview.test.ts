@@ -123,6 +123,7 @@ describe("a report from the gate's side", () => {
           uncovered: [],
           notLoaded: [],
           unmeasured: [],
+          noTestsRan: [],
         },
         baseline: { detecting: 0, notDetecting: [], failingOnHead: [] },
         suites: [],

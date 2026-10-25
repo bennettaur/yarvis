@@ -11,11 +11,12 @@
  *   auto-merge the same way.
  *
  * Everything here is deterministic. The report was written by a model reading
- * text a PR author controls, so the gate takes only its verdict and its
- * assessed risk tier, and only from a report a trusted user posted and signed
- * with a key in VERIFY_ALLOWED_SIGNERS, for this PR's current commit. It
- * recomputes a floor under that tier from the PR's files and their added
- * lines, which the report's tier can raise but never lower.
+ * text a PR author controls, so the gate reads its data block (the commit,
+ * verdict, assessed risk tier, finding counts and flagged checks) only from a
+ * report a trusted user posted and signed with a key in VERIFY_ALLOWED_SIGNERS,
+ * for this PR's current commit. It recomputes a floor under the tier from the
+ * PR's files and their added lines, which the report's tier can raise but
+ * never lower.
  *
  * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO,
  * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USER_IDS
@@ -413,21 +414,30 @@ export function parseTrusted(value: string | undefined): number[] {
     .map(Number);
 }
 
-interface CommentEvent {
+export interface CommentEvent {
   issue: { number: number; pull_request?: unknown };
   comment: Comment;
 }
 
-function react(commentId: number, content: "-1" | "rocket") {
-  ghApi(`repos/{owner}/{repo}/issues/comments/${commentId}/reactions`, ["-X", "POST"], { content });
+/** The gate's calls to GitHub, passed in so tests can record them rather than make them. */
+export interface GitHub {
+  api: typeof ghApi;
+  pages: typeof ghApiPages;
+  run: typeof run;
 }
 
-function reply(prNumber: number, body: string) {
-  ghApi(`repos/{owner}/{repo}/issues/${prNumber}/comments`, ["-X", "POST"], { body });
+function react(gh: GitHub, commentId: number, content: "-1" | "rocket") {
+  gh.api(`repos/{owner}/{repo}/issues/comments/${commentId}/reactions`, ["-X", "POST"], {
+    content,
+  });
 }
 
-function setStatus(sha: string, description: string, targetUrl: string) {
-  ghApi(`repos/{owner}/{repo}/statuses/${sha}`, ["-X", "POST"], {
+function reply(gh: GitHub, prNumber: number, body: string) {
+  gh.api(`repos/{owner}/{repo}/issues/${prNumber}/comments`, ["-X", "POST"], { body });
+}
+
+function setStatus(gh: GitHub, sha: string, description: string, targetUrl: string) {
+  gh.api(`repos/{owner}/{repo}/statuses/${sha}`, ["-X", "POST"], {
     state: "success",
     context: STATUS_CONTEXT,
     // GitHub rejects a description over 140 characters.
@@ -443,8 +453,8 @@ const MERGE_MUTATION = `mutation($id: ID!, $sha: GitObjectID!) {
   mergePullRequest(input: {pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $sha}) { clientMutationId }
 }`;
 
-function graphql(query: string, pr: PullRequest, allowFailure = false) {
-  return run(
+function graphql(gh: GitHub, query: string, pr: PullRequest, allowFailure = false) {
+  return gh.run(
     "gh",
     [
       "api",
@@ -464,16 +474,16 @@ function graphql(query: string, pr: PullRequest, allowFailure = false) {
  * Approves the given head and turns on squash auto-merge pinned to it, so a
  * commit pushed afterwards can't ride along on this approval.
  */
-function approveAndMerge(pr: PullRequest, reason: string) {
-  ghApi(`repos/{owner}/{repo}/pulls/${pr.number}/reviews`, ["-X", "POST"], {
+export function approveAndMerge(gh: GitHub, pr: PullRequest, reason: string) {
+  gh.api(`repos/{owner}/{repo}/pulls/${pr.number}/reviews`, ["-X", "POST"], {
     commit_id: pr.head.sha,
     event: "APPROVE",
     body: reason,
   });
-  const auto = graphql(AUTO_MERGE_MUTATION, pr, true);
+  const auto = graphql(gh, AUTO_MERGE_MUTATION, pr, true);
   // GitHub refuses auto-merge on a PR with nothing left to wait for; merge it now instead.
   if (auto.status !== 0 && /clean status/i.test(auto.stdout + auto.stderr)) {
-    graphql(MERGE_MUTATION, pr);
+    graphql(gh, MERGE_MUTATION, pr);
   } else if (auto.status !== 0) {
     throw new Error(`enabling auto-merge failed: ${auto.stdout} ${auto.stderr}`.trim());
   }
@@ -490,27 +500,30 @@ export function addedTextOf(patch: string | undefined): string | null {
 }
 
 /** The PR's files, with a rename's old path so moving a file out of a high-risk path still counts. */
-function changedFiles(prNumber: number): ChangedFile[] {
-  return ghApiPages<{
-    filename: string;
-    previous_filename?: string;
-    additions: number;
-    deletions: number;
-    patch?: string;
-  }>(`repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100`).map((file) => ({
-    path: file.filename,
-    previousPath: file.previous_filename,
-    additions: file.additions,
-    deletions: file.deletions,
-    addedText: addedTextOf(file.patch),
-  }));
+function changedFiles(gh: GitHub, prNumber: number): ChangedFile[] {
+  return gh
+    .pages<{
+      filename: string;
+      previous_filename?: string;
+      additions: number;
+      deletions: number;
+      patch?: string;
+    }>(`repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100`)
+    .map((file) => ({
+      path: file.filename,
+      previousPath: file.previous_filename,
+      additions: file.additions,
+      deletions: file.deletions,
+      addedText: addedTextOf(file.patch),
+    }));
 }
 
-function fetchPr(prNumber: number): PullRequest {
-  return ghApi<PullRequest>(`repos/{owner}/{repo}/pulls/${prNumber}`);
+function fetchPr(gh: GitHub, prNumber: number): PullRequest {
+  return gh.api<PullRequest>(`repos/{owner}/{repo}/pulls/${prNumber}`);
 }
 
-function handleApprove(
+export function handleApprove(
+  gh: GitHub,
   event: CommentEvent,
   pr: PullRequest,
   sha: string | undefined,
@@ -520,16 +533,25 @@ function handleApprove(
   const refusal = approveRefusal({ commenter, sha, pr, trusted });
   if (refusal) {
     console.log(`[verify] /approve from ${commenter.login} refused: ${refusal}`);
-    react(event.comment.id, "-1");
-    if (trusted.includes(commenter.id)) reply(pr.number, `Not approved: ${refusal}.`);
+    react(gh, event.comment.id, "-1");
+    if (trusted.includes(commenter.id)) reply(gh, pr.number, `Not approved: ${refusal}.`);
     return;
   }
-  if (pr.draft) run("gh", ["pr", "ready", String(pr.number)]);
+  if (pr.draft) gh.run("gh", ["pr", "ready", String(pr.number)]);
   approveAndMerge(
+    gh,
     pr,
     `${APPROVE_COMMAND_PREFIX}${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
   );
-  react(event.comment.id, "rocket");
+  react(gh, event.comment.id, "rocket");
+}
+
+export interface SignedContext {
+  trusted: number[];
+  mode: Mode;
+  repo: string;
+  checks: ReturnType<typeof signatureChecks>;
+  now: Date;
 }
 
 /**
@@ -537,32 +559,31 @@ function handleApprove(
  * refuses if the head moved meanwhile (the files must describe the head being
  * approved), decides, then approves and sets the status.
  */
-function handleSigned(
+export function handleSigned(
+  gh: GitHub,
   kind: "report" | "agent-review",
   event: CommentEvent,
   pr: PullRequest,
-  trusted: number[],
-  mode: Mode,
-  allowedSigners: string,
+  ctx: SignedContext,
 ) {
-  const comments = ghApiPages<Comment>(
+  const comments = gh.pages<Comment>(
     `repos/{owner}/{repo}/issues/${pr.number}/comments?per_page=100`,
   );
-  const files = changedFiles(pr.number);
-  if (fetchPr(pr.number).head.sha !== pr.head.sha) {
+  const files = changedFiles(gh, pr.number);
+  if (fetchPr(gh, pr.number).head.sha !== pr.head.sha) {
     console.log(`[verify] the head moved while reading the PR; a new ${kind} is needed`);
     return;
   }
   const input = {
     comment: event.comment,
     comments,
-    repo: process.env.GH_REPO ?? "",
+    repo: ctx.repo,
     pr,
     files,
-    trusted,
-    mode,
-    ...signatureChecks(allowedSigners),
-    now: new Date(),
+    trusted: ctx.trusted,
+    mode: ctx.mode,
+    ...ctx.checks,
+    now: ctx.now,
   };
   const decision = kind === "report" ? decideReport(input) : decideAgentReview(input);
   if ("skip" in decision) {
@@ -572,16 +593,18 @@ function handleSigned(
   if (decision.approve) {
     const head = pr.head.sha.slice(0, 7);
     approveAndMerge(
+      gh,
       pr,
       kind === "report"
         ? `${AUTO_APPROVAL_PREFIX} the verification report for ${head} passed.`
         : `${AGENT_APPROVAL_PREFIX} the merge reviewer approved ${head} after its verification report asked for a review.`,
     );
   }
-  setStatus(pr.head.sha, decision.status, event.comment.html_url);
+  setStatus(gh, pr.head.sha, decision.status, event.comment.html_url);
 }
 
 if (import.meta.main) {
+  const gh: GitHub = { api: ghApi, pages: ghApiPages, run };
   const event = JSON.parse(
     readFileSync(process.env.GITHUB_EVENT_PATH ?? "", "utf8"),
   ) as CommentEvent;
@@ -596,13 +619,19 @@ if (import.meta.main) {
   if (!allowedSigners.trim()) {
     console.warn("[verify] VERIFY_ALLOWED_SIGNERS is empty, so no report can be accepted");
   }
-  const pr = fetchPr(event.issue.number);
+  const pr = fetchPr(gh, event.issue.number);
   if (pr.state !== "open") process.exit(0);
 
   const kind = commentKind(event.comment.body);
   if (kind === "approve") {
-    handleApprove(event, pr, parseApprove(event.comment.body)?.sha, trusted);
+    handleApprove(gh, event, pr, parseApprove(event.comment.body)?.sha, trusted);
   } else if (kind) {
-    handleSigned(kind, event, pr, trusted, mode, allowedSigners);
+    handleSigned(gh, kind, event, pr, {
+      trusted,
+      mode,
+      repo: process.env.GH_REPO ?? "",
+      checks: signatureChecks(allowedSigners),
+      now: new Date(),
+    });
   }
 }

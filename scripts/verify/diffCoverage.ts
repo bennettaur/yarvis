@@ -24,7 +24,12 @@ export interface DiffCoverage {
   notLoaded: string[];
   /** Changed source files in a language no coverage tool ran for. */
   unmeasured: string[];
+  /** Changed source files whose suite was run but ran no tests, as when its preload crashed. */
+  noTestsRan: string[];
 }
+
+/** What a coverage run says about one file's suite and language. */
+export type Measurement = "measured" | "not-run" | "no-tests";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".rs"];
 
@@ -139,14 +144,14 @@ export function formatRanges(lines: number[]): string {
 }
 
 /**
- * @param measuredExtensions file extensions a coverage tool ran for. A changed
- *   `.rs` file is reported as unmeasured, not untested, when Rust coverage
- *   wasn't collected.
+ * @param measurement whether a coverage run went through for the file's suite
+ *   and language. A file with no run is reported as unmeasured rather than
+ *   untested, and one whose suite ran no tests is reported apart from both.
  */
 export function diffCoverage(
   added: AddedLines,
   hits: LineHits,
-  measuredExtensions: string[],
+  measurement: (path: string) => Measurement,
 ): DiffCoverage {
   const result: DiffCoverage = {
     changedLines: 0,
@@ -155,13 +160,15 @@ export function diffCoverage(
     uncovered: [],
     notLoaded: [],
     unmeasured: [],
+    noTestsRan: [],
   };
 
   for (const [path, lines] of added) {
     const ext = SOURCE_EXTENSIONS.find((e) => path.endsWith(e));
     if (!ext || isTestFile(path) || path.endsWith(".d.ts") || lines.size === 0) continue;
-    if (!measuredExtensions.includes(ext)) {
-      result.unmeasured.push(path);
+    const measured = measurement(path);
+    if (measured !== "measured") {
+      (measured === "no-tests" ? result.noTestsRan : result.unmeasured).push(path);
       continue;
     }
     const fileHits = hits.get(path);
