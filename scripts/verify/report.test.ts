@@ -18,6 +18,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
     summary: "Adds a drag handle to the workspace list divider.",
     verdict: "auto",
     verdictReason: "Small, tested, UI only.",
+    risk: { tier: "low", reasons: ["Layout only; calls nothing new"] },
     dimensions: {
       goal: pass,
       tests: pass,
@@ -91,6 +92,28 @@ describe("finalVerdict", () => {
     expect(finalVerdict(makeReview(), at(0.2)).verdict).toBe("human");
   });
 
+  const mutation = (killed: number, survivedCount: number) => ({
+    score: killed / (killed + survivedCount),
+    killed,
+    survived: Array.from({ length: survivedCount }, (_, i) => `src/a.ts:${i + 1} BlockStatement`),
+    skippedRanges: 0,
+  });
+
+  it("needs an agent when the tests miss many mutations on the changed lines", () => {
+    expect(finalVerdict(makeReview(), makeFacts({ mutation: mutation(5, 5) })).verdict).toBe(
+      "agent",
+    );
+    expect(finalVerdict(makeReview(), makeFacts({ mutation: mutation(6, 4) })).verdict).toBe(
+      "auto",
+    );
+  });
+
+  it("doesn't judge the tests on too few mutants", () => {
+    expect(finalVerdict(makeReview(), makeFacts({ mutation: mutation(1, 3) })).verdict).toBe(
+      "auto",
+    );
+  });
+
   it("needs a human when tests fail on the PR", () => {
     const facts = makeFacts({
       baseline: { detecting: 0, notDetecting: [], failingOnHead: ["a.test.ts > x"] },
@@ -102,6 +125,17 @@ describe("finalVerdict", () => {
     const review = makeReview({ findings: [{ severity: "blocker", title: "x", detail: "…" }] });
     const facts = makeFacts({ tier: { tier: "standard", reasons: [] } });
     expect(finalVerdict(review, facts).verdict).toBe("human");
+  });
+
+  it("takes the assessed risk when it is stricter than the paths'", () => {
+    const review = makeReview({ risk: { tier: "high", reasons: ["Writes a secret from the UI"] } });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("human");
+    expect(renderReport(review, makeFacts()).data.riskTier).toBe("high");
+  });
+
+  it("never lets an assessed low risk lower the paths' tier", () => {
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+    expect(renderReport(makeReview(), facts).data.riskTier).toBe("high");
   });
 
   it("can be made stricter by the reviewer", () => {
@@ -122,6 +156,38 @@ describe("renderReport", () => {
     });
     const facts = makeFacts({ coverage: { ...makeFacts().coverage, ratio: 0.2 } });
     expect(renderReport(review, facts).data.flagged).toEqual(["tests", "coverage"]);
+  });
+
+  it("shows the mutation score with the tests and lists surviving mutants in details", () => {
+    const facts = makeFacts({
+      mutation: {
+        score: 0.5,
+        killed: 5,
+        survived: [
+          "src/a.ts:10 BlockStatement",
+          "src/a.ts:9 BlockStatement",
+          "src/a.ts:1 X",
+          "src/a.ts:2 X",
+          "src/a.ts:3 X",
+        ],
+        skippedRanges: 2,
+      },
+    });
+    const { body, data } = renderReport(makeReview(), facts);
+    expect(body).toContain("50% of 10 mutants on changed lines caught (2 ranges not mutated)");
+    const details = body.split("<details>")[1];
+    // Numeric order, so line 9 comes before line 10.
+    expect(details.indexOf("src/a.ts:9 ")).toBeLessThan(details.indexOf("src/a.ts:10 "));
+    expect(data.flagged).toContain("mutation");
+  });
+
+  it("says nothing about mutation when no mutant ran", () => {
+    const facts = makeFacts({
+      mutation: { score: null, killed: 0, survived: [], skippedRanges: 0 },
+    });
+    const { body, data } = renderReport(makeReview(), facts);
+    expect(body).not.toContain("mutants");
+    expect(data.flagged).not.toContain("mutation");
   });
 
   it("keeps minor findings out of the headline section", () => {

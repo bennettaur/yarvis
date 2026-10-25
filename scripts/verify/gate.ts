@@ -11,9 +11,10 @@
  *   auto-merge the same way.
  *
  * Everything here is deterministic. The report was written by a model reading
- * text a PR author controls, so the gate takes nothing from it on trust except
- * the verdict, and only from a report a trusted user posted. It recomputes the
- * risk tier itself from the PR's files.
+ * text a PR author controls, so the gate takes only its verdict and its
+ * assessed risk tier, and only from a report a trusted user posted. It
+ * recomputes a floor under that tier from the PR's files and their added
+ * lines, which the report's tier can raise but never lower.
  *
  * Env: GH_TOKEN (the yarvis bot's installation token), GH_REPO,
  * GITHUB_EVENT_PATH, VERIFY_MODE (`shadow` or `enforce`), VERIFY_TRUSTED_USER_IDS
@@ -24,10 +25,48 @@
 import { readFileSync } from "node:fs";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { parseReportData, REPORT_MARKER, type ReportData } from "./report.ts";
-import { type ChangedFile, classify, type Tier } from "./tier.ts";
+import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
 const STATUS_CONTEXT = "Verification report";
+
+/**
+ * How each kind of bot approval begins. `mergePath` reads them back to tell
+ * how a merged PR was approved.
+ */
+export const AUTO_APPROVAL_PREFIX = "Auto-approved:";
+export const APPROVE_COMMAND_PREFIX = "Approved by @";
+
+/** How a merged PR got its approval. */
+export type MergePath = "auto" | "/approve" | "human" | "none";
+
+export interface ApprovalReview {
+  state: string;
+  body: string;
+  /**
+   * Written by a GitHub App. Only apps the repo owner installed can review,
+   * so this is what stops anyone else from passing off a review as the bot's.
+   */
+  byBot: boolean;
+  /** Written by someone with write access. Anyone can approve a public PR. */
+  byMaintainer: boolean;
+}
+
+/** Associations GitHub gives users with write access to the repo. */
+export const MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
+/**
+ * How a merged PR was approved. A maintainer's own approval wins over the
+ * bot's, since that person took the PR on whatever the bot said.
+ */
+export function mergePath(reviews: ApprovalReview[]): MergePath {
+  const approvals = reviews.filter((review) => review.state === "APPROVED");
+  if (approvals.some((review) => !review.byBot && review.byMaintainer)) return "human";
+  const bot = approvals.filter((review) => review.byBot);
+  if (bot.some((review) => review.body.startsWith(APPROVE_COMMAND_PREFIX))) return "/approve";
+  if (bot.some((review) => review.body.startsWith(AUTO_APPROVAL_PREFIX))) return "auto";
+  return "none";
+}
 
 /** The pull request files API stops listing files here. */
 const MAX_LISTED_FILES = 3000;
@@ -122,7 +161,9 @@ export function decideReport(input: {
     prAuthor: pr.user,
     draft: pr.draft,
     trusted,
-    tier: gateTier(pr, input.files),
+    // The report's tier rests on its assessment of what the change does; the
+    // gate's own from the paths is a floor under it that the report can't lower.
+    tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
   if (blockers.length > 0) {
     return {
@@ -240,18 +281,30 @@ function approveAndMerge(pr: PullRequest, reason: string) {
   }
 }
 
-/** Both sides of a rename, so moving a file out of a high-risk path still counts. */
+/** The added lines in a file's patch, or `null` when GitHub sent none (too big, or binary). */
+export function addedTextOf(patch: string | undefined): string | null {
+  if (patch === undefined) return null;
+  return patch
+    .split("\n")
+    .filter((line) => line.startsWith("+"))
+    .map((line) => line.slice(1))
+    .join("\n");
+}
+
+/** The PR's files, with a rename's old path so moving a file out of a high-risk path still counts. */
 function changedFiles(prNumber: number): ChangedFile[] {
   return ghApiPages<{
     filename: string;
     previous_filename?: string;
     additions: number;
     deletions: number;
+    patch?: string;
   }>(`repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100`).map((file) => ({
     path: file.filename,
     previousPath: file.previous_filename,
     additions: file.additions,
     deletions: file.deletions,
+    addedText: addedTextOf(file.patch),
   }));
 }
 
@@ -276,7 +329,7 @@ function handleApprove(
   if (pr.draft) run("gh", ["pr", "ready", String(pr.number)]);
   approveAndMerge(
     pr,
-    `Approved by @${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
+    `${APPROVE_COMMAND_PREFIX}${commenter.login} with /approve at ${pr.head.sha.slice(0, 7)}.`,
   );
   react(event.comment.id, "rocket");
 }
@@ -299,7 +352,7 @@ function handleReport(event: CommentEvent, pr: PullRequest, trusted: number[], m
   if (decision.approve) {
     approveAndMerge(
       pr,
-      `Auto-approved: the verification report for ${pr.head.sha.slice(0, 7)} passed.`,
+      `${AUTO_APPROVAL_PREFIX} the verification report for ${pr.head.sha.slice(0, 7)} passed.`,
     );
   }
   setStatus(pr.head.sha, decision.status, event.comment.html_url);

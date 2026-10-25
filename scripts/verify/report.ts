@@ -14,6 +14,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
+import { stricterTier, type Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
@@ -26,6 +27,23 @@ const DATA_PATTERN = /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*$/;
 /** Changed-line coverage at or above this passes; below the floor fails. */
 const COVERAGE_PASS = 0.8;
 const COVERAGE_FLOOR = 0.5;
+
+/**
+ * Below this share of mutants caught, the tests run the changed lines without
+ * really checking them. Lower than the coverage bar because some mutants
+ * (a log message's wording) aren't worth a test.
+ */
+const MUTATION_FLOOR = 0.6;
+
+/** Fewer mutants than this are too few to judge the tests by. */
+const MUTATION_MIN_MUTANTS = 10;
+
+function hasWeakMutationScore(facts: Facts): boolean {
+  const mutation = facts.mutation;
+  if (!mutation || mutation.score === null) return false;
+  const total = mutation.killed + mutation.survived.length;
+  return total >= MUTATION_MIN_MUTANTS && mutation.score < MUTATION_FLOOR;
+}
 
 const Status = z.enum(["pass", "concern", "fail", "n/a"]);
 type Status = z.infer<typeof Status>;
@@ -42,6 +60,15 @@ export const Review = z.object({
   summary: z.string().min(1).max(300),
   verdict: Verdict,
   verdictReason: z.string().max(200),
+  /**
+   * How much harm the change could do, judged from what it does rather than
+   * where it is: see the skill's risk assessment step. It can only raise the
+   * tier the changed paths set, never lower it.
+   */
+  risk: z.object({
+    tier: z.enum(["low", "standard", "high"]),
+    reasons: z.array(z.string().max(140)).min(1).max(4),
+  }),
   dimensions: z.object({
     goal: Dimension,
     tests: Dimension,
@@ -87,10 +114,14 @@ const ReportData = z.object({
   version: z.literal(1),
   headSha: z.string(),
   verdict: Verdict,
+  /** The stricter of the changed paths' tier and the assessed one. */
+  riskTier: z.enum(["low", "standard", "high"]),
   blockers: z.number().int().nonnegative(),
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
   flagged: z.array(z.string()),
+  /** The model that reviewed, so calibration can compare verdicts across models. */
+  model: z.string().optional(),
 });
 export type ReportData = z.infer<typeof ReportData>;
 
@@ -132,6 +163,11 @@ function code(text: string): string {
   return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
 
+/** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
+export function riskTier(review: Review, facts: Facts): Tier {
+  return stricterTier(facts.tier.tier, review.risk.tier);
+}
+
 /**
  * The verdict a report may give, which is never looser than the risk tier
  * allows. Only a low-risk PR with nothing wrong is eligible to merge on its own.
@@ -146,13 +182,17 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
     }
   };
 
-  if (facts.tier.tier === "high") requireAtLeast("human", "high-risk change");
-  if (facts.tier.tier === "standard") requireAtLeast("agent", "standard-risk change");
+  const tier = riskTier(review, facts);
+  if (tier === "high") requireAtLeast("human", "high-risk change");
+  if (tier === "standard") requireAtLeast("agent", "standard-risk change");
   if (review.findings.some((f) => f.severity === "blocker")) {
     requireAtLeast("human", "blocking finding");
   }
   if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
   if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
+  if (hasWeakMutationScore(facts)) {
+    requireAtLeast("agent", "tests miss many mutations on changed lines");
+  }
   const statuses = [
     ...Object.values(review.dimensions).map((d) => d.status),
     coverageStatus(facts.coverage),
@@ -213,6 +253,14 @@ function baselineNote(baseline: Facts["baseline"]): string {
   return parts.join(", ");
 }
 
+function mutationNote(mutation: Facts["mutation"]): string {
+  if (!mutation || mutation.score === null) return "";
+  const total = mutation.killed + mutation.survived.length;
+  const skipped =
+    mutation.skippedRanges > 0 ? ` (${mutation.skippedRanges} ranges not mutated)` : "";
+  return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
+}
+
 function bulletList(items: string[], limit = 15): string {
   const shown = items.slice(0, limit).map((item) => `- ${code(item)}`);
   if (items.length > limit) shown.push(`- …and ${items.length - limit} more`);
@@ -229,7 +277,10 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
   // Coverage sits right after the tests row, since the two are read together.
   const rows = DIMENSION_LABELS.flatMap(([key, label]) => {
     const dim = review.dimensions[key];
-    const extra = key === "tests" ? baselineNote(facts.baseline) : "";
+    const extra =
+      key === "tests"
+        ? [baselineNote(facts.baseline), mutationNote(facts.mutation)].filter(Boolean).join(". ")
+        : "";
     const note = inline([dim.note, extra].filter(Boolean).join(". "));
     const row = `| ${STATUS_ICON[dim.status]} | ${label} | ${note} |`;
     if (key !== "tests") return [row];
@@ -240,15 +291,17 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     verdict !== review.verdict
       ? `${inline(review.verdictReason)} Raised by: ${why.join(", ")}.`
       : inline(review.verdictReason);
-  const riskReasons = facts.tier.reasons.length
-    ? ` (${inline(facts.tier.reasons.join("; "))})`
-    : "";
+  const tier = riskTier(review, facts);
+  // Each source labeled, since they can disagree: "assessed low" next to
+  // "floor high" says the paths won, where an unlabeled list reads as a muddle.
+  const floorReasons = facts.tier.reasons.length ? `: ${facts.tier.reasons.join("; ")}` : "";
+  const riskReasons = `assessed ${review.risk.tier}: ${review.risk.reasons.join("; ")}; floor ${facts.tier.tier}${floorReasons}`;
 
   const lines = [
     REPORT_MARKER,
     `## ${VERDICT_TITLE[verdict]}`,
     "",
-    `**Risk:** ${facts.tier.tier}${riskReasons} · **Head:** \`${facts.head.slice(0, 7)}\``,
+    `**Risk:** ${tier} (${inline(riskReasons)}) · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
     `**Goal:** ${inline(review.goal)}`,
     "",
@@ -308,6 +361,16 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
   if (facts.baseline.failingOnHead.length > 0) {
     details.push("**Tests failing on the PR**", "", bulletList(facts.baseline.failingOnHead), "");
   }
+  if (facts.mutation && facts.mutation.survived.length > 0) {
+    details.push(
+      "**Mutations no test caught**",
+      "",
+      bulletList(
+        [...facts.mutation.survived].sort((a, b) => a.localeCompare(b, "en", { numeric: true })),
+      ),
+      "",
+    );
+  }
   if (details.length > 0) {
     lines.push("", "<details><summary>Details</summary>", "", ...details, "</details>");
   }
@@ -316,6 +379,7 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     version: 1,
     headSha: facts.head,
     verdict,
+    riskTier: tier,
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,
     flagged: [
@@ -323,7 +387,9 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
         ([key]) => key,
       ),
       ...(isFlagged(coverage) ? ["coverage"] : []),
+      ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
+    model: review.model,
   };
 
   const suites = facts.suites.join(", ") || "none";
@@ -406,5 +472,5 @@ if (import.meta.main) {
   for (const old of previous) {
     ghApi(`repos/{owner}/{repo}/issues/comments/${old.id}`, ["-X", "DELETE"]);
   }
-  console.log(`Posted: ${data.verdict} (${facts.tier.tier} risk)`);
+  console.log(`Posted: ${data.verdict} (${data.riskTier} risk)`);
 }

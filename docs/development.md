@@ -109,10 +109,11 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 
 The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
 short verification report on it. The report covers the goal, diff coverage,
-whether the new tests fail without the change, reliability, security,
-complexity, maintainability and UI. It runs locally, since it needs the test
-database and the demo harness. `scripts/verify/` holds the parts that measure
-and post.
+whether the new tests fail without the change, how many small breaking edits to
+the changed lines the tests catch (mutation testing with Stryker, for
+TypeScript), reliability, security, complexity, maintainability and UI. It runs
+locally, since it needs the test database and the demo harness.
+`scripts/verify/` holds the parts that measure and post.
 
 Only run it on another contributor's PR the way the skill says to. Their
 tests and scripts would run with your `gh` login, so the skill measures their
@@ -135,22 +136,26 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   push made after you read the diff isn't approved with it. Anything else after
   `/approve` is ignored.
 
-Only low-risk PRs can merge on a report alone. `scripts/verify/tier.ts` decides
-the tier, from both sides of any rename:
+Only low-risk PRs can merge on a report alone. A PR's tier is the stricter of
+two things:
 
-- **High:** CI and repo config, the verifier itself, agent instructions and
-  hooks (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test
-  config, secrets and shell access, app permissions, sidecar request handling,
-  agent tool approvals, the MCP server, settings, migrations, dependencies,
-  what the Chrome extension may do, the two frontend files allowed to call
-  secret or shell commands (`src/lib/privilegedCommands.ts` and
-  `src/lib/pty.ts`), or more than 800 changed lines of code.
-- **Standard:** any other change to the Rust core, the sidecar, the extension
-  or dev scripts, or more than 300 changed lines of code.
+- **The risk assessment** in the report: how much harm the change could do,
+  judged from what it does, whatever part of the app it is in. A UI change
+  that writes a secret, launches a command, changes which tools ask before
+  running, or sends data somewhere new is high risk. One that only moves
+  things around on screen is low. The `/verify-pr` skill makes this call and
+  signs it into the report.
+- **A floor from the changed paths** (`scripts/verify/tier.ts`, from both
+  sides of any rename), which the assessment can't lower. It is high for CI
+  and repo config, the verifier itself, agent instructions and hooks
+  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
+  secrets and shell access, app permissions, sidecar request handling, agent
+  tool approvals, the MCP server, settings, migrations, dependencies, what
+  the Chrome extension may do, or more than 800 changed lines of code. More
+  than 300 lines is standard. Anything else starts low: no area is presumed
+  safe or risky.
 
-Tests, docs and lockfiles don't count toward the line limits. The rest of the
-frontend is low risk because `scripts/verify/nativeBridge.test.ts`, which runs
-in CI, fails when any other file calls one of those commands.
+Tests, docs and lockfiles don't count toward the line limits.
 
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository
@@ -158,7 +163,7 @@ settings:
 
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
-  access to contents, pull requests, issues and commit statuses.
+  access to actions, contents, pull requests, issues and commit statuses.
 - `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
   IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
   IDs, not logins, because a login freed by a rename can be taken by someone
@@ -167,6 +172,24 @@ settings:
   auto-approves. `enforce` lets a passing report approve. `/approve` works in
   both. Before switching to `enforce`, make `Verification report` a required
   status check in the `Protect Main` ruleset.
+
+### When an auto-merge breaks main
+
+The `Verify revert` workflow (`.github/workflows/verify-revert.yml`) runs when
+CI fails on a push to `main`. If the gate auto-approved the PR behind that
+commit, CI was passing on the commit before it, and no revert exists yet, it
+re-runs the failed jobs once. If they fail again, it opens a revert PR through
+GitHub's own revert and comments on the original. A maintainer merges the
+revert, or closes it and fixes forward. PRs a person approved, `/approve`
+included, are left alone.
+
+### Checking the thresholds
+
+`bun run verify:calibrate --days 60` lists each verdict, and each way PRs were
+approved, against how many of those merges were later reverted or caused a
+regression. Reverts are found from GitHub's `Reverts owner/repo#N` line. For a
+fix that doesn't revert, add a line `Regression-from: #N` to the fix PR's
+description, so it counts too.
 
 ## Running more than one instance
 
