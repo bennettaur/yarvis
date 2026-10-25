@@ -114,6 +114,9 @@ the changed lines the tests catch (mutation testing with Stryker, for
 TypeScript), reliability, security, complexity, maintainability and UI. It runs
 locally, since it needs the test database and the demo harness.
 `scripts/verify/` holds the parts that measure and post.
+[How PRs merge through verification](verification.md) shows how the report,
+the CI gate, the merge reviewer and `/approve` fit together, and why reports
+are signed. This section is the reference for the settings and rules.
 
 Only run it on another contributor's PR the way the skill says to. Their
 tests and scripts would run with your `gh` login, so the skill measures their
