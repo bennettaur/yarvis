@@ -56,17 +56,22 @@ export function commonGitDirFor(cwd: string): string | null {
   }
 }
 
-/** Symlinks in `gitDir` where Yarvis's git would write through them. */
+/**
+ * Symlinks in `gitDir` where Yarvis's git would write through them, and FIFOs
+ * or other special files, which would make it hang when it opens one.
+ */
 export function scanGitDirForSymlinks(gitDir: string): SymlinkFinding[] {
   const findings: SymlinkFinding[] = [];
   let visited = 0;
   const flag = (path: string) =>
-    findings.push({ problem: "a symlink in the clone's git data", where: path });
+    findings.push({ problem: "a symlink or special file in the clone's git data", where: path });
 
-  const isLink = (path: string): boolean | null => {
+  /** True for anything but a plain file or folder; null when it can't be read. */
+  const isUnsafe = (path: string): boolean | null => {
     visited++;
     try {
-      return lstatSync(path).isSymbolicLink();
+      const stat = lstatSync(path);
+      return !(stat.isFile() || stat.isDirectory());
     } catch {
       return null;
     }
@@ -84,33 +89,33 @@ export function scanGitDirForSymlinks(gitDir: string): SymlinkFinding[] {
     for (const name of children(dir)) {
       if (visited > MAX_ENTRIES) return;
       const path = join(dir, name);
-      const link = isLink(path);
+      const link = isUnsafe(path);
       if (link) flag(path);
       else if (link === false && lstatSync(path).isDirectory()) walk(path);
     }
   };
 
-  if (isLink(gitDir)) {
+  if (isUnsafe(gitDir)) {
     flag(gitDir);
     return findings;
   }
   for (const name of children(gitDir)) {
     const path = join(gitDir, name);
-    if (isLink(path)) flag(path);
+    if (isUnsafe(path)) flag(path);
   }
   for (const name of WALKED) {
     const path = join(gitDir, name);
-    if (isLink(path) === false) walk(path);
+    if (isUnsafe(path) === false) walk(path);
   }
   const objects = join(gitDir, "objects");
-  if (isLink(objects) === false) {
+  if (isUnsafe(objects) === false) {
     for (const name of children(objects)) {
       const path = join(objects, name);
-      const link = isLink(path);
+      const link = isUnsafe(path);
       if (link) flag(path);
       else if (link === false && lstatSync(path).isDirectory()) {
         for (const child of children(path)) {
-          if (isLink(join(path, child))) flag(join(path, child));
+          if (isUnsafe(join(path, child))) flag(join(path, child));
         }
       }
     }

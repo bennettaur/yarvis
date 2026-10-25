@@ -189,9 +189,16 @@ Some details:
   running can change things after a check, or clean up before the next one.
 - **Known limit: the shared object store.** The sandbox has to write the
   clone's object store to commit, and every workspace on that repo shares it.
-  A hijacked session can't change what an existing commit holds, but it can
-  delete or corrupt objects, which can break other workspaces on the same repo
-  until they're fetched again.
+  A hijacked session can delete or corrupt objects, which breaks other
+  workspaces on the same repo, and it can overwrite an existing object with
+  different content. Git doesn't re-check an object's hash on checkout, so
+  another workspace, or one provisioned later (whose setup script runs outside
+  the sandbox), would check out the changed files. A fetch doesn't repair an
+  object git already has. `git fsck` in the repo's clone under `.repos/` finds
+  it.
+- **Known limit: the check runs right before each command.** A session that is
+  still running can swap a file for a symlink between Yarvis's check and its
+  git command. Yarvis's merge could then overwrite the file the link points at.
 - **`.yarvis/brief.md` is written last,** as the final step of provisioning.
 
 ### When provisioning fails

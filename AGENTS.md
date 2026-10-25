@@ -318,6 +318,10 @@ back to ad-hoc.
     still running can still plant one in between; the narrow grants in
     `sandboxPaths.ts` (only the workspace's own refs' leaves, never a folder in
     `refs`) are what keep it from making directory links there at all.
+  - The object store is the accepted gap. A session has to write it to commit,
+    so it can also overwrite an object every workspace on the repo shares, and
+    git doesn't re-hash an object when it checks it out. Nothing here detects
+    that short of `git fsck`, and `docs/features/workspaces.md` says so.
   - `integrity.ts` is best-effort detection of the traces such a session
     leaves, for the user's own terminal, which nothing in Yarvis hardens.
     Yarvis refuses to merge or push for a workspace while any are there, and

@@ -162,6 +162,21 @@ describe("the symlink scan", () => {
     const link = join(adminDirOf(gitDir, ours), "MERGE_MSG");
     symlinkSync(target, link);
     const findings = await checkRepoIntegrity(defaultGitRunner, clone, ours);
-    expect(findings).toContainEqual({ problem: "a symlink in the clone's git data", where: link });
+    expect(findings).toContainEqual({
+      problem: "a symlink or special file in the clone's git data",
+      where: link,
+    });
+  });
+
+  it("refuses a worktree with a FIFO in its git data, before git can block on it", async () => {
+    const { ours, gitDir } = sharedClone();
+    const fifo = join(adminDirOf(gitDir, ours), "MERGE_HEAD");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+
+    expect(scanGitDirForSymlinks(gitDir).map((f) => f.where)).toEqual([fifo]);
+    // Refused before git starts, so the test can't hang on the FIFO.
+    expect((await defaultGitRunner(["status"], { cwd: ours, timeoutMs: 5_000 })).exitCode).toBe(
+      128,
+    );
   });
 });
