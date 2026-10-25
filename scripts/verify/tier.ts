@@ -214,7 +214,7 @@ export function classify(files: ChangedFile[]): TierResult {
 
   const tier: Tier = byTier.high.size > 0 ? "high" : byTier.standard.size > 0 ? "standard" : "low";
   // Only the winning tier's reasons: the report says why it is high, not
-  // that it is also big.
+  // every lower-tier reason that also fired.
   const reasons = [...byTier[tier]].map(([reason, paths]) => {
     if (paths.length === 0) return reason;
     return paths.length === 1 ? `${reason} (${paths[0]})` : `${reason} (${paths.length} files)`;

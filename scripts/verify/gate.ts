@@ -281,7 +281,6 @@ function approveAndMerge(pr: PullRequest, reason: string) {
   }
 }
 
-/** Both sides of a rename, so moving a file out of a high-risk path still counts. */
 /** The added lines in a file's patch, or `null` when GitHub sent none (too big, or binary). */
 export function addedTextOf(patch: string | undefined): string | null {
   if (patch === undefined) return null;
@@ -292,6 +291,7 @@ export function addedTextOf(patch: string | undefined): string | null {
     .join("\n");
 }
 
+/** The PR's files, with a rename's old path so moving a file out of a high-risk path still counts. */
 function changedFiles(prNumber: number): ChangedFile[] {
   return ghApiPages<{
     filename: string;
