@@ -592,6 +592,7 @@ export class AzureDevOpsClient {
       state: pr.status ?? "active",
       draft: Boolean(pr.isDraft),
       author: pr.createdBy?.displayName ?? "",
+      ...(pr.createdBy?.id ? { authorId: pr.createdBy.id } : {}),
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
       // Azure names the source repository only when it differs from the target.
@@ -687,6 +688,7 @@ export class AzureDevOpsClient {
       comments: comments.map((c) => ({
         id: c.id != null ? String(c.id) : "",
         author: c.author?.displayName ?? "",
+        ...(c.author?.id ? { authorId: c.author.id } : {}),
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
         ...(url ? { url } : {}),

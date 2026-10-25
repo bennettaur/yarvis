@@ -281,7 +281,7 @@ export default memo(function SinceReviewTab({ ctx }: { ctx: TabContext }) {
       <SinceReviewView
         prRef={ctx.prRef}
         since={data}
-        summary={<RereviewSummary ctx={ctx} since={data} />}
+        summary={<RereviewSummary key={data.fromHeadSha} ctx={ctx} since={data} />}
         onOpenFile={(file) =>
           ctx.openTab({
             kind: "since-file",

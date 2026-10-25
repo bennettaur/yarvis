@@ -540,6 +540,7 @@ export function createReviewWorkspaceRoutes(
           db(),
           c.req.param("id"),
           c.req.param("prId"),
+          deps(),
           (id) => registry.isLive(id),
           from,
         ),

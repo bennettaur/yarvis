@@ -24,7 +24,7 @@ import {
   setMarkMergeBase,
   toMarkResponse,
 } from "../pr/reviewMarks.ts";
-import type { PrRef } from "../pr/types.ts";
+import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { git } from "../workspaces/git.ts";
 import { stringsSize } from "./cache.ts";
@@ -120,7 +120,11 @@ export interface LastReview {
 }
 
 /** The PR's latest mark, after reading the viewer's provider-side reviews in. */
-async function latestMark(db: Db, ref: PrRef, deps: ReviewDeps): Promise<PrReviewMark | null> {
+export async function latestMark(
+  db: Db,
+  ref: PrRef,
+  deps: ReviewDeps,
+): Promise<PrReviewMark | null> {
   await providerMarks.sync(db, ref, deps.markProvider?.(ref) ?? null);
   return latestReviewMark(db, ref);
 }

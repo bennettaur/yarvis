@@ -139,6 +139,11 @@ export type DiffSide = "LEFT" | "RIGHT";
 export interface ReviewComment {
   id: string;
   author: string;
+  /**
+   * The author's provider identity id, where `author` is only a display name
+   * that two people can share (Azure). Absent on GitHub, whose login is unique.
+   */
+  authorId?: string;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */
@@ -228,6 +233,8 @@ export interface PrDetail {
   state: string;
   draft: boolean;
   author: string;
+  /** The author's provider identity id, as on {@link ReviewComment.authorId}. */
+  authorId?: string;
   baseRef: string;
   headRef: string;
   /**

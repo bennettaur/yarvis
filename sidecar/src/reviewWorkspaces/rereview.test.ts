@@ -1,15 +1,20 @@
 import { describe, expect, it } from "bun:test";
 import { jsonSchemaArg } from "../agentRuns/service.ts";
-import type { ReviewComment, ReviewThread } from "../pr/types.ts";
+import type { PrRef, ReviewComment, ReviewThread } from "../pr/types.ts";
 import {
   buildRereviewMaterial,
+  checkedViewer,
   clipSentences,
+  commentLines,
   emptyRereviewAudit,
   hunkRanges,
+  lineNote,
+  MAX_NEW_CHANGES,
   type RereviewInput,
   type RereviewItem,
   type RereviewLimits,
   rereviewSchema,
+  sameIdentity,
 } from "./rereview.ts";
 import type { SincePatch } from "./reviewMarks.ts";
 
@@ -19,14 +24,17 @@ const item = (id: string, overrides: Partial<RereviewItem> = {}): RereviewItem =
   providerId: `node-${id}`,
   path: "src/a.ts",
   line: 10,
+  resolved: false,
   othersReplied: false,
   ...overrides,
 });
 
-const limits = (items: RereviewItem[]): RereviewLimits => ({
+const limits = (items: RereviewItem[], over: Partial<RereviewLimits> = {}): RereviewLimits => ({
   items,
   changedPaths: new Set(["src/a.ts", "src/b.ts"]),
+  hunks: new Map([["src/a.ts", [{ start: 2, end: 6 }]]]),
   checkoutDir: "/checkout",
+  ...over,
 });
 
 const answer = (overrides: Record<string, unknown> = {}) => ({
@@ -34,12 +42,21 @@ const answer = (overrides: Record<string, unknown> = {}) => ({
   verdict: "needs_another_look",
   verdictReason: "Cache comment still open.",
   comments: [],
-  newChanges: [],
+  newChanges: [
+    { path: "src/a.ts", kind: "minor", reason: "Comment wording." },
+    { path: "src/b.ts", kind: "minor", reason: "Typo." },
+  ],
   ...overrides,
 });
 
+const fixed = (threadId: string, path = "src/a.ts", line?: number) => ({
+  threadId,
+  verdict: "addressed",
+  evidence: { path, ...(line ? { line } : {}), note: "Done." },
+});
+
 describe("the re-review schema", () => {
-  it("gives every comment exactly one verdict, in order, dropping ids it doesn't know", () => {
+  it("gives every comment exactly one verdict, in order, recording ids it can't use", () => {
     const audit = emptyRereviewAudit();
     const parsed = rereviewSchema(limits([item("T1"), item("T2"), item("C1")]), audit).parse(
       answer({
@@ -62,111 +79,179 @@ describe("the re-review schema", () => {
     ]);
     expect(parsed.comments[1]).toMatchObject({ providerId: "node-T2", path: "src/a.ts", line: 10 });
     expect(parsed.comments[2]?.evidence.note).toContain("no verdict");
-    expect(audit).toMatchObject({ unknownIds: ["T9"], missingIds: ["C1"] });
+    expect(audit).toMatchObject({ unknownIds: ["T9"], duplicateIds: ["T2"], missingIds: ["C1"] });
   });
 
-  it("downgrades a fix with no changed code cited, and a disagreement nobody else wrote", () => {
+  it("keeps only a bounded number of unknown ids in the audit", () => {
+    const audit = emptyRereviewAudit();
+    rereviewSchema(limits([]), audit).parse(
+      answer({
+        comments: Array.from({ length: 50 }, (_, i) => ({
+          threadId: `X${i}`,
+          verdict: "unclear",
+          evidence: null,
+        })),
+      }),
+    );
+    expect(audit.unknownIds).toHaveLength(20);
+  });
+
+  describe("evidence for a fix", () => {
+    const judge = (it: RereviewItem, evidence: Record<string, unknown>) =>
+      rereviewSchema(limits([it])).parse(
+        answer({ comments: [{ threadId: it.id, verdict: "addressed", evidence }] }),
+      ).comments[0];
+
+    it("is a changed file, at a line in or near one of its hunks", () => {
+      expect(judge(item("T1"), { path: "/checkout/src/a.ts", line: 8, note: "x" })).toMatchObject({
+        verdict: "addressed",
+        evidence: { path: "src/a.ts", line: 8 },
+      });
+      expect(judge(item("T1"), { path: "src/a.ts", line: 40, note: "x" })).toMatchObject({
+        verdict: "unclear",
+        downgradedFrom: "addressed",
+        evidence: { note: "x" },
+      });
+      // No line, or no hunks known (the patch was left out): the file is enough.
+      expect(judge(item("T1"), { path: "src/a.ts", note: "x" })?.verdict).toBe("addressed");
+      expect(judge(item("T1"), { path: "src/b.ts", line: 400, note: "x" })?.verdict).toBe(
+        "addressed",
+      );
+    });
+
+    it("is the thread's own unchanged file only when the author answered there", () => {
+      const own = { path: "src/c.ts", line: 1, note: "Answered." };
+      expect(judge(item("T1", { path: "src/c.ts" }), own)?.verdict).toBe("unclear");
+      expect(judge(item("T1", { path: "src/c.ts", othersReplied: true }), own)?.verdict).toBe(
+        "addressed",
+      );
+      expect(judge(item("T1"), { path: "src/zz.ts", note: "?" })?.verdict).toBe("unclear");
+    });
+
+    it("can be nothing for a comment on the PR the author answered, and only then", () => {
+      const pr = { kind: "conversation" as const, path: null, line: null };
+      expect(
+        judge(item("C1", { ...pr, othersReplied: true }), { note: "Answered." }),
+      ).toMatchObject({ verdict: "addressed", evidence: { note: "Answered." } });
+      expect(judge(item("C1", pr), { note: "?" })?.verdict).toBe("unclear");
+      expect(judge(item("T1"), { note: "Reply says done." })?.verdict).toBe("unclear");
+    });
+  });
+
+  it("accepts a disagreement only when the author replied, keeping the agent's summary", () => {
     const audit = emptyRereviewAudit();
     const parsed = rereviewSchema(
-      limits([
-        item("T1"),
-        item("T2"),
-        item("T3", { path: "src/c.ts" }),
-        item("T4"),
-        item("T5", { othersReplied: true }),
-      ]),
+      limits([item("T1"), item("T2", { othersReplied: true })]),
       audit,
     ).parse(
       answer({
         comments: [
-          { threadId: "T1", verdict: "addressed", evidence: { note: "Reply says done." } },
-          // A path the PR didn't change since the review isn't evidence of a fix.
-          { threadId: "T2", verdict: "partly", evidence: { path: "src/zz.ts", note: "?" } },
-          // The thread's own path is, for a question answered in the thread.
-          { threadId: "T3", verdict: "addressed", evidence: { path: "src/c.ts", note: "ok" } },
+          { threadId: "T1", verdict: "disagreed", evidence: { note: "?" }, replySummary: "No." },
           {
-            threadId: "T4",
+            threadId: "T2",
             verdict: "disagreed",
-            evidence: { note: "?" },
-            replySummary: "They said no.",
-          },
-          {
-            threadId: "T5",
-            verdict: "disagreed",
-            evidence: { path: "/checkout/src/a.ts", line: 3, note: "Kept as is." },
+            evidence: { note: "Kept." },
             replySummary: "Security control; stays constant.",
           },
         ],
       }),
     );
-    expect(parsed.comments.map((c) => [c.verdict, c.downgradedFrom])).toEqual([
-      ["unclear", "addressed"],
-      ["unclear", "partly"],
-      ["addressed", undefined],
-      ["unclear", "disagreed"],
-      ["disagreed", undefined],
+    expect(parsed.comments.map((c) => [c.verdict, c.replySummary])).toEqual([
+      ["unclear", undefined],
+      ["disagreed", "Security control; stays constant."],
     ]);
-    expect(parsed.comments[1]?.evidence).toEqual({ note: "?" });
-    expect(parsed.comments[3]?.replySummary).toBeUndefined();
-    expect(parsed.comments[4]).toMatchObject({
-      evidence: { path: "src/a.ts", line: 3 },
-      replySummary: "Security control; stays constant.",
-    });
-    expect(audit.downgraded.map((d) => [d.id, d.reason])).toEqual([
-      ["T1", "no-evidence"],
-      ["T2", "no-evidence"],
-      ["T4", "no-reply"],
-    ]);
+    expect(audit.downgraded).toEqual([{ id: "T1", from: "disagreed", reason: "no-reply" }]);
   });
 
-  it("won't say ready to approve beside anything outstanding", () => {
-    const schema = (audit = emptyRereviewAudit()) => rereviewSchema(limits([item("T1")]), audit);
-    const fixed = {
-      threadId: "T1",
-      verdict: "addressed",
-      evidence: { path: "src/a.ts", line: 2, note: "Gone." },
-    };
-    const clean = schema().parse(
-      answer({ verdict: "ready_to_approve", verdictReason: "All good.", comments: [fixed] }),
-    );
-    expect(clean).toMatchObject({ verdict: "ready_to_approve", verdictReason: "All good." });
-
+  it("lists every changed file nobody classified as needing review", () => {
     const audit = emptyRereviewAudit();
-    const logic = schema(audit).parse(
-      answer({
-        verdict: "ready_to_approve",
-        comments: [fixed],
-        newChanges: [{ path: "src/b.ts", kind: "needs_review", reason: "New retry." }],
-      }),
-    );
-    expect(logic).toMatchObject({
-      verdict: "needs_another_look",
-      verdictReason: "1 change to review",
-    });
-    expect(audit.verdictOverridden).toBe(true);
-
-    const open = schema().parse(answer({ verdict: "ready_to_approve", comments: [] }));
-    expect(open).toMatchObject({
-      verdict: "needs_another_look",
-      verdictReason: "1 comment not settled",
-    });
+    const parsed = rereviewSchema(
+      limits([item("T1")], { changedPaths: new Set(["src/a.ts", "src/b.ts", "src/c.ts"]) }),
+      audit,
+    ).parse(answer({ comments: [fixed("T1")], newChanges: [] }));
+    // src/a.ts is the cited fix; the other two were never looked at.
+    expect(parsed.newChanges).toEqual([
+      { path: "src/b.ts", kind: "needs_review", reason: "Not classified by the agent." },
+      { path: "src/c.ts", kind: "needs_review", reason: "Not classified by the agent." },
+    ]);
+    expect(audit.unclassifiedPaths).toEqual(["src/b.ts", "src/c.ts"]);
+    expect(parsed.serverNote).toBe("2 changed files weren't classified.");
+    expect(parsed.verdictReason).toBe("2 changes to review");
   });
 
-  it("keeps new changes to files that changed since the review, once each", () => {
+  it("dedupes the changes, needing review first, then caps them", () => {
+    const paths = Array.from({ length: 40 }, (_, i) => `src/f${i}.ts`);
     const audit = emptyRereviewAudit();
-    const parsed = rereviewSchema(limits([]), audit).parse(
+    const parsed = rereviewSchema(limits([], { changedPaths: new Set(paths) }), audit).parse(
       answer({
         newChanges: [
-          { path: "./src/b.ts", lines: { start: 9, end: 3 }, kind: "minor", reason: "Typo." },
-          { path: "src/b.ts", kind: "needs_review", reason: "Also a condition." },
+          ...paths.map((path) => ({ path, kind: "minor", reason: "Typo." })),
+          { path: "./src/f39.ts", lines: { start: 9, end: 3 }, kind: "needs_review", reason: "x" },
           { path: "src/untouched.ts", kind: "needs_review", reason: "?" },
         ],
       }),
     );
-    expect(parsed.newChanges).toEqual([
-      { path: "src/b.ts", lines: { start: 3, end: 9 }, kind: "needs_review", reason: "Typo." },
-    ]);
+    expect(parsed.newChanges[0]).toEqual({
+      path: "src/f39.ts",
+      kind: "needs_review",
+      reason: "Typo.",
+    });
+    const listed = parsed.newChanges.filter((c) => c.reason !== "Not classified by the agent.");
+    expect(listed).toHaveLength(MAX_NEW_CHANGES);
+    expect(new Set(parsed.newChanges.map((c) => c.path)).size).toBe(parsed.newChanges.length);
     expect(audit.droppedChanges).toEqual(["src/untouched.ts"]);
+  });
+
+  describe("the verdict", () => {
+    const schema = (items: RereviewItem[], audit = emptyRereviewAudit()) =>
+      rereviewSchema(limits(items), audit);
+
+    it("stands when every comment is addressed or resolved and nothing needs review", () => {
+      const parsed = schema([item("T1"), item("T2", { resolved: true })]).parse(
+        answer({
+          verdict: "ready_to_approve",
+          verdictReason: "All good.",
+          comments: [fixed("T1"), { threadId: "T2", verdict: "not_addressed", evidence: null }],
+        }),
+      );
+      expect(parsed).toMatchObject({ verdict: "ready_to_approve", verdictReason: "All good." });
+      expect(parsed.serverNote).toBeUndefined();
+    });
+
+    it("waits on a reasoned disagreement until its thread is resolved", () => {
+      const audit = emptyRereviewAudit();
+      const disagreed = {
+        threadId: "T1",
+        verdict: "disagreed",
+        evidence: { note: "Kept." },
+        replySummary: "Reason.",
+      };
+      const open = schema([item("T1", { othersReplied: true })], audit).parse(
+        answer({ verdict: "ready_to_approve", comments: [disagreed] }),
+      );
+      expect(open).toMatchObject({
+        verdict: "needs_another_look",
+        verdictReason: "1 comment not settled",
+      });
+      expect(audit.verdictOverridden).toBe(true);
+      const resolved = schema([item("T1", { othersReplied: true, resolved: true })]).parse(
+        answer({ verdict: "ready_to_approve", comments: [disagreed] }),
+      );
+      expect(resolved.verdict).toBe("ready_to_approve");
+    });
+
+    it("gives the server's reason and a note when it couldn't take the answer as given", () => {
+      const parsed = schema([item("T1"), item("T2")]).parse(
+        answer({
+          verdictReason: "The agent's own reason.",
+          comments: [{ threadId: "T1", verdict: "addressed", evidence: { note: "trust me" } }],
+        }),
+      );
+      expect(parsed.verdictReason).toBe("2 comments not settled");
+      expect(parsed.serverNote).toBe(
+        "1 verdict wasn't supported by evidence; 1 comment got no verdict.",
+      );
+    });
   });
 
   it("holds the summary to three sentences, not splitting on a file name", () => {
@@ -183,10 +268,11 @@ describe("the re-review schema", () => {
     expect(parsed.verdictReason.length).toBeLessThanOrEqual(160);
   });
 
-  it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
-    const schema = jsonSchemaArg(rereviewSchema(limits([item("T1")])));
+  it("offers the ids as an enum, and limits only as descriptions", () => {
+    const schema = jsonSchemaArg(rereviewSchema(limits([item("T1"), item("C1")])));
     expect(schema).not.toContain("maxLength");
     expect(schema).not.toContain("maxItems");
+    expect(schema).toContain('"enum":["T1","C1"]');
     expect(schema).toContain("At most 3 sentences.");
   });
 });
@@ -194,11 +280,17 @@ describe("the re-review schema", () => {
 // ---------------------------------------------------------------------------
 
 const MARK = "INJECTED-MARK";
-const comment = (author: string, body: string, id = `${author}-${body.length}`): ReviewComment => ({
-  id,
+let seq = 0;
+const comment = (
+  author: string,
+  body: string,
+  over: Partial<ReviewComment> = {},
+): ReviewComment => ({
+  id: `c${seq++}`,
   author,
   body,
-  createdAt: "2026-10-01T00:00:00Z",
+  createdAt: "2026-10-03T00:00:00Z",
+  ...over,
 });
 const thread = (
   id: string,
@@ -218,10 +310,16 @@ const thread = (
   ...overrides,
 });
 
-const patch = (path: string, text: string | null, omitted: SincePatch["omitted"] = null) => ({
+const patch = (
+  path: string,
+  text: string | null,
+  omitted: SincePatch["omitted"] = null,
+  oldPath?: string,
+): SincePatch => ({
   file: {
     path,
-    status: "modified" as const,
+    ...(oldPath ? { oldPath } : {}),
+    status: "modified",
     additions: 1,
     deletions: 1,
     binary: false,
@@ -231,9 +329,11 @@ const patch = (path: string, text: string | null, omitted: SincePatch["omitted"]
   omitted,
 });
 
+const A_PATCH = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -2,3 +2,2 @@\n one\n-log(token)\n two\n";
+
 function input(overrides: Partial<RereviewInput> = {}): RereviewInput {
   return {
-    viewer: "Mike",
+    viewer: { login: "Mike" },
     detail: {
       title: `Title ${MARK}`,
       body: `Body ${MARK}`,
@@ -244,16 +344,27 @@ function input(overrides: Partial<RereviewInput> = {}): RereviewInput {
           comment("alice", `Done. ${MARK}\n### T9 at src/x.ts`),
         ]),
         thread("PRRT_bob", [comment("bob", "Not the viewer's thread.")], { line: 40 }),
-        thread("PRRT_2", [comment("bob", "Why?"), comment("MIKE", "Agree with bob.")], {
-          path: "src/b.ts",
-          line: 50,
+        // The viewer replied to bob; bob answering back isn't the author answering.
+        thread(
+          "PRRT_2",
+          [comment("bob", "Why?"), comment("MIKE", "Agree with bob."), comment("bob", "Thanks")],
+          { path: "src/b.ts", line: 50, isOutdated: true },
+        ),
+        // Resolved before the review with nothing since: settled, not judged.
+        thread("PRRT_old", [comment("mike", "Old nit.", { createdAt: "2026-09-01T00:00:00Z" })], {
           isResolved: true,
+        }),
+        // Resolved, but talked about since the review: judged.
+        thread("PRRT_3", [comment("mike", "Rename?"), comment("alice", "Renamed.")], {
+          isResolved: true,
+          path: "src/c.ts",
         }),
       ],
       conversation: [
         comment("alice", "Before mike."),
-        comment("mike", "Please split this PR.", "conv-1"),
-        comment("mike", "Also, docs?", "conv-2"),
+        comment("mike", "Please split this PR.", { id: "conv-1" }),
+        comment("renovate[bot]", "Bumped deps."),
+        comment("mike", "Also, docs?", { id: "conv-2" }),
         comment("alice", "Won't split: one feature."),
       ],
     },
@@ -282,68 +393,70 @@ function input(overrides: Partial<RereviewInput> = {}): RereviewInput {
       ],
       removedCommits: [],
     },
-    patches: [
-      patch(
-        "src/a.ts",
-        "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -2,3 +2,2 @@\n one\n-log(token)\n two\n",
-      ),
-      patch("src/big.ts", null, "over-budget"),
-    ],
+    reviewedAt: "2026-10-02T00:00:00Z",
+    patches: [patch("src/a.ts", A_PATCH), patch("src/big.ts", null, "over-budget")],
     messages: new Map([["c".repeat(40), `Stop logging\n\nBecause ${MARK}.`]]),
     ...overrides,
   };
 }
 
 describe("building the re-review's material", () => {
-  it("judges only the viewer's threads and comments, under short ids", () => {
-    const { limits: built, contextFile, prompt } = buildRereviewMaterial(input(), "/ctx");
-    expect(built.items).toEqual([
-      {
-        id: "T1",
-        kind: "thread",
-        providerId: "PRRT_1",
-        path: "src/a.ts",
-        line: 3,
-        othersReplied: true,
-      },
-      // Bob started it and wrote nothing after the viewer: no reply to them.
-      {
-        id: "T2",
-        kind: "thread",
-        providerId: "PRRT_2",
-        path: "src/b.ts",
-        line: 50,
-        othersReplied: false,
-      },
-      {
-        id: "C1",
-        kind: "conversation",
-        providerId: "conv-1",
-        path: null,
-        line: null,
-        othersReplied: true,
-      },
-      {
-        id: "C2",
-        kind: "conversation",
-        providerId: "conv-2",
-        path: null,
-        line: null,
-        othersReplied: true,
-      },
+  it("judges the viewer's threads and comments, counting only the author's replies", () => {
+    const { limits: built, prompt } = buildRereviewMaterial(input(), "/ctx");
+    expect(built.items.map((i) => [i.id, i.providerId, i.resolved, i.othersReplied])).toEqual([
+      ["T1", "PRRT_1", false, true],
+      ["T2", "PRRT_2", false, false],
+      ["T3", "PRRT_3", true, true],
+      ["C1", "conv-1", false, true],
+      ["C2", "conv-2", false, true],
     ]);
-    expect(contextFile).not.toContain("Not the viewer's thread.");
-    expect(contextFile).toContain("[reviewer] mike: Don't log the token.");
-    expect(contextFile).toContain("[other] alice:");
-    expect(contextFile).toContain("code within 3 lines of it changed since the review");
-    expect(prompt).toContain("COMMENT_IDS=T1,T2,C1,C2");
+    expect(built.settled).toEqual([{ providerId: "PRRT_old", path: "src/a.ts", line: 3 }]);
+    expect(built.hunks.get("src/a.ts")).toEqual([{ start: 2, end: 3 }]);
+    expect(prompt).toContain("COMMENT_IDS=T1,T2,T3,C1,C2");
     expect(prompt).toContain("REVIEW_CONTEXT=/ctx");
+  });
+
+  it("labels whose each line is, the thread's state, and what moved near it", () => {
+    const { contextFile } = buildRereviewMaterial(input(), "/ctx");
+    expect(contextFile).not.toContain("Not the viewer's thread.");
+    expect(contextFile).not.toContain("Old nit.");
+    expect(contextFile).toContain("[reviewer] mike: Don't log the token.");
+    expect(contextFile).toContain("[author] alice:");
+    expect(contextFile).toContain("[other] bob: Why?");
+    expect(contextFile).toContain("T2 at src/b.ts:50 [open, outdated]");
+    expect(contextFile).toContain("T3 at src/c.ts:3 [resolved]");
+    expect(contextFile).toContain("code within 3 lines of it changed since the review");
+    expect(contextFile).toContain("Later comments on the PR by the author (may be unrelated");
+    // A bot's comment is never the author's answer.
+    expect(contextFile).not.toContain("Bumped deps.");
+  });
+
+  it("matches people by identity id where the provider has one", () => {
+    const azure = input({
+      viewer: { login: "Sam Lee", id: "id-me" },
+      detail: {
+        title: "t",
+        body: "",
+        author: "Sam Lee",
+        authorId: "id-author",
+        reviewThreads: [
+          thread("1", [
+            comment("Sam Lee", "Mine.", { authorId: "id-me" }),
+            comment("Sam Lee", "The author, same name.", { authorId: "id-author" }),
+          ]),
+          thread("2", [comment("Sam Lee", "Another Sam's.", { authorId: "id-other" })]),
+        ],
+        conversation: [],
+      },
+    });
+    const { limits: built } = buildRereviewMaterial(azure, "/ctx");
+    expect(built.items.map((i) => [i.providerId, i.othersReplied])).toEqual([["1", true]]);
+    expect(sameIdentity({ author: "MIKE" }, { login: "mike" })).toBe(true);
   });
 
   it("keeps PR-written text out of the prompt, fenced and flattened in the context", () => {
     const { prompt, contextFile, diffFile } = buildRereviewMaterial(input(), "/ctx");
     expect(prompt).not.toContain(MARK);
-    // Every occurrence sits inside a nonce fence.
     const unfenced = contextFile.replace(/<([a-z-]+-[0-9a-f]{12})>[\s\S]*?<\/\1>/g, "");
     expect(contextFile).toContain(MARK);
     expect(unfenced).not.toContain(MARK);
@@ -354,11 +467,12 @@ describe("building the re-review's material", () => {
     expect(diffFile).toContain("-    b3  log(token)");
     expect(contextFile).toContain("- src/a.ts (changed again, +1 -1): interdiff.diff line 3");
     expect(contextFile).toContain("src/big.ts (changed again, +1 -1): no interdiff (left out");
+    expect(contextFile).toContain("1 thread resolved before the review");
   });
 
-  it("bounds the threads and comments it lists", () => {
+  it("lists at most 40 threads, open ones first, and says how many it left out", () => {
     const many = Array.from({ length: 50 }, (_, i) =>
-      thread(`PRRT_${i}`, [comment("mike", "x".repeat(2000))], { isResolved: i < 45 }),
+      thread(`PRRT_${i}`, [comment("mike", `nit ${i}`)], { isResolved: i < 45 }),
     );
     const base = input();
     const { limits: built, contextFile } = buildRereviewMaterial(
@@ -366,12 +480,36 @@ describe("building the re-review's material", () => {
       "/ctx",
     );
     expect(built.items).toHaveLength(40);
-    // The open ones are kept first.
     for (const i of [45, 46, 47, 48, 49]) {
       expect(built.items.some((it) => it.providerId === `PRRT_${i}`)).toBe(true);
     }
-    expect(contextFile).toContain("10 older comments by the reviewer are not listed.");
-    expect(contextFile).not.toContain("x".repeat(801));
+    expect(contextFile).toContain(
+      "10 of the reviewer's comments are left out, resolved ones first",
+    );
+  });
+
+  it("keeps the reviewer's words longer than replies, and the whole file within budget", () => {
+    const long = Array.from({ length: 50 }, (_, i) =>
+      thread(`PRRT_${i}`, [comment("mike", "x".repeat(2000)), comment("alice", "y".repeat(2000))]),
+    );
+    const base = input();
+    const files = Array.from({ length: 600 }, (_, i) =>
+      patch(`src/${"d".repeat(40)}${i}.ts`, null, "too-large"),
+    );
+    const { limits: built, contextFile } = buildRereviewMaterial(
+      input({ detail: { ...base.detail, reviewThreads: long, conversation: [] }, patches: files }),
+      "/ctx",
+    );
+    expect(contextFile).toContain("x".repeat(1499));
+    expect(contextFile).not.toContain("x".repeat(1501));
+    expect(contextFile).not.toContain("y".repeat(401));
+    // The comments' budget stops short of all 50 threads, and says so.
+    expect(built.items.length).toBeLessThan(40);
+    expect(contextFile).toContain(
+      `${50 - built.items.length} of the reviewer's comments are left out`,
+    );
+    expect(contextFile).toMatch(/\d+ files at the end of the list are left out/);
+    expect(contextFile.length).toBeLessThan(130_000);
   });
 
   it("finds the head lines each interdiff hunk covers", () => {
@@ -379,5 +517,66 @@ describe("building the re-review's material", () => {
       { start: 1, end: 3 },
       { start: 11, end: 11 },
     ]);
+  });
+});
+
+describe("a long thread", () => {
+  it("shows the first comment and the latest replies, marking the gap", () => {
+    const comments = [
+      comment("mike", "The request."),
+      ...Array.from({ length: 12 }, (_, i) => comment("alice", `reply ${i}`)),
+    ];
+    const lines = commentLines(comments, { login: "mike" }, { login: "alice" }).split("\n");
+    expect(lines[0]).toContain("The request.");
+    expect(lines[1]).toBe("  - (5 replies in between not shown)");
+    expect(lines.at(-1)).toContain("reply 11");
+    expect(lines).toHaveLength(9);
+  });
+});
+
+describe("what moved near a line comment", () => {
+  const patches = new Map<string, SincePatch>([
+    ["src/a.ts", patch("src/a.ts", A_PATCH)],
+    ["src/old.ts", patch("src/new.ts", A_PATCH, null, "src/old.ts")],
+    ["src/big.ts", patch("src/big.ts", null, "too-large")],
+  ]);
+  const at = (over: Partial<ReviewThread>) =>
+    lineNote({ path: "src/a.ts", line: 3, side: "RIGHT", isOutdated: false, ...over }, patches);
+
+  it("tells each case apart", () => {
+    expect(at({ isOutdated: true, line: 3 })).toContain("outdated");
+    expect(at({ line: null })).toContain("the comment has no line");
+    expect(at({ path: "src/same.ts" })).toContain("is the same as when reviewed");
+    expect(at({ path: "src/big.ts" })).toContain("no interdiff included");
+    expect(at({ side: "LEFT" })).toContain("old side");
+    expect(at({ line: 3 })).toContain("within 3 lines");
+    expect(at({ line: 90 })).toContain("not near this line");
+  });
+
+  it("finds a renamed file's patch by its old name", () => {
+    const { contextFile } = buildRereviewMaterial(
+      input({
+        patches: [patch("src/new.ts", A_PATCH, null, "src/old.ts")],
+        detail: {
+          ...input().detail,
+          reviewThreads: [thread("R", [comment("mike", "Here.")], { path: "src/old.ts" })],
+          conversation: [],
+        },
+      }),
+      "/ctx",
+    );
+    expect(contextFile).toContain("code within 3 lines of it changed since the review");
+  });
+});
+
+describe("who the viewer is", () => {
+  const gh: PrRef = { provider: "github", owner: "o", repo: "r", number: 1 };
+  const az: PrRef = { provider: "azure", org: "o", project: "p", repo: "r", prId: 1 };
+
+  it("refuses an empty login, and on Azure an empty identity id", () => {
+    expect(checkedViewer(gh, { login: "mike" })).toEqual({ login: "mike" });
+    expect(() => checkedViewer(gh, { login: " " })).toThrow("who you are");
+    expect(() => checkedViewer(az, { login: "Sam Lee" })).toThrow("who you are");
+    expect(checkedViewer(az, { login: "Sam Lee", id: "id-me" })).toMatchObject({ id: "id-me" });
   });
 });

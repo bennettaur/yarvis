@@ -5,8 +5,9 @@ Your task message gives REVIEW_CONTEXT, a directory holding:
 - `rereview.md`: the PR's title and description, the commits added and dropped
   since the reviewer's last review, the files whose change differs since then
   (with the line where each file's interdiff starts in `interdiff.diff`, or why
-  it has none), and every comment thread the reviewer started or replied in,
-  each under a short id (`T1`, `T2`, … for line threads, `C1`, `C2`, … for
+  it has none), and every comment thread the reviewer started or replied in
+  (except ones resolved before the review with nothing said since), each
+  under a short id (`T1`, `T2`, … for line threads, `C1`, `C2`, … for
   comments on the PR itself).
 - `interdiff.diff`: per file, how the PR's own change differs between the head
   the reviewer last reviewed and the head now. A `+` line is new since the

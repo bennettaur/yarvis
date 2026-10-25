@@ -22,6 +22,7 @@ import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
+import { reviewSincePatches, reviewSinceReview } from "./reviewMarks.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
 import { type PrMeta, type ReviewDeps, reviewPatches } from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
@@ -974,7 +975,7 @@ cat "${fakeDir}/result.jsonl"`,
             if (detailFails) throw new Error("provider is down");
             return detail();
           },
-          viewerLogin: async () => viewer,
+          viewer: async () => ({ login: viewer }),
           settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5, autoStart: false }),
           run: { program, registry, instance: "test" },
         },
@@ -1123,15 +1124,61 @@ cat "${fakeDir}/result.jsonl"`,
   });
 
   it("refuses what it can't judge, starting nothing", async () => {
-    const { wsId, prId, head } = await reviewedThenPushed();
-    // Nothing changed since a review at the head.
-    expect((await rereview("POST", wsId, prId, head)).status).toBe(409);
+    const { wsId, prId, reviewed, head } = await reviewedThenPushed();
     expect((await rereview("POST", wsId, prId, "not-a-sha")).status).toBe(400);
+    // Only a commit a review was recorded at.
+    expect((await rereview("POST", wsId, prId, head)).status).toBe(400);
     detailFails = true;
     const res = await rereview("POST", wsId, prId);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("provider is down");
+    detailFails = false;
+    viewer = "";
+    const nobody = await rereview("POST", wsId, prId, reviewed);
+    expect(nobody.status).toBe(502);
+    expect(((await nobody.json()) as { error: string }).error).toContain("who you are");
+    // Nothing changed since a review at the head.
+    viewer = "me";
+    expect((await call("POST", `/${wsId}/prs/${prId}/review-mark`)).status).toBe(201);
+    expect((await rereview("POST", wsId, prId)).status).toBe(409);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("reads each changed file's interdiff within the budgets, and the new commits' messages", async () => {
+    const { wsId, prId } = await reviewedThenPushed();
+    remote.pushToPr("src/b.ts", `${"export const big = 1;\n".repeat(200)}`);
+    sh(remote.work, "checkout", "-q", "feature");
+    writeFileSync(join(remote.work, "src/c.ts"), "export const c = 1;\n");
+    sh(remote.work, "add", "-A");
+    sh(remote.work, "commit", "-q", "-m", "Add c\n\nBecause the cache needs it.");
+    sh(remote.work, "push", "-q", remote.bare, "feature:refs/pull/1/head", "--force");
+    sh(remote.work, "checkout", "-q", "main");
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+
+    const since = await reviewSinceReview(db, config, wsId, prId, deps());
+    const read = (maxTotalBytes: number) =>
+      reviewSincePatches(db, config, wsId, prId, deps(), since, {
+        maxFileBytes: 2_000,
+        maxTotalBytes,
+      });
+    const size = (path: string, all: Awaited<ReturnType<typeof read>>) =>
+      all.patches.find((p) => p.file.path === path)?.patch?.length ?? 0;
+    const unbounded = await read(1_000_000);
+    const { patches, messages } = await read(
+      size("src/a.ts", unbounded) + size("src/c.ts", unbounded) - 1,
+    );
+    const byPath = Object.fromEntries(patches.map((p) => [p.file.path, p]));
+    expect(byPath["src/b.ts"]).toMatchObject({ patch: null, omitted: "too-large" });
+    expect(byPath["src/a.ts"]?.patch).toContain("+export const a = 5;");
+    // a.ts fits first (path order); c.ts would take the total past the budget.
+    expect(byPath["src/c.ts"]).toMatchObject({ patch: null, omitted: "over-budget" });
+    expect(byPath["src/c.ts"]?.file.additions).toBe(1);
+    const fresh = since.commits.filter((c) => c.isNew);
+    expect(fresh).toHaveLength(3);
+    const added = fresh.find((c) => c.subject === "Add c");
+    expect(messages.get(added?.sha as string)).toBe("Add c\n\nBecause the cache needs it.");
+    expect(messages.size).toBe(3);
   });
 });
 

@@ -43,19 +43,28 @@ export const VERDICT_LABELS: Record<CommentVerdict, { text: string; className: s
 /** The order "still open" lists its comments in: the clearest problems first. */
 const OPEN_ORDER: CommentVerdict[] = ["not_addressed", "partly", "unclear"];
 
-/** The comments in the three groups the summary shows them in. */
-export function groupComments(comments: RereviewComment[]): {
+/**
+ * The comments in the three groups the summary shows them in. A resolved
+ * thread is settled whatever its verdict, so it joins the addressed ones;
+ * `resolved` says which threads are resolved now, since the reviewer may have
+ * resolved one after the run.
+ */
+export function groupComments(
+  comments: RereviewComment[],
+  resolved: (c: RereviewComment) => boolean = (c) => c.resolved,
+): {
   open: RereviewComment[];
   disagreed: RereviewComment[];
   addressed: RereviewComment[];
 } {
+  const settled = (c: RereviewComment) => c.verdict === "addressed" || resolved(c);
   const open = comments
-    .filter((c) => OPEN_ORDER.includes(c.verdict))
+    .filter((c) => !settled(c) && OPEN_ORDER.includes(c.verdict))
     .sort((a, b) => OPEN_ORDER.indexOf(a.verdict) - OPEN_ORDER.indexOf(b.verdict));
   return {
     open,
-    disagreed: comments.filter((c) => c.verdict === "disagreed"),
-    addressed: comments.filter((c) => c.verdict === "addressed"),
+    disagreed: comments.filter((c) => !settled(c) && c.verdict === "disagreed"),
+    addressed: comments.filter(settled),
   };
 }
 
@@ -122,14 +131,18 @@ function CommentItem({
 }) {
   const label = VERDICT_LABELS[comment.verdict];
   const { evidence } = comment;
+  // Only where it adds something: another file, or a line other than the comment's.
   const showEvidence =
-    evidence.path && (evidence.path !== comment.path || evidence.line !== comment.line);
+    evidence.path &&
+    (evidence.path !== comment.path ||
+      (evidence.line !== undefined && evidence.line !== comment.line));
   return (
     <li className="space-y-2 rounded-lg border border-zinc-800 p-3" data-verdict={comment.verdict}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded border px-1.5 py-0.5 text-[11px] ${label.className}`}>
           {label.text}
         </span>
+        {thread?.isResolved && <span className="text-[11px] text-zinc-500">resolved</span>}
         {comment.path ? (
           <PathLink
             path={comment.path}
@@ -143,7 +156,7 @@ function CommentItem({
       </div>
       {comment.replySummary && (
         <p className="text-sm text-sky-200">
-          <span className="text-zinc-500">Their reason: </span>
+          <span className="text-zinc-500">The agent's summary of their reply: </span>
           {comment.replySummary}
         </p>
       )}
@@ -162,7 +175,9 @@ function CommentItem({
       {comment.downgradedFrom && (
         <p className="text-xs text-zinc-500">
           The agent said "{VERDICT_LABELS[comment.downgradedFrom].text.toLowerCase()}" but{" "}
-          {comment.downgradedFrom === "disagreed" ? "nobody else replied" : "cited no changed code"}
+          {comment.downgradedFrom === "disagreed"
+            ? "the author didn't reply"
+            : "cited nothing that changed since your review"}
           , so it is shown as unclear.
         </p>
       )}
@@ -212,15 +227,23 @@ export function RereviewView({
   threadProps: (thread: ReviewThread) => ThreadViewProps;
   links: RereviewLinks;
 }) {
-  const groups = groupComments(review.comments);
+  const threadOf = (c: RereviewComment) =>
+    c.kind === "thread" ? (threads.get(c.providerId) ?? null) : null;
+  const resolvedNow = (c: RereviewComment) => threadOf(c)?.isResolved ?? c.resolved;
+  const groups = groupComments(review.comments, resolvedNow);
   const needsReview = review.newChanges.filter((c) => c.kind === "needs_review");
   const minor = review.newChanges.filter((c) => c.kind === "minor");
-  const ready = review.verdict === "ready_to_approve";
+  const settled = review.settled ?? [];
+  // Resolving the threads that held it back settles the verdict without a re-run.
+  const ready =
+    review.verdict === "ready_to_approve" ||
+    (groups.open.length === 0 && groups.disagreed.length === 0 && needsReview.length === 0);
+  const resolvedSince = ready && review.verdict !== "ready_to_approve";
   const item = (c: RereviewComment) => (
     <CommentItem
       key={c.threadId}
       comment={c}
-      thread={c.kind === "thread" ? (threads.get(c.providerId) ?? null) : null}
+      thread={threadOf(c)}
       conversation={c.kind === "conversation" ? (conversation.get(c.providerId) ?? null) : null}
       threadProps={threadProps}
       links={links}
@@ -237,16 +260,30 @@ export function RereviewView({
         <p className={`text-sm font-semibold ${ready ? "text-emerald-300" : "text-amber-300"}`}>
           {ready ? "Ready to approve" : "Needs another look"}
         </p>
-        <p className="text-xs text-zinc-300">{review.verdictReason}</p>
+        <p className="text-xs text-zinc-300">
+          {resolvedSince
+            ? "You've resolved the threads that were still open."
+            : review.verdictReason}
+        </p>
       </div>
       <p className="text-sm text-zinc-200">{review.summary}</p>
+      {review.serverNote && (
+        <p className="text-xs text-amber-300/90" data-testid="server-note">
+          Yarvis checked the answer: {review.serverNote} Those are shown as unclear or as needing
+          review.
+        </p>
+      )}
 
       <section aria-label="Your comments" className="space-y-2">
         <h4 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
           Your comments <span className="font-normal">{review.comments.length}</span>
         </h4>
         {review.comments.length === 0 && (
-          <p className="text-xs text-zinc-500">You left no comments on this pull request.</p>
+          <p className="text-xs text-zinc-500">
+            {settled.length > 0
+              ? "Your comments were all settled before your review."
+              : "You haven't commented on this pull request."}
+          </p>
         )}
         {groups.open.length > 0 && (
           <>
@@ -265,9 +302,32 @@ export function RereviewView({
         {groups.addressed.length > 0 && (
           <details>
             <summary className="cursor-pointer text-xs text-zinc-400">
-              Addressed ({groups.addressed.length})
+              Addressed or resolved ({groups.addressed.length})
             </summary>
             <ul className="mt-2 space-y-2">{groups.addressed.map(item)}</ul>
+          </details>
+        )}
+        {settled.length > 0 && (
+          <details>
+            <summary className="cursor-pointer text-xs text-zinc-400">
+              Settled before your review ({settled.length})
+            </summary>
+            <ul className="mt-2 space-y-2">
+              {settled.map((s) => {
+                const thread = threads.get(s.providerId);
+                return (
+                  <li key={s.providerId}>
+                    {thread ? (
+                      <ThreadView {...threadProps(thread)} />
+                    ) : (
+                      <span className="font-mono text-xs text-zinc-500">
+                        {s.path ? where(s.path, s.line) : "On the pull request"}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </details>
         )}
       </section>
@@ -381,7 +441,10 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
   const from = since.fromHeadSha;
   const key = rereviewKey(pr.id, from);
   const latest = useLatestRereview(workspaceId, pr.id, from);
-  const [startedId, setStartedId] = useState<string | null>(null);
+  // The run this view started, and the range it was for: a view that moves to
+  // another range must not keep following (or showing) the old one.
+  const [started, setStarted] = useState<{ runId: string; from: string } | null>(null);
+  const startedId = started?.from === from ? started.runId : null;
   const [starting, setStarting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -399,7 +462,7 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
     setActionError(null);
     try {
       const { runId } = await startRereview(workspaceId, pr.id, from);
-      setStartedId(runId);
+      setStarted({ runId, from });
       invalidate(key);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));

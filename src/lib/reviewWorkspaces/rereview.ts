@@ -20,10 +20,12 @@ export interface RereviewComment {
   providerId: string;
   path: string | null;
   line: number | null;
+  /** The thread was resolved when the run started; a resolved thread isn't outstanding. */
+  resolved: boolean;
   verdict: CommentVerdict;
   /** Where the agent saw the fix or the problem; agent-written. */
   evidence: { path?: string; line?: number; note: string };
-  /** For `disagreed`: the gist of the reply; agent-written. */
+  /** For `disagreed`: the agent's summary of the author's reply. */
   replySummary?: string;
   /** What the agent said before the server found it unsupported. */
   downgradedFrom?: CommentVerdict;
@@ -40,8 +42,12 @@ export interface Rereview {
   summary: string;
   verdict: "ready_to_approve" | "needs_another_look";
   verdictReason: string;
+  /** The server's own line when it couldn't take the agent's answer as given. */
+  serverNote?: string;
   comments: RereviewComment[];
   newChanges: RereviewChange[];
+  /** Threads resolved before the review with nothing said since: not judged again. */
+  settled?: { providerId: string; path: string | null; line: number | null }[];
 }
 
 /** A re-review run as the route returns it. */

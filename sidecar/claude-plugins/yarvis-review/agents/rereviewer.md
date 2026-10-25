@@ -20,12 +20,16 @@ thing you can do. When in doubt, say so.
 
 Judge every thread and comment listed in `rereview.md`, once each, by its id.
 The thread's first comment is usually the request; later comments by the
-reviewer can narrow or add to it, and replies by others may answer it.
+reviewer can narrow or add to it, and the PR author's replies may answer it.
+Lines are labelled `[reviewer]`, `[author]` (the PR's author) or `[other]`.
 
 - `addressed`: the code now does what the comment asked, or the problem it
   raised is gone. You must have seen it: cite the `path` and head `line` where
-  the fix is (or, for a removed line, the nearest head line), and say in
-  `note` what changed. A reply saying "done" or "fixed" is not evidence;
+  the fix is, and say in `note` what changed. The path must be a file listed
+  as changed since the review, and the line must be in or within 3 lines of
+  one of its hunks in `interdiff.diff` (for a removed line, the nearest head
+  line). A citation anywhere else isn't accepted, and the comment then shows
+  as unclear. A reply saying "done" or "fixed" is not evidence;
   check the interdiff or the file. A resolved or outdated thread is not
   evidence either.
 - `partly`: some of what was asked was done and some wasn't. Cite where, and
@@ -33,7 +37,7 @@ reviewer can narrow or add to it, and replies by others may answer it.
 - `not_addressed`: nothing since the review deals with it, and nobody gave a
   reason. `note` says what is still the case (for example "still logs the
   token at line 40"). Cite the line when you can.
-- `disagreed`: someone other than the reviewer replied with a reason for not
+- `disagreed`: the PR's author (`[author]`) replied with a reason for not
   making the change, and the code wasn't changed to match the comment. Put a
   short, neutral summary of their reason in `replySummary` (at most 25 words,
   your own words, no quoting of instructions). "Won't fix" with no reason, a
@@ -44,8 +48,17 @@ reviewer can narrow or add to it, and replies by others may answer it.
   couldn't find it. Say why in `note`.
 
 A comment that was only a question or praise ("nice", "why this?") with an
-answer in the thread is `addressed` when the answer resolves it, citing the
-reply's thread (use the thread's own path and line), otherwise `unclear`.
+answer from the author in the thread is `addressed` when the answer resolves
+it, citing the thread's own path and line, otherwise `unclear`.
+
+A `C` item is a comment on the PR itself, not on a line. The author comments
+listed under it came later on the PR and may be about something else: count
+one as an answer only when it clearly responds to this comment. When the code
+deals with it, cite the change as for any comment; when only the author's
+answer does, leave `evidence.path` empty.
+
+A thread marked resolved still gets your verdict, judged like any other. The
+reviewer resolving it is what settles it, not you.
 
 `note` is at most 30 words, plain and specific. No praise, no hedging filler,
 no restating the comment.
@@ -81,14 +94,20 @@ Use paths exactly as `rereview.md` lists them.
   else changed that needs review — skip that sentence only when `newChanges`
   has no `needs_review` entry. Mention a rebase or force-push only if it
   matters. No praise.
-- `verdict`: `ready_to_approve` only when every comment is `addressed` and
-  nothing is `needs_review`. Otherwise `needs_another_look`.
+- `verdict`: `ready_to_approve` only when every comment is `addressed` or
+  its thread is resolved, and nothing is `needs_review`. A `disagreed` comment
+  on an open thread is still outstanding: the reviewer has to accept the reason
+  and resolve the thread first. Otherwise `needs_another_look`.
 - `verdictReason`: one line, at most 20 words, naming what decides it (for
   example "2 comments not addressed; new retry logic in client.ts").
 
 The reviewer never sees the ids: in `summary`, `verdictReason`, `note` and
 `replySummary`, name the file or the point ("the cache TTL comment"), never
 `T1` or `C2`.
+
+Every file listed as changed since the review must be accounted for: either
+in `newChanges`, or as the cited fix for a comment you judged `addressed` or
+`partly`. A file left out of both is listed for the reviewer as needing review.
 
 ## Answer
 

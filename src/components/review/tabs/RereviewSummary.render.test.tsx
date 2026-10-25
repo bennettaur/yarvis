@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { prDetailKey } from "../../../lib/pr/cache";
 import type { PrRef, ReviewThread } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
@@ -35,6 +35,7 @@ const judged = (
   providerId: `node-${threadId}`,
   path: "src/cache.ts",
   line: 13,
+  resolved: false,
   verdict,
   evidence: { note: `note for ${threadId}` },
   ...over,
@@ -112,6 +113,16 @@ describe("grouping the comments", () => {
     expect(groups.disagreed.map((c) => c.threadId)).toEqual(["T2"]);
     expect(groups.addressed.map((c) => c.threadId)).toEqual(["T1"]);
   });
+
+  it("counts a resolved thread as settled, whatever its verdict", () => {
+    const groups = groupComments(
+      review.comments,
+      (c) => c.threadId === "T2" || c.threadId === "T3",
+    );
+    expect(groups.open.map((c) => c.threadId)).toEqual(["T5", "T4"]);
+    expect(groups.disagreed).toEqual([]);
+    expect(groups.addressed.map((c) => c.threadId)).toEqual(["T1", "T2", "T3"]);
+  });
 });
 
 describe("RereviewView", () => {
@@ -123,14 +134,71 @@ describe("RereviewView", () => {
       "Removed the token log",
       "Still open (3)",
       "Answered with a reason (1)",
-      "Addressed (1)",
+      "Addressed or resolved (1)",
       "Needs your review (1)",
       "Minor (1)",
     ].map((s) => text.indexOf(s));
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(text).toContain("Their reason: A security control; stays constant.");
-    expect(text).toContain('The agent said "addressed" but cited no changed code');
+    expect(text).toContain(
+      "The agent's summary of their reply: A security control; stays constant.",
+    );
+    expect(text).toContain(
+      'The agent said "addressed" but cited nothing that changed since your review',
+    );
+  });
+
+  it("says, under the summary, what the server couldn't take from the answer", async () => {
+    const text = textOf(
+      await renderToHtml(
+        view({ review: { ...review, serverNote: "1 verdict wasn't supported by evidence." } }),
+      ),
+    );
+    expect(text).toContain("Yarvis checked the answer: 1 verdict wasn't supported by evidence.");
+    expect(text.indexOf("Yarvis checked")).toBeGreaterThan(text.indexOf("Removed the token log"));
+    expect(textOf(await renderToHtml(view()))).not.toContain("Yarvis checked");
+  });
+
+  it("shows where a fix was seen only when it adds something", async () => {
+    const at = (evidence: RereviewComment["evidence"]) =>
+      renderToHtml(
+        view({ review: { ...review, comments: [judged("T3", "partly", { evidence })] } }),
+      ).then(textOf);
+    expect(await at({ path: "src/cache.ts", note: "n" })).not.toContain("Seen at");
+    expect(await at({ path: "src/cache.ts", line: 13, note: "n" })).not.toContain("Seen at");
+    expect(await at({ path: "src/cache.ts", line: 20, note: "n" })).toContain(
+      "Seen at src/cache.ts:20",
+    );
+    expect(await at({ path: "src/other.ts", note: "n" })).toContain("Seen at src/other.ts");
+  });
+
+  it("turns ready once the threads holding it back are resolved", async () => {
+    const onlyDisagreed: Rereview = {
+      ...review,
+      comments: [review.comments[0] as RereviewComment, review.comments[1] as RereviewComment],
+      newChanges: [review.newChanges[1] as Rereview["newChanges"][number]],
+    };
+    const rate = { ...thread("node-T2", "Configurable?"), isResolved: true };
+    const text = textOf(
+      await renderToHtml(view({ review: onlyDisagreed, threads: new Map([["node-T2", rate]]) })),
+    );
+    expect(text).toContain("Ready to approve");
+    expect(text).toContain("You've resolved the threads that were still open.");
+  });
+
+  it("folds away threads settled before the review", async () => {
+    const html = await renderToHtml(
+      view({
+        review: {
+          ...review,
+          comments: [],
+          settled: [{ providerId: "node-T3", path: "src/cache.ts", line: 13 }],
+        },
+      }),
+    );
+    expect(textOf(html)).toContain("Settled before your review (1)");
+    expect(textOf(html)).toContain("Your comments were all settled before your review.");
+    expect(html).toMatch(/<details>[\s\S]*Entries never expire\.[\s\S]*<\/details>/);
   });
 
   it("collapses the addressed comments and the minor changes", async () => {
@@ -298,7 +366,7 @@ describe("RereviewSummary", () => {
       status: "succeeded" as const,
       result: review,
       error: null,
-      costUsd: 0.04,
+      costUsd: 0.04 as number | null,
       startedAt: "2026-10-01T00:00:00Z",
       finishedAt: "2026-10-01T00:01:00Z",
       fromHeadSha: sha("9"),
@@ -316,5 +384,116 @@ describe("RereviewSummary", () => {
     expect(text).toContain("Needs another look");
     expect(text).toContain("not what this tab compares now");
     expect(text).toContain("Re-run");
+  });
+
+  const running = (live: boolean): LatestRereview => ({
+    ...nothingYet,
+    current: true,
+    run: {
+      id: "run2",
+      status: "running",
+      result: null,
+      error: null,
+      costUsd: null,
+      startedAt: "2026-10-01T00:00:00Z",
+      finishedAt: null,
+      fromHeadSha: sha("a"),
+      toHeadSha: sha("b"),
+      live,
+    },
+  });
+
+  it("follows a run here, and cancels it", async () => {
+    primeReads(running(true));
+    const cancelled: string[] = [];
+    const { promise: never } = Promise.withResolvers<void>();
+    stubReviewApi({
+      getRereviewRunConfig: async () => ({ model: "sonnet", maxBudgetUsd: 1, autoStart: true }),
+      latestRereview: async () => running(true),
+      streamAgentRun: async function* () {
+        yield { type: "tool", id: "1", name: "Read", summary: "interdiff.diff", subagentId: null };
+        await never;
+      },
+      cancelAgentRun: async (id) => {
+        cancelled.push(id);
+      },
+    });
+    const mounted = await mountForInteraction(createElement(RereviewSummary, { ctx, since }));
+    unmount = mounted.unmount;
+    await waitFor(() => !!mounted.host.textContent?.includes("Read interdiff.diff"), "progress");
+    expect(mounted.host.textContent).toContain("Reading what changed · 1 steps");
+    [...mounted.host.querySelectorAll("button")].find((b) => b.textContent === "Cancel")?.click();
+    await waitFor(() => cancelled.length > 0, "the cancel");
+    expect(cancelled).toEqual(["run2"]);
+  });
+
+  it("says when another window is writing it, offering no second start", async () => {
+    primeReads(running(false));
+    stubReviewApi({
+      getRereviewRunConfig: async () => ({ model: "sonnet", maxBudgetUsd: 1, autoStart: true }),
+      latestRereview: async () => running(false),
+    });
+    const html = await renderToHtml(createElement(RereviewSummary, { ctx, since }));
+    expect(textOf(html)).toContain("Another Yarvis window is writing this summary.");
+    expect(textOf(html)).not.toContain("What's changed ");
+    expect(html).not.toContain(">What&#x27;s changed</button>");
+  });
+
+  it("shows why the last run for this range failed", async () => {
+    const failed: LatestRereview = {
+      ...nothingYet,
+      current: true,
+      run: {
+        ...(running(false).run as NonNullable<LatestRereview["run"]>),
+        status: "failed",
+        error: "Claude Code ran out of budget",
+      },
+    };
+    primeReads(failed);
+    stubReviewApi({
+      getRereviewRunConfig: async () => ({ model: "sonnet", maxBudgetUsd: 1, autoStart: true }),
+      latestRereview: async () => failed,
+    });
+    const text = textOf(await renderToHtml(createElement(RereviewSummary, { ctx, since })));
+    expect(text).toContain("The last run failed: Claude Code ran out of budget");
+  });
+
+  it("stops following a run it started once the range moves on", async () => {
+    primeReads(nothingYet);
+    primeCache(rereviewKey(pr.id, sha("c")), { ...nothingYet, fromHeadSha: sha("c") });
+    stubReviewApi({
+      getRereviewRunConfig: async () => ({ model: "sonnet", maxBudgetUsd: 1, autoStart: false }),
+      startRereview: async () => ({
+        runId: "run1",
+        existing: false,
+        fromHeadSha: sha("a"),
+        toHeadSha: sha("b"),
+      }),
+      latestRereview: async (_ws, _pr, from) => ({ ...nothingYet, fromHeadSha: from ?? null }),
+      streamAgentRun: async function* () {
+        yield { type: "tool", id: "1", name: "Read", summary: "rereview.md", subagentId: null };
+        await new Promise(() => {});
+      },
+    });
+    let moveTo: (from: string) => void = () => {};
+    function Host() {
+      const [from, setFrom] = useState(sha("a"));
+      moveTo = setFrom;
+      return createElement(RereviewSummary, { ctx, since: { ...since, fromHeadSha: from } });
+    }
+    const mounted = await mountForInteraction(createElement(Host));
+    unmount = mounted.unmount;
+    [...mounted.host.querySelectorAll("button")]
+      .find((b) => b.textContent === "What's changed")
+      ?.click();
+    await waitFor(() => !!mounted.host.textContent?.includes("Read rereview.md"), "progress");
+    moveTo(sha("c"));
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Reading what changed"),
+      "the old run to drop",
+    );
+    expect(
+      [...mounted.host.querySelectorAll("button")].some((b) => b.textContent === "What's changed"),
+    ).toBe(true);
   });
 });
