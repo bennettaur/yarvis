@@ -3,7 +3,6 @@ import { refProviderName } from "../../../lib/pr/ref";
 import type { PrRef } from "../../../lib/pr/types";
 import {
   invalidateLastReview,
-  type LastReview,
   markReviewedHere,
   type ReviewCommit,
   type ReviewMark,
@@ -89,33 +88,31 @@ function CommitRow({
 }
 
 /**
- * What the tab shows once both reads are in: the mark, the summary line, a
- * slot for an agent's summary, the files whose PR-only change differs, and the
- * commits. Separate from the loading so it renders in a test from plain data.
+ * What the tab shows once both reads are in: the mark, the summary line, the
+ * files whose PR-only change differs, and the commits. Separate from the
+ * loading so it renders in a test from plain data.
  */
 export function SinceReviewView({
   prRef,
-  last,
   since,
   onOpenFile,
   onOpenCommit,
 }: {
   prRef: PrRef;
-  last: LastReview;
   since: SinceReview;
   onOpenFile: (file: SinceFile) => void;
   onOpenCommit: (commit: ReviewCommit) => void;
 }) {
-  const mark = since.mark ?? last.mark;
+  const mark = since.mark;
   const fresh = since.commits.filter((c) => c.isNew);
   return (
     <>
       <header className="space-y-1">
         <h2 className="text-base font-semibold text-zinc-100">Since your last review</h2>
         <p className="text-xs text-zinc-400">
-          You reviewed <span className="font-mono">{short(since.fromHeadSha)}</span>
-          {mark ? ` ${markSourceText(mark, prRef)} ${formatRelativeTime(mark.createdAt)}` : ""}; the
-          checkout is at <span className="font-mono">{short(since.toHeadSha)}</span>.
+          You reviewed <span className="font-mono">{short(since.fromHeadSha)}</span>{" "}
+          {markSourceText(mark, prRef)} {formatRelativeTime(mark.createdAt)}; the checkout is at{" "}
+          <span className="font-mono">{short(since.toHeadSha)}</span>.
         </p>
         <p className="text-sm text-zinc-200" data-testid="since-summary">
           {summaryLine(since)}
@@ -127,14 +124,6 @@ export function SinceReviewView({
           </p>
         )}
       </header>
-
-      <section
-        aria-label="Summary of what changed"
-        className="rounded-md border border-dashed border-zinc-700 px-3 py-2 text-xs text-zinc-500"
-      >
-        Coming soon: an agent's summary of what changed — whether your comments were addressed or
-        answered, and what's new that you haven't seen.
-      </section>
 
       <section aria-label="Files changed since your review" className="space-y-1">
         <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
@@ -205,6 +194,12 @@ export function SinceReviewView({
         )}
         {since.commitsTruncated && (
           <p className="text-xs text-zinc-500">Only the newest 250 commits are listed.</p>
+        )}
+        {since.rebaseMatchSkipped && (
+          <p className="text-xs text-zinc-500">
+            Too many commits to match rebased ones to those you reviewed, so every rewritten commit
+            counts as new.
+          </p>
         )}
       </section>
     </>
@@ -279,7 +274,6 @@ export default memo(function SinceReviewTab({ ctx }: { ctx: TabContext }) {
     <TabPage>
       <SinceReviewView
         prRef={ctx.prRef}
-        last={last.data}
         since={data}
         onOpenFile={(file) =>
           ctx.openTab({

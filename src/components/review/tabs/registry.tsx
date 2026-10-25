@@ -51,7 +51,7 @@ export function tabTooltip(spec: TabSpec): string {
     case "file":
       return spec.path;
     case "since-file":
-      return `${spec.path} — since your review`;
+      return `${spec.path} — since your review at ${spec.from.slice(0, 7)}`;
     case "commit":
       return spec.subject ? `${spec.sha} — ${spec.subject}` : spec.sha;
     default:

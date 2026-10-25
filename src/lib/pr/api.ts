@@ -36,6 +36,7 @@ import {
   ghSetThreadResolved,
   ghSubmitReview,
 } from "./github";
+import { FULL_SHA } from "./ref";
 import type {
   MergeMethod,
   NewComment,
@@ -82,7 +83,7 @@ export function seenFields(seen: SeenCommits | undefined): Record<string, string
   const out: Record<string, string> = {};
   for (const key of ["headSha", "baseSha", "mergeBaseSha"] as const) {
     const sha = seen?.[key];
-    if (sha && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) out[key] = sha;
+    if (sha && FULL_SHA.test(sha)) out[key] = sha;
   }
   return out;
 }

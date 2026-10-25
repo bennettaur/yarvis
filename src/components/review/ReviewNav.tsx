@@ -3,7 +3,7 @@ import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
-import { useLastReview, usePrCommits } from "../../lib/reviewWorkspaces/sinceReview";
+import { useCommitsSinceLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
 import CommitsList from "./nav/CommitsList";
@@ -87,12 +87,15 @@ function Section({
   defaultOpen: boolean;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  // Follows `defaultOpen` (which can change, as commits arrive) until the user
+  // opens or closes it; from then on it stays as they left it.
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const open = chosen ?? defaultOpen;
   return (
     <div>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setChosen(!open)}
         aria-expanded={open}
         className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 hover:text-zinc-300"
       >
@@ -129,13 +132,7 @@ function PrGroup({
   const [collapsed, setCollapsed] = useState(false);
   const { data: detail } = usePrDetail(pr.ref);
   const changed = useReviewChangedFiles(workspaceId, pr);
-  const last = useLastReview(workspaceId, pr);
-  const mark = last.data?.mark;
-  const commits = usePrCommits(
-    workspaceId,
-    pr,
-    mark && last.data?.shaExists !== false ? mark.headSha : null,
-  );
+  const commits = useCommitsSinceLastReview(workspaceId, pr);
   const commitList = commits.data?.commits ?? null;
   const newCommits = commitList?.filter((c) => c.isNew).length ?? 0;
   const openThreads = (detail?.reviewThreads ?? []).filter((t) => !t.isResolved).length;
@@ -213,12 +210,7 @@ function PrGroup({
               openTab={openTab}
             />
           </Section>
-          <Section
-            title="Commits"
-            count={commitList?.length}
-            defaultOpen={newCommits > 0}
-            key={newCommits > 0 ? "commits-new" : "commits"}
-          >
+          <Section title="Commits" count={commitList?.length} defaultOpen={newCommits > 0}>
             {commitList ? (
               <CommitsList
                 prId={pr.id}

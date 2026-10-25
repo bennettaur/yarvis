@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePrDetail } from "../../lib/pr/cache";
+import { usePrDetail, usePrStatus } from "../../lib/pr/cache";
 import { refKey } from "../../lib/pr/ref";
 import type { PrSummary } from "../../lib/pr/types";
 import {
@@ -165,7 +165,8 @@ export default function ReviewPrBar({
   /** Something about the PR's row changed: re-read the workspace. */
   onChanged: () => void;
 }) {
-  const { data: detail, loading, refreshing, refresh: refreshDetail } = usePrDetail(pr.ref);
+  const { data: detail, loading, refreshing } = usePrDetail(pr.ref);
+  const { data: prStatus, refresh: refreshStatus } = usePrStatus(pr.ref);
   const actions = usePrActions(pr.ref, seenAt(pr));
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -173,15 +174,17 @@ export default function ReviewPrBar({
   const summary = summaryFor(pr, detail);
   const status = derivePrUiStatus(detail, summary);
 
-  // The detail is what says a push happened. Nothing else re-reads it while the
-  // PR sits open, so ask again now and then — only while the window is in view,
-  // since each ask is a provider call.
+  // The PR's head says a push happened. Nothing else re-reads it while the PR
+  // sits open, so ask again now and then — through the lightweight status
+  // rather than the whole detail, and only while the window is in view, since
+  // each ask is a provider call.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refreshDetail();
+      if (document.visibilityState === "visible") void refreshStatus();
     }, NEW_COMMITS_POLL_MS);
     return () => clearInterval(timer);
-  }, [refreshDetail]);
+  }, [refreshStatus]);
+  const providerHead = prStatus?.headSha ?? detail?.headSha;
 
   const runCheckout = async (op: () => Promise<unknown>) => {
     setCheckoutBusy(true);
@@ -255,7 +258,7 @@ export default function ReviewPrBar({
         key={pr.id}
         workspaceId={workspaceId}
         pr={pr}
-        providerHead={detail?.headSha}
+        providerHead={providerHead}
         readOnly={readOnly}
         onRefreshed={onChanged}
         onSeeChanges={() => openTab("since-review")}

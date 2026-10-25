@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import type { PrRef } from "../../lib/pr/types";
 import type { ReviewProgressEvent, ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
@@ -78,6 +78,54 @@ describe("NewCommitsBanner", () => {
     expect(reread).toBe(1);
     button("See what changed since you last reviewed")?.click();
     expect(seen).toBe(1);
+  });
+
+  it("after a refresh, offers another one if newer commits were pushed meanwhile", async () => {
+    stubReviewApi({
+      refreshReviewPr: async () => pr,
+      followReviewPrProgress: async function* (): AsyncGenerator<ReviewProgressEvent> {
+        yield { type: "done", phase: "refresh", status: "ready", error: null };
+      },
+    });
+    let setHead: (head: string) => void = () => {};
+    function Harness() {
+      const [head, set] = useState(sha("b"));
+      setHead = set;
+      return createElement(NewCommitsBanner, { ...props, providerHead: head });
+    }
+    const mounted = await mountForInteraction(createElement(Harness));
+    unmount = mounted.unmount;
+    const button = (label: string) =>
+      [...mounted.host.querySelectorAll("button")].find((b) => b.textContent === label);
+    button("Refresh")?.click();
+    await waitFor(() => !!mounted.host.textContent?.includes("Checkout updated"), "done");
+    // The poll sees a push the refresh didn't fetch.
+    setHead(sha("c"));
+    await waitFor(() => !!mounted.host.textContent?.includes("New commits pushed"), "behind again");
+    expect(mounted.host.textContent).not.toContain("Checkout updated");
+    expect(button("Refresh")).toBeDefined();
+  });
+
+  it("a failed refresh can be dismissed", async () => {
+    stubReviewApi({
+      refreshReviewPr: async () => pr,
+      followReviewPrProgress: async function* (): AsyncGenerator<ReviewProgressEvent> {
+        yield { type: "done", phase: "refresh", status: "ready", error: "fetch failed" };
+      },
+    });
+    const mounted = await mountForInteraction(
+      createElement(NewCommitsBanner, { ...props, providerHead: sha("b") }),
+    );
+    unmount = mounted.unmount;
+    const button = (label: string) =>
+      [...mounted.host.querySelectorAll("button")].find(
+        (b) => b.textContent === label || b.getAttribute("aria-label") === label,
+      );
+    button("Refresh")?.click();
+    await waitFor(() => !!mounted.host.textContent?.includes("Update failed"), "the failure");
+    button("Dismiss")?.click();
+    await waitFor(() => !mounted.host.textContent?.includes("Update failed"), "dismissed");
+    expect(mounted.host.textContent).toContain("New commits pushed");
   });
 
   it("offers no refresh in an archived workspace", async () => {

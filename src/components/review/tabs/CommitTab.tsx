@@ -1,7 +1,11 @@
 import { memo, useState } from "react";
 import { refKey } from "../../../lib/pr/ref";
 import type { ReviewChangedFile } from "../../../lib/reviewWorkspaces/api";
-import { useCommitFileDiff, useCommitFiles } from "../../../lib/reviewWorkspaces/sinceReview";
+import {
+  useCommitFileDiff,
+  useCommitFiles,
+  useCommitsSinceLastReview,
+} from "../../../lib/reviewWorkspaces/sinceReview";
 import LoadingIndicator from "../../LoadingIndicator";
 import { MonacoDiffView, snapshotUri } from "../editor";
 import { CenteredNote } from "./FileChrome";
@@ -64,7 +68,12 @@ export default memo(function CommitTab({
   subject?: string;
 }) {
   const files = useCommitFiles(ctx.workspaceId, ctx.pr.id, sha);
+  const commits = useCommitsSinceLastReview(ctx.workspaceId, ctx.pr);
   const [picked, setPicked] = useState<string | null>(null);
+  // A force-push since the tab was opened can drop its commit from the PR; it
+  // still reads (the clone has it), so the tab says so rather than closing.
+  const listed = commits.data;
+  const gone = !!listed && !listed.truncated && !listed.commits.some((c) => c.sha === sha);
   if (files.error && !files.data) return <CenteredNote tone="error">{files.error}</CenteredNote>;
   if (!files.data) {
     return (
@@ -80,6 +89,11 @@ export default memo(function CommitTab({
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs">
         <span className="font-mono text-zinc-400">{sha.slice(0, 7)}</span>
         <span className="min-w-0 truncate text-zinc-200">{subject}</span>
+        {gone && (
+          <span className="shrink-0 rounded bg-amber-900/40 px-1.5 text-amber-200">
+            No longer in this pull request
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-zinc-500">
           {list.length} {list.length === 1 ? "file" : "files"}
         </span>

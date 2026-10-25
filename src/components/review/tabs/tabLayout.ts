@@ -1,3 +1,4 @@
+import { FULL_SHA } from "../../../lib/pr/ref";
 import { reorderTabs } from "../../shell/terminalTabs/reorderTabs";
 import { type DynamicTabKind, type StaticTabKind, type TabSpec, tabId } from "./types";
 
@@ -89,7 +90,8 @@ function withGroup(layout: TabLayout, index: number, group: TabGroup): TabLayout
 /**
  * Opens `spec`, or focuses it where it is already open. A file or diff that is
  * open already takes a new `revealLine` with a bumped `revealNonce`, so asking
- * for the same line again scrolls there again. A new tab goes into `group`
+ * for the same line again scrolls there again; an interdiff takes the new
+ * spec's `from`. A new tab goes into `group`
  * (the focused one by default); a second group is created when asked for and
  * missing.
  */
@@ -99,10 +101,13 @@ export function openTab(layout: TabLayout, spec: TabSpec, group?: number): TabLa
   if (found) {
     const g = layout.groups[found.group]!;
     const old = g.tabs[found.index]!;
-    const next =
-      "revealLine" in spec && spec.revealLine !== undefined
-        ? { ...spec, revealNonce: ("revealNonce" in old ? (old.revealNonce ?? 0) : 0) + 1 }
-        : old;
+    let next: TabSpec = old;
+    if ("revealLine" in spec && spec.revealLine !== undefined) {
+      next = { ...spec, revealNonce: ("revealNonce" in old ? (old.revealNonce ?? 0) : 0) + 1 };
+    } else if (spec.kind === "since-file") {
+      // Reopened from a newer review: the tab compares from that one now.
+      next = spec;
+    }
     const tabs = g.tabs.map((t, i) => (i === found.index ? next : t));
     return {
       ...withGroup(layout, found.group, { ...g, tabs, activeId: id }),
@@ -249,8 +254,6 @@ export const layoutStorageKey = (workspaceId: string) => `yarvis.review.tabs.${w
 
 const KINDS = new Set<string>([...STATIC_ORDER, ...DYNAMIC_KINDS]);
 
-const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
 function parseSpec(raw: unknown): TabSpec | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -260,13 +263,18 @@ function parseSpec(raw: unknown): TabSpec | null {
     return { kind: r.kind, prId: r.prId, path: r.path };
   }
   if (r.kind === "since-file") {
-    if (typeof r.path !== "string" || !r.path || typeof r.from !== "string" || !SHA.test(r.from)) {
+    if (
+      typeof r.path !== "string" ||
+      !r.path ||
+      typeof r.from !== "string" ||
+      !FULL_SHA.test(r.from)
+    ) {
       return null;
     }
     return { kind: "since-file", prId: r.prId, path: r.path, from: r.from };
   }
   if (r.kind === "commit") {
-    if (typeof r.sha !== "string" || !SHA.test(r.sha)) return null;
+    if (typeof r.sha !== "string" || !FULL_SHA.test(r.sha)) return null;
     return {
       kind: "commit",
       prId: r.prId,

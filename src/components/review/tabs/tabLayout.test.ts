@@ -36,6 +36,19 @@ describe("openTab", () => {
     expect(layout.groups[0]!.activeId).toBe("description:a");
   });
 
+  it("an interdiff reopened from a newer review compares from that one", () => {
+    const since = (from: string): TabSpec => ({
+      kind: "since-file",
+      prId: "a",
+      path: "x.ts",
+      from,
+    });
+    const layout = open(since("a".repeat(40)), desc(), since("b".repeat(40)));
+    expect(ids(layout)).toEqual(["description:a", "since-file:a:x.ts"]);
+    expect(layout.groups[0]!.tabs[1]).toEqual(since("b".repeat(40)));
+    expect(layout.groups[0]!.activeId).toBe("since-file:a:x.ts");
+  });
+
   it("keeps static tabs to the left in a fixed order, files after in opening order", () => {
     const layout = open(diff("b.ts"), comments(), diff("a.ts"), desc(), desc("b"));
     expect(ids(layout)).toEqual([

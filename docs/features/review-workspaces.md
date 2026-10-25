@@ -213,15 +213,14 @@ own reviews on GitHub, and your votes on Azure DevOps, count too: GitHub says
 which commit each review was made on, and an Azure vote is matched to the push
 it came after. **⋯ → Mark reviewed here** in the PR bar records the checkout's
 commit by hand, for when you read the PR without leaving a review. The latest
-of all of these is your last review. The commit is kept in the review clone,
-so a force-push or a clean-up of the clone doesn't lose it.
+of all of these is your last review. Recording a review, and every refresh,
+keeps its commit in the review clone, so a force-push or a clean-up of the
+clone doesn't lose it; removing the PR from its last workspace lets them go.
 
 The **Since last review** tab shows:
 
 - A summary line: how many new commits, how many files, and whether the PR was
   rebased onto a newer base, force-pushed, or had its base merged in.
-- A space for an agent's summary of what changed, which is coming in a later
-  release.
 - The files whose change differs from the one you reviewed: **Changed again**,
   **Newly changed** (the PR didn't touch it before), or **Reverted** (the PR no
   longer changes it), with the lines added and removed since. Clicking one opens
@@ -240,11 +239,15 @@ upstream rewrote the very lines the PR changed, that can't be done cleanly; the
 left side is then the file exactly as you reviewed it, and a note above the
 diff says that some differences come from the base branch. A commit is only
 "new" if it brings a change you haven't seen: a commit a rebase re-created with
-the same change counts as one you've seen.
+the same change counts as one you've seen. On a PR with more than 500 commits
+that matching is skipped, and the tab says every rewritten commit counts as
+new.
 
 When you've caught up, **Mark reviewed here** at the bottom of the tab moves
 your starting point to the checkout's commit. Open **Δ** tabs keep comparing
-against the review they were opened from.
+against the review they were opened from (the tab's tooltip names its commit)
+until you open the file again from the list. A commit tab whose commit a
+force-push has since dropped says it is no longer in the pull request.
 
 ### New commits pushed
 
@@ -253,7 +256,8 @@ while the app is in view. When someone has pushed past the commit the checkout
 is at, a **New commits pushed — Refresh** banner appears under the bar.
 **Refresh** fetches the new commits and moves the checkout, showing the fetch's
 progress as it goes. Your tabs stay open and show the new commits once it is
-done, and the banner then offers **See what changed since you last reviewed**.
+done, and the banner then offers **See what changed since you last reviewed** —
+or, if more commits were pushed while it ran, another **Refresh**.
 
 ### Tabs
 

@@ -71,13 +71,16 @@ export interface SinceReview {
   rebased: boolean;
   /** The PR now sits on a newer base (rebased onto it, or merged it in). */
   baseMoved: boolean;
-  mark: ReviewMark | null;
+  /** The review this compares from. */
+  mark: ReviewMark;
   files: SinceFile[];
   filesTruncated: boolean;
   commits: ReviewCommit[];
   /** Reviewed commits with no counterpart now: dropped or rewritten. */
   removedCommits: ReviewCommit[];
   commitsTruncated: boolean;
+  /** Too many commits to match rebased ones, so each rewritten commit counts as new. */
+  rebaseMatchSkipped: boolean;
 }
 
 export interface FileSide {
@@ -304,6 +307,23 @@ export function usePrCommits(
       ? `${reviewWorkspacePrefix(pr.id)}commits:${pr.mergeBaseSha}..${pr.headSha}:${from ?? "-"}`
       : null;
   return useCachedResource(key, () => prCommits(workspaceId, pr.id, from ?? undefined), AT_COMMIT);
+}
+
+/**
+ * The PR's commits, flagged new since the last review when there is one to
+ * compare from. The nav and a commit tab share it, and so its cache entry.
+ */
+export function useCommitsSinceLastReview(
+  workspaceId: string,
+  pr: PrShas & Pick<ReviewWorkspacePr, "ref">,
+): Resource<PrCommits> {
+  const last = useLastReview(workspaceId, pr);
+  const mark = last.data?.mark;
+  return usePrCommits(
+    workspaceId,
+    pr,
+    mark && last.data?.shaExists !== false ? mark.headSha : null,
+  );
 }
 
 export function useCommitFiles(workspaceId: string, prId: string, sha: string) {

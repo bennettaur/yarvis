@@ -80,6 +80,7 @@ const since = (over: Partial<SinceReview> = {}): SinceReview => ({
   commits: [commit("2", true, "Address review"), commit("1", false, "First pass")],
   removedCommits: [],
   commitsTruncated: false,
+  rebaseMatchSkipped: false,
   ...over,
 });
 
@@ -110,16 +111,15 @@ describe("summaryLine", () => {
 
 describe("markSourceText", () => {
   it("names the provider for a review made there", () => {
-    expect(markSourceText(since().mark!, ref)).toBe("in your review on GitHub");
+    expect(markSourceText(since().mark, ref)).toBe("in your review on GitHub");
   });
 });
 
 describe("SinceReviewView", () => {
-  it("shows the summary, the agent slot, the changed files and only the new commits", async () => {
+  it("shows the summary, the changed files and only the new commits", async () => {
     const html = await renderToHtml(
       createElement(SinceReviewView, {
         prRef: ref,
-        last,
         since: since(),
         onOpenFile: () => {},
         onOpenCommit: () => {},
@@ -127,7 +127,7 @@ describe("SinceReviewView", () => {
     );
     const text = textOf(html);
     expect(text).toContain("1 new commit · 2 files changed");
-    expect(text).toContain("Coming soon");
+    expect(text).not.toContain("Coming soon");
     expect(text).toContain("Changed again");
     expect(text).toContain("Reverted");
     expect(text).toContain("Address review");
@@ -138,7 +138,6 @@ describe("SinceReviewView", () => {
     const mounted = await mountForInteraction(
       createElement(SinceReviewView, {
         prRef: ref,
-        last,
         since: since(),
         onOpenFile: (file) =>
           ctx.openTab({ kind: "since-file", prId: "pr1", path: file.path, from: sha("a") }),
@@ -155,18 +154,22 @@ describe("SinceReviewView", () => {
     ]);
   });
 
-  it("lists commits a force-push dropped", async () => {
+  it("lists commits a force-push dropped, and says when rebases weren't matched", async () => {
     const html = await renderToHtml(
       createElement(SinceReviewView, {
         prRef: ref,
-        last,
-        since: since({ rebased: true, removedCommits: [commit("9", false, "Old attempt")] }),
+        since: since({
+          rebased: true,
+          removedCommits: [commit("9", false, "Old attempt")],
+          rebaseMatchSkipped: true,
+        }),
         onOpenFile: () => {},
         onOpenCommit: () => {},
       }),
     );
     expect(textOf(html)).toContain("Gone since your review");
     expect(textOf(html)).toContain("Old attempt");
+    expect(textOf(html)).toContain("every rewritten commit counts as new");
   });
 });
 
@@ -182,7 +185,7 @@ describe("SinceReviewTab", () => {
     stubReviewApi({
       markReviewedHere: async (_ws, prId) => {
         marked.push(prId);
-        return { ...since().mark!, headSha: sha("b"), source: "manual" };
+        return { ...since().mark, headSha: sha("b"), source: "manual" };
       },
     });
     const mounted = await mountForInteraction(createElement(SinceReviewTab, { ctx }));

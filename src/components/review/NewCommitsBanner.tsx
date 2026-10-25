@@ -17,15 +17,17 @@ export function hasNewCommits(
 type Phase =
   | { kind: "idle" }
   | { kind: "refreshing"; line: string | null }
-  | { kind: "done" }
+  /** `target` is the provider head the refresh was started for. */
+  | { kind: "done"; target: string | null | undefined }
   | { kind: "failed"; error: string };
 
 /**
  * The PR bar's "New commits pushed — Refresh": shown when the provider's head
- * (from the PR detail) is not the checkout's. Refreshing moves the checkout and
+ * (from the PR status) is not the checkout's. Refreshing moves the checkout and
  * follows the run's log until it ends; the open tabs stay as they are and read
  * the new commits on their own. Afterwards it offers the since-review tab,
- * which is what a re-review usually wants next.
+ * which is what a re-review usually wants next — unless more commits were
+ * pushed in the meantime, when it offers another refresh instead.
  */
 export default function NewCommitsBanner({
   workspaceId,
@@ -48,6 +50,7 @@ export default function NewCommitsBanner({
   useEffect(() => () => abort.current?.abort(), []);
 
   const refresh = async () => {
+    const target = providerHead;
     setPhase({ kind: "refreshing", line: null });
     abort.current?.abort();
     const controller = new AbortController();
@@ -67,7 +70,7 @@ export default function NewCommitsBanner({
       if (controller.signal.aborted) return;
       invalidateLastReview(pr.ref);
       onRefreshed();
-      setPhase(failure ? { kind: "failed", error: failure } : { kind: "done" });
+      setPhase(failure ? { kind: "failed", error: failure } : { kind: "done", target });
     } catch (e) {
       if (!controller.signal.aborted) {
         setPhase({ kind: "failed", error: e instanceof Error ? e.message : String(e) });
@@ -76,7 +79,9 @@ export default function NewCommitsBanner({
   };
 
   const behind = hasNewCommits(pr, providerHead);
-  if (phase.kind === "done") {
+  // A push the refresh started too early for: the checkout is behind again.
+  const newerSinceRefresh = phase.kind === "done" && behind && providerHead !== phase.target;
+  if (phase.kind === "done" && !newerSinceRefresh) {
     return (
       <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-emerald-800 bg-emerald-950/30 px-3 py-1.5 text-xs text-emerald-100">
         <span>Checkout updated to the latest commits. Your tabs now show them.</span>
@@ -130,7 +135,17 @@ export default function NewCommitsBanner({
         </>
       )}
       {phase.kind === "failed" && (
-        <span className="text-red-300">Update failed: {phase.error}</span>
+        <>
+          <span className="text-red-300">Update failed: {phase.error}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setPhase({ kind: "idle" })}
+            className="ml-auto px-1 text-sky-300 hover:text-sky-100"
+          >
+            ×
+          </button>
+        </>
       )}
     </div>
   );

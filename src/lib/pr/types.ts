@@ -32,6 +32,8 @@ export interface PrSummary {
 export interface PrStatus {
   mergeable: boolean | null;
   mergeableState: string;
+  /** The PR's head commit, so a poll can notice a push without reading the whole PR. */
+  headSha: string | null;
   checks: { total: number; success: number; failure: number; pending: number };
 }
 

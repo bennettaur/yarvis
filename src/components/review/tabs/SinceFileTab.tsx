@@ -50,7 +50,7 @@ export default memo(function SinceFileTab({
   const data = view.data;
   const status = SINCE_STATUS[data.status];
   const unreadable =
-    data.tooLarge || data.original?.binary || data.modified?.binary || data.original?.tooLarge;
+    data.tooLarge || [data.original, data.modified].some((side) => side?.binary || side?.tooLarge);
   const key = refKey(ctx.prRef);
   // The reviewed version depends on the reviewed head and today's merge-base.
   const originalUri = snapshotUri(key, `since-${from}-${ctx.pr.mergeBaseSha ?? ""}`, path);
