@@ -821,8 +821,10 @@ cat "${fakeDir}/result.jsonl"`,
     expect(indexFile).toContain("- image.bin (added, binary): no patch (binary)");
     // The 2 MB file is there, its patch whole: under the cap, nothing is cut.
     expect(indexFile).toMatch(
-      /- huge\.txt \(added, \+20001 -0\): patches\/huge\.txt\.diff \(\d+ lines, \d+ KB\)\n/,
+      /- huge\.txt \(added, \+20001 -0\): patches\/huge\.txt\.diff \(\d+ lines, 2\.1 MB\)\n/,
     );
+    // Too big for one agent, so split by lines across reading groups.
+    expect(indexFile).toContain("patches/huge.txt.diff lines 1-");
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
     expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
     expect(
@@ -831,6 +833,7 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
     expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
+    expect(prompt).toMatch(/READING_GROUPS=[2-9]/);
     // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
     expect(prompt).not.toContain("Changes a and renames old.");
 
@@ -1069,6 +1072,7 @@ cat "${fakeDir}/result.jsonl"`,
     headSha: string;
     current: boolean;
     lastSucceeded: { run: { id: string }; current: boolean } | null;
+    size: { files: number; readBytes: number; overAgentBudget: boolean; budgetUsd: number } | null;
   };
   async function latest(wsId: string, prId: string, from?: string): Promise<Latest> {
     return (await (await rereview("GET", wsId, prId, from)).json()) as Latest;
@@ -1150,7 +1154,13 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
     const done = await latest(wsId, prId);
     expect(done.run?.result?.verdict).toBe("ready_to_approve");
-    expect(done.run?.result?.coverage).toEqual({ examined: 1, total: 1, notExamined: [] });
+    expect(done.run?.result?.coverage).toEqual({
+      examined: 1,
+      total: 1,
+      skimmed: [],
+      notExamined: [],
+      laneGaps: [],
+    });
     expect(done.run?.result?.comments).toMatchObject([{ threadId: "T1", providerId: "PRRT_mine" }]);
     expect(done.lastSucceeded).toMatchObject({ run: { id: done.run?.id }, current: true });
     await until(async () => !existsSync(contextDir), "the context folder to go");
@@ -1190,6 +1200,24 @@ cat "${fakeDir}/result.jsonl"`,
       current: true,
       lastSucceeded: { run: { id: good }, current: true },
     });
+  });
+
+  it("sizes the re-review, and refuses one too big for its one agent before running", async () => {
+    const { wsId, prId } = await reviewedThenPushed();
+    expect((await latest(wsId, prId)).size).toMatchObject({
+      files: 1,
+      overAgentBudget: false,
+      budgetUsd: 0.5,
+    });
+    // ~900 KB of new code since the review: more than one agent can hold.
+    remote.pushToPr("src/big.ts", `${"export const value = 1234567890;\n".repeat(28_000)}`);
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    expect((await latest(wsId, prId)).size).toMatchObject({ overAgentBudget: true });
+    const res = await rereview("POST", wsId, prId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("too much for one agent");
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 
   it("refuses what it can't judge, starting nothing", async () => {

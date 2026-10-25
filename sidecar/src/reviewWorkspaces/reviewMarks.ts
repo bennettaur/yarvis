@@ -29,11 +29,12 @@ import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { git } from "../workspaces/git.ts";
 import { stringsSize } from "./cache.ts";
 import { type FileAtSide, fileDiffBetween, type ReviewChangedFile } from "./git.ts";
-import type { PatchSource } from "./patchFiles.ts";
+import { type PatchSource, sizeText } from "./patchFiles.ts";
 import {
   cache,
   cachedFileAt,
   changedFiles,
+  classifyBulk,
   defaultReviewDeps,
   getReviewPr,
   keepReviewedCommit,
@@ -552,7 +553,14 @@ export async function reviewSinceSources(
     toHead: since.toHeadSha,
     toMergeBase: since.toMergeBase,
   };
-  const sources = (await sinceEntries(ready, range)).map(
+  const entries = await sinceEntries(ready, range);
+  const bulk = await classifyBulk(
+    ready,
+    range.toMergeBase,
+    range.toHead,
+    entries.map((e) => e.path),
+  );
+  const sources = entries.map(
     (entry): PatchSource => ({
       path: entry.path,
       ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
@@ -560,8 +568,11 @@ export async function reviewSinceSources(
       additions: 0,
       deletions: 0,
       binary: entry.binary,
+      ...bulk.get(entry.path),
       ...(!entry.binary && overCap(entry.sizes)
-        ? { unavailable: "a version is over 2 MB, too large to compare" }
+        ? {
+            unavailable: `a version is over ${sizeText(MAX_FILE_BYTES)}, too large to compare`,
+          }
         : {}),
       read: async () => {
         const view = await sinceView(ready, range, entry);

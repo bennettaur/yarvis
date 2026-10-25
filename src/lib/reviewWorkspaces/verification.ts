@@ -41,10 +41,24 @@ export interface VerificationMustRead {
  * run's Read calls (`reviewWorkspaces/coverage.ts`), not taken from them.
  */
 export interface VerificationCoverage {
+  /** Files at least one check read in full. */
   examined: number;
   total: number;
+  /** Lockfiles and generated, vendored or minified files whose first page was read. */
+  skimmed: { path: string; kind: string }[];
   notExamined: { path: string; reason: string }[];
+  /** Per check: source files in its lane it didn't read itself. */
+  laneGaps: { check: string; paths: string[] }[];
 }
+
+/** Counting the coverage failed: the report stands, what it read is unknown. */
+export interface UnknownCoverage {
+  unknown: true;
+}
+
+export const coverageKnown = (
+  c: VerificationCoverage | UnknownCoverage | undefined,
+): c is VerificationCoverage => !!c && !("unknown" in c);
 
 /** Mirrors the sidecar's `CoveredReport` (`reviewWorkspaces/verification.ts`). */
 export interface VerificationReport {
@@ -62,7 +76,7 @@ export interface VerificationReport {
   performance: VerificationCheck;
   comments: VerificationCheck;
   /** Absent on a report from before coverage was counted. */
-  coverage?: VerificationCoverage;
+  coverage?: VerificationCoverage | UnknownCoverage;
 }
 
 /** Mirrors the sidecar's `VerificationSize`: the facts a warning before a run states. */
@@ -75,6 +89,8 @@ export interface VerificationSize {
   binary: string[];
   /** Changed files whose diff is too large, so the agents see only its start. */
   truncated: string[];
+  /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
+  skimmed: string[];
   /** A rough estimate for the configured model. */
   estimatedCostUsd: number;
   budgetUsd: number;

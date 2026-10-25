@@ -141,32 +141,18 @@ export function numberPatch(patch: string): string {
 }
 
 /**
- * Patches numbered with {@link numberPatch} and fenced as one block tagged
- * `tag`, with the line each path's patch starts on in the file the caller
- * writes. A patch that is null or empty is left out; `header` adds a line
- * naming the file before its patch.
+ * One patch numbered with {@link numberPatch} and fenced as a block tagged
+ * `tag`, after the warning naming its nonce. `header`, when given, is a line
+ * naming the file put before a patch that lacks git's own.
  */
-export function fencedDiff(
-  items: { path: string; patch: string | null }[],
-  tag: string,
-  header?: (path: string) => string,
-): { diff: string; startLine: Map<string, number> } {
+export function fencedPatch(patch: string, tag: string, header?: string): string {
   const nonce = newNonce();
-  const startLine = new Map<string, number>();
-  const parts: string[] = [];
-  // The warning and the opening tag come first.
-  let line = 3;
-  for (const { path, patch } of items) {
-    if (!patch) continue;
-    startLine.set(path, line);
-    const numbered = `${header ? `${header(path)}\n` : ""}${numberPatch(patch)}`;
-    const text = numbered.endsWith("\n") ? numbered : `${numbered}\n`;
-    parts.push(text);
-    line += text.split("\n").length - 1;
-  }
-  const body = parts.join("").replace(/\n$/, "");
-  return { diff: `${untrustedWarning(nonce, tag)}\n${fence(body, nonce, tag)}\n`, startLine };
+  const body = `${header ? `${header}\n` : ""}${numberPatch(patch)}`.replace(/\n$/, "");
+  return `${untrustedWarning(nonce, tag)}\n${fence(body, nonce, tag)}\n`;
 }
+
+/** "1 file", "2 files": a count with its noun agreeing; `many` for an irregular plural. */
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // ---------------------------------------------------------------------------
 // Context folders

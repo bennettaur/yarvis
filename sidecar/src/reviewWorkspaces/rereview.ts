@@ -45,18 +45,44 @@ import {
   lineRangeSchema,
   optionalLine,
   optionalPath,
+  plural,
   repoPath,
 } from "./agentContext.ts";
-import { type Coverage, coverageOf } from "./coverage.ts";
-import { type HeadHunk, type PatchIndexEntry, patchIndex, writePatchFiles } from "./patchFiles.ts";
+import {
+  type Coverage,
+  coverageOf,
+  type ReadVolume,
+  safeCoverage,
+  type UnknownCoverage,
+} from "./coverage.ts";
+import {
+  type HeadHunk,
+  type PatchIndexEntry,
+  patchIndex,
+  READER_BUDGET_BYTES,
+  SKIM_LINES,
+  sizeText,
+  writePatchFiles,
+} from "./patchFiles.ts";
 import {
   latestMark,
   reviewSinceReview,
   reviewSinceSources,
   type SinceReview,
 } from "./reviewMarks.ts";
-import { getReviewPr, type ReviewDeps, ReviewWorkspaceError } from "./service.ts";
-import { requireCheckout } from "./verification.ts";
+import {
+  classifyBulk,
+  getReviewPr,
+  type ReviewDeps,
+  ReviewWorkspaceError,
+  requireReadyPr,
+} from "./service.ts";
+import {
+  estimateRunCostUsd,
+  recordReadVolumes,
+  requireCheckout,
+  sizedFileBytes,
+} from "./verification.ts";
 
 export const REREVIEW_RUN_KIND = "pr-rereview";
 
@@ -135,7 +161,11 @@ export interface RereviewAudit {
   duplicateIds: string[];
   /** Comments the answer skipped, filled in as `unclear`. */
   missingIds: string[];
-  downgraded: { id: string; from: CommentVerdict; reason: "no-evidence" | "no-reply" }[];
+  downgraded: {
+    id: string;
+    from: CommentVerdict;
+    reason: "no-evidence" | "no-reply" | "not-read";
+  }[];
   /** New changes naming a path that hasn't changed since the review. */
   droppedChanges: string[];
   /** Changed files the answer neither listed nor cited, added as needing review. */
@@ -261,14 +291,27 @@ function judged(
   item: RereviewItem,
   limits: RereviewLimits,
   audit: RereviewAudit,
+  read: ReadonlySet<string> | null,
 ): RereviewComment {
   const { evidence } = answer;
   const path = evidence.path ? repoPath(evidence.path, limits.checkoutDir) : undefined;
   const ok = supported(path, evidence.line, item, limits);
   let verdict = answer.verdict;
   let downgradedFrom: CommentVerdict | undefined;
-  if ((verdict === "addressed" || verdict === "partly") && !ok) {
+  const fixed = verdict === "addressed" || verdict === "partly";
+  if (fixed && !ok) {
     audit.downgraded.push({ id: item.id, from: verdict, reason: "no-evidence" });
+    downgradedFrom = verdict;
+    verdict = "unclear";
+  } else if (
+    fixed &&
+    read !== null &&
+    path !== undefined &&
+    limits.changedPaths.has(path) &&
+    !read.has(path)
+  ) {
+    // A fix cited in a file the agent opened neither the interdiff nor the head of.
+    audit.downgraded.push({ id: item.id, from: verdict, reason: "not-read" });
     downgradedFrom = verdict;
     verdict = "unclear";
   } else if (verdict === "disagreed" && !item.othersReplied) {
@@ -306,6 +349,7 @@ function checkedComments(
   answers: CommentAnswer[],
   limits: RereviewLimits,
   audit: RereviewAudit,
+  read: ReadonlySet<string> | null,
 ): RereviewComment[] {
   const items = new Map(limits.items.map((item) => [item.id, item]));
   const byId = new Map<string, RereviewComment>();
@@ -319,7 +363,7 @@ function checkedComments(
       keepFew(audit.duplicateIds, item.id);
       continue;
     }
-    byId.set(item.id, judged(answer, item, limits, audit));
+    byId.set(item.id, judged(answer, item, limits, audit, read));
   }
   return limits.items.map((item) => {
     const found = byId.get(item.id);
@@ -406,8 +450,6 @@ function checkedChanges(
 
 const unexaminedReason = (why: string) => clip(`Not examined by the agent: ${why}.`, 160);
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-
 /** A comment is outstanding until it is addressed or its thread is resolved. */
 export const isOutstanding = (c: Pick<RereviewComment, "verdict" | "resolved">) =>
   !c.resolved && c.verdict !== "addressed";
@@ -479,10 +521,17 @@ export function checkedRereview(
   answer: RereviewAnswer,
   limits: RereviewLimits,
   audit: RereviewAudit,
-  coverage?: Coverage,
+  counted?: {
+    coverage: Coverage | UnknownCoverage;
+    /** Changed files whose interdiff or head file was read at all; null when unknown. */
+    touched: ReadonlySet<string> | null;
+  },
 ) {
-  const notExamined = new Map(coverage?.notExamined.map((n) => [n.path, n.reason]) ?? []);
-  const comments = checkedComments(answer.comments, limits, audit);
+  const coverage = counted?.coverage;
+  const notExamined = new Map(
+    coverage && !("unknown" in coverage) ? coverage.notExamined.map((n) => [n.path, n.reason]) : [],
+  );
+  const comments = checkedComments(answer.comments, limits, audit, counted?.touched ?? null);
   const newChanges = checkedChanges(answer.newChanges, comments, limits, audit, notExamined);
   const outstanding = outstandingReason(comments, newChanges);
   const note = serverNote(audit);
@@ -503,14 +552,6 @@ export function checkedRereview(
     settled,
     ...(coverage ? { coverage } : {}),
   };
-}
-
-/** {@link rereviewAnswerSchema} with the checks applied, for an answer with no reads to weigh. */
-export function rereviewSchema(
-  limits: RereviewLimits,
-  audit: RereviewAudit = emptyRereviewAudit(),
-) {
-  return rereviewAnswerSchema(limits).transform((answer) => checkedRereview(answer, limits, audit));
 }
 
 export type Rereview = ReturnType<typeof checkedRereview>;
@@ -921,7 +962,34 @@ export function buildRereviewMaterial(input: RereviewInput, contextDir: string):
 export const REREVIEW_CONTEXT_DIR_PREFIX = "yarvis-rereview-";
 /** Longest a run can last, past which nothing still reads its context. */
 export const REREVIEW_RUN_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_TURNS = 30;
+/** Lines one Read takes of a patch, as the agent's prompt tells it to page. */
+const PAGE_LINES = 800;
+/** Turns for reading the context files, judging, and answering, on top of the patches. */
+const BASE_TURNS = 20;
+const MAX_TURNS = 150;
+
+/** What reading every interdiff costs the one agent, skimming bulk to its first page. */
+export function rereviewReadBytes(index: PatchIndexEntry[]): number {
+  return index.reduce((n, e) => {
+    if (!e.patchFile) return n;
+    if (!e.skim) return n + e.bytes;
+    return n + Math.round((e.bytes / Math.max(1, e.lines)) * Math.min(e.lines, SKIM_LINES));
+  }, 0);
+}
+
+/**
+ * Turns for a re-review: one per page of each interdiff to read (one for a
+ * skimmed one), plus {@link BASE_TURNS} reserved for the rest, so a big
+ * interdiff doesn't run out of turns before the answer.
+ */
+export function rereviewMaxTurns(index: PatchIndexEntry[]): number {
+  const pages = index.reduce(
+    (n, e) => n + (!e.patchFile ? 0 : e.skim ? 1 : Math.ceil(e.lines / PAGE_LINES)),
+    0,
+  );
+  return Math.min(MAX_TURNS, BASE_TURNS + pages);
+}
+
 const ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
 const DISALLOWED_TOOLS = [
   "Bash",
@@ -1097,8 +1165,18 @@ export async function startRereview(
       );
       writeFileSync(join(contextDir, "rereview.md"), material.contextFile);
       writeFileSync(join(contextDir, "index.md"), material.indexFile);
+      const reading = rereviewReadBytes(index);
+      if (reading > READER_BUDGET_BYTES) {
+        throw new ReviewWorkspaceError(
+          `what changed since the review is too much for one agent to read (about ` +
+            `${sizeText(reading)} of interdiffs, past ${sizeText(READER_BUDGET_BYTES)}); ` +
+            "review it in the Since last review tab instead",
+          409,
+        );
+      }
       const audit = emptyRereviewAudit();
       const limits = { ...material.limits, checkoutDir: pr.worktreePath };
+      let volumes: ReadVolume[] = [];
       const handle = await startClaudeRun(
         db,
         {
@@ -1108,20 +1186,20 @@ export async function startRereview(
           addDirs: [contextDir],
           prompt: material.prompt,
           outputSchema: rereviewAnswerSchema(limits),
-          finishOutput: (answer, activity) =>
-            checkedRereview(
-              answer,
-              limits,
-              audit,
-              coverageOf(index, activity.reads, { cwd: pr.worktreePath, contextDir }),
-            ),
+          finishOutput: (answer, activity) => {
+            const counted = safeCoverage("rereview", () =>
+              coverageOf(index, activity, { cwd: pr.worktreePath, contextDir }),
+            );
+            volumes = counted.volumes;
+            return checkedRereview(answer, limits, audit, counted);
+          },
           plugins: ["yarvis-review"],
           agent: REREVIEW_AGENT,
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
           model: settings.model,
           maxBudgetUsd: settings.maxBudgetUsd,
-          maxTurns: MAX_TURNS,
+          maxTurns: rereviewMaxTurns(index),
           timeoutMs: REREVIEW_RUN_TIMEOUT_MS,
           meta: {
             workspaceId,
@@ -1140,7 +1218,10 @@ export async function startRereview(
         deps.run,
       );
       void handle.done
-        .then(() => recordAudit(db, handle.id, audit))
+        .then(async () => {
+          await recordReadVolumes(db, handle.id, volumes);
+          return recordAudit(db, handle.id, audit);
+        })
         .catch((e) => console.error("[rereview] could not record the audit:", e))
         .finally(removeContext);
       return { runId: handle.id, existing: false, ...range };
@@ -1170,6 +1251,69 @@ export interface LatestRereview {
    * succeeded — so a failed or cancelled re-run doesn't hide the last good one.
    */
   lastSucceeded: (RunRange & { run: AgentRunSummary; current: boolean }) | null;
+  /** What a re-review of that range would read and cost; null when it can't be sized. */
+  size: RereviewSize | null;
+}
+
+/** The facts the warning before a re-review states. */
+export interface RereviewSize {
+  files: number;
+  changedLines: number;
+  /** Files with no text interdiff. */
+  binary: string[];
+  /** Files with a version too large to compare, so no interdiff. */
+  noInterdiff: string[];
+  /** Bulk the agent only skims. */
+  skimmed: string[];
+  /** About how much interdiff the one agent would read. */
+  readBytes: number;
+  /** Past what one agent can hold: the run refuses to start. */
+  overAgentBudget: boolean;
+  estimatedCostUsd: number;
+  budgetUsd: number;
+  overBudget: boolean;
+}
+
+/**
+ * {@link RereviewSize} for the range from the last review (or `from`) to the
+ * head, from the since-review listing's counts (cached once the tab has shown
+ * it) and the same bulk rule the run uses.
+ */
+async function rereviewSize(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  reviewDeps: ReviewDeps,
+  settings: RereviewRunConfig,
+  from?: string,
+): Promise<RereviewSize> {
+  const since = await reviewSinceReview(db, config, workspaceId, prId, reviewDeps, from);
+  const ready = await requireReadyPr(db, config, workspaceId, prId, reviewDeps);
+  const bulk = await classifyBulk(
+    ready,
+    since.toMergeBase,
+    since.toHeadSha,
+    since.files.map((f) => f.path),
+  );
+  const text = since.files.filter((f) => !f.binary && !f.tooLarge);
+  const readBytes = text.reduce(
+    (n, f) => n + sizedFileBytes(f, { truncated: false, skim: !!bulk.get(f.path)?.skim }),
+    0,
+  );
+  const estimatedCostUsd = estimateRunCostUsd(settings.model, readBytes);
+  return {
+    files: since.files.length,
+    changedLines: text.reduce((n, f) => n + f.additions + f.deletions, 0),
+    binary: since.files.filter((f) => f.binary).map((f) => f.path),
+    noInterdiff: since.files.filter((f) => f.tooLarge).map((f) => f.path),
+    skimmed: text.filter((f) => bulk.get(f.path)?.skim).map((f) => f.path),
+    readBytes,
+    overAgentBudget: readBytes > READER_BUDGET_BYTES,
+    estimatedCostUsd,
+    budgetUsd: settings.maxBudgetUsd,
+    overBudget: estimatedCostUsd > settings.maxBudgetUsd,
+  };
 }
 
 /**
@@ -1184,8 +1328,28 @@ export async function latestRereview(
   reviewDeps: ReviewDeps,
   isLive: (id: string) => boolean,
   from?: string,
+  sizing?: { config: Config; settings: () => Promise<RereviewRunConfig> },
 ): Promise<LatestRereview> {
   const pr = await getReviewPr(db, workspaceId, prId);
+  let size: RereviewSize | null = null;
+  if (sizing && pr.status === "ready") {
+    // A failure (no review recorded, say) only costs the warning.
+    try {
+      size = await rereviewSize(
+        db,
+        sizing.config,
+        workspaceId,
+        prId,
+        reviewDeps,
+        await sizing.settings(),
+        from,
+      );
+    } catch (e) {
+      if (!(e instanceof ReviewWorkspaceError)) {
+        console.error("[rereview] could not size the re-review:", describeError(e));
+      }
+    }
+  }
   const fromHeadSha = from ?? (await latestMark(db, pr.ref, reviewDeps))?.headSha ?? null;
   const currentKey =
     fromHeadSha && pr.headSha ? rereviewTargetKey(pr.refKey, fromHeadSha, pr.headSha) : null;
@@ -1205,5 +1369,6 @@ export async function latestRereview(
     lastSucceeded: succeeded
       ? { run: succeeded, ...rangeOf(succeeded), current: succeeded.targetKey === currentKey }
       : null,
+    size,
   };
 }

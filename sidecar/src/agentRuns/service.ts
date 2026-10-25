@@ -24,7 +24,20 @@ import { type ClaudeStreamResult, type FileRead, StreamJsonParser } from "./stre
 export interface RunActivity {
   /** Every Read call, the run's subagents' included. */
   reads: FileRead[];
+  /** Each delegation's subagent type, by the delegation id a read carries. */
+  subagents: ReadonlyMap<string, string>;
 }
+
+/**
+ * The finishing step: optional when it would hand back the answer's own type,
+ * required when the kept result is a different one, so a result can't claim a
+ * field nothing added.
+ */
+type FinishStep<T, R> = [T] extends [R]
+  ? [R] extends [T]
+    ? { finishOutput?: (output: T, activity: RunActivity) => R }
+    : { finishOutput: (output: T, activity: RunActivity) => R }
+  : { finishOutput: (output: T, activity: RunActivity) => R };
 
 /**
  * Headless Claude Code runs a feature starts and the UI follows live: a
@@ -64,7 +77,9 @@ export interface RunActivity {
 export type AgentRunPermissionMode = Exclude<ClaudePermissionMode, "bypassPermissions" | "auto">;
 const REFUSED_PERMISSION_MODES = new Set<string>(["bypassPermissions", "auto"]);
 
-export interface ClaudeRunOptions<T = unknown, R = T> {
+export type ClaudeRunOptions<T = unknown, R = T> = ClaudeRunBaseOptions<T> & FinishStep<T, R>;
+
+interface ClaudeRunBaseOptions<T> {
   /** What the run is for, e.g. "verification-report". */
   kind: string;
   /** What it runs against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
@@ -84,12 +99,13 @@ export interface ClaudeRunOptions<T = unknown, R = T> {
    * fails unless its structured output parses against it.
    */
   outputSchema?: z.ZodType<T>;
-  /**
-   * Turns the parsed answer into what the run keeps, given what the run did
-   * on the way: a check the answer alone can't support, such as which files
-   * the run actually read. Runs once, before the result is stored or sent.
+  /*
+   * `finishOutput` ({@link FinishStep}) turns the parsed answer into what the
+   * run keeps, given what the run did on the way: a check the answer alone
+   * can't support, such as which files the run actually read. It runs once,
+   * before the result is stored or sent, and a throw fails the run, so a
+   * caller whose check is best-effort catches its own errors.
    */
-  finishOutput?: (output: T, activity: RunActivity) => R;
   /** Shipped plugins to load (`--plugin-dir`), written out fresh for the run. */
   plugins?: PluginName[];
   /**
@@ -425,7 +441,12 @@ export async function startClaudeRun<T, R = T>(
   };
 
   const done = execute()
-    .then((ending) => settle(options, ending, parser.estimatedCostUsd, { reads: parser.fileReads }))
+    .then((ending) =>
+      settle(options, ending, parser.estimatedCostUsd, {
+        reads: parser.fileReads,
+        subagents: parser.subagents,
+      }),
+    )
     .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
     .then((outcome) => {
       for (const event of parser.closeOpenDelegations()) emit(event);
@@ -562,11 +583,23 @@ function settle<T, R>(
       base,
     );
   }
-  // Without a finishing step the parsed answer is what is kept, so R is T.
-  const output = options.finishOutput
-    ? options.finishOutput(parsed.data, activity)
-    : (parsed.data as unknown as R);
-  return { ...base, status: "succeeded", output, error: null };
+  if (!options.finishOutput) {
+    // FinishStep makes the step optional only when R is T.
+    return { ...base, status: "succeeded", output: parsed.data as unknown as R, error: null };
+  }
+  try {
+    return {
+      ...base,
+      status: "succeeded",
+      output: options.finishOutput(parsed.data, activity),
+      error: null,
+    };
+  } catch (e) {
+    return failure(
+      `could not finish the run's answer: ${e instanceof Error ? e.message : String(e)}`,
+      base,
+    );
+  }
 }
 
 /** A run as the routes return it: everything but the event log and the process bookkeeping. */

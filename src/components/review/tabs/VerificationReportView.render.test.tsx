@@ -80,19 +80,34 @@ describe("VerificationReportView", () => {
     const opened: string[] = [];
     const { host, unmount } = await mountForInteraction(
       createElement(VerificationReportView, {
-        report: { ...report, coverage: { examined: 12, total: 20, notExamined } },
+        report: {
+          ...report,
+          coverage: {
+            examined: 10,
+            total: 20,
+            notExamined,
+            skimmed: [
+              { path: "package-lock.json", kind: "lockfile" },
+              { path: "web/api.gen.ts", kind: "generated" },
+            ],
+            laneGaps: [{ check: "Performance", paths: ["src/cache.ts"] }],
+          },
+        },
         onOpen: { open: (path) => opened.push(path), canOpen: () => true },
       }),
     );
     try {
       const text = textOf(host.innerHTML);
       expect(text.indexOf("Not examined")).toBeLessThan(text.indexOf("Summary"));
-      expect(text).toContain("The checks didn't read 8 of the 20 changed files.");
+      expect(text).toContain("No check read 8 of the 20 files changed.");
       expect(text).toContain("only 800 of its patch's 2400 lines were read");
       // Past six, the rest fold away behind a count.
       expect(
         host.querySelector('section[aria-label="Not examined"] details')?.textContent,
       ).toContain("2 more");
+      // Skimmed bulk is its own folded group, with a count.
+      expect(text).toContain("Generated, skimmed: 2 files");
+      expect(text).toContain("Not examined by Performance: src/cache.ts");
       const first = [...host.querySelectorAll("button")].find((b) => b.textContent === "zz/f0.ts");
       first?.click();
       expect(opened).toEqual(["zz/f0.ts"]);
@@ -105,13 +120,33 @@ describe("VerificationReportView", () => {
     const all = textOf(
       await renderToHtml(
         createElement(VerificationReportView, {
-          report: { ...report, coverage: { examined: 20, total: 20, notExamined: [] } },
+          report: {
+            ...report,
+            coverage: {
+              examined: 19,
+              total: 20,
+              notExamined: [],
+              skimmed: [{ path: "yarn.lock", kind: "lockfile" }],
+              laneGaps: [],
+            },
+          },
           onOpen: { open: () => {}, canOpen: () => true },
         }),
       ),
     );
-    expect(all).toContain("The checks read all 20 changed files.");
+    expect(all).toContain(
+      "At least one check read each of the 19 files to read, and skimmed 1 file.",
+    );
     expect(all).not.toContain("Not examined");
+    const unknown = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: { ...report, coverage: { unknown: true } },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(unknown).toContain("couldn't count which files the checks read");
     const old = textOf(
       await renderToHtml(
         createElement(VerificationReportView, {

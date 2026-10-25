@@ -65,6 +65,7 @@ import {
   fileDiffBetween,
   fileDiffCapped,
   type GitCredentials,
+  generatedByAttributes,
   type HeadSource,
   type PrShas,
   prefetchTree,
@@ -76,7 +77,7 @@ import {
   reviewGit,
   treePaths,
 } from "./git.ts";
-import type { PatchSource } from "./patchFiles.ts";
+import { bulkKind, type PatchSource } from "./patchFiles.ts";
 import {
   claimRun,
   forgetRuns,
@@ -1077,6 +1078,44 @@ export async function reviewDiff(
   return { ...base, patch, tooLarge: false };
 }
 
+/** How a changed file reads for an agent: bulk to skim, and whether the PR marked it generated. */
+export interface BulkClass {
+  skim: string | null;
+  markedByPr: boolean;
+}
+
+/**
+ * {@link bulkKind} for each of `paths`, with `.gitattributes` read at
+ * `baseSha` (whose word counts) and `headSha` (to say when the PR added a
+ * mark). Cached by commit. When the attributes can't be read the paths alone
+ * decide, which only ever makes fewer files bulk.
+ */
+export async function classifyBulk(
+  ready: Pick<ReadyPr, "runners" | "clonePath">,
+  baseSha: string,
+  headSha: string,
+  paths: string[],
+): Promise<Map<string, BulkClass>> {
+  const marked = (sha: string) =>
+    cache
+      .get(
+        `attrs:${ready.clonePath}:${sha}:${Bun.hash(paths.join("\0"))}`,
+        () => generatedByAttributes(ready.runners.network, ready.clonePath, sha, paths),
+        (s) => stringsSize([...s]) + 64,
+      )
+      .catch((e) => {
+        console.error("[review-workspaces] could not read .gitattributes:", describeError(e));
+        return new Set<string>();
+      });
+  const [atBase, atHead] = await Promise.all([marked(baseSha), marked(headSha)]);
+  return new Map(
+    paths.map((path) => {
+      const skim = bulkKind(path, atBase);
+      return [path, { skim, markedByPr: !skim && atHead.has(path) }];
+    }),
+  );
+}
+
 /**
  * A diff can't be much bigger than both sides together, so only a file this
  * close to the cap has its diff read to see whether it goes over.
@@ -1097,7 +1136,11 @@ export async function reviewDiffFacts(
   prId: string,
   deps: ReviewDeps,
   maxPatchBytes: number,
-): Promise<{ files: ChangedFileWithSizes[]; truncated: string[] }> {
+): Promise<{
+  files: ChangedFileWithSizes[];
+  truncated: string[];
+  bulk: Map<string, BulkClass>;
+}> {
   const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
   const files = await changedFiles(
     ready.runners,
@@ -1125,7 +1168,13 @@ export async function reviewDiffFacts(
     );
     if (!complete) truncated.push(file.path);
   }
-  return { files, truncated };
+  const bulk = await classifyBulk(
+    ready,
+    ready.mergeBaseSha,
+    ready.headSha,
+    files.map((f) => f.path),
+  );
+  return { files, truncated, bulk };
 }
 
 /**
@@ -1151,11 +1200,18 @@ export async function reviewPatchSources(
     ready.mergeBaseSha,
     ready.headSha,
   );
+  const bulk = await classifyBulk(
+    ready,
+    ready.mergeBaseSha,
+    ready.headSha,
+    files.map((f) => f.path),
+  );
   const sources = [...files]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map(
       ({ oldSize: _old, newSize: _new, ...file }): PatchSource => ({
         ...file,
+        ...bulk.get(file.path),
         read: () =>
           fileDiffCapped(
             ready.runners.search,

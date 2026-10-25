@@ -34,25 +34,27 @@ const MAX_TEXT_CHARS = 8_000;
 /** Longest tool summary: one line in a progress list. */
 const MAX_SUMMARY_CHARS = 160;
 
-/** Longest path kept whole; past this it is no path a file tool could open. */
+/** Longest Read path kept; past this it is no path the tool could open. */
 const MAX_PATH_CHARS = 4096;
 
 /** Most Read calls kept for a run; far past what any run makes. */
 const MAX_FILE_READS = 20_000;
 
-/** The tools that take one file's path. */
-const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
-
 /**
  * One Read call, as the run made it: the path as given, the 1-based line it
- * started at and how many lines it asked for (null for the tool's defaults),
- * and whether the tool answered with an error.
+ * started at and how many lines it asked for (null when the key was absent,
+ * for the tool's defaults), whether it gave either in a shape that isn't a
+ * number (`malformed`: what it showed can't be told, so it counts for
+ * nothing), whether the tool answered with an error, and which delegation
+ * made it (null for the main agent).
  */
 export interface FileRead {
   path: string;
   offset: number | null;
   limit: number | null;
+  malformed: boolean;
   failed: boolean;
+  subagentId: string | null;
 }
 
 /** The tools Claude Code delegates through; it has used both names. */
@@ -180,12 +182,19 @@ export class StreamJsonParser {
    * files it never opened.
    */
   private readonly reads = new Map<string, FileRead>();
+  /** Every delegation's subagent type, by its `tool_use` id, kept after it ends. */
+  private readonly delegationNames = new Map<string, string>();
 
   constructor(private readonly cwd: string) {}
 
   /** The run's Read calls so far, in the order it made them, main agent and subagents alike. */
   get fileReads(): FileRead[] {
     return [...this.reads.values()];
+  }
+
+  /** Each delegation's subagent type (e.g. `yarvis-review:test-reviewer`), by delegation id. */
+  get subagents(): ReadonlyMap<string, string> {
+    return this.delegationNames;
   }
 
   /** What the run has spent so far, from the usage on its messages. */
@@ -326,33 +335,49 @@ export class StreamJsonParser {
             ...delegation,
             background: input.run_in_background === true,
           });
+          this.delegationNames.set(id, delegation.name);
           events.push({ type: "subagent", phase: "start", id, ...delegation });
         } else {
-          const input = isObject(block.input) ? block.input : {};
-          const rawPath = FILE_TOOLS.has(name)
-            ? (asString(input.file_path) ?? asString(input.notebook_path))
-            : null;
-          const path = rawPath && rawPath.length <= MAX_PATH_CHARS ? rawPath : null;
-          if (name === "Read" && path && this.reads.size < MAX_FILE_READS) {
-            this.reads.set(id, {
-              path,
-              offset: asNumber(input.offset),
-              limit: asNumber(input.limit),
-              failed: false,
-            });
-          }
+          if (name === "Read") this.recordRead(id, block.input, subagentId);
           events.push({
             type: "tool",
             id,
             name,
             summary: summarizeToolInput(name, block.input, this.cwd),
             subagentId,
-            ...(path ? { path: redactSecrets(path) } : {}),
           });
         }
       }
     }
     return events;
+  }
+
+  /**
+   * Keeps one Read call. An `offset` or `limit` that is there but isn't a
+   * finite number marks the read malformed rather than falling back to the
+   * defaults, since what the tool then showed can't be known.
+   */
+  private recordRead(id: string, input: unknown, subagentId: string | null): void {
+    if (!isObject(input) || this.reads.size >= MAX_FILE_READS) return;
+    const path = asString(input.file_path);
+    if (!path || path.length > MAX_PATH_CHARS) return;
+    const field = (key: string) => {
+      if (!(key in input) || input[key] === undefined) {
+        return { value: null, bad: false };
+      }
+      const value = asNumber(input[key]);
+      return { value, bad: value === null };
+    };
+    const offset = field("offset");
+    const limit = field("limit");
+    this.reads.set(id, {
+      path,
+      offset: offset.value,
+      limit: limit.value,
+      malformed: offset.bad || limit.bad,
+      failed: false,
+      subagentId,
+    });
   }
 
   private parseUser(message: Json): AgentRunEvent[] {

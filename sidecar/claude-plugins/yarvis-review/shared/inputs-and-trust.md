@@ -7,20 +7,30 @@ Your task message gives REVIEW_CONTEXT, a directory holding:
   counts, and its patch: a path relative to REVIEW_CONTEXT
   (`patches/<repo path>.diff`), the patch's length in lines and its size. A
   binary file has no patch; a patch whose diff was too large is marked as cut
-  off, and only its start is there.
+  off, and only its start is there. Bulk (lockfiles, generated, vendored and
+  minified code) is marked `SKIM`. Then the reading groups: the patches to
+  read whole, split so that no one agent reads more than it can hold.
 - `patches/`: one patch per changed file, the diff from the merge-base to the
   PR head.
 
 The working directory is the PR checkout at its head; the base versions of
 files aren't there, so the patch is the only place to see what was removed.
 Read `index.md` first, then open the patches your instructions say are in
-your lane, by their full path (`<REVIEW_CONTEXT>/patches/…`). Open every
-patch in your lane, each one whole: nothing else will read it for you, and
-the report lists every file no check read. Read several patches in one turn
-when you can. A patch over 800 lines doesn't fit in one Read: read it in
-pages with `offset` and `limit` (lines 1–800, 801–1600, …) until its end.
-Open head files only where the patch alone can't answer the question. A
-renamed file goes by its new path.
+your lane, by their full path (`<REVIEW_CONTEXT>/patches/…`).
+
+- If your task gives `GROUP=<n>`, your lane is only the patches (or the line
+  ranges) listed under that reading group; other agents of your kind have the
+  other groups. Without one, your lane is every reading group.
+- Open every patch in your lane, each one whole (or the whole range given).
+  Yarvis records which patches each check reads, and the report names every
+  file in your lane you didn't read.
+- Read several patches in one turn when you can. A patch over 800 lines
+  doesn't fit in one Read: read it in pages with `offset` and `limit` (lines
+  1–800, 801–1600, …) until its end.
+- A `SKIM` patch is never in your lane to read whole: when you need to know
+  what one is, read its first 200 lines and no more.
+- Open head files only where the patch alone can't answer the question. A
+  renamed file goes by its new path.
 
 In a patch, every hunk line carries its file line number after the
 `+`/`-`/space marker: the head file's line for added and unchanged lines,

@@ -544,6 +544,7 @@ export function createReviewWorkspaceRoutes(
           deps(),
           (id) => registry.isLive(id),
           from,
+          { config, settings: (options.rereview ?? defaultRereviewDeps(config)).settings },
         ),
       );
     } catch (e) {

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { ratesFor } from "../agentRuns/pricing.ts";
 import {
   type AgentRunSummary,
   type ClaudeRunDeps,
@@ -43,19 +44,29 @@ import {
   lineRangeSchema,
   optionalLine,
   optionalPath,
+  plural,
   repoPath,
 } from "./agentContext.ts";
-import { type Coverage, coverageOf } from "./coverage.ts";
+import {
+  type Coverage,
+  coverageOf,
+  type ReadVolume,
+  safeCoverage,
+  type UnknownCoverage,
+} from "./coverage.ts";
 import type { ChangedFileWithSizes } from "./git.ts";
 import {
-  countOf,
   PATCH_LIMITS,
   type PatchIndexEntry,
   patchIndex,
+  READER_BUDGET_BYTES,
+  readingGroups,
+  SKIM_LINES,
   writePatchFiles,
 } from "./patchFiles.ts";
 import {
   assertWorktreeInWorkspace,
+  type BulkClass,
   getReviewPr,
   type ReviewDeps,
   ReviewWorkspaceError,
@@ -322,7 +333,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
 export type VerificationReport = z.output<ReturnType<typeof verificationReportSchema>>;
 
 /** The report as stored: the agents' answer plus the server's count of what they read. */
-export type CoveredReport = VerificationReport & { coverage: Coverage };
+export type CoveredReport = VerificationReport & { coverage: Coverage | UnknownCoverage };
 
 /**
  * The summary's word cap: about a word per three changed lines, between 10
@@ -352,58 +363,80 @@ const MAX_COMMENTS_PER_THREAD = 5;
  */
 const LARGE_PR = { changedLines: 4_000, files: 150 };
 
-/**
- * A rough cost model for a run, by model: a fixed part for the orchestration
- * and the agents' own reasoning, plus the patches' tokens times how many
- * agents read each one and how often the context is re-sent. Haiku's figures
- * come from one real run on a 1.5 MB PR (about $0.02); the others scale them by
- * each model's price. It is for a warning, not a bill.
+/*
+ * The cost estimate. A token an agent reads is written to the prompt cache
+ * once (at 1.25x the input rate) and re-sent from it on each later turn (at
+ * the cache-read rate), so a run costs about
+ *
+ *   (BASE_TOKENS + read tokens) × (1.25 × input + RESEND × cache read)
+ *
+ * at the model's rates (`agentRuns/pricing.ts`), where the read tokens are
+ * each patch's bytes (BYTES_PER_CHANGED_LINE a changed line) times how many
+ * agents read it (READERS), over BYTES_PER_TOKEN.
+ *
+ * How the numbers were got, in October 2026, with Haiku: two runs of the
+ * same 8-check report, one on 618 changed lines of code (the agents read
+ * 497 KB of patch between them; Claude Code reported $0.056) and one on 22
+ * changed lines of code beside 16,000 skimmed lines of bulk (15 KB read;
+ * $0.018). Solving the formula for those two points gives BASE_TOKENS ≈
+ * 62,000 and RESEND ≈ 15. In both runs every agent read every patch that
+ * wasn't bulk, docs included, hence 7 readers for any file; the code patches
+ * came to about 115 bytes per changed line. Two points fix two constants
+ * exactly and test nothing, and the other models are this formula at their
+ * own rates, unmeasured: a warning's estimate, not a bill.
  */
-const COST_MODEL: Record<VerificationModel, { baseUsd: number; usdPerMillionPatchTokens: number }> =
-  {
-    haiku: { baseUsd: 0.03, usdPerMillionPatchTokens: 1 },
-    sonnet: { baseUsd: 0.5, usdPerMillionPatchTokens: 20 },
-    opus: { baseUsd: 1, usdPerMillionPatchTokens: 35 },
-  };
-/**
- * Lockfiles and generated or vendored code, which the agents are told to
- * skim: a page of each, not the whole patch.
- */
-const BULK_PATH =
-  /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock|go\.sum)$|(^|\/)(dist|vendor|generated|__generated__)\//;
-/** A numbered patch line is about this long: the change, its context share and the number. */
-const BYTES_PER_CHANGED_LINE = 70;
+const BASE_TOKENS = 62_000;
+const RESEND = 15;
+/** Which Claude model each setting's alias stood for when the rates were set. */
+const MODEL_IDS: Record<VerificationModel, string> = {
+  haiku: "claude-haiku-5-5",
+  sonnet: "claude-sonnet-5",
+  opus: "claude-opus-5-5",
+};
+/** Agents that read a file: all seven, measured; a bulk file's first page by one. */
+const READERS = { file: 7, bulk: 1 };
+/** A numbered patch line is about this long, its share of context lines included. */
+const BYTES_PER_CHANGED_LINE = 115;
 const BYTES_PER_TOKEN = 3.5;
-/**
- * What the agents read of bulk: a cut-off patch or a {@link BULK_PATH} file,
- * of which they are told to read a page to see what it is.
- */
-const BULK_READ_BYTES = 64 * 1024;
 
-/** About how many bytes of patches a run over these files reads. */
-export function estimatePatchBytes(
-  files: Pick<ChangedFileWithSizes, "path" | "binary" | "additions" | "deletions">[],
+type SizedFile = Pick<ChangedFileWithSizes, "path" | "binary" | "additions" | "deletions">;
+
+/** About how many bytes of one file's patch one agent reads: a page of it, for bulk. */
+export function sizedFileBytes(
+  f: Pick<SizedFile, "binary" | "additions" | "deletions">,
+  { truncated, skim }: { truncated: boolean; skim: boolean },
+): number {
+  if (f.binary) return 0;
+  const whole = Math.min(
+    truncated ? PATCH_LIMITS.truncatedBytes : PATCH_LIMITS.maxPatchBytes,
+    (f.additions + f.deletions) * BYTES_PER_CHANGED_LINE,
+  );
+  return skim ? Math.min(whole, SKIM_LINES * BYTES_PER_CHANGED_LINE) : whole;
+}
+
+/** About how many bytes of patch the agents read in all, each reader counted. */
+export function estimateReadBytes(
+  files: SizedFile[],
   truncated: ReadonlySet<string>,
+  bulk: ReadonlyMap<string, BulkClass>,
 ): number {
   let bytes = 0;
   for (const f of files) {
     if (f.binary) continue;
-    const whole = Math.min(
-      PATCH_LIMITS.maxPatchBytes,
-      (f.additions + f.deletions) * BYTES_PER_CHANGED_LINE,
-    );
+    const skim = !!bulk.get(f.path)?.skim;
     bytes +=
-      truncated.has(f.path) || BULK_PATH.test(f.path) ? Math.min(whole, BULK_READ_BYTES) : whole;
+      sizedFileBytes(f, { truncated: truncated.has(f.path), skim }) *
+      (skim ? READERS.bulk : READERS.file);
   }
   return bytes;
 }
 
-/** About what a run reading `patchBytes` of patches costs with `model`, in USD. */
-export function estimateRunCostUsd(model: VerificationModel, patchBytes: number): number {
-  const rates = COST_MODEL[model];
-  const cost =
-    rates.baseUsd + (patchBytes / BYTES_PER_TOKEN / 1_000_000) * rates.usdPerMillionPatchTokens;
-  return Math.round(cost * 100) / 100;
+/** About what a run whose agents read `readBytes` of patch costs with `model`, in USD. */
+export function estimateRunCostUsd(model: VerificationModel, readBytes: number): number {
+  const rates = ratesFor(MODEL_IDS[model]);
+  const tokens = BASE_TOKENS + readBytes / BYTES_PER_TOKEN;
+  const perToken = (1.25 * rates.input + RESEND * rates.cacheRead) / 1_000_000;
+  return Math.round(tokens * perToken * 100) / 100;
 }
 
 export interface VerificationInput {
@@ -435,6 +468,8 @@ export interface VerificationMaterial {
   /** `index.md`. */
   indexFile: string;
   limits: ReportLimits;
+  /** How many reading groups the patches were split into: agents per lane. */
+  groups: number;
 }
 
 export const CHECK_OUTCOMES = [
@@ -518,13 +553,13 @@ function threadsBlock(threads: ReviewThread[]): string {
 }
 
 /**
- * Changed lines that buy summary words: a binary file has none, and a patch
- * cut off for its size is bulk (a lockfile, a generated bundle), not change
- * to describe.
+ * Changed lines that buy summary words: a binary file has none, and bulk (by
+ * the same rule the agents skim by) and a patch cut off for its size are not
+ * change to describe.
  */
 function describedLines(index: PatchIndexEntry[]): number {
   return index.reduce(
-    (n, e) => n + (e.patchFile && !e.truncated ? e.additions + e.deletions : 0),
+    (n, e) => n + (e.patchFile && !e.truncated && !e.skim ? e.additions + e.deletions : 0),
     0,
   );
 }
@@ -564,13 +599,12 @@ export function buildVerificationMaterial(
       : "Description: unknown (the PR details could not be loaded).";
   const binary = index.filter((e) => e.binary).length;
   const cut = index.filter((e) => e.truncated).length;
+  const groups = readingGroups(index);
   const files = [
     `Changed files: ${index.length}, with ${index.reduce((n, e) => n + e.additions + e.deletions, 0)} changed lines.`,
     "index.md lists every one, with its patch under patches/.",
-    binary ? `${countOf(binary, "binary file has", "binary files have")} no patch.` : null,
-    cut
-      ? `${countOf(cut, "patch is", "patches are")} cut off because the diff is too large.`
-      : null,
+    binary ? `${plural(binary, "binary file has", "binary files have")} no patch.` : null,
+    cut ? `${plural(cut, "patch is", "patches are")} cut off because the diff is too large.` : null,
   ]
     .filter(Boolean)
     .join(" ");
@@ -593,17 +627,21 @@ export function buildVerificationMaterial(
     `REVIEW_CONTEXT=${contextDir}`,
     `SUMMARY_WORDS=${limits.summaryWords}`,
     `MUST_READ_MAX=${limits.mustReadMax}`,
+    `READING_GROUPS=${groups.length}`,
+    `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
     "",
     "REVIEW_CONTEXT holds pr.md (the PR's description, CI checks and comments), index.md " +
-      "(every changed file and its patch) and patches/ (one numbered patch per changed file, " +
-      "from the merge-base to the head). The agents read them there; you don't need to.",
+      "(every changed file and its patch, and the reading groups) and patches/ (one numbered " +
+      "patch per changed file, from the merge-base to the head). The agents read them there; " +
+      "you don't need to.",
   ].join("\n");
 
   return {
     prompt,
     contextFile: `${context}\n`,
-    indexFile: patchIndex(index, { title: "Changed files" }),
+    indexFile: patchIndex(index, { title: "Changed files", groups }),
     limits,
+    groups: groups.length,
   };
 }
 
@@ -666,6 +704,25 @@ async function latestRunId(db: Db, refKey: string, status?: string): Promise<str
 }
 
 /** Adds what the server took out of the answer to the run's meta, once the run is over. */
+/**
+ * Adds how much patch each agent read to the run's meta, so a reader near
+ * {@link READER_BUDGET_BYTES} (and so near compacting) shows. Shared with the
+ * re-review.
+ */
+export async function recordReadVolumes(
+  db: Db,
+  runId: string,
+  volumes: ReadVolume[],
+): Promise<void> {
+  if (volumes.length === 0) return;
+  await db
+    .update(agentRuns)
+    .set({
+      meta: sql`${agentRuns.meta} || ${JSON.stringify({ readBytesByAgent: volumes })}::jsonb`,
+    })
+    .where(eq(agentRuns.id, runId));
+}
+
 async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<void> {
   if (audit.droppedDuplicates.length === 0 && audit.droppedMustReads.length === 0) return;
   console.log(
@@ -745,6 +802,7 @@ export async function startVerification(
       writeFileSync(join(contextDir, "pr.md"), material.contextFile);
       writeFileSync(join(contextDir, "index.md"), material.indexFile);
       const audit = emptyAudit();
+      let volumes: ReadVolume[] = [];
       const handle = await startClaudeRun(
         db,
         {
@@ -757,10 +815,13 @@ export async function startVerification(
             { ...material.limits, checkoutDir: pr.worktreePath },
             audit,
           ),
-          finishOutput: (report, activity): CoveredReport => ({
-            ...report,
-            coverage: coverageOf(index, activity.reads, { cwd: pr.worktreePath, contextDir }),
-          }),
+          finishOutput: (report, activity): CoveredReport => {
+            const counted = safeCoverage("verification", () =>
+              coverageOf(index, activity, { cwd: pr.worktreePath, contextDir, lanes: true }),
+            );
+            volumes = counted.volumes;
+            return { ...report, coverage: counted.coverage };
+          },
           plugins: ["yarvis-review"],
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
@@ -778,19 +839,22 @@ export async function startVerification(
             binaryFiles: index.filter((e) => e.binary).length,
             truncatedFiles: index.filter((e) => e.truncated).length,
             patchBytes: index.reduce((n, e) => n + e.bytes, 0),
+            readingGroups: material.groups,
             detailLoaded: detail !== null,
           },
         },
         deps.run,
       );
       void handle.done
-        .then((outcome) => {
+        .then(async (outcome) => {
           const coverage = outcome.output?.coverage;
-          if (coverage) {
+          if (coverage && !("unknown" in coverage)) {
             console.log(
-              `[verification] run ${handle.id}: examined ${coverage.examined} of ${coverage.total} changed files`,
+              `[verification] run ${handle.id}: examined ${coverage.examined} of ` +
+                `${coverage.total} changed files, skimmed ${coverage.skimmed.length}`,
             );
           }
+          await recordReadVolumes(db, handle.id, volumes);
           return recordAudit(db, handle.id, audit);
         })
         .catch((e) => console.error("[verification] could not record the audit:", e))
@@ -832,6 +896,8 @@ export interface VerificationSize {
   binary: string[];
   /** Changed files whose diff is over the cap, so the run sees only its start. */
   truncated: string[];
+  /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
+  skimmed: string[];
   /** A rough figure from {@link estimateRunCostUsd}, for the configured model. */
   estimatedCostUsd: number;
   /** The configured budget; past it, Claude Code stops the run before it answers. */
@@ -841,14 +907,15 @@ export interface VerificationSize {
 
 /** The facts a warning before a run states, from the PR's files and the run settings. */
 export function verificationSize(
-  files: Pick<ChangedFileWithSizes, "path" | "binary" | "additions" | "deletions">[],
+  files: SizedFile[],
   truncated: string[],
+  bulk: ReadonlyMap<string, BulkClass>,
   settings: VerificationRunConfig,
 ): VerificationSize {
   const changedLines = files.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0);
   const estimatedCostUsd = estimateRunCostUsd(
     settings.model,
-    estimatePatchBytes(files, new Set(truncated)),
+    estimateReadBytes(files, new Set(truncated), bulk),
   );
   return {
     files: files.length,
@@ -856,6 +923,7 @@ export function verificationSize(
     large: changedLines > LARGE_PR.changedLines || files.length > LARGE_PR.files,
     binary: files.filter((f) => f.binary).map((f) => f.path),
     truncated,
+    skimmed: files.filter((f) => !f.binary && bulk.get(f.path)?.skim).map((f) => f.path),
     estimatedCostUsd,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
@@ -879,11 +947,11 @@ export async function latestVerification(
   if (pr.status === "ready") {
     // A cached read once the PR has been opened. A failure only costs the warning.
     try {
-      const [{ files, truncated }, runConfig] = await Promise.all([
+      const [{ files, truncated, bulk }, runConfig] = await Promise.all([
         reviewDiffFacts(db, config, workspaceId, prId, reviewDeps, PATCH_LIMITS.maxPatchBytes),
         settings(),
       ]);
-      size = verificationSize(files, truncated, runConfig);
+      size = verificationSize(files, truncated, bulk, runConfig);
     } catch (e) {
       console.error("[verification] could not size the PR:", describeError(e));
     }

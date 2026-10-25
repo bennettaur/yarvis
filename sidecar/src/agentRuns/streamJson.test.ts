@@ -63,43 +63,96 @@ describe("reading a captured run", () => {
       name: "Read",
       summary: "a.txt",
       subagentId: null,
-      path: "/work/repo/a.txt",
     });
   });
 
-  it("keeps every Read call apart from the events, with its path whole", () => {
-    const parser = new StreamJsonParser("/work/repo");
-    for (const line of readFileSync(
-      join(import.meta.dir, "fixtures", "subagent-structured-output.jsonl"),
-      "utf8",
-    ).split("\n")) {
-      parser.parseLine(line);
-    }
-    expect(parser.fileReads).toEqual([
-      { path: "/work/repo/a.txt", offset: null, limit: null, failed: false },
-    ]);
-    // A path past the summary's cap is still kept whole.
-    const long = `/work/repo/${"d/".repeat(200)}x.ts`;
-    const id = "toolu_long";
-    parser.parseLine(
+  describe("Read calls, kept apart from the events", () => {
+    const assistant = (parent: string | null, content: unknown[]) =>
       JSON.stringify({
         type: "assistant",
-        parent_tool_use_id: "toolu_sub",
-        message: {
-          id: "msg_long",
-          content: [
-            { type: "tool_use", id, name: "Read", input: { file_path: long, offset: 5, limit: 9 } },
-          ],
+        parent_tool_use_id: parent,
+        message: { id: `msg_${Math.random()}`, content },
+      });
+    const read = (id: string, input: Record<string, unknown>) => ({
+      type: "tool_use",
+      id,
+      name: "Read",
+      input,
+    });
+
+    it("keeps the main agent's, with its path whole", () => {
+      const parser = new StreamJsonParser("/work/repo");
+      for (const line of readFileSync(
+        join(import.meta.dir, "fixtures", "subagent-structured-output.jsonl"),
+        "utf8",
+      ).split("\n")) {
+        parser.parseLine(line);
+      }
+      expect(parser.fileReads).toEqual([
+        {
+          path: "/work/repo/a.txt",
+          offset: null,
+          limit: null,
+          malformed: false,
+          failed: false,
+          subagentId: null,
         },
-      }),
-    );
-    parser.parseLine(
-      JSON.stringify({
-        type: "user",
-        message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true }] },
-      }),
-    );
-    expect(parser.fileReads.at(-1)).toEqual({ path: long, offset: 5, limit: 9, failed: true });
+      ]);
+    });
+
+    it("records a subagent's failed Read under its delegation, by parent_tool_use_id", () => {
+      const parser = new StreamJsonParser("/work/repo");
+      parser.parseLine(
+        assistant(null, [
+          {
+            type: "tool_use",
+            id: "toolu_task",
+            name: "Agent",
+            input: { subagent_type: "yarvis-review:test-reviewer", description: "tests" },
+          },
+        ]),
+      );
+      // A path past the summary's cap is still kept whole.
+      const long = `/work/repo/${"d/".repeat(200)}x.ts`;
+      parser.parseLine(
+        assistant("toolu_task", [read("toolu_r", { file_path: long, offset: 5, limit: 9 })]),
+      );
+      parser.parseLine(
+        JSON.stringify({
+          type: "user",
+          parent_tool_use_id: "toolu_task",
+          message: { content: [{ type: "tool_result", tool_use_id: "toolu_r", is_error: true }] },
+        }),
+      );
+      expect(parser.fileReads).toEqual([
+        {
+          path: long,
+          offset: 5,
+          limit: 9,
+          malformed: false,
+          failed: true,
+          subagentId: "toolu_task",
+        },
+      ]);
+      expect(parser.subagents.get("toolu_task")).toBe("yarvis-review:test-reviewer");
+    });
+
+    it("marks an offset or limit that is there but isn't a number as malformed", () => {
+      const parser = new StreamJsonParser("/work/repo");
+      parser.parseLine(
+        assistant(null, [
+          read("a", { file_path: "/x.diff", offset: "1", limit: 800 }),
+          read("b", { file_path: "/x.diff", limit: null }),
+          read("c", { file_path: "/x.diff" }),
+        ]),
+      );
+      // Only a key that is absent gets the tool's default.
+      expect(parser.fileReads.map((r) => [r.malformed, r.limit])).toEqual([
+        [true, 800],
+        [true, null],
+        [false, null],
+      ]);
+    });
   });
 
   it("keeps the delegation tool and the structured-output tool out of the tool list", () => {

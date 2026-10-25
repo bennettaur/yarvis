@@ -337,6 +337,46 @@ describe("RereviewSummary", () => {
     expect(started).toEqual([sha("a")]);
   });
 
+  it("won't start, by itself or by the button, a re-review too big for its agent", async () => {
+    const tooBig: LatestRereview = {
+      ...nothingYet,
+      size: {
+        files: 3,
+        changedLines: 30_000,
+        binary: ["logo.png"],
+        noInterdiff: [],
+        skimmed: [],
+        readBytes: 900 * 1024,
+        overAgentBudget: true,
+        estimatedCostUsd: 0.4,
+        budgetUsd: 1,
+        overBudget: false,
+      },
+    };
+    primeReads(tooBig);
+    const started: (string | undefined)[] = [];
+    stubReviewApi({
+      getRereviewRunConfig: async () => ({ model: "sonnet", maxBudgetUsd: 1, autoStart: true }),
+      startRereview: async (_ws, _pr, from) => {
+        started.push(from);
+        return { runId: "run1", existing: false, fromHeadSha: sha("a"), toHeadSha: sha("b") };
+      },
+      latestRereview: async () => tooBig,
+      streamAgentRun: async function* () {},
+    });
+    const mounted = await mountForInteraction(createElement(RereviewSummary, { ctx, since }));
+    unmount = mounted.unmount;
+    await new Promise((r) => setTimeout(r, 50));
+    const text = textOf(mounted.host.innerHTML);
+    expect(text).toContain("Too much changed since your review for one agent to read");
+    expect(text).toContain("1 binary file has no diff to read: logo.png");
+    const button = [...mounted.host.querySelectorAll("button")].find(
+      (b) => b.textContent === "What's changed",
+    );
+    expect(button?.disabled).toBe(true);
+    expect(started).toEqual([]);
+  });
+
   it("waits for the button when the setting is off", async () => {
     primeReads(nothingYet);
     const started: (string | undefined)[] = [];

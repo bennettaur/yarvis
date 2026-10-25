@@ -164,6 +164,7 @@ describe("VerificationTab", () => {
     large: true,
     binary: [],
     truncated: [],
+    skimmed: [],
     estimatedCostUsd: 1.4,
     budgetUsd: 2,
     overBudget: false,
@@ -218,14 +219,23 @@ describe("VerificationTab", () => {
     expect(text).toContain("and 2 more");
     expect(host.querySelector('[role="alert"] details')?.textContent).toContain("d.png, e.png");
     expect(text).toContain(
-      "1 diff is too large and will be cut off, so the checks see only the start: package-lock.json",
+      "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
     );
     expect(text).toContain("about $3.20, against a budget of $2.00");
-    expect(text).toContain("may hit the budget and stop before it writes the report");
+    expect(text).toContain("may hit the budget and stop before it answers");
+    // A list that folds sits in a block, not inside a paragraph.
+    expect(host.querySelector("p details")).toBeNull();
   });
 
-  it("starts at once when the PR is small and within budget", async () => {
-    const host = await mount(latest({ size: size({ large: false, binary: ["a.png"] }) }));
+  it("says up front what a small PR's run won't read whole, and starts at once", async () => {
+    const host = await mount(
+      latest({ size: size({ large: false, binary: ["a.png"], skimmed: ["yarn.lock"] }) }),
+    );
+    const notices = textOf(host.querySelector('[data-testid="file-notices"]')?.innerHTML ?? "");
+    expect(notices).toContain("1 binary file has no diff to read: a.png");
+    expect(notices).toContain(
+      "1 file is bulk (a lockfile, or generated, vendored or minified code)",
+    );
     button(host, "Run verification")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(button(host, "Run anyway")).toBeUndefined();

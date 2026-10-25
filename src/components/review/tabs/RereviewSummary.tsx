@@ -21,6 +21,7 @@ import { ThreadView, type ThreadViewProps } from "../../pr/ThreadView";
 import { useThreadActions } from "../../pr/useThreadActions";
 import { Spinner } from "../../ThinkingIndicator";
 import { rereviewKey, useLatestRereview, useReviewChangedFiles } from "./reviewData";
+import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 
 /**
@@ -456,8 +457,13 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
   const runningElsewhere = !running && run?.status === "running" && !run.live;
   const good = latest.data?.lastSucceeded ?? null;
   const review = good?.run.result ?? null;
+  const size = latest.data?.size ?? null;
+  const tooBig = !!size?.overAgentBudget;
+  // Over the budget, the run is asked for first.
+  const [confirming, setConfirming] = useState(false);
 
   const start = useCallback(async () => {
+    setConfirming(false);
     setStarting(true);
     setActionError(null);
     try {
@@ -479,6 +485,8 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
   useEffect(() => {
     if (!loaded || covered || autoStarted.current === key) return;
     autoStarted.current = key;
+    // Never start by itself what would be refused, or would ask first.
+    if (size?.overAgentBudget || size?.overBudget) return;
     void getRereviewRunConfig()
       .then((settings) => {
         if (settings.autoStart) void start();
@@ -486,7 +494,7 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
       .catch(() => {
         // Without the setting the button still works; nothing starts by itself.
       });
-  }, [loaded, covered, key, start]);
+  }, [loaded, covered, key, start, size?.overAgentBudget, size?.overBudget]);
 
   const { data: detail } = usePrDetail(ctx.prRef);
   const threadList = detail?.reviewThreads ?? [];
@@ -549,8 +557,8 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
             !runningElsewhere && (
               <button
                 type="button"
-                onClick={() => void start()}
-                disabled={starting || notReady}
+                onClick={() => (size?.overBudget ? setConfirming(true) : void start())}
+                disabled={starting || notReady || tooBig}
                 className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
               >
                 {starting ? "Starting…" : review ? "Re-run" : "What's changed"}
@@ -565,6 +573,42 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
           An agent checks whether each of your comments was addressed or answered, and sorts the
           other changes since your review into what needs a look and what is minor.
         </p>
+      )}
+      {size && !running && (
+        <div className="space-y-1 text-xs text-zinc-400" data-testid="rereview-notices">
+          {tooBig && (
+            <p className="text-amber-300">
+              Too much changed since your review for one agent to read (about{" "}
+              {Math.round(size.readBytes / 1024)} KB of interdiffs), so the summary won't run.
+              Review the changes in this tab instead.
+            </p>
+          )}
+          <FileNotices notices={fileNotices(size)} />
+        </div>
+      )}
+      {confirming && size && !running && (
+        <div
+          role="alert"
+          className="space-y-2 rounded border border-amber-800 bg-amber-950/30 p-2 text-xs text-amber-200"
+        >
+          <CostLine {...size} />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void start()}
+              className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600"
+            >
+              Run anyway
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
       {actionError && (
         <p role="alert" className="text-xs text-red-400">

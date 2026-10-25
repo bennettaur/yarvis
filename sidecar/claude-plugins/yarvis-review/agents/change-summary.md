@@ -12,10 +12,19 @@ you add is reading time you have to justify.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch in `index.md`: you are the one check that reads the
-whole change. For generated code, a lockfile or vendored code (the path and
-the patch's first lines tell you), the first page is enough to say what it is;
-don't page through the rest.
+## What to read
+
+You don't read every patch: the other checks do, and you work from
+`index.md`. In this order:
+
+1. `index.md` and `pr.md`.
+2. Every patch `index.md` marks `SKIM`: one Read each, with `limit` 200,
+   and no more of it. No other check opens these. You are the one that says
+   what the bulk is, and Yarvis counts a bulk file as skimmed only once its
+   first 200 lines were read.
+3. The patches that show what the change is and where its weight lies,
+   whole, up to READ_BUDGET_KB (from your task) by the sizes `index.md` gives.
+   For any other, the first 200 lines are enough to say what its change is.
 
 Your task message also gives SUMMARY_WORDS and MUST_READ_MAX, the limits for
 this PR.

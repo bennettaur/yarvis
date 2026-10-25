@@ -12,7 +12,7 @@
  * model not listed here is priced at the most expensive rates listed, so an
  * unknown model overstates its cost rather than hiding it.
  */
-interface Rates {
+export interface Rates {
   input: number;
   output: number;
   cacheRead: number;
@@ -31,7 +31,7 @@ const RATES: [prefix: string, rates: Rates][] = [
 
 const MOST_EXPENSIVE: Rates = { input: 10, output: 50, cacheRead: 1 };
 
-function ratesFor(model: string | null): Rates {
+export function ratesFor(model: string | null): Rates {
   if (!model) return MOST_EXPENSIVE;
   return RATES.find(([prefix]) => model.startsWith(prefix))?.[1] ?? MOST_EXPENSIVE;
 }

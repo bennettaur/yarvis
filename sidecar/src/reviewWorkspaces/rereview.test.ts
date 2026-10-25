@@ -12,13 +12,19 @@ import {
   hunkRanges,
   lineNote,
   MAX_NEW_CHANGES,
+  type RereviewAudit,
   type RereviewInput,
   type RereviewItem,
   type RereviewLimits,
   rereviewAnswerSchema,
-  rereviewSchema,
+  rereviewMaxTurns,
+  rereviewReadBytes,
   sameIdentity,
 } from "./rereview.ts";
+
+/** The production path, parsing then checking, for an answer with no reads to weigh. */
+const rereviewSchema = (lim: RereviewLimits, audit: RereviewAudit = emptyRereviewAudit()) =>
+  rereviewAnswerSchema(lim).transform((a) => checkedRereview(a, lim, audit));
 
 const item = (id: string, overrides: Partial<RereviewItem> = {}): RereviewItem => ({
   id,
@@ -204,8 +210,10 @@ describe("the re-review schema", () => {
         { path: "src/b.ts", reason: "only 10 of its patch's 900 lines were read" },
         { path: "src/c.ts", reason: "its patch wasn't opened" },
       ],
+      skimmed: [],
+      laneGaps: [],
     };
-    const checked = checkedRereview(raw, lim, audit, coverage);
+    const checked = checkedRereview(raw, lim, audit, { coverage, touched: null });
     expect(checked.newChanges).toEqual([
       {
         path: "src/b.ts",
@@ -230,6 +238,37 @@ describe("the re-review schema", () => {
     expect(checked.verdict).toBe("needs_another_look");
     expect(checked.serverNote).toBe("3 changed files weren't examined.");
     expect(checked.coverage).toEqual(coverage);
+  });
+
+  it("doesn't take a fix cited in a file the agent never opened", () => {
+    const audit = emptyRereviewAudit();
+    const lim = limits([item("T1"), item("T2", { path: "src/b.ts" })]);
+    const raw = rereviewAnswerSchema(lim).parse(
+      answer({ comments: [fixed("T1", "src/a.ts", 3), fixed("T2", "src/b.ts")] }),
+    );
+    const coverage = { examined: 2, total: 2, notExamined: [], skimmed: [], laneGaps: [] };
+    const checked = checkedRereview(raw, lim, audit, {
+      coverage,
+      // The agent opened b.ts's interdiff or head file, never a.ts's.
+      touched: new Set(["src/b.ts"]),
+    });
+    expect(checked.comments.map((c) => [c.threadId, c.verdict])).toEqual([
+      ["T1", "unclear"],
+      ["T2", "addressed"],
+    ]);
+    expect(audit.downgraded).toEqual([{ id: "T1", from: "addressed", reason: "not-read" }]);
+  });
+
+  it("keeps the answer when its coverage is unknown", () => {
+    const audit = emptyRereviewAudit();
+    const lim = limits([item("T1")]);
+    const raw = rereviewAnswerSchema(lim).parse(answer({ comments: [fixed("T1", "src/a.ts", 3)] }));
+    const checked = checkedRereview(raw, lim, audit, {
+      coverage: { unknown: true },
+      touched: null,
+    });
+    expect(checked.comments[0]?.verdict).toBe("addressed");
+    expect(checked.coverage).toEqual({ unknown: true });
   });
 
   it("dedupes the changes, needing review first, then caps them", () => {
@@ -382,6 +421,9 @@ const patch = (
   truncated: false,
   noPatch: text === null ? noPatch : null,
   hunks: text === null ? [] : headHunksOf(text),
+  skim: null,
+  markedByPr: false,
+  longLines: 0,
 });
 
 const A_PATCH = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -2,3 +2,2 @@\n one\n-log(token)\n two\n";
@@ -580,6 +622,29 @@ describe("building the re-review's material", () => {
       { start: 1, end: 3 },
       { start: 11, end: 11 },
     ]);
+  });
+});
+
+describe("sizing a re-review from its index", () => {
+  const sized = (lines: number, bytes: number, skim: string | null = null): PatchIndexEntry => ({
+    ...patch("src/x.ts", "@@ -1 +1 @@\n-a\n+b\n"),
+    lines,
+    bytes,
+    skim,
+  });
+
+  it("gives a turn per page of interdiff, one per skimmed file, and a reserve for the answer", () => {
+    expect(rereviewMaxTurns([])).toBe(20);
+    expect(rereviewMaxTurns([sized(2000, 80_000), sized(9000, 400_000, "lockfile")])).toBe(
+      20 + 3 + 1,
+    );
+    expect(rereviewMaxTurns(Array.from({ length: 500 }, () => sized(100, 1000)))).toBe(150);
+  });
+
+  it("counts a skimmed file's first page only", () => {
+    expect(rereviewReadBytes([sized(1000, 100_000), sized(1000, 100_000, "generated")])).toBe(
+      100_000 + 20_000,
+    );
   });
 });
 

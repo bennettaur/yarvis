@@ -6,10 +6,12 @@ import { jsonSchemaArg } from "../agentRuns/service.ts";
 import type { CheckItem, PrDetail } from "../pr/types.ts";
 import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
 import type { PatchIndexEntry } from "./patchFiles.ts";
+import type { BulkClass } from "./service.ts";
 import {
   buildVerificationMaterial,
   checkOutcome,
   emptyAudit,
+  estimateReadBytes,
   estimateRunCostUsd,
   MAX_MUST_READ,
   mustReadCap,
@@ -398,6 +400,9 @@ function hostileInput(): VerificationInput {
     truncated: false,
     noPatch: null,
     hunks: [{ start: 1, count: additions }],
+    skim: null,
+    markedByPr: false,
+    longLines: 0,
   });
   const index: PatchIndexEntry[] = [
     entry(`src/${MARK}.ts`, 2),
@@ -490,38 +495,77 @@ describe("the size a warning states", () => {
     deletions: 0,
   });
 
-  it("names the binary and cut-off files, and weighs the estimate against the budget", () => {
-    const files = [f("img.png", 0, true), f("src/schema.ts", 40_000), f("src/a.ts", 20)];
-    const size = verificationSize(files, ["src/schema.ts"], {
-      model: "sonnet",
-      maxBudgetUsd: 2,
-    });
+  const sonnet = { model: "sonnet" as const, maxBudgetUsd: 2 };
+  const noBulk = new Map<string, BulkClass>();
+
+  it("names the binary, cut-off and skimmed files, and weighs the estimate against the budget", () => {
+    const files = [
+      f("img.png", 0, true),
+      f("src/schema.ts", 40_000),
+      f("src/a.ts", 20),
+      f("package-lock.json", 40_000),
+    ];
+    const bulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    const size = verificationSize(files, ["src/schema.ts"], bulk, sonnet);
     expect(size).toMatchObject({
-      files: 3,
-      changedLines: 40_020,
+      files: 4,
+      changedLines: 80_020,
       large: true,
       binary: ["img.png"],
       truncated: ["src/schema.ts"],
+      skimmed: ["package-lock.json"],
       budgetUsd: 2,
     });
-    // A cut-off file costs only a page of it.
-    expect(size.estimatedCostUsd).toBeLessThan(2);
-    expect(size.overBudget).toBe(false);
-    // Whole, the same file is far over the budget.
-    expect(verificationSize(files, [], { model: "sonnet", maxBudgetUsd: 2 }).overBudget).toBe(true);
-    // A lockfile or generated code costs a page however big it is.
-    const bulk = [f("package-lock.json", 40_000), f("web/generated/api.ts", 40_000)];
-    expect(verificationSize(bulk, [], { model: "sonnet", maxBudgetUsd: 2 }).overBudget).toBe(false);
+    // Whole and read by every lane, the same source file is far dearer than its shown part.
+    const whole = verificationSize(files, [], bulk, sonnet);
+    expect(whole.estimatedCostUsd).toBeGreaterThan(size.estimatedCostUsd * 3);
+    expect(whole.overBudget).toBe(true);
   });
 
-  it("grows with the patches read, from a floor", () => {
-    expect(estimateRunCostUsd("sonnet", 0)).toBeGreaterThan(0);
-    expect(estimateRunCostUsd("sonnet", 1_000_000)).toBeGreaterThan(
-      estimateRunCostUsd("sonnet", 0),
+  it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
+    const lock = [f("package-lock.json", 40_000)];
+    const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    expect(estimateReadBytes(lock, new Set(), asBulk)).toBe(200 * 115);
+    // Any other file: 115 bytes a changed line, by each of the 7 agents.
+    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toBe(100 * 115 * 7);
+  });
+
+  it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
+    // Sonnet 5: $2/M input, $0.2/M cache read. 350 KB read is 100k tokens on top of the base.
+    const perToken = (1.25 * 2 + 15 * 0.2) / 1_000_000;
+    expect(estimateRunCostUsd("sonnet", 350_000)).toBeCloseTo((62_000 + 100_000) * perToken, 2);
+  });
+
+  it("lands near what the calibration runs cost", () => {
+    // The two Haiku runs the constants were fitted to, from their files' line counts.
+    const code = verificationSize(
+      [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
+      [],
+      noBulk,
+      { model: "haiku", maxBudgetUsd: 1 },
     );
-    expect(estimateRunCostUsd("haiku", 1_000_000)).toBeLessThan(
-      estimateRunCostUsd("opus", 1_000_000),
+    expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25);
+    const bulk = new Map(
+      ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
+        p,
+        { skim: "generated", markedByPr: false },
+      ]),
     );
+    const mostlyBulk = verificationSize(
+      [
+        f("package-lock.json", 12_000),
+        f("generated/a.ts", 3_600),
+        f("generated/b.ts", 3_600),
+        f("src/cart.ts", 7),
+        f("zz/core.ts", 15),
+      ],
+      [],
+      bulk,
+      { model: "haiku", maxBudgetUsd: 1 },
+    );
+    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018 * 0.75);
+    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * 1.5);
   });
 });
 

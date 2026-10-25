@@ -13,7 +13,9 @@ complexity, performance, comments) in parallel and assembles their answers.
 Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context, an `index.md` of every changed file and one numbered
 patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a
-directory the run may read. Once the run answers it removes duplicate
+directory the run may read, marks bulk to skim, and splits the rest into
+reading groups no bigger than one agent can hold; on a big PR the skill runs
+each check once per group. Once the run answers it removes duplicate
 findings across sections and adds which changed files no agent read
 (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
 

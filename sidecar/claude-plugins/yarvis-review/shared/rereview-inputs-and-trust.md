@@ -21,9 +21,12 @@ The working directory is the PR checkout at today's head. Read `rereview.md`
 and `index.md` first, then open every interdiff listed, each one whole, by its
 full path (`<REVIEW_CONTEXT>/patches/…`); several in one turn when you can. A
 patch over 800 lines doesn't fit in one Read: read it in pages with `offset`
-and `limit` (lines 1–800, 801–1600, …) until its end. Yarvis checks which
-interdiffs you read, and lists any file you didn't as needing review. Open
-head files only to confirm a fix or to see what code around a change does.
+and `limit` (lines 1–800, 801–1600, …) until its end. A file marked `SKIM`
+(lockfiles, generated, vendored or minified code) needs only its first 200
+lines. Yarvis checks which interdiffs you read: it lists any file you didn't
+as needing review, and a fix you cite in a file you never opened doesn't
+count. Open head files only to confirm a fix or to see what code around a
+change does.
 
 In an interdiff, every hunk line carries its file line number after the
 `+`/`-`/space marker: the head file's line for added and unchanged lines,

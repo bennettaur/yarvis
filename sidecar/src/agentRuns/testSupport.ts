@@ -72,5 +72,6 @@ export function runOptions<T = unknown, R = T>(
     maxBudgetUsd: 1,
     timeoutMs: 10_000,
     ...overrides,
-  };
+    // A test passes the finishing step its R needs among the overrides.
+  } as ClaudeRunOptions<T, R>;
 }

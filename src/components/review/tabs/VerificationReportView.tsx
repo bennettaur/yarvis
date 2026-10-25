@@ -1,4 +1,5 @@
 import {
+  coverageKnown,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationCheck,
@@ -148,10 +149,11 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
       </p>
     );
   }
-  if (coverage.notExamined.length === 0) {
+  if (!coverageKnown(coverage)) {
     return (
-      <p className="text-xs text-zinc-500">
-        The checks read all {coverage.total} changed {coverage.total === 1 ? "file" : "files"}.
+      <p className="text-xs text-amber-300">
+        Yarvis couldn't count which files the checks read, so this report may not cover every
+        changed file.
       </p>
     );
   }
@@ -163,6 +165,51 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
   );
   const shown = coverage.notExamined.slice(0, NOT_EXAMINED_SHOWN);
   const rest = coverage.notExamined.slice(NOT_EXAMINED_SHOWN);
+  const skimmed = coverage.skimmed.length > 0 && (
+    <details className="text-xs text-zinc-400">
+      <summary className="cursor-pointer">
+        Generated, skimmed: {files(coverage.skimmed.length)}
+      </summary>
+      <p className="mt-1 text-zinc-500">
+        Lockfiles and generated, vendored or minified files. The checks read only their first page.
+      </p>
+      <ul className="mt-1 space-y-1">
+        {coverage.skimmed.map((s) => (
+          <li key={s.path}>
+            <Location path={s.path} label="" className="text-xs" onOpen={onOpen} />{" "}
+            <span className="text-zinc-500">({s.kind})</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+  const gaps = coverage.laneGaps.length > 0 && (
+    <ul className="space-y-1 text-xs text-zinc-400">
+      {coverage.laneGaps.map((gap) => (
+        <li key={gap.check}>
+          Not examined by {gap.check}:{" "}
+          {gap.paths.map((path, i) => (
+            <span key={path}>
+              {i > 0 && ", "}
+              <Location path={path} label="" className="text-xs" onOpen={onOpen} />
+            </span>
+          ))}
+        </li>
+      ))}
+    </ul>
+  );
+  if (coverage.notExamined.length === 0) {
+    return (
+      <div className="space-y-1">
+        <p className="text-xs text-zinc-500">
+          At least one check read each of the {files(coverage.examined)} to read
+          {coverage.skimmed.length > 0 ? `, and skimmed ${files(coverage.skimmed.length)}` : ""}.
+        </p>
+        {gaps}
+        {skimmed}
+      </div>
+    );
+  }
   return (
     <section
       aria-label="Not examined"
@@ -170,8 +217,8 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
     >
       <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-300">Not examined</h3>
       <p className="text-xs text-amber-200">
-        The checks didn't read {coverage.notExamined.length} of the {coverage.total} changed files.
-        Nothing in this report covers them; review them yourself.
+        No check read {coverage.notExamined.length} of the {files(coverage.total)} changed. Nothing
+        in this report covers them; review them yourself.
       </p>
       <ul className="space-y-1.5">{shown.map(item)}</ul>
       {rest.length > 0 && (
@@ -180,9 +227,13 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
           <ul className="mt-1.5 space-y-1.5">{rest.map(item)}</ul>
         </details>
       )}
+      {gaps}
+      {skimmed}
     </section>
   );
 }
+
+const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
 /**
  * The report in the order a reviewer uses it: which files it didn't cover,
