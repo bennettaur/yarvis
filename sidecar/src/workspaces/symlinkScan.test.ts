@@ -97,6 +97,19 @@ describe("the symlink scan", () => {
     expect(commonGitDirFor(join(ours, "nowhere"))).toBeNull();
   });
 
+  it("hands back a linked or FIFO .git as is, without following or reading it", () => {
+    const { root } = sharedClone();
+    const linked = join(root, "linked");
+    mkdirSync(linked);
+    symlinkSync(join(root, "nowhere"), join(linked, ".git"));
+    expect(commonGitDirFor(linked)).toBe(join(linked, ".git"));
+
+    const piped = join(root, "piped");
+    mkdirSync(piped);
+    expect(spawnSync("mkfifo", [join(piped, ".git")]).status).toBe(0);
+    expect(commonGitDirFor(piped)).toBe(join(piped, ".git"));
+  });
+
   it("refuses a clone with a symlink under refs/remotes, leaving other branches alone", async () => {
     const { clone, ours, gitDir, targetDir } = sharedClone();
     const before = branchTip(clone, "yarvis/b");

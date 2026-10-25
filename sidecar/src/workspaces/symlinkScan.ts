@@ -1,4 +1,13 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -37,22 +46,27 @@ const WALKED = ["refs", "logs", "worktrees"];
  */
 export function commonGitDirFor(cwd: string): string | null {
   const dotGit = join(cwd, ".git");
-  let stat: ReturnType<typeof lstatSync>;
+  // One descriptor for the type check and the read, opened without following a
+  // link or blocking on a FIFO, so `.git` can't be swapped in between.
+  let fd: number;
   try {
-    stat = lstatSync(dotGit);
-  } catch {
-    return null;
+    fd = openSync(dotGit, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (e) {
+    // A link (ELOOP) is still scanned, so the scan reports it; anything else means no repo.
+    return (e as NodeJS.ErrnoException).code === "ELOOP" ? dotGit : null;
   }
-  if (stat.isDirectory()) return dotGit;
-  if (!stat.isFile()) return dotGit;
   try {
-    const match = readFileSync(dotGit, "utf8").match(/^gitdir: (.+)$/m);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return dotGit;
+    const match = readFileSync(fd, "utf8").match(/^gitdir: (.+)$/m);
     if (!match) return null;
     const gitDir = resolve(cwd, match[1]!.trim());
     // A worktree's admin directory sits two levels under the shared one.
     return /[\\/]worktrees[\\/][^\\/]+$/.test(gitDir) ? dirname(dirname(gitDir)) : gitDir;
   } catch {
     return null;
+  } finally {
+    closeSync(fd);
   }
 }
 
