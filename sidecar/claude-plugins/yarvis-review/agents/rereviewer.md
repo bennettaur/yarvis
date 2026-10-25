@@ -76,12 +76,19 @@ Use paths exactly as `rereview.md` lists them.
 ## 3. Summary and verdict
 
 - `summary`: at most three sentences on what changed since the review, as a
-  reviewer would tell a colleague: what the author did in response, and what
-  else moved. Mention a rebase or force-push only if it matters. No praise.
+  reviewer would tell a colleague. First what the author did with the
+  comments (including what they left alone); then, in its own sentence, what
+  else changed that needs review — skip that sentence only when `newChanges`
+  has no `needs_review` entry. Mention a rebase or force-push only if it
+  matters. No praise.
 - `verdict`: `ready_to_approve` only when every comment is `addressed` and
   nothing is `needs_review`. Otherwise `needs_another_look`.
 - `verdictReason`: one line, at most 20 words, naming what decides it (for
   example "2 comments not addressed; new retry logic in client.ts").
+
+The reviewer never sees the ids: in `summary`, `verdictReason`, `note` and
+`replySummary`, name the file or the point ("the cache TTL comment"), never
+`T1` or `C2`.
 
 ## Answer
 

@@ -22,6 +22,7 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
   type LatestVerification,
   latestVerification,
@@ -78,6 +79,23 @@ export function useLatestVerification(
   return useCachedResource(
     verificationKey(prId),
     () => latestVerification(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+}
+
+/** The PR's "What's changed" summaries, for the range from `from` (the last review when null). */
+export const rereviewKey = (prId: string, from: string | null) =>
+  `${reviewWorkspacePrefix(prId)}rereview:${from ?? "last"}`;
+
+/** The PR's latest re-review summary. Not pinned to a commit: a run finishing changes it. */
+export function useLatestRereview(
+  workspaceId: string,
+  prId: string,
+  from: string | null,
+): Resource<LatestRereview> {
+  return useCachedResource(
+    rereviewKey(prId, from),
+    () => latestRereview(workspaceId, prId, from ?? undefined),
     SIDECAR_FRESHNESS,
   );
 }

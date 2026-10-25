@@ -22,6 +22,7 @@ import {
   failInterruptedMutationRuns,
   mutantCopiesInUse,
 } from "./reviewWorkspaces/mutationTesting.ts";
+import { REREVIEW_CONTEXT_DIR_PREFIX } from "./reviewWorkspaces/rereview.ts";
 import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
@@ -93,7 +94,9 @@ writeDiscovery({
   .catch((e) => console.error("[browser] could not write the discovery file:", e));
 
 try {
-  const removed = sweepVerificationContextDirs();
+  const removed =
+    sweepVerificationContextDirs() +
+    sweepVerificationContextDirs(undefined, undefined, REREVIEW_CONTEXT_DIR_PREFIX);
   if (removed > 0) console.log(`[verification] removed ${removed} leftover context folders`);
 } catch (e) {
   console.error("[verification] could not sweep leftover context folders:", e);

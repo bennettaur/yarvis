@@ -221,6 +221,8 @@ The **Since last review** tab shows:
 
 - A summary line: how many new commits, how many files, and whether the PR was
   rebased onto a newer base, force-pushed, or had its base merged in.
+- **What's changed**, an agent's summary of the re-review (see
+  [What's changed](#whats-changed)).
 - The files whose change differs from the one you reviewed: **Changed again**,
   **Newly changed** (the PR didn't touch it before), or **Reverted** (the PR no
   longer changes it), with the lines added and removed since. Clicking one opens
@@ -248,6 +250,46 @@ your starting point to the checkout's commit. Open **Δ** tabs keep comparing
 against the review they were opened from (the tab's tooltip names its commit)
 until you open the file again from the list. A commit tab whose commit a
 force-push has since dropped says it is no longer in the pull request.
+
+#### What's changed
+
+The **What's changed** button in the **Since last review** tab answers the
+questions a re-review is about: did the author deal with each of your
+comments, is there anything new you need to read, and can you approve. An
+agent (Claude Code, on your machine, reading only) reads what changed since
+your review and your comments, then reports:
+
+- **The verdict** at the top: **Ready to approve**, or **Needs another look**
+  with the reason.
+- **A summary** of two or three sentences.
+- **Your comments**, grouped. **Still open** comes first (not addressed,
+  partly addressed, or unclear), then **Answered with a reason**, with the
+  gist of the reply, and then **Addressed**, folded away. Each one shows the
+  thread with **Reply** and **Resolve** right there, and its location opens the
+  diff at that line.
+- **Other changes** since your review: **Needs your review** opens each file's
+  **Δ** tab, and **Minor** (formatting, comments, renames, small mechanical
+  fixes, test-only tweaks) is folded away. Anything touching logic, contracts,
+  data, security or behaviour counts as needing review, however small.
+
+Your comments are the review threads you started or replied in, and your
+comments on the PR itself. Yarvis asks the provider who you are to find them.
+Yarvis checks the agent's answer rather than taking it on trust:
+
+- An "addressed" or "partly" with no changed code cited shows as **Unclear**.
+- So does a "disagreed" that no one but you replied to.
+- A comment the agent skipped shows as **Unclear** too.
+- **Ready to approve** never stands beside anything outstanding.
+
+Everything the agent wrote is shown as plain text. A path is a link only when
+the PR changes that file.
+
+A summary is for one range, from your last review to the checkout's head. When
+the PR has moved on since, the last summary stays in view with a note and
+**Re-run**. By default the agent waits for the button. To have it start when the
+tab opens on changes it hasn't summarised, turn on auto-start under
+**Settings → PR review → What's changed**, where its model and spend ceiling
+are set too ($1 by default).
 
 ### New commits pushed
 

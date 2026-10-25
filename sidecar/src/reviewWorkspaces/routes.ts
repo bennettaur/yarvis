@@ -14,6 +14,12 @@ import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
 import { follow, type ReviewProgressEvent } from "./progress.ts";
 import {
+  defaultRereviewDeps,
+  latestRereview,
+  type RereviewDeps,
+  startRereview,
+} from "./rereview.ts";
+import {
   markReviewPrHere,
   reviewCommitDiff,
   reviewCommits,
@@ -112,6 +118,8 @@ export interface ReviewWorkspaceRouteOptions {
   deps?: (db: Db) => ReviewDeps;
   /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
   verification?: VerificationDeps;
+  /** Replaces the provider, settings and `claude` the re-review summary uses, for tests. */
+  rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
 }
@@ -488,6 +496,52 @@ export function createReviewWorkspaceRoutes(
           c.req.param("prId"),
           deps(),
           (id) => registry.isLive(id),
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+  // Starts the "What's changed" re-review over what changed since the last
+  // review (or `?from=<sha>`), or answers with the run already going over the
+  // same range. Followed on `/api/agent-runs/:runId/events`.
+  router.post("/:id/prs/:prId/rereview", async (c) => {
+    const from = c.req.query("from");
+    if (from !== undefined && !COMMIT_SHA_PATTERN.test(from)) {
+      return c.json({ error: "from must be a full commit sha" }, 400);
+    }
+    try {
+      const started = await startRereview(
+        db(),
+        config,
+        c.req.param("id"),
+        c.req.param("prId"),
+        deps(),
+        options.rereview ?? defaultRereviewDeps(config),
+        from,
+      );
+      return c.json(started, started.existing ? 200 : 202);
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // The PR's latest re-review and last good one, and whether each covers the
+  // range from the last review (or `?from=`) to the head now.
+  router.get("/:id/prs/:prId/rereview", async (c) => {
+    const from = c.req.query("from");
+    if (from !== undefined && !COMMIT_SHA_PATTERN.test(from)) {
+      return c.json({ error: "from must be a full commit sha" }, 400);
+    }
+    const registry = options.rereview?.run?.registry ?? agentRunRegistry;
+    try {
+      return c.json(
+        await latestRereview(
+          db(),
+          c.req.param("id"),
+          c.req.param("prId"),
+          (id) => registry.isLive(id),
+          from,
         ),
       );
     } catch (e) {

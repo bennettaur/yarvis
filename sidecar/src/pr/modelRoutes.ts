@@ -4,8 +4,11 @@ import type { Config } from "../config.ts";
 import { selectionSchema } from "../llm/complexityRoutes.ts";
 import {
   getPrModelConfig,
+  getRereviewRunConfig,
   getVerificationRunConfig,
+  rereviewRunConfigSchema,
   savePrModelConfig,
+  saveRereviewRunConfig,
   saveVerificationRunConfig,
   verificationRunConfigSchema,
 } from "./models.ts";
@@ -42,6 +45,18 @@ export function createPrModelRoutes(_config: Config): Hono {
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     return c.json(await saveVerificationRunConfig(parsed.data));
+  });
+
+  // The "What's changed" summary's model, spend ceiling and auto-start.
+  router.get("/rereview", async (c) => c.json(await getRereviewRunConfig()));
+
+  router.patch("/rereview", async (c) => {
+    const parsed = rereviewRunConfigSchema
+      .partial()
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveRereviewRunConfig(parsed.data));
   });
 
   return router;

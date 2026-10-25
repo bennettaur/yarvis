@@ -102,6 +102,56 @@ export async function saveVerificationRunConfig(
   );
 }
 
+/**
+ * The "What's changed" re-review summary also runs on Claude Code, under its
+ * own `prRereview` key: it reads far less than a verification report, so it
+ * gets its own, smaller ceiling. `autoStart` runs it when the "Since last
+ * review" tab opens on a range it hasn't summarised, instead of waiting for
+ * the button.
+ */
+export const rereviewRunConfigSchema = verificationRunConfigSchema.extend({
+  autoStart: z.boolean(),
+});
+
+export type RereviewRunConfig = z.infer<typeof rereviewRunConfigSchema>;
+
+export const DEFAULT_REREVIEW_RUN_CONFIG: RereviewRunConfig = {
+  model: "sonnet",
+  maxBudgetUsd: 1,
+  autoStart: false,
+};
+
+const REREVIEW_SETTINGS_KEY = "prRereview";
+
+function rereviewConfigFrom(stored: Record<string, unknown> | undefined): RereviewRunConfig {
+  const shape = rereviewRunConfigSchema.shape;
+  const model = shape.model.safeParse(stored?.model);
+  const budget = shape.maxBudgetUsd.safeParse(stored?.maxBudgetUsd);
+  const autoStart = shape.autoStart.safeParse(stored?.autoStart);
+  return {
+    model: model.success ? model.data : DEFAULT_REREVIEW_RUN_CONFIG.model,
+    maxBudgetUsd: budget.success ? budget.data : DEFAULT_REREVIEW_RUN_CONFIG.maxBudgetUsd,
+    autoStart: autoStart.success ? autoStart.data : DEFAULT_REREVIEW_RUN_CONFIG.autoStart,
+  };
+}
+
+export async function getRereviewRunConfig(): Promise<RereviewRunConfig> {
+  return rereviewConfigFrom(await readSection(REREVIEW_SETTINGS_KEY));
+}
+
+/** Merges the given fields onto the stored settings and writes them back. */
+export async function saveRereviewRunConfig(
+  input: Partial<RereviewRunConfig>,
+): Promise<RereviewRunConfig> {
+  return withSection<Record<string, unknown>, RereviewRunConfig>(
+    REREVIEW_SETTINGS_KEY,
+    (current) => {
+      const next = { ...rereviewConfigFrom(current), ...input };
+      return { next, result: next };
+    },
+  );
+}
+
 /** The provider/model for a feature, or the default chat model when it is unset. */
 export async function resolvePrModel(
   config: Config,

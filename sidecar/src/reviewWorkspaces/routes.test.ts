@@ -892,6 +892,249 @@ cat "${fakeDir}/result.jsonl"`,
   });
 });
 
+describe("re-review summary", () => {
+  const answer = {
+    summary: "Changed a. Nothing else.",
+    verdict: "ready_to_approve",
+    verdictReason: "All addressed.",
+    comments: [
+      {
+        threadId: "T1",
+        verdict: "addressed",
+        evidence: { path: "src/a.ts", line: 1, note: "a is 5 now." },
+      },
+    ],
+    newChanges: [],
+  };
+  let viewer: string;
+  let detailFails: boolean;
+  const detail = (): PrDetail =>
+    ({
+      title: "Feature work",
+      body: "Changes a.",
+      author: "octocat",
+      reviewThreads: [
+        {
+          id: "PRRT_mine",
+          path: "src/a.ts",
+          line: 1,
+          side: "RIGHT",
+          isResolved: false,
+          isOutdated: false,
+          canReply: true,
+          canResolve: true,
+          canUnresolve: true,
+          comments: [
+            { id: "c1", author: "me", body: "Make a 5.", createdAt: "2026-10-01T00:00:00Z" },
+          ],
+        },
+        {
+          id: "PRRT_theirs",
+          path: "src/a.ts",
+          line: 2,
+          side: "RIGHT",
+          isResolved: false,
+          isOutdated: false,
+          canReply: true,
+          canResolve: true,
+          canUnresolve: true,
+          comments: [
+            { id: "c2", author: "bob", body: "Rename b.", createdAt: "2026-10-01T00:00:00Z" },
+          ],
+        },
+      ],
+      conversation: [],
+    }) as unknown as PrDetail;
+
+  let fakeDir: string;
+  let registry: RunRegistry<AgentRunEvent>;
+  let rereviewApp: Hono;
+
+  function setUpFake() {
+    fakeDir = mkdtempSync(join(tmpdir(), "yarvis-rereview-fake-"));
+    writeFileSync(
+      join(fakeDir, "result.jsonl"),
+      `${JSON.stringify(resultLine({ structured_output: answer }))}\n`,
+    );
+    const program = fakeClaude(
+      fakeDir,
+      "claude",
+      `cat > "${fakeDir}/stdin.txt"
+printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+cat "${fakeDir}/result.jsonl"`,
+    );
+    registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+    rereviewApp = new Hono().route(
+      "/rw",
+      createReviewWorkspaceRoutes(config, {
+        deps,
+        rereview: {
+          loadDetail: async () => {
+            if (detailFails) throw new Error("provider is down");
+            return detail();
+          },
+          viewerLogin: async () => viewer,
+          settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5, autoStart: false }),
+          run: { program, registry, instance: "test" },
+        },
+      }),
+    );
+  }
+
+  const release = () => writeFileSync(join(fakeDir, "release"), "");
+
+  async function rereview(method: string, wsId: string, prId: string, from?: string) {
+    return rereviewApp.request(`/rw/${wsId}/prs/${prId}/rereview${from ? `?from=${from}` : ""}`, {
+      method,
+    });
+  }
+
+  type Latest = {
+    run: {
+      id: string;
+      status: string;
+      targetKey: string;
+      fromHeadSha: string;
+      toHeadSha: string;
+      result: { verdict: string; comments: { threadId: string; providerId: string }[] } | null;
+    } | null;
+    fromHeadSha: string | null;
+    headSha: string;
+    current: boolean;
+    lastSucceeded: { run: { id: string }; current: boolean } | null;
+  };
+  async function latest(wsId: string, prId: string, from?: string): Promise<Latest> {
+    return (await (await rereview("GET", wsId, prId, from)).json()) as Latest;
+  }
+
+  /** A PR reviewed at its first head and pushed to since. */
+  async function reviewedThenPushed() {
+    const ready = await readyWorkspace();
+    const reviewed = (await prRow(ready.prId)).headSha as string;
+    expect((await call("POST", `/${ready.wsId}/prs/${ready.prId}/review-mark`)).status).toBe(201);
+    remote.pushToPr("src/a.ts", "export const a = 5;\n");
+    await call("POST", `/${ready.wsId}/prs/${ready.prId}/refresh`);
+    await progress(ready.wsId, ready.prId);
+    const head = (await prRow(ready.prId)).headSha as string;
+    return { ...ready, reviewed, head };
+  }
+
+  beforeEach(async () => {
+    await sql`TRUNCATE agent_runs, pr_review_marks`;
+    viewer = "me";
+    detailFails = false;
+    setUpFake();
+  });
+
+  afterEach(() => {
+    release();
+    rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  it("starts one run per range, judging only the viewer's comments", async () => {
+    const { wsId, prId, reviewed, head } = await reviewedThenPushed();
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: null,
+      fromHeadSha: reviewed,
+      headSha: head,
+      current: false,
+    });
+
+    const responses = await Promise.all([
+      rereview("POST", wsId, prId),
+      rereview("POST", wsId, prId),
+    ]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
+    const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
+      runId: string;
+      existing: boolean;
+      fromHeadSha: string;
+      toHeadSha: string;
+    }[];
+    expect(bodies[0]?.runId).toBe(bodies[1]?.runId as string);
+    expect(bodies[0]).toMatchObject({ fromHeadSha: reviewed, toHeadSha: head });
+    expect(await db.select().from(agentRuns)).toHaveLength(1);
+
+    // The run is the rereviewer agent, reading the prepared context.
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:rereviewer");
+    expect(
+      args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
+    ).toEqual(["Read", "Grep", "Glob"]);
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    const context = readFileSync(join(contextDir, "rereview.md"), "utf8");
+    expect(context).toContain("Make a 5.");
+    expect(context).not.toContain("Rename b.");
+    expect(readFileSync(join(contextDir, "interdiff.diff"), "utf8")).toContain(
+      "diff --git a/src/a.ts b/src/a.ts",
+    );
+    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
+    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("COMMENT_IDS=T1\n");
+
+    const running = await latest(wsId, prId);
+    expect(running).toMatchObject({ run: { status: "running" }, current: true });
+    expect(running.run?.targetKey).toBe(`gh:o/r/1@${reviewed}..${head}`);
+
+    release();
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
+    const done = await latest(wsId, prId);
+    expect(done.run?.result?.verdict).toBe("ready_to_approve");
+    expect(done.run?.result?.comments).toMatchObject([{ threadId: "T1", providerId: "PRRT_mine" }]);
+    expect(done.lastSucceeded).toMatchObject({ run: { id: done.run?.id }, current: true });
+    await until(async () => !existsSync(contextDir), "the context folder to go");
+
+    // From another review head, the same run doesn't cover the range.
+    expect(await latest(wsId, prId, head)).toMatchObject({ current: false });
+  });
+
+  it("keeps the last good summary in view when a re-run fails", async () => {
+    const { wsId, prId, reviewed, head } = await reviewedThenPushed();
+    const insert = async (status: string, minutesAgo: number, from: string) => {
+      const [row] = await db
+        .insert(agentRuns)
+        .values({
+          kind: "pr-rereview",
+          targetKey: `gh:o/r/1@${from}..${head}`,
+          status,
+          instance: "test",
+          meta: { refKey: "gh:o/r/1", fromHeadSha: from, toHeadSha: head },
+          startedAt: new Date(Date.now() - minutesAgo * 60_000),
+        })
+        .returning({ id: agentRuns.id });
+      return row?.id as string;
+    };
+    const good = await insert("succeeded", 30, reviewed);
+    const failed = await insert("failed", 5, reviewed);
+    // A verification run for the same PR is another kind.
+    await db.insert(agentRuns).values({
+      kind: "verification-report",
+      targetKey: `gh:o/r/1@${head}`,
+      status: "succeeded",
+      instance: "test",
+      meta: { refKey: "gh:o/r/1", headSha: head },
+    });
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: failed, status: "failed", fromHeadSha: reviewed, toHeadSha: head },
+      current: true,
+      lastSucceeded: { run: { id: good }, current: true },
+    });
+  });
+
+  it("refuses what it can't judge, starting nothing", async () => {
+    const { wsId, prId, head } = await reviewedThenPushed();
+    // Nothing changed since a review at the head.
+    expect((await rereview("POST", wsId, prId, head)).status).toBe(409);
+    expect((await rereview("POST", wsId, prId, "not-a-sha")).status).toBe(400);
+    detailFails = true;
+    const res = await rereview("POST", wsId, prId);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("provider is down");
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+});
+
 describe("patches for an agent run", () => {
   it("leaves out binary, oversized and over-budget files, in path order", async () => {
     const { prId } = await readyWorkspace();

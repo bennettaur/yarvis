@@ -26,6 +26,7 @@ import {
 } from "../pr/reviewMarks.ts";
 import type { PrRef } from "../pr/types.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
+import { git } from "../workspaces/git.ts";
 import { stringsSize } from "./cache.ts";
 import { type FileAtSide, fileDiffBetween, type ReviewChangedFile } from "./git.ts";
 import {
@@ -512,4 +513,92 @@ export async function reviewCommitDiff(
     ),
   ]);
   return { ...base, original, modified, patch, tooLarge: false };
+}
+
+export interface SincePatch {
+  file: SinceFile;
+  /** The file's interdiff; null when it is left out, for the reason in `omitted`. */
+  patch: string | null;
+  omitted: "binary" | "too-large" | "over-budget" | null;
+}
+
+/** Commit messages read for an agent; past this, the rest are listed by subject only. */
+const MAX_COMMIT_MESSAGES = 50;
+
+/**
+ * Each listed file's interdiff, and the full message of each new and removed
+ * commit, for an agent reading what changed since a review. Takes the answer
+ * {@link reviewSinceReview} gave, so both describe the same four commits; 409
+ * when the checkout has moved since. A patch over `maxFileBytes`, or one that
+ * would take the total past `maxTotalBytes`, is listed but not included.
+ */
+export async function reviewSincePatches(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+  since: Pick<
+    SinceReview,
+    "fromHeadSha" | "fromMergeBase" | "toHeadSha" | "toMergeBase" | "commits" | "removedCommits"
+  >,
+  limits: { maxFileBytes: number; maxTotalBytes: number },
+): Promise<{ patches: SincePatch[]; messages: Map<string, string> }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  if (ready.headSha !== since.toHeadSha) {
+    throw new ReviewWorkspaceError("the checkout moved while reading what changed", 409);
+  }
+  const range: SinceRange = {
+    fromHead: since.fromHeadSha,
+    fromMergeBase: since.fromMergeBase,
+    toHead: since.toHeadSha,
+    toMergeBase: since.toMergeBase,
+  };
+  const patches: SincePatch[] = [];
+  let total = 0;
+  for (const entry of await sinceEntries(ready, range)) {
+    const tooLarge = !entry.binary && overCap(entry.sizes);
+    const file: SinceFile = {
+      path: entry.path,
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+      status: entry.status,
+      additions: 0,
+      deletions: 0,
+      binary: entry.binary,
+      tooLarge,
+    };
+    if (entry.binary || tooLarge) {
+      patches.push({ file, patch: null, omitted: entry.binary ? "binary" : "too-large" });
+      continue;
+    }
+    const view = await sinceView(ready, range, entry);
+    const sized = { ...file, additions: view.additions, deletions: view.deletions };
+    const bytes = view.patch.length;
+    if (bytes > limits.maxFileBytes) {
+      patches.push({ file: sized, patch: null, omitted: "too-large" });
+    } else if (total + bytes > limits.maxTotalBytes) {
+      patches.push({ file: sized, patch: null, omitted: "over-budget" });
+    } else {
+      total += bytes;
+      patches.push({ file: sized, patch: view.patch, omitted: null });
+    }
+  }
+
+  const shas = [...since.commits.filter((c) => c.isNew), ...since.removedCommits]
+    .map((c) => c.sha)
+    .filter((sha) => COMMIT_SHA_PATTERN.test(sha))
+    .slice(0, MAX_COMMIT_MESSAGES);
+  const messages = new Map<string, string>();
+  if (shas.length > 0) {
+    const out = await git(
+      ready.runners.local,
+      ["log", "--no-walk=unsorted", "--format=%H%x1f%B%x1e", ...shas, "--"],
+      ready.clonePath,
+    );
+    for (const record of out.split("\x1e")) {
+      const [sha, body] = record.replace(/^\n/, "").split("\x1f");
+      if (sha && body !== undefined) messages.set(sha, body.trim());
+    }
+  }
+  return { patches, messages };
 }

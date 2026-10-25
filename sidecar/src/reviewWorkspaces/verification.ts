@@ -57,7 +57,7 @@ const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
 
 /** Cuts text to `max` characters, ending in an ellipsis when it had to cut. */
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
   const trimmed = text.trim();
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
@@ -86,7 +86,7 @@ export function clipWords(text: string, max: number): string {
  */
 
 /** A string cut to `max` characters. */
-function boundedText(max: number) {
+export function boundedText(max: number) {
   return z
     .string()
     .transform((s) => clip(s, max))
@@ -94,7 +94,7 @@ function boundedText(max: number) {
 }
 
 /** An array cut to `max` items. */
-function boundedList<T extends z.ZodType>(item: T, max: number) {
+export function boundedList<T extends z.ZodType>(item: T, max: number) {
   return z
     .array(item)
     .transform((items) => items.slice(0, max))
@@ -106,12 +106,12 @@ function positiveInt(n: unknown): number | undefined {
 }
 
 /** Optional in the answer; models write null for "none" as often as they leave a key out. */
-const optionalPath = z
+export const optionalPath = z
   .string()
   .nullish()
   .transform((p) => (p?.trim() ? clip(p, 500) : undefined));
 
-const optionalLine = z.number().nullish().transform(positiveInt);
+export const optionalLine = z.number().nullish().transform(positiveInt);
 
 /** Titles and details: the agents are asked for at most 12 and 40 words. */
 const TITLE_CHARS = 100;
@@ -163,7 +163,7 @@ const riskSchema = z.object({
 });
 
 /** A range with either end missing or invalid reads as the other end; with neither, no range. */
-const lineRangeSchema = z
+export const lineRangeSchema = z
   .object({ start: z.number().nullish(), end: z.number().nullish() })
   .nullish()
   .transform((r) => {
@@ -697,10 +697,11 @@ const RUN_TIMEOUT_MS = 20 * 60 * 1000;
 export function sweepVerificationContextDirs(
   root: string = tmpdir(),
   now: number = Date.now(),
+  prefix: string = CONTEXT_DIR_PREFIX,
 ): number {
   let removed = 0;
   for (const name of readdirSync(root)) {
-    if (!name.startsWith(CONTEXT_DIR_PREFIX)) continue;
+    if (!name.startsWith(prefix)) continue;
     const path = join(root, name);
     try {
       if (now - statSync(path).mtimeMs <= RUN_TIMEOUT_MS + 5 * 60 * 1000) continue;
@@ -784,7 +785,7 @@ export interface StartedVerification {
   existing: boolean;
 }
 
-function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
+export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
   if (pr.status !== "ready" || pr.worktreeStatus !== "ready" || !pr.headSha) {
     const state = pr.status !== "ready" ? pr.status : pr.worktreeStatus;
     throw new ReviewWorkspaceError(`the checkout is ${state}, not ready`, 409);
