@@ -21,9 +21,12 @@ export default function TopBar({
   const [health, setHealth] = useState<Health>("checking");
   // Counts origins, not items, so the badge matches the grouped rows in the panel.
   const count = useAttentionGroups().length;
-  // Keyed on the newest item so a fresh arrival restarts the sweep right away
-  // instead of waiting for the next cycle.
-  const newestSeq = useAttentionItems()[0]?.seq;
+  // The sweep and ring are keyed on the highest seq seen, so a fresh arrival
+  // restarts them right away. Clearing the newest item doesn't, because the key
+  // never goes back down.
+  const newestSeq = useAttentionItems()[0]?.seq ?? 0;
+  const [restartKey, setRestartKey] = useState(newestSeq);
+  if (newestSeq > restartKey) setRestartKey(newestSeq);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +60,7 @@ export default function TopBar({
     <header className="relative isolate flex h-12 shrink-0 items-center justify-between overflow-hidden border-b border-zinc-800 px-5">
       {count > 0 && (
         <span
-          key={newestSeq}
+          key={restartKey}
           aria-hidden="true"
           data-testid="attention-sweep"
           className="yarvis-attention-sweep pointer-events-none absolute inset-0 -z-10"
@@ -73,7 +76,7 @@ export default function TopBar({
           className="relative flex h-7 w-7 items-center justify-center text-zinc-400 transition-colors hover:text-zinc-100"
         >
           <Icon
-            key={newestSeq}
+            key={restartKey}
             name="bell"
             className={`h-4.5 w-4.5 ${count > 0 ? "yarvis-bell-ring" : ""}`}
           />

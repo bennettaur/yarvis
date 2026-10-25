@@ -182,9 +182,15 @@
 /*
  * The top bar's call for attention while the bell has something pending (see
  * `components/shell/TopBar.tsx`). An amber band sweeps across the bar towards the
- * bell, then the bell rings. Both share one cycle, so most of each 8s period is
- * still and the bar doesn't become noise. `TopBar` remounts both elements when a
- * new item arrives, which restarts the cycle so a fresh item is announced at once.
+ * bell, and the bell rings as the band reaches it. Most of each 8s cycle is
+ * still, so the bar doesn't become noise. The three keyframes below share that
+ * cycle, so their durations and percentages change together. `TopBar` remounts
+ * both elements when a new item arrives, which restarts the cycle so a fresh
+ * item is announced at once.
+ *
+ * The gradient is three times the bar's width and clear at both ends, so moving
+ * `background-position` from 100% to 0% carries the band left to right and it
+ * starts and ends off screen.
  *
  * With reduced motion the band fades in and out in place and the bell stays
  * still.
@@ -192,16 +198,10 @@
 @keyframes yarvis-attention-sweep {
   0% {
     background-position: 100% 0;
-    opacity: 1;
   }
-  20% {
-    background-position: 0% 0;
-    opacity: 1;
-  }
-  20.01%,
+  20%,
   100% {
     background-position: 0% 0;
-    opacity: 0;
   }
 }
 
@@ -241,9 +241,9 @@
   background-image: linear-gradient(
     100deg,
     transparent 35%,
-    rgb(251 191 36 / 0.16) 48%,
-    rgb(251 191 36 / 0.28) 50%,
-    rgb(251 191 36 / 0.16) 52%,
+    color-mix(in oklab, var(--color-amber-400) 16%, transparent) 48%,
+    color-mix(in oklab, var(--color-amber-400) 28%, transparent) 50%,
+    color-mix(in oklab, var(--color-amber-400) 16%, transparent) 52%,
     transparent 65%
   );
   background-size: 300% 100%;
@@ -258,7 +258,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .yarvis-attention-sweep {
-    background-image: linear-gradient(90deg, transparent, rgb(251 191 36 / 0.14));
+    background-image: linear-gradient(90deg, transparent, color-mix(in oklab, var(--color-amber-400) 14%, transparent));
     background-size: 100% 100%;
     animation-name: yarvis-attention-glow;
   }

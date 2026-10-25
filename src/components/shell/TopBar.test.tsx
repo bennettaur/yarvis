@@ -1,9 +1,11 @@
-import { afterAll, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import * as realApi from "../../lib/api";
 import type { AttentionItem } from "../../lib/attention";
-import { renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml } from "../../test/render";
 
 let pending: AttentionItem[] = [];
+// Sends a frame down the open attention stream, as the sidecar would.
+let pushFrame: (data: string) => void = () => {};
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
@@ -19,8 +21,26 @@ mock.module("../../lib/api", () => ({
   }),
   sidecarFetch: async (path: string) =>
     path.startsWith("/api/attention") ? json(pending) : json([]),
-  // The attention store subscribes to an SSE stream; an empty one keeps it quiet.
-  streamSSE: async function* () {},
+  // Stays open until the store aborts it, so a test can stream items in.
+  streamSSE: async function* (_path: string, init: RequestInit = {}) {
+    const queue: string[] = [];
+    let wake = () => {};
+    pushFrame = (data) => {
+      queue.push(data);
+      wake();
+    };
+    init.signal?.addEventListener("abort", () => wake());
+    while (!init.signal?.aborted) {
+      const next = queue.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    }
+  },
 }));
 
 afterAll(() => {
@@ -28,6 +48,14 @@ afterAll(() => {
 });
 
 const TopBar = (await import("./TopBar")).default;
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+let unmount: (() => void) | null = null;
+afterEach(() => {
+  unmount?.();
+  unmount = null;
+});
 
 const item = (id: string, seq: number): AttentionItem => ({
   id,
@@ -51,6 +79,36 @@ describe("TopBar attention animation", () => {
 
     expect(html).toContain('data-testid="attention-sweep"');
     expect(html).toContain("yarvis-bell-ring");
+  });
+
+  it("restarts the sweep and the bell when a newer item arrives, and only then", async () => {
+    pending = [item("a", 2)];
+    const mounted = await mountForInteraction(<TopBar title="Chat" onOpenAttention={() => {}} />);
+    unmount = mounted.unmount;
+    const sweep = () => mounted.host.querySelector('[data-testid="attention-sweep"]');
+    const bell = () => mounted.host.querySelector("svg");
+    const firstSweep = sweep();
+    const firstBell = bell();
+    expect(firstSweep).not.toBeNull();
+
+    // An update to an item already on screen keeps the cycle running as it was.
+    pushFrame(JSON.stringify({ type: "item", item: { ...item("a", 2), title: "Edited" } }));
+    await settle();
+    expect(sweep()).toBe(firstSweep);
+    expect(bell()).toBe(firstBell);
+
+    pushFrame(JSON.stringify({ type: "item", item: item("c", 5) }));
+    await settle();
+    expect(sweep()).not.toBeNull();
+    expect(sweep()).not.toBe(firstSweep);
+    expect(bell()).not.toBe(firstBell);
+
+    // Clearing the newest item leaves an older one as the newest; that is no
+    // reason to announce again.
+    const afterArrival = sweep();
+    pushFrame(JSON.stringify({ type: "item", item: { ...item("c", 5), status: "dismissed" } }));
+    await settle();
+    expect(sweep()).toBe(afterArrival);
   });
 
   // Runs last so the shared store is left empty for any later test file.
