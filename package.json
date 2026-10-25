@@ -26,6 +26,7 @@
     "verify:collect": "bun run scripts/verify/collect.ts",
     "verify:report": "bun run scripts/verify/report.ts",
     "verify:calibrate": "bun run scripts/verify/calibrate.ts",
+    "verify:signers": "bun run scripts/verify/signers.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint .",
     "format": "biome format .",

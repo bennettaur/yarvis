@@ -249,8 +249,11 @@ bun run verify:report --pr <N> --review "$TMPDIR/verify/<N>/review.json" --facts
 
 The schema rejects notes and findings that run long; shorten them rather than
 splitting one across two fields. When it reads well, run the same command
-without `--dry-run` to post it. That replaces the previous report and refuses
-if the PR's head moved since `collect` ran.
+without `--dry-run` to post it. That signs the report with the user's git SSH
+signing key, so 1Password may ask them to approve. It then replaces the
+previous report, and refuses if the PR's head moved since `collect` ran. The
+gate ignores a report without a valid signature, so never post one another
+way.
 
 ## 9. Tell the user
 

@@ -14,15 +14,17 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
+import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
 import { stricterTier, type Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
 /**
- * The data block, which `renderReport` always writes last. Anchored to the end
- * so a block smuggled into the text above it is never the one read.
+ * The data block and its signature, which always end a posted report.
+ * Anchored to the end so a block smuggled into the text above is never read.
  */
-const DATA_PATTERN = /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*$/;
+const SIGNED_DATA_PATTERN =
+  /<!-- yarvis-verify-data ([A-Za-z0-9+/=]+) -->\s*<!-- yarvis-verify-sig ([A-Za-z0-9+/=]+) -->\s*$/;
 
 /** Changed-line coverage at or above this passes; below the floor fails. */
 const COVERAGE_PASS = 0.8;
@@ -109,10 +111,18 @@ export const Review = z.object({
 });
 export type Review = z.infer<typeof Review>;
 
-/** What the gate reads back out of a posted report. */
+/**
+ * What the gate reads back out of a posted report. The repo, PR and commit
+ * are inside what's signed, so a signed report can't be moved to another PR
+ * or kept past a push.
+ */
 const ReportData = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
+  repo: z.string(),
+  pr: z.number().int().positive(),
   headSha: z.string(),
+  /** When it was signed, ISO 8601, so a re-posted old report can be refused. */
+  issuedAt: z.string().datetime(),
   verdict: Verdict,
   /** The stricter of the changed paths' tier and the assessed one. */
   riskTier: z.enum(["low", "standard", "high"]),
@@ -267,7 +277,23 @@ function bulletList(items: string[], limit = 15): string {
   return shown.join("\n");
 }
 
-export function renderReport(review: Review, facts: Facts): { body: string; data: ReportData } {
+/** Where a report will be posted, which its signed data names. */
+export interface ReportTarget {
+  /** `owner/name`. */
+  repo: string;
+  pr: number;
+}
+
+/**
+ * The report's markdown, ending in its data block, and that block's base64
+ * text: the exact string `signing.ts`'s `signPayload` signs.
+ */
+export function renderReport(
+  review: Review,
+  facts: Facts,
+  target: ReportTarget,
+  now: Date = new Date(),
+): { body: string; data: ReportData; payload: string } {
   const { verdict, why } = finalVerdict(review, facts);
   const coverage = coverageStatus(facts.coverage);
   const headlineFindings = review.findings.filter((f) => f.severity !== "minor");
@@ -376,8 +402,11 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
   }
 
   const data: ReportData = {
-    version: 1,
+    version: 2,
+    repo: target.repo,
+    pr: target.pr,
     headSha: facts.head,
+    issuedAt: now.toISOString(),
     verdict,
     riskTier: tier,
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
@@ -392,25 +421,43 @@ export function renderReport(review: Review, facts: Facts): { body: string; data
     model: review.model,
   };
 
+  // Base64 so nothing in the data can close the HTML comment early.
+  const payload = Buffer.from(JSON.stringify(data)).toString("base64");
   const suites = facts.suites.join(", ") || "none";
   lines.push(
     "",
     `<sub>${inline(review.model)} · ${inline(review.reviewers.join(", "))} · suites: ${suites}</sub>`,
-    // Base64 so nothing in the data can close the HTML comment early.
-    `<!-- yarvis-verify-data ${Buffer.from(JSON.stringify(data)).toString("base64")} -->`,
+    `<!-- yarvis-verify-data ${payload} -->`,
   );
-  return { body: lines.join("\n"), data };
+  return { body: lines.join("\n"), data, payload };
 }
 
-/** Reads the data block back out of a report comment, or `null` if it has none. */
-export function parseReportData(body: string): ReportData | null {
-  const match = body.match(DATA_PATTERN);
+/** Appends the signature block that the gate requires after the data block. */
+export function withSignature(body: string, signature: string): string {
+  return `${body}\n<!-- yarvis-verify-sig ${signature} -->`;
+}
+
+export interface SignedReport {
+  data: ReportData;
+  /** The data block's base64 text, which is what was signed. */
+  payload: string;
+  /** The armored SSH signature, base64-encoded. */
+  signature: string;
+}
+
+/**
+ * Reads the data block and its signature from a report comment, or `null` if
+ * either is missing or the data is malformed. It doesn't check the signature;
+ * `signing.ts`'s `verifiedSigner` does.
+ */
+export function parseSignedReport(body: string): SignedReport | null {
+  const match = body.match(SIGNED_DATA_PATTERN);
   if (!match) return null;
   try {
     const parsed = ReportData.safeParse(
       JSON.parse(Buffer.from(match[1], "base64").toString("utf8")),
     );
-    return parsed.success ? parsed.data : null;
+    return parsed.success ? { data: parsed.data, payload: match[1], signature: match[2] } : null;
   } catch {
     return null;
   }
@@ -434,9 +481,18 @@ if (import.meta.main) {
   if (!values.pr || !values.review || !values.facts) {
     throw new Error("--pr, --review and --facts are required");
   }
+  if (!/^[1-9]\d*$/.test(values.pr)) throw new Error("--pr must be a PR number");
   const review = Review.parse(JSON.parse(readFileSync(values.review, "utf8")));
   const facts = JSON.parse(readFileSync(values.facts, "utf8")) as Facts;
-  const { body, data } = renderReport(review, facts);
+  const repo = run("gh", [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner",
+    "--jq",
+    ".nameWithOwner",
+  ]).stdout.trim();
+  const { body, data, payload } = renderReport(review, facts, { repo, pr: Number(values.pr) });
 
   const outDir = realpathSync(dirname(values.facts));
   for (const shot of review.screenshots) {
@@ -446,8 +502,8 @@ if (import.meta.main) {
     }
   }
   const bodyFile = join(outDir, "report.md");
-  writeFileSync(bodyFile, body);
   if (values["dry-run"]) {
+    writeFileSync(bodyFile, body);
     console.log(body);
     process.exit(0);
   }
@@ -458,6 +514,10 @@ if (import.meta.main) {
       `the PR head is ${pr.head.sha.slice(0, 7)} but the facts describe ${facts.head.slice(0, 7)}; re-run collect`,
     );
   }
+
+  // Signed last, after every check that could refuse the post, so a
+  // 1Password prompt only appears for a report that will be posted.
+  writeFileSync(bodyFile, withSignature(body, signPayload(payload, REPORT_NAMESPACE)));
 
   const me = ghApi<{ id: number }>("user").id;
   const previous = ghApiPages<Comment>(
