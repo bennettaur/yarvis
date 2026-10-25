@@ -114,9 +114,7 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
   if (suites.length > 0) measured.push(".ts", ".tsx");
 
   // Only asked when Rust changed: a machine with no cargo at all throws here.
-  const hasLlvmCov = () =>
-    run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0;
-  if (touchesRust && hasLlvmCov()) {
+  if (touchesRust && run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0) {
     const lcov = join(out, "coverage-rust.info");
     run("cargo", ["llvm-cov", "--all-targets", "--lcov", "--output-path", lcov], {
       cwd: join(root, "src-tauri"),

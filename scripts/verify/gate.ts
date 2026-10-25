@@ -499,7 +499,7 @@ export function addedTextOf(patch: string | undefined): string | null {
     .join("\n");
 }
 
-/** Both sides of a rename, so moving a file out of a high-risk path still counts. */
+/** The PR's files, with a rename's old path so moving a file out of a high-risk path still counts. */
 function changedFiles(gh: GitHub, prNumber: number): ChangedFile[] {
   return gh
     .pages<{
