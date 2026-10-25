@@ -84,7 +84,7 @@ export function parseNumstat(numstat: string): ChangedFile[] {
     });
 }
 
-function collectCoverage(root: string, out: string, paths: string[]) {
+export function collectCoverage(root: string, out: string, paths: string[]) {
   const hits: LineHits[] = [];
   const suites: string[] = [];
   const measured: string[] = [];
@@ -109,12 +109,14 @@ function collectCoverage(root: string, out: string, paths: string[]) {
 
   if (touchesRoot) bunCoverage("", "frontend", ["./src", "./scripts", "./demo"]);
   if (touchesSidecar) bunCoverage("sidecar", "sidecar", []);
-  // Only once a suite actually wrote coverage: a run that crashed would
+  // Only once a suite actually wrote coverage: a run that found no tests would
   // otherwise report every changed file as one no test loads.
   if (suites.length > 0) measured.push(".ts", ".tsx");
 
-  const hasLlvmCov = run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0;
-  if (touchesRust && hasLlvmCov) {
+  // Only asked when Rust changed: a machine with no cargo at all throws here.
+  const hasLlvmCov = () =>
+    run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0;
+  if (touchesRust && hasLlvmCov()) {
     const lcov = join(out, "coverage-rust.info");
     run("cargo", ["llvm-cov", "--all-targets", "--lcov", "--output-path", lcov], {
       cwd: join(root, "src-tauri"),
