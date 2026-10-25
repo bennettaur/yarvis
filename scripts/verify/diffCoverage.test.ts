@@ -81,7 +81,7 @@ describe("diffCoverage", () => {
   const hits = parseLcov("SF:src/a.ts\nDA:4,1\nDA:5,0\nDA:23,1\n", "", "/r");
 
   it("counts only executable added lines in source files", () => {
-    const result = diffCoverage(added, hits, [".ts", ".tsx"]);
+    const result = diffCoverage(added, hits, (path) => !path.endsWith(".rs"));
     // Line 6 isn't in lcov, so it's not executable and not counted.
     expect(result.changedLines).toBe(3);
     expect(result.coveredLines).toBe(2);
@@ -89,15 +89,19 @@ describe("diffCoverage", () => {
   });
 
   it("reports a file no test imported separately from one with gaps", () => {
-    expect(diffCoverage(added, hits, [".ts", ".tsx"]).notLoaded).toEqual(["src/untested.ts"]);
+    expect(diffCoverage(added, hits, (path) => !path.endsWith(".rs")).notLoaded).toEqual([
+      "src/untested.ts",
+    ]);
   });
 
   it("calls a language with no coverage run unmeasured rather than untested", () => {
-    expect(diffCoverage(added, hits, [".ts", ".tsx"]).unmeasured).toEqual(["src-tauri/src/x.rs"]);
+    expect(diffCoverage(added, hits, (path) => !path.endsWith(".rs")).unmeasured).toEqual([
+      "src-tauri/src/x.rs",
+    ]);
   });
 
   it("has no ratio when nothing executable changed", () => {
-    expect(diffCoverage(new Map(), hits, [".ts"]).ratio).toBeNull();
+    expect(diffCoverage(new Map(), hits, () => true).ratio).toBeNull();
   });
 });
 

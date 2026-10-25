@@ -114,7 +114,7 @@ it("is one", () => expect(a(1)).toBe(1));
     const out = join(root, "out");
     const result = collectCoverage(root, out, ["src/a.ts"]);
     expect(result.suites).toEqual(["frontend"]);
-    expect(result.measured).toEqual([".ts", ".tsx"]);
+    expect(result.measured("src/a.ts")).toBe(true);
     const lines = result.hits.get("src/a.ts");
     expect(lines?.get(2)).toBeGreaterThan(0);
     expect(lines?.get(3)).toBe(0);
@@ -134,6 +134,32 @@ it("is one", () => expect(a(1)).toBe(1));
     // bun writes no lcov when it finds no test files to run.
     const root = repo({ "src/a.ts": source["src/a.ts"] });
     const result = collectCoverage(root, join(root, "out"), ["src/a.ts"]);
-    expect(result).toEqual({ hits: new Map(), measured: [], suites: [] });
+    expect(result.suites).toEqual([]);
+    expect(result.measured("src/a.ts")).toBe(false);
+  });
+
+  it("measures nothing for a suite whose preload crashed, though bun wrote lcov", () => {
+    const root = repo({
+      ...source,
+      "bunfig.toml": '[test]\npreload = ["./crash.ts"]\n',
+      "crash.ts": 'throw new Error("preload failed");\n',
+    });
+    const result = collectCoverage(root, join(root, "out"), ["src/a.ts"]);
+    expect(result.suites).toEqual([]);
+    expect(result.measured("src/a.ts")).toBe(false);
+  });
+
+  it("still measures one suite when the other crashed", () => {
+    const root = repo({
+      ...source,
+      "sidecar/src/b.ts": source["src/a.ts"],
+      "sidecar/src/b.test.ts": source["src/a.test.ts"].replace("./a.ts", "./b.ts"),
+      "sidecar/bunfig.toml": '[test]\npreload = ["./crash.ts"]\n',
+      "sidecar/crash.ts": 'throw new Error("preload failed");\n',
+    });
+    const result = collectCoverage(root, join(root, "out"), ["src/a.ts", "sidecar/src/b.ts"]);
+    expect(result.suites).toEqual(["frontend"]);
+    expect(result.measured("src/a.ts")).toBe(true);
+    expect(result.measured("sidecar/src/b.ts")).toBe(false);
   });
 });

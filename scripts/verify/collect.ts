@@ -20,7 +20,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { type BaselineResult, runBaseline } from "./baseline.ts";
+import { type BaselineResult, parseJunit, runBaseline } from "./baseline.ts";
 import {
   type DiffCoverage,
   diffCoverage,
@@ -84,10 +84,16 @@ export function parseNumstat(numstat: string): ChangedFile[] {
     });
 }
 
+/** The suite directory a changed file's tests run in: the sidecar's own, or the root's. */
+function bunSuiteOf(path: string): string {
+  return path.startsWith("sidecar/") ? "sidecar" : "";
+}
+
 export function collectCoverage(root: string, out: string, paths: string[]) {
   const hits: LineHits[] = [];
   const suites: string[] = [];
-  const measured: string[] = [];
+  const ranSuites = new Set<string>();
+  let rustRan = false;
 
   const touchesRoot = paths.some((p) => /^(src|scripts|demo)\//.test(p));
   const touchesSidecar = paths.some((p) => p.startsWith("sidecar/"));
@@ -95,23 +101,34 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
 
   const bunCoverage = (suite: string, name: string, args: string[]) => {
     const dir = join(out, `coverage-${name}`);
+    const junit = join(dir, "junit.xml");
     // Failing tests are CI's to report; coverage of the passing ones is still useful.
     run(
       "bun",
-      ["test", ...args, "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${dir}`],
+      [
+        "test",
+        ...args,
+        "--coverage",
+        "--coverage-reporter=lcov",
+        `--coverage-dir=${dir}`,
+        "--reporter=junit",
+        `--reporter-outfile=${junit}`,
+      ],
       { cwd: suite ? join(root, suite) : root, allowFailure: true },
     );
     const lcov = join(dir, "lcov.info");
-    if (!existsSync(lcov)) return;
+    // A suite that ran no tests says nothing about coverage, and bun still
+    // writes lcov when a preload crashes. Without this check, every changed
+    // file in the suite would be reported as one no test loads.
+    const ranTests = existsSync(junit) && parseJunit(readFileSync(junit, "utf8"), suite).length > 0;
+    if (!existsSync(lcov) || !ranTests) return;
     hits.push(parseLcov(readFileSync(lcov, "utf8"), suite, root));
     suites.push(name);
+    ranSuites.add(suite);
   };
 
   if (touchesRoot) bunCoverage("", "frontend", ["./src", "./scripts", "./demo"]);
   if (touchesSidecar) bunCoverage("sidecar", "sidecar", []);
-  // Only once a suite actually wrote coverage: a run that found no tests would
-  // otherwise report every changed file as one no test loads.
-  if (suites.length > 0) measured.push(".ts", ".tsx");
 
   // Only asked when Rust changed: a machine with no cargo at all throws here.
   if (touchesRust && run("cargo", ["llvm-cov", "--version"], { allowFailure: true }).status === 0) {
@@ -122,11 +139,13 @@ export function collectCoverage(root: string, out: string, paths: string[]) {
     });
     if (existsSync(lcov)) {
       hits.push(parseLcov(readFileSync(lcov, "utf8"), "", root));
-      measured.push(".rs");
+      rustRan = true;
       suites.push("rust");
     }
   }
 
+  const measured = (path: string) =>
+    path.endsWith(".rs") ? rustRan : ranSuites.has(bunSuiteOf(path));
   return { hits: mergeLineHits(...hits), measured, suites };
 }
 
@@ -175,7 +194,11 @@ if (import.meta.main) {
     head,
     files,
     tier: classify(files),
-    coverage: diffCoverage(added, measuredRun?.hits ?? new Map(), measuredRun?.measured ?? []),
+    coverage: diffCoverage(
+      added,
+      measuredRun?.hits ?? new Map(),
+      measuredRun?.measured ?? (() => false),
+    ),
     baseline: measuredRun
       ? runBaseline(root, base, addedOrModified)
       : { detecting: 0, notDetecting: [], failingOnHead: [] },

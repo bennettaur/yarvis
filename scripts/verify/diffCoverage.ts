@@ -139,14 +139,15 @@ export function formatRanges(lines: number[]): string {
 }
 
 /**
- * @param measuredExtensions file extensions a coverage tool ran for. A changed
- *   `.rs` file is reported as unmeasured, not untested, when Rust coverage
- *   wasn't collected.
+ * @param isMeasured whether a coverage run went through for the file's suite
+ *   and language. A changed file that fails it is reported as unmeasured, not
+ *   untested: a `.rs` file when Rust coverage wasn't collected, or a sidecar
+ *   file when the sidecar's suite crashed.
  */
 export function diffCoverage(
   added: AddedLines,
   hits: LineHits,
-  measuredExtensions: string[],
+  isMeasured: (path: string) => boolean,
 ): DiffCoverage {
   const result: DiffCoverage = {
     changedLines: 0,
@@ -160,7 +161,7 @@ export function diffCoverage(
   for (const [path, lines] of added) {
     const ext = SOURCE_EXTENSIONS.find((e) => path.endsWith(e));
     if (!ext || isTestFile(path) || path.endsWith(".d.ts") || lines.size === 0) continue;
-    if (!measuredExtensions.includes(ext)) {
+    if (!isMeasured(path)) {
       result.unmeasured.push(path);
       continue;
     }
