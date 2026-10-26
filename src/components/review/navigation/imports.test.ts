@@ -174,6 +174,18 @@ describe("loadTsPathConfig", () => {
     });
   });
 
+  it("leaves out patterns and targets with more than one *, as the compiler does", async () => {
+    const { tree, readFile } = repo({
+      "tsconfig.json":
+        '{ "compilerOptions": { "paths": { "@a/*/*": ["a/*"], "@b/*": ["b/*/*", "c/*"] } } }',
+      "src/a.ts": "",
+    });
+    expect(await loadTsPathConfig("src/a.ts", tree, readFile)).toEqual({
+      dir: "",
+      paths: { "@b/*": ["c/*"] },
+    });
+  });
+
   it("applies a relative extends and follows a solution config's references", async () => {
     const { tree, readFile } = repo({
       "tsconfig.base.json":

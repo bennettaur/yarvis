@@ -182,9 +182,10 @@ async function readConfig(
     const root = baseUrl ?? dir;
     paths = {};
     for (const [pattern, targets] of Object.entries(options.paths as Record<string, unknown>)) {
-      if (!Array.isArray(targets)) continue;
+      // The compiler rejects a pattern or target with more than one `*`.
+      if (!Array.isArray(targets) || starCount(pattern) > 1) continue;
       const resolved = targets
-        .filter((t): t is string => typeof t === "string")
+        .filter((t): t is string => typeof t === "string" && starCount(t) <= 1)
         .map((t) => posix.join(root, t))
         .filter((t): t is string => t !== null);
       if (resolved.length > 0) paths[pattern] = resolved;
@@ -233,6 +234,10 @@ function tryFile(base: string, tree: ReadonlySet<string>): string | null {
   return null;
 }
 
+function starCount(text: string): number {
+  return text.split("*").length - 1;
+}
+
 /** Matches `spec` against a `paths` pattern; the text `*` stood for, or null. */
 function matchPattern(pattern: string, spec: string): string | null {
   const star = pattern.indexOf("*");
@@ -277,7 +282,7 @@ export function resolveSpecifier(
     .sort((a, b) => prefixLength(b.pattern) - prefixLength(a.pattern));
   for (const { pattern, rest } of patterns) {
     for (const target of config.paths[pattern] ?? []) {
-      const found = tryFile(target.replace("*", rest), tree);
+      const found = tryFile(target.split("*").join(rest), tree);
       if (found) return found;
     }
   }
