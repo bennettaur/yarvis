@@ -35,6 +35,8 @@ export interface ReviewWorkspacePr {
   baseSha: string | null;
   mergeBaseSha: string | null;
   setupConsent: SetupConsent | null;
+  /** The commit setup consent was given for; a new head asks again. */
+  setupHeadSha?: string | null;
   setupStatus: SetupStatus | null;
   setupLog: string | null;
   addedAt: string;
@@ -111,6 +113,8 @@ export interface ReviewSetupInfo {
   headSha: string | null;
   /** Environment variables the script won't get (the SSH agent), to say so in the prompt. */
   withheldEnv: string[];
+  /** What the sidecar wants said about how unconfined setup is, when it says anything. */
+  sandboxNotes?: string;
   consent: SetupConsent | null;
   status: SetupStatus | null;
   log: string | null;
@@ -188,13 +192,15 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
 
 /**
  * Replays the PR's latest clone/refresh/setup run and yields the rest of it.
- * Ends at once when there is no recent run to show.
+ * Ends at once when there is no recent run to show; aborting `signal` closes
+ * the stream.
  */
 export async function* followReviewPrProgress(
   workspaceId: string,
   prId: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<ReviewProgressEvent> {
-  for await (const data of streamSSE(`${prPath(workspaceId, prId)}/progress`)) {
+  for await (const data of streamSSE(`${prPath(workspaceId, prId)}/progress`, { signal })) {
     yield JSON.parse(data) as ReviewProgressEvent;
   }
 }

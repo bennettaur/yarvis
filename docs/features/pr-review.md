@@ -7,6 +7,10 @@ out the order to read the change in, and **line questions** where you ask about
 a piece of code and keep the answer as a private note. The assistant can search
 those notes later.
 
+For a faster, editor-like review of one or several PRs checked out locally,
+with tabs and a side-by-side view, see [Review workspaces](review-workspaces.md).
+A PR's header here has **Open in review workspace** to move it there.
+
 ## Set up
 
 1. Sign in with GitHub, or save a **GitHub token** or an **Azure DevOps token**,
