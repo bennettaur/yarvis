@@ -25,6 +25,40 @@ export async function getPrModelConfig(): Promise<PrModelConfig> {
   return res.json();
 }
 
+/**
+ * The verification report runs on Claude Code, so it takes a Claude Code
+ * model alias and a spend ceiling rather than a provider/model pair.
+ */
+export const VERIFICATION_MODELS = ["sonnet", "opus", "haiku"] as const;
+
+export type VerificationModel = (typeof VERIFICATION_MODELS)[number];
+
+export interface VerificationRunConfig {
+  model: VerificationModel;
+  maxBudgetUsd: number;
+}
+
+export const VERIFICATION_BUDGET_LIMITS = { min: 0.25, max: 20 } as const;
+
+export async function getVerificationRunConfig(): Promise<VerificationRunConfig> {
+  const res = await sidecarFetch("/api/pr-models/verification");
+  await ensureOk(res, "verification report settings");
+  return res.json();
+}
+
+/** Saves the given fields, leaving the rest as they are. */
+export async function saveVerificationRunConfig(
+  patch: Partial<VerificationRunConfig>,
+): Promise<VerificationRunConfig> {
+  const res = await sidecarFetch("/api/pr-models/verification", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await ensureOk(res, "save verification report settings");
+  return res.json();
+}
+
 /** Saves the given features, leaving the rest as they are; `null` clears one. */
 export async function savePrModelConfig(patch: Partial<PrModelConfig>): Promise<PrModelConfig> {
   const res = await sidecarFetch("/api/pr-models", {

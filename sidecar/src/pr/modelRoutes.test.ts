@@ -71,3 +71,38 @@ describe("GET/PATCH /api/pr-models", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("GET/PATCH /api/pr-models/verification", () => {
+  const patch = (body: unknown) =>
+    app().request("/api/pr-models/verification", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify(body),
+    });
+
+  it("answers the defaults before anything is saved", async () => {
+    const res = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await res.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+  });
+
+  it("saves one field and keeps the other", async () => {
+    expect(await (await patch({ maxBudgetUsd: 0.75 })).json()).toEqual({
+      model: "sonnet",
+      maxBudgetUsd: 0.75,
+    });
+    await patch({ model: "opus" });
+    const read = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await read.json()).toEqual({ model: "opus", maxBudgetUsd: 0.75 });
+  });
+
+  it("refuses a model that isn't a Claude Code alias, and a budget out of range", async () => {
+    for (const body of [
+      { model: "--model=x" },
+      { maxBudgetUsd: 0 },
+      { maxBudgetUsd: 500 },
+      { other: 1 },
+    ]) {
+      expect((await patch(body)).status).toBe(400);
+    }
+  });
+});

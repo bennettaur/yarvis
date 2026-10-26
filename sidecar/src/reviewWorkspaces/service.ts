@@ -245,7 +245,7 @@ function refDomKey(ref: PrRef): string {
  * Checked before anything is checked out, run or deleted there, so a row that
  * somehow named another path can't point any of those at the rest of the disk.
  */
-function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
+export function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
   if (dirname(resolve(pr.worktreePath)) !== resolve(reviewWorkspaceDir(config, pr.workspaceId))) {
     throw new Error(`${pr.worktreePath} is not in this review workspace's folder; left in place`);
   }
@@ -764,7 +764,10 @@ async function requireReadyPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReadyPr> {
-  const pr = await getReviewPr(db, workspaceId, prId);
+  return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
+}
+
+function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }
@@ -894,6 +897,96 @@ export async function reviewDiff(
     (p) => p.length + 64,
   );
   return { ...base, patch, tooLarge: false };
+}
+
+/**
+ * How big the PR's diff is, counting only files `reviewPatches` would read with
+ * the same `maxFileBytes`: a lockfile left out for its size isn't part of what
+ * a reader of the patches pays for.
+ */
+export async function reviewDiffSize(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  prId: string,
+  deps: ReviewDeps,
+  maxFileBytes: number,
+): Promise<{ files: number; changedLines: number }> {
+  const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
+  const files = await changedFiles(
+    ready.runners,
+    ready.clonePath,
+    ready.mergeBaseSha,
+    ready.headSha,
+  );
+  const changedLines = files
+    .filter((f) => !f.binary && Math.max(f.oldSize, f.newSize) <= maxFileBytes)
+    .reduce((n, f) => n + f.additions + f.deletions, 0);
+  return { files: files.length, changedLines };
+}
+
+/** One changed file's patch for a whole-PR read, or why it was left out. */
+export interface ReviewPatch {
+  file: ReviewChangedFile;
+  patch: string | null;
+  omitted: "binary" | "too-large" | "over-budget" | null;
+}
+
+/**
+ * Every changed file's patch, in path order, for a reader that wants the whole
+ * PR at once (an agent run). A file over `maxFileBytes` on either side is left
+ * out — a lockfile or generated bundle is all bulk and no review — and a patch
+ * that would take the total past `maxTotalBytes` is listed but not included,
+ * so one huge PR can't produce an unbounded file.
+ *
+ * Takes the PR row rather than reading it, so a caller that also uses the
+ * row's head and worktree gets patches from that same head.
+ */
+export async function reviewPatches(
+  config: Config,
+  pr: ReviewWorkspacePr,
+  deps: ReviewDeps,
+  limits: { maxFileBytes: number; maxTotalBytes: number },
+): Promise<ReadShas & { patches: ReviewPatch[] }> {
+  const ready = readyFrom(config, pr, deps);
+  const files = await changedFiles(
+    ready.runners,
+    ready.clonePath,
+    ready.mergeBaseSha,
+    ready.headSha,
+  );
+  const patches: ReviewPatch[] = [];
+  let total = 0;
+  for (const { oldSize, newSize, ...file } of [...files].sort((a, b) =>
+    a.path.localeCompare(b.path),
+  )) {
+    const omitted = file.binary
+      ? "binary"
+      : Math.max(oldSize, newSize) > limits.maxFileBytes
+        ? "too-large"
+        : null;
+    if (omitted) {
+      patches.push({ file, patch: null, omitted });
+      continue;
+    }
+    // Serial on purpose: each is a local git call, and a PR with hundreds of
+    // files shouldn't fork hundreds of processes at once.
+    const patch = await fileDiffBetween(
+      ready.runners.local,
+      ready.clonePath,
+      ready.mergeBaseSha,
+      ready.headSha,
+      file.path,
+      file.oldPath,
+    );
+    if (total + patch.length > limits.maxTotalBytes) {
+      patches.push({ file, patch: null, omitted: "over-budget" });
+      continue;
+    }
+    total += patch.length;
+    patches.push({ file, patch, omitted: null });
+  }
+  return { headSha: ready.headSha, mergeBaseSha: ready.mergeBaseSha, patches };
 }
 
 // ---------------------------------------------------------------------------
