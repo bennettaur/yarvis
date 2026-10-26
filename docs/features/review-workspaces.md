@@ -88,6 +88,50 @@ A **file tab** shows any file at the PR's head whole, with the PR's threads
 on it. Questions work on any file; comments only on files the PR changes,
 since that is all the providers accept.
 
+### Code navigation
+
+Diff and file tabs support go-to-definition and find references, so you can
+follow a call into code the PR doesn't touch without leaving the review.
+
+- **Go to definition**: Cmd+click a name, or put the cursor on it and press
+  F12. If there is one answer, its file opens in a tab at that line. If there
+  are several, a peek list shows them, best guess first: double-click one to
+  open it. A file the PR changes opens as a diff, and any other file opens as
+  a plain file.
+- **Find references**: press Shift+F12, or pick it from the right-click menu.
+
+For TypeScript and JavaScript, Yarvis uses the editor's own TypeScript
+service. When you open a file, Yarvis loads the files it imports from the
+PR's head: relative imports, aliases from the repo's `tsconfig.json`
+(`paths` and `baseUrl`), and index files. It follows imports a few levels
+deep, up to a fixed limit per PR, so jumps land on the real declaration.
+Packages aren't loaded, not even ones committed under `node_modules`, so a
+jump into a library finds nothing.
+
+Other languages, and TypeScript imports the editor can't resolve, use a text
+search over the PR's head commit. The search finds lines that look like
+declarations: Python, Go, Rust, Java, Kotlin, C#, Ruby, PHP, Swift, C/C++,
+and a generic fallback for everything else. Comments are skipped, and so are
+minified files, source maps and build folders (`node_modules`, `dist`,
+`build`, `out`, `target`, `.next`, `coverage`). Results are ranked with the
+current file first, then its directory, then the files it imports, then
+everything else. Python class attributes and dataclass fields come last,
+because the search can't tell them from ordinary assignments. In a very large
+repo the search stops early and shows what it found so far. It can't tell
+overloads or same-named symbols apart, so treat its answers as good guesses,
+not compiler-exact results.
+
+Navigation works once the PR's checkout has finished. It never runs code from
+the PR and doesn't need setup to have run. It reads the files committed at
+the head, so dependencies that are installed but not committed aren't visible
+to it.
+
+Every open PR shares one TypeScript service in the editor. Each PR's files
+and aliases stay separate, but a global declaration in one PR's loaded files
+(`declare global`, a script file with no imports) can show up in another PR's
+hover or completion while both are open. The peek list labels a file's folder
+with a leading `/head/` (for example `/head/app`).
+
 ### Guided review
 
 **Guided review** in the PR bar opens the
@@ -237,6 +281,8 @@ into is kept, so the next review of that repo starts faster.
 | Cmd+W | Close the tab |
 | Cmd+\ | Move the tab to the other side, splitting the view if it isn't yet |
 | Option+J / Option+K | Open the next / previous changed file of the PR in front |
+| F12 or Cmd+click | Go to the definition of the name under the cursor |
+| Shift+F12 | Find references to it |
 
 They work while the focus is somewhere in the workspace. While you are typing
 in a box (a comment, a reply, the Add PR field), Cmd+W and Option+J / K are

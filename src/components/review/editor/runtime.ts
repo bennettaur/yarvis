@@ -12,6 +12,7 @@ import { openExternal } from "../../../lib/url";
 import { installNavigation } from "./navigation";
 import { type QuickInfo, quickInfoHover } from "./quickInfo";
 import { defineThemes, monacoThemeFor } from "./themes";
+import { onlyUnresolvedImports, type WorkerDefinition } from "./tsDefinitions";
 import "./reviewEditor.css";
 
 // Everything here runs once, the first time an editor mounts (`loader.ts`
@@ -80,6 +81,13 @@ function withoutHovers<C extends { readonly hovers?: boolean }>(defaults: {
 }
 withoutHovers(monaco.typescript.typescriptDefaults);
 withoutHovers(monaco.typescript.javascriptDefaults);
+// Go-to-definition is served below too, so it can leave out an unresolved import.
+for (const defaults of [
+  monaco.typescript.typescriptDefaults,
+  monaco.typescript.javascriptDefaults,
+]) {
+  defaults.setModeConfiguration({ ...defaults.modeConfiguration, definitions: false });
+}
 withoutHovers(monaco.css.cssDefaults);
 withoutHovers(monaco.css.scssDefaults);
 withoutHovers(monaco.css.lessDefaults);
@@ -110,6 +118,36 @@ for (const [language, getWorker] of [
         range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
         contents: quickInfoHover(info),
       };
+    },
+  });
+
+  // Go-to-definition from the worker, less one answer: an import whose module
+  // didn't resolve points back at its own binding, which would sit beside the
+  // text search's guesses (`navigation.ts` providers) and turn every such
+  // jump into a list of two. Targets without a model (the worker's lib files)
+  // are left out; a review only opens its own files.
+  monaco.languages.registerDefinitionProvider(language, {
+    async provideDefinition(model, position) {
+      const worker = await (await getWorker())(model.uri);
+      if (model.isDisposed()) return null;
+      const self = model.uri.toString();
+      const entries: readonly WorkerDefinition[] | undefined = await worker.getDefinitionAtPosition(
+        self,
+        model.getOffsetAt(position),
+      );
+      if (!entries || model.isDisposed() || onlyUnresolvedImports(entries, self)) return null;
+      return entries.flatMap((entry) => {
+        const target = monaco.editor.getModel(monaco.Uri.parse(entry.fileName));
+        if (!target) return [];
+        const start = target.getPositionAt(entry.textSpan.start);
+        const end = target.getPositionAt(entry.textSpan.start + entry.textSpan.length);
+        return [
+          {
+            uri: target.uri,
+            range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
+          },
+        ];
+      });
     },
   });
 }

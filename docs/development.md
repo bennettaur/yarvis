@@ -400,6 +400,9 @@ src/            React frontend (Vite + TS + Tailwind)
                 comment/ask buttons, React view zones, review:// models and a
                 go-to-definition hook. Monaco rather than CodeMirror for its
                 diff editor and language workers; loaded lazily, never edits
+    review/navigation/ go-to-definition and references for review tabs: a
+                PR's TypeScript imports fed to Monaco's worker, the sidecar's
+                text search for every other language
     workspaces/ workspace detail views, Omni widgets, self-review comments, editor
     shell/      nav rail, top bar, boot screen, tab shortcuts, cheat sheet
     omni/       Omni view, the chat-built widget canvas
@@ -457,7 +460,8 @@ sidecar/        Bun + TS service (Hono)
   src/workspaces/  repo registry, worktree provisioning, base-branch sync,
                    teardown, self-review comments, gh-stack bridge, file editor
   src/reviewWorkspaces/ PRs checked out for review: blobless clones, a detached
-                   worktree per PR, local diffs and file reads, setup consent
+                   worktree per PR, local diffs and file reads, setup consent,
+                   definition/reference search by git grep
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

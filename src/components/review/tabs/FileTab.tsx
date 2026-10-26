@@ -1,6 +1,7 @@
 import { memo } from "react";
 import LoadingIndicator from "../../LoadingIndicator";
 import { MonacoFileView } from "../editor";
+import { useReviewNavigation } from "../navigation";
 import { AnnotationBar, CenteredNote } from "./FileChrome";
 import { modelUri, useReviewChangedFiles, useReviewFile } from "./reviewData";
 import type { TabContext } from "./types";
@@ -24,6 +25,7 @@ export default memo(function FileTab({
   revealNonce?: number;
 }) {
   const reveal = useReveal(revealLine, revealNonce);
+  const { onOpenLocation } = useReviewNavigation(ctx);
   const head = useReviewFile(ctx.workspaceId, ctx.pr, path, "head");
   const changed = useReviewChangedFiles(ctx.workspaceId, ctx.pr);
   const changedFile = changed.data?.files.find((f) => f.path === path);
@@ -60,6 +62,7 @@ export default memo(function FileTab({
         content={content}
         revealLine={reveal.line}
         revealKey={reveal.key}
+        onOpenLocation={onOpenLocation}
         zones={annotations.zones}
         onLineAction={annotations.onLineAction}
       />
