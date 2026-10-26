@@ -231,8 +231,13 @@ export function reviewClonePath(config: Pick<Config, "workspacesRoot">, ref: PrR
 }
 
 /** The folder holding one review workspace's worktrees. */
-function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
-  return join(config.workspacesRoot, ".review", id);
+/** The folder holding every review workspace's folder. */
+export function reviewWorkspacesRoot(config: Pick<Config, "workspacesRoot">): string {
+  return join(config.workspacesRoot, ".review");
+}
+
+export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
+  return join(reviewWorkspacesRoot(config), id);
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
@@ -245,7 +250,10 @@ function refDomKey(ref: PrRef): string {
  * Checked before anything is checked out, run or deleted there, so a row that
  * somehow named another path can't point any of those at the rest of the disk.
  */
-export function assertWorktreeInWorkspace(config: Config, pr: ReviewWorkspacePr): void {
+export function assertWorktreeInWorkspace(
+  config: Pick<Config, "workspacesRoot">,
+  pr: Pick<ReviewWorkspacePr, "workspaceId" | "worktreePath">,
+): void {
   if (dirname(resolve(pr.worktreePath)) !== resolve(reviewWorkspaceDir(config, pr.workspaceId))) {
     throw new Error(`${pr.worktreePath} is not in this review workspace's folder; left in place`);
   }
@@ -362,7 +370,7 @@ export async function touchReviewWorkspace(
   return row ? getReviewWorkspace(db, id) : null;
 }
 
-async function requireActiveWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
+export async function requireActiveWorkspace(db: Db, id: string): Promise<ReviewWorkspace> {
   const [ws] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, id));
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
@@ -1006,6 +1014,16 @@ export const SETUP_WITHHELD_ENV = [
   "GIT_SSH_COMMAND",
 ] as const;
 
+/**
+ * Said in the consent prompt: agreeing runs the PR's code, and only the tests
+ * mutation testing runs get a sandbox.
+ */
+export const SETUP_SANDBOX_NOTES =
+  "Agreeing runs this pull request's code on your machine as you. The setup script runs without " +
+  "a sandbox, with no provider secrets or SSH agent. Mutation testing later runs its tests in a " +
+  "macOS sandbox (loopback-only network, writes only to a scratch copy, no reads of your " +
+  "credentials); that is a second line of defence, not a reason to run code you don't trust.";
+
 interface SetupInfo {
   script: string | null;
   author: string | null;
@@ -1014,7 +1032,11 @@ interface SetupInfo {
   headSha: string | null;
   /** Environment variables the script will not be given. */
   withheldEnv: readonly string[];
+  /** What runs sandboxed and what doesn't, for the consent prompt to say plainly. */
+  sandboxNotes: string;
   consent: "granted" | "declined" | null;
+  /** The head commit `consent` was given for; consent for another head no longer applies. */
+  consentHeadSha: string | null;
   status: ReviewWorkspacePr["setupStatus"];
   log: string | null;
 }
@@ -1033,7 +1055,9 @@ export async function reviewSetupInfo(
     branch: pr.headRef,
     headSha: pr.headSha,
     withheldEnv: SETUP_WITHHELD_ENV,
+    sandboxNotes: SETUP_SANDBOX_NOTES,
     consent: pr.setupConsent,
+    consentHeadSha: pr.setupHeadSha,
     status: pr.setupStatus,
     log: pr.setupLog,
   };
@@ -1073,7 +1097,9 @@ export async function answerReviewSetup(
 ): Promise<ReviewWorkspacePr> {
   await requireActiveWorkspace(db, workspaceId);
   const pr = await getReviewPr(db, workspaceId, prId);
-  if (!answer.grant) return updatePr(db, pr.id, { setupConsent: "declined" });
+  if (!answer.grant) {
+    return updatePr(db, pr.id, { setupConsent: "declined", setupHeadSha: pr.headSha });
+  }
 
   if (pr.worktreeStatus !== "ready") {
     throw new ReviewWorkspaceError(`the checkout is ${pr.worktreeStatus}, not ready`, 409);
@@ -1091,7 +1117,13 @@ export async function answerReviewSetup(
       409,
     );
   }
-  if (!script) return updatePr(db, pr.id, { setupConsent: "granted", setupStatus: "skipped" });
+  if (!script) {
+    return updatePr(db, pr.id, {
+      setupConsent: "granted",
+      setupHeadSha: pr.headSha,
+      setupStatus: "skipped",
+    });
+  }
 
   // Claimed before anything is written, so a request that loses the race to a
   // sync (or another yes) is refused without leaving `running` on the row.
@@ -1101,6 +1133,7 @@ export async function answerReviewSetup(
   try {
     row = await updatePr(db, pr.id, {
       setupConsent: "granted",
+      setupHeadSha: pr.headSha,
       setupStatus: "running",
       setupLog: null,
     });

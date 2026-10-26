@@ -302,6 +302,13 @@
       "when": 1792900922958,
       "tag": "0042_rare_jasper_sitwell",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792900964028,
+      "tag": "0043_windy_vance_astro",
+      "breakpoints": true
     }
   ]
 }

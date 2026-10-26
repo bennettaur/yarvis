@@ -559,6 +559,22 @@ back to ad-hoc.
   `sidecar/claude-plugins/`, embedded like the agent definitions and written
   to a fresh private temp directory for each run, so nothing between runs can
   edit it; a file reaches a run only once it is listed in `agentRuns/plugins.ts`.
+  Mutation testing splits the work: a run like that only *plans* the mutants,
+  read-only, and the sidecar applies them and runs the tests itself
+  (`reviewWorkspaces/mutationExecutor.ts`), so what ran and how it scored is
+  never a model's say. Claude Code's sandbox only wraps the commands Claude
+  Code runs, so those tests run under `reviewWorkspaces/testSandbox.ts`
+  instead: a deny-by-default `sandbox-exec` profile with no network or DNS,
+  loopback only to the ephemeral port range, writes only to the scratch copy
+  and a temp folder (which holds a fake `HOME`), no reads of the home folder
+  beyond the toolchains or of other checkouts, no setsid, and no launchd,
+  LaunchServices or keychain. One helper per pass runs every command, so the
+  profile compiles once.
+  A probe script checks it holds before any test runs, and where it can't
+  apply (anything but macOS) the tests don't run. The user already agreed to
+  run the PR's code and its setup runs unsandboxed, so this is defence in
+  depth, not the trust boundary; the sidecar's own writes into the copy still
+  assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

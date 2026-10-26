@@ -2007,6 +2007,11 @@ export const reviewWorkspacePrs = pgTable(
     mergeBaseSha: text("merge_base_sha"),
     /** Null until the user answers; whether the PR's setup script may run. */
     setupConsent: text("setup_consent").$type<"granted" | "declined">(),
+    /**
+     * The head commit the answer was given for. Consent is to that code: after
+     * a refresh moves the head, anything that runs the PR's code asks again.
+     */
+    setupHeadSha: text("setup_head_sha"),
     /** "running" | "succeeded" | "failed" | "skipped" (no script to run). */
     setupStatus: text("setup_status").$type<"running" | "succeeded" | "failed" | "skipped">(),
     /** Capped tail of the last setup run. */
@@ -2018,3 +2023,57 @@ export const reviewWorkspacePrs = pgTable(
 
 export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
+
+/**
+ * A mutation-testing pass over one review PR: a planning run picks mutants, the
+ * sidecar runs them against the PR's tests in a scratch copy, and an
+ * explanation run writes up the survivors. Results are written as each mutant
+ * finishes, so a pass that is cancelled or cut off still shows what it found.
+ * The two Claude Code runs are `agent_runs` rows of their own.
+ */
+export const mutationRuns = pgTable(
+  "mutation_runs",
+  {
+    /** Also names the run's scratch copy, `<refDomKey>-mutants-<id>`. */
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    prId: uuid("pr_id")
+      .notNull()
+      .references(() => reviewWorkspacePrs.id, { onDelete: "cascade" }),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status")
+      .$type<"running" | "succeeded" | "failed" | "cancelled">()
+      .notNull()
+      .default("running"),
+    /** "copying" | "planning" | "baseline" | "control" | "mutants" | "explaining" | "done". */
+    phase: text("phase").notNull().default("copying"),
+    /** The app instance whose sidecar runs it; only that instance can know it stopped. */
+    instance: text("instance").notNull(),
+    /** The model, budget and limits it was started with. */
+    settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
+    /** The test command running now, which leads its own process group. */
+    pid: integer("pid"),
+    /** When that process started, so a sweep after a crash kills only it. */
+    pidStartedAt: text("pid_started_at"),
+    planRunId: uuid("plan_run_id"),
+    explainRunId: uuid("explain_run_id"),
+    /** The planning run's validated output. */
+    plan: jsonb("plan"),
+    /** Baselines, the positive control and mutant results so far. */
+    execution: jsonb("execution"),
+    /** Computed from `execution`, never by a model. */
+    summary: jsonb("summary"),
+    findings: jsonb("findings"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("mutation_runs_pr_idx").on(t.prId, t.startedAt.desc())],
+);
+
+export type MutationRunRow = typeof mutationRuns.$inferSelect;
