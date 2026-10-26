@@ -7,11 +7,12 @@ import {
   type ReviewAction,
 } from "../../lib/pr/api";
 import { invalidate, invalidatePrReview, prDetailKey, prStackKey } from "../../lib/pr/cache";
-import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
+import { refDisplayRepo, refKey, refNumber, refProviderName } from "../../lib/pr/ref";
 import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
 import { openExternal } from "../../lib/url";
 import CopyLinkButton from "../CopyLinkButton";
 import OpenInReviewWorkspace from "../review/OpenInReviewWorkspace";
+import PrConflictBanner from "./PrConflictBanner";
 import PrWorkspaceAction from "./PrWorkspaceAction";
 
 /**
@@ -517,7 +518,8 @@ export function PrStatusBadge({ status }: { status: PrUiStatus }) {
  * The static title/status bar at the top of the in-app PR review. Sits above
  * the scrolling body (the parent `PrDetailView` is a flex column whose body
  * owns the scroll), so it never overlaps body content as the user scrolls.
- * Renders the title, lifecycle status badge, and the action buttons.
+ * Renders the title, lifecycle status badge, and the action buttons, with the
+ * conflict banner beneath them when the PR conflicts with its base.
  */
 export default function PrFloatingHeader({
   pr,
@@ -608,6 +610,7 @@ export default function PrFloatingHeader({
           leading={<OpenInReviewWorkspace pr={{ ...pr, title }} />}
         />
       </div>
+      <PrConflictBanner key={refKey(prRef)} prRef={prRef} detail={detail} />
       {actions.error && <p className="mt-2 text-xs text-red-400">{actions.error}</p>}
     </div>
   );

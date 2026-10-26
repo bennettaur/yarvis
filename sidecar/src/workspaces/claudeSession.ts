@@ -24,6 +24,10 @@ import {
   sendClaudeInstruction,
   spawnClaudeSession,
 } from "../core/controlClient.ts";
+import type { Db } from "../db/client.ts";
+import { emitEvent } from "../events/service.ts";
+import { reapAndListAgentSessions } from "./agentSessions.ts";
+import { writeClaudeSettings } from "./claudeSettings.ts";
 
 export interface StartClaudeSessionInput {
   /** Workspace the session belongs to; forms the PTY session key. */
@@ -104,6 +108,20 @@ export interface SendSessionInstructionInput {
 export const AGENT_NOT_RECOGNISED_ERROR =
   "the configured agent is not what is reading that session's prompt";
 
+/**
+ * The core's refusal when the workspace has no agent tab at all — nothing a
+ * fresh spawn would collide with. Must match the message in
+ * `send_session_instruction` in `src-tauri/src/pty.rs`.
+ */
+export const NO_AGENT_SESSION_ERROR = "no agent session is running for that workspace";
+
+/**
+ * The core's refusal when the agent tab's shell has itself exited. The dead
+ * session still holds the tab's id, so a spawn is discarded until it is
+ * killed. Must match `send_session_instruction` in `src-tauri/src/pty.rs`.
+ */
+export const AGENT_SESSION_EXITED_ERROR = "the agent session has exited";
+
 /** Injectable sender so the workspace tool is testable without the core. */
 export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Promise<void>;
 
@@ -119,4 +137,79 @@ export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Pro
  */
 export async function sendSessionInstruction(input: SendSessionInstructionInput): Promise<void> {
   await sendClaudeInstruction(input);
+}
+
+/** Pids of the Claude sessions registered in a workspace's agent tab, oldest first. */
+export async function agentTabPids(db: Db, workspaceId: string): Promise<number[]> {
+  const sessionKey = `ws-claude:${workspaceId}`;
+  const sessions = (await reapAndListAgentSessions(db, [workspaceId])).get(workspaceId) ?? [];
+  return sessions.filter((s) => s.sessionKey === sessionKey).map((s) => s.pid);
+}
+
+/** Why an instruction didn't reach the agent, from the core's refusal. */
+export type AgentSendFailure =
+  /** The workspace has no agent tab; a fresh spawn would take it. */
+  | "no_session"
+  /** The tab's shell exited; its dead session still holds the id. */
+  | "exited"
+  /** Something other than a recognised agent holds the prompt. */
+  | "not_recognised"
+  | "error";
+
+export type AgentSendResult =
+  | { delivered: true }
+  | { delivered: false; failure: AgentSendFailure; error: string };
+
+/**
+ * Types an instruction at a workspace's agent tab and records that it did,
+ * shared by every caller that forwards text into a session so they all keep
+ * the same rules. The event logs the instruction's length, not its text: it
+ * can be composed from data an outside party influenced, and the event log is
+ * read back into later prompts.
+ *
+ * When the core can't tell what holds the prompt and nothing has registered,
+ * the agent most likely predates the workspace's registration hooks; writing
+ * them now means a restarted session registers.
+ */
+export async function sendToWorkspaceAgent(
+  db: Db,
+  workspace: { id: string; name: string; rootPath: string },
+  instruction: string,
+  {
+    agentPids,
+    send = sendSessionInstruction,
+    eventSource,
+    eventPayload = {},
+  }: {
+    /** From {@link agentTabPids}, which the caller has usually read already. */
+    agentPids: number[];
+    send?: ClaudeSessionMessenger;
+    eventSource: string;
+    eventPayload?: Record<string, unknown>;
+  },
+): Promise<AgentSendResult> {
+  try {
+    await send({ workspaceId: workspace.id, instruction, agentPids });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    let failure: AgentSendFailure = "error";
+    if (error.includes(NO_AGENT_SESSION_ERROR)) failure = "no_session";
+    else if (error.includes(AGENT_SESSION_EXITED_ERROR)) failure = "exited";
+    else if (error.includes(AGENT_NOT_RECOGNISED_ERROR)) failure = "not_recognised";
+    if (failure === "not_recognised" && agentPids.length === 0) {
+      writeClaudeSettings(workspace.rootPath, workspace.id);
+    }
+    return { delivered: false, failure, error };
+  }
+  void emitEvent(db, {
+    type: "workspace.instruction_sent",
+    source: eventSource,
+    payload: {
+      workspaceId: workspace.id,
+      name: workspace.name,
+      chars: instruction.length,
+      ...eventPayload,
+    },
+  });
+  return { delivered: true };
 }

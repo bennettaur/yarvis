@@ -90,6 +90,7 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   additions: 0,
   deletions: 0,
   mergeable: "MERGEABLE",
+  hasConflicts: false,
   mergeMethods: ["MERGE", "SQUASH", "REBASE"],
   autoMergeEnabled: false,
   canEnableAutoMerge: false,
@@ -141,6 +142,20 @@ describe("PrFloatingHeader merge controls", () => {
     const html = await render(detail({ state: "MERGED" }));
     expect(html).not.toContain("Enable auto-merge");
     expect(html).not.toContain("Auto-merge on");
+  });
+});
+
+describe("PrFloatingHeader conflicts", () => {
+  it("leads with the conflict and the button to resolve it", async () => {
+    const html = await render(detail({ mergeable: "CONFLICTING", hasConflicts: true }));
+    expect(html).toContain("Conflicts with main");
+    expect(html).toContain("Resolve conflicts");
+  });
+
+  it("says nothing about conflicts on a mergeable PR", async () => {
+    const html = await render(detail());
+    expect(html).not.toContain("Conflicts with");
+    expect(html).not.toContain("Resolve conflicts");
   });
 });
 

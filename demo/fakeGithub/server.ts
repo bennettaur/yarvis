@@ -36,8 +36,8 @@ function toRestPull(pr: FakePull) {
     head: { sha: `sha-${pr.number}`, ref: pr.headRef },
     base: { ref: pr.baseRef },
     merged: false,
-    mergeable: true,
-    mergeable_state: "clean",
+    mergeable: !pr.conflicting,
+    mergeable_state: pr.conflicting ? "dirty" : "clean",
   };
 }
 
@@ -137,8 +137,8 @@ function toGraphqlPull(pr: FakePull) {
     isCrossRepository: false,
     additions: pr.files.reduce((n, f) => n + f.additions, 0),
     deletions: pr.files.reduce((n, f) => n + f.deletions, 0),
-    mergeable: "MERGEABLE",
-    mergeStateStatus: "CLEAN",
+    mergeable: pr.conflicting ? "CONFLICTING" : "MERGEABLE",
+    mergeStateStatus: pr.conflicting ? "DIRTY" : "CLEAN",
     reviewDecision: Object.values(pr.reviews).includes("APPROVED") ? "APPROVED" : "REVIEW_REQUIRED",
     autoMergeRequest: null,
     viewerCanEnableAutoMerge: false,

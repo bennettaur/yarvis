@@ -38,6 +38,8 @@ export interface FakePull {
   reviewThreads: { path: string; line: number; author: string; body: string }[];
   /** The diff. A PR without files shows none, and its +/- counts are zero. */
   files: FakeFile[];
+  /** The branch conflicts with its base; GitHub reports it CONFLICTING and DIRTY. */
+  conflicting?: boolean;
 }
 
 /**
@@ -217,6 +219,23 @@ export const PULLS: FakePull[] = [
     checks: [{ name: "build", conclusion: null }],
     reviewThreads: [],
     files: [],
+  },
+  {
+    number: 487,
+    title: "Keep the shipping address between checkout steps",
+    author: VIEWER,
+    body: "Stores the shipping address in the checkout session so going back doesn't clear it.",
+    draft: false,
+    headRef: "feat/keep-shipping-address",
+    baseRef: "main",
+    createdAt: hoursAgo(9),
+    updatedAt: hoursAgo(3),
+    requestedReviewers: ["priya-shah"],
+    reviews: {},
+    checks: [{ name: "build", conclusion: "SUCCESS" }],
+    reviewThreads: [],
+    files: [],
+    conflicting: true,
   },
 ];
 

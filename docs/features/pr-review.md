@@ -233,6 +233,55 @@ Some rules that follow from how it works:
   a workspace created some other way, the link appears after the next PR poll
   (within a minute).
 
+### Resolve merge conflicts
+
+When a PR conflicts with its base branch, a red **Conflicts with <base>** banner
+appears under the header. GitHub's `CONFLICTING` and `DIRTY` and Azure
+DevOps's `conflicts` all count; an Azure merge a branch policy rejected does
+not, since there is nothing to resolve. GitHub works mergeability out lazily,
+so when it hasn't decided yet the page asks once more after a few seconds and
+shows nothing in the meantime.
+
+**Resolve conflicts** in the banner hands the job to a coding agent:
+
+- **The PR's workspace has an agent running:** the instructions are typed at
+  its prompt. If the agent looks busy (its transcript moved on since it last
+  finished a turn), you're asked first: "The agent is working on something.
+  Send anyway?" If it is waiting on a permission prompt, nothing is sent: answer
+  the prompt in the workspace, then try again.
+- **The workspace has no agent running:** the instructions are written to
+  `.yarvis/resolve-conflicts.md` (the workspace's `.yarvis/brief.md` is left
+  alone) and an agent is started on them.
+- **The PR has no workspace:** one is created on the PR's branch, as
+  **Start workspace** does, and its first session starts on the instructions.
+  The app switches to it.
+- **The PR comes from a fork:** the button is disabled, for the same reason
+  Start workspace is.
+- **Something other than the agent holds the workspace's agent tab:** nothing
+  is sent. If it's an agent Yarvis doesn't recognise, restart it there.
+
+After a send, **Open workspace** jumps to it, and **Send again** asks before
+sending a second time. A second click while a send is running does nothing.
+Progress and errors show in the banner.
+
+The busy check is a guess, not a guard. It can't see the other dialogs an agent
+shows (approving a plan, answering a question, a menu), so if one is open the
+typed instructions answer it instead. It can also say "busy" for an agent that
+was killed mid-turn, or when another Claude session ran at the workspace root.
+
+Branch names are quoted into the instructions, so a branch with characters
+other than letters, digits, `.`, `_`, `/` and `-` is refused rather than
+handed over.
+
+The agent is told to merge `origin/<base>` into the PR's branch (a merge, not
+a rebase, so nothing needs a force-push), using a `merge-default-branch` skill
+if one is available. For a stacked PR it merges the PR's actual base, not the
+default branch. It resolves each conflict by working out what both sides
+meant, runs the repo's checks and tests, commits a normal merge commit, pushes
+to the PR's branch, and reports what it resolved and anything it's unsure of.
+The PR's title and branch names are quoted to it as data, not instructions. As with any send,
+Yarvis confirms delivery, not that the work is done.
+
 ### See where a PR sits in its stack
 
 A PR that is part of a stack gets a **Stack** section above **Checks**. It

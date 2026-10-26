@@ -219,6 +219,13 @@ export interface PrDetail {
   /** GraphQL/Azure mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
   mergeable: string;
   /**
+   * True when the head branch conflicts with the base, in each provider's own
+   * terms: GitHub's CONFLICTING or DIRTY, Azure's `conflicts`. Narrower than
+   * `mergeable` not being MERGEABLE, which on Azure also covers a merge a
+   * branch policy rejected.
+   */
+  hasConflicts: boolean;
+  /**
    * Merge methods the repo permits, so the UI only offers valid ones. Empty
    * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
    */
