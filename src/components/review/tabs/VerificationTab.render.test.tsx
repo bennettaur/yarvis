@@ -4,7 +4,10 @@ import type { AgentRunEvent } from "../../../lib/agentRuns";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
-import type { LatestVerification } from "../../../lib/reviewWorkspaces/verification";
+import type {
+  LatestVerification,
+  VerificationSize,
+} from "../../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { treeKey, verificationKey } from "./reviewData";
@@ -155,11 +158,30 @@ describe("VerificationTab", () => {
     expect(button(host, "Re-run")).toBeUndefined();
   });
 
+  const size = (over: Partial<VerificationSize> = {}): VerificationSize => ({
+    files: 240,
+    changedLines: 9000,
+    large: true,
+    binary: [],
+    truncated: [],
+    skimmed: [],
+    estimatedCostUsd: 1.4,
+    budgetUsd: 2,
+    overBudget: false,
+    ...over,
+  });
+
   it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {
-    const host = await mount(latest({ size: { files: 240, changedLines: 9000, large: true } }));
+    const host = await mount(latest({ size: size() }));
     button(host, "Run verification")?.click();
     await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
-    expect(textOf(host.innerHTML)).toContain("This PR is large: 240 files, 9000 changed lines.");
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("This PR is large: 240 files, 9000 changed lines.");
+    expect(text).toContain("The checks read every file's diff");
+    expect(text).toContain("Estimated cost: about $1.40, against a budget of $2.00.");
+    // Nothing is left out any more, so the warning never says so.
+    expect(text).not.toContain("leave some files out");
+    expect(text).not.toContain("may hit the budget");
 
     const cancel = [...host.querySelectorAll('[role="alert"] button')].find(
       (b) => b.textContent === "Cancel",
@@ -173,6 +195,50 @@ describe("VerificationTab", () => {
     button(host, "Run anyway")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(started).toEqual(["pr1"]);
+  });
+
+  it("names the binary and cut-off files, folding a long list, and warns of the budget", async () => {
+    const binary = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    const host = await mount(
+      latest({
+        size: size({
+          large: false,
+          binary,
+          truncated: ["package-lock.json"],
+          estimatedCostUsd: 3.2,
+          overBudget: true,
+        }),
+      }),
+    );
+    // Over budget alone is reason to ask.
+    button(host, "Run verification")?.click();
+    await waitFor(() => button(host, "Run anyway") !== undefined, "the warning");
+    const text = textOf(host.innerHTML);
+    expect(text).not.toContain("This PR is large");
+    expect(text).toContain("5 binary files have no diff to read: a.png, b.png, c.png");
+    expect(text).toContain("and 2 more");
+    expect(host.querySelector('[role="alert"] details')?.textContent).toContain("d.png, e.png");
+    expect(text).toContain(
+      "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
+    );
+    expect(text).toContain("about $3.20, against a budget of $2.00");
+    expect(text).toContain("may hit the budget and stop before it answers");
+    // A list that folds sits in a block, not inside a paragraph.
+    expect(host.querySelector("p details")).toBeNull();
+  });
+
+  it("says up front what a small PR's run won't read whole, and starts at once", async () => {
+    const host = await mount(
+      latest({ size: size({ large: false, binary: ["a.png"], skimmed: ["yarn.lock"] }) }),
+    );
+    const notices = textOf(host.querySelector('[data-testid="file-notices"]')?.innerHTML ?? "");
+    expect(notices).toContain("1 binary file has no diff to read: a.png");
+    expect(notices).toContain(
+      "1 file is bulk (a lockfile, or generated, vendored or minified code)",
+    );
+    button(host, "Run verification")?.click();
+    await waitFor(() => started.length > 0, "the run to start");
+    expect(button(host, "Run anyway")).toBeUndefined();
   });
 
   it("shows why a run couldn't start", async () => {

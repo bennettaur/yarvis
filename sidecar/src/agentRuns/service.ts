@@ -18,7 +18,26 @@ import {
   processStartTime,
   type StreamingExit,
 } from "./process.ts";
-import { type ClaudeStreamResult, StreamJsonParser } from "./streamJson.ts";
+import { type ClaudeStreamResult, type FileRead, StreamJsonParser } from "./streamJson.ts";
+
+/** What a run did on its way to an answer, for {@link ClaudeRunOptions.finishOutput}. */
+export interface RunActivity {
+  /** Every Read call, the run's subagents' included. */
+  reads: FileRead[];
+  /** Each delegation's subagent type, by the delegation id a read carries. */
+  subagents: ReadonlyMap<string, string>;
+}
+
+/**
+ * The finishing step: optional when it would hand back the answer's own type,
+ * required when the kept result is a different one, so a result can't claim a
+ * field nothing added.
+ */
+type FinishStep<T, R> = [T] extends [R]
+  ? [R] extends [T]
+    ? { finishOutput?: (output: T, activity: RunActivity) => R }
+    : { finishOutput: (output: T, activity: RunActivity) => R }
+  : { finishOutput: (output: T, activity: RunActivity) => R };
 
 /**
  * Headless Claude Code runs a feature starts and the UI follows live: a
@@ -58,7 +77,9 @@ import { type ClaudeStreamResult, StreamJsonParser } from "./streamJson.ts";
 export type AgentRunPermissionMode = Exclude<ClaudePermissionMode, "bypassPermissions" | "auto">;
 const REFUSED_PERMISSION_MODES = new Set<string>(["bypassPermissions", "auto"]);
 
-export interface ClaudeRunOptions<T = unknown> {
+export type ClaudeRunOptions<T = unknown, R = T> = ClaudeRunBaseOptions<T> & FinishStep<T, R>;
+
+interface ClaudeRunBaseOptions<T> {
   /** What the run is for, e.g. "verification-report". */
   kind: string;
   /** What it runs against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
@@ -78,6 +99,13 @@ export interface ClaudeRunOptions<T = unknown> {
    * fails unless its structured output parses against it.
    */
   outputSchema?: z.ZodType<T>;
+  /*
+   * `finishOutput` ({@link FinishStep}) turns the parsed answer into what the
+   * run keeps, given what the run did on the way: a check the answer alone
+   * can't support, such as which files the run actually read. It runs once,
+   * before the result is stored or sent, and a throw fails the run, so a
+   * caller whose check is best-effort catches its own errors.
+   */
   /** Shipped plugins to load (`--plugin-dir`), written out fresh for the run. */
   plugins?: PluginName[];
   /**
@@ -275,7 +303,10 @@ export function jsonSchemaArg(schema: z.ZodType): string {
 }
 
 /** The argv after the program; the prompt goes on stdin. Exported for tests. */
-export function buildClaudeArgs(options: ClaudeRunOptions, pluginDirs: string[]): string[] {
+export function buildClaudeArgs<T, R>(
+  options: ClaudeRunOptions<T, R>,
+  pluginDirs: string[],
+): string[] {
   const args = [
     "-p",
     "--output-format",
@@ -329,11 +360,11 @@ const MAX_ERROR_CHARS = 2_000;
  * directory that isn't there or a plugin that can't be written, so the starting
  * route can answer with the reason.
  */
-export async function startClaudeRun<T>(
+export async function startClaudeRun<T, R = T>(
   db: Db,
-  options: ClaudeRunOptions<T>,
+  options: ClaudeRunOptions<T, R>,
   deps: ClaudeRunDeps = {},
-): Promise<ClaudeRunHandle<T>> {
+): Promise<ClaudeRunHandle<R>> {
   const registry = deps.registry ?? agentRunRegistry;
   if (options.permissionMode && REFUSED_PERMISSION_MODES.has(options.permissionMode)) {
     throw new Error(`permission mode "${options.permissionMode}" is not allowed for agent runs`);
@@ -410,8 +441,13 @@ export async function startClaudeRun<T>(
   };
 
   const done = execute()
-    .then((ending) => settle(options, ending, parser.estimatedCostUsd))
-    .catch((e) => failure<T>(e instanceof Error ? e.message : String(e), {}))
+    .then((ending) =>
+      settle(options, ending, parser.estimatedCostUsd, {
+        reads: parser.fileReads,
+        subagents: parser.subagents,
+      }),
+    )
+    .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
     .then((outcome) => {
       for (const event of parser.closeOpenDelegations()) emit(event);
       return finishRun(db, registry, id, outcome);
@@ -499,16 +535,17 @@ function failure<T>(
 }
 
 /** Turns how the process ended, and what it said last, into the run's outcome. */
-function settle<T>(
-  options: ClaudeRunOptions<T>,
+function settle<T, R>(
+  options: ClaudeRunOptions<T, R>,
   ending: RunEnding,
   estimatedCostUsd: number,
-): AgentRunOutcome<T> {
+  activity: RunActivity,
+): AgentRunOutcome<R> {
   const estimate = estimatedCostUsd > 0 ? estimatedCostUsd : null;
   if (ending.kind === "not-started") return failure(ending.message, { costUsd: estimate });
   const { exit, result } = ending;
   const base = {
-    output: null as T | null,
+    output: null as R | null,
     text: result?.text ?? null,
     costUsd: result?.costUsd ?? estimate,
     durationMs: result?.durationMs ?? null,
@@ -546,7 +583,23 @@ function settle<T>(
       base,
     );
   }
-  return { ...base, status: "succeeded", output: parsed.data, error: null };
+  if (!options.finishOutput) {
+    // FinishStep makes the step optional only when R is T.
+    return { ...base, status: "succeeded", output: parsed.data as unknown as R, error: null };
+  }
+  try {
+    return {
+      ...base,
+      status: "succeeded",
+      output: options.finishOutput(parsed.data, activity),
+      error: null,
+    };
+  } catch (e) {
+    return failure(
+      `could not finish the run's answer: ${e instanceof Error ? e.message : String(e)}`,
+      base,
+    );
+  }
 }
 
 /** A run as the routes return it: everything but the event log and the process bookkeeping. */

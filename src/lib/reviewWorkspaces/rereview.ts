@@ -1,5 +1,6 @@
 import type { AgentRunStatus } from "../agentRuns";
 import { ensureOk, sidecarFetch } from "../api";
+import type { UnknownCoverage, VerificationCoverage } from "./verification";
 
 /**
  * Client for a review PR's "What's changed" summary: an agent's judgement of
@@ -48,6 +49,27 @@ export interface Rereview {
   newChanges: RereviewChange[];
   /** Threads resolved before the review with nothing said since: not judged again. */
   settled?: { providerId: string; path: string | null; line: number | null }[];
+  /**
+   * Which changed files the agent read, counted by the sidecar; a file it
+   * didn't is among `newChanges` as needing review. Absent on older answers.
+   */
+  coverage?: VerificationCoverage | UnknownCoverage;
+}
+
+/** Mirrors the sidecar's `RereviewSize`: what a re-review would read and cost. */
+export interface RereviewSize {
+  files: number;
+  changedLines: number;
+  binary: string[];
+  /** Files with a version too large to compare. */
+  noInterdiff: string[];
+  skimmed: string[];
+  readBytes: number;
+  /** More than one agent can hold: the run won't start. */
+  overAgentBudget: boolean;
+  estimatedCostUsd: number;
+  budgetUsd: number;
+  overBudget: boolean;
 }
 
 /** A re-review run as the route returns it. */
@@ -79,6 +101,8 @@ export interface LatestRereview {
     toHeadSha: string | null;
     current: boolean;
   } | null;
+  /** What a re-review of the range would read and cost; null when it can't be sized. */
+  size?: RereviewSize | null;
 }
 
 const path = (workspaceId: string, prId: string, from?: string) =>

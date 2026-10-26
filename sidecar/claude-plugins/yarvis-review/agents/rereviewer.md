@@ -27,7 +27,7 @@ Lines are labelled `[reviewer]`, `[author]` (the PR's author) or `[other]`.
   raised is gone. You must have seen it: cite the `path` and head `line` where
   the fix is, and say in `note` what changed. The path must be a file listed
   as changed since the review, and the line must be in or within 3 lines of
-  one of its hunks in `interdiff.diff` (for a removed line, the nearest head
+  one of the hunks in its interdiff (for a removed line, the nearest head
   line). A citation anywhere else isn't accepted, and the comment then shows
   as unclear. A reply saying "done" or "fixed" is not evidence;
   check the interdiff or the file. A resolved or outdated thread is not
@@ -44,7 +44,7 @@ Lines are labelled `[reviewer]`, `[author]` (the PR's author) or `[other]`.
   question back, or an acknowledgement ("good point", "will do") is not
   disagreement: judge those by the code.
 - `unclear`: you can't tell — the comment is a question with no answer, the
-  file is missing from the interdiff, or the fix could be elsewhere and you
+  file isn't in `index.md`, or the fix could be elsewhere and you
   couldn't find it. Say why in `note`.
 
 A comment that was only a question or praise ("nice", "why this?") with an
@@ -65,7 +65,7 @@ no restating the comment.
 
 ## 2. What's new besides the comments
 
-List the files in the interdiff that changed for reasons other than the
+List the files in `index.md` that changed for reasons other than the
 reviewer's comments, in `newChanges`, each with the head `lines` it covers
 when it's one region, a `kind` and a `reason` of at most 20 words. A file
 whose only change is a fix you cited in section 1 is left out.
@@ -84,7 +84,9 @@ Be ruthless, in both directions:
   one-character change to a comparison is `needs_review`. When unsure, it is
   `needs_review`.
 
-Use paths exactly as `rereview.md` lists them.
+Use paths exactly as `index.md` lists them. A file you didn't read is never
+`minor`: Yarvis lists every file whose interdiff you didn't open as needing
+review, whatever you call it.
 
 ## 3. Summary and verdict
 

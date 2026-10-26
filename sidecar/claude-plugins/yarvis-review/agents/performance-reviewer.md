@@ -10,6 +10,9 @@ code: the kind that shows up in production, not in a micro-benchmark.
 
 <!-- yarvis-review:inputs-and-trust -->
 
+Your lane is every patch of source code other than tests, plus schema and
+migration files: not tests, docs, generated code, lockfiles or vendored code.
+
 ## What counts
 
 - A query, request or file read inside a loop (N+1).

@@ -149,18 +149,55 @@ marks its files viewed.
 
 ### Verification report
 
-**Verification** in the PR bar opens a tab where an agent (Claude Code,
-running on your machine against the PR's checkout) reads the whole change and
-reports: a summary, the files that must be read and why, the risk, and checks
-for completeness, tests, complexity, performance and comments. Its progress
-shows check by check while it runs, and **Cancel** stops it. Every file and
-line in the report opens the diff there.
+**Verification** in the PR bar opens a tab where agents (Claude Code,
+running on your machine against the PR's checkout) read every changed file's
+diff and report: a summary, the files that must be read and why, the risk, and
+checks for completeness, tests, complexity, performance and comments. Its
+progress shows check by check while it runs, and **Cancel** stops it. Every
+file and line in the report opens the diff there.
+
+No file is left out to save room. Each changed file's diff is given to the
+agents on its own, and each check is told to read every one in its area (the
+tests check reads the tests and the code they cover, for example). Only a
+binary file has no diff. A diff over 2 MB is cut to its first 256 KB, and the
+agents are told so.
+
+Bulk is skimmed, not read: lockfiles, minified files, `dist/` and `vendor/`,
+and files the repo's `.gitattributes` marks `linguist-generated` or
+`linguist-vendored`. Those marks are read at the merge-base, so a PR can't
+mark its own code generated to get it skimmed. For the same reason a file
+under `dist/` or `vendor/` is skimmed only if it already existed at the
+merge-base: one the PR adds there is read in full. The summary agent reads the
+first 200 lines of each bulk file to say what it is.
+
+On a big PR, one agent can't hold every diff at once, and what it read early
+would drop out of its context. So the diffs are split into reading groups of
+about 512 KB (one huge diff is split by lines), and each check runs as one
+agent per group, with their findings merged into one report.
+
+Yarvis then counts, from the files the agents actually opened, which changed
+files no check read in full. A read only counts when it shows the lines: a
+read that failed, a diff with lines too long for the agent to see whole, or
+only part of a diff read, doesn't. When any file is short, the report opens
+with a **Not examined** section listing each one and why. Click a path to
+open its diff. Nothing else in the report covers those files. Below it:
+
+- **Generated, skimmed**, folded away: the bulk whose first page was read.
+- **Not examined by** a check: source files in that check's area that it
+  didn't read, though another check did.
+
+When every file was read, the report says that at least one check read each
+one.
 
 - A report made for an older head says so, with **Re-run**.
 - If a re-run fails or is cancelled, the last good report stays below the
   notice.
-- On a large PR you are asked first: the run leaves some files out and costs
-  more.
+- Before a run, the tab names the binary files, any diffs that will be cut
+  off, and the bulk the agents will only skim.
+- On a large PR, or when the estimated cost is over the report's budget
+  (**Settings → PR review**), you are asked first, with a rough cost estimate
+  against the budget. A run that reaches its budget stops without a report,
+  so raise the budget there before running a PR the estimate says is over it.
 
 ### Mutation testing
 
@@ -295,6 +332,17 @@ Yarvis checks the agent's answer rather than taking it on trust:
 - Every file that changed since your review is accounted for. One the agent
   neither listed nor cited as a fix is listed as needing review ("not
   classified by the agent").
+- The agent gets every changed file's interdiff, none left out for room, and
+  Yarvis counts which ones it actually read. A file it didn't read in full is
+  listed as needing review ("not examined by the agent", with why), even when
+  the agent called it minor or cited a fix there. A file with a version over
+  2 MB has no interdiff and is listed the same way. A fix the agent cites in a
+  file it never opened shows as **Unclear**.
+- One agent writes the summary, so it has a limit: when the changes since
+  your review are more than it can read at once (about 512 KB of interdiffs),
+  **What's changed** won't run, and says so. Before a run the section names
+  the files it can't read whole, and asks first when the estimated cost is
+  over its budget. Auto-start never starts a run like that.
 - When it changed anything, the verdict's reason is Yarvis's own count, and a
   line under the summary says what it couldn't take as given.
 - **Ready to approve** never stands beside anything outstanding.

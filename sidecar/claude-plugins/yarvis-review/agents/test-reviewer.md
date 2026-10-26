@@ -10,6 +10,10 @@ those tests fail if the code were wrong? You cannot run anything; read.
 
 <!-- yarvis-review:inputs-and-trust -->
 
+Your lane is every test patch, and every patch of code with behaviour that
+could need a test: not docs, plain configuration, generated code, lockfiles or
+vendored code.
+
 ## Method
 
 1. List the behaviour the PR adds or changes that can be wrong: branches,

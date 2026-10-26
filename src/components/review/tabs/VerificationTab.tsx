@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
 import { invalidate } from "../../../lib/resourceCache";
-import { startVerification } from "../../../lib/reviewWorkspaces/verification";
+import {
+  startVerification,
+  type VerificationSize,
+} from "../../../lib/reviewWorkspaces/verification";
 import LoadingIndicator from "../../LoadingIndicator";
 import { Spinner } from "../../ThinkingIndicator";
 import {
@@ -11,6 +14,7 @@ import {
   useReviewTree,
   verificationKey,
 } from "./reviewData";
+import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 import VerificationReportView, { type OpenLocation } from "./VerificationReportView";
 import {
@@ -52,6 +56,25 @@ export function useVerificationRun(prId: string, runId: string | null): RunProgr
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
+/**
+ * What a run on this PR will and won't see, and what it may cost, asked
+ * before a large or over-budget run starts.
+ */
+function SizeWarning({ size }: { size: VerificationSize }) {
+  return (
+    <div className="space-y-1">
+      {size.large && (
+        <div>
+          This PR is large: {size.files} files, {size.changedLines} changed lines. The checks read
+          every file's diff, so the run takes longer and costs more than usual.
+        </div>
+      )}
+      <FileNotices notices={fileNotices(size)} />
+      <CostLine {...size} />
+    </div>
+  );
+}
+
 function CheckLine({ check }: { check: CheckProgress }) {
   const icon =
     check.state === "running" ? (
@@ -91,7 +114,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const [startedId, setStartedId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  // A large PR asks first: the run leaves files out and costs more.
+  // A large PR, or one the estimate says will outrun the budget, asks first.
   const [confirmingLarge, setConfirmingLarge] = useState(false);
 
   const run = latest.data?.run ?? null;
@@ -105,7 +128,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const size = latest.data?.size ?? null;
 
   const start = async (confirmed = false) => {
-    if (size?.large && !confirmed) {
+    if ((size?.large || size?.overBudget) && !confirmed) {
       setConfirmingLarge(true);
       return;
     }
@@ -200,10 +223,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             role="alert"
             className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"
           >
-            <p>
-              This PR is large: {size.files} files, {size.changedLines} changed lines. The run will
-              leave some files out and cost more than usual.
-            </p>
+            <SizeWarning size={size} />
             <div className="flex gap-2">
               <button
                 type="button"
@@ -222,6 +242,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             </div>
           </div>
         )}
+        {!confirmingLarge && size && !running && (
+          // Even on a small PR, say up front what the run won't read whole.
+          <div className="text-xs text-zinc-400" data-testid="file-notices">
+            <FileNotices notices={fileNotices(size)} />
+          </div>
+        )}
 
         {actionError && (
           <p role="alert" className="text-xs text-red-400">
@@ -232,9 +258,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
         {!run && !running && (
           <p className="text-sm text-zinc-400">
-            An agent reads the whole change and reports what it does, which files must be read, how
-            risky it is, and whether it is complete, tested, simple, fast and well commented. Checks
-            that pass say so in a line.
+            Agents read every changed file's diff and report what the change does, which files must
+            be read, how risky it is, and whether it is complete, tested, simple, fast and well
+            commented. Checks that pass say so in a line, and the report lists any file the checks
+            didn't read.
           </p>
         )}
 

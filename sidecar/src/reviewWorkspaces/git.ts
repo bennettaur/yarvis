@@ -628,12 +628,82 @@ export async function fileDiffBetween(
   path: string,
   oldPath?: string,
 ): Promise<string> {
+  return git(runner, fileDiffArgs(from, to, path, oldPath), clonePath);
+}
+
+function fileDiffArgs(from: string, to: string, path: string, oldPath?: string): string[] {
   assertSafeRepoPath(path);
   if (oldPath) assertSafeRepoPath(oldPath);
   const paths = oldPath && oldPath !== path ? [oldPath, path] : [path];
-  return git(
+  return [
+    "--literal-pathspecs",
+    "diff",
+    ...SAFE_DIFF_FLAGS,
+    "-M",
+    `${from}..${to}`,
+    "--",
+    ...paths,
+  ];
+}
+
+const GENERATED_ATTRIBUTES = ["linguist-generated", "linguist-vendored"];
+
+/**
+ * Which of `paths` the `.gitattributes` files at commit `sha` mark generated
+ * or vendored (`linguist-generated`, `linguist-vendored`). Read from the
+ * commit (`--source`), not a checkout, so the caller decides whose word counts:
+ * the merge-base's, which a PR can't edit. On the network runner, since a
+ * blobless clone may not have that commit's `.gitattributes` yet.
+ */
+export async function generatedByAttributes(
+  runner: GitRunner,
+  clonePath: string,
+  sha: string,
+  paths: readonly string[],
+): Promise<Set<string>> {
+  const marked = new Set<string>();
+  if (paths.length === 0) return marked;
+  const out = await git(
     runner,
-    ["--literal-pathspecs", "diff", ...SAFE_DIFF_FLAGS, "-M", `${from}..${to}`, "--", ...paths],
+    ["check-attr", `--source=${sha}`, "-z", "--stdin", ...GENERATED_ATTRIBUTES],
     clonePath,
+    NETWORK_TIMEOUT_MS,
+    `${paths.join("\0")}\0`,
   );
+  const fields = out.split("\0");
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const value = fields[i + 2];
+    if (value === "set" || value === "true") marked.add(fields[i] as string);
+  }
+  return marked;
+}
+
+/** How long one capped file diff may take; a multi-megabyte generated file takes a few seconds. */
+const CAPPED_DIFF_TIMEOUT_MS = 60_000;
+
+/**
+ * {@link fileDiffBetween}, read only up to `maxBytes`: for a reader of every
+ * changed file, where one generated file's diff can run to hundreds of
+ * megabytes. `complete` is false when the output reached the cap or the time
+ * ran out, and the patch is then what had arrived, cut at a line.
+ */
+export async function fileDiffCapped(
+  runner: CappedGitRunner,
+  clonePath: string,
+  from: string,
+  to: string,
+  path: string,
+  oldPath: string | undefined,
+  maxBytes: number,
+): Promise<{ patch: string; complete: boolean }> {
+  const args = fileDiffArgs(from, to, path, oldPath);
+  const result = await runner(args, {
+    cwd: clonePath,
+    timeoutMs: CAPPED_DIFF_TIMEOUT_MS,
+    maxBytes,
+  });
+  if (result.stopped === null && result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed (${result.exitCode}): ${result.stderr.trim()}`);
+  }
+  return { patch: result.stdout, complete: result.stopped === null };
 }

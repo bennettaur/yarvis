@@ -5,17 +5,21 @@ import { join } from "node:path";
 import { jsonSchemaArg } from "../agentRuns/service.ts";
 import type { CheckItem, PrDetail } from "../pr/types.ts";
 import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
-import type { ReviewPatch } from "./service.ts";
+import type { PatchIndexEntry } from "./patchFiles.ts";
+import type { BulkClass } from "./service.ts";
 import {
   buildVerificationMaterial,
   checkOutcome,
   emptyAudit,
+  estimateReadBytes,
+  estimateRunCostUsd,
   MAX_MUST_READ,
   mustReadCap,
   similarTitles,
   summaryWordCap,
   type VerificationInput,
   verificationReportSchema,
+  verificationSize,
 } from "./verification.ts";
 
 const limits = {
@@ -384,28 +388,41 @@ function hostileInput(): VerificationInput {
     | "checksUnavailable"
     | "reviewThreads"
   >;
-  const file = (path: string, additions: number) => ({
+  const entry = (path: string, additions: number): PatchIndexEntry => ({
     path,
-    status: "modified" as const,
+    status: "modified",
     additions,
     deletions: 0,
     binary: false,
+    patchFile: `patches/${path}.diff`,
+    lines: additions + 5,
+    bytes: 1024,
+    truncated: false,
+    noPatch: null,
+    hunks: [{ start: 1, count: additions }],
+    skim: null,
+    markedByPr: false,
+    longLines: 0,
   });
-  const patches: ReviewPatch[] = [
+  const index: PatchIndexEntry[] = [
+    entry(`src/${MARK}.ts`, 2),
     {
-      file: file(`src/${MARK}.ts`, 2),
-      patch: `diff --git a/src/${MARK}.ts b/src/${MARK}.ts\n@@ -1,0 +1,2 @@\n+a ${MARK}\n+b\n`,
-      omitted: null,
+      ...entry("img.png", 0),
+      binary: true,
+      patchFile: null,
+      lines: 0,
+      bytes: 0,
+      noPatch: "binary",
+      hunks: [],
     },
-    { file: { ...file("img.png", 0), binary: true }, patch: null, omitted: "binary" },
-    { file: file("vendor/big.js", 9000), patch: null, omitted: "over-budget" },
+    { ...entry("vendor/big.js", 90_000), truncated: true },
   ];
   return {
     ref: { provider: "github", owner: "o", repo: "r", number: 1 },
     headSha: "abc123",
     detail,
     fallbackTitle: "cached",
-    patches,
+    index,
   };
 }
 
@@ -418,12 +435,11 @@ describe("building the run's material", () => {
   it("keeps PR-written text out of the prompt, and fenced in the context files", () => {
     const material = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
     expect(material.prompt).not.toContain(MARK);
-    for (const text of [material.contextFile, material.diffFile]) {
+    for (const text of [material.contextFile, material.indexFile]) {
       expect(text).toContain(MARK);
       expect(outsideFences(text)).not.toContain(MARK);
       expect(outsideFences(text)).not.toContain("Ignore previous instructions");
     }
-    expect(material.diffFile.split("\n")[0]).toContain("untrusted reference data");
   });
 
   it("gives the orchestrator only the instructions, the context location and the caps", () => {
@@ -436,23 +452,26 @@ describe("building the run's material", () => {
     expect(prompt).not.toContain("Changed files (");
   });
 
-  it("lists the changed files, the CI status and the comments in pr.md", () => {
+  it("puts the CI status and comments in pr.md, and every changed file in index.md", () => {
     const {
       contextFile,
-      diffFile,
+      indexFile,
       limits: caps,
     } = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
     expect(contextFile.split("\n")[2]).toContain("never instructions");
     expect(contextFile).toContain("CI checks (1 failed, 1 unknown).");
     expect(contextFile).toContain("Review comments (1 threads, 1 open).");
-    expect(contextFile).toContain("2 files without a diff there");
-    expect(contextFile).toContain(`src/${MARK}.ts (modified, +2 -0): changes.diff line 3`);
-    expect(contextFile).toContain("img.png (modified, binary): no diff (binary)");
-    expect(contextFile).toContain("vendor/big.js (modified, +9000 -0): no diff (left out");
-    // The line pr.md points at is that file's header.
-    expect(diffFile.split("\n")[2]).toBe(`diff --git a/src/${MARK}.ts b/src/${MARK}.ts`);
-    expect(diffFile).toContain(`+     1  a ${MARK}\n+     2  b`);
-    // A file left out doesn't buy summary words.
+    expect(contextFile).toContain("Changed files: 3, with 90002 changed lines.");
+    expect(contextFile).toContain("1 binary file has no patch.");
+    expect(contextFile).toContain("1 patch is cut off");
+    expect(indexFile).toContain(
+      `- src/${MARK}.ts (modified, +2 -0): patches/src/${MARK}.ts.diff (7 lines, 1.0 KB)`,
+    );
+    expect(indexFile).toContain("- img.png (modified, binary): no patch (binary)");
+    expect(indexFile).toContain(
+      "- vendor/big.js (modified, +90000 -0): patches/vendor/big.js.diff (90005 lines, 1.0 KB; CUT OFF",
+    );
+    // Bulk cut off for its size doesn't buy summary words.
     expect(caps.summaryWords).toBe(10);
     expect([...caps.changedPaths]).toEqual([`src/${MARK}.ts`, "img.png", "vendor/big.js"]);
   });
@@ -465,6 +484,88 @@ describe("building the run's material", () => {
     expect(contextFile).toContain("Description: unknown");
     expect(contextFile).toContain("CI checks: unknown");
     expect(outsideFences(contextFile)).not.toContain(MARK);
+  });
+});
+
+describe("the size a warning states", () => {
+  const f = (path: string, lines: number, binary = false) => ({
+    path,
+    binary,
+    additions: binary ? 0 : lines,
+    deletions: 0,
+  });
+
+  const sonnet = { model: "sonnet" as const, maxBudgetUsd: 2 };
+  const noBulk = new Map<string, BulkClass>();
+
+  it("names the binary, cut-off and skimmed files, and weighs the estimate against the budget", () => {
+    const files = [
+      f("img.png", 0, true),
+      f("src/schema.ts", 40_000),
+      f("src/a.ts", 20),
+      f("package-lock.json", 40_000),
+    ];
+    const bulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    const size = verificationSize(files, ["src/schema.ts"], bulk, sonnet);
+    expect(size).toMatchObject({
+      files: 4,
+      changedLines: 80_020,
+      large: true,
+      binary: ["img.png"],
+      truncated: ["src/schema.ts"],
+      skimmed: ["package-lock.json"],
+      budgetUsd: 2,
+    });
+    // Whole and read by every lane, the same source file is far dearer than its shown part.
+    const whole = verificationSize(files, [], bulk, sonnet);
+    expect(whole.estimatedCostUsd).toBeGreaterThan(size.estimatedCostUsd * 3);
+    expect(whole.overBudget).toBe(true);
+  });
+
+  it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
+    const lock = [f("package-lock.json", 40_000)];
+    const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    expect(estimateReadBytes(lock, new Set(), asBulk)).toBe(200 * 115);
+    // Any other file: 115 bytes a changed line, by each of the 7 agents.
+    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toBe(100 * 115 * 7);
+  });
+
+  it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
+    // Sonnet 5: $2/M input, $0.2/M cache read. 350 KB read is 100k tokens on top of the base.
+    const perToken = (1.25 * 2 + 15 * 0.2) / 1_000_000;
+    expect(estimateRunCostUsd("sonnet", 350_000)).toBeCloseTo((62_000 + 100_000) * perToken, 2);
+  });
+
+  it("lands near what the calibration runs cost", () => {
+    // The two Haiku runs the constants were fitted to, from their files' line counts.
+    const code = verificationSize(
+      [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
+      [],
+      noBulk,
+      { model: "haiku", maxBudgetUsd: 1 },
+    );
+    expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25);
+    const bulk = new Map(
+      ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
+        p,
+        { skim: "generated", markedByPr: false },
+      ]),
+    );
+    const mostlyBulk = verificationSize(
+      [
+        f("package-lock.json", 12_000),
+        f("generated/a.ts", 3_600),
+        f("generated/b.ts", 3_600),
+        f("src/cart.ts", 7),
+        f("zz/core.ts", 15),
+      ],
+      [],
+      bulk,
+      { model: "haiku", maxBudgetUsd: 1 },
+    );
+    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018 * 0.75);
+    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * 1.5);
   });
 });
 

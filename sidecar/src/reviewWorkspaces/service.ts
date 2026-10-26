@@ -36,7 +36,7 @@ import { prSourceFor } from "../pr/source.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
-import { removeWorktree } from "../workspaces/git.ts";
+import { git, removeWorktree, splitNulFields } from "../workspaces/git.ts";
 import {
   assertSafeBranchName,
   findRepoForPr,
@@ -63,7 +63,9 @@ import {
   type FileAtSide,
   fetchPr,
   fileDiffBetween,
+  fileDiffCapped,
   type GitCredentials,
+  generatedByAttributes,
   type HeadSource,
   type PrShas,
   prefetchTree,
@@ -75,6 +77,7 @@ import {
   reviewGit,
   treePaths,
 } from "./git.ts";
+import { bulkKind, type PatchSource } from "./patchFiles.ts";
 import {
   claimRun,
   forgetRuns,
@@ -1075,19 +1078,92 @@ export async function reviewDiff(
   return { ...base, patch, tooLarge: false };
 }
 
+/** How a changed file reads for an agent: bulk to skim, and whether the PR marked it generated. */
+export interface BulkClass {
+  skim: string | null;
+  markedByPr: boolean;
+}
+
 /**
- * How big the PR's diff is, counting only files `reviewPatches` would read with
- * the same `maxFileBytes`: a lockfile left out for its size isn't part of what
- * a reader of the patches pays for.
+ * {@link bulkKind} for each of `paths`, with `.gitattributes` read at
+ * `baseSha` (whose word counts) and `headSha` (to say when the PR added a
+ * mark). Cached by commit. When the attributes can't be read the paths alone
+ * decide, which only ever makes fewer files bulk.
  */
-export async function reviewDiffSize(
+export async function classifyBulk(
+  ready: Pick<ReadyPr, "runners" | "clonePath">,
+  baseSha: string,
+  headSha: string,
+  paths: string[],
+): Promise<Map<string, BulkClass>> {
+  const marked = (sha: string) =>
+    cache
+      .get(
+        `attrs:${ready.clonePath}:${sha}:${Bun.hash(paths.join("\0"))}`,
+        () => generatedByAttributes(ready.runners.network, ready.clonePath, sha, paths),
+        (s) => stringsSize([...s]) + 64,
+      )
+      .catch((e) => {
+        console.error("[review-workspaces] could not read .gitattributes:", describeError(e));
+        return new Set<string>();
+      });
+  // Which paths the merge-base already had; trees are local. When this can't
+  // be read, none count as existing, so path-only bulk is read in full.
+  const existing = cache
+    .get(
+      `base-paths:${ready.clonePath}:${baseSha}:${Bun.hash(paths.join("\0"))}`,
+      async () =>
+        new Set(
+          paths.length === 0
+            ? []
+            : splitNulFields(
+                await git(
+                  ready.runners.local,
+                  ["--literal-pathspecs", "ls-tree", "-z", "--name-only", baseSha, "--", ...paths],
+                  ready.clonePath,
+                ),
+              ),
+        ),
+      (s) => stringsSize([...s]) + 64,
+    )
+    .catch((e) => {
+      console.error("[review-workspaces] could not list the merge-base's files:", describeError(e));
+      return new Set<string>();
+    });
+  const [atBase, atHead, existed] = await Promise.all([marked(baseSha), marked(headSha), existing]);
+  return new Map(
+    paths.map((path) => {
+      const skim = bulkKind(path, atBase, existed.has(path));
+      return [path, { skim, markedByPr: !skim && atHead.has(path) }];
+    }),
+  );
+}
+
+/**
+ * A diff can't be much bigger than both sides together, so only a file this
+ * close to the cap has its diff read to see whether it goes over.
+ */
+const mayOverflow = (f: ChangedFileWithSizes, maxPatchBytes: number) =>
+  !f.binary && 2 * (f.oldSize + f.newSize) + 64 * 1024 > maxPatchBytes;
+
+/**
+ * The PR's changed files with their sizes, and which of them have a diff over
+ * `maxPatchBytes`, which an agent run is given only the start of. Found
+ * without diffing every file: only one big enough to get there is read, up to
+ * the cap, and the answer is cached by commit.
+ */
+export async function reviewDiffFacts(
   db: Db,
   config: Config,
   workspaceId: string,
   prId: string,
   deps: ReviewDeps,
-  maxFileBytes: number,
-): Promise<{ files: number; changedLines: number }> {
+  maxPatchBytes: number,
+): Promise<{
+  files: ChangedFileWithSizes[];
+  truncated: string[];
+  bulk: Map<string, BulkClass>;
+}> {
   const ready = await requireReadyPr(db, config, workspaceId, prId, deps);
   const files = await changedFiles(
     ready.runners,
@@ -1095,35 +1171,51 @@ export async function reviewDiffSize(
     ready.mergeBaseSha,
     ready.headSha,
   );
-  const changedLines = files
-    .filter((f) => !f.binary && Math.max(f.oldSize, f.newSize) <= maxFileBytes)
-    .reduce((n, f) => n + f.additions + f.deletions, 0);
-  return { files: files.length, changedLines };
-}
-
-/** One changed file's patch for a whole-PR read, or why it was left out. */
-export interface ReviewPatch {
-  file: ReviewChangedFile;
-  patch: string | null;
-  omitted: "binary" | "too-large" | "over-budget" | null;
+  const truncated: string[] = [];
+  for (const file of files.filter((f) => mayOverflow(f, maxPatchBytes))) {
+    const complete = await cache.get(
+      `diff-complete:${ready.clonePath}:${ready.mergeBaseSha}..${ready.headSha}:${maxPatchBytes}:${file.path}`,
+      async () =>
+        (
+          await fileDiffCapped(
+            ready.runners.search,
+            ready.clonePath,
+            ready.mergeBaseSha,
+            ready.headSha,
+            file.path,
+            file.oldPath,
+            maxPatchBytes + 1,
+          )
+        ).complete,
+      () => 64,
+    );
+    if (!complete) truncated.push(file.path);
+  }
+  const bulk = await classifyBulk(
+    ready,
+    ready.mergeBaseSha,
+    ready.headSha,
+    files.map((f) => f.path),
+  );
+  return { files, truncated, bulk };
 }
 
 /**
- * Every changed file's patch, in path order, for a reader that wants the whole
- * PR at once (an agent run). A file over `maxFileBytes` on either side is left
- * out — a lockfile or generated bundle is all bulk and no review — and a patch
- * that would take the total past `maxTotalBytes` is listed but not included,
- * so one huge PR can't produce an unbounded file.
+ * Every changed file, in path order, for a reader that wants the whole PR at
+ * once (an agent run), each with its patch read only when it is written out.
+ * Nothing is left out: a binary file has no patch, and any other file's patch
+ * is read up to `maxPatchBytes` (plus one byte, so a patch past it reads as
+ * incomplete).
  *
  * Takes the PR row rather than reading it, so a caller that also uses the
  * row's head and worktree gets patches from that same head.
  */
-export async function reviewPatches(
+export async function reviewPatchSources(
   config: Config,
   pr: ReviewWorkspacePr,
   deps: ReviewDeps,
-  limits: { maxFileBytes: number; maxTotalBytes: number },
-): Promise<ReadShas & { patches: ReviewPatch[] }> {
+  maxPatchBytes: number,
+): Promise<ReadShas & { sources: PatchSource[] }> {
   const ready = readyFrom(config, pr, deps);
   const files = await changedFiles(
     ready.runners,
@@ -1131,38 +1223,31 @@ export async function reviewPatches(
     ready.mergeBaseSha,
     ready.headSha,
   );
-  const patches: ReviewPatch[] = [];
-  let total = 0;
-  for (const { oldSize, newSize, ...file } of [...files].sort((a, b) =>
-    a.path.localeCompare(b.path),
-  )) {
-    const omitted = file.binary
-      ? "binary"
-      : Math.max(oldSize, newSize) > limits.maxFileBytes
-        ? "too-large"
-        : null;
-    if (omitted) {
-      patches.push({ file, patch: null, omitted });
-      continue;
-    }
-    // Serial on purpose: each is a local git call, and a PR with hundreds of
-    // files shouldn't fork hundreds of processes at once.
-    const patch = await fileDiffBetween(
-      ready.runners.local,
-      ready.clonePath,
-      ready.mergeBaseSha,
-      ready.headSha,
-      file.path,
-      file.oldPath,
+  const bulk = await classifyBulk(
+    ready,
+    ready.mergeBaseSha,
+    ready.headSha,
+    files.map((f) => f.path),
+  );
+  const sources = [...files]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(
+      ({ oldSize: _old, newSize: _new, ...file }): PatchSource => ({
+        ...file,
+        ...bulk.get(file.path),
+        read: () =>
+          fileDiffCapped(
+            ready.runners.search,
+            ready.clonePath,
+            ready.mergeBaseSha,
+            ready.headSha,
+            file.path,
+            file.oldPath,
+            maxPatchBytes + 1,
+          ),
+      }),
     );
-    if (total + patch.length > limits.maxTotalBytes) {
-      patches.push({ file, patch: null, omitted: "over-budget" });
-      continue;
-    }
-    total += patch.length;
-    patches.push({ file, patch, omitted: null });
-  }
-  return { headSha: ready.headSha, mergeBaseSha: ready.mergeBaseSha, patches };
+  return { headSha: ready.headSha, mergeBaseSha: ready.mergeBaseSha, sources };
 }
 
 // ---------------------------------------------------------------------------

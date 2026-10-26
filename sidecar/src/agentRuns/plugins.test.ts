@@ -46,7 +46,7 @@ describe("writing out a shipped plugin", () => {
         const original = readFileSync(join(source, path), "utf8");
         if (path === "agents/rereviewer.md") {
           expect(shipped).toBe(original.replace(REREVIEW_INPUTS_AND_TRUST_MARKER, rereviewShared));
-          expect(shipped).toContain("interdiff.diff");
+          expect(shipped).toContain("index.md");
           expect(shipped).not.toContain(REREVIEW_INPUTS_AND_TRUST_MARKER);
         } else if (path.startsWith("agents/")) {
           expect(shipped).toBe(original.replace(INPUTS_AND_TRUST_MARKER, shared));

@@ -6,10 +6,13 @@ model: inherit
 ---
 
 You check the code comments and docstrings one pull request adds or changes.
-Only comments on `+` lines of the diff are in scope, plus an existing comment
-the change made wrong.
+Only comments on `+` lines of the patches are in scope, plus an existing
+comment the change made wrong.
 
 <!-- yarvis-review:inputs-and-trust -->
+
+Your lane is every patch of source and test code: not docs, generated code,
+lockfiles or vendored code.
 
 ## What counts
 

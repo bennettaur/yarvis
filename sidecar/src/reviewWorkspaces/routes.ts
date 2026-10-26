@@ -496,6 +496,7 @@ export function createReviewWorkspaceRoutes(
           c.req.param("prId"),
           deps(),
           (id) => registry.isLive(id),
+          (options.verification ?? defaultVerificationDeps(config)).settings,
         ),
       );
     } catch (e) {
@@ -543,6 +544,7 @@ export function createReviewWorkspaceRoutes(
           deps(),
           (id) => registry.isLive(id),
           from,
+          { config, settings: (options.rereview ?? defaultRereviewDeps(config)).settings },
         ),
       );
     } catch (e) {

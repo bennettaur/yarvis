@@ -16,6 +16,7 @@ import {
   lockedDownSettings,
   pruneAgentRunEvents,
   RUN_GUARDRAIL,
+  type RunActivity,
   spotlight,
   startClaudeRun,
 } from "./service.ts";
@@ -243,6 +244,39 @@ describe("a run", () => {
     const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
     expect(events.at(-1)).toEqual({ type: "done", status: "succeeded" });
     expect(events.some((event) => event.type === "subagent")).toBe(true);
+  });
+
+  it("finishes the answer with what the run read before storing it", async () => {
+    const handle = await startClaudeRun(
+      db,
+      runOptions<{ count: number }, { count: number; read: string[] }>(dir, {
+        outputSchema: countSchema,
+        finishOutput: (answer: { count: number }, activity: RunActivity) => ({
+          ...answer,
+          read: activity.reads.map((r) => r.path),
+        }),
+      }),
+      deps(replay("subagent-structured-output.jsonl")),
+    );
+    const outcome = await handle.done;
+    expect(outcome.output).toEqual({ count: 2, read: ["/work/repo/a.txt"] });
+    expect((await row(handle.id))?.result).toEqual({ count: 2, read: ["/work/repo/a.txt"] });
+  });
+
+  it("fails the run, rather than storing a half-finished answer, when the finishing step throws", async () => {
+    const handle = await startClaudeRun(
+      db,
+      runOptions<{ count: number }, { count: number; read: string[] }>(dir, {
+        outputSchema: countSchema,
+        finishOutput: () => {
+          throw new Error("could not count");
+        },
+      }),
+      deps(replay("subagent-structured-output.jsonl")),
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "failed", output: null });
+    expect(outcome.error).toContain("could not count");
   });
 
   it("records its process, so a sweep after a crash can find it", async () => {

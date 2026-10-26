@@ -10,6 +10,9 @@ and only report it when you can name a materially simpler version.
 
 <!-- yarvis-review:inputs-and-trust -->
 
+Your lane is every patch of source code other than tests: not tests, docs,
+configuration, generated code, lockfiles or vendored code.
+
 ## What counts
 
 - An abstraction (interface, base class, factory, generic, option, plugin
