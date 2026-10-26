@@ -70,6 +70,15 @@ describe("setup guard", () => {
     expect(readFileSync(outside, "utf8")).toBe("untouched\n");
   });
 
+  it("removes a fifo the script left in hooks without blocking on it", () => {
+    const fifo = join(clone, ".git", "hooks", "pre-commit");
+    const snapshot = snapshotGitState(clone, worktree);
+    Bun.spawnSync(["mkfifo", fifo]);
+
+    expect(restoreGitState(snapshot)).toContain(join(clone, ".git", "hooks"));
+    expect(existsSync(fifo)).toBe(false);
+  });
+
   it("reports nothing when nothing changed", () => {
     expect(restoreGitState(snapshotGitState(clone, worktree))).toEqual([]);
   });

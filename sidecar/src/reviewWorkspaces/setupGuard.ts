@@ -19,19 +19,29 @@
  */
 
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  readSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-type Entry = { kind: "file"; data: Buffer } | { kind: "link"; target: string } | { kind: "dir" };
+/** `other` is anything that isn't a regular file, link or directory (a fifo, a socket). */
+type Entry =
+  | { kind: "file"; data: Buffer }
+  | { kind: "link"; target: string }
+  | { kind: "dir" }
+  | { kind: "other" };
 
 /** What a path held: nothing, or a tree of entries keyed by relative path. */
 type Snapshot = Map<string, Entry> | null;
@@ -50,10 +60,41 @@ function capture(root: string): Snapshot {
     else if (stat.isDirectory()) {
       entries.set(rel, { kind: "dir" });
       for (const name of readdirSync(full)) walk(rel ? join(rel, name) : name);
-    } else entries.set(rel, { kind: "file", data: readFileSync(full) });
+    } else entries.set(rel, readEntry(full));
   };
   walk("");
   return entries;
+}
+
+/**
+ * Reads a file through one descriptor opened with `O_NOFOLLOW`, so a file
+ * swapped for a symlink after the `lstat` is never followed to whatever it
+ * names. `O_NONBLOCK` so a fifo left behind by the script can't hang the read.
+ */
+function readEntry(path: string): Entry {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      return { kind: "link", target: readlinkSync(path) };
+    }
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return { kind: "other" };
+    const data = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < stat.size) {
+      const n = readSync(fd, data, read, stat.size - read, read);
+      if (n === 0) break;
+      read += n;
+    }
+    return { kind: "file", data: data.subarray(0, read) };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function isLink(path: string): boolean {
@@ -69,7 +110,7 @@ function same(a: Snapshot, b: Snapshot): boolean {
   if (a.size !== b.size) return false;
   for (const [rel, entry] of a) {
     const other = b.get(rel);
-    if (!other || other.kind !== entry.kind) return false;
+    if (!other || other.kind !== entry.kind || entry.kind === "other") return false;
     if (entry.kind === "file" && other.kind === "file" && !entry.data.equals(other.data)) {
       return false;
     }
@@ -88,6 +129,7 @@ function restore(root: string, snapshot: Snapshot): void {
     const full = rel ? join(root, rel) : root;
     if (entry.kind === "dir") mkdirSync(full, { recursive: true });
     else if (entry.kind === "link") symlinkSync(entry.target, full);
+    else if (entry.kind === "other") continue;
     else {
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, entry.data);
