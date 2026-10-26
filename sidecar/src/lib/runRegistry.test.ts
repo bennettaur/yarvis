@@ -14,6 +14,20 @@ function collector() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
 
+describe("forget", () => {
+  it("drops a finished run's history and leaves a live one alone", async () => {
+    const runs = registry({ keepFinishedMs: 60_000 });
+    runs.start("done");
+    runs.emit("done", "one");
+    runs.finish("done");
+    runs.start("live");
+    runs.forget("done");
+    runs.forget("live");
+    expect(await runs.follow("done", () => {})).toBe(false);
+    expect(runs.isLive("live")).toBe(true);
+  });
+});
+
 describe("following a run", () => {
   it("replays what happened before the viewer joined, then streams the rest", async () => {
     const runs = registry();

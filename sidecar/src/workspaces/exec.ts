@@ -33,14 +33,15 @@ const ENV_ALLOWLIST = [
   "XDG_CONFIG_HOME",
 ];
 
-/** Builds an allowlisted env, overlaying any explicit extras. */
+/** Builds an allowlisted env, minus `without`, overlaying any explicit extras. */
 export function scrubbedEnv(
   extra: Record<string, string | undefined> = {},
+  without: readonly string[] = [],
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of ENV_ALLOWLIST) {
     const value = process.env[key];
-    if (value !== undefined) out[key] = value;
+    if (value !== undefined && !without.includes(key)) out[key] = value;
   }
   for (const [key, value] of Object.entries(extra)) {
     if (value !== undefined) out[key] = value;
@@ -59,13 +60,24 @@ export interface RunOptions {
   timeoutMs?: number;
   /** Extra env entries overlaid on the scrubbed allowlist. */
   env?: Record<string, string | undefined>;
+  /** Written to the command's stdin; without it stdin is closed. */
+  stdin?: string;
+  /** Allowlisted variables to withhold from this command. */
+  withoutEnv?: readonly string[];
 }
 
-/** Runs a command to completion, capturing stdout/stderr. Never inherits secrets. */
-export async function run(args: string[], opts: RunOptions = {}): Promise<RunResult> {
+export interface RunBytesResult {
+  stdout: Uint8Array;
+  stderr: string;
+  exitCode: number;
+}
+
+/** Spawns a command with the scrubbed env and a timeout, and collects its output. */
+async function spawnAndCollect(args: string[], opts: RunOptions): Promise<RunBytesResult> {
   const proc = Bun.spawn(args, {
     cwd: opts.cwd,
-    env: scrubbedEnv(opts.env),
+    env: scrubbedEnv(opts.env, opts.withoutEnv),
+    stdin: opts.stdin === undefined ? undefined : new TextEncoder().encode(opts.stdin),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -79,20 +91,35 @@ export async function run(args: string[], opts: RunOptions = {}): Promise<RunRes
 
   try {
     const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
+      new Response(proc.stdout).arrayBuffer(),
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
     if (timedOut) {
       throw new Error(`command timed out after ${timeoutMs}ms: ${args.join(" ")}`);
     }
-    return { stdout, stderr, exitCode };
+    return { stdout: new Uint8Array(stdout), stderr, exitCode };
   } finally {
     clearTimeout(timer);
   }
 }
 
-export interface StreamOptions extends RunOptions {
+/** Runs a command to completion, capturing stdout/stderr. Never inherits secrets. */
+export async function run(args: string[], opts: RunOptions = {}): Promise<RunResult> {
+  const result = await spawnAndCollect(args, opts);
+  return { ...result, stdout: new TextDecoder().decode(result.stdout) };
+}
+
+/**
+ * Like {@link run}, but hands stdout back as bytes. For reading file contents
+ * out of git, where decoding as text would mangle a binary file before anything
+ * could tell it was one.
+ */
+export function runBytes(args: string[], opts: RunOptions = {}): Promise<RunBytesResult> {
+  return spawnAndCollect(args, opts);
+}
+
+export interface StreamOptions extends Omit<RunOptions, "stdin"> {
   /** Called with each decoded chunk of stdout/stderr as it arrives. */
   onChunk: (text: string) => void | Promise<void>;
 }
@@ -104,7 +131,7 @@ export interface StreamOptions extends RunOptions {
 export async function runStreaming(args: string[], opts: StreamOptions): Promise<number> {
   const proc = Bun.spawn(args, {
     cwd: opts.cwd,
-    env: scrubbedEnv(opts.env),
+    env: scrubbedEnv(opts.env, opts.withoutEnv),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -134,4 +161,40 @@ export async function runStreaming(args: string[], opts: StreamOptions): Promise
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** How long a repo's setup script may run before it is killed. */
+export const SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * How much of a setup script's output is kept on the row once it finishes. The
+ * live stream carries all of it; what is stored is the tail, which is where a
+ * failure says why.
+ */
+export const SETUP_LOG_CAP = 16 * 1024;
+
+/**
+ * Runs a repo's setup script in `cwd`, streaming its output to `onChunk`, and
+ * resolves with the exit code and the last {@link SETUP_LOG_CAP} characters of
+ * output. `bash -c`, not `-lc`: a login shell would source the user's profile
+ * and re-import the provider secrets the scrubbed environment strips.
+ * `withoutEnv` withholds allowlisted variables on top of that.
+ */
+export async function runSetupScript(
+  cwd: string,
+  script: string,
+  onChunk: (text: string) => void | Promise<void>,
+  { withoutEnv = [] }: { withoutEnv?: readonly string[] } = {},
+): Promise<{ exitCode: number; logTail: string }> {
+  let logTail = "";
+  const exitCode = await runStreaming(["bash", "-c", script], {
+    cwd,
+    withoutEnv,
+    timeoutMs: SETUP_TIMEOUT_MS,
+    onChunk: async (text) => {
+      logTail = (logTail + text).slice(-SETUP_LOG_CAP);
+      await onChunk(text);
+    },
+  });
+  return { exitCode, logTail };
 }
