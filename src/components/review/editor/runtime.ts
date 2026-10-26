@@ -1,12 +1,12 @@
 import * as monaco from "monaco-editor";
 // `monaco-editor` is pinned to an exact version in package.json because these
-// worker paths are internal to its package layout, not public API, and have
-// moved between minor releases (0.53 and 0.55 both reshuffled the package).
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+// worker paths have moved between minor releases: 0.53 and 0.55 reshuffled the
+// package, and 0.57's exports map dropped the `esm/vs/` prefix.
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import CssWorker from "monaco-editor/language/css/css.worker?worker";
+import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { getColorTheme, onColorTheme } from "../../../lib/theme";
 import { openExternal } from "../../../lib/url";
 import { installNavigation } from "./navigation";

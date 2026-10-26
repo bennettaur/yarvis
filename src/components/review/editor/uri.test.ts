@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 // @ts-expect-error Monaco ships no types for its internal modules; this is the
 // parser its `Uri` uses, loaded alone because the editor itself needs a browser.
-import { URI } from "monaco-editor/esm/vs/base/common/uri.js";
+import { URI } from "monaco-editor/base/common/uri.js";
 import { uriKey } from "./navigation";
 import { parseReviewUri, reviewUri } from "./uri";
 
