@@ -23,4 +23,11 @@ export type {
   LineDecoration,
   ModelSide,
 } from "./types";
-export { type ParsedReviewUri, parseReviewUri, REVIEW_SCHEME, reviewUri } from "./uri";
+export {
+  type ParsedReviewUri,
+  parseReviewUri,
+  REVIEW_SCHEME,
+  reviewUri,
+  SNAPSHOT_SCHEME,
+  snapshotUri,
+} from "./uri";

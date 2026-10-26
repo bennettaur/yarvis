@@ -36,6 +36,7 @@ import {
   ghSetThreadResolved,
   ghSubmitReview,
 } from "./github";
+import { FULL_SHA } from "./ref";
 import type {
   MergeMethod,
   NewComment,
@@ -45,6 +46,7 @@ import type {
   PrStatus,
   PrSummary,
   ReviewThread,
+  SeenCommits,
 } from "./types";
 
 /** The list-row summary for one PR the user named rather than picked from a list. */
@@ -76,8 +78,25 @@ export const fetchPrFileContent = (ref: PrRef, path: string, sha: string): Promi
     (r) => r.content,
   );
 
-export const postPrComment = (ref: PrRef, comment: NewComment): Promise<{ ok: boolean }> =>
-  ref.provider === "github" ? ghPostComment(ref, comment) : azPostComment(ref, comment);
+/** The request fields for `seen`, leaving out anything that isn't a full sha. */
+export function seenFields(seen: SeenCommits | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ["headSha", "baseSha", "mergeBaseSha"] as const) {
+    const sha = seen?.[key];
+    if (sha && FULL_SHA.test(sha)) out[key] = sha;
+  }
+  return out;
+}
+
+/** Posts a line comment; `seen` is what the page showed, recorded as where the user reviewed. */
+export const postPrComment = (
+  ref: PrRef,
+  comment: NewComment,
+  seen?: SeenCommits,
+): Promise<{ ok: boolean }> => {
+  const body = { ...comment, ...seenFields(seen) };
+  return ref.provider === "github" ? ghPostComment(ref, body) : azPostComment(ref, body);
+};
 
 /** An Azure comment id as the number Azure gave it, or undefined when there isn't one. */
 function azureCommentId(id: string | undefined): number | undefined {
@@ -128,6 +147,7 @@ export async function applyReviewAction(
   ref: PrRef,
   action: ReviewAction,
   body?: string,
+  seen?: SeenCommits,
 ): Promise<void> {
   if (ref.provider === "github") {
     if (action === "publish") {
@@ -135,7 +155,7 @@ export async function applyReviewAction(
       return;
     }
     const event = action === "approve" ? "APPROVE" : "REQUEST_CHANGES";
-    await ghSubmitReview(ref, event, body);
+    await ghSubmitReview(ref, event, body, seenFields(seen));
     return;
   }
   if (action === "publish") {
@@ -144,7 +164,7 @@ export async function applyReviewAction(
   }
   // Azure votes are numeric: 10 = approved, -10 = rejected.
   const vote = action === "approve" ? 10 : -10;
-  await azSubmitVote(ref, vote, body);
+  await azSubmitVote(ref, vote, body, seenFields(seen));
 }
 
 /**

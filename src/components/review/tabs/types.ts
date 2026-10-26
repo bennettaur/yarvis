@@ -7,6 +7,7 @@ export type StaticTabKind =
   | "reviewers"
   | "checks"
   | "comments"
+  | "since-review"
   | "guide"
   | "verification"
   | "mutation";
@@ -14,10 +15,22 @@ export type StaticTabKind =
 export type TabSpec =
   | { kind: StaticTabKind; prId: string }
   | { kind: "diff"; prId: string; path: string; revealLine?: number; revealNonce?: number }
-  | { kind: "file"; prId: string; path: string; revealLine?: number; revealNonce?: number };
+  | { kind: "file"; prId: string; path: string; revealLine?: number; revealNonce?: number }
+  /**
+   * How one file's part in the PR changed since a review. `from` is the
+   * reviewed head, kept on the tab so a later "Mark reviewed here" doesn't
+   * empty a tab the reader is still looking at.
+   */
+  | { kind: "since-file"; prId: string; path: string; from: string }
+  /** One of the PR's commits, diffed against its parent; `subject` titles the tab. */
+  | { kind: "commit"; prId: string; sha: string; subject?: string };
+
+/** The kinds a PR can have many of, each naming a file or a commit. */
+export type DynamicTabKind = Exclude<TabSpec["kind"], StaticTabKind>;
 
 /** Identity of a tab: opening a spec whose id is already open focuses that tab. */
-export const tabId = (t: TabSpec) => `${t.kind}:${t.prId}${"path" in t ? `:${t.path}` : ""}`;
+export const tabId = (t: TabSpec) =>
+  `${t.kind}:${t.prId}${"path" in t ? `:${t.path}` : "sha" in t ? `:${t.sha}` : ""}`;
 
 /** One PR's colour as Tailwind classes, written out in full so the build keeps them. */
 export interface PrColor {

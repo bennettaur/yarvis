@@ -11,6 +11,7 @@
 
 import type {
   CheckItem,
+  CommitsSince,
   NewComment,
   PrDetail,
   PrFile,
@@ -20,6 +21,7 @@ import type {
   ReviewerState,
   ReviewThread,
   Viewer,
+  ViewerReview,
 } from "../pr/types.ts";
 import type {
   AzureChanges,
@@ -54,6 +56,9 @@ const COMMENT_TYPE_TEXT = 1;
 const THREAD_STATUS_ACTIVE = 1;
 const THREAD_STATUS_FIXED = 2;
 
+/** Commits `commitsSince` reads of a PR's list, newest first. */
+const COMMITS_PAGE = 500;
+
 // The PR's base/head commit pair is invariant for the life of an iteration, but
 // every per-file diff needs it. Cache it briefly so opening an N-file PR doesn't
 // re-fetch the PR once per file. Module-level because the client is constructed
@@ -66,6 +71,11 @@ const commitCache = new Map<string, { base: string; head: string; ts: number }>(
 // would repeat on every search. Cache it module-wide, keyed by org + token so a
 // changed PAT or org URL is a new key and re-resolves on its own.
 const viewerIdCache = new Map<string, string>();
+
+/** Test hook: forget every cached viewer id. */
+export function resetViewerIds(): void {
+  viewerIdCache.clear();
+}
 
 const ALLOWED_AZURE_HOSTS = ["dev.azure.com", "visualstudio.com"];
 
@@ -477,6 +487,83 @@ export class AzureDevOpsClient {
     return { base, head };
   }
 
+  /** The PR's head commit as Azure last merged it, or null before it has one. */
+  async headSha(ref: AzureRef): Promise<string | null> {
+    return (await this.commitPair(ref)).head ?? null;
+  }
+
+  /**
+   * The commits the viewer voted on. Azure keeps no commit on a vote, so each
+   * vote is matched to the push it followed: a vote leaves a `VoteUpdate`
+   * system thread stamped with the voter and the time, and each iteration
+   * records when it was pushed and at which head. A vote reset to "no vote"
+   * isn't a review and is skipped. A vote cast from a page loaded before the
+   * latest push is still matched to that push, so it can claim a commit the
+   * viewer never saw; the marks Yarvis records itself carry the page's head
+   * and don't have this problem.
+   */
+  async viewerVotes(ref: AzureRef): Promise<ViewerReview[]> {
+    const [viewerId, threads, iterations] = await Promise.all([
+      this.resolveViewerId(),
+      this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`),
+      this.get<AzureList<AzureIteration>>(
+        `${this.repoBase(ref)}/pullRequests/${ref.prId}/iterations`,
+      ),
+    ]);
+    const pushes = (iterations.value ?? [])
+      .flatMap((it) =>
+        it.sourceRefCommit?.commitId && it.createdDate
+          ? [{ at: Date.parse(it.createdDate), iteration: it }]
+          : [],
+      )
+      .sort((a, b) => a.at - b.at);
+    const votes: ViewerReview[] = [];
+    for (const thread of threads.value ?? []) {
+      const props = thread.properties ?? {};
+      if (props.CodeReviewThreadType?.$value !== "VoteUpdate") continue;
+      if (Number(props.CodeReviewVoteResult?.$value) === 0) continue;
+      const comment = thread.comments?.[0];
+      const votedBy = props.CodeReviewVotedByIdentity?.$value;
+      const voter =
+        (votedBy != null ? thread.identities?.[String(votedBy)]?.id : undefined) ??
+        comment?.author?.id;
+      if (voter !== viewerId || !comment?.publishedDate) continue;
+      const at = Date.parse(comment.publishedDate);
+      const push = pushes.filter((p) => p.at <= at).at(-1)?.iteration;
+      const headSha = push?.sourceRefCommit?.commitId;
+      if (!headSha) continue;
+      votes.push({
+        headSha,
+        ...(push.commonRefCommit?.commitId ? { mergeBaseSha: push.commonRefCommit.commitId } : {}),
+        submittedAt: comment.publishedDate,
+      });
+    }
+    return votes.sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
+  }
+
+  /**
+   * How far the PR has moved on from `sha`. The PR's own commit list (newest
+   * first) answers while `sha` is still in it; once a force-push has dropped
+   * it, only whether the repository still has the commit can be said. A full
+   * page that doesn't have it says nothing either way — `sha` may just be
+   * older than the page — so that is an unknown count, not a rewrite.
+   */
+  async commitsSince(ref: AzureRef, sha: string): Promise<CommitsSince> {
+    const list = await this.get<AzureList<{ commitId?: string }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/commits?$top=${COMMITS_PAGE}`,
+    );
+    const commits = list.value ?? [];
+    const index = commits.findIndex((c) => c.commitId === sha);
+    if (index >= 0) return { exists: true, commits: index, rewritten: false };
+    if (commits.length >= COMMITS_PAGE) return { exists: true, commits: null, rewritten: false };
+    const res = await this.fetchImpl(
+      this.withVersion(`${this.repoBase(ref)}/commits/${encodeURIComponent(sha)}`, API_VERSION),
+      { headers: { Authorization: this.authHeader(), Accept: "application/json" } },
+    );
+    if (!res.ok && res.status !== 404) throw new Error(`azure GET commit -> ${res.status}`);
+    return { exists: res.ok, commits: null, rewritten: true };
+  }
+
   /** Lightweight per-row status: one call, no policy evaluations. */
   async prStatus(ref: AzureRef): Promise<PrStatus> {
     const pr = await this.prRaw(ref);
@@ -486,6 +573,7 @@ export class AzureDevOpsClient {
       merged: pr.status === "completed",
       mergeable: merge.mergeable,
       mergeableState: pr.mergeStatus ?? "unknown",
+      headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       checks: { total: 0, success: 0, failure: 0, pending: 0 },
     };
   }

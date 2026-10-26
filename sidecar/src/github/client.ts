@@ -8,6 +8,7 @@ import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../is
 import type {
   CheckItem,
   ChecksSummary,
+  CommitsSince,
   MergeMethod,
   NewComment,
   PrDetail,
@@ -22,6 +23,7 @@ import type {
   ReviewerState,
   ReviewThread,
   StackEntry,
+  ViewerReview,
 } from "../pr/types.ts";
 import {
   GitHubError,
@@ -872,6 +874,14 @@ function noteRestFallback(e: unknown): void {
 
 const VIEWER_QUERY = "query{ viewer{ login } }";
 
+const VIEWER_REVIEWS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$viewer:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviews(last:50, author:$viewer){ nodes{ state submittedAt commit{ oid } } }
+    }
+  }
+}`;
+
 /** The fields `restLikePr` reads. */
 const PR_SUMMARY_FIELDS = `
   number title url isDraft state createdAt updatedAt
@@ -905,7 +915,7 @@ const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      state merged mergeable mergeStateStatus
+      state merged mergeable mergeStateStatus headRefOid
       commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
         __typename
         ... on CheckRun { status conclusion }
@@ -1309,6 +1319,7 @@ export class GitHubClient {
           merged: Boolean(pr.merged),
           mergeable: restMergeable(pr.mergeable),
           mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
+          headSha: pr.headRefOid ?? null,
           checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
         };
       },
@@ -1335,6 +1346,7 @@ export class GitHubClient {
       merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
+      headSha: pr.head?.sha ?? null,
       checks: sumCheckSummaries(
         summarizeChecks(checks.check_runs ?? []),
         summarizeCommitStatuses(combined?.statuses ?? []),
@@ -1829,7 +1841,7 @@ export class GitHubClient {
     number: number,
     event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
     body?: string,
-  ): Promise<{ nodeId: string | null }> {
+  ): Promise<{ nodeId: string | null; commitId: string | null }> {
     const res = await this.fetchImpl(
       `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
       {
@@ -1845,10 +1857,71 @@ export class GitHubClient {
     );
     if (!res.ok) throw await githubErrorFrom(res, "submit review");
     // The review is already posted, so an unreadable reply must not turn this into a failure.
-    const review = (await res.json().catch(() => null)) as { node_id?: unknown } | null;
-    if (typeof review?.node_id === "string") return { nodeId: review.node_id };
+    const review = (await res.json().catch(() => null)) as {
+      node_id?: unknown;
+      commit_id?: unknown;
+    } | null;
+    const commitId = typeof review?.commit_id === "string" ? review.commit_id : null;
+    if (typeof review?.node_id === "string") return { nodeId: review.node_id, commitId };
     console.warn("[github] submitted review reply had no node_id");
-    return { nodeId: null };
+    return { nodeId: null, commitId };
+  }
+
+  /**
+   * The viewer's submitted reviews on one PR and the commit each was made on,
+   * newest last. Drafts (`PENDING`) are left out: nobody has seen them.
+   */
+  async viewerReviews(owner: string, repo: string, number: number): Promise<ViewerReview[]> {
+    const { login } = await this.viewer();
+    const data = await this.graphql<{
+      repository?: {
+        pullRequest?: {
+          reviews?: {
+            nodes?: ({
+              state?: string;
+              submittedAt?: string | null;
+              commit?: { oid?: string } | null;
+            } | null)[];
+          };
+        };
+      };
+    }>(VIEWER_REVIEWS_QUERY, { owner, repo, number, viewer: login });
+    return (data.repository?.pullRequest?.reviews?.nodes ?? []).flatMap((node) =>
+      node?.state !== "PENDING" && node?.commit?.oid && node.submittedAt
+        ? [{ headSha: node.commit.oid, submittedAt: node.submittedAt }]
+        : [],
+    );
+  }
+
+  /**
+   * How far `head` has moved on from `sha`, by GitHub's compare. A 404 means
+   * GitHub no longer has `sha` (or never did); "diverged" means `head` doesn't
+   * contain it, which is what a force-push leaves behind.
+   */
+  async commitsSince(
+    owner: string,
+    repo: string,
+    sha: string,
+    head: string,
+  ): Promise<CommitsSince> {
+    const res = await this.fetchImpl(
+      `${this.endpoints.api}/repos/${owner}/${repo}/compare/${sha}...${head}?per_page=1`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return { exists: false, commits: null, rewritten: true };
+    if (!res.ok) throw await githubErrorFrom(res, "compare commits");
+    const body = (await res.json()) as { status?: string; ahead_by?: number };
+    return {
+      exists: true,
+      commits: typeof body.ahead_by === "number" ? body.ahead_by : null,
+      rewritten: body.status === "diverged" || body.status === "behind",
+    };
   }
 
   /**
@@ -1886,7 +1959,12 @@ export class GitHubClient {
    * `side` target the range's last line in the diff, and `start_line` +
    * `start_side` its first.
    */
-  async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
+  async postComment(
+    owner: string,
+    repo: string,
+    number: number,
+    input: NewComment,
+  ): Promise<{ commitId: string }> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
     const side = input.side ?? "RIGHT";
     const range =
@@ -1914,6 +1992,7 @@ export class GitHubClient {
       },
     );
     if (!res.ok) throw await githubErrorFrom(res, "post comment");
+    return { commitId: pr.head.sha };
   }
 
   /** Replies to a review thread, addressed by its GraphQL node id. */

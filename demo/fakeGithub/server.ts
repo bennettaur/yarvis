@@ -19,6 +19,9 @@ const REPO_API_URL = `https://api.github.com/repos/${OWNER}/${REPO}`;
 const findPull = (number: unknown) => PULLS.find((p) => p.number === Number(number));
 const findIssue = (number: unknown) => ISSUES.find((i) => i.number === Number(number));
 
+/** A PR's head commit: a real-looking sha where the data gives one, else a placeholder. */
+const headShaOf = (pr: FakePull) => pr.headSha ?? `sha-${pr.number}`;
+
 /** A pull request as the REST search and pulls endpoints return it. */
 function toRestPull(pr: FakePull) {
   return {
@@ -33,7 +36,7 @@ function toRestPull(pr: FakePull) {
     created_at: pr.createdAt,
     updated_at: pr.updatedAt,
     body: pr.body,
-    head: { sha: `sha-${pr.number}`, ref: pr.headRef },
+    head: { sha: headShaOf(pr), ref: pr.headRef },
     base: { ref: pr.baseRef },
     merged: false,
     mergeable: !pr.conflicting,
@@ -133,7 +136,7 @@ function toGraphqlPull(pr: FakePull) {
     repository: { name: REPO, owner: { login: OWNER } },
     baseRefName: pr.baseRef,
     headRefName: pr.headRef,
-    headRefOid: `sha-${pr.number}`,
+    headRefOid: headShaOf(pr),
     isCrossRepository: false,
     additions: pr.files.reduce((n, f) => n + f.additions, 0),
     deletions: pr.files.reduce((n, f) => n + f.deletions, 0),
@@ -149,9 +152,21 @@ function toGraphqlPull(pr: FakePull) {
     latestReviews: {
       nodes: Object.entries(pr.reviews).map(([login, state]) => ({ author: { login }, state })),
     },
-    // The viewer's own reviews, for the Reviewing list.
+    // The viewer's own reviews: their states for the Reviewing list, and the
+    // commit and time of each for "since your last review".
     reviews: {
-      nodes: pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : [],
+      nodes: [
+        ...(pr.reviews[VIEWER] ? [{ state: pr.reviews[VIEWER] }] : []),
+        ...(pr.viewerReview
+          ? [
+              {
+                state: pr.viewerReview.state,
+                submittedAt: pr.viewerReview.submittedAt,
+                commit: { oid: pr.viewerReview.commit },
+              },
+            ]
+          : []),
+      ],
     },
     reviewThreads: {
       nodes: pr.reviewThreads.map((t, i) => {
@@ -298,11 +313,23 @@ function handleRest({ method, url, body }: FakeRequest): FakeResponse {
     };
   }
   if (/^\/pulls\/\d+\/(reviews|comments)$/.test(repoPath)) return { status: 201, json: { id: 1 } };
+  // How far a PR's head is past the viewer's review of it; any other pair is unknown.
+  const compared = repoPath.match(/^\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/);
+  if (compared) {
+    const pr = PULLS.find(
+      (p) => p.viewerReview?.commit === compared[1] && p.headSha === compared[2],
+    );
+    return pr?.viewerReview
+      ? { json: { status: "ahead", ahead_by: pr.viewerReview.commitsSince } }
+      : { status: 404, json: { message: "Not Found" } };
+  }
   // Finding a workspace branch's PR: none of the demo's branches have one.
   if (repoPath === "/pulls") return { json: [] };
-  const checksPullNumber = matchNumber(/^\/commits\/sha-(\d+)\/check-runs$/);
-  if (checksPullNumber) {
-    const checks = findPull(checksPullNumber)?.checks ?? [];
+  // Asked by either form of a PR's head: its sha, or the `sha-N` placeholder.
+  const checksSha = repoPath.match(/^\/commits\/([^/]+)\/check-runs$/)?.[1];
+  if (checksSha) {
+    const pr = PULLS.find((p) => checksSha === headShaOf(p) || checksSha === `sha-${p.number}`);
+    const checks = pr?.checks ?? [];
     return {
       json: {
         check_runs: checks.map((c) => ({

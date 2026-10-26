@@ -309,6 +309,13 @@
       "when": 1792900964028,
       "tag": "0043_windy_vance_astro",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1792900985237,
+      "tag": "0044_glossy_sugar_man",
+      "breakpoints": true
     }
   ]
 }

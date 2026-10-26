@@ -47,6 +47,24 @@ export function reviewUri(refKey: string, side: ModelSide, path: string): string
   return `${REVIEW_SCHEME}://${encodeAuthority(refKey)}/${side}/${encoded}`;
 }
 
+export const SNAPSHOT_SCHEME = "review-snapshot";
+
+/**
+ * A file's text at some other version than the PR's merge-base or head — a
+ * commit's parent, the reviewed version carried onto today's base — named by
+ * `label`, which says which version and must change whenever the text could.
+ * A scheme of its own, so it never shares a model with a base or head file and
+ * code navigation, which only answers `review://` models, leaves it alone.
+ */
+export function snapshotUri(refKey: string, label: string, path: string): string {
+  const encoded = path
+    .split("/")
+    .filter((segment) => segment !== "")
+    .map(encodeURIComponent)
+    .join("/");
+  return `${SNAPSHOT_SCHEME}://${encodeAuthority(refKey)}/${encodeURIComponent(label)}/${encoded}`;
+}
+
 export interface ParsedReviewUri {
   refKey: string;
   side: ModelSide;

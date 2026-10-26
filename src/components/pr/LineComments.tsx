@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { postPrComment } from "../../lib/pr/api";
 import { invalidate, prDetailKey } from "../../lib/pr/cache";
-import type { DiffSide, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import type { DiffSide, PrFile, PrRef, ReviewThread, SeenCommits } from "../../lib/pr/types";
+import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import { CommentComposer, describeLines, needsLineLabel, ThreadView } from "./ThreadView";
 import { comparableBody, type ThreadActions, useThreadActions } from "./useThreadActions";
 
@@ -65,8 +66,17 @@ function extendTarget(current: CommentTarget, line: number): CommentTarget {
   return first < last ? { side: current.side, line: last, startLine: first } : current;
 }
 
-/** Owns one file's comment state, shared by whichever renderer is showing it. */
-export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThread[]): LineComments {
+/**
+ * Owns one file's comment state, shared by whichever renderer is showing it.
+ * `seen` is the head the renderer is showing, recorded as where the user
+ * reviewed when they comment.
+ */
+export function useLineComments(
+  prRef: PrRef,
+  file: PrFile,
+  threads: ReviewThread[],
+  seen?: SeenCommits,
+): LineComments {
   const byAnchor = useMemo(() => threadsByAnchor(threads), [threads]);
   const threadActions = useThreadActions(prRef, threads);
   const [composer, setComposer] = useState<CommentTarget | null>(null);
@@ -101,14 +111,19 @@ export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThrea
   }, [pending, posted.length]);
 
   const submit = async (target: CommentTarget, body: string) => {
-    await postPrComment(prRef, {
-      path: file.filename,
-      line: target.line,
-      body,
-      // Left out when it is the provider's default (the new file, one line).
-      ...(target.side === "LEFT" ? { side: "LEFT" as const } : {}),
-      ...(target.startLine != null ? { startLine: target.startLine } : {}),
-    });
+    await postPrComment(
+      prRef,
+      {
+        path: file.filename,
+        line: target.line,
+        body,
+        // Left out when it is the provider's default (the new file, one line).
+        ...(target.side === "LEFT" ? { side: "LEFT" as const } : {}),
+        ...(target.startLine != null ? { startLine: target.startLine } : {}),
+      },
+      seen,
+    );
+    invalidateLastReview(prRef);
     // Read the counter outside the updater, which React may call more than once.
     const id = nextId.current++;
     setPosted((p) => [...p, { ...target, id, body }]);

@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { buildFileTree, flattenFileTree } from "../../../lib/fileTree";
 import type { ReviewChangedFile } from "../../../lib/reviewWorkspaces/api";
+import { seenAt } from "../../../lib/reviewWorkspaces/sinceReview";
 import type { VerificationMustRead } from "../../../lib/reviewWorkspaces/verification";
 import LoadingIndicator from "../../LoadingIndicator";
 import { MonacoDiffView } from "../editor";
@@ -137,6 +138,7 @@ function ChangedFileDiff({
     headContent,
     headSha: ctx.pr.headSha ?? "",
     canComment: true,
+    seen: seenAt(ctx.pr),
   });
 
   const isViewed = viewed.viewed.has(path);

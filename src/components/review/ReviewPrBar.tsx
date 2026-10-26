@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import { usePrDetail } from "../../lib/pr/cache";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { usePrDetail, usePrStatus } from "../../lib/pr/cache";
 import { refKey } from "../../lib/pr/ref";
 import type { PrSummary } from "../../lib/pr/types";
 import {
@@ -8,6 +8,11 @@ import {
   removeReviewPr,
 } from "../../lib/reviewWorkspaces/api";
 import { prWebUrl } from "../../lib/reviewWorkspaces/open";
+import {
+  invalidateLastReview,
+  markReviewedHere,
+  seenAt,
+} from "../../lib/reviewWorkspaces/sinceReview";
 import PrConflictBanner from "../pr/PrConflictBanner";
 import {
   derivePrUiStatus,
@@ -16,6 +21,7 @@ import {
   usePrActions,
 } from "../pr/PrFloatingHeader";
 import ConfirmDialog from "./ConfirmDialog";
+import NewCommitsBanner from "./NewCommitsBanner";
 import { prLabel } from "./ReviewNav";
 import type { PrColor, StaticTabKind } from "./tabs/types";
 import { useDismiss } from "./useDismiss";
@@ -38,13 +44,18 @@ export function summaryFor(pr: ReviewWorkspacePr, detail: ReturnType<typeof useP
 function MoreMenu({
   busy,
   cloning,
+  canMark,
   onUpdate,
+  onMark,
   onRemove,
   onMutation,
 }: {
   busy: boolean;
   cloning: boolean;
+  /** The checkout has a head to mark. */
+  canMark: boolean;
   onUpdate: () => void;
+  onMark: () => void;
   onRemove: () => void;
   onMutation: () => void;
 }) {
@@ -82,6 +93,18 @@ function MoreMenu({
           </button>
           <button
             type="button"
+            disabled={busy || !canMark}
+            onClick={() => {
+              setOpen(false);
+              onMark();
+            }}
+            title="Record the checkout's commit as where you last reviewed, for “Since last review”"
+            className={item}
+          >
+            Mark reviewed here
+          </button>
+          <button
+            type="button"
             disabled={busy}
             onClick={() => {
               setOpen(false);
@@ -108,6 +131,9 @@ function MoreMenu({
     </div>
   );
 }
+
+/** How often the bar re-reads the PR from the provider to notice a push. */
+const NEW_COMMITS_POLL_MS = 2 * 60 * 1000;
 
 const AGENT_TABS: { kind: StaticTabKind; label: string; title: string }[] = [
   { kind: "guide", label: "Guided review", title: "Walk through the PR step by step" },
@@ -140,11 +166,25 @@ export default function ReviewPrBar({
   onChanged: () => void;
 }) {
   const { data: detail, loading, refreshing } = usePrDetail(pr.ref);
-  const actions = usePrActions(pr.ref);
+  const { data: prStatus, refresh: refreshStatus } = usePrStatus(pr.ref);
+  const actions = usePrActions(pr.ref, seenAt(pr));
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [marked, setMarked] = useState<string | null>(null);
   const summary = summaryFor(pr, detail);
   const status = derivePrUiStatus(detail, summary);
+
+  // The PR's head says a push happened. Nothing else re-reads it while the PR
+  // sits open, so ask again now and then — through the lightweight status
+  // rather than the whole detail, and only while the window is in view, since
+  // each ask is a provider call.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refreshStatus();
+    }, NEW_COMMITS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refreshStatus]);
+  const providerHead = prStatus?.headSha ?? detail?.headSha;
 
   const runCheckout = async (op: () => Promise<unknown>) => {
     setCheckoutBusy(true);
@@ -158,6 +198,13 @@ export default function ReviewPrBar({
       setCheckoutBusy(false);
     }
   };
+
+  const markHere = () =>
+    runCheckout(async () => {
+      const mark = await markReviewedHere(workspaceId, pr.id);
+      invalidateLastReview(pr.ref);
+      setMarked(mark.headSha);
+    });
 
   const remove = async () => {
     await removeReviewPr(workspaceId, pr.id);
@@ -199,12 +246,29 @@ export default function ReviewPrBar({
           <MoreMenu
             busy={checkoutBusy}
             cloning={pr.status === "cloning"}
+            canMark={pr.status === "ready" && !!pr.headSha}
             onUpdate={() => void runCheckout(() => refreshReviewPr(workspaceId, pr.id))}
+            onMark={() => void markHere()}
             onRemove={() => setConfirmingRemove(true)}
             onMutation={() => openTab("mutation")}
           />
         )}
       </div>
+      <NewCommitsBanner
+        key={pr.id}
+        workspaceId={workspaceId}
+        pr={pr}
+        providerHead={providerHead}
+        readOnly={readOnly}
+        onRefreshed={onChanged}
+        onSeeChanges={() => openTab("since-review")}
+      />
+      {marked && marked === pr.headSha && (
+        <p className="mt-1 text-xs text-emerald-300">
+          Marked reviewed at <span className="font-mono">{marked.slice(0, 7)}</span>. “Since last
+          review” starts from here now.
+        </p>
+      )}
       <PrConflictBanner key={refKey(pr.ref)} prRef={pr.ref} detail={detail} />
       {actions.error && <p className="mt-1 text-xs text-red-400">{actions.error}</p>}
       {confirmingRemove && (

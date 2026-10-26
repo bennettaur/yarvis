@@ -36,6 +36,19 @@ describe("openTab", () => {
     expect(layout.groups[0]!.activeId).toBe("description:a");
   });
 
+  it("an interdiff reopened from a newer review compares from that one", () => {
+    const since = (from: string): TabSpec => ({
+      kind: "since-file",
+      prId: "a",
+      path: "x.ts",
+      from,
+    });
+    const layout = open(since("a".repeat(40)), desc(), since("b".repeat(40)));
+    expect(ids(layout)).toEqual(["description:a", "since-file:a:x.ts"]);
+    expect(layout.groups[0]!.tabs[1]).toEqual(since("b".repeat(40)));
+    expect(layout.groups[0]!.activeId).toBe("since-file:a:x.ts");
+  });
+
   it("keeps static tabs to the left in a fixed order, files after in opening order", () => {
     const layout = open(diff("b.ts"), comments(), diff("a.ts"), desc(), desc("b"));
     expect(ids(layout)).toEqual([
@@ -266,6 +279,38 @@ describe("persistence", () => {
     expect(ids(layout, 1)).toEqual(["diff:a:y"]);
     expect(layout.groups[1]?.activeId).toBe("diff:a:y");
     expect(layout.groups.map((g) => g.key)).toEqual(["a", "b"]);
+  });
+
+  it("keeps interdiff and commit tabs, with the commit they name, and drops malformed ones", () => {
+    const from = "a".repeat(40);
+    const sha = "b".repeat(40);
+    const since: TabSpec = { kind: "since-file", prId: "a", path: "x.ts", from };
+    const commit: TabSpec = { kind: "commit", prId: "a", sha, subject: "Fix it" };
+    const layout = open(desc(), since, commit, { kind: "since-review", prId: "a" });
+    const loaded = parseLayout(serializeLayout(layout));
+    expect(ids(loaded)).toEqual([
+      "description:a",
+      "since-review:a",
+      `since-file:a:x.ts`,
+      `commit:a:${sha}`,
+    ]);
+    expect(loaded.groups[0]!.tabs[2]).toEqual(since);
+    expect(loaded.groups[0]!.tabs[3]).toEqual(commit);
+
+    const damaged = parseLayout(
+      JSON.stringify({
+        groups: [
+          {
+            tabs: [
+              { kind: "since-file", prId: "a", path: "x.ts", from: "main" },
+              { kind: "commit", prId: "a", sha: "HEAD" },
+              { kind: "commit", prId: "a", sha },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(ids(damaged)).toEqual([`commit:a:${sha}`]);
   });
 
   it("starts empty on anything unreadable", () => {

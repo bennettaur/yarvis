@@ -40,7 +40,7 @@ import {
   saveLayout,
   type TabLayout,
 } from "./tabs/tabLayout";
-import { type TabContext, type TabSpec, tabId } from "./tabs/types";
+import { type StaticTabKind, type TabContext, type TabSpec, tabId } from "./tabs/types";
 
 const DIFF_MODE_KEY = "yarvis.review.diffMode";
 
@@ -138,6 +138,7 @@ function useCloneProgress(
 export default function ReviewWorkspaceView({
   workspaceId,
   focusPrId,
+  focusTab = "description",
   onFocusHandled,
   onBack,
   onArchived,
@@ -145,6 +146,8 @@ export default function ReviewWorkspaceView({
   workspaceId: string;
   /** A PR to bring forward once the workspace has loaded. */
   focusPrId?: string;
+  /** Which of its tabs to open. */
+  focusTab?: StaticTabKind;
   onFocusHandled: () => void;
   onBack: () => void;
   onArchived: () => void;
@@ -208,9 +211,9 @@ export default function ReviewWorkspaceView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-checked when the PRs change, since the one asked for may arrive late
   useEffect(() => {
     if (!focusPrId || !prs.some((p) => p.id === focusPrId)) return;
-    open({ kind: "description", prId: focusPrId });
+    open({ kind: focusTab, prId: focusPrId });
     onFocusHandled();
-  }, [focusPrId, prIds, open, onFocusHandled]);
+  }, [focusPrId, focusTab, prIds, open, onFocusHandled]);
 
   const current = activeTab(layout);
   const frontPr = prs.find((p) => p.id === current?.prId) ?? prs[0] ?? null;

@@ -10,7 +10,7 @@ import { useThreadActions } from "../../pr/useThreadActions";
 import type { TabContext } from "./types";
 
 /** The scrolling page a static tab's content sits on. */
-function TabPage({ children }: { children: ReactNode }) {
+export function TabPage({ children }: { children: ReactNode }) {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl space-y-4 px-6 py-5">{children}</div>

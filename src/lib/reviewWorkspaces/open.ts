@@ -1,4 +1,4 @@
-import { requestOpenReview } from "../nav";
+import { type OpenReviewRequest, requestOpenReview } from "../nav";
 import { refDisplayRepo, refKey, refNumber } from "../pr/ref";
 import type { PrRef } from "../pr/types";
 import { primeCache } from "../resourceCache";
@@ -57,17 +57,22 @@ function remember(ws: ReviewWorkspace): void {
 /**
  * Opens `ref` in the review workspace already holding it, or a new one named
  * after it, and asks the app to show the Review tab there. The clone runs in
- * the background; the workspace is usable before it finishes.
+ * the background; the workspace is usable before it finishes. `tab` picks the
+ * PR tab to open there instead of its description.
  */
-export async function openInReviewWorkspace(ref: PrRef, title?: string): Promise<void> {
+export async function openInReviewWorkspace(
+  ref: PrRef,
+  title?: string,
+  tab?: OpenReviewRequest["tab"],
+): Promise<void> {
   const existing = findWorkspaceWithPr(await listReviewWorkspaces(), ref);
   if (existing) {
-    requestOpenReview(existing);
+    requestOpenReview({ ...existing, tab });
     return;
   }
   const ws = await createReviewWorkspace({ name: title?.trim() || shortPrName(ref), refs: [ref] });
   remember(ws);
-  requestOpenReview({ workspaceId: ws.id, prId: ws.prs[0]?.id });
+  requestOpenReview({ workspaceId: ws.id, prId: ws.prs[0]?.id, tab });
 }
 
 /** Adds `ref` to an existing workspace and shows it there. */

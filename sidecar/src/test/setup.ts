@@ -2,6 +2,7 @@ import { afterAll, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetViewerIds } from "../azure/client.ts";
 import { resetViewerLogins } from "../github/client.ts";
 import { resetRateLimits } from "../github/rateLimit.ts";
 
@@ -16,10 +17,11 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// GitHub rate limits and logins are remembered per token for the life of the
-// process, and test files reuse tokens, so one test's 429 or login would
-// otherwise leak into the next.
+// GitHub rate limits and logins, and Azure viewer ids, are remembered per token
+// for the life of the process, and test files reuse tokens, so one test's 429 or
+// login would otherwise leak into the next.
 beforeEach(() => {
   resetRateLimits();
   resetViewerLogins();
+  resetViewerIds();
 });
