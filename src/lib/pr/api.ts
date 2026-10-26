@@ -15,6 +15,8 @@ import {
   azPrStatus,
   azPrSummary,
   azRemoveStar,
+  azReplyToThread,
+  azSetThreadResolved,
   azSubmitVote,
 } from "./azure";
 import {
@@ -30,6 +32,8 @@ import {
   ghPrStatus,
   ghPrSummary,
   ghRemoveStar,
+  ghReplyToThread,
+  ghSetThreadResolved,
   ghSubmitReview,
 } from "./github";
 import type {
@@ -40,6 +44,7 @@ import type {
   PrRef,
   PrStatus,
   PrSummary,
+  ReviewThread,
 } from "./types";
 
 /** The list-row summary for one PR the user named rather than picked from a list. */
@@ -73,6 +78,34 @@ export const fetchPrFileContent = (ref: PrRef, path: string, sha: string): Promi
 
 export const postPrComment = (ref: PrRef, comment: NewComment): Promise<{ ok: boolean }> =>
   ref.provider === "github" ? ghPostComment(ref, comment) : azPostComment(ref, comment);
+
+/** An Azure comment id as the number Azure gave it, or undefined when there isn't one. */
+function azureCommentId(id: string | undefined): number | undefined {
+  return id && /^\d+$/.test(id) ? Number(id) : undefined;
+}
+
+/**
+ * Replies to a review thread. Azure threads a reply under a parent comment: the
+ * thread's first one, named when its id is known and otherwise left to the
+ * sidecar's default.
+ */
+export const replyToPrThread = (
+  ref: PrRef,
+  thread: Pick<ReviewThread, "id" | "comments">,
+  body: string,
+): Promise<{ ok: boolean }> =>
+  ref.provider === "github"
+    ? ghReplyToThread(ref, thread.id, body)
+    : azReplyToThread(ref, thread.id, body, azureCommentId(thread.comments[0]?.id));
+
+export const setPrThreadResolved = (
+  ref: PrRef,
+  threadId: string,
+  resolved: boolean,
+): Promise<{ ok: boolean }> =>
+  ref.provider === "github"
+    ? ghSetThreadResolved(ref, threadId, resolved)
+    : azSetThreadResolved(ref, threadId, resolved);
 
 export const addStar = (ref: PrRef, title?: string | null, url?: string | null) =>
   ref.provider === "github" ? ghAddStar(ref, title, url) : azAddStar(ref, title, url);

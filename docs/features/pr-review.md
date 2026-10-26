@@ -80,6 +80,47 @@ as two. If the branch lookup fails or is slow, the list loads without nesting.
 - A file with review comments shows a speech bubble with the count. That count
   includes replies and resolved threads.
 
+### Comment on a PR
+
+Review comments are posted to the PR straight away, on GitHub and Azure DevOps
+alike. There is no pending review to submit.
+
+1. Hover a line and press the **+** beside it. In **Split**, the left gutter's
+   **+** comments on the old file and the right one on the new file. In
+   **Unified**, a deleted line takes its comment on the old file and every
+   other line on the new file.
+2. To comment on a range, shift-click the **+** on a second line on the same
+   side. The composer then says which lines it covers. A range stays on one
+   side: shift-clicking a **+** on the other side starts a new comment there.
+3. Type the comment and press **Comment**.
+
+Existing threads appear under the line they belong to, including threads on
+the old file. Each thread has two controls:
+
+- **Reply** adds a comment to the thread.
+- **Resolve** marks the thread resolved, and **Unresolve** opens it again.
+
+A comment, reply or resolve shows at once and stays shown while the provider
+catches up. If the provider refuses, the error appears beside the control you
+used, your text is kept, and nothing changes. A control is hidden when GitHub says you may not use it.
+
+Some differences between the providers:
+
+- **Azure DevOps**: resolving sets the thread to *Fixed*, and unresolving sets
+  it back to *Active*. A thread marked *Won't fix*, *By design* or *Closed*
+  counts as resolved too.
+- **GitHub** tags a thread **outdated** when a push moves the code out from
+  under it. An outdated thread can't be placed on a line any more, so it is
+  listed under **Comments** in the PR's description instead. A range someone
+  made on github.com can start in the old file and end in the new one; its
+  label names both.
+- A PR with more than 50 threads loads the rest in further pages, up to 550 in
+  all. Each thread shows its first 100 comments. When some threads couldn't be
+  loaded, a note under **Comments** says so.
+
+Each thread has an **open on GitHub** (or **Azure DevOps**) link to the same
+thread on the provider's site.
+
 ### Take a guided review
 
 A guided review has an agent read the change and give you an order to review

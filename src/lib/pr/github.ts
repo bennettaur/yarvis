@@ -118,6 +118,17 @@ export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
   );
 export const ghPostComment = (ref: PrRef, comment: NewComment) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+export const ghReplyToThread = (ref: PrRef, threadId: string, body: string) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/replies`,
+    "POST",
+    { body },
+  );
+export const ghSetThreadResolved = (ref: PrRef, threadId: string, resolved: boolean) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/${resolved ? "resolve" : "unresolve"}`,
+    "POST",
+  );
 
 export const ghMarkReady = (ref: PrRef) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");

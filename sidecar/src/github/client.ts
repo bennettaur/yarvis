@@ -20,6 +20,7 @@ import type {
   ReviewDecision,
   Reviewer,
   ReviewerState,
+  ReviewThread,
   StackEntry,
 } from "../pr/types.ts";
 import {
@@ -346,15 +347,44 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
-    reviewThreads: threadNodes.map((thread: any) => ({
-      path: thread.path ?? null,
-      line: thread.line ?? null,
-      isResolved: Boolean(thread.isResolved),
-      comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
-        author: comment.author?.login ?? "",
-        body: comment.body ?? "",
-        createdAt: comment.createdAt ?? "",
-      })),
+    reviewThreads: threadNodes.map(toReviewThread),
+  };
+}
+
+/**
+ * Shapes one GraphQL `PullRequestReviewThread`. GitHub reports `line` against
+ * the current diff and nulls it once a push moves the code out from under the
+ * thread, which is what `isOutdated` says too. `diffSide` names the file the
+ * range ends in and `startDiffSide` the one it starts in; a range made on
+ * github.com can start in the old file and end in the new one.
+ */
+export function toReviewThread(thread: any): ReviewThread {
+  const line: number | null = thread.line ?? null;
+  const startLine: number | null = thread.startLine ?? null;
+  const side = thread.diffSide === "LEFT" ? "LEFT" : "RIGHT";
+  const startSide = thread.startDiffSide === "LEFT" ? "LEFT" : "RIGHT";
+  // GitHub sets `startLine` equal to `line` on some single-line threads; on
+  // the other side, the same number is a different line and still a range.
+  const isRange = startLine != null && line != null && (startLine !== line || startSide !== side);
+  // Without an id there is nothing to address a reply or resolve to.
+  const addressable = Boolean(thread.id);
+  return {
+    id: thread.id ?? "",
+    path: thread.path ?? null,
+    line,
+    ...(isRange ? { startLine, startSide } : {}),
+    side,
+    isResolved: Boolean(thread.isResolved),
+    isOutdated: Boolean(thread.isOutdated),
+    canReply: addressable && Boolean(thread.viewerCanReply),
+    canResolve: addressable && Boolean(thread.viewerCanResolve),
+    canUnresolve: addressable && Boolean(thread.viewerCanUnresolve),
+    comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
+      id: comment.id ?? "",
+      author: comment.author?.login ?? "",
+      body: comment.body ?? "",
+      createdAt: comment.createdAt ?? "",
+      ...(comment.url ? { url: comment.url } : {}),
     })),
   };
 }
@@ -702,6 +732,34 @@ function buildBranchLookupQuery(count: number): string {
   return `query(${varDecls}){\n${fields}\n}`;
 }
 
+/** Review threads asked for per page, on the detail query and each follow-up. */
+const REVIEW_THREAD_PAGE_SIZE = 50;
+/**
+ * Follow-up pages of review threads a PR detail load will make. A PR busy
+ * enough to pass this is shown with its first threads rather than costing a
+ * request per page on every load.
+ */
+const MAX_REVIEW_THREAD_PAGES = 10;
+
+// Comments are not paginated: a thread with more than this many replies shows
+// its first ones, which is where the context for the rest lives.
+const REVIEW_THREAD_FIELDS = `
+  id isResolved isOutdated path line startLine diffSide startDiffSide
+  viewerCanReply viewerCanResolve viewerCanUnresolve
+  comments(first:100){ nodes{ id author{login} body createdAt url } }`;
+
+const REVIEW_THREADS_PAGE_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}, after:$after){
+        pageInfo{ hasNextPage endCursor }
+        nodes{ ${REVIEW_THREAD_FIELDS} }
+      }
+    }
+  }
+}`;
+
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
@@ -726,11 +784,9 @@ query($owner:String!,$repo:String!,$number:Int!){
       latestReviews(first:50){
         nodes{ author{login} state }
       }
-      reviewThreads(first:50){
-        nodes{
-          isResolved path line
-          comments(first:50){ nodes{ author{login} body createdAt } }
-        }
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
+        pageInfo{ hasNextPage endCursor }
+        nodes{ ${REVIEW_THREAD_FIELDS} }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
@@ -1336,7 +1392,44 @@ export class GitHubClient {
     const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
     const detail = toPrDetail(pr, data?.repository);
+    const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
+    detail.reviewThreads.push(...more.threads);
+    if (more.truncated) detail.reviewThreadsTruncated = true;
     return errors ? { ...detail, checksUnavailable: true } : detail;
+  }
+
+  /**
+   * The review threads past the detail query's first page. A page that fails
+   * to load ends the walk rather than the PR detail: the threads already read
+   * are worth showing, and `truncated` says some are missing.
+   */
+  private async remainingReviewThreads(
+    owner: string,
+    repo: string,
+    number: number,
+    pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined,
+  ): Promise<{ threads: ReviewThread[]; truncated: boolean }> {
+    const threads: ReviewThread[] = [];
+    let page = pageInfo;
+    for (let i = 0; i < MAX_REVIEW_THREAD_PAGES && page?.hasNextPage && page.endCursor; i++) {
+      let data: { repository?: { pullRequest?: any } };
+      try {
+        data = await this.graphql(REVIEW_THREADS_PAGE_QUERY, {
+          owner,
+          repo,
+          number,
+          after: page.endCursor,
+        });
+      } catch (e) {
+        console.warn(`[github] review threads page for ${owner}/${repo}#${number} failed:`, e);
+        return { threads, truncated: true };
+      }
+      const connection = data.repository?.pullRequest?.reviewThreads;
+      for (const node of connection?.nodes ?? []) threads.push(toReviewThread(node));
+      page = connection?.pageInfo;
+    }
+    // Still more to read: the cap was reached, or GitHub gave no cursor to go on.
+    return { threads, truncated: Boolean(page?.hasNextPage) };
   }
 
   /**
@@ -1767,12 +1860,18 @@ export class GitHubClient {
   }
 
   /**
-   * Posts a single-line review comment. GitHub anchors review comments to a
-   * commit, so the PR's head sha is fetched first; `line` + `side` target the
-   * line in the diff (the same right-side line our diff parser exposes).
+   * Posts a review comment on one line or a range. GitHub anchors review
+   * comments to a commit, so the PR's head sha is fetched first; `line` +
+   * `side` target the range's last line in the diff, and `start_line` +
+   * `start_side` its first.
    */
   async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    const side = input.side ?? "RIGHT";
+    const range =
+      input.startLine != null
+        ? { start_line: input.startLine, start_side: input.startSide ?? side }
+        : {};
     const res = await this.fetchImpl(
       `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
       {
@@ -1788,11 +1887,32 @@ export class GitHubClient {
           commit_id: pr.head.sha,
           path: input.path,
           line: input.line,
-          side: input.side ?? "RIGHT",
+          side,
+          ...range,
         }),
       },
     );
     if (!res.ok) throw await githubErrorFrom(res, "post comment");
+  }
+
+  /** Replies to a review thread, addressed by its GraphQL node id. */
+  async replyToThread(threadId: string, body: string): Promise<void> {
+    await this.graphql<unknown>(
+      `mutation($id:ID!,$body:String!){
+        addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id, body:$body}){
+          comment{ id }
+        }
+      }`,
+      { id: threadId, body },
+    );
+  }
+
+  /** Marks a review thread resolved, or open again. */
+  async setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
+    const mutation = resolved
+      ? `mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread{ id } } }`
+      : `mutation($id:ID!){ unresolveReviewThread(input:{threadId:$id}){ thread{ id } } }`;
+    await this.graphql<unknown>(mutation, { id: threadId });
   }
 
   // --- Issues ---
