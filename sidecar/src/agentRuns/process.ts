@@ -18,6 +18,47 @@ import { claudeChildEnv } from "../lib/claudeCli.ts";
  */
 const MAX_LINE_CHARS = 4_000_000;
 
+/**
+ * Splits stdout chunks into lines, skipping any longer than `maxChars`. A line
+ * can end in the same chunk that takes it over the limit, so the length is
+ * checked when a line ends as well as while it is still being buffered.
+ * `end` hands over a last line with no newline and returns how many were skipped.
+ */
+export function lineSplitter(
+  onLine: (line: string) => void,
+  maxChars = MAX_LINE_CHARS,
+): { push: (chunk: string) => void; end: () => number } {
+  let buffer = "";
+  let skipping = false;
+  let skipped = 0;
+  return {
+    push: (chunk) => {
+      const pieces = chunk.split("\n");
+      // Every piece but the last ends a line; the last is the start of the next.
+      const rest = pieces.pop() ?? "";
+      for (const piece of pieces) {
+        if (skipping || buffer.length + piece.length > maxChars) skipped++;
+        else onLine(buffer + piece);
+        buffer = "";
+        skipping = false;
+      }
+      if (skipping) return;
+      buffer += rest;
+      if (buffer.length > maxChars) {
+        buffer = "";
+        skipping = true;
+      }
+    },
+    end: () => {
+      if (skipping || buffer.length > maxChars) skipped++;
+      else if (buffer) onLine(buffer);
+      buffer = "";
+      skipping = false;
+      return skipped;
+    },
+  };
+}
+
 /** How much stderr is kept for the error message of a failed run. */
 const MAX_STDERR_CHARS = 20_000;
 
@@ -175,27 +216,9 @@ export function launchStreaming(launch: StreamingLaunch): Promise<StreamingExit>
     child.stdin?.on("error", () => {});
     child.stdin?.end(launch.stdin);
 
-    let buffer = "";
-    let skipping = false;
-    let skippedLines = 0;
+    const lines = lineSplitter(launch.onLine);
     child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      const pieces = chunk.split("\n");
-      // Every piece but the last ends a line; the last is the start of the next.
-      const rest = pieces.pop() ?? "";
-      for (const piece of pieces) {
-        if (skipping) skippedLines++;
-        else launch.onLine(buffer + piece);
-        buffer = "";
-        skipping = false;
-      }
-      if (skipping) return;
-      buffer += rest;
-      if (buffer.length > MAX_LINE_CHARS) {
-        buffer = "";
-        skipping = true;
-      }
-    });
+    child.stdout?.on("data", lines.push);
 
     let stderr = "";
     child.stderr?.setEncoding("utf8");
@@ -223,8 +246,7 @@ export function launchStreaming(launch: StreamingLaunch): Promise<StreamingExit>
     });
     child.on("close", (code) => {
       cleanUp();
-      if (skipping) skippedLines++;
-      else if (buffer) launch.onLine(buffer);
+      const skippedLines = lines.end();
       // Keep the pending SIGKILL only for a straggler that ignored SIGTERM.
       if (forceKill && (pgid === undefined || !groupAlive(pgid))) clearTimeout(forceKill);
       resolve({ code, stderr, timedOut, aborted, skippedLines });

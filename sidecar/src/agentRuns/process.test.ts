@@ -6,6 +6,7 @@ import {
   groupAlive,
   killLeftoverGroup,
   launchStreaming,
+  lineSplitter,
   processStartTime,
   type StreamingLaunch,
 } from "./process.ts";
@@ -175,5 +176,24 @@ describe("cleaning up after a crashed sidecar", () => {
 
   it("leaves a pid alone when nothing is running under it", async () => {
     expect(await killLeftoverGroup(999_999, "whenever")).toBe(false);
+  });
+});
+
+describe("line splitter", () => {
+  it("skips a line that ends in the same chunk that takes it over the limit", () => {
+    const lines: string[] = [];
+    const split = lineSplitter((line) => lines.push(line), 10);
+    split.push("12345678");
+    split.push("901234\nok\nlast");
+    expect(split.end()).toBe(1);
+    expect(lines).toEqual(["ok", "last"]);
+  });
+
+  it("skips a line over the limit that arrives in one chunk", () => {
+    const lines: string[] = [];
+    const split = lineSplitter((line) => lines.push(line), 10);
+    split.push("12345678901\nok\n");
+    expect(split.end()).toBe(1);
+    expect(lines).toEqual(["ok"]);
   });
 });
