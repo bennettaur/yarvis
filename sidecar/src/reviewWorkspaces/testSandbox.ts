@@ -1068,7 +1068,9 @@ export async function checkSandbox(
   const tag = `yarvis-sandbox-probe-${process.pid}-${Date.now()}`;
   const outsideWrite = join(dirs.outside, `.${tag}-write`);
   const outsideTarget = join(dirs.outside, `.${tag}-target`);
-  writeFileSync(outsideTarget, "untouched\n");
+  // Exclusive create: the name is predictable and `outside` can be a shared
+  // temp folder, so a file or symlink already there is refused, not written through.
+  writeFileSync(outsideTarget, "untouched\n", { flag: "wx", mode: 0o600 });
   const realHome = sandbox?.realHome ?? sandboxDefaults.realHome;
   const secretDir =
     SECRET_HOME_PATHS.map((p) => join(realHome, p)).find((p) => existsSync(p)) ??
