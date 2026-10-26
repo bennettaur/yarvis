@@ -72,6 +72,11 @@ const commitCache = new Map<string, { base: string; head: string; ts: number }>(
 // changed PAT or org URL is a new key and re-resolves on its own.
 const viewerIdCache = new Map<string, string>();
 
+/** Test hook: forget every cached viewer id. */
+export function resetViewerIds(): void {
+  viewerIdCache.clear();
+}
+
 const ALLOWED_AZURE_HOSTS = ["dev.azure.com", "visualstudio.com"];
 
 /**
