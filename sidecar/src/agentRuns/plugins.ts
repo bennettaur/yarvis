@@ -1,0 +1,74 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/plugin.json";
+import reviewReadme from "../../claude-plugins/yarvis-review/README.md" with { type: "text" };
+
+/**
+ * The Claude Code plugins Yarvis ships to its headless runs.
+ *
+ * Each plugin's source is a folder under `sidecar/claude-plugins/`, laid out the
+ * way Claude Code expects, so it can be reviewed in git and loaded by hand with
+ * `claude --plugin-dir`. Its files are imported as text, which embeds them in the
+ * compiled sidecar — a release build has no source tree to point Claude Code
+ * at — and `writePluginCopy` writes them out for a run.
+ *
+ * A file reaches a run only by being listed here: adding an agent or a skill is
+ * its file in the plugin folder plus an import and an entry in that plugin's map.
+ * Manifests are imported as JSON rather than text because TypeScript types a
+ * `.json` import as its parsed shape whatever the import attribute says.
+ */
+const PLUGINS = {
+  "yarvis-review": {
+    ".claude-plugin/plugin.json": `${JSON.stringify(reviewManifest, null, 2)}\n`,
+    "README.md": reviewReadme,
+  },
+} satisfies Record<string, Record<string, string>>;
+
+export type PluginName = keyof typeof PLUGINS;
+
+export interface PluginCopy {
+  /** The directory to hand to `--plugin-dir`. */
+  dir: string;
+  remove: () => void;
+}
+
+/** Refuses a listed path that would land outside the plugin's folder. */
+function checkedRelativePath(path: string): string {
+  const normalized = normalize(path);
+  if (isAbsolute(normalized) || normalized.split(sep).includes("..")) {
+    throw new Error(`plugin file path escapes its folder: ${path}`);
+  }
+  return normalized;
+}
+
+/**
+ * Writes a fresh copy of a plugin for one run, in a new private temp directory,
+ * and returns it with a way to remove it once the run is over.
+ *
+ * Fresh per run rather than one long-lived copy: a plugin is agent prompts and
+ * tool grants, and a shared copy under the home directory is something anything
+ * running as the user could edit between runs — including an earlier run that
+ * was pointed at a hostile checkout. A copy nobody else has seen can't have been
+ * tampered with, and there is no "is the copy current?" question to get wrong.
+ */
+export function writePluginCopy(
+  name: PluginName,
+  files: Record<string, string> = PLUGINS[name],
+): PluginCopy {
+  // mkdtemp creates the directory 0700, so other users can't read or swap it.
+  const root = mkdtempSync(join(tmpdir(), "yarvis-plugin-"));
+  const remove = () => rmSync(root, { recursive: true, force: true });
+  try {
+    const dir = join(root, name);
+    for (const [path, content] of Object.entries(files)) {
+      const destination = join(dir, checkedRelativePath(path));
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, content);
+    }
+    return { dir, remove };
+  } catch (e) {
+    remove();
+    throw e;
+  }
+}

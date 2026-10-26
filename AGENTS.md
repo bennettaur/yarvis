@@ -524,6 +524,41 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A feature that needs Claude Code to work *while the user watches* (a
+  verification report, mutation testing) starts it with `startClaudeRun` in
+  `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
+  program lookup, directory check and built environment (`lib/claudeCli.ts`),
+  streams `--output-format stream-json` into typed events any number of viewers
+  follow over `/api/agent-runs/:id/events`, and ends in an `agent_runs` row.
+  These runs are pointed at a pull request's checkout, which its author
+  controls, so they read no settings files at all (`--setting-sources ""`):
+  the checkout's can declare hooks, which are shell commands Claude Code runs
+  itself, and the user's were written for sessions the user drives — their
+  allow rules, hooks, plugins and `CLAUDE.md` (which may say to push and open
+  PRs) don't belong in an unattended run. `lockedDownSettings` applies instead:
+  no hooks or auto-memory, a deny list for publishing and the network, and Bash
+  in a network-less sandbox that refuses to run when the sandbox can't start.
+  The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
+  `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
+  Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
+  suite's own file reads never pass through the rules. The plugins compiled
+  into Claude Code (`cc-plugin-*@builtin`) load with no settings file at all,
+  so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
+  security default managed settings seat. Claude Code's core agents and skills
+  aren't plugins and stay.
+  The permission mode is always set and never one that approves on its own, a
+  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  checkout is material rather than instructions (`spotlight` fences PR text a
+  caller interpolates), and no session is saved, so the transcript never
+  reaches the nightly session digest and from there memory.
+  `agentRuns/canary.ts` checks all of that against the real CLI.
+  Cancelling kills the process group, since the tools a run starts outlive a
+  kill aimed only at Claude Code; so does the sidecar exiting, and the startup
+  sweep kills what a crashed sidecar left, matched by pid and start time. The
+  agents and skills these runs load ship as a plugin under
+  `sidecar/claude-plugins/`, embedded like the agent definitions and written
+  to a fresh private temp directory for each run, so nothing between runs can
+  edit it; a file reaches a run only once it is listed in `agentRuns/plugins.ts`.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
