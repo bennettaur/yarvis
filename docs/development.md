@@ -391,6 +391,10 @@ src/            React frontend (Vite + TS + Tailwind)
     issue/      Issues tab views
     files/      shared file-tree rows
     editor/     CodeMirror 6 wrapper behind the workspace file editor
+    review/editor/ read-only Monaco file and diff views for PR review: line
+                comment/ask buttons, React view zones, review:// models and a
+                go-to-definition hook. Monaco rather than CodeMirror for its
+                diff editor and language workers; loaded lazily, never edits
     workspaces/ workspace detail views, Omni widgets, self-review comments, editor
     shell/      nav rail, top bar, boot screen, tab shortcuts, cheat sheet
     omni/       Omni view, the chat-built widget canvas
