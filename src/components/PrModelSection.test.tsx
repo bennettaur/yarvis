@@ -14,6 +14,8 @@ const PROVIDERS = [
 
 let config: Record<string, unknown> = { guide: null, ask: null };
 let verification: Record<string, unknown> = { model: "sonnet", maxBudgetUsd: 2 };
+const REREVIEW_DEFAULTS = { model: "sonnet", maxBudgetUsd: 1, autoStart: false };
+let rereview: Record<string, unknown> = { ...REREVIEW_DEFAULTS };
 /** Requests the section made, so a test can assert what it wrote. */
 const calls: { url: string; method: string; body?: string }[] = [];
 /** When set, the next PATCH answers with this status instead of succeeding. */
@@ -45,6 +47,13 @@ mock.module("../lib/api", () => ({
         headers: { "content-type": "application/json" },
       });
     }
+    if (url === "/api/pr-models/rereview") {
+      if (method === "PATCH") rereview = { ...rereview, ...JSON.parse(init.body as string) };
+      return new Response(JSON.stringify(rereview), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (method === "PATCH" && nextPatchStatus !== null) {
       const status = nextPatchStatus;
       nextPatchStatus = null;
@@ -69,6 +78,7 @@ afterEach(() => {
   nextPatchStatus = null;
   config = { guide: null, ask: null };
   verification = { model: "sonnet", maxBudgetUsd: 2 };
+  rereview = { ...REREVIEW_DEFAULTS };
 });
 
 /** Sets a form control's value the way React notices, then fires `event`. */
@@ -148,6 +158,32 @@ describe("PrModelSection", () => {
       .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
       .map((c) => JSON.parse(c.body ?? "{}"));
     expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 0.75 }]);
+  });
+
+  it("saves the What's changed summary's own budget and auto-start", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      `[aria-label="What's changed budget in US dollars"]`,
+    ) as HTMLInputElement;
+    expect(budget.value).toBe("1");
+    enter(budget, "0.5", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const auto = mounted.host.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(auto.checked).toBe(false);
+    auto.click();
+    await settle();
+
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/rereview" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ maxBudgetUsd: 0.5 }, { autoStart: true }]);
+    expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
+      false,
+    );
   });
 
   it("refuses a budget out of range without saving it", async () => {

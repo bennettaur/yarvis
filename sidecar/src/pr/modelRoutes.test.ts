@@ -106,3 +106,29 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     }
   });
 });
+
+describe("GET/PATCH /api/pr-models/rereview", () => {
+  const patch = (body: unknown) =>
+    app().request("/api/pr-models/rereview", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify(body),
+    });
+  const read = async () =>
+    (await app().request("/api/pr-models/rereview", { headers: auth })).json();
+
+  it("answers its own defaults, off until turned on, apart from the verification report's", async () => {
+    expect(await read()).toEqual({ model: "sonnet", maxBudgetUsd: 1, autoStart: false });
+    await patch({ autoStart: true, maxBudgetUsd: 0.5 });
+    await patch({ model: "haiku" });
+    expect(await read()).toEqual({ model: "haiku", maxBudgetUsd: 0.5, autoStart: true });
+    const verification = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await verification.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+  });
+
+  it("refuses values it doesn't know", async () => {
+    for (const body of [{ autoStart: "yes" }, { maxBudgetUsd: 50 }, { model: "gpt" }, { x: 1 }]) {
+      expect((await patch(body)).status).toBe(400);
+    }
+  });
+});

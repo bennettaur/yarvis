@@ -17,12 +17,20 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
+import { sweepContextDirs } from "./reviewWorkspaces/agentContext.ts";
 import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
 import {
   failInterruptedMutationRuns,
   mutantCopiesInUse,
 } from "./reviewWorkspaces/mutationTesting.ts";
-import { sweepVerificationContextDirs } from "./reviewWorkspaces/verification.ts";
+import {
+  REREVIEW_CONTEXT_DIR_PREFIX,
+  REREVIEW_RUN_TIMEOUT_MS,
+} from "./reviewWorkspaces/rereview.ts";
+import {
+  VERIFICATION_CONTEXT_DIR_PREFIX,
+  VERIFICATION_RUN_TIMEOUT_MS,
+} from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
@@ -93,10 +101,15 @@ writeDiscovery({
   .catch((e) => console.error("[browser] could not write the discovery file:", e));
 
 try {
-  const removed = sweepVerificationContextDirs();
-  if (removed > 0) console.log(`[verification] removed ${removed} leftover context folders`);
+  const removed =
+    sweepContextDirs({
+      prefix: VERIFICATION_CONTEXT_DIR_PREFIX,
+      maxAgeMs: VERIFICATION_RUN_TIMEOUT_MS,
+    }) +
+    sweepContextDirs({ prefix: REREVIEW_CONTEXT_DIR_PREFIX, maxAgeMs: REREVIEW_RUN_TIMEOUT_MS });
+  if (removed > 0) console.log(`[agent-context] removed ${removed} leftover context folders`);
 } catch (e) {
-  console.error("[verification] could not sweep leftover context folders:", e);
+  console.error("[agent-context] could not sweep leftover context folders:", e);
 }
 
 if (config.databaseUrl) {

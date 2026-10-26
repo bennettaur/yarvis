@@ -11,7 +11,7 @@
  * shown once.
  */
 
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -26,12 +26,22 @@ import {
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
-import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { getVerificationRunConfig, type VerificationRunConfig } from "../pr/models.ts";
 import { prSourceFor } from "../pr/source.ts";
 import type { CheckItem, PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
+import {
+  boundedList,
+  boundedText,
+  clip,
+  clipWords,
+  fencedDiff,
+  lineRangeSchema,
+  optionalLine,
+  optionalPath,
+  repoPath,
+} from "./agentContext.ts";
 import type { ReviewChangedFile } from "./git.ts";
 import {
   assertWorktreeInWorkspace,
@@ -55,63 +65,6 @@ export const MAX_MUST_READ = 8;
 
 const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
-
-/** Cuts text to `max` characters, ending in an ellipsis when it had to cut. */
-function clip(text: string, max: number): string {
-  const trimmed = text.trim();
-  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
-}
-
-/**
- * Cuts text to `max` words. Ends at the last full sentence that fits when that
- * keeps most of the allowance, since a summary that stops mid-clause reads
- * worse than a shorter one; otherwise cuts mid-sentence and adds an ellipsis.
- */
-export function clipWords(text: string, max: number): string {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length <= max) return words.join(" ");
-  const kept = words.slice(0, max);
-  for (let end = kept.length; end >= Math.ceil(max / 2); end--) {
-    if (/[.!?]["')\]]?$/.test(kept[end - 1] ?? "")) return kept.slice(0, end).join(" ");
-  }
-  return `${kept.join(" ")}…`;
-}
-
-/*
- * Limits reach the model as descriptions, not as `maxLength`/`maxItems`:
- * Claude Code rejects structured output that breaks a JSON Schema bound, and a
- * model told its answer is too long can refuse to shorten it and finish with
- * no structured output at all — losing a whole paid-for run over one long
- * sentence. The transforms below hold the limits instead.
- */
-
-/** A string cut to `max` characters. */
-function boundedText(max: number) {
-  return z
-    .string()
-    .transform((s) => clip(s, max))
-    .meta({ description: `At most ${max} characters.` });
-}
-
-/** An array cut to `max` items. */
-function boundedList<T extends z.ZodType>(item: T, max: number) {
-  return z
-    .array(item)
-    .transform((items) => items.slice(0, max))
-    .meta({ description: `At most ${max} items.` });
-}
-
-function positiveInt(n: unknown): number | undefined {
-  return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : undefined;
-}
-
-/** Optional in the answer; models write null for "none" as often as they leave a key out. */
-const optionalPath = z
-  .string()
-  .nullish()
-  .transform((p) => (p?.trim() ? clip(p, 500) : undefined));
-
-const optionalLine = z.number().nullish().transform(positiveInt);
 
 /** Titles and details: the agents are asked for at most 12 and 40 words. */
 const TITLE_CHARS = 100;
@@ -161,19 +114,6 @@ const riskSchema = z.object({
   mitigations: boundedList(boundedText(100), 3),
   concerns: boundedList(concernSchema, MAX_FINDINGS),
 });
-
-/** A range with either end missing or invalid reads as the other end; with neither, no range. */
-const lineRangeSchema = z
-  .object({ start: z.number().nullish(), end: z.number().nullish() })
-  .nullish()
-  .transform((r) => {
-    const start = positiveInt(r?.start);
-    const end = positiveInt(r?.end);
-    const a = start ?? end;
-    const b = end ?? start;
-    if (a === undefined || b === undefined) return undefined;
-    return { start: Math.min(a, b), end: Math.max(a, b) };
-  });
 
 const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
@@ -310,19 +250,6 @@ export interface ReportLimits {
   changedPaths: ReadonlySet<string>;
   /** The checkout the run reads; a path an agent gives under it is made relative. */
   checkoutDir?: string;
-}
-
-/**
- * A path as the repo knows it. Agents sometimes cite the absolute path Read
- * showed them, which would match no changed file and no other check's finding.
- */
-export function repoPath(path: string, checkoutDir?: string): string {
-  let p = path.trim();
-  if (checkoutDir) {
-    const root = checkoutDir.replace(/\/+$/, "");
-    if (p.startsWith(`${root}/`)) p = p.slice(root.length + 1);
-  }
-  return p.replace(/^(\.\/)+/, "");
 }
 
 function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string): T {
@@ -527,64 +454,12 @@ function threadsBlock(threads: ReviewThread[]): string {
   return `Review comments (${threads.length} threads, ${open} open).${more}\n${spotlight("review-comments", text)}`;
 }
 
-const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-
-/**
- * Prefixes every line of a hunk with the line number it has in its file: the
- * head's for added and context lines, the base's (marked `b`) for removed
- * ones. A model reading a diff cites the line numbers in front of it, and
- * without these those are the diff file's own, which point nowhere.
- */
-export function numberPatch(patch: string): string {
-  let oldLine = 0;
-  let newLine = 0;
-  let inHunk = false;
-  const out: string[] = [];
-  for (const line of patch.split("\n")) {
-    const header = HUNK_HEADER.exec(line);
-    if (header) {
-      oldLine = Number(header[1]);
-      newLine = Number(header[2]);
-      inHunk = true;
-      out.push(line);
-    } else if (!inHunk || line.startsWith("\\") || line === "") {
-      out.push(line);
-    } else if (line.startsWith("+")) {
-      out.push(`+${String(newLine++).padStart(6)}  ${line.slice(1)}`);
-    } else if (line.startsWith("-")) {
-      out.push(`-${`b${oldLine++}`.padStart(6)}  ${line.slice(1)}`);
-    } else if (line.startsWith(" ")) {
-      oldLine++;
-      out.push(` ${String(newLine++).padStart(6)}  ${line.slice(1)}`);
-    } else {
-      // The next file's header in a concatenated diff.
-      inHunk = false;
-      out.push(line);
-    }
-  }
-  return out.join("\n");
-}
-
-/**
- * `changes.diff`, fenced like the rest of the PR's text, and the line each
- * file's patch starts on in it.
- */
+/** `changes.diff`, fenced like the rest of the PR's text, and the line each file's patch starts on in it. */
 function diffAndIndex(patches: ReviewPatch[]): { diff: string; startLine: Map<string, number> } {
-  const nonce = newNonce();
-  const startLine = new Map<string, number>();
-  const parts: string[] = [];
-  // The warning and the opening tag come first.
-  let line = 3;
-  for (const { file, patch } of patches) {
-    if (patch === null) continue;
-    startLine.set(file.path, line);
-    const numbered = numberPatch(patch);
-    const text = numbered.endsWith("\n") ? numbered : `${numbered}\n`;
-    parts.push(text);
-    line += text.split("\n").length - 1;
-  }
-  const body = parts.join("").replace(/\n$/, "");
-  return { diff: `${untrustedWarning(nonce, "diff")}\n${fence(body, nonce, "diff")}\n`, startLine };
+  return fencedDiff(
+    patches.map(({ file, patch }) => ({ path: file.path, patch })),
+    "diff",
+  );
 }
 
 function fileLine(
@@ -684,34 +559,10 @@ export function buildVerificationMaterial(
 // Context directories
 // ---------------------------------------------------------------------------
 
-const CONTEXT_DIR_PREFIX = "yarvis-verification-";
+export const VERIFICATION_CONTEXT_DIR_PREFIX = "yarvis-verification-";
 
 /** Longest a run can last, past which nothing still reads its context. */
-const RUN_TIMEOUT_MS = 20 * 60 * 1000;
-
-/**
- * Removes context directories a run left behind — a sidecar killed mid-run
- * never gets to. Only ones older than a run can last, since another instance
- * shares the temp folder and may have a run reading its own.
- */
-export function sweepVerificationContextDirs(
-  root: string = tmpdir(),
-  now: number = Date.now(),
-): number {
-  let removed = 0;
-  for (const name of readdirSync(root)) {
-    if (!name.startsWith(CONTEXT_DIR_PREFIX)) continue;
-    const path = join(root, name);
-    try {
-      if (now - statSync(path).mtimeMs <= RUN_TIMEOUT_MS + 5 * 60 * 1000) continue;
-      rmSync(path, { recursive: true, force: true });
-      removed++;
-    } catch (e) {
-      console.error(`[verification] could not remove ${path}:`, describeError(e));
-    }
-  }
-  return removed;
-}
+export const VERIFICATION_RUN_TIMEOUT_MS = 20 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Starting and looking up runs
@@ -784,7 +635,7 @@ export interface StartedVerification {
   existing: boolean;
 }
 
-function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
+export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
   if (pr.status !== "ready" || pr.worktreeStatus !== "ready" || !pr.headSha) {
     const state = pr.status !== "ready" ? pr.status : pr.worktreeStatus;
     throw new ReviewWorkspaceError(`the checkout is ${state}, not ready`, 409);
@@ -831,7 +682,7 @@ export async function startVerification(
       deps.settings(),
     ]);
 
-    const contextDir = mkdtempSync(join(tmpdir(), CONTEXT_DIR_PREFIX));
+    const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
     const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
     try {
       const material = buildVerificationMaterial(
@@ -859,7 +710,7 @@ export async function startVerification(
           model: settings.model,
           maxBudgetUsd: settings.maxBudgetUsd,
           maxTurns: MAX_TURNS,
-          timeoutMs: RUN_TIMEOUT_MS,
+          timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
           meta: {
             workspaceId,
             prId,

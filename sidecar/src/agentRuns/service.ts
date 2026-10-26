@@ -80,6 +80,12 @@ export interface ClaudeRunOptions<T = unknown> {
   outputSchema?: z.ZodType<T>;
   /** Shipped plugins to load (`--plugin-dir`), written out fresh for the run. */
   plugins?: PluginName[];
+  /**
+   * A plugin agent the run's main thread runs as (`--agent`, e.g.
+   * `yarvis-review:rereviewer`): its prompt and tool list instead of a
+   * coordinator delegating to it, for a job one agent does whole.
+   */
+  agent?: string;
   /** Tools the run may use; anything else is denied, since nobody can answer a prompt. */
   allowedTools: string[];
   disallowedTools?: string[];
@@ -293,6 +299,7 @@ export function buildClaudeArgs(options: ClaudeRunOptions, pluginDirs: string[])
   ];
   for (const dir of pluginDirs) args.push("--plugin-dir", dir);
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
+  if (options.agent) args.push("--agent", options.agent);
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));

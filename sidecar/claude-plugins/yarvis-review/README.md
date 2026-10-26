@@ -14,9 +14,17 @@ Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context and numbered diff to a directory the run may read, and
 removes duplicate findings across sections once the run answers.
 
-Every agent takes its inputs and trust rules from `shared/inputs-and-trust.md`,
-which `plugins.ts` puts in place of the `<!-- yarvis-review:inputs-and-trust -->`
-line when it writes a run's copy. Claude Code has no include for agent files,
+The "What's changed" re-review summary is the `rereviewer` agent alone, run as
+the main thread (`--agent yarvis-review:rereviewer`). Its run starts from
+`sidecar/src/reviewWorkspaces/rereview.ts`, which writes the reviewer's
+comments and the numbered interdiff since their last review, and checks the
+answer against them.
+
+Every verification agent takes its inputs and trust rules from
+`shared/inputs-and-trust.md`, which `plugins.ts` puts in place of the
+`<!-- yarvis-review:inputs-and-trust -->` line when it writes a run's copy;
+`rereviewer` takes its own from `shared/rereview-inputs-and-trust.md`, in place
+of `<!-- yarvis-review:rereview-inputs-and-trust -->`. Claude Code has no include for agent files,
 and the system prompt a run appends doesn't reach subagents, so this is how
 each agent gets the same guardrail.
 

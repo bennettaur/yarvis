@@ -221,6 +221,8 @@ The **Since last review** tab shows:
 
 - A summary line: how many new commits, how many files, and whether the PR was
   rebased onto a newer base, force-pushed, or had its base merged in.
+- **What's changed**, an agent's summary of the re-review (see
+  [What's changed](#whats-changed)).
 - The files whose change differs from the one you reviewed: **Changed again**,
   **Newly changed** (the PR didn't touch it before), or **Reverted** (the PR no
   longer changes it), with the lines added and removed since. Clicking one opens
@@ -248,6 +250,64 @@ your starting point to the checkout's commit. Open **Δ** tabs keep comparing
 against the review they were opened from (the tab's tooltip names its commit)
 until you open the file again from the list. A commit tab whose commit a
 force-push has since dropped says it is no longer in the pull request.
+
+#### What's changed
+
+The **What's changed** button in the **Since last review** tab answers the
+questions a re-review is about: did the author deal with each of your
+comments, is there anything new you need to read, and can you approve. An
+agent (Claude Code, on your machine, reading only) reads what changed since
+your review and your comments, then reports:
+
+- **The verdict** at the top: **Ready to approve**, or **Needs another look**
+  with the reason. It is ready only when each of your comments is addressed
+  or its thread is resolved, and nothing new needs your review. A
+  disagreement the author explained still holds it back until you accept the
+  reason by resolving the thread; resolve it right there and the verdict
+  turns ready without a re-run.
+- **A summary** of two or three sentences.
+- **Your comments**, grouped. **Still open** comes first (not addressed,
+  partly addressed, or unclear), then **Answered with a reason**, with the
+  agent's summary of the author's reply, then **Addressed or resolved**, and
+  **Settled before your review** (threads you resolved before your last
+  review, with nothing said since, which aren't judged again), both folded
+  away. Each one shows the thread with **Reply** and **Resolve** right there,
+  and its location opens the diff at that line.
+- **Other changes** since your review: **Needs your review** opens each file's
+  **Δ** tab, and **Minor** (formatting, comments, renames, small mechanical
+  fixes, test-only tweaks) is folded away. Anything touching logic, contracts,
+  data, security or behaviour counts as needing review, however small.
+
+Your comments are the review threads you started or replied in, and your
+comments on the PR itself. Yarvis asks the provider who you are to find them
+(on Azure DevOps by your identity, since two people can share a display name),
+and won't run if it can't tell. Only the PR author's replies count as answers;
+another reviewer's or a bot's don't.
+
+Yarvis checks the agent's answer rather than taking it on trust:
+
+- "Addressed" or "partly" has to cite a file that changed since your review,
+  at a line in or next to one of its changes. Citing the thread's own file, or
+  nothing for a comment on the PR itself, counts only when the author answered
+  there. Anything else shows as **Unclear**.
+- So does a "disagreed" the author didn't reply to, and a comment the agent
+  skipped.
+- Every file that changed since your review is accounted for. One the agent
+  neither listed nor cited as a fix is listed as needing review ("not
+  classified by the agent").
+- When it changed anything, the verdict's reason is Yarvis's own count, and a
+  line under the summary says what it couldn't take as given.
+- **Ready to approve** never stands beside anything outstanding.
+
+Everything the agent wrote is shown as plain text. A path is a link only when
+the PR changes that file.
+
+A summary is for one range, from your last review to the checkout's head. When
+the PR has moved on since, the last summary stays in view with a note and
+**Re-run**. By default the agent waits for the button. To have it start when the
+tab opens on changes it hasn't summarised, turn on auto-start under
+**Settings → PR review → What's changed**, where its model and spend ceiling
+are set too ($1 by default).
 
 ### New commits pushed
 

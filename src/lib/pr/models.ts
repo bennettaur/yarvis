@@ -59,6 +59,33 @@ export async function saveVerificationRunConfig(
   return res.json();
 }
 
+/**
+ * The "What's changed" summary on a re-review: a Claude Code model, its own
+ * spend ceiling, and whether it starts by itself when the tab opens.
+ */
+export interface RereviewRunConfig extends VerificationRunConfig {
+  autoStart: boolean;
+}
+
+export async function getRereviewRunConfig(): Promise<RereviewRunConfig> {
+  const res = await sidecarFetch("/api/pr-models/rereview");
+  await ensureOk(res, "re-review summary settings");
+  return res.json();
+}
+
+/** Saves the given fields, leaving the rest as they are. */
+export async function saveRereviewRunConfig(
+  patch: Partial<RereviewRunConfig>,
+): Promise<RereviewRunConfig> {
+  const res = await sidecarFetch("/api/pr-models/rereview", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  await ensureOk(res, "save re-review summary settings");
+  return res.json();
+}
+
 /** Saves the given features, leaving the rest as they are; `null` clears one. */
 export async function savePrModelConfig(patch: Partial<PrModelConfig>): Promise<PrModelConfig> {
   const res = await sidecarFetch("/api/pr-models", {

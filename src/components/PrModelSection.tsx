@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { listProviders, type ProviderInfo } from "../lib/chat";
 import type { ModelSelection } from "../lib/complexityModels";
 import {
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
+  getRereviewRunConfig,
   getVerificationRunConfig,
   PR_MODEL_FEATURES,
   type PrModelConfig,
   type PrModelFeature,
+  type RereviewRunConfig,
   savePrModelConfig,
+  saveRereviewRunConfig,
   saveVerificationRunConfig,
   VERIFICATION_BUDGET_LIMITS,
   VERIFICATION_MODELS,
@@ -18,8 +21,9 @@ import {
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
- * code. A feature left unset uses the default chat model. The verification report runs
- * on Claude Code instead, so it takes a Claude Code model and a spend ceiling.
+ * code. A feature left unset uses the default chat model. The verification report and
+ * the "What's changed" summary run on Claude Code instead, so each takes a Claude Code
+ * model and a spend ceiling.
  */
 
 const FIELD =
@@ -36,25 +40,103 @@ const VERIFICATION_MODEL_LABELS: Record<VerificationModel, string> = {
   haiku: "Claude Haiku",
 };
 
+/**
+ * A feature that runs on Claude Code: its model and spend ceiling, and
+ * whatever else `children` adds. The budget is saved on blur, so a half-typed
+ * number isn't sent, and one out of range is refused and put back.
+ */
+function ClaudeRunRow({
+  label,
+  hint,
+  value,
+  onSave,
+  onError,
+  children,
+}: {
+  label: string;
+  hint: string;
+  value: VerificationRunConfig;
+  onSave: (patch: Partial<VerificationRunConfig>) => void;
+  onError: (message: string) => void;
+  children?: ReactNode;
+}) {
+  const [budgetDraft, setBudgetDraft] = useState(String(value.maxBudgetUsd));
+  useEffect(() => setBudgetDraft(String(value.maxBudgetUsd)), [value.maxBudgetUsd]);
+
+  const commitBudget = () => {
+    const budget = Number(budgetDraft);
+    if (
+      budgetDraft.trim() === "" ||
+      !Number.isFinite(budget) ||
+      budget < VERIFICATION_BUDGET_LIMITS.min ||
+      budget > VERIFICATION_BUDGET_LIMITS.max
+    ) {
+      setBudgetDraft(String(value.maxBudgetUsd));
+      onError(
+        `The budget must be between $${VERIFICATION_BUDGET_LIMITS.min} and $${VERIFICATION_BUDGET_LIMITS.max}.`,
+      );
+      return;
+    }
+    if (budget !== value.maxBudgetUsd) onSave({ maxBudgetUsd: budget });
+  };
+
+  return (
+    <div className="grid grid-cols-[120px_1fr_1fr] items-start gap-2">
+      <div>
+        <p className="text-sm text-zinc-300">{label}</p>
+        <p className="text-xs text-zinc-600">{hint}</p>
+      </div>
+      <select
+        className={FIELD}
+        aria-label={`${label} model`}
+        value={value.model}
+        onChange={(e) => onSave({ model: e.target.value as VerificationModel })}
+      >
+        {VERIFICATION_MODELS.map((m) => (
+          <option key={m} value={m}>
+            {VERIFICATION_MODEL_LABELS[m]}
+          </option>
+        ))}
+      </select>
+      <label className="flex items-center gap-1 text-sm text-zinc-500">
+        $
+        <input
+          className={FIELD}
+          aria-label={`${label} budget in US dollars`}
+          type="number"
+          inputMode="decimal"
+          min={VERIFICATION_BUDGET_LIMITS.min}
+          max={VERIFICATION_BUDGET_LIMITS.max}
+          step={0.25}
+          value={budgetDraft}
+          onChange={(e) => setBudgetDraft(e.target.value)}
+          onBlur={commitBudget}
+        />
+      </label>
+      {children && <div className="col-start-2 col-end-4">{children}</div>}
+    </div>
+  );
+}
+
 export default function PrModelSection() {
   const [config, setConfig] = useState<PrModelConfig>(DEFAULT_PR_MODEL_CONFIG);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [verification, setVerification] = useState<VerificationRunConfig | null>(null);
-  /** The budget as typed; saved on blur, so a half-typed number isn't sent. */
-  const [budgetDraft, setBudgetDraft] = useState("");
+  const [rereview, setRereview] = useState<RereviewRunConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [saved, catalog, run] = await Promise.all([
+      const [saved, catalog, run, rerun] = await Promise.all([
         getPrModelConfig(),
         listProviders("chat"),
         getVerificationRunConfig(),
+        getRereviewRunConfig(),
       ]);
       setConfig(saved);
       setProviders(catalog);
       setVerification(run);
-      setBudgetDraft(String(run.maxBudgetUsd));
+      setRereview(rerun);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -83,32 +165,21 @@ export default function PrModelSection() {
 
   const saveVerification = useCallback(async (patch: Partial<VerificationRunConfig>) => {
     try {
-      const saved = await saveVerificationRunConfig(patch);
-      setVerification(saved);
-      setBudgetDraft(String(saved.maxBudgetUsd));
+      setVerification(await saveVerificationRunConfig(patch));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
-  const commitBudget = () => {
-    if (!verification) return;
-    const value = Number(budgetDraft);
-    if (
-      budgetDraft.trim() === "" ||
-      !Number.isFinite(value) ||
-      value < VERIFICATION_BUDGET_LIMITS.min ||
-      value > VERIFICATION_BUDGET_LIMITS.max
-    ) {
-      setBudgetDraft(String(verification.maxBudgetUsd));
-      setError(
-        `The budget must be between $${VERIFICATION_BUDGET_LIMITS.min} and $${VERIFICATION_BUDGET_LIMITS.max}.`,
-      );
-      return;
+  const saveRereview = useCallback(async (patch: Partial<RereviewRunConfig>) => {
+    try {
+      setRereview(await saveRereviewRunConfig(patch));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
-    if (value !== verification.maxBudgetUsd) void saveVerification({ maxBudgetUsd: value });
-  };
+  }, []);
 
   const modelsFor = (providerId: string) =>
     providers.find((p) => p.id === providerId)?.models ?? [];
@@ -171,43 +242,31 @@ export default function PrModelSection() {
           );
         })}
         {verification && (
-          <div className="grid grid-cols-[120px_1fr_1fr] items-start gap-2">
-            <div>
-              <p className="text-sm text-zinc-300">Verification report</p>
-              <p className="text-xs text-zinc-600">
-                Runs on Claude Code. The budget caps what one report may spend.
-              </p>
-            </div>
-            <select
-              className={FIELD}
-              aria-label="Verification report model"
-              value={verification.model}
-              onChange={(e) =>
-                void saveVerification({ model: e.target.value as VerificationModel })
-              }
-            >
-              {VERIFICATION_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {VERIFICATION_MODEL_LABELS[m]}
-                </option>
-              ))}
-            </select>
-            <label className="flex items-center gap-1 text-sm text-zinc-500">
-              $
+          <ClaudeRunRow
+            label="Verification report"
+            hint="Runs on Claude Code. The budget caps what one report may spend."
+            value={verification}
+            onSave={(patch) => void saveVerification(patch)}
+            onError={setError}
+          />
+        )}
+        {rereview && (
+          <ClaudeRunRow
+            label="What's changed"
+            hint="Re-review summary, on Claude Code. The budget caps one summary."
+            value={rereview}
+            onSave={(patch) => void saveRereview(patch)}
+            onError={setError}
+          >
+            <label className="flex items-center gap-2 text-xs text-zinc-400">
               <input
-                className={FIELD}
-                aria-label="Verification report budget in US dollars"
-                type="number"
-                inputMode="decimal"
-                min={VERIFICATION_BUDGET_LIMITS.min}
-                max={VERIFICATION_BUDGET_LIMITS.max}
-                step={0.25}
-                value={budgetDraft}
-                onChange={(e) => setBudgetDraft(e.target.value)}
-                onBlur={commitBudget}
+                type="checkbox"
+                checked={rereview.autoStart}
+                onChange={(e) => void saveRereview({ autoStart: e.target.checked })}
               />
+              Start it when "Since last review" opens on changes it hasn't summarised
             </label>
-          </div>
+          </ClaudeRunRow>
         )}
       </div>
 

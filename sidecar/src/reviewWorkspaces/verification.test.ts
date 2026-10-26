@@ -4,18 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jsonSchemaArg } from "../agentRuns/service.ts";
 import type { CheckItem, PrDetail } from "../pr/types.ts";
+import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
 import type { ReviewPatch } from "./service.ts";
 import {
   buildVerificationMaterial,
   checkOutcome,
-  clipWords,
   emptyAudit,
   MAX_MUST_READ,
   mustReadCap,
-  numberPatch,
   similarTitles,
   summaryWordCap,
-  sweepVerificationContextDirs,
   type VerificationInput,
   verificationReportSchema,
 } from "./verification.ts";
@@ -471,21 +469,26 @@ describe("building the run's material", () => {
 });
 
 describe("sweeping leftover context folders", () => {
-  it("removes only folders older than a run can last", () => {
+  it("removes only its own prefix's folders older than a run can last", () => {
     const root = mkdtempSync(join(tmpdir(), "yarvis-sweep-test-"));
     try {
       const old = join(root, "yarvis-verification-old");
       const fresh = join(root, "yarvis-verification-fresh");
+      const otherKind = join(root, "yarvis-rereview-old");
       const other = join(root, "something-else");
-      for (const dir of [old, fresh, other]) mkdirSync(dir);
+      for (const dir of [old, fresh, otherKind, other]) mkdirSync(dir);
       const anHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
-      utimesSync(old, anHourAgo, anHourAgo);
-      utimesSync(other, anHourAgo, anHourAgo);
+      for (const dir of [old, otherKind, other]) utimesSync(dir, anHourAgo, anHourAgo);
 
-      expect(sweepVerificationContextDirs(root)).toBe(1);
+      const sweep = (prefix: string) =>
+        sweepContextDirs({ prefix, maxAgeMs: 20 * 60 * 1000, root });
+      expect(sweep("yarvis-verification-")).toBe(1);
       expect(existsSync(old)).toBe(false);
       expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(otherKind)).toBe(true);
       expect(existsSync(other)).toBe(true);
+      expect(sweep("yarvis-rereview-")).toBe(1);
+      expect(existsSync(otherKind)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

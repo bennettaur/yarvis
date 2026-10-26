@@ -134,6 +134,7 @@ describe("the arguments a run is started with", () => {
       "--disallowedTools",
       "--plugin-dir",
       "--add-dir",
+      "--agent",
     ]) {
       expect(args).not.toContain(flag);
     }
@@ -149,6 +150,7 @@ describe("the arguments a run is started with", () => {
         appendSystemPrompt: "Be brief.",
         permissionMode: "plan",
         addDirs: ["/ctx/one", "/ctx/two"],
+        agent: "yarvis-review:rereviewer",
       }),
       ["/plugins/yarvis-review"],
     );
@@ -165,6 +167,7 @@ describe("the arguments a run is started with", () => {
     expect(value("--disallowedTools")).toBe("Edit");
     expect(value("--plugin-dir")).toBe("/plugins/yarvis-review");
     expect(value("--permission-mode")).toBe("plan");
+    expect(value("--agent")).toBe("yarvis-review:rereviewer");
     expect(value("--append-system-prompt")).toBe(`${RUN_GUARDRAIL}\n\nBe brief.`);
     expect(JSON.parse(value("--json-schema") ?? "").properties.count.type).toBe("number");
   });

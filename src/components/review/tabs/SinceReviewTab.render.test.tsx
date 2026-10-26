@@ -121,13 +121,14 @@ describe("SinceReviewView", () => {
       createElement(SinceReviewView, {
         prRef: ref,
         since: since(),
+        summary: createElement("p", null, "AGENT SLOT"),
         onOpenFile: () => {},
         onOpenCommit: () => {},
       }),
     );
     const text = textOf(html);
     expect(text).toContain("1 new commit · 2 files changed");
-    expect(text).not.toContain("Coming soon");
+    expect(text.indexOf("AGENT SLOT")).toBeLessThan(text.indexOf("Changed again"));
     expect(text).toContain("Changed again");
     expect(text).toContain("Reverted");
     expect(text).toContain("Address review");

@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, type ReactNode, useState } from "react";
 import { refProviderName } from "../../../lib/pr/ref";
 import type { PrRef } from "../../../lib/pr/types";
 import {
@@ -14,6 +14,7 @@ import {
 import { formatRelativeTime } from "../../../lib/time";
 import LoadingIndicator from "../../LoadingIndicator";
 import { CenteredNote } from "./FileChrome";
+import RereviewSummary from "./RereviewSummary";
 import { TabPage } from "./StaticTabs";
 import type { TabContext } from "./types";
 
@@ -89,17 +90,20 @@ function CommitRow({
 
 /**
  * What the tab shows once both reads are in: the mark, the summary line, the
- * files whose PR-only change differs, and the commits. Separate from the
- * loading so it renders in a test from plain data.
+ * agent's "What's changed" summary (`summary`), the files whose PR-only change
+ * differs, and the commits. Separate from the loading so it renders in a test
+ * from plain data.
  */
 export function SinceReviewView({
   prRef,
   since,
+  summary,
   onOpenFile,
   onOpenCommit,
 }: {
   prRef: PrRef;
   since: SinceReview;
+  summary?: ReactNode;
   onOpenFile: (file: SinceFile) => void;
   onOpenCommit: (commit: ReviewCommit) => void;
 }) {
@@ -124,6 +128,8 @@ export function SinceReviewView({
           </p>
         )}
       </header>
+
+      {summary}
 
       <section aria-label="Files changed since your review" className="space-y-1">
         <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
@@ -275,6 +281,7 @@ export default memo(function SinceReviewTab({ ctx }: { ctx: TabContext }) {
       <SinceReviewView
         prRef={ctx.prRef}
         since={data}
+        summary={<RereviewSummary key={data.fromHeadSha} ctx={ctx} since={data} />}
         onOpenFile={(file) =>
           ctx.openTab({
             kind: "since-file",
