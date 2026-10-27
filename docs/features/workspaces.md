@@ -111,7 +111,7 @@ writes these files into the root:
 | File | What it's for |
 | --- | --- |
 | `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
-| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), and register each Claude Code session with the workspace |
+| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), register each Claude Code session with the workspace, and let the session's sandbox write to each repo's clone |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
 | `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
@@ -132,6 +132,73 @@ Some details:
   left alone.
 - **`.claude/settings.json` and `.mcp.json` are merged, not overwritten.**
   Other keys and other MCP servers you have there stay.
+- **The sandbox can commit.** A worktree's git data lives in the repo's clone
+  under `.repos/`, outside the workspace folder, which Claude Code's sandbox
+  doesn't let a session write to by default. Yarvis adds what this workspace's
+  commits need to `sandbox.filesystem.allowWrite`: its worktree's folder under
+  `.git/worktrees`, the object store, and its own branch and that branch's
+  remote-tracking ref. Commits, rebases and pushes on the workspace's branch
+  then run inside the sandbox instead of asking you each time. Paths you added
+  yourself stay. Yarvis also turns off fetching tags on each clone
+  (`remote.origin.tagOpt`), since nothing in Yarvis uses them.
+- **What still asks.** The clone is shared by every workspace on that repo, and
+  parts of its `.git` decide what git runs, so these stay out of the sandbox's
+  reach (`sandbox.filesystem.denyWrite`): the git config, hooks, submodule git
+  folders, `commondir`, `info`, replace refs, packed refs and tags. Tags are
+  denied because git looks a short name like `origin/main` up as a tag before
+  the remote branch, so a planted tag could change what that name means. So a
+  command that writes any of these, like `git push -u` (which records the
+  upstream in the config), creating or deleting a branch or a tag, a fetch that
+  updates other branches' remote-tracking refs (a plain `git fetch` usually
+  does), or adding a worktree (including the ones Claude Code makes for
+  subagents), asks as before. Git packs refs on its own
+  after some commits; inside the sandbox that step fails with a warning, and
+  the commit itself still goes through.
+- **No symlinks in a clone's git data.** Yarvis's own git runs outside the
+  sandbox, so a symlink a session left in the parts of `.git` it can write
+  would make Yarvis's fetch or merge write wherever the link points: another
+  workspace's branch, or any of your files. git never makes symlinks there
+  itself. Right before every git or `gh stack` command Yarvis runs on a clone or
+  one of its worktrees, it looks for one in the clone's top-level entries,
+  `refs`, `logs`, each worktree's folder under `.git/worktrees` and the object
+  store's folders. If it finds one, it refuses the command and raises the same
+  attention item as the checks below. Like them, it can't stop a session that
+  is still running from planting a link between the check and the command.
+- **Tampering checks.** A session can still stage a fake submodule whose git
+  folder runs a command the next time anything runs `git status` in that
+  worktree. Yarvis's own git runs with that switched off and names branches in
+  full, but your terminal and Claude Code's don't. So Yarvis checks the repo
+  for:
+  - submodules `.gitmodules` doesn't declare, or whose `.git` points outside
+    the clone
+  - replace refs, and tags or branches named so that they shadow another
+    branch (a tag called `origin/main`, say)
+  - a redirected `commondir`, a worktree `.git` that points somewhere else, and
+    a worktree put on a branch another worktree has checked out
+  - a stopped rebase whose remaining steps run commands
+  - a symlink in the clone's git data
+
+  It checks when the workspace is provisioned, when a Claude Code session in it
+  ends, before it merges or pushes for the workspace, and when you archive it.
+  Anything found raises an attention item naming what and where, and Yarvis
+  won't merge or push for that workspace until it's gone. Right before a merge
+  or push, a check that can't run counts as a finding too. Look before you run
+  git in that worktree yourself.
+
+  This is best-effort detection, not a guarantee: a session that is still
+  running can change things after a check, or clean up before the next one.
+- **Known limit: the shared object store.** The sandbox has to write the
+  clone's object store to commit, and every workspace on that repo shares it.
+  A hijacked session can delete or corrupt objects, which breaks other
+  workspaces on the same repo, and it can overwrite an existing object with
+  different content. Git doesn't re-check an object's hash on checkout, so
+  another workspace, or one provisioned later (whose setup script runs outside
+  the sandbox), would check out the changed files. A fetch doesn't repair an
+  object git already has. `git fsck` in the repo's clone under `.repos/` finds
+  it.
+- **Known limit: the check runs right before each command.** A session that is
+  still running can swap a file for a symlink between Yarvis's check and its
+  git command. Yarvis's merge could then overwrite the file the link points at.
 - **`.yarvis/brief.md` is written last,** as the final step of provisioning.
 
 ### When provisioning fails

@@ -49,7 +49,8 @@ const opts = { toolCallId: "test", messages: [] } as never;
 
 /** Mock git runner that makes provisioning succeed without touching a network. */
 const okRunner: GitRunner = async (args) => {
-  if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+  if (args[0] === "ls-remote")
+    return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   // No pre-existing branch, so provisioning keeps the intended branch name.
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
   return { stdout: "", stderr: "", exitCode: 0 };
@@ -562,7 +563,8 @@ describe("workspace tools", () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     let started = false;
     const failRunner: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "add") {
         return { stdout: "", stderr: "boom", exitCode: 1 };
@@ -624,7 +626,10 @@ describe("workspace tools", () => {
     // As a workspace provisioned before the hooks existed would have it.
     mkdirSync(join(detail!.rootPath, ".claude"), { recursive: true });
     writeFileSync(settingsFile, JSON.stringify({ hooks: {} }));
-    let settingsAtLaunch: { hooks: Record<string, unknown[]> } | null = null;
+    let settingsAtLaunch: {
+      hooks: Record<string, unknown[]>;
+      sandbox: { filesystem: { allowWrite: string[]; denyWrite: string[] } };
+    } | null = null;
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
       startClaudeSession: async (input) => {
@@ -636,6 +641,10 @@ describe("workspace tools", () => {
     await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
 
     expect(settingsAtLaunch!.hooks.SessionStart).toHaveLength(1);
+    // And the sandbox paths, so the session can commit to the repo's clone.
+    const clone = detail!.repos[0]!.repo.primaryClonePath;
+    expect(settingsAtLaunch!.sandbox.filesystem.allowWrite).toContain(`${clone}/.git/objects`);
+    expect(settingsAtLaunch!.sandbox.filesystem.denyWrite).toContain(`${clone}/.git/hooks`);
   });
 
   it("start_workspace_session errors on an unknown workspace", async () => {
@@ -1092,7 +1101,8 @@ describe("workspace tools", () => {
     const { client, calls } = fakeGitHub();
     let started = false;
     const failRunner: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "add") {
         return { stdout: "", stderr: "boom", exitCode: 1 };
@@ -1467,7 +1477,8 @@ describe("workspace tools", () => {
     // registered afterwards, so it stays listed.
     let refusedPath = "";
     const refuseUnlessForced: GitRunner = async (args) => {
-      if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+      if (args[0] === "ls-remote")
+        return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
         refusedPath = args[2] ?? "";
@@ -1546,7 +1557,7 @@ describe("workspace tools", () => {
     expect(result.workspaces[0]!.repos[0]!.pushed).toBe(true);
     // The base is merged from the remote-tracking ref, after a fetch.
     expect(calls.some((c) => c[0] === "fetch")).toBe(true);
-    expect(calls.some((c) => c[0] === "merge" && c[2] === "origin/main")).toBe(true);
+    expect(calls.some((c) => c[0] === "merge" && c[2] === "refs/remotes/origin/main")).toBe(true);
     expect(calls.some((c) => c[0] === "push")).toBe(true);
   });
 
@@ -1564,6 +1575,34 @@ describe("workspace tools", () => {
     // The conflict is what the workspace's agent needs in order to resolve it.
     expect(calls.some((c) => c.includes("--abort"))).toBe(false);
     expect(calls.some((c) => c[0] === "push")).toBe(false);
+  });
+
+  it("sync_workspaces_with_base won't merge or push for a clone whose git data was tampered with", async () => {
+    const created = await activeWorkspace("Tampered");
+    const detail = await getWorkspace(db, created.workspaceId);
+    const clone = detail!.repos[0]!.repo.primaryClonePath;
+    // A commondir in the clone's own git folder points every git run there elsewhere.
+    // The fake clone's path is shared by every test here, so it is put back after.
+    mkdirSync(join(clone, ".git"), { recursive: true });
+    writeFileSync(join(clone, ".git", "commondir"), "/somewhere/else");
+    const { runner, calls } = syncRunner(created.branch);
+
+    let result: SyncReport;
+    try {
+      result = await runSync(runner, { workspaceIds: [created.workspaceId], push: true });
+    } finally {
+      rmSync(join(clone, ".git"), { recursive: true, force: true });
+    }
+
+    const repo = result.workspaces[0]!.repos[0]!;
+    expect(repo.merge).toBe("skipped");
+    expect(repo.note).toContain("commondir");
+    expect(calls.some((c) => c[0] === "merge" || c[0] === "push")).toBe(false);
+    const [item] = await sql`
+      SELECT kind, body FROM attention_items
+      WHERE session_key = ${`workspace-integrity:${created.workspaceId}`}`;
+    expect(item?.kind).toBe("error");
+    expect(item?.body).toContain("won't push or merge");
   });
 
   it("sync_workspaces_with_base skips a worktree with uncommitted changes", async () => {
@@ -1856,8 +1895,13 @@ describe("workspace tools", () => {
     const detail = await getWorkspace(db, created.workspaceId);
     const settings = JSON.parse(
       readFileSync(join(detail!.rootPath, ".claude/settings.json"), "utf8"),
-    ) as { hooks: Record<string, unknown[]> };
+    ) as {
+      hooks: Record<string, unknown[]>;
+      sandbox: { filesystem: { allowWrite: string[] } };
+    };
     expect(settings.hooks.SessionStart).toHaveLength(1);
+    const clone = detail!.repos[0]!.repo.primaryClonePath;
+    expect(settings.sandbox.filesystem.allowWrite).toContain(`${clone}/.git/objects`);
   });
 
   it("send_workspace_instruction leaves the settings alone for other refusals", async () => {
