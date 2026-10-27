@@ -51,8 +51,12 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  /** `heads-down` marks a pass of the heads-down loop, which runs with nobody watching. */
-  source?: "telegram" | "voice" | "heads-down";
+  /**
+   * `heads-down` marks a pass of the heads-down loop, which runs with nobody
+   * watching. `scheduled-task` marks a scheduled task's turn, which the
+   * assistant wrote for itself.
+   */
+  source?: "telegram" | "voice" | "heads-down" | "scheduled-task";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -61,6 +65,8 @@ export interface ChatMessageMetadata {
    * row's content is the summary; replay resumes after `throughMessageId`.
    */
   compaction?: { throughMessageId: string };
+  /** Set on a scheduled task's turn: the assistant wrote this message, not the user. */
+  scheduledTask?: { id: string; attempt: number; origin: "chat" | "heads-down" };
 }
 
 /**
@@ -1095,7 +1101,8 @@ export type AttentionNavTarget =
    * workspace before focusing the tab.
    */
   | { type: "terminal"; sessionKey: string; workspaceId?: string }
-  | { type: "chat" }
+  /** A chat, or Omni Chat when there is no session to open. */
+  | { type: "chat"; sessionId?: string }
   | { type: "pr"; owner: string; repo: string; number: number }
   // Azure PRs are addressed by project/repo/id rather than owner/repo/number,
   // so they get their own variant instead of being squeezed into the GitHub
@@ -1864,6 +1871,53 @@ export type ScheduledJob = typeof scheduledJobs.$inferSelect;
 export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
 export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
 export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
+
+/**
+ * A prompt the assistant left for itself to run later in the chat it came from:
+ * "check whether my PRs are mergeable in an hour", "check in on this week's
+ * goals on Wednesday".
+ *
+ * One row is one future turn. A task that finds the thing it watches still
+ * unfinished schedules a fresh row with `attempt` one higher and `parentId`
+ * pointing back at it; the attempt is what bounds a chain that never resolves.
+ */
+export const chatScheduledTasks = pgTable(
+  "chat_scheduled_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    /** A few words naming the task, shown in the attention bell when it reports. */
+    title: text("title").notNull(),
+    /** The instructions the agent wrote for its future turn. */
+    prompt: text("prompt").notNull(),
+    /**
+     * Where the task was scheduled. A heads-down pass runs in a hidden chat, so
+     * its tasks report to the Heads down page instead of a chat.
+     */
+    origin: text("origin").$type<"chat" | "heads-down">().notNull().default("chat"),
+    /** The provider/model the scheduling turn ran on; null falls back to the default. */
+    provider: text("provider"),
+    model: text("model"),
+    /** 1 for one the user's own turn scheduled; each re-schedule adds one. */
+    attempt: integer("attempt").notNull().default(1),
+    /** The task whose run scheduled this one; null for the first in a chain. */
+    parentId: uuid("parent_id"),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    status: text("status").$type<"pending" | "fired" | "cancelled">().notNull().default("pending"),
+    firedAt: timestamp("fired_at", { withTimezone: true }),
+    /** Why the turn failed, when it did. Redacted before it is stored. */
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("chat_scheduled_tasks_due_idx").on(t.status, t.dueAt),
+    index("chat_scheduled_tasks_session_idx").on(t.sessionId, t.status),
+  ],
+);
+
+export type ChatScheduledTask = typeof chatScheduledTasks.$inferSelect;
 
 export const alarmStatus = pgEnum("alarm_status", [
   "scheduled",

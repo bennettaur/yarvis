@@ -17,7 +17,8 @@ export type AttentionNavTarget =
   | { type: "workspace"; workspaceId: string }
   /** A specific terminal tab/pane, addressed by its PTY session id. */
   | { type: "terminal"; sessionKey: string; workspaceId?: string }
-  | { type: "chat" }
+  /** A specific chat in the Chat tab, or Omni Chat when there is no session. */
+  | { type: "chat"; sessionId?: string }
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }

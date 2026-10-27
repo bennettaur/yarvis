@@ -141,17 +141,22 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setError(null);
   }, []);
 
+  // Bumped on each load, so a slow fetch for a session the user has already
+  // left can't paint its messages under the one they are now in.
+  const loadSeq = useRef(0);
+
   const loadSession = useCallback(
     async (id: string) => {
       // A turn started in another thread would otherwise keep streaming and
       // append its reply here, into a conversation it was never part of.
       abandonTurn();
       setSessionId(id);
+      const seq = ++loadSeq.current;
       try {
         const msgs = await getMessages(id);
-        setMessages(toThreadMessages(msgs));
+        if (seq === loadSeq.current) setMessages(toThreadMessages(msgs));
       } catch (e) {
-        setError(formatError(e));
+        if (seq === loadSeq.current) setError(formatError(e));
       }
     },
     [abandonTurn],

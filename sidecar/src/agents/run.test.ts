@@ -50,6 +50,13 @@ describe("specialist tool selection", () => {
     expect(selected).toEqual({});
   });
 
+  it("never gives a specialist the scheduled-task tools, which need a chat to return to", () => {
+    const names = ["schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"];
+    const ids = names.map((name) => `builtin:${name}`);
+    const withScheduledTasks = { ...all, ...Object.fromEntries(names.map((n) => [n, all.recall])) };
+    expect(selectTools(withScheduledTasks, ids, { grantedIds: ids })).toEqual({});
+  });
+
   it("withholds a tool that writes where others can see it, until it is granted", () => {
     const asked = ["builtin:jira_create_issue", "builtin:archive_workspace"];
     expect(Object.keys(selectTools(all, asked))).toEqual([]);
