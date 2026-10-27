@@ -78,6 +78,26 @@ describe("/api/work-streams", () => {
     expect(res.status).toBe(400);
   });
 
+  it("pauses and resumes a stream, keeping its status", async () => {
+    const stream = await createStream(db, { title: "ship billing", status: "waiting-on-others" });
+    const patch = (body: unknown) =>
+      app.request(`/api/work-streams/${stream.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await patch({ paused: "yes" })).status).toBe(400);
+    const paused = (await (await patch({ paused: true })).json()) as {
+      status: string;
+      pausedAt: string | null;
+    };
+    expect(paused).toMatchObject({ status: "waiting-on-others" });
+    expect(paused.pausedAt).toBeString();
+    const resumed = (await (await patch({ paused: false })).json()) as { pausedAt: string | null };
+    expect(resumed.pausedAt).toBeNull();
+  });
+
   it("rejects an unknown status filter and a malformed id", async () => {
     expect((await app.request("/api/work-streams?status=nope", { headers: auth })).status).toBe(
       400,

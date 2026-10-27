@@ -380,8 +380,9 @@ you asked.
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
 - **Going heads down** asks every time, since it starts a loop that keeps
-  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
-  for what it may do without asking.
+  acting on its own until you stop it. So do resuming it after a pause and
+  changing when it stops, which keep that loop going. See
+  [Heads-down mode](heads-down.md) for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing, editing,
@@ -433,8 +434,8 @@ Always available:
   to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
   for you, and specialists and scheduled jobs never get these. See
   [MCP](mcp.md#asking-you-questions).
-- **Heads down.** Start heads-down mode once you agree, stop it, and check
-  whether it's running.
+- **Heads down.** Start heads-down mode once you agree, pause, resume or stop
+  it, set when it stops, and check whether it's running.
 
 Loaded on demand:
 
