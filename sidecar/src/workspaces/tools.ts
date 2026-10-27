@@ -22,11 +22,12 @@ import { type ActivityRecapper, recapActivity, recapWorkspaceSession } from "./a
 import { reapAndListAgentSessions } from "./agentSessions.ts";
 import { kickOffResult, resolveWorkspaceBrief, WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import {
-  AGENT_NOT_RECOGNISED_ERROR,
+  agentTabPids,
   type ClaudeSessionMessenger,
   type ClaudeSessionStarter,
   sendSessionInstruction as defaultSendSessionInstruction,
   startClaudeSession as defaultStartClaudeSession,
+  sendToWorkspaceAgent,
   sessionDescription,
   sessionStartedMessage,
 } from "./claudeSession.ts";
@@ -1060,24 +1061,15 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
         const sessionKey = `ws-claude:${workspaceId}`;
-        const sessions = await reapAndListAgentSessions(db, [workspaceId]);
-        const agentTabSessions = (sessions.get(workspaceId) ?? []).filter(
-          (s) => s.sessionKey === sessionKey,
-        );
-        try {
-          await sendInstruction({
-            workspaceId,
-            instruction,
-            agentPids: agentTabSessions.map((s) => s.pid),
-          });
-          // Logged with its length rather than its text: the instruction is
-          // model-composed from data an outside party can influence, and the
-          // event log is read back into later prompts.
-          void emitEvent(db, {
-            type: "workspace.instruction_sent",
-            source: "chat",
-            payload: { workspaceId, name: detail.name, chars: instruction.length },
-          });
+        const agentPids = await agentTabPids(db, workspaceId);
+        // Writes the registration hooks itself when an unregistered agent tab
+        // is the reason the send was refused.
+        const sent = await sendToWorkspaceAgent(db, detail, instruction, {
+          agentPids,
+          send: sendInstruction,
+          eventSource: "chat",
+        });
+        if (sent.delivered) {
           return {
             workspaceId,
             name: detail.name,
@@ -1088,25 +1080,18 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             completionConfirmed: false,
             message: `Typed into the agent session in workspace "${detail.name}". Watch it in the Workspaces tab.`,
           };
-        } catch (e) {
-          const message = errorMessage(e);
-          const unrecognised =
-            agentTabSessions.length === 0 && message.includes(AGENT_NOT_RECOGNISED_ERROR);
-          // An agent tab with no registered session most likely predates its
-          // workspace's registration hooks. Writing them now means the next
-          // session started there registers, including one the UI launches.
-          if (unrecognised) writeClaudeSettings(detail);
-          return {
-            error: message,
-            workspaceId,
-            name: detail.name,
-            delivered: false,
-            registeredAgentSessionCount: agentTabSessions.length,
-            note: unrecognised
-              ? "The instruction was not delivered. No Claude Code session has registered itself in that workspace's agent tab, so Yarvis could only go by the agent's executable name. If one is running there, ask the user to restart it: Yarvis has now added the registration hooks, so the restarted session will be recognised. If none is running, start one with start_workspace_session."
-              : "The instruction was not delivered. If no agent session is running, start one with start_workspace_session.",
-          };
         }
+        const unrecognised = agentPids.length === 0 && sent.failure === "not_recognised";
+        return {
+          error: sent.error,
+          workspaceId,
+          name: detail.name,
+          delivered: false,
+          registeredAgentSessionCount: agentPids.length,
+          note: unrecognised
+            ? "The instruction was not delivered. No Claude Code session has registered itself in that workspace's agent tab, so Yarvis could only go by the agent's executable name. If one is running there, ask the user to restart it: Yarvis has now added the registration hooks, so the restarted session will be recognised. If none is running, start one with start_workspace_session."
+            : "The instruction was not delivered. If no agent session is running, start one with start_workspace_session.",
+        };
       },
     }),
 

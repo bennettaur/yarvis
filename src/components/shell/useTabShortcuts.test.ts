@@ -54,4 +54,10 @@ describe("tabShortcutDigit", () => {
     expect(tabShortcutDigit("dashboard")).toBeNull();
     expect(tabShortcutDigit("settings")).toBeNull();
   });
+
+  it("skips Review, so the tabs after it keep their digits", () => {
+    expect(tabShortcutDigit("review")).toBeNull();
+    expect(tabShortcutDigit("issues")).toBe("7");
+    expect(tabShortcutDigit("calendar")).toBe("9");
+  });
 });

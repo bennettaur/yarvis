@@ -1,120 +1,85 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { postPrComment } from "../../lib/pr/api";
 import { invalidate, prDetailKey } from "../../lib/pr/cache";
-import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
-import { ThreadCard } from "./PrDescription";
+import type { DiffSide, PrFile, PrRef, ReviewThread, SeenCommits } from "../../lib/pr/types";
+import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
+import { CommentComposer, describeLines, needsLineLabel, ThreadView } from "./ThreadView";
+import { comparableBody, type ThreadActions, useThreadActions } from "./useThreadActions";
 
 /**
  * The line-comment layer of a file diff: existing review threads, comments
- * posted this session, and the composer, all anchored to a right-side line
- * number. Both the unified and the side-by-side renderer drive it, so a comment
- * behaves identically whichever way the reader is looking at the diff.
+ * posted this session, and the composer, each anchored to a line on one side
+ * of the diff — the new file ("RIGHT") or the old one ("LEFT"). Both the
+ * unified and the side-by-side renderer drive it, so a comment behaves
+ * identically whichever way the reader is looking at the diff.
  */
 
-/** Inline composer for a new line comment. */
-function CommentComposer({
-  onSubmit,
-  onCancel,
-}: {
-  onSubmit: (body: string) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // The composer only mounts when the user clicks a line's "+", so focusing it
-  // is expected. Done via a ref rather than the autoFocus attribute (which
-  // fires on initial page render and is an accessibility anti-pattern there).
-  useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
-
-  const submit = async () => {
-    if (!body.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(body.trim());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="border-l-2 border-sky-700 bg-zinc-900 p-2">
-      <textarea
-        ref={textareaRef}
-        value={body}
-        placeholder="Leave a comment…"
-        onChange={(e) => setBody(e.target.value)}
-        className="h-20 w-full rounded-md border border-zinc-700 bg-zinc-800 p-2 text-sm text-zinc-100"
-      />
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-      <div className="mt-1 flex gap-2">
-        <button
-          type="button"
-          onClick={() => void submit()}
-          disabled={busy || !body.trim()}
-          className="rounded-md bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
-        >
-          {busy ? "Posting…" : "Comment"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="rounded-md border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
+/** Where a new comment goes: its last line, and its first for a range. */
+export interface CommentTarget {
+  side: DiffSide;
+  line: number;
+  startLine?: number;
 }
 
-/** Groups a file's review threads by their right-side line number. */
-function threadsByLine(threads: ReviewThread[]): Map<number, ReviewThread[]> {
-  const map = new Map<number, ReviewThread[]>();
+const anchorKey = (side: DiffSide, line: number) => `${side}:${line}`;
+
+/** Groups a file's review threads by the side and line they hang below. */
+function threadsByAnchor(threads: ReviewThread[]): Map<string, ReviewThread[]> {
+  const map = new Map<string, ReviewThread[]>();
   for (const thread of threads) {
     if (thread.line == null) continue;
-    const list = map.get(thread.line);
+    const key = anchorKey(thread.side, thread.line);
+    const list = map.get(key);
     if (list) list.push(thread);
-    else map.set(thread.line, [thread]);
+    else map.set(key, [thread]);
   }
   return map;
 }
 
 /** A comment posted this session, shown optimistically until the server has it. */
-interface PostedComment {
+interface PostedComment extends CommentTarget {
   /** Survives an entry being dropped from the middle, which an index key can't. */
   id: number;
-  line: number;
   body: string;
 }
 
 export interface LineComments {
-  byLine: Map<number, ReviewThread[]>;
+  threadsAt(side: DiffSide, line: number): ReviewThread[] | undefined;
   pending: PostedComment[];
-  activeLine: number | null;
-  openComposer: (line: number) => void;
+  /** Where the open composer will post, or null when none is open. */
+  composer: CommentTarget | null;
+  /**
+   * Opens the composer on a line. `extend` grows an open composer on the same
+   * side to cover every line between it and this one instead.
+   */
+  openComposer: (side: DiffSide, line: number, extend?: boolean) => void;
   closeComposer: () => void;
-  submit: (line: number, body: string) => Promise<void>;
+  submit: (target: CommentTarget, body: string) => Promise<void>;
+  /** Reply and resolve for the threads this file shows. */
+  threadActions: ThreadActions;
+}
+
+/** The composer's range after a shift-click on `line`. */
+function extendTarget(current: CommentTarget, line: number): CommentTarget {
+  const first = Math.min(current.startLine ?? current.line, current.line, line);
+  const last = Math.max(current.line, line);
+  return first < last ? { side: current.side, line: last, startLine: first } : current;
 }
 
 /**
- * Comparable form of a comment body. A provider echoes a body back with its own
- * line endings, and the composer has already trimmed what it sent, so neither
- * difference should count as a mismatch below.
+ * Owns one file's comment state, shared by whichever renderer is showing it.
+ * `seen` is the head the renderer is showing, recorded as where the user
+ * reviewed when they comment.
  */
-const comparable = (body: string) => body.replace(/\r\n/g, "\n").trim();
-
-/** Owns one file's comment state, shared by whichever renderer is showing it. */
-export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThread[]): LineComments {
-  const byLine = useMemo(() => threadsByLine(threads), [threads]);
-  const [activeLine, setActiveLine] = useState<number | null>(null);
+export function useLineComments(
+  prRef: PrRef,
+  file: PrFile,
+  threads: ReviewThread[],
+  seen?: SeenCommits,
+): LineComments {
+  const byAnchor = useMemo(() => threadsByAnchor(threads), [threads]);
+  const threadActions = useThreadActions(prRef, threads);
+  const [composer, setComposer] = useState<CommentTarget | null>(null);
   // Every comment posted this session; `pending` below narrows it to the ones
   // the server hasn't echoed back yet.
   const [posted, setPosted] = useState<PostedComment[]>([]);
@@ -128,42 +93,60 @@ export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThrea
     () =>
       posted.filter(
         (p) =>
-          !byLine
-            .get(p.line)
+          !byAnchor
+            .get(anchorKey(p.side, p.line))
             ?.some((thread) =>
-              thread.comments.some((c) => comparable(c.body) === comparable(p.body)),
+              thread.comments.some((c) => comparableBody(c.body) === comparableBody(p.body)),
             ),
       ),
-    [posted, byLine],
+    [posted, byAnchor],
   );
 
   // Forget a comment for good once a thread has carried it. Re-deriving the
   // match every render would otherwise resurrect the optimistic card if that
   // thread later stopped carrying the body — an outdated thread loses its line,
-  // and `threadsByLine` skips it.
+  // and `threadsByAnchor` skips it.
   useEffect(() => {
     if (pending.length !== posted.length) setPosted(pending);
   }, [pending, posted.length]);
 
-  const submit = async (line: number, body: string) => {
-    await postPrComment(prRef, { path: file.filename, line, body });
+  const submit = async (target: CommentTarget, body: string) => {
+    await postPrComment(
+      prRef,
+      {
+        path: file.filename,
+        line: target.line,
+        body,
+        // Left out when it is the provider's default (the new file, one line).
+        ...(target.side === "LEFT" ? { side: "LEFT" as const } : {}),
+        ...(target.startLine != null ? { startLine: target.startLine } : {}),
+      },
+      seen,
+    );
+    invalidateLastReview(prRef);
     // Read the counter outside the updater, which React may call more than once.
     const id = nextId.current++;
-    setPosted((p) => [...p, { id, line, body }]);
-    setActiveLine(null);
+    setPosted((p) => [...p, { ...target, id, body }]);
+    setComposer(null);
     // Drop the cached detail so the real thread arrives and supersedes the
     // optimistic copy. This wakes every mounted subscriber, so the refetch can
     // land while this file is still on screen.
     invalidate(prDetailKey(prRef));
   };
 
+  const openComposer = (side: DiffSide, line: number, extend = false) =>
+    setComposer((current) =>
+      extend && current?.side === side ? extendTarget(current, line) : { side, line },
+    );
+
   return {
-    byLine,
+    threadsAt: (side, line) => byAnchor.get(anchorKey(side, line)),
     pending,
-    activeLine,
-    openComposer: setActiveLine,
-    closeComposer: () => setActiveLine(null),
+    composer,
+    openComposer,
+    closeComposer: () => setComposer(null),
     submit,
+    threadActions,
   };
 }
 
@@ -172,40 +155,48 @@ export function useLineComments(prRef: PrRef, file: PrFile, threads: ReviewThrea
  * needs a wrapper element around the block (the grid-based side-by-side view)
  * can skip emitting one for the vast majority of lines that have no comments.
  */
-export function hasLineComments(line: number | null, comments: LineComments): boolean {
+export function hasLineComments(
+  side: DiffSide,
+  line: number | null,
+  comments: LineComments,
+): boolean {
   if (line == null) return false;
   return (
-    comments.byLine.has(line) ||
-    comments.activeLine === line ||
-    comments.pending.some((p) => p.line === line)
+    comments.threadsAt(side, line) != null ||
+    (comments.composer?.side === side && comments.composer.line === line) ||
+    comments.pending.some((p) => p.side === side && p.line === line)
   );
 }
 
 /**
- * Everything hanging below one diff line: its threads, this session's optimistic
- * comments, and the composer when open. Renders nothing when the line has none
- * of those — an empty container's padding would otherwise show up as a blank gap
- * between consecutive rows.
+ * Everything hanging below one diff line on one side: its threads, this
+ * session's optimistic comments, and the composer when open. Renders nothing
+ * when the line has none of those — an empty container's padding would
+ * otherwise show up as a blank gap between consecutive rows.
  */
 export function LineCommentBlock({
+  side,
   line,
   comments,
 }: {
+  side: DiffSide;
   line: number | null;
   comments: LineComments;
 }) {
   // The null check is redundant with `hasLineComments` but narrows `line` to a
   // number for the composer's submit below.
-  if (line == null || !hasLineComments(line, comments)) return null;
-  const threads = comments.byLine.get(line);
-  const pending = comments.pending.filter((p) => p.line === line);
-  const composing = comments.activeLine === line;
+  if (line == null || !hasLineComments(side, line, comments)) return null;
+  const threads = comments.threadsAt(side, line);
+  const pending = comments.pending.filter((p) => p.side === side && p.line === line);
+  const target =
+    comments.composer?.side === side && comments.composer.line === line ? comments.composer : null;
 
   return (
     <div className="space-y-2 px-3 py-2 font-sans">
       {threads?.map((t, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: threads render an immutable server snapshot
-        <ThreadCard key={`t-${i}`} thread={t} />
+        // A provider can leave a thread's id off (Azure does on some threads),
+        // and then its position stands in for it.
+        <ThreadView key={t.id || `at-${i}`} {...comments.threadActions.viewProps(t)} />
       ))}
       {pending.map((p) => (
         <div
@@ -216,9 +207,10 @@ export function LineCommentBlock({
           {p.body}
         </div>
       ))}
-      {composing && (
+      {target && (
         <CommentComposer
-          onSubmit={(body) => comments.submit(line, body)}
+          label={needsLineLabel(target) ? `Commenting on ${describeLines(target)}` : undefined}
+          onSubmit={(body) => comments.submit(target, body)}
           onCancel={comments.closeComposer}
         />
       )}
@@ -258,16 +250,31 @@ export function LineActions({ children }: { children: React.ReactNode }) {
 const ACTION_CLASS =
   "flex size-5 items-center justify-center rounded border border-zinc-700 bg-zinc-900 text-sm leading-none shadow";
 
-/** The hover-revealed "+" that opens the composer on a commentable line. */
-export function AddCommentButton({ onClick }: { onClick: () => void }) {
+/**
+ * The hover-revealed "+" that opens the composer on a commentable line. Where
+ * the caller supports it (`extendable`), shift-clicking stretches an open
+ * composer to cover every line from its own to this one, the same gesture the
+ * "?" uses, so a range needs no drag that would fight the browser's text
+ * selection.
+ */
+export function AddCommentButton({
+  onClick,
+  extendable = false,
+}: {
+  onClick: (extend: boolean) => void;
+  extendable?: boolean;
+}) {
+  const label = extendable
+    ? "Comment on this line — shift-click to extend the open comment to it"
+    : "Comment on this line";
   return (
     <button
       type="button"
-      onClick={onClick}
-      title="Comment on this line"
+      onClick={(e) => onClick(e.shiftKey)}
+      title={label}
       // The glyph is the label a screen reader would otherwise read out, and
       // "plus" says nothing about what the button does.
-      aria-label="Comment on this line"
+      aria-label={label}
       className={`${ACTION_CLASS} text-sky-400 hover:bg-zinc-800 hover:text-sky-300`}
     >
       +

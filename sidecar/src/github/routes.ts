@@ -1,10 +1,12 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { retireGuide } from "../pr/guides.ts";
-import { refKey } from "../pr/types.ts";
+import { type SeenCommits, seenCommitFields, seenMarkInput } from "../pr/reviewMarks.ts";
+import { type PrRef, refKey } from "../pr/types.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { createGitHubClient, reviewExternalId } from "./client.ts";
 import { getGithubPrConfig, saveGithubPrConfig } from "./config.ts";
 import { githubErrorResponse, missingTokenResponse } from "./errors.ts";
@@ -64,16 +66,45 @@ const starSchema = z.object({
   url: z.string().nullish(),
 });
 
-const commentSchema = z.object({
-  path: z.string().min(1).max(1024),
-  line: z.number().int().min(1),
-  body: z.string().min(1),
-  side: z.enum(["RIGHT", "LEFT"]).optional(),
-});
+const commentSchema = z
+  .object({
+    path: z.string().min(1).max(1024),
+    line: z.number().int().min(1),
+    body: z.string().min(1).max(65_536),
+    side: z.enum(["RIGHT", "LEFT"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+    ...seenCommitFields,
+  })
+  // Within one file a range runs downwards. Across the two (a range starting in
+  // the old file and ending in the new) the numbers aren't comparable, so only
+  // GitHub can judge it.
+  .refine((c) => {
+    if (c.startLine == null) return true;
+    const endSide = c.side ?? "RIGHT";
+    const startSide = c.startSide ?? endSide;
+    const crossesSides = startSide !== endSide;
+    return crossesSides || c.startLine < c.line;
+  }, "startLine must come before line")
+  .refine((c) => c.startSide == null || c.startLine != null, "startSide needs a startLine");
+
+/**
+ * A review thread's GraphQL node id, interpolated into nothing but a GraphQL
+ * variable; the charset is what GitHub's ids use and keeps a route param from
+ * carrying anything else.
+ */
+const threadIdParam = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_=-]+$/, "invalid thread id");
+
+const replySchema = z.object({ body: z.string().trim().min(1).max(65_536) });
 
 const reviewSchema = z.object({
   event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
   body: z.string().max(65_536).optional(),
+  ...seenCommitFields,
 });
 
 /**
@@ -130,6 +161,20 @@ export function createGithubRoutes(config: Config): Hono {
   const db = () => getDb(config.databaseUrl as string).db;
   const client = () =>
     config.secrets.githubToken ? createGitHubClient(config, config.secrets.githubToken) : null;
+
+  /**
+   * Records where the user reviewed: the head the page said it was showing,
+   * else the commit GitHub attached the review or comment to.
+   */
+  const recordSeen = async (
+    ref: PrRef,
+    seen: SeenCommits,
+    providerSha: string | null,
+    source: "review" | "comment",
+  ) => {
+    const input = seenMarkInput(ref, seen, providerSha, source);
+    if (input) await markReviewed(db(), config, input);
+  };
 
   // --- Live GitHub queries (require a token) ---
 
@@ -292,13 +337,14 @@ export function createGithubRoutes(config: Config): Hono {
       return c.json({ error: "request changes requires a body" }, 400);
     }
     try {
-      const { nodeId } = await gh.submitReview(
+      const { nodeId, commitId } = await gh.submitReview(
         params.owner,
         params.repo,
         params.number,
         parsed.data.event,
         parsed.data.body,
       );
+      await recordSeen({ provider: "github", ...params }, parsed.data, commitId, "review");
       // Approving or requesting changes ends the reviewer's pass over this PR,
       // so its guide has done its job. A plain comment does not — the review is
       // still open.
@@ -421,7 +467,7 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
-  // Post a single-line review comment to the PR.
+  // Post a review comment on one line or a range of lines, on either side.
   router.post("/pr/:owner/:repo/:number/comments", async (c) => {
     const gh = client();
     if (!gh) return missingTokenResponse(c);
@@ -430,7 +476,14 @@ export function createGithubRoutes(config: Config): Hono {
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      await gh.postComment(params.owner, params.repo, params.number, parsed.data);
+      const { headSha, baseSha, mergeBaseSha, ...comment } = parsed.data;
+      const { commitId } = await gh.postComment(params.owner, params.repo, params.number, comment);
+      await recordSeen(
+        { provider: "github", ...params },
+        { headSha, baseSha, mergeBaseSha },
+        commitId,
+        "comment",
+      );
       void emitEvent(db(), {
         type: "pr.commented",
         source: "github",
@@ -441,6 +494,62 @@ export function createGithubRoutes(config: Config): Hono {
       return githubErrorResponse(c, e);
     }
   });
+
+  /** The PR plus the thread a thread route addresses, or why they're invalid. */
+  function parseThreadParams(
+    c: Context,
+  ):
+    | { ref: { owner: string; repo: string; number: number }; threadId: string }
+    | { error: unknown } {
+    const { owner = "", repo = "", number = "", threadId = "" } = c.req.param();
+    const ref = parsePrParams(owner, repo, number);
+    if ("error" in ref) return ref;
+    const parsedThreadId = threadIdParam.safeParse(threadId);
+    if (!parsedThreadId.success) return { error: parsedThreadId.error.flatten() };
+    return { ref, threadId: parsedThreadId.data };
+  }
+
+  // Reply to an existing review thread.
+  router.post("/pr/:owner/:repo/:number/threads/:threadId/replies", async (c) => {
+    const gh = client();
+    if (!gh) return missingTokenResponse(c);
+    const params = parseThreadParams(c);
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = replySchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      await gh.replyToThread(params.threadId, parsed.data.body);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "github",
+        payload: {
+          ref: refKey({ provider: "github", ...params.ref }),
+          reply: true,
+        },
+      });
+      return c.json({ ok: true }, 201);
+    } catch (e) {
+      return githubErrorResponse(c, e);
+    }
+  });
+
+  for (const [action, resolved] of [
+    ["resolve", true],
+    ["unresolve", false],
+  ] as const) {
+    router.post(`/pr/:owner/:repo/:number/threads/:threadId/${action}`, async (c) => {
+      const gh = client();
+      if (!gh) return missingTokenResponse(c);
+      const params = parseThreadParams(c);
+      if ("error" in params) return c.json({ error: params.error }, 400);
+      try {
+        await gh.setThreadResolved(params.threadId, resolved);
+        return c.json({ ok: true });
+      } catch (e) {
+        return githubErrorResponse(c, e);
+      }
+    });
+  }
 
   // --- Dashboard config (database only) ---
 

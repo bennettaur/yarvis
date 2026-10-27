@@ -26,11 +26,11 @@ export interface GitRunResult {
 /** Runs `git <args>`; `cwd` is the repo/worktree the command operates in. */
 export type GitRunner = (
   args: string[],
-  opts: { cwd?: string; timeoutMs?: number },
+  opts: { cwd?: string; timeoutMs?: number; stdin?: string },
 ) => Promise<GitRunResult>;
 
 /** Network git operations (clone/fetch) can legitimately take a while. */
-const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
+export const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** A reachability check answers in seconds or not at all; an SSH prompt with
  *  no terminal to answer it would otherwise hold the chat turn for minutes. */
@@ -78,24 +78,33 @@ export function refusedResult(reason: string): GitRunResult {
   return { stdout: "", stderr: reason, exitCode: 128 };
 }
 
-/**
- * Real runner: shells out to `git` with a scrubbed env and `hardenedGitEnv`,
- * after refusing a clone whose git data has a symlink in it (`symlinkScan.ts`),
- * since git outside the sandbox would write through it. Every git the sidecar
- * runs on a clone or worktree comes through here, so no call can skip the scan.
- * `GIT_TERMINAL_PROMPT=0` makes a missing-credential clone fail fast instead of
- * hanging on a prompt the headless sidecar can never answer. `LC_ALL=C` pins
- * git's messages to English: `scrubbedEnv` passes the user's locale through,
- * and `mergeBaseIntoWorktree` reads "Already up to date" out of that output.
- */
-export const defaultGitRunner: GitRunner = async (args, opts) => {
-  const refusal = symlinkRefusal(opts.cwd);
-  if (refusal) return refusedResult(refusal);
-  return run(["git", ...args], {
-    ...opts,
-    env: { ...hardenedGitEnv(), GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
-  });
+export const GIT_BASE_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: "0",
+  LC_ALL: "C",
 };
+
+/**
+ * A runner that shells out to `git` with a scrubbed env, `env` added, and
+ * `hardenedGitEnv` on top so a caller's env can't switch the hardening off. It
+ * first refuses a clone whose git data has a symlink in it (`symlinkScan.ts`),
+ * since git outside the sandbox would write through it. Every git the sidecar
+ * runs on a workspace clone or worktree comes through here, so no call can
+ * skip the scan. `GIT_TERMINAL_PROMPT=0` makes a missing-credential clone fail
+ * fast instead of hanging on a prompt the headless sidecar can never answer.
+ * `LC_ALL=C` pins git's messages to English: `scrubbedEnv` passes the user's
+ * locale through, and `mergeBaseIntoWorktree` reads "Already up to date" out
+ * of that output.
+ */
+export function gitRunnerWithEnv(env: Record<string, string>): GitRunner {
+  const merged = { ...GIT_BASE_ENV, ...env, ...hardenedGitEnv() };
+  return async (args, opts) => {
+    const refusal = symlinkRefusal(opts.cwd);
+    if (refusal) return refusedResult(refusal);
+    return run(["git", ...args], { ...opts, env: merged });
+  };
+}
+
+export const defaultGitRunner: GitRunner = gitRunnerWithEnv({});
 
 /**
  * The fully qualified remote-tracking ref for `branch`. A short `origin/<branch>`
@@ -108,13 +117,14 @@ export function remoteRef(branch: string): string {
 }
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
-async function git(
+export async function git(
   runner: GitRunner,
   args: string[],
   cwd?: string,
   timeoutMs?: number,
+  stdin?: string,
 ): Promise<string> {
-  const result = await runner(args, { cwd, timeoutMs });
+  const result = await runner(args, { cwd, timeoutMs, ...(stdin === undefined ? {} : { stdin }) });
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(" ")} failed (${result.exitCode}): ${result.stderr.trim()}`);
   }
@@ -740,10 +750,132 @@ const STATUS_LETTERS: Record<string, string> = {
  * Splits a NUL-terminated git list into fields, dropping the empty one the
  * final NUL leaves behind.
  */
-function splitNulFields(out: string): string[] {
+export function splitNulFields(out: string): string[] {
   const fields = out.split("\0");
   if (fields[fields.length - 1] === "") fields.pop();
   return fields;
+}
+
+/** One file in a diff: what kind of change it is and how many lines moved. */
+export interface DiffRecord {
+  /** Where the file ended up. */
+  path: string;
+  /** Where a rename or copy came from. */
+  oldPath?: string;
+  /** git's status code (`A`, `M`, `D`, `R087`, …); `M` for a file only numstat listed. */
+  code: string;
+  additions: number;
+  deletions: number;
+  /** numstat reported `-` for both counts, i.e. git treats the file as binary. */
+  binary: boolean;
+  /** Blob ids from `--raw` output (all zeros for a side that has no file). */
+  oldOid?: string;
+  newOid?: string;
+}
+
+interface StatusRecord {
+  path: string;
+  oldPath?: string;
+  code: string;
+  oldOid?: string;
+  newOid?: string;
+}
+
+interface CountRecord {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+/**
+ * Reads `-z` status records — `--name-status` (`R087\0old\0new`) or `--raw`
+ * (`:100644 100644 <oid> <oid> R087\0old\0new`) — starting at `start`, for as
+ * long as `isStatus` accepts the field. Returns where it stopped, so the
+ * numstat records that follow `--raw --numstat` output can be read from there.
+ *
+ * A rename or copy carries its source path before its destination; every other
+ * kind carries one path. The file is keyed by where it ended up.
+ */
+function readStatusRecords(
+  fields: string[],
+  start: number,
+  isStatus: (field: string) => boolean,
+): { records: StatusRecord[]; next: number } {
+  const records: StatusRecord[] = [];
+  let i = start;
+  while (i < fields.length && isStatus(fields[i] as string)) {
+    const field = fields[i] as string;
+    // The raw form is `:<old mode> <new mode> <old oid> <new oid> <code>`.
+    const raw = field.startsWith(":") ? field.split(" ") : null;
+    const code = raw ? (raw[4] ?? "") : field;
+    const pathCount = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
+    const path = fields[i + pathCount] ?? "";
+    const oldPath = pathCount === 2 ? fields[i + 1] : undefined;
+    i += pathCount + 1;
+    if (!path) continue;
+    records.push({
+      path,
+      ...(oldPath ? { oldPath } : {}),
+      code,
+      ...(raw ? { oldOid: raw[2], newOid: raw[3] } : {}),
+    });
+  }
+  return { records, next: i };
+}
+
+/**
+ * Reads `--numstat -z` records from `start` to the end. Only the first two tabs
+ * are delimiters — a tab is legal in a filename and `-z` leaves it raw, so the
+ * path is everything after them. A rename or copy leaves the path column empty
+ * and puts the source and destination in the two fields that follow.
+ */
+function readCountRecords(fields: string[], start: number): CountRecord[] {
+  const records: CountRecord[] = [];
+  let i = start;
+  while (i < fields.length) {
+    const [add, del, ...rest] = (fields[i] as string).split("\t");
+    const pathInRecord = rest.join("\t");
+    const isSplitRecord = !pathInRecord;
+    const path = (isSplitRecord ? fields[i + 2] : pathInRecord) ?? "";
+    i += isSplitRecord ? 3 : 1;
+    if (!path) continue;
+    records.push({
+      path,
+      additions: add === "-" ? 0 : Number(add) || 0,
+      deletions: del === "-" ? 0 : Number(del) || 0,
+      binary: add === "-" && del === "-",
+    });
+  }
+  return records;
+}
+
+/** Joins status and count records by path, in the order git listed them. */
+function joinDiffRecords(status: StatusRecord[], counts: CountRecord[]): DiffRecord[] {
+  const byPath = new Map<string, DiffRecord>();
+  for (const record of status) {
+    byPath.set(record.path, { ...record, additions: 0, deletions: 0, binary: false });
+  }
+  for (const count of counts) {
+    byPath.set(count.path, { code: "M", ...byPath.get(count.path), ...count });
+  }
+  return [...byPath.values()];
+}
+
+/** Parses separate `diff --name-status -z` and `diff --numstat -z` output. */
+export function parseNameStatusAndNumstat(nameStatus: string, numstat: string): DiffRecord[] {
+  const { records } = readStatusRecords(splitNulFields(nameStatus), 0, () => true);
+  return joinDiffRecords(records, readCountRecords(splitNulFields(numstat), 0));
+}
+
+/**
+ * Parses one `diff --raw --numstat -z` run: every raw record (each starting
+ * with `:`) comes first, then every numstat record, with no separator.
+ */
+export function parseRawNumstat(out: string): DiffRecord[] {
+  const fields = splitNulFields(out);
+  const { records, next } = readStatusRecords(fields, 0, (field) => field.startsWith(":"));
+  return joinDiffRecords(records, readCountRecords(fields, next));
 }
 
 /**
@@ -765,57 +897,22 @@ export async function listChangedFiles(
   const base = await resolveDiffBase(runner, worktreePath, baseRef);
   const byPath = new Map<string, ChangedFile>();
 
-  // name-status gives the change kind (A/M/D/R…).
-  const nameStatus = splitNulFields(
+  // name-status gives the change kind (A/M/D/R…), numstat the line counts.
+  const records = parseNameStatusAndNumstat(
     await git(
       runner,
       ["diff", "--name-status", "-z", "--ignore-submodules=all", base],
       worktreePath,
     ),
-  );
-  let statusField = 0;
-  while (statusField < nameStatus.length) {
-    const code = nameStatus[statusField];
-    // A rename or copy carries its source path before its destination; every
-    // other kind carries one path. Either way the file is listed where it
-    // ended up, so it's always the last path of the record we want.
-    const pathCount = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
-    const destination = nameStatus[statusField + pathCount] ?? "";
-    statusField += pathCount + 1;
-    if (!destination) continue;
-    byPath.set(destination, {
-      path: destination,
-      status: STATUS_LETTERS[code[0] ?? ""] ?? "modified",
-      additions: 0,
-      deletions: 0,
-    });
-  }
-
-  // numstat gives line counts ("-" for binary).
-  const numstat = splitNulFields(
     await git(runner, ["diff", "--numstat", "-z", "--ignore-submodules=all", base], worktreePath),
   );
-  let countsField = 0;
-  while (countsField < numstat.length) {
-    // Only the first two tabs are delimiters — a tab is legal in a filename and
-    // `-z` leaves it raw, so the path is everything after them.
-    const [add, del, ...rest] = numstat[countsField].split("\t");
-    const pathInRecord = rest.join("\t");
-    // A rename or copy leaves the path column empty and puts the source and
-    // destination in the two fields that follow.
-    const isSplitRecord = !pathInRecord;
-    const destination = (isSplitRecord ? numstat[countsField + 2] : pathInRecord) ?? "";
-    countsField += isSplitRecord ? 3 : 1;
-    if (!destination) continue;
-    const entry = byPath.get(destination) ?? {
-      path: destination,
-      status: "modified",
-      additions: 0,
-      deletions: 0,
-    };
-    entry.additions = add === "-" ? 0 : Number(add) || 0;
-    entry.deletions = del === "-" ? 0 : Number(del) || 0;
-    byPath.set(destination, entry);
+  for (const record of records) {
+    byPath.set(record.path, {
+      path: record.path,
+      status: STATUS_LETTERS[record.code[0] ?? ""] ?? "modified",
+      additions: record.additions,
+      deletions: record.deletions,
+    });
   }
 
   const untracked = await git(

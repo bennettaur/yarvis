@@ -7,6 +7,10 @@ out the order to read the change in, and **line questions** where you ask about
 a piece of code and keep the answer as a private note. The assistant can search
 those notes later.
 
+For a faster, editor-like review of one or several PRs checked out locally,
+with tabs and a side-by-side view, see [Review workspaces](review-workspaces.md).
+A PR's header here has **Open in review workspace** to move it there.
+
 ## Set up
 
 1. Sign in with GitHub, or save a **GitHub token** or an **Azure DevOps token**,
@@ -16,7 +20,9 @@ those notes later.
 2. Guided reviews and line questions are agent runs, so they also need an LLM
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
-   **Settings → PR review → Review models**.
+   **Settings → PR review → Review models**. The same section sets the
+   verification report's Claude model (Sonnet by default) and the most one
+   report may spend ($2 by default).
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 
@@ -79,6 +85,47 @@ as two. If the branch lookup fails or is slow, the list loads without nesting.
   that file while the files above it load, until you scroll.
 - A file with review comments shows a speech bubble with the count. That count
   includes replies and resolved threads.
+
+### Comment on a PR
+
+Review comments are posted to the PR straight away, on GitHub and Azure DevOps
+alike. There is no pending review to submit.
+
+1. Hover a line and press the **+** beside it. In **Split**, the left gutter's
+   **+** comments on the old file and the right one on the new file. In
+   **Unified**, a deleted line takes its comment on the old file and every
+   other line on the new file.
+2. To comment on a range, shift-click the **+** on a second line on the same
+   side. The composer then says which lines it covers. A range stays on one
+   side: shift-clicking a **+** on the other side starts a new comment there.
+3. Type the comment and press **Comment**.
+
+Existing threads appear under the line they belong to, including threads on
+the old file. Each thread has two controls:
+
+- **Reply** adds a comment to the thread.
+- **Resolve** marks the thread resolved, and **Unresolve** opens it again.
+
+A comment, reply or resolve shows at once and stays shown while the provider
+catches up. If the provider refuses, the error appears beside the control you
+used, your text is kept, and nothing changes. A control is hidden when GitHub says you may not use it.
+
+Some differences between the providers:
+
+- **Azure DevOps**: resolving sets the thread to *Fixed*, and unresolving sets
+  it back to *Active*. A thread marked *Won't fix*, *By design* or *Closed*
+  counts as resolved too.
+- **GitHub** tags a thread **outdated** when a push moves the code out from
+  under it. An outdated thread can't be placed on a line any more, so it is
+  listed under **Comments** in the PR's description instead. A range someone
+  made on github.com can start in the old file and end in the new one; its
+  label names both.
+- A PR with more than 50 threads loads the rest in further pages, up to 550 in
+  all. Each thread shows its first 100 comments. When some threads couldn't be
+  loaded, a note under **Comments** says so.
+
+Each thread has an **open on GitHub** (or **Azure DevOps**) link to the same
+thread on the provider's site.
 
 ### Take a guided review
 
@@ -186,6 +233,66 @@ Some rules that follow from how it works:
   a workspace created some other way, the link appears after the next PR poll
   (within a minute).
 
+### Resolve merge conflicts
+
+When a PR conflicts with its base branch, a red **Conflicts with <base>** banner
+appears under the header. GitHub's `CONFLICTING` and `DIRTY` and Azure
+DevOps's `conflicts` all count; an Azure merge a branch policy rejected does
+not, since there is nothing to resolve. GitHub works mergeability out lazily,
+so when it hasn't decided yet the page asks once more after a few seconds and
+shows nothing in the meantime.
+
+**Resolve conflicts** in the banner hands the job to a coding agent:
+
+- **The PR's workspace has an agent running:** the instructions are typed at
+  its prompt. If the agent looks busy (its transcript moved on since it last
+  finished a turn), you're asked first: "The agent is working on something.
+  Send anyway?" If it is waiting on a permission prompt, nothing is sent: answer
+  the prompt in the workspace, then try again.
+- **The workspace has no agent running:** the instructions are written to
+  `.yarvis/resolve-conflicts.md` (the workspace's `.yarvis/brief.md` is left
+  alone) and an agent is started on them.
+- **The PR has no workspace:** one is created on the PR's branch, as
+  **Start workspace** does, and its first session starts on the instructions.
+  The app switches to it.
+- **The PR comes from a fork:** the button is disabled, for the same reason
+  Start workspace is.
+- **Something other than the agent holds the workspace's agent tab:** nothing
+  is sent. If it's an agent Yarvis doesn't recognise, restart it there.
+
+After a send, **Open workspace** jumps to it, and **Send again** asks before
+sending a second time. A second click while a send is running does nothing.
+Progress and errors show in the banner.
+
+The busy check is a guess, not a guard. It can't see the other dialogs an agent
+shows (approving a plan, answering a question, a menu), so if one is open the
+typed instructions answer it instead. It can also say "busy" for an agent that
+was killed mid-turn, or when another Claude session ran at the workspace root.
+
+Branch names are quoted into the instructions, so a branch with characters
+other than letters, digits, `.`, `_`, `/` and `-` is refused rather than
+handed over.
+
+The agent is told to merge `origin/<base>` into the PR's branch (a merge, not
+a rebase, so nothing needs a force-push), using a `merge-default-branch` skill
+if one is available. For a stacked PR it merges the PR's actual base, not the
+default branch. It resolves each conflict by working out what both sides
+meant, runs the repo's checks and tests, commits a normal merge commit, pushes
+to the PR's branch, and reports what it resolved and anything it's unsure of.
+The PR's title and branch names are quoted to it as data, not instructions. As with any send,
+Yarvis confirms delivery, not that the work is done.
+
+### See what changed since your review
+
+Yarvis remembers where you last reviewed each PR: the commit you were looking
+at when you approved, requested changes or posted a comment here, or when you
+reviewed it on GitHub (or voted on it in Azure DevOps). When the PR has moved
+on since, a note under the header says so — **3 new commits since your
+review**, or that it was force-pushed — with **See what changed in a review
+workspace**. That opens the PR in a [review workspace](review-workspaces.md) on
+its **Since last review** tab, which shows what the author changed since,
+leaving out what came in from the base branch.
+
 ### See where a PR sits in its stack
 
 A PR that is part of a stack gets a **Stack** section above **Checks**. It
@@ -203,6 +310,32 @@ it.
 
 Merging a stack needs the `gh stack` CLI, so it lives in the workspace's Stack
 tab. See [Workspaces](workspaces.md).
+
+### Let the merge reviewer decide
+
+In a repo that uses Yarvis's verification layer, a PR's verification report
+can say it needs an agent's review rather than a person's. Ask the assistant
+to have the merge reviewer look at it ("have the merge reviewer check
+bennettaur/yarvis#123"). The reviewer reads the PR, the report and the code
+the report points at, then posts its decision on the PR: approve, which lets
+the repo's CI merge it, or reject, which leaves it for you.
+
+- It only decides PRs whose latest report, posted from your GitHub account,
+  is for the current commit and asked for an agent. Anything else it reports
+  back without posting.
+- Its decision is signed with the **Merge reviewer signing key** in Settings →
+  Credentials, so the repo can tell it from a comment anyone with your token
+  could post. Make the key with `bun run verify:agent-key` in the Yarvis repo,
+  which writes it to a file for you to paste in, and add the line it prints
+  to the repo's `VERIFY_ALLOWED_SIGNERS` variable.
+- The repo's CI still decides: it won't merge a high-risk change on the
+  reviewer's word, or a PR with a blocking finding.
+- A review works on one PR. Once it has read a PR it can't read or post on
+  any other, so text in one PR can't send it off to read another repo, and
+  it posts once.
+- As the specialist, it posts without asking first, like `project-manager`
+  filing a ticket: that grant is on the `merge-reviewer` definition. Anywhere
+  else, such as the chat itself, posting a merge review asks you first.
 
 ## Reference
 
