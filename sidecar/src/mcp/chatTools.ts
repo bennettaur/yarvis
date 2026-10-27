@@ -283,7 +283,7 @@ export async function assembleAgentToolset(opts: {
   /**
    * Built-ins that must be confirmed before they run on this turn. Never empty in
    * practice: the outward-facing tools ask on every turn, and a turn nobody
-   * proof-read (spoken, or a check-back) adds the wider destructive set. A
+   * proof-read (spoken, or a scheduled task) adds the wider destructive set. A
    * surface with no way to prompt gets them dropped instead — see below.
    */
   confirmBuiltins?: ReadonlySet<string>;
@@ -291,7 +291,7 @@ export async function assembleAgentToolset(opts: {
    * False on a turn the user didn't proof-read, which makes every MCP tool ask
    * regardless of stored consent. Consent is given in Settings or from the chat
    * bar — both places where the turn was typed and read back — and a spoken
-   * turn or a check-back is neither.
+   * turn or a scheduled task is neither.
    */
   honourStandingConsent?: boolean;
   /**

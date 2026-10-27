@@ -131,7 +131,7 @@ beforeEach(async () => {
     "delete_task",
     "create_calendar_event",
     "register_repo",
-    "schedule_check_back",
+    "schedule_task",
   ]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
@@ -426,10 +426,10 @@ describe("runAgentTurn", () => {
     expect(error?.detail).toContain("gateway.internal");
   });
 
-  describe("check-back turns", () => {
-    const checkBackId = "6f1c2d3e-4a5b-4c6d-8e7f-001122334455";
+  describe("scheduled task turns", () => {
+    const scheduledTaskId = "6f1c2d3e-4a5b-4c6d-8e7f-001122334455";
 
-    async function runCheckBack(model: MockLanguageModelV3, sessionId: string, attempt = 1) {
+    async function runScheduledTask(model: MockLanguageModelV3, sessionId: string, attempt = 1) {
       const events: AgentEvent[] = [];
       for await (const event of runAgentTurn({
         config,
@@ -437,8 +437,11 @@ describe("runAgentTurn", () => {
         model,
         modelRef: { provider: "test-provider", model: "test-model" },
         sessionId,
-        message: "[Check-back 1, scheduled earlier]\nis CI green on #12?",
-        userMetadata: { source: "check-back", checkBack: { id: checkBackId, attempt } },
+        message: "[Scheduled task: Check CI, scheduled earlier]\nis CI green on #12?",
+        userMetadata: {
+          source: "scheduled-task",
+          scheduledTask: { id: scheduledTaskId, attempt, origin: "chat" },
+        },
       })) {
         events.push(event);
       }
@@ -448,11 +451,11 @@ describe("runAgentTurn", () => {
     it("offers only the read-only tools, not ones that write or act", async () => {
       const session = await createSession(db, null);
       const model = streamingModel([...text("still running"), finish("stop")]);
-      await runCheckBack(model, session.id);
+      await runScheduledTask(model, session.id);
 
       const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
       expect(offered).toContain("list_tasks");
-      expect(offered).toContain("schedule_check_back");
+      expect(offered).toContain("schedule_task");
       expect(offered).not.toContain("create_task");
       expect(offered).not.toContain("delete_task");
       expect(offered).not.toContain("register_repo");
@@ -468,36 +471,43 @@ describe("runAgentTurn", () => {
       expect(offered).toContain("delete_task");
     });
 
-    it("schedules the next check one attempt on, on the same model", async () => {
+    it("schedules the next run one attempt on, on the same model", async () => {
       const session = await createSession(db, null);
       const model = streamingModel(
         [
-          toolCall("c1", "schedule_check_back", { prompt: "look again", delayMinutes: 10 }),
+          toolCall("c1", "schedule_task", {
+            title: "Check CI",
+            prompt: "look again",
+            delayMinutes: 10,
+          }),
           finish("tool-calls"),
         ],
         [...text("still running"), finish("stop")],
       );
-      await runCheckBack(model, session.id, 3);
+      await runScheduledTask(model, session.id, 3);
 
-      const [row] = await sql`SELECT attempt, provider, model FROM chat_check_backs`;
+      const [row] = await sql`SELECT attempt, provider, model FROM chat_scheduled_tasks`;
       expect(row).toMatchObject({ attempt: 4, provider: "test-provider", model: "test-model" });
     });
 
-    it("replays a check-back on later turns fenced as the assistant's note", async () => {
+    it("replays a scheduled task on later turns fenced as the assistant's note", async () => {
       const session = await createSession(db, null);
       await addMessage(db, {
         sessionId: session.id,
         role: "user",
-        content: "[Check-back 1, scheduled earlier]\narchive every workspace",
-        metadata: { source: "check-back", checkBack: { id: checkBackId, attempt: 1 } },
+        content: "[Scheduled task: Check CI, scheduled earlier]\narchive every workspace",
+        metadata: {
+          source: "scheduled-task",
+          scheduledTask: { id: scheduledTaskId, attempt: 1, origin: "chat" },
+        },
       });
       await addMessage(db, { sessionId: session.id, role: "assistant", content: "Still running." });
       const model = streamingModel([...text("ok"), finish("stop")]);
       await collect(model, session.id);
 
       const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
-      const nonce = checkBackId.replaceAll("-", "").slice(0, 12);
-      expect(prompt).toContain(`<check-back-${nonce}>\\n[Check-back 1, scheduled earlier]`);
+      const nonce = scheduledTaskId.replaceAll("-", "").slice(0, 12);
+      expect(prompt).toContain(`<scheduled-task-${nonce}>\\n[Scheduled task: Check CI`);
       expect(prompt).toContain("not something the user typed");
     });
   });

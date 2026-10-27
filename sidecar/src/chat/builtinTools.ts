@@ -1,7 +1,6 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
-import { buildCheckBackTools, type CheckBackTurnContext } from "../checkBacks/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
@@ -15,6 +14,7 @@ import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
+import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
@@ -50,8 +50,8 @@ export interface BuiltinToolDeps {
   atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
-  /** What a check-back scheduled from this turn inherits. Absent off a chat turn. */
-  checkBack?: CheckBackTurnContext;
+  /** What a task scheduled from this turn inherits. Absent off a chat turn. */
+  scheduledTask?: ScheduledTaskTurnContext;
 }
 
 /**
@@ -64,12 +64,17 @@ export interface BuiltinToolDeps {
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
   const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
-  const checkBack = deps.checkBack ?? { provider: null, model: null, attempt: 0 };
+  const scheduledTask = deps.scheduledTask ?? {
+    provider: null,
+    model: null,
+    attempt: 0,
+    origin: unattended ? "heads-down" : "chat",
+  };
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
-    checkBacks: buildCheckBackTools(db, sessionId, checkBack),
+    scheduledTasks: buildScheduledTaskTools(db, sessionId, scheduledTask),
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
