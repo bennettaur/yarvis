@@ -36,7 +36,7 @@ import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
-import type { AttentionItem } from "./lib/attention";
+import { type AttentionItem, hasAnswerDialog } from "./lib/attention";
 import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
 import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
@@ -328,18 +328,13 @@ export default function App() {
 
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
-      // A prompt can be answered where the user already is. The item stays
-      // pending until it is answered, which resolves it on the sidecar.
-      if (item.kind === "permission" && item.source === "claude-hook" && item.sessionKey) {
+      // A prompt or question is answered where the user already is. The item
+      // stays pending until it is answered, which resolves it on the sidecar.
+      // The panel closes so Esc reaches only the dialog.
+      if (hasAnswerDialog(item)) {
         setAttentionPanelOpen(false);
-        setPermissionItem(item);
-        return;
-      }
-      // A question is answered in place too; it leaves the stream once answered,
-      // not when it is opened. The panel closes so Esc reaches only the dialog.
-      if (item.kind === "question") {
-        setAttentionPanelOpen(false);
-        setQuestionItem(item);
+        if (item.kind === "question") setQuestionItem(item);
+        else setPermissionItem(item);
         return;
       }
       void markAttention(item.id, "read");
@@ -349,18 +344,35 @@ export default function App() {
   );
 
   // A prompt or question from the workspace on screen opens straight away,
-  // unless another dialog or Omni Chat already holds the user's attention.
-  const dialogOpenRef = useRef(false);
+  // unless an overlay is already open. Opening would replace or close it while
+  // the user is in it; the item still waits on the bell.
+  const overlayOpenRef = useRef(false);
   useEffect(() => {
-    dialogOpenRef.current = permissionItem !== null || questionItem !== null;
-  }, [permissionItem, questionItem]);
+    overlayOpenRef.current =
+      permissionItem !== null ||
+      questionItem !== null ||
+      omniChatOpen ||
+      attentionPanelOpen ||
+      clipboardOpen ||
+      setupGuideOpen ||
+      tourOpen;
+  }, [
+    permissionItem,
+    questionItem,
+    omniChatOpen,
+    attentionPanelOpen,
+    clipboardOpen,
+    setupGuideOpen,
+    tourOpen,
+  ]);
 
   useEffect(
     () =>
       onAttentionArrived((item) => {
-        if (dialogOpenRef.current || openRef.current) return;
+        if (overlayOpenRef.current) return;
         if (!shouldAutoOpen(getViewedScope(), item)) return;
-        dialogOpenRef.current = true;
+        // Claimed now: a second item can arrive before the state change commits.
+        overlayOpenRef.current = true;
         openAttentionItem(item);
       }),
     [openAttentionItem],

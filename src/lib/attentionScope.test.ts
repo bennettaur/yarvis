@@ -89,12 +89,17 @@ describe("shouldAutoOpen", () => {
   });
 
   it("leaves items alone when no workspace is on screen", () => {
-    const sessionless = item({ workspaceId: null });
-    expect(shouldAutoOpen(scope(), sessionless)).toBe(false);
+    const workspaceless = item({ workspaceId: null });
+    expect(shouldAutoOpen(scope(), workspaceless)).toBe(false);
   });
 
   it("ignores kinds that have no answer dialog", () => {
     expect(shouldAutoOpen(scope({ workspaceId: "w1" }), item({ kind: "idle" }))).toBe(false);
+  });
+
+  it("ignores a permission item that didn't come from a Claude Code hook", () => {
+    const fromSystem = item({ source: "system" });
+    expect(shouldAutoOpen(scope({ workspaceId: "w1" }), fromSystem)).toBe(false);
   });
 
   it("ignores a permission item with no session to answer for", () => {

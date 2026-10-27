@@ -615,7 +615,7 @@ first question. See
 When the prompt or question comes from the workspace you have open, its window
 opens on its own, so you don't have to reach for the bell. It still opens while
 Yarvis is in the background, ready for when you switch back. It doesn't open
-over another prompt or question window, or over Omni Chat; the item waits on
-the bell instead.
+while another window is up, such as another prompt, Omni Chat or the attention
+panel itself; the item waits on the bell instead.
 
 The assistant doesn't read the bell. It is for you.

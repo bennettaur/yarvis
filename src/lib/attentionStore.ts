@@ -35,8 +35,8 @@ let running = false;
 // shouldn't replay a backlog as fresh alerts.
 let primed = false;
 
-// Told about each item raised live, so the app can react to the arrival itself
-// rather than diffing snapshots.
+// Listeners for items raised live, so the app can react to an arrival without
+// diffing snapshots.
 const arrivalListeners = new Set<(item: AttentionItem) => void>();
 
 function emit(): void {
@@ -108,8 +108,9 @@ function hydrateFrom(items: AttentionItem[]): void {
 
 /**
  * Applies one streamed item to the live snapshot, notifying on genuinely-new
- * items. An item whose origin is already on screen doesn't notify — the user is
- * looking straight at it, and the auto-clear pass is about to drop it anyway.
+ * items and passing them to arrival listeners. An item whose origin is already
+ * on screen doesn't notify — the user is looking straight at it, and the
+ * auto-clear pass is about to drop it anyway.
  */
 function applyItem(item: AttentionItem): void {
   const { list, added, changed } = applyAttentionItem(snapshot, item);
@@ -122,7 +123,14 @@ function applyItem(item: AttentionItem): void {
   if (!isInView(getViewedScope(), item)) {
     void notify(item.title, item.body ?? "Wants your attention");
   }
-  for (const listener of arrivalListeners) listener(item);
+  for (const listener of arrivalListeners) {
+    // Caught here so one failing listener can't skip the rest or drop the stream.
+    try {
+      listener(item);
+    } catch (e) {
+      console.error("[attention] arrival listener failed:", e);
+    }
+  }
 }
 
 async function hydrate(): Promise<void> {

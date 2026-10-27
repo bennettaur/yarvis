@@ -201,7 +201,8 @@ Not exposed, on purpose:
 | `wait_for_answer` | Keeps waiting on an `ask_user` call that came back `pending` |
 
 A question rings the attention bell. Its row opens a dialog over whatever page
-you are on, so you can answer without switching to the session. See
+you are on, so you can answer without switching to the session. A question
+from the workspace you have open opens that dialog by itself. See
 [Workspaces](workspaces.md#the-attention-bell). The in-app assistant has the
 same two tools, and its questions show as coming from **Yarvis** (see
 [The assistant](assistant.md#tools)).

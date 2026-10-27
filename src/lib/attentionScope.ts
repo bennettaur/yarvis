@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { AttentionItem } from "./attention";
+import { type AttentionItem, hasAnswerDialog } from "./attention";
 
 /**
  * What the user is currently looking at, as far as the attention stream cares:
@@ -109,9 +109,9 @@ export function isInView(scope: ViewedScope, item: AttentionItem): boolean {
  * dialog is already waiting when the user switches back to the app.
  */
 export function shouldAutoOpen(scope: ViewedScope, item: AttentionItem): boolean {
-  if (!item.workspaceId || item.workspaceId !== scope.workspaceId) return false;
-  if (item.kind === "question") return true;
-  return item.kind === "permission" && item.source === "claude-hook" && Boolean(item.sessionKey);
+  return (
+    Boolean(item.workspaceId) && item.workspaceId === scope.workspaceId && hasAnswerDialog(item)
+  );
 }
 
 export function getViewedScope(): ViewedScope {
