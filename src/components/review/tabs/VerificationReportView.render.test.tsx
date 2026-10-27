@@ -186,7 +186,7 @@ describe("VerificationReportView", () => {
     );
     expect(withChecks).toContain("Observabilitypasses");
     expect(withChecks).toContain("Code qualitypasses");
-    const old = textOf(
+    const withoutChecks = textOf(
       await renderToHtml(
         createElement(VerificationReportView, {
           report,
@@ -194,8 +194,8 @@ describe("VerificationReportView", () => {
         }),
       ),
     );
-    expect(old).not.toContain("Observability");
-    expect(old).not.toContain("Code quality");
+    expect(withoutChecks).not.toContain("Observability");
+    expect(withoutChecks).not.toContain("Code quality");
   });
 
   it("crosses off must-reads and findings in files the reviewer has viewed", async () => {
@@ -218,5 +218,19 @@ describe("VerificationReportView", () => {
     expect(struck.some((t) => t.includes("No invalidation on write"))).toBe(true);
     expect(struck.some((t) => t.includes("Calls the cache"))).toBe(false);
     expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(false);
+  });
+
+  it("crosses off a check's finding once its file is viewed", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        viewed: new Set(["src/cache.test.ts"]),
+      }),
+    );
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
+    expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(true);
   });
 });

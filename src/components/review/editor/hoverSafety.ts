@@ -36,8 +36,11 @@ export function safeHoverContents<T extends MarkdownLike>(contents: readonly T[]
 
 /**
  * Text shown as itself in a hover: every markdown character escaped, so a
- * model-written reason can't form a link, an image or formatting.
+ * model-written reason can't form a link, an image or formatting. `:` is
+ * escaped too, since GFM turns a bare `https://…` into a link with no
+ * bracket at all, and newlines become spaces so no line can start a heading
+ * or a code block.
  */
 export function plainHoverText(text: string): string {
-  return text.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, "\\$&");
+  return text.replace(/\s*\n\s*/g, " ").replace(/[\\`*_{}[\]()#+\-.!|<>~:=]/g, "\\$&");
 }

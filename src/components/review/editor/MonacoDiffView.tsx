@@ -177,10 +177,12 @@ function DiffEditor({
     void revealKey;
   }, [diff, held, revealLine, revealKey]);
 
+  // Re-applied after a content sync too: `setValue` clears a model's decorations.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `modified` is read by its change alone
   useEffect(() => {
     if (!lineDecorations || !held) return;
     lineDecorations.set(monacoDecorations(monaco, decorations));
-  }, [monaco, lineDecorations, held, decorations]);
+  }, [monaco, lineDecorations, held, decorations, modified]);
 
   const placed = useMemo<PlacedZone[]>(() => {
     if (!diff || !zones?.length) return [];

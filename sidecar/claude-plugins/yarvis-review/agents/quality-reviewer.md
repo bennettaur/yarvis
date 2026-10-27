@@ -24,28 +24,32 @@ neighbours is not wrong because a style guide says otherwise.
   surprises: a floating promise, a mutable default argument, a hook called
   conditionally, a resource that is opened and never closed, shared state
   mutated across threads without a lock, `==` where it coerces.
-- Against the codebase's own pattern: the PR does by hand what an existing
-  helper or layer is there to do, or bypasses the module everything else goes
-  through. Cite the existing one.
-- Error handling: a failure that is caught and turned into a wrong result
-  (an empty list, `null`, a default) the caller can't tell from success; an
-  error that loses its cause; a catch so broad it hides programming errors;
-  input from outside the process used with no check.
+- Against the codebase's own layering: the PR bypasses the module or layer
+  everything else goes through. Cite the one it should use.
+- Error handling the caller pays for: a failure that is caught and turned into
+  a wrong result (an empty list, `null`, a default) the caller can't tell from
+  success; an error that loses its cause; a catch so broad it hides
+  programming errors; data from outside the process parsed without
+  validation.
 - Naming that misleads: a name that says something the code doesn't do, a
   boolean whose `true` is ambiguous, two names for the same thing, or one name
   for two things.
-- Code a reader has to decode: a dense expression or clever trick where plain
-  code would read in one pass.
+- A single expression a reader has to decode, such as a clever trick where
+  plain code would read in one pass. Structure and control flow belong to the
+  complexity check.
 
-Not quality: complexity and over-abstraction (another check has those), code
-comments (another check), logging (another check), formatting and lint the
-tools enforce, personal preference, and code the PR didn't touch.
+Not quality, because another check in the same report has it: complexity,
+over-abstraction and duplicating an existing helper (complexity); code
+comments (comments); logging, and a failure nobody can see because it was
+caught with no log or result (observability); input reaching a query, shell,
+file path or HTML (risk). Also not quality: formatting and lint the tools
+enforce, personal preference, and code the PR didn't touch.
 
 ## Output rules
 
 - Every finding cites `path` and head `line`. `detail` at most 40 words: what
   goes wrong or confuses, and the fix (the better name, the right handling,
-  the existing helper).
+  the layer to go through).
 - `title` at most 12 words.
 - Severity: `high` will cause a bug or a wrong result; `medium` likely to
   cause one later, or misleads a reader into one; `low` a clearer name or a

@@ -79,16 +79,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/**
- * The files the reviewer has marked viewed. An item in a file they've viewed
- * is crossed off, so the report doubles as the review's to-do list.
- */
+/** Paths the reviewer has marked viewed. */
 type Viewed = ReadonlySet<string>;
 
-const isDone = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
+const NONE_VIEWED: Viewed = new Set();
+
+const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
 
 /** Struck through and dimmed once its file is viewed. */
-const doneClass = (done: boolean) => (done ? "line-through opacity-50" : "");
+const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
 /**
  * A check passing is one line and nothing more: the reader's time goes to the
@@ -131,7 +130,7 @@ function CheckRow({
         {check.findings.map((f) => (
           <li
             key={`${f.title}:${f.path}:${f.line}`}
-            className={`space-y-0.5 ${doneClass(isDone(viewed, f.path))}`}
+            className={`space-y-0.5 ${viewedClass(isViewed(viewed, f.path))}`}
           >
             <div className="flex flex-wrap items-center gap-2">
               <span
@@ -261,14 +260,14 @@ const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 export default function VerificationReportView({
   report,
   onOpen,
-  viewed = new Set(),
+  viewed = NONE_VIEWED,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
 }) {
   const { risk } = report;
-  const mustReadDone = report.mustRead.filter((entry) => viewed.has(entry.path)).length;
+  const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
   return (
     <div className="space-y-5">
       <Coverage report={report} onOpen={onOpen} />
@@ -278,10 +277,13 @@ export default function VerificationReportView({
       </Section>
 
       {report.mustRead.length > 0 && (
-        <Section title={`Must read · ${mustReadDone} of ${report.mustRead.length} viewed`}>
+        <Section title={`Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`}>
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
-              <li key={entry.path} className={`text-sm ${doneClass(viewed.has(entry.path))}`}>
+              <li
+                key={entry.path}
+                className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}
+              >
                 <Location
                   path={entry.path}
                   line={entry.lines?.start}
@@ -317,7 +319,7 @@ export default function VerificationReportView({
               {risk.concerns.map((c) => (
                 <li
                   key={`${c.title}:${c.path}:${c.line}`}
-                  className={doneClass(isDone(viewed, c.path))}
+                  className={viewedClass(isViewed(viewed, c.path))}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-zinc-200">{c.title}</span>

@@ -2,8 +2,8 @@
  * The verification report: a headless Claude Code run over a review PR's
  * checkout that summarises the change, picks the files that must be read, and
  * runs the risk, completeness, test, complexity, performance, comment,
- * observability and quality checks — each a subagent of the `yarvis-review` plugin, fanned out by its
- * `verification-report` skill.
+ * observability and quality checks — each a subagent of the `yarvis-review`
+ * plugin, fanned out by its `verification-report` skill.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a

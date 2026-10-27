@@ -39,8 +39,10 @@ logger, its prefixes, its metrics client, if any) and hold the PR to that.
   alert (a queue, a job, a retry loop, a call to an outside service). Most
   changes need no metric; don't ask for one on ordinary code.
 
-Not observability: log wording and formatting, a codebase without a metrics
-client (don't ask for one), and code the PR didn't touch.
+Not observability: a catch that hands the caller a wrong value (the quality
+check has that; yours is that nobody can see it failed), log wording and
+formatting, a codebase without a metrics client (don't ask for one), and code
+the PR didn't touch.
 
 ## Output rules
 

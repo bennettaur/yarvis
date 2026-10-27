@@ -79,10 +79,10 @@ describe("reportDecorations", () => {
     ]);
     // A model-written link is escaped, so the hover can't render it.
     expect(decorations[0].hoverMessage).toBe(
-      "Must read: Eviction \\[logic\\]\\(https://x\\.test\\)",
+      "Must read\\: Eviction \\[logic\\]\\(https\\://x\\.test\\)",
     );
     expect(decorations[1].hoverMessage).toBe(
-      "Performance \\(high\\): N\\+1\\. One query per user\\.",
+      "Performance \\(high\\)\\: N\\+1\\. One query per user\\.",
     );
   });
 

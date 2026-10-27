@@ -106,9 +106,8 @@ function CheckLine({ check }: { check: CheckProgress }) {
  * The verification report: an agent review of the whole change — summary,
  * the files that must be read, risk, and the completeness, test, complexity,
  * performance, comment, observability and quality checks — run on the PR's
- * checkout. Shows the run's
- * progress while it works and the report once it is done; every location in
- * it opens the file's diff at that line.
+ * checkout. Shows the run's progress while it works and the report once it
+ * is done; every location in it opens the file's diff at that line.
  */
 export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
