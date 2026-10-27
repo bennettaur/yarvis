@@ -12,7 +12,7 @@ import {
   unlinkFromStream,
   updateStream,
 } from "./service.ts";
-import { buildWorkStreamTools } from "./tools.ts";
+import { buildWorkStreamTools, STREAM_PAUSED } from "./tools.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -242,6 +242,67 @@ describe("work stream tools", () => {
       opts,
     );
     expect(reopened).toMatchObject({ status: "active" });
+  });
+
+  it("keeps a paused stream where it was, and picks up there when resumed", async () => {
+    const stream = await createStream(db, { title: "chase review" });
+    await updateStream(db, stream.id, { status: "waiting-on-others", waitingOn: "Alex" });
+
+    const paused = await tools.update_work_stream.execute!({ id: stream.id, paused: true }, opts);
+    expect(paused).toMatchObject({ status: "waiting-on-others" });
+    expect((await getStream(db, stream.id))?.pausedAt).toBeInstanceOf(Date);
+    expect((await listStreams(db)).map((s) => s.id)).toEqual([stream.id]);
+    expect(await listStreams(db, { excludePaused: true })).toEqual([]);
+
+    await tools.update_work_stream.execute!({ id: stream.id, paused: false }, opts);
+    const resumed = await getStream(db, stream.id);
+    expect(resumed).toMatchObject({
+      pausedAt: null,
+      status: "waiting-on-others",
+      waitingOn: "Alex",
+    });
+  });
+
+  it("hides a paused stream from a pass, and won't let it change or resume one", async () => {
+    const passTools = buildWorkStreamTools(db, { unattended: true });
+    const stream = await createStream(db, { title: "chase review" });
+    const link = await linkToStream(db, stream.id, { ref: pr });
+    await updateStream(db, stream.id, { paused: true });
+
+    const listed = (await passTools.list_work_streams.execute!({}, opts)) as {
+      streams: unknown[];
+    };
+    expect(listed.streams).toEqual([]);
+    const found = (await passTools.find_work_streams_for.execute!({ ref: pr }, opts)) as {
+      streams: unknown[];
+    };
+    expect(found.streams).toEqual([]);
+    expect(await passTools.get_work_stream.execute!({ id: stream.id }, opts)).toEqual({
+      error: STREAM_PAUSED,
+    });
+    expect(await passTools.unlink_from_work_stream.execute!({ linkId: link.id }, opts)).toEqual({
+      error: STREAM_PAUSED,
+    });
+    expect((await getStream(db, stream.id))?.links).toHaveLength(1);
+    expect(
+      await passTools.update_work_stream.execute!({ id: stream.id, note: "bumped" }, opts),
+    ).toEqual({ error: STREAM_PAUSED });
+    expect(
+      await passTools.link_to_work_stream.execute!({ streamId: stream.id, ref: pr }, opts),
+    ).toEqual({ error: STREAM_PAUSED });
+    expect(
+      await passTools.update_work_stream.execute!({ id: stream.id, paused: false }, opts),
+    ).toEqual({ error: "only the user pauses or resumes a stream" });
+    expect((await getStream(db, stream.id))?.pausedAt).toBeInstanceOf(Date);
+  });
+
+  it("won't apply a pass's update to a stream the user paused since it was read", async () => {
+    const stream = await createStream(db, { title: "chase review" });
+    await updateStream(db, stream.id, { paused: true });
+    expect(
+      await updateStream(db, stream.id, { note: "bumped" }, { unlessPaused: true }),
+    ).toBeNull();
+    expect((await getStream(db, stream.id))?.notes).toEqual([]);
   });
 
   it("won't let a pass rewrite a link the user made", async () => {

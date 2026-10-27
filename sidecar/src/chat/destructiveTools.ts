@@ -31,11 +31,18 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // so the user confirms the exact remote before any of its code can arrive.
   "register_repo",
   // Starts an unattended loop that starts work, files tickets and instructs
-  // agent sessions on its own until it is stopped.
+  // agent sessions on its own until it is stopped. Resuming a paused run or
+  // moving its stop time keeps that loop going, so the user confirms those too.
   "start_heads_down",
+  "resume_heads_down",
+  "set_heads_down_stop_time",
   // Its approval lets the repo's CI merge the PR with nobody else reading it.
   // Only the merge-reviewer specialist's grant may skip asking.
   "post_merge_review",
+  // Posts to Yarvis's public repo, which the user never registered. The model
+  // may decide to file one mid-task, so the user reads the text before anyone
+  // else can.
+  "file_yarvis_issue",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([

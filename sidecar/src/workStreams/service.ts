@@ -54,6 +54,8 @@ export interface UpdateStreamInput {
   nextAction?: string | null;
   waitingOn?: string | null;
   wakeAt?: Date | null;
+  /** Pauses or resumes the stream. Only the user does this. */
+  paused?: boolean;
   /** Appended to the notes rather than replacing them. */
   note?: string;
 }
@@ -63,6 +65,8 @@ export interface ListStreamsOptions {
   projectId?: string;
   /** Only streams that are awake at this instant: no `wakeAt`, or one already passed. */
   awakeAt?: Date;
+  /** Leave out the streams the user paused. */
+  excludePaused?: boolean;
 }
 
 export interface LinkToStreamInput {
@@ -171,6 +175,7 @@ export async function listStreams(
   const statuses = options.statuses ?? OPEN_STREAM_STATUSES;
   if (statuses.length) conditions.push(inArray(workStreams.status, [...statuses]));
   if (options.projectId) conditions.push(eq(workStreams.projectId, options.projectId));
+  if (options.excludePaused) conditions.push(isNull(workStreams.pausedAt));
   if (options.awakeAt) {
     const awake = or(isNull(workStreams.wakeAt), lte(workStreams.wakeAt, options.awakeAt));
     if (awake) conditions.push(awake);
@@ -187,10 +192,15 @@ export async function listStreams(
   return rows.map((r) => ({ ...r, links: links.get(r.id) ?? [] }));
 }
 
+/**
+ * Applies a patch to a stream. Null when there is no such stream, or with
+ * `unlessPaused` when the user has paused it, even between the read and the write.
+ */
 export async function updateStream(
   db: Db,
   id: string,
   patch: UpdateStreamInput,
+  { unlessPaused = false }: { unlessPaused?: boolean } = {},
 ): Promise<WorkStream | null> {
   const [existing] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!existing) return null;
@@ -210,12 +220,20 @@ export async function updateStream(
       ...(patch.nextAction !== undefined ? { nextAction: patch.nextAction } : {}),
       ...(patch.waitingOn !== undefined ? { waitingOn: patch.waitingOn } : {}),
       ...(patch.wakeAt !== undefined ? { wakeAt: patch.wakeAt } : {}),
+      // Pausing a stream that is already paused keeps when it was first paused.
+      ...(patch.paused !== undefined
+        ? { pausedAt: patch.paused ? (existing.pausedAt ?? now) : null }
+        : {}),
       ...(patch.note ? { notes: appendNote(existing.notes, patch.note, now) } : {}),
       ...(closing && !existing.closedAt ? { closedAt: now } : {}),
       ...(reopening ? { closedAt: null } : {}),
       updatedAt: now,
     })
-    .where(eq(workStreams.id, id))
+    .where(
+      unlessPaused
+        ? and(eq(workStreams.id, id), isNull(workStreams.pausedAt))
+        : eq(workStreams.id, id),
+    )
     .returning();
   if (row && closing && !existing.closedAt) {
     await emitEvent(db, {
@@ -279,6 +297,16 @@ export async function streamExists(db: Db, id: string): Promise<boolean> {
     .from(workStreams)
     .where(eq(workStreams.id, id));
   return row !== undefined;
+}
+
+/** The stream a link belongs to, or null when there is no such link. */
+export async function streamOfLink(db: Db, linkId: string): Promise<WorkStream | null> {
+  const [row] = await db
+    .select({ stream: workStreams })
+    .from(workStreamLinks)
+    .innerJoin(workStreams, eq(workStreams.id, workStreamLinks.streamId))
+    .where(eq(workStreamLinks.id, linkId));
+  return row?.stream ?? null;
 }
 
 export async function unlinkFromStream(db: Db, linkId: string): Promise<boolean> {

@@ -55,6 +55,22 @@ export interface MonacoFileViewProps {
   side?: DiffSide;
 }
 
+/** Our line decorations in Monaco's terms, shared by the file and diff views. */
+export function monacoDecorations(
+  monaco: MonacoApi,
+  decorations: LineDecoration[] | undefined,
+): Monaco.editor.IModelDeltaDecoration[] {
+  return (decorations ?? []).map((d) => ({
+    range: new monaco.Range(d.startLine, 1, d.endLine, 1),
+    options: {
+      isWholeLine: true,
+      className: d.className,
+      linesDecorationsClassName: d.marginClassName,
+      hoverMessage: d.hoverMessage ? { value: d.hoverMessage } : undefined,
+    },
+  }));
+}
+
 /** One file, read-only, in Monaco. Size it with its parent: it fills it. */
 export function MonacoFileView(props: MonacoFileViewProps) {
   const state = useMonaco();
@@ -146,17 +162,7 @@ function FileEditor({
 
   useEffect(() => {
     if (!lineDecorations || !held) return;
-    lineDecorations.set(
-      (decorations ?? []).map((d) => ({
-        range: new monaco.Range(d.startLine, 1, d.endLine, 1),
-        options: {
-          isWholeLine: true,
-          className: d.className,
-          linesDecorationsClassName: d.marginClassName,
-          hoverMessage: d.hoverMessage ? { value: d.hoverMessage } : undefined,
-        },
-      })),
-    );
+    lineDecorations.set(monacoDecorations(monaco, decorations));
   }, [monaco, lineDecorations, held, decorations]);
 
   const placed = useMemo<PlacedZone[]>(

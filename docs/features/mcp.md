@@ -79,6 +79,9 @@ and can't be a custom header on either kind.
 
 ### Use it
 
+The Tool manager groups tools by where they come from: built-in, then one
+group per MCP server. Each group starts collapsed; click its name to open it. A
+group's header shows how many of its tools are set to auto-approve.
 The Tool manager sets two things per tool.
 
 How the tool is offered:
@@ -95,8 +98,8 @@ Whether it needs approval:
   waiting. **Approve** (`A`) and **Deny** (`D`) answer it, and **Arguments**
   shows what the tool was called with.
 - **Auto.** Runs without asking. **Always allow** on the approval bar sets
-  this for that tool. A group-level button auto-approves, or asks for, every
-  tool on a server.
+  this for that tool. A button at the top of each open MCP server group
+  auto-approves, or asks for, every tool on that server.
 
 A denied call is not retried or worked around.
 

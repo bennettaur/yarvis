@@ -198,6 +198,8 @@ describe("coverage from a run's reads", () => {
       "Test quality",
       "Complexity",
       "Comment quality",
+      "Observability",
+      "Code quality",
     ]);
     expect(coverage.laneGaps.every((g) => g.paths.join() === "src/core.ts")).toBe(true);
     // Each agent's reading: a whole 40 KB patch per Read.

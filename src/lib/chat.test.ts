@@ -28,4 +28,8 @@ describe("messageLabel", () => {
   it("shows a bare Telegram label when no sender info is present", () => {
     expect(messageLabel("user", { source: "telegram" })).toBe("Telegram");
   });
+
+  it("marks a message sent from the Chrome side panel", () => {
+    expect(messageLabel("user", { source: "browser" })).toBe("user · Chrome");
+  });
 });

@@ -24,19 +24,20 @@ a missing piece can be anywhere, tests and docs included.
    handled in every switch, a rename missed in some callers. Grep for the
    siblings and callers to prove it.
 3. Flag unfinished work: TODO/FIXME added by this PR on the main path, stubs,
-   placeholder values, commented-out code, error paths that silently do
-   nothing.
+   placeholder values, commented-out code, error paths left as an empty
+   placeholder.
 4. Flag drift only when it matters: a behaviour change the description doesn't
    mention and a reviewer wouldn't expect. Incidental refactors, renames and
    formatting near the change are not drift.
 5. Review comments that asked for a change in what the code does: flag one
    still unaddressed in the code.
 
-Only completeness and drift. Tests, performance, complexity and code comments
-have their own checks in the same report; don't report them here, even when a
-review comment raised them. A loop that queries once per item is performance,
-a docstring that says the wrong thing is comments, a weak test is tests —
-skip each of those, whoever asked for it.
+Only completeness and drift. Tests, performance, complexity, code comments,
+observability and code quality have their own checks in the same report; don't
+report them here, even when a review comment raised them. A loop that queries
+once per item is performance, a docstring that says the wrong thing is
+comments, a weak test is tests, a swallowed error is observability, a
+misleading name is quality — skip each of those, whoever asked for it.
 
 ## Output rules
 

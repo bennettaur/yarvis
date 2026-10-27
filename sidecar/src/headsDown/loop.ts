@@ -5,9 +5,10 @@ import { getDb } from "../db/client.ts";
 import type { AttentionItemRow, HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
 import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
+import { stopHeadsDown } from "./control.ts";
 import { PASS_TIMEOUT_MS, type PassResult, runPass } from "./pass.ts";
-import { getActiveRun } from "./service.ts";
-import { setWakeHandler } from "./wake.ts";
+import { getActiveRun, msUntilStop } from "./service.ts";
+import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
 
 /**
  * The heads-down loop: while a run is active, run a pass, sleep for as long as
@@ -47,6 +48,8 @@ async function readMinSleepMs(): Promise<number> {
 export interface HeadsDownLoop {
   stop: () => void;
   wake: () => void;
+  /** Re-reads the run's stop time and sleeps no later than it, without running a pass. */
+  reschedule: () => Promise<void>;
   /** Runs one cycle now and resolves when it is done, for tests. */
   cycle: () => Promise<void>;
 }
@@ -57,10 +60,22 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
   let running = false;
   let wakeRequested = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * When the loop means to look again, as epoch ms: what the last pass chose,
+   * or now when woken. The timer may be set sooner, for a stop time; kept
+   * apart so moving or clearing that stop time can go back to this.
+   */
+  let sleepUntil = 0;
 
-  const schedule = (ms: number) => {
+  const setTimer = (ms: number) => {
     clearTimeout(timer);
     if (!stopped) timer = deps.setTimer(() => void cycle(), ms);
+  };
+
+  /** Sleeps `ms`, or until the run's stop time when that comes first. */
+  const schedule = (ms: number, untilStop = Infinity) => {
+    sleepUntil = Date.now() + ms;
+    setTimer(Math.min(ms, untilStop));
   };
 
   const cycle = async (): Promise<void> => {
@@ -72,9 +87,12 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
     running = true;
     wakeRequested = false;
     let nextMs = IDLE_CHECK_MS;
+    let untilStop = Infinity;
     try {
       const run = await getActiveRun(db);
-      if (run && (await claimJob(db, LEASE_NAME, LEASE_MS))) {
+      if (run && msUntilStop(run) === 0) {
+        await stopHeadsDown(db);
+      } else if (run && !run.pausedAt && (await claimJob(db, LEASE_NAME, LEASE_MS))) {
         let status: "ok" | "error" = "ok";
         try {
           nextMs = (await deps.runPass(run)).sleepMinutes * 60_000;
@@ -87,11 +105,13 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
       }
       // Woken during the pass: something changed that the pass may not have seen.
       if (wakeRequested) nextMs = Math.min(nextMs, await deps.minSleepMs());
+      // Read again: the stop time may have changed while the pass ran.
+      untilStop = msUntilStop(await getActiveRun(db));
     } catch (e) {
       console.error("[heads-down] loop cycle failed:", e);
     } finally {
       running = false;
-      schedule(nextMs);
+      schedule(nextMs, untilStop);
     }
   };
 
@@ -100,12 +120,26 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
     else schedule(0);
   };
 
+  const reschedule = async () => {
+    // A cycle in flight reads the stop time again when it ends.
+    if (running || stopped) return;
+    try {
+      const untilStop = msUntilStop(await getActiveRun(db));
+      // Checked again: a cycle may have started while the run was read.
+      if (running || stopped) return;
+      setTimer(Math.min(Math.max(0, sleepUntil - Date.now()), untilStop));
+    } catch (e) {
+      console.error("[heads-down] rescheduling failed:", e);
+    }
+  };
+
   return {
     stop: () => {
       stopped = true;
       clearTimeout(timer);
     },
     wake,
+    reschedule,
     cycle,
   };
 }
@@ -120,6 +154,7 @@ export function startHeadsDownLoop(config: Config): () => void {
     setTimer: (fn, ms) => setTimeout(fn, ms),
   });
   setWakeHandler(loop.wake);
+  setRescheduleHandler(() => void loop.reschedule());
 
   // A workspace session raising attention (waiting on permission, finished)
   // is worth a look, but no more often than the shortest sleep. Only a
@@ -144,5 +179,6 @@ export function startHeadsDownLoop(config: Config): () => void {
     loop.stop();
     unsubscribe();
     setWakeHandler(null);
+    setRescheduleHandler(null);
   };
 }
