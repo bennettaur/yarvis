@@ -217,17 +217,21 @@ export async function markAttention(
 
 /**
  * Marks every pending item in a scope — a whole workspace, or one terminal
- * session — in a single request. Optimistic like `markAttention`.
+ * session — in a single request. Optimistic like `markAttention`. Marking read
+ * leaves questions pending, matching the server: seeing a question doesn't
+ * answer it.
  */
 export async function markAttentionScope(
   scope: AttentionScope,
   status: Exclude<AttentionStatus, "pending">,
 ): Promise<void> {
-  const next = snapshot.filter(
-    (i) =>
-      !(scope.workspaceId && i.workspaceId === scope.workspaceId) &&
-      !(scope.sessionKey && i.sessionKey === scope.sessionKey),
-  );
+  const next = snapshot.filter((i) => {
+    const inScope =
+      (scope.workspaceId && i.workspaceId === scope.workspaceId) ||
+      (scope.sessionKey && i.sessionKey === scope.sessionKey);
+    const staysPending = status === "read" && i.kind === "question";
+    return staysPending || !inScope;
+  });
   if (next.length !== snapshot.length) {
     snapshot = next;
     emit();
@@ -265,9 +269,19 @@ export function clearTargetsFor(
 ): ClearTargets {
   const sessionKeys = new Set<string>();
   const itemIds: string[] = [];
+  // A permission item stays until the prompt is answered. The terminal may not
+  // show the prompt while Yarvis holds it, so looking at the session is no sign
+  // it was handled, and the bell is how the user reaches it. The rest of that
+  // session's items clear one by one, since a session-wide clear would take it too.
+  const holdsPrompt = new Set(
+    items.filter((i) => i.kind === "permission" && i.sessionKey).map((i) => i.sessionKey),
+  );
   for (const item of items) {
+    // A question stays up until it is answered, even with its session on screen.
+    if (item.kind === "question") continue;
     if (isBacklogged(item.id) || !isInView(scope, item)) continue;
-    if (item.sessionKey) sessionKeys.add(item.sessionKey);
+    if (item.kind === "permission") continue;
+    if (item.sessionKey && !holdsPrompt.has(item.sessionKey)) sessionKeys.add(item.sessionKey);
     else itemIds.push(item.id);
   }
   return { sessionKeys: [...sessionKeys], itemIds };

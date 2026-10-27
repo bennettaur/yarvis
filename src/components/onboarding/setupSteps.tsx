@@ -392,7 +392,7 @@ export function CheckStep() {
 const OPTIONAL_FEATURES: { label: string; what: string; place: AppPlace }[] = [
   {
     label: "GitHub PRs and issues",
-    what: "Save a GitHub token.",
+    what: "Sign in with GitHub, or save a token.",
     place: { kind: "settings", tab: "credentials" },
   },
   {

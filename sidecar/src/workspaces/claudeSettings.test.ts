@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { ingestSchema } from "../attention/routes.ts";
-import { attentionHookCommand, buildClaudeSettings } from "./claudeSettings.ts";
+import {
+  agentSessionHookCommand,
+  attentionHookCommand,
+  buildClaudeSettings,
+  PERMISSION_HOOK_TIMEOUT_S,
+  permissionHookCommand,
+} from "./claudeSettings.ts";
 
 const WORKSPACE_ID = "11111111-1111-1111-1111-111111111111";
 
@@ -21,28 +27,28 @@ function payloadOf(command: string, env: Record<string, string> = {}): unknown {
 describe("attentionHookCommand", () => {
   it("emits a body that satisfies the ingest route's schema", () => {
     // The whole feature silently breaks if these two sides drift, so pin them.
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const parsed = ingestSchema.safeParse(payloadOf(command));
     expect(parsed.success).toBe(true);
     expect(parsed.success && parsed.data).toEqual({
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws-claude:${WORKSPACE_ID}`,
-      kind: "permission",
+      kind: "idle",
     });
   });
 
   it("reports the PTY session it runs in, so the item names the exact tab", () => {
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const payload = payloadOf(command, { YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p2` });
     expect(payload).toEqual({
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws:${WORKSPACE_ID}/t1/p2`,
-      kind: "permission",
+      kind: "idle",
     });
   });
 
   it("treats a hostile session key as data, not as shell to run", () => {
-    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "permission");
+    const command = attentionHookCommand(WORKSPACE_ID, `ws-claude:${WORKSPACE_ID}`, "idle");
     const payload = payloadOf(command, { YARVIS_SESSION_KEY: "$(echo pwned);id" }) as {
       sessionKey: string;
     };
@@ -79,14 +85,175 @@ describe("attentionHookCommand", () => {
   });
 });
 
+describe("permissionHookCommand", () => {
+  /** Runs the command under a real shell against a stand-in sidecar. */
+  async function runAgainst(
+    reply: (req: Request) => Response | Promise<Response>,
+    stdin: string,
+    env: Record<string, string> = {},
+  ) {
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: reply });
+    try {
+      const child = Bun.spawn(["sh", "-c", permissionHookCommand(WORKSPACE_ID)], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          YARVIS_SIDECAR_PORT: String(server.port),
+          YARVIS_ATTENTION_TOKEN: "scoped",
+          YARVIS_SESSION_KEY: `ws:${WORKSPACE_ID}/t1/p1`,
+          YARVIS_SESSION_TOKEN: "pty-token",
+          ...env,
+        },
+        stdin: new Blob([stdin]),
+        stdout: "pipe",
+      });
+      const stdout = await new Response(child.stdout).text();
+      return { stdout, exitCode: await child.exited };
+    } finally {
+      server.stop(true);
+    }
+  }
+
+  it("forwards Claude Code's stdin with the session's identity and prints the decision", async () => {
+    let seen: { headers: Headers; body: unknown } | null = null;
+    const decision = { hookSpecificOutput: { decision: { behavior: "allow" } } };
+    const { stdout, exitCode } = await runAgainst(
+      async (req) => {
+        seen = { headers: req.headers, body: await req.json() };
+        return Response.json(decision);
+      },
+      JSON.stringify({ tool_name: "Bash", tool_input: { command: "ls" } }),
+    );
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(decision);
+    expect(seen!.body).toEqual({ tool_name: "Bash", tool_input: { command: "ls" } });
+    expect(seen!.headers.get("authorization")).toBe("Bearer scoped");
+    expect(seen!.headers.get("x-yarvis-workspace-id")).toBe(WORKSPACE_ID);
+    expect(seen!.headers.get("x-yarvis-session-key")).toBe(`ws:${WORKSPACE_ID}/t1/p1`);
+    expect(seen!.headers.get("x-yarvis-session-token")).toBe("pty-token");
+  });
+
+  it("prints nothing and exits cleanly when the sidecar refuses", async () => {
+    // An error body on stdout would read to Claude Code as a malformed decision.
+    const { stdout, exitCode } = await runAgainst(
+      () => Response.json({ error: "nope" }, { status: 401 }),
+      "{}",
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe("");
+  });
+
+  for (const unset of ["YARVIS_SIDECAR_PORT", "YARVIS_SESSION_KEY", "YARVIS_SESSION_TOKEN"]) {
+    it(`prints nothing without ${unset}, without calling anything`, async () => {
+      let called = false;
+      const { stdout, exitCode } = await runAgainst(
+        () => {
+          called = true;
+          return Response.json({ hookSpecificOutput: { decision: { behavior: "allow" } } });
+        },
+        "{}",
+        { [unset]: "" },
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("");
+      expect(called).toBe(false);
+    });
+  }
+
+  it("stays inside Claude Code's timeout for the hook", () => {
+    const command = permissionHookCommand(WORKSPACE_ID);
+    const maxTime = Number(command.match(/-m (\d+)/)?.[1]);
+    expect(maxTime).toBeLessThan(PERMISSION_HOOK_TIMEOUT_S);
+  });
+});
+
+/** A request the registration hook made, as the sidecar would receive it. */
+interface CapturedRequest {
+  url: URL;
+  headers: Headers;
+  body: unknown;
+}
+
+/**
+ * Runs the registration hook in a real shell against a stand-in sidecar, with
+ * `hookInput` on stdin the way Claude Code delivers it.
+ */
+async function runRegistrationHook(
+  env: Record<string, string>,
+  hookInput: unknown,
+): Promise<{ requests: CapturedRequest[]; shellParent: number }> {
+  const requests: CapturedRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (req) => {
+      requests.push({ url: new URL(req.url), headers: req.headers, body: await req.json() });
+      return new Response(null, { status: 204 });
+    },
+  });
+  try {
+    const run = Bun.spawn(["sh", "-c", agentSessionHookCommand(WORKSPACE_ID)], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        YARVIS_SIDECAR_PORT: String(server.port),
+        YARVIS_ATTENTION_TOKEN: "tok",
+        YARVIS_SESSION_TOKEN: "session-tok",
+        ...env,
+      },
+      stdin: new Blob([JSON.stringify(hookInput)]),
+    });
+    expect(await run.exited).toBe(0);
+    // The shell's parent is this test process, which stands in for Claude.
+    return { requests, shellParent: process.pid };
+  } finally {
+    server.stop(true);
+  }
+}
+
+describe("agentSessionHookCommand", () => {
+  const hookInput = {
+    session_id: "d8cb83ea-8ef9-42b0-95b2-bf4602c282bc",
+    hook_event_name: "SessionStart",
+    source: "startup",
+    cwd: "/ws",
+  };
+
+  it("forwards Claude's hook input with its pid and the PTY it runs in", async () => {
+    const { requests, shellParent } = await runRegistrationHook(
+      { YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}` },
+      hookInput,
+    );
+    expect(requests).toHaveLength(1);
+    const [req] = requests;
+    expect(req!.url.pathname).toBe("/ingest/agent-session");
+    expect(req!.url.searchParams.get("workspaceId")).toBe(WORKSPACE_ID);
+    expect(req!.url.searchParams.get("pid")).toBe(String(shellParent));
+    expect(req!.headers.get("authorization")).toBe("Bearer tok");
+    expect(req!.headers.get("x-yarvis-session-key")).toBe(`ws-claude:${WORKSPACE_ID}`);
+    expect(req!.headers.get("x-yarvis-session-token")).toBe("session-tok");
+    expect(req!.body).toEqual(hookInput);
+  });
+
+  it("registers nothing outside a Yarvis PTY", async () => {
+    // A headless `claude -p` in the workspace has no prompt to deliver to.
+    const { requests } = await runRegistrationHook({}, hookInput);
+    expect(requests).toEqual([]);
+  });
+
+  it("refuses to embed a workspace id the shell would scan", () => {
+    expect(() => agentSessionHookCommand("w$(id)")).toThrow(/unsafe value/);
+  });
+});
+
 describe("buildClaudeSettings", () => {
-  it("writes the three attention hooks with the idle_prompt matcher on Notification", () => {
+  it("writes the attention and registration hooks, with idle_prompt on Notification", () => {
     const settings = buildClaudeSettings(WORKSPACE_ID) as {
       hooks: Record<string, { matcher?: string }[]>;
     };
     expect(Object.keys(settings.hooks).sort()).toEqual([
       "Notification",
       "PermissionRequest",
+      "SessionEnd",
+      "SessionStart",
       "Stop",
     ]);
     expect(settings.hooks.Notification![0]!.matcher).toBe("idle_prompt");
@@ -113,7 +280,32 @@ describe("buildClaudeSettings", () => {
       e.hooks.map((h) => h.command),
     );
     expect(commands).toContain("echo user-hook");
-    expect(commands.some((c) => c.includes("/ingest/attention"))).toBe(true);
+    expect(commands.some((c) => c.includes("/ingest/permission"))).toBe(true);
+  });
+
+  it("replaces the flag-only permission hook an earlier version wrote", () => {
+    const existing = {
+      hooks: {
+        PermissionRequest: [
+          {
+            hooks: [
+              {
+                type: "command",
+                // What an earlier version wrote: a flag-only post to the attention ingest.
+                command: `cat >/dev/null 2>&1; curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/attention" -d '{"workspaceId":"${WORKSPACE_ID}","kind":"permission"}' || true`,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const settings = buildClaudeSettings(WORKSPACE_ID, existing) as {
+      hooks: Record<string, { hooks: { command: string; timeout?: number }[] }[]>;
+    };
+    expect(settings.hooks.PermissionRequest).toHaveLength(1);
+    const [hook] = settings.hooks.PermissionRequest![0]!.hooks;
+    expect(hook!.command).toContain("/ingest/permission");
+    expect(hook!.timeout).toBe(PERMISSION_HOOK_TIMEOUT_S);
   });
 
   it("is idempotent: re-applying does not stack duplicate Yarvis hooks", () => {
@@ -124,6 +316,8 @@ describe("buildClaudeSettings", () => {
     expect(twice.hooks.PermissionRequest).toHaveLength(1);
     expect(twice.hooks.Notification).toHaveLength(1);
     expect(twice.hooks.Stop).toHaveLength(1);
+    expect(twice.hooks.SessionStart).toHaveLength(1);
+    expect(twice.hooks.SessionEnd).toHaveLength(1);
   });
 
   it("strips the skills/agents paths an earlier version wrote", () => {

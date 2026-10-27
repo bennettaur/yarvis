@@ -159,6 +159,13 @@ const loads = new Map<string, Promise<ReviewComment[]>>();
  *  `useSyncExternalStore` requires — a fresh `[]` per read would loop. */
 const NO_COMMENTS: ReviewComment[] = [];
 
+/**
+ * How often an open list re-reads the sidecar. The agent session can resolve
+ * comments over MCP while the user watches, and it runs inside this window, so
+ * a focus event would never come to prompt a refresh.
+ */
+const REFRESH_INTERVAL_MS = 5000;
+
 function publish(workspaceId: string, comments: ReviewComment[]): void {
   byWorkspace.set(workspaceId, comments);
   for (const listener of listeners.get(workspaceId) ?? []) listener();
@@ -212,15 +219,21 @@ export function useReviewComments(workspaceId: string): {
 
   useEffect(() => {
     let live = true;
-    loadInto(workspaceId)
-      .then(() => {
-        if (live) setError(null);
-      })
-      .catch((e) => {
-        if (live) setError(e instanceof Error ? e.message : String(e));
-      });
+    const load = () =>
+      loadInto(workspaceId)
+        .then(() => {
+          if (live) setError(null);
+        })
+        .catch((e) => {
+          if (live) setError(e instanceof Error ? e.message : String(e));
+        });
+    void load();
+    const timer = setInterval(() => {
+      if (!document.hidden) void load();
+    }, REFRESH_INTERVAL_MS);
     return () => {
       live = false;
+      clearInterval(timer);
     };
   }, [workspaceId]);
 

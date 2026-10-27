@@ -18,6 +18,11 @@
     "medium": null,
     "max": null
   },
+  "decisionModel": {
+    "model": null,
+    "autoApproveTools": false,
+    "autoApproveHeadsDown": false
+  },
   "githubPrConfig": {
     "reviewQuery": "is:open is:pr review-requested:@me",
     "reviewingLookbackDays": 30
@@ -39,6 +44,15 @@
   "jobConfig": {
     "ccDigestEnabled": false,
     "ccDigestProjectDirs": []
+  },
+  "headsDown": {
+    "minSleepMinutes": 5,
+    "maxSleepMinutes": 120,
+    "idleSleepMinutes": 60,
+    "workingHours": { "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00" },
+    "userAwayAfterMinutes": 120,
+    "provider": null,
+    "model": null
   },
   "voiceConfig": {
     "sttProvider": "",

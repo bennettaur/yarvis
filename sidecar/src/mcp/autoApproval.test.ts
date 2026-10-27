@@ -1,9 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import postgres from "postgres";
 import { z } from "zod";
 import { syncBuiltins } from "../agentTools/registry.ts";
 import { setToolSettings, syncToolSet } from "../agentTools/store.ts";
+import type { ToolCallReviewer } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
@@ -92,6 +93,7 @@ afterAll(async () => {
 async function assemble(
   approval?: Parameters<typeof assembleAgentToolset>[0]["approval"],
   honourStandingConsent = true,
+  reviewer?: ToolCallReviewer,
 ) {
   return assembleAgentToolset({
     config,
@@ -100,6 +102,7 @@ async function assemble(
     builtinTools: {},
     approval,
     honourStandingConsent,
+    reviewer,
     liveTools,
   });
 }
@@ -203,5 +206,157 @@ describe("auto-approved MCP tools", () => {
     });
     await tools[modelToolKey(AUTO_ID)]?.execute?.({}, executeOptions);
     expect(asked).toEqual([AUTO_ID]);
+  });
+});
+
+describe("auto mode's decision model", () => {
+  it("runs a call it approves without prompting", async () => {
+    const reviewed: string[] = [];
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      { onRequest: async ({ id }) => void asked.push(id) },
+      true,
+      async ({ id }) => {
+        reviewed.push(id);
+        return true;
+      },
+    );
+
+    const result = await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
+    expect(result).toEqual({ ran: "write_page" });
+    expect(reviewed).toEqual([ASK_ID]);
+    expect(asked).toEqual([]);
+  });
+
+  it("asks the user when it does not approve", async () => {
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, false);
+        },
+      },
+      true,
+      async () => false,
+    );
+
+    const result = await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
+    expect(result).toMatchObject({ denied: true });
+    expect(asked).toEqual([ASK_ID]);
+  });
+
+  it("is not asked on a turn the user didn't proof-read", async () => {
+    const reviewed: string[] = [];
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, false);
+        },
+      },
+      false,
+      async ({ id }) => {
+        reviewed.push(id);
+        return true;
+      },
+    );
+
+    await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
+    expect(reviewed).toEqual([]);
+    expect(asked).toEqual([ASK_ID]);
+  });
+
+  // The built-ins that ask are the ones whose answer must come from the user.
+  it("never reviews a built-in that has to be confirmed", async () => {
+    const reviewed: string[] = [];
+    const asked: string[] = [];
+    const { tools } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: `sess-${crypto.randomUUID()}`,
+      builtinTools: { register_repo: liveTool("register_repo") as unknown as Tool },
+      confirmBuiltins: new Set(["register_repo"]),
+      approval: {
+        onRequest: async ({ toolCallId, id }) => {
+          asked.push(id);
+          resolveApproval(toolCallId, false);
+        },
+      },
+      reviewer: async ({ id }) => {
+        reviewed.push(id);
+        return true;
+      },
+      liveTools: {},
+    });
+
+    await tools.register_repo?.execute?.({}, executeOptions);
+    expect(reviewed).toEqual([]);
+    expect(asked).toEqual(["register_repo"]);
+  });
+
+  it("neither runs the call nor asks when the turn is stopped during the review", async () => {
+    const controller = new AbortController();
+    const asked: string[] = [];
+    const { tools } = await assemble(
+      { signal: controller.signal, onRequest: async ({ id }) => void asked.push(id) },
+      true,
+      async () => {
+        controller.abort();
+        return true;
+      },
+    );
+
+    const result = await tools[modelToolKey(ASK_ID)]?.execute?.({}, executeOptions);
+    expect(result).toMatchObject({ denied: true });
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("the reason the model gives for a call", () => {
+  it("reaches the reviewer and the approval prompt, and never the tool", async () => {
+    let ran: unknown;
+    const tools = {
+      [ASK_ID]: tool({
+        description: "write_page",
+        inputSchema: z.object({ title: z.string() }),
+        execute: async (args) => {
+          ran = args;
+          return { ok: true };
+        },
+      }) as unknown as McpClientTool,
+    };
+    const requests: { args: unknown; reason: string | null }[] = [];
+    const reviewed: (string | null | undefined)[] = [];
+    const reviewer: ToolCallReviewer = async (call) => {
+      reviewed.push(call.reason);
+      return false;
+    };
+    const { tools: assembled } = await assembleAgentToolset({
+      config,
+      db,
+      sessionId: "s-reason",
+      builtinTools: {},
+      liveTools: tools,
+      reviewer,
+      approval: {
+        onRequest: async ({ toolCallId, args, reason }) => {
+          requests.push({ args, reason });
+          resolveApproval(toolCallId, true);
+        },
+      },
+    });
+
+    await (assembled[modelToolKey(ASK_ID)] as Tool).execute!(
+      { title: "notes", callReason: "The user asked for their notes in Notion" },
+      { toolCallId: "reason-1", messages: [] } as never,
+    );
+
+    expect(reviewed).toEqual(["The user asked for their notes in Notion"]);
+    expect(requests).toEqual([
+      { args: { title: "notes" }, reason: "The user asked for their notes in Notion" },
+    ]);
+    expect(ran).toEqual({ title: "notes" });
   });
 });
