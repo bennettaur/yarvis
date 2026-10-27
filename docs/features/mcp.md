@@ -112,6 +112,16 @@ with the **Ollama** protocol and the server's root URL (for example
 its model `decision`. Only an Ollama on this machine works; one elsewhere on
 your network is refused like any other private address.
 
+System One models (such as `nimble` on Ollama) work too: pick the **System
+One** protocol instead, with the server's root URL (Yarvis adds
+`/v1/systemone`), for example `http://localhost:11434` for a local Ollama or
+`https://ollama.com` with your API key for a cloud model. These models are
+tagged `decision` for you and are never offered for chat. A System One model
+answers each of the three questions below with how likely the answer is yes,
+and a call runs without a prompt only when it is at least 80% sure the call
+matches your request and is neither risky nor destructive. It gives no written
+reason, so it is a weaker check than a model that explains itself.
+
 Before any tool set to **Ask** raises the approval bar, the decision model reads
 your message this turn, the recent conversation (tool results included, and
 the assistant's reasoning from earlier steps where the provider returns it),

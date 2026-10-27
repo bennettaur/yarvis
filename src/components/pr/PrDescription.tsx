@@ -2,40 +2,22 @@ import { usePrDetail } from "../../lib/pr/cache";
 import type { PrRef, ReviewThread } from "../../lib/pr/types";
 import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
+import { ThreadView } from "./ThreadView";
+import { type ThreadActions, useThreadActions } from "./useThreadActions";
 
-/** One review thread rendered as a card. Reused for inline diff threads too. */
-export function ThreadCard({ thread }: { thread: ReviewThread }) {
-  return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-      <div className="mb-2 flex items-center gap-2 text-xs">
-        <span className="font-mono text-zinc-400">
-          {thread.path ?? "(general)"}
-          {thread.line != null ? `:${thread.line}` : ""}
-        </span>
-        <span className={thread.isResolved ? "text-emerald-500" : "text-amber-500"}>
-          {thread.isResolved ? "resolved" : "open"}
-        </span>
-      </div>
-      <div className="space-y-2">
-        {thread.comments.map((cm, j) => (
-          <div key={j}>
-            <div className="text-xs font-medium text-zinc-400">{cm.author}</div>
-            <Markdown allowImages>{cm.body}</Markdown>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+/** Stable across renders, so the thread actions don't recompute while loading. */
+const NO_THREADS: ReviewThread[] = [];
 
-function ThreadsSection({ threads }: { threads: ReviewThread[] }) {
+function ThreadsSection({ threads, actions }: { threads: ReviewThread[]; actions: ThreadActions }) {
   if (threads.length === 0) {
     return <p className="text-sm text-zinc-600">No general comments.</p>;
   }
   return (
     <div className="space-y-3">
       {threads.map((t, i) => (
-        <ThreadCard key={i} thread={t} />
+        // A provider can leave a thread's id off (Azure does on some threads),
+        // and then its position stands in for it.
+        <ThreadView key={t.id || `at-${i}`} showLocation {...actions.viewProps(t)} />
       ))}
     </div>
   );
@@ -43,16 +25,19 @@ function ThreadsSection({ threads }: { threads: ReviewThread[] }) {
 
 /**
  * A PR's description (markdown body) together with the review threads that
- * can't be anchored inline in the diff — general PR comments and threads with
- * no right-side line. File/line threads render beside their diff line instead.
+ * can't be anchored inline in the diff — general PR comments and threads the
+ * provider can no longer place on a line. File/line threads render beside
+ * their diff line instead.
  */
 export default function PrDescription({ prRef }: { prRef: PrRef }) {
   const { data, error, loading } = usePrDetail(prRef);
+  const threads = data?.reviewThreads ?? NO_THREADS;
+  const actions = useThreadActions(prRef, threads);
 
   if (error) return <p className="text-sm text-red-400">{error}</p>;
   if (loading || !data) return <LoadingIndicator />;
 
-  const general = data.reviewThreads.filter((t) => t.path == null || t.line == null);
+  const general = threads.filter((t) => t.path == null || t.line == null);
 
   return (
     <div className="space-y-5">
@@ -68,7 +53,12 @@ export default function PrDescription({ prRef }: { prRef: PrRef }) {
       </section>
       <section>
         <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Comments</h3>
-        <ThreadsSection threads={general} />
+        <ThreadsSection threads={general} actions={actions} />
+        {data.reviewThreadsTruncated && (
+          <p className="mt-2 text-xs text-zinc-500">
+            Not every comment thread could be loaded. The rest are on the provider's site.
+          </p>
+        )}
       </section>
     </div>
   );

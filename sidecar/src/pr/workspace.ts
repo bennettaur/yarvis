@@ -31,7 +31,7 @@ import type { PrRef } from "./types.ts";
 export class PrWorkspaceRefusal extends Error {}
 
 /** The locator shape the workspace lookups use, from a PR ref. */
-function locatorForRef(ref: PrRef): PrLocator {
+export function locatorForRef(ref: PrRef): PrLocator {
   return ref.provider === "github"
     ? { provider: "github", owner: ref.owner, repo: ref.repo, number: ref.number }
     : {
@@ -54,6 +54,13 @@ export interface PrWorkspaceResult {
 export interface PrWorkspaceOptions {
   /** Injectable so tests can assert the kick-off without running git. */
   kickOff?: (db: Db, workspaceId: string) => void;
+  /**
+   * Work for the new workspace's first session, seeded as its brief so the agent
+   * starts on it once provisioning finishes. Only a workspace created by this
+   * call gets it: one that already existed is returned untouched, and the caller
+   * decides what to do with it.
+   */
+  brief?: string;
 }
 
 /** Workspace name for a PR, e.g. `PR #42 · Rename the API`. The title is bounded
@@ -84,7 +91,7 @@ export async function startWorkspaceForPr(
   db: Db,
   config: Config,
   source: PrCodeSource,
-  { kickOff = startKickOff }: PrWorkspaceOptions = {},
+  { kickOff = startKickOff, brief }: PrWorkspaceOptions = {},
 ): Promise<PrWorkspaceResult> {
   const locator = locatorForRef(source.ref);
 
@@ -124,14 +131,17 @@ export async function startWorkspaceForPr(
     name: workspaceName(locator.number, detail.title),
     repoIds: [repo.id],
     existingBranches: { [repo.id]: detail.headRef },
+    brief,
   });
 
-  // No pending prompt: the workspace opens on a session with nothing typed
-  // into it. Provisioning is all the kick-off does here, and the frontend
-  // starts the agent when it opens a provisioned workspace. That also means
-  // `resumeKickOffs` won't re-drive this one after a sidecar restart — it
-  // selects on a pending prompt — so an interrupted provision is left to the
-  // poller's orphan sweep and the workspace view's retry button.
+  // Without a brief there is no pending prompt: the workspace opens on a
+  // session with nothing typed into it. Provisioning is all the kick-off does
+  // then, and the frontend starts the agent when it opens a provisioned
+  // workspace. That also means `resumeKickOffs` won't re-drive this one after a
+  // sidecar restart — it selects on a pending prompt — so an interrupted
+  // provision is left to the poller's orphan sweep and the workspace view's
+  // retry button. With a brief, provisioning ends by launching the agent on it,
+  // exactly as an issue's "Start work" does.
   kickOff(db, workspace.id);
 
   return { workspaceId: workspace.id, name: workspace.name, existing: false };

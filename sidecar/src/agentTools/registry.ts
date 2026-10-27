@@ -32,6 +32,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   tasks: "always",
   memory: "always",
   attention: "always",
+  scheduledTasks: "always",
   // Always on, since `wait_for_answer` has to be reachable the moment
   // `ask_user` comes back pending.
   questions: "always",
@@ -50,6 +51,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   githubIssues: "search",
   azureBoards: "search",
   prReview: "search",
+  mergeReview: "search",
   calendar: "search",
   alarms: "search",
   browser: "search",

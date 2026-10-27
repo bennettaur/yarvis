@@ -23,7 +23,7 @@ setup guide, a tour of the app, and Ask Yarvis.
 | Cmd+F | Find on page |
 | Cmd+G / Cmd+Shift+G | Next / previous match, while Find is open |
 
-Alarms, Jobs, Sessions, Dashboard and Settings have no number. Click them, or
+Review, Alarms, Jobs, Sessions, Dashboard and Settings have no number. Click them, or
 cycle to them with Cmd+Shift+].
 
 **Find on page** tints every match and picks out the current one. Enter and
@@ -46,6 +46,21 @@ scrollback that has scrolled off screen are not searched.
 
 These use Cmd only, so Ctrl+D, Ctrl+T and Ctrl+W still reach the shell. See
 [Terminals](terminals.md).
+
+## Review
+
+| Keys | Does |
+| --- | --- |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab on the focused side |
+| Cmd+Option+→ / Cmd+Option+← | Next / previous tab, the same way |
+| Cmd+W | Close the tab |
+| Cmd+\ | Move the tab to the other side, splitting the view if it isn't yet |
+| Option+J / Option+K | Open the next / previous changed file of the PR in front |
+| F12 or Cmd+click | Go to the definition of the name under the cursor, in a diff or file tab |
+| Shift+F12 | Find references to it |
+
+Cmd+1 … Cmd+9 and Cmd+Shift+] / [ still move between the app's views, which is
+why tabs cycle on other keys here. See [Review workspaces](review-workspaces.md).
 
 ## Chat and approvals
 

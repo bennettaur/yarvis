@@ -26,6 +26,15 @@ import { createSession, getMessages, listSessions, rewindToMessage } from "./ser
 // imports it from here) keeps passing and callers have one import surface.
 export { buildScreenContextMessage } from "./agent.ts";
 
+/**
+ * A turn can send nothing for minutes: a slow tool, an approval nobody has
+ * answered yet, a model thinking without streaming its reasoning. Bun closes a
+ * socket that is silent for its `idleTimeout` (255s, `server.ts`), so the
+ * stream pings well inside that. The cost is that the idle timeout no longer
+ * ends a turn that hangs forever; only the user's Stop does.
+ */
+const HEARTBEAT_MS = 25_000;
+
 const chatSchema = z.object({
   sessionId: z.string().uuid(),
   message: z.string().min(1),
@@ -161,73 +170,100 @@ export function createChatRoutes(config: Config): Hono {
         return writeChain;
       };
 
-      // The agent yields delta/attention/error/done events; map each onto the
-      // SSE wire protocol the frontend consumes. `done.text` is ignored here
-      // because the deltas already carried the full reply to the client.
-      for await (const event of runAgentTurn({
-        config,
-        db: dbh,
-        model: chatModel,
-        sessionId,
-        message,
-        context,
-        userMetadata: source ? { source } : undefined,
-        serverNames,
-        providerOptions,
-        budget,
-        // Cancel the upstream call if the client disconnects.
-        signal: c.req.raw.signal,
-        // This surface holds a live channel to the user, so it can ask for MCP
-        // tool approval; the answer comes back on POST /approvals/:toolCallId.
-        approval: {
+      const heartbeat = setInterval(() => void safeWrite({ type: "ping" }), HEARTBEAT_MS);
+
+      const startedAt = Date.now();
+      let lastEvent = { type: "start", at: startedAt };
+      // The client going away is either the user pressing Stop or the
+      // connection dropping, and the sidecar can't tell which. Log it either
+      // way, so a turn that failed with only a browser "Load failed" leaves
+      // something to match it against.
+      const onDisconnect = () => {
+        const now = Date.now();
+        const turnSeconds = Math.round((now - startedAt) / 1000);
+        const quietSeconds = Math.round((now - lastEvent.at) / 1000);
+        console.warn(
+          `[chat] client closed the stream mid-turn (a Stop or a dropped connection) session=${sessionId} after=${turnSeconds}s lastEvent=${lastEvent.type} ${quietSeconds}s earlier`,
+        );
+      };
+      c.req.raw.signal.addEventListener("abort", onDisconnect, { once: true });
+
+      try {
+        // The agent yields delta/attention/error/done events; map each onto the
+        // SSE wire protocol the frontend consumes. `done.text` is ignored here
+        // because the deltas already carried the full reply to the client.
+        for await (const event of runAgentTurn({
+          config,
+          db: dbh,
+          model: chatModel,
+          modelRef: { provider, model },
+          sessionId,
+          message,
+          context,
+          userMetadata: source ? { source } : undefined,
+          serverNames,
+          providerOptions,
+          budget,
+          // Cancel the upstream call if the client disconnects.
           signal: c.req.raw.signal,
-          onRequest: async ({ toolCallId, id, args, reason }) => {
-            const [, serverId = "", ...rest] = id.split(":");
-            await safeWrite({
-              type: "tool_approval_request",
-              id: toolCallId,
-              // The registry id, so the client can offer "always allow" for
-              // this tool without having to reassemble it from the parts.
-              toolId: id,
-              name: rest.join(":"),
-              server: serverNames.get(serverId) ?? serverId,
-              args,
-              reason,
-            });
+          // This surface holds a live channel to the user, so it can ask for MCP
+          // tool approval; the answer comes back on POST /approvals/:toolCallId.
+          approval: {
+            signal: c.req.raw.signal,
+            onRequest: async ({ toolCallId, id, args, reason }) => {
+              const [, serverId = "", ...rest] = id.split(":");
+              await safeWrite({
+                type: "tool_approval_request",
+                id: toolCallId,
+                // The registry id, so the client can offer "always allow" for
+                // this tool without having to reassemble it from the parts.
+                toolId: id,
+                name: rest.join(":"),
+                server: serverNames.get(serverId) ?? serverId,
+                args,
+                reason,
+              });
+            },
           },
-        },
-      })) {
-        if (event.type === "delta") {
-          await safeWrite({ type: "delta", text: event.text });
-        } else if (event.type === "reasoning") {
-          await safeWrite({ type: "reasoning", text: event.text });
-        } else if (event.type === "tool_call") {
-          await safeWrite({
-            type: "tool_call",
-            id: event.id,
-            name: event.name,
-            server: event.server,
-            args: event.args,
-          });
-        } else if (event.type === "tool_result") {
-          await safeWrite({
-            type: "tool_result",
-            id: event.id,
-            status: event.status,
-            result: event.result,
-            durationMs: event.durationMs,
-          });
-        } else if (event.type === "attention") {
-          await safeWrite({ type: "attention", reason: event.reason });
-        } else if (event.type === "error") {
-          await safeWrite({ type: "error", message: event.message, detail: event.detail });
-        } else if (event.type === "done") {
-          await safeWrite({
-            type: "done",
-            finishReason: event.finishReason,
-            steps: event.steps,
-          });
+        })) {
+          lastEvent = { type: event.type, at: Date.now() };
+          if (event.type === "delta") {
+            await safeWrite({ type: "delta", text: event.text });
+          } else if (event.type === "reasoning") {
+            await safeWrite({ type: "reasoning", text: event.text });
+          } else if (event.type === "tool_call") {
+            await safeWrite({
+              type: "tool_call",
+              id: event.id,
+              name: event.name,
+              server: event.server,
+              args: event.args,
+            });
+          } else if (event.type === "tool_result") {
+            await safeWrite({
+              type: "tool_result",
+              id: event.id,
+              status: event.status,
+              result: event.result,
+              durationMs: event.durationMs,
+            });
+          } else if (event.type === "attention") {
+            await safeWrite({ type: "attention", reason: event.reason });
+          } else if (event.type === "error") {
+            await safeWrite({ type: "error", message: event.message, detail: event.detail });
+          } else if (event.type === "done") {
+            await safeWrite({
+              type: "done",
+              finishReason: event.finishReason,
+              steps: event.steps,
+            });
+          }
         }
+      } finally {
+        clearInterval(heartbeat);
+        c.req.raw.signal.removeEventListener("abort", onDisconnect);
+        // A ping queued just before the turn ended settles before the stream closes.
+        await writeChain;
       }
     });
   });

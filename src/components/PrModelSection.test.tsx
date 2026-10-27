@@ -13,8 +13,11 @@ const PROVIDERS = [
 ];
 
 let config: Record<string, unknown> = { guide: null, ask: null };
+let verification: Record<string, unknown> = { model: "sonnet", maxBudgetUsd: 2 };
+const REREVIEW_DEFAULTS = { model: "sonnet", maxBudgetUsd: 1, autoStart: false };
+let rereview: Record<string, unknown> = { ...REREVIEW_DEFAULTS };
 /** Requests the section made, so a test can assert what it wrote. */
-const calls: { method: string; body?: string }[] = [];
+const calls: { url: string; method: string; body?: string }[] = [];
 /** When set, the next PATCH answers with this status instead of succeeding. */
 let nextPatchStatus: number | null = null;
 
@@ -29,9 +32,24 @@ mock.module("../lib/api", () => ({
   ...actualApi,
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
-    calls.push({ method, body: init.body as string | undefined });
+    calls.push({ url, method, body: init.body as string | undefined });
     if (url.startsWith("/api/chat/providers")) {
       return new Response(JSON.stringify(PROVIDERS), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/api/pr-models/verification") {
+      if (method === "PATCH")
+        verification = { ...verification, ...JSON.parse(init.body as string) };
+      return new Response(JSON.stringify(verification), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/api/pr-models/rereview") {
+      if (method === "PATCH") rereview = { ...rereview, ...JSON.parse(init.body as string) };
+      return new Response(JSON.stringify(rereview), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -59,7 +77,18 @@ afterEach(() => {
   calls.length = 0;
   nextPatchStatus = null;
   config = { guide: null, ask: null };
+  verification = { model: "sonnet", maxBudgetUsd: 2 };
+  rereview = { ...REREVIEW_DEFAULTS };
 });
+
+/** Sets a form control's value the way React notices, then fires `event`. */
+function enter(el: HTMLInputElement | HTMLSelectElement, value: string, event: string) {
+  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement : HTMLInputElement;
+  Object.getOwnPropertyDescriptor(proto.prototype, "value")?.set?.call(el, value);
+  el.dispatchEvent(new Event(event, { bubbles: true }));
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("PrModelSection", () => {
   it("shows every feature defaulting to the chat model", async () => {
@@ -103,5 +132,76 @@ describe("PrModelSection", () => {
     expect(mounted.host.textContent).toContain("failed");
     // Reverted to unset rather than showing the picked provider as if it saved.
     expect((mounted.host.querySelectorAll("select")[0] as HTMLSelectElement).value).toBe("");
+  });
+
+  it("saves the verification report's model and budget", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).toContain("Verification report");
+
+    const model = mounted.host.querySelector(
+      '[aria-label="Verification report model"]',
+    ) as HTMLSelectElement;
+    expect(model.value).toBe("sonnet");
+    enter(model, "opus", "change");
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      '[aria-label="Verification report budget in US dollars"]',
+    ) as HTMLInputElement;
+    enter(budget, "0.75", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 0.75 }]);
+  });
+
+  it("saves the What's changed summary's own budget and auto-start", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      `[aria-label="What's changed budget in US dollars"]`,
+    ) as HTMLInputElement;
+    expect(budget.value).toBe("1");
+    enter(budget, "0.5", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const auto = mounted.host.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(auto.checked).toBe(false);
+    auto.click();
+    await settle();
+
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/rereview" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ maxBudgetUsd: 0.5 }, { autoStart: true }]);
+    expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
+      false,
+    );
+  });
+
+  it("refuses a budget out of range without saving it", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      '[aria-label="Verification report budget in US dollars"]',
+    ) as HTMLInputElement;
+    enter(budget, "500", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+
+    expect(mounted.host.textContent).toContain("The budget must be between");
+    expect(budget.value).toBe("2");
+    expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
+      false,
+    );
   });
 });

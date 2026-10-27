@@ -5,6 +5,7 @@ import type { PrDetail, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
 import { prFile as file, setPrFiles } from "../../test/prFiles";
 import { mountForInteraction, renderToHtml } from "../../test/render";
+import { reviewThread } from "../../test/reviewThread";
 import { JUMP_TO_FILE_EVENT, prFileAnchorId } from "./shared";
 
 // Imported after the shared stub so its usePrFiles mock is in place.
@@ -84,16 +85,13 @@ describe("PrFileList comment counts", () => {
     path: string | null,
     commentCount: number,
     { isResolved = false, line = 1 as number | null } = {},
-  ): ReviewThread => ({
-    path,
-    line,
-    isResolved,
-    comments: Array.from({ length: commentCount }, () => ({
-      author: "octocat",
-      body: "hm",
-      createdAt: "2026-01-01T00:00:00Z",
-    })),
-  });
+  ): ReviewThread =>
+    reviewThread({
+      path,
+      line,
+      isResolved,
+      bodies: Array.from({ length: commentCount }, () => "hm"),
+    });
 
   const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
     number: 1,
@@ -109,6 +107,7 @@ describe("PrFileList comment counts", () => {
     additions: 0,
     deletions: 0,
     mergeable: "MERGEABLE",
+    hasConflicts: false,
     mergeMethods: [],
     autoMergeEnabled: false,
     canEnableAutoMerge: false,

@@ -6,6 +6,7 @@ import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { setPrFileContent } from "../../test/prFiles";
 import { renderToHtml, textOf } from "../../test/render";
+import { reviewThread } from "../../test/reviewThread";
 import { DiffBody } from "./PrFileDiffs";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -39,18 +40,17 @@ describe("DiffBody comment-container rendering", () => {
   // the negative assertions below pass for the wrong reason.
   const CONTAINER_MARKER = "space-y-2 px-3 py-2 font-sans";
 
-  // Deleted rows carry no right-side line number, so the empty comment
-  // container must not render under them — otherwise its vertical padding
-  // shows up as a blank gap between consecutive removed lines.
+  // A deleted row can take an old-side comment, but with nothing on it the
+  // container must not render — otherwise its vertical padding shows up as a
+  // blank gap between consecutive removed lines.
   it("renders no comment container under deleted lines when there are no threads", async () => {
     const patch = ["@@ -1,3 +1,1 @@", "-a", "-b", " c"].join("\n");
     const html = await render(patch);
     expect(html).not.toContain(CONTAINER_MARKER);
   });
 
-  // Hunk headers also carry no right-side line number and must stay gap-free,
-  // exactly like deleted lines — the guard keys off the missing line, not the
-  // row kind.
+  // Every row, whichever side its line is on, stays gap-free until something
+  // hangs below it; hunk headers carry no line on either side at all.
   it("renders no comment container under added lines or hunk headers absent threads", async () => {
     const html = await render(["@@ -1,0 +1,2 @@", "+a", "+b"].join("\n"));
     expect(html).not.toContain(CONTAINER_MARKER);
@@ -71,15 +71,31 @@ describe("DiffBody comment-container rendering", () => {
   // The other half of the guard: a real thread on a commentable line must still
   // render its container, so the fix can't regress by suppressing every one.
   it("renders the comment container on a line that has a thread", async () => {
-    const thread: ReviewThread = {
-      path: file.filename,
-      line: 2,
-      isResolved: false,
-      comments: [{ author: "octocat", body: "needs a guard", createdAt: "" }],
-    };
+    const thread = reviewThread({ path: file.filename, line: 2, bodies: ["needs a guard"] });
     const html = await render(["@@ -1,2 +1,2 @@", " a", "+b"].join("\n"), [thread]);
     expect(html).toContain(CONTAINER_MARKER);
     expect(html).toContain("needs a guard");
+  });
+
+  // A deleted line exists only in the old file, so a thread left on it is
+  // anchored by the old line number — which the unified view must still place.
+  it("shows a thread on a deleted line, by its old line number", async () => {
+    const thread = reviewThread({
+      path: file.filename,
+      line: 2,
+      side: "LEFT",
+      bodies: ["why remove this?"],
+    });
+    const html = await render(["@@ -1,2 +1,1 @@", " a", "-b"].join("\n"), [thread]);
+    expect(html).toContain("why remove this?");
+    expect(html).toContain("line 2 (old)");
+  });
+
+  it("does not show an old-side thread on the new line with the same number", async () => {
+    const thread = reviewThread({ path: file.filename, line: 2, side: "LEFT", bodies: ["old"] });
+    // New line 2 exists, but old line 2 does not: the hunk only adds.
+    const html = await render(["@@ -1,1 +1,2 @@", " a", "+b"].join("\n"), [thread]);
+    expect(html).not.toContain(CONTAINER_MARKER);
   });
 });
 

@@ -69,6 +69,9 @@ bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
 bun run --cwd sidecar db:migrate   # apply sidecar DB migrations
+bun run verify:collect             # facts for a PR's verification report;
+                                    #   the /verify-pr skill runs it and
+                                    #   verify:report, which posts the report
 
 bun run typecheck                  # frontend tsc --noEmit
 bun run sidecar:typecheck          # sidecar tsc --noEmit
@@ -93,7 +96,12 @@ sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
 trailing comment. `nightly.yml`
-and `codeql.yml` follow neither convention yet. A pre-commit
+and `codeql.yml` follow neither convention yet. `verify.yml` is the one
+workflow that writes: it runs on PR comments, as the default branch's copy,
+checks out no PR code, and acts through the yarvis GitHub App to set the
+verification status, approve and turn on auto-merge. Keep it that way, since
+it holds write access on a public repo; see `docs/development.md` ("Verifying a
+PR for merge"). A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
@@ -242,7 +250,8 @@ back to ad-hoc.
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
   because a transcript can be misheard or picked up from the room. A surface
   that can't prompt gets those tools dropped rather than run unattended —
-  silently doing the irreversible thing is the one unacceptable outcome.
+  silently doing the irreversible thing is the one unacceptable outcome. A
+  `scheduled-task` turn (below) is unreviewed in the same way.
 - Secrets flow one way — the webview writes them to the Keychain, the core
   injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
@@ -516,6 +525,78 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A scheduled task (`sidecar/src/scheduledTasks/`) is a prompt the chat agent
+  schedules for itself, run later by the `scheduled-tasks` job as a turn in the
+  chat it came from, ringing the attention bell when the run has something to
+  report. It is how "check on my PRs in an hour" or "tell me when CI goes
+  green" works without a shell.
+  The prompt is model-composed, often just after reading a CI log or a PR
+  comment, so three things hold it down. The turn gets only
+  `SCHEDULED_TASK_TOOLS` (`chat/destructiveTools.ts`), a read-only allowlist,
+  because anything it writes would be read back later as if the user had
+  agreed. Its stored row has the user role so the thread reads in order, but it
+  reaches the model fenced as the assistant's own note
+  (`scheduledTasks/message.ts`), on its own turn and every later one, since a
+  typed turn runs the destructive tools without asking. And a chain is bounded
+  by an attempt counter that comes from the row, never from the model. Unlike
+  the memory jobs, a row is marked fired *before* its turn runs: a sidecar that
+  dies mid-turn loses one run rather than replaying it into the chat on every
+  restart. A run that only schedules its next one (`parentId` points back at
+  it) stays quiet. The bell item's title is always ours, naming the task; the
+  model's words go in the body, so injected text can't pose as an app alert.
+  A heads-down pass runs in a hidden chat, so a task it schedules carries
+  `origin: "heads-down"` and its bell item opens the Heads down page.
+- A feature that needs Claude Code to work *while the user watches* (a
+  verification report, mutation testing) starts it with `startClaudeRun` in
+  `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
+  program lookup, directory check and built environment (`lib/claudeCli.ts`),
+  streams `--output-format stream-json` into typed events any number of viewers
+  follow over `/api/agent-runs/:id/events`, and ends in an `agent_runs` row.
+  These runs are pointed at a pull request's checkout, which its author
+  controls, so they read no settings files at all (`--setting-sources ""`):
+  the checkout's can declare hooks, which are shell commands Claude Code runs
+  itself, and the user's were written for sessions the user drives — their
+  allow rules, hooks, plugins and `CLAUDE.md` (which may say to push and open
+  PRs) don't belong in an unattended run. `lockedDownSettings` applies instead:
+  no hooks or auto-memory, a deny list for publishing and the network, and Bash
+  in a network-less sandbox that refuses to run when the sandbox can't start.
+  The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
+  `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
+  Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
+  suite's own file reads never pass through the rules. The plugins compiled
+  into Claude Code (`cc-plugin-*@builtin`) load with no settings file at all,
+  so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
+  security default managed settings seat. Claude Code's core agents and skills
+  aren't plugins and stay.
+  The permission mode is always set and never one that approves on its own, a
+  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  checkout is material rather than instructions (`spotlight` fences PR text a
+  caller interpolates), and no session is saved, so the transcript never
+  reaches the nightly session digest and from there memory.
+  `agentRuns/canary.ts` checks all of that against the real CLI.
+  Cancelling kills the process group, since the tools a run starts outlive a
+  kill aimed only at Claude Code; so does the sidecar exiting, and the startup
+  sweep kills what a crashed sidecar left, matched by pid and start time. The
+  agents and skills these runs load ship as a plugin under
+  `sidecar/claude-plugins/`, embedded like the agent definitions and written
+  to a fresh private temp directory for each run, so nothing between runs can
+  edit it; a file reaches a run only once it is listed in `agentRuns/plugins.ts`.
+  Mutation testing splits the work: a run like that only *plans* the mutants,
+  read-only, and the sidecar applies them and runs the tests itself
+  (`reviewWorkspaces/mutationExecutor.ts`), so what ran and how it scored is
+  never a model's say. Claude Code's sandbox only wraps the commands Claude
+  Code runs, so those tests run under `reviewWorkspaces/testSandbox.ts`
+  instead: a deny-by-default `sandbox-exec` profile with no network or DNS,
+  loopback only to the ephemeral port range, writes only to the scratch copy
+  and a temp folder (which holds a fake `HOME`), no reads of the home folder
+  beyond the toolchains or of other checkouts, no setsid, and no launchd,
+  LaunchServices or keychain. One helper per pass runs every command, so the
+  profile compiles once.
+  A probe script checks it holds before any test runs, and where it can't
+  apply (anything but macOS) the tests don't run. The user already agreed to
+  run the PR's code and its setup runs unsandboxed, so this is defence in
+  depth, not the trust boundary; the sidecar's own writes into the copy still
+  assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
@@ -544,8 +625,11 @@ back to ad-hoc.
     itself. A tool that writes where other people can see it sits between those
     two cases: available, but only to a definition that also names it under
     `unattended:`, which Settings flags on the row as "acts unattended".
-    `project-manager` filing tickets is the one shipped grant — turning a
-    discussion into tickets is the job.
+    Two shipped definitions have a grant, each because the action is the job:
+    `project-manager` files tickets, and `merge-reviewer` posts a signed
+    approval a repo's CI can merge on. The second is narrowed again at the
+    tool: `post_merge_review` re-reads the PR and its report itself, and posts
+    only for a current report whose verdict asked for an agent.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

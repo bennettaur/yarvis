@@ -17,7 +17,9 @@ import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
+import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
+import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
@@ -52,6 +54,8 @@ export interface BuiltinToolDeps {
   atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
+  /** What a task scheduled from this turn inherits. Absent off a chat turn. */
+  scheduledTask?: ScheduledTaskTurnContext;
 }
 
 /**
@@ -64,10 +68,19 @@ export interface BuiltinToolDeps {
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
   const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
+  // Only a chat turn can schedule a task; the others get a context that is never used.
+  const scheduledTask = deps.scheduledTask ?? {
+    provider: null,
+    model: null,
+    attempt: 0,
+    scheduledTaskId: null,
+    origin: "chat",
+  };
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    scheduledTasks: buildScheduledTaskTools(db, sessionId, scheduledTask),
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
@@ -81,6 +94,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     githubIssues: buildIssueTools(db, config),
     azureBoards: buildAzureBoardsTools(db, config),
     prReview: buildPrReviewTools(db),
+    mergeReview: buildMergeReviewTools(config),
     calendar: buildCalendarTools(db, config),
     alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),

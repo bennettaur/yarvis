@@ -45,6 +45,10 @@ export interface ProviderSecrets {
   // Rust core from the Keychain, like the other secrets.
   googleClientId?: string;
   googleClientSecret?: string;
+  // Ed25519 key (PKCS8) the merge reviewer signs its approvals with, so a
+  // repo's verification gate can tell them from a comment anyone with the
+  // GitHub token could post.
+  verifyAgentSigningKey?: string;
   // AWS Bedrock relies on the standard AWS credential chain (env vars / SSO),
   // so no explicit key is read here.
 }
@@ -482,6 +486,7 @@ export function loadConfig(): Config {
       jiraApiToken: env.JIRA_API_TOKEN,
       googleClientId: env.GOOGLE_CLIENT_ID,
       googleClientSecret: env.GOOGLE_CLIENT_SECRET,
+      verifyAgentSigningKey: env.VERIFY_AGENT_SIGNING_KEY,
     },
     customProviderSecrets: parseCustomProviderSecrets(env.YARVIS_CUSTOM_PROVIDER_SECRETS),
     mcpSecrets: parseMcpSecrets(env.YARVIS_MCP_SECRETS),

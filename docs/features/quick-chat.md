@@ -55,6 +55,12 @@ streaming while you do something else.
 - While a reply is running, **Send** becomes **Stop**. Stopping discards the
   partial reply and saves nothing for that turn.
 - If a turn fails, **Retry** sends the same message again.
+- If the connection to the sidecar drops mid-turn, the error says which of three
+  things happened: the sidecar restarted during the turn (saving API keys in
+  Settings restarts it), it isn't answering at all, or the connection dropped
+  while it kept running. The detail shows how long the turn ran and the last
+  thing it received. `sidecar.log`, whose path Settings → Diagnostics shows,
+  keeps what the sidecar logged across a crash or restart.
 
 There is no file attachment yet. Paste text, or ingest a document under
 **Memory → Ingest document**.

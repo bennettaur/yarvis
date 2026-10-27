@@ -13,6 +13,7 @@ import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
 import ModelCatalogSection from "./ModelCatalogSection";
+import MutationTestingSection from "./MutationTestingSection";
 import PrModelSection from "./PrModelSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
@@ -98,6 +99,7 @@ export default function SettingsPanel({
         <div className="space-y-5">
           <PrReviewSection />
           <PrModelSection />
+          <MutationTestingSection />
         </div>
       )}
       {active === "voice" && <VoiceSection />}
