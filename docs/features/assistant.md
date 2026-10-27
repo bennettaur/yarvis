@@ -143,6 +143,47 @@ The assistant can act on your workspaces in bulk:
   worktrees, and completes any linked task. If there are uncommitted changes,
   it asks before throwing them away.
 
+### Scheduled tasks
+
+The assistant can leave itself a **scheduled task**: a prompt it runs later in
+the same chat. It schedules one on its own when you asked to be told about
+something, or when it fits what you said you're working on. Otherwise it offers
+first. It always tells you what it scheduled and when. It uses them to come
+back to something at a useful time:
+
+- **Checking on progress.** Tell it you're trying to get all your PRs
+  mergeable, and it can look again in an hour and tell you which ones still
+  aren't.
+- **Checking in.** Set your goals on Monday, and it can check in mid-week on
+  how they're going.
+- **Watching something slow.** Ask "let me know when CI on the billing-api PR
+  goes green." It checks right away, and if CI is still running it schedules a
+  task to look again. A run that finds it still running schedules the next one
+  quietly; you hear about it when there is something to say.
+
+When a task runs and has something for you, it posts in the chat it came from
+and rings the attention bell. The item's title names the task, and its text is
+the start of what the assistant found. Click it to open that chat, which also
+reloads it if it was already open. A task the [heads-down](heads-down.md) loop
+scheduled opens the **Heads down** page instead, since its passes run in chats
+you don't see.
+
+- Task messages show in the chat as **Yarvis · scheduled task**, so you can
+  tell them from what you typed.
+- A task runs with nobody watching, so it only gets tools that read: it can
+  look things up, report and schedule another task. It can't write tasks or
+  memories, start sessions, read your browser tabs, or use MCP tools. If you
+  want something done when it runs, ask once you've read what it found.
+- A task can be up to two weeks out. A chat can have 5 tasks waiting at once.
+  A chain of tasks watching the same thing re-checks at most every 5 minutes
+  and stops after 24 runs. Ask "what
+  have you scheduled?" to list them, or "cancel the CI check" to cancel one.
+- If a task fails to run (for example, the model is unavailable or it times out
+  after 5 minutes), the bell tells you so. It also tells you when a chain stops
+  after 24 runs.
+- Tasks report in the app, not in Telegram, even when you asked for one from
+  Telegram.
+
 ### Friday: what did I get done?
 
 Ask "what did I get done this week?" The assistant gathers the week's
@@ -348,6 +389,8 @@ you asked.
   syncing branches, sending an instruction to a session, launching a
   session, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
+- **Scheduled tasks** can't ask, because nobody is watching them. They only
+  get tools that read. See [Scheduled tasks](#scheduled-tasks).
 
 The assistant is also instructed to create workspaces, register a repo, add a
 repo to a workspace, start work, sync, send instructions or archive only when
@@ -380,6 +423,8 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Scheduled tasks.** Schedule, list and cancel a prompt it runs later in the
+  same chat.
 - **Questions.** Ask you something and wait for the answer (`ask_user`,
   `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
   you answer in a dialog from wherever you are in the app. It is meant for when

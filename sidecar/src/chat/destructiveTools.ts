@@ -90,3 +90,48 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // multi-step run nobody reviewed.
   "delegate",
 ]);
+
+/**
+ * The only built-ins a scheduled task's turn is offered.
+ *
+ * A scheduled task runs a prompt the model wrote for itself, often just after
+ * reading a CI log or a PR comment, and nobody is watching it run. Dropping the
+ * tools above is not enough there: a memory or task written on that turn is read
+ * back on later turns as though the user had agreed to it. So the turn gets what
+ * it needs to look, report and look again, and nothing that writes. The
+ * browser tools are left out too: they read the user's signed-in tabs, and what
+ * a task reads can end up in a notification.
+ */
+export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
+  "schedule_task",
+  "list_scheduled_tasks",
+  "cancel_scheduled_task",
+  "request_attention",
+  "list_tasks",
+  "recall",
+  "list_memories",
+  "list_projects",
+  "get_project",
+  "list_project_items",
+  "list_todos",
+  "get_todo",
+  "list_work_streams",
+  "get_work_stream",
+  "find_work_streams_for",
+  "heads_down_status",
+  "search_events",
+  "activity_summary",
+  "find_dangling_work",
+  "work_summary",
+  "list_repos",
+  "list_repo_issues",
+  "list_workspaces",
+  "get_workspace_activity",
+  "get_workspace_status",
+  "jira_search_issues",
+  "jira_get_issue",
+  "get_repo_issue",
+  "list_pr_reviews",
+  "search_pr_insights",
+  "list_calendar_events",
+]);
