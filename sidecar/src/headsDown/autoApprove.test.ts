@@ -75,7 +75,8 @@ function context(reviewDeps: ReviewDeps): PassReviewContext {
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  // agent_tools too: a tool another suite left marked unattended would run without the review.
+  await sql`TRUNCATE heads_down_runs, heads_down_questions, attention_items, memories, events, agent_tools RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {

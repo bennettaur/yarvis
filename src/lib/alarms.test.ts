@@ -1,6 +1,5 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { nativeInvoke } from "../test/nativeInvoke";
-import * as realApi from "./api";
 
 /**
  * The webview stops an alarm ringing before it asks the sidecar to record the
@@ -8,7 +7,10 @@ import * as realApi from "./api";
  */
 
 const invoked: { command: string; args: unknown }[] = [];
-let sidecarDown = false;
+
+// Copied before mocking: `mock.module` patches the namespace object in place,
+// so spreading it later would pick up the stub instead of the real exports.
+const realApi = { ...(await import("./api")) };
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args?: unknown) => {
@@ -19,9 +21,8 @@ mock.module("@tauri-apps/api/core", () => ({
 
 mock.module("./api", () => ({
   ...realApi,
-  sidecarFetch: async (path: string, init?: RequestInit) => {
-    if (sidecarDown) throw new Error("sidecar unreachable");
-    return realApi.sidecarFetch(path, init);
+  sidecarFetch: async () => {
+    throw new Error("sidecar unreachable");
   },
 }));
 
@@ -32,13 +33,16 @@ const { acknowledgeAlarm, snoozeAlarm } = (await import(realAlarms)) as typeof i
 
 afterEach(() => {
   invoked.length = 0;
-  sidecarDown = false;
+});
+
+// `mock.module` lasts for the whole run, so hand later suites the real modules back.
+afterAll(() => {
+  mock.module("./api", () => realApi);
+  mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 });
 
 describe("dealing with a ringing alarm", () => {
   it("stops the ringing even when the sidecar can't record it", async () => {
-    sidecarDown = true;
-
     await expect(acknowledgeAlarm("a1")).rejects.toThrow("sidecar unreachable");
     await expect(snoozeAlarm("a2", 5)).rejects.toThrow("sidecar unreachable");
 
