@@ -1,0 +1,67 @@
+/*
+ * The review editor's own chrome inside Monaco. Loaded with Monaco, so the
+ * rest of the app never carries it. Colours read the app's theme variables, so
+ * Palenight retints them like everything else.
+ */
+
+/* The glyph-margin buttons. Drawn as masks so they take a theme colour. */
+.review-glyph {
+  cursor: pointer;
+}
+.review-glyph::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 0 auto;
+  position: relative;
+  top: 50%;
+  transform: translateY(-50%);
+  background-color: var(--color-zinc-500, #71717a);
+  -webkit-mask: var(--review-glyph-icon) center / contain no-repeat;
+  mask: var(--review-glyph-icon) center / contain no-repeat;
+}
+.review-glyph:hover::before {
+  background-color: var(--color-sky-400, #38bdf8);
+}
+.review-glyph-comment {
+  --review-glyph-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6a1.5 1.5 0 0 1-1.5 1.5H7l-3 3v-3h-.5A1.5 1.5 0 0 1 2 9.5z'/%3E%3C/svg%3E");
+}
+.review-glyph-ask {
+  --review-glyph-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1m-.1 9.6a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8M8 4C6.6 4 5.6 4.9 5.5 6.1h1.4c.1-.5.5-.9 1.1-.9.6 0 1 .4 1 .9 0 .4-.2.7-.7 1-.7.4-1.1.9-1.1 1.6v.4h1.4v-.3c0-.4.2-.6.7-.9.7-.4 1.2-1 1.2-1.8C10.5 4.9 9.5 4 8 4'/%3E%3C/svg%3E");
+}
+
+/* The bar beside a selection. */
+.review-selection-actions {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--color-zinc-700, #3f3f46);
+  background: var(--color-zinc-800, #27272a);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.4);
+  font: 11px/1.4 ui-sans-serif, system-ui, sans-serif;
+  white-space: nowrap;
+}
+.review-selection-actions button {
+  padding: 1px 8px;
+  border-radius: 4px;
+  color: var(--color-zinc-100, #f4f4f5);
+  cursor: pointer;
+}
+.review-selection-actions button:hover {
+  background: var(--color-zinc-700, #3f3f46);
+}
+
+/*
+ * React content inside a view zone. Monaco's text layer is unselectable.
+ * `flow-root` keeps a child's margins inside the box, where the zone's
+ * measured height counts them.
+ */
+.review-zone {
+  display: flow-root;
+  user-select: text;
+  -webkit-user-select: text;
+  white-space: normal;
+  cursor: auto;
+}

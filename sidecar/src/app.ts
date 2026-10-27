@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createAgentRunRoutes } from "./agentRuns/routes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
+import { createAlarmRoutes } from "./alarms/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
@@ -37,6 +39,8 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createMutationTestingConfigRoutes } from "./reviewWorkspaces/mutationConfig.ts";
+import { createReviewWorkspaceRoutes } from "./reviewWorkspaces/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
@@ -175,11 +179,13 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
+  app.route("/api/agent-runs", createAgentRunRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
   app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
+  app.route("/api/alarms", createAlarmRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
   app.route("/api/pr-models", createPrModelRoutes(config));
@@ -187,6 +193,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
+  app.route("/api/review-workspaces", createReviewWorkspaceRoutes(config));
+  app.route("/api/mutation-testing-config", createMutationTestingConfigRoutes());
 
   return app;
 }

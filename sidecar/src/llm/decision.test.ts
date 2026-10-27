@@ -59,6 +59,93 @@ describe("decision model config", () => {
   });
 });
 
+describe("decide through System One", () => {
+  const schema = z.object({ ok: z.boolean() });
+  const systemOne = {
+    questions: { ok: { type: "noul" as const, instructions: "Is it ok?" } },
+    toAnswer: (p: Record<string, number>) => ({ ok: (p.ok ?? 0) > 0.5 }),
+  };
+
+  async function systemOneSelection() {
+    const row = await createCustomProvider({
+      name: "system one",
+      baseUrl: "http://127.0.0.1:11434/",
+      apiKind: "systemone",
+      models: ["nimble"],
+      headerNames: [],
+    });
+    return { provider: `custom:${row.id}`, model: "nimble" };
+  }
+
+  it("posts the prompt as state with the questions, and maps the answers", async () => {
+    const selection = await systemOneSelection();
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(init.body as string) });
+      return Response.json({
+        model: "nimble",
+        answers: { ok: { noul: 0.9 } },
+        usage: { input_tokens: 10, output_tokens: 1 },
+      });
+    }) as unknown as typeof fetch;
+
+    const answer = await decide(config, selection, {
+      system: "sys",
+      prompt: "question",
+      schema,
+      systemOne,
+      fetchImpl,
+    });
+
+    expect(answer).toEqual({ ok: true });
+    expect(calls[0]?.url).toBe("http://127.0.0.1:11434/v1/systemone");
+    expect(calls[0]?.body).toEqual({
+      model: "nimble",
+      state: "question",
+      questions: systemOne.questions,
+    });
+  });
+
+  it("sends the provider's API key and custom headers", async () => {
+    const selection = await systemOneSelection();
+    const id = selection.provider.slice("custom:".length);
+    const withSecrets: Config = {
+      ...config,
+      customProviderSecrets: { [id]: { apiKey: "sk-test", headers: { "X-Team": "core" } } },
+    };
+    let headers: Record<string, string> = {};
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      headers = init.headers as Record<string, string>;
+      return Response.json({ answers: { ok: { noul: 0.9 } } });
+    }) as unknown as typeof fetch;
+
+    await decide(withSecrets, selection, {
+      system: "s",
+      prompt: "p",
+      schema,
+      systemOne,
+      fetchImpl,
+    });
+    expect(headers).toMatchObject({ Authorization: "Bearer sk-test", "X-Team": "core" });
+  });
+
+  it("throws when an answer is missing", async () => {
+    const selection = await systemOneSelection();
+    const fetchImpl = (async () => Response.json({ answers: {} })) as unknown as typeof fetch;
+
+    await expect(
+      decide(config, selection, { system: "s", prompt: "p", schema, systemOne, fetchImpl }),
+    ).rejects.toThrow("no answer for ok");
+  });
+
+  it("throws for a decision that has no System One questions", async () => {
+    const selection = await systemOneSelection();
+    await expect(decide(config, selection, { system: "s", prompt: "p", schema })).rejects.toThrow(
+      "System One",
+    );
+  });
+});
+
 describe("decide through Ollama", () => {
   const schema = z.object({ ok: z.boolean() });
 

@@ -1,5 +1,6 @@
-import type { AzureDevOpsClient } from "../azure/client.ts";
-import type { GitHubClient } from "../github/client.ts";
+import { AzureDevOpsClient, isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
+import type { Config } from "../config.ts";
+import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import type { PrDetail, PrFile, PrRef } from "./types.ts";
 
 /**
@@ -97,4 +98,28 @@ export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSour
     searchCode: async (query, limit) => client.searchCode(azRef, query, limit),
     searchScope: "the repository, via Azure DevOps code search",
   };
+}
+
+/**
+ * Builds the source for a ref from the configured credentials, or an error
+ * naming what is missing. The Azure organization is bound from configuration
+ * rather than trusted from the ref, so a ref naming a different org is refused
+ * outright instead of being pointed at a host we did not configure.
+ */
+export function prSourceFor(
+  config: Pick<Config, "secrets" | "endpoints">,
+  ref: PrRef,
+): PrCodeSource | { error: string } {
+  if (ref.provider === "github") {
+    const token = config.secrets.githubToken;
+    if (!token) return { error: "github token not configured" };
+    return githubPrSource(createGitHubClient(config, token), ref);
+  }
+  const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+  if (!azureDevopsToken || !azureDevopsOrgUrl) return { error: "azure devops not configured" };
+  if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) return { error: "invalid azure org url" };
+  if (orgFromOrgUrl(azureDevopsOrgUrl) !== ref.org) {
+    return { error: "pull request belongs to a different azure organization" };
+  }
+  return azurePrSource(new AzureDevOpsClient(azureDevopsToken, azureDevopsOrgUrl), ref);
 }

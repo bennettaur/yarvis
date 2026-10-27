@@ -1,14 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import {
-  alarmInvoke,
-  alarmListen,
-  resetCoreAlarms,
-  setCoreAlarms,
-  UNHANDLED,
-} from "../test/alarmFixture";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { fakeAlarms, resetAlarms, setAlarms } from "../test/alarmFixture";
 import { mountForInteraction } from "../test/render";
 
 /**
@@ -17,17 +10,7 @@ import { mountForInteraction } from "../test/render";
  * listed here with its own dismiss action.
  */
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: Record<string, unknown>) => {
-    const result = alarmInvoke(command, args ?? {});
-    return result === UNHANDLED ? nativeInvoke(command) : result;
-  },
-}));
-
-mock.module("@tauri-apps/api/event", () => ({
-  listen: async (event: string, handler: (e: { payload: Alarm }) => void) =>
-    alarmListen(event, handler),
-}));
+mock.module("../lib/alarms", () => fakeAlarms);
 
 const AlarmsPanel = (await import("./AlarmsPanel")).default;
 
@@ -49,7 +32,7 @@ afterEach(() => {
   unmount = null;
 });
 
-afterAll(resetCoreAlarms);
+afterAll(resetAlarms);
 
 async function mountPanel(): Promise<HTMLElement> {
   const mounted = await mountForInteraction(createElement(AlarmsPanel), 50);
@@ -59,7 +42,7 @@ async function mountPanel(): Promise<HTMLElement> {
 
 describe("AlarmsPanel", () => {
   it("lists both alarms that fired together, each with its own dismiss", async () => {
-    setCoreAlarms([fired("page-a", "Morning coffee"), fired("page-b", "Retro")]);
+    setAlarms([fired("page-a", "Morning coffee"), fired("page-b", "Retro")]);
     const host = await mountPanel();
 
     expect(host.innerHTML).toContain("Ringing (2)");
@@ -81,7 +64,7 @@ describe("AlarmsPanel", () => {
   });
 
   it("hides the ringing section when nothing has fired", async () => {
-    setCoreAlarms([{ ...fired("upcoming", "Later"), status: "scheduled" }]);
+    setAlarms([{ ...fired("upcoming", "Later"), status: "scheduled" }]);
     const host = await mountPanel();
 
     expect(host.innerHTML).not.toContain("Ringing (");

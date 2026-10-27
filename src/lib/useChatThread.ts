@@ -15,6 +15,7 @@ import {
 } from "./chat";
 import { type DisplayError, formatError } from "./errors";
 import { setToolSettings } from "./mcp";
+import { explainStreamDrop, isConnectionDrop } from "./streamDrop";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
@@ -80,6 +81,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   // stream, which the sidecar reads as the client going away and uses to cancel
   // the upstream call, so a stopped turn stops costing tokens.
   const inFlight = useRef<AbortController | null>(null);
+  // The most recent turn, still running or not, so late async work from an
+  // earlier one can tell it has been superseded.
+  const latestTurn = useRef<AbortController | null>(null);
   // The session on screen now, for async work that must not land in a thread the
   // user has since left.
   const currentSession = useRef<string | null>(null);
@@ -284,10 +288,13 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       const context = getContext?.();
       const controller = new AbortController();
       inFlight.current = controller;
+      latestTurn.current = controller;
       let acc = "";
       let failed = false;
       let thought = "";
       const ran: ToolActivity[] = [];
+      const startedAt = Date.now();
+      let lastEvent = { type: "none", at: startedAt };
       try {
         for await (const evt of streamChat(
           {
@@ -304,6 +311,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           },
           { signal: controller.signal },
         )) {
+          // A heartbeat says the connection was alive, not what the turn was
+          // doing, and the drop explanation needs the latter.
+          if (evt.type !== "ping") lastEvent = { type: evt.type, at: Date.now() };
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
@@ -362,6 +372,16 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           setError({ message: "Turn stopped. Nothing was saved for it.", tone: "notice" });
         } else {
           setError(formatError(e));
+          if (isConnectionDrop(e)) {
+            // The explanation waits on a health check, so it lands after the
+            // turn ends. It replaces the bare error unless a newer turn has
+            // started or the user has switched sessions.
+            void explainStreamDrop({ error: e, startedAt, lastEvent }).then((explained) => {
+              if (latestTurn.current === controller && currentSession.current === activeId) {
+                setError(explained);
+              }
+            });
+          }
         }
       } finally {
         inFlight.current = null;

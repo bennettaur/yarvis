@@ -72,6 +72,26 @@ const PASS = {
   error: null,
 };
 
+const FAILED_PASS = {
+  ...PASS,
+  id: "p0",
+  chatSessionId: "c0",
+  startedAt: "2026-10-19T09:00:00.000Z",
+  finishedAt: "2026-10-19T09:05:00.000Z",
+  notes: null,
+  error: "Overloaded (status 529)",
+  callCount: 5,
+  failedCalls: [
+    { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+    {
+      name: "send_workspace_instruction",
+      server: null,
+      error: "The turn ended before this finished.",
+      noResult: true,
+    },
+  ],
+};
+
 const CONFIG = {
   minSleepMinutes: 5,
   maxSleepMinutes: 120,
@@ -80,7 +100,26 @@ const CONFIG = {
   userAwayAfterMinutes: 120,
   provider: null,
   model: null,
+  guidance: null,
 };
+
+const PROVIDERS = [
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    available: true,
+    models: [
+      { id: "claude-opus-5-5", capabilities: ["chat"] },
+      { id: "claude-haiku-5-5", capabilities: ["chat"] },
+    ],
+  },
+];
+
+/** The saved heads-down config the page loads; a test may replace it. */
+let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
+  provider: string | null;
+  model: string | null;
+} = CONFIG;
 
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
@@ -136,9 +175,10 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM]);
-    if (path === "/api/heads-down/passes") return json([PASS]);
+    if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
-    if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/config") return json(savedConfig);
+    if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
     if (path === "/api/heads-down/auto-approvals") {
       return json([
         {
@@ -163,7 +203,7 @@ mock.module("../../lib/api", () => ({
 }));
 
 const HeadsDownPanel = (await import("./HeadsDownPanel")).default;
-const { applyPassEvent } = await import("./useLivePass");
+const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -180,6 +220,7 @@ afterEach(() => {
   clearResourceCache();
   writes.length = 0;
   streamFrames = [];
+  savedConfig = CONFIG;
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -209,6 +250,22 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("shows it is sleeping between passes", async () => {
+    const host = await mount();
+
+    expect(host.textContent).toContain("Sleeping until");
+    expect(host.querySelector('[data-state="sleeping"]')).not.toBeNull();
+  });
+
+  it("shows what a failed pass did and which calls failed", async () => {
+    const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
+
+    expect(text).toContain("Overloaded (status 529)");
+    expect(text).toContain("5 tool calls · 1 failed · 1 with no result");
+    expect(text).toContain("Slack/post_message: channel_not_found");
+    expect(text).toContain("send_workspace_instruction: no result");
   });
 
   it("sends the option the user picked", async () => {
@@ -255,6 +312,39 @@ describe("HeadsDownPanel live", () => {
 
     expect(host.textContent).toContain("Working now");
     expect(host.textContent).toContain("list_work_streams");
+    expect(host.querySelector('[data-state="working"]')).not.toBeNull();
+  });
+
+  it("shows its latest thought folded to a line", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "reasoning", text: "Check the billing PR first.\nThen the docs." },
+      },
+    ];
+    const host = await mount();
+    await waitForText(host, "Thinking:");
+
+    expect(host.querySelector("details")?.open).toBe(false);
+    expect(host.textContent).toContain("Check the billing PR first.");
+  });
+
+  it("says it will try again only when the sidecar says it is retrying", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "error", message: "Overloaded", transient: true },
+      },
+      { type: "pass-retrying", passId: "p2", retryAt: "2026-10-19T10:00:30.000Z" },
+    ];
+    const host = await mount();
+    await waitForText(host, "Trying again shortly.");
+
+    expect(host.textContent).toContain("Overloaded Trying again shortly.");
   });
 });
 
@@ -273,11 +363,111 @@ describe("HeadsDownSettings", () => {
       body: { allowed: false },
     });
   });
+
+  it("saves the model passes run on", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("");
+    expect(model.disabled).toBe(true);
+
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    expect(model.value).toBe("claude-opus-5-5");
+    model.value = "claude-haiku-5-5";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+    });
+  });
+
+  it("saves the standing guidance every pass follows", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = host.querySelector<HTMLTextAreaElement>('[aria-label="Standing guidance"]');
+    if (!field) throw new Error("no guidance field");
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+      field,
+      "Don't merge during market hours",
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, guidance: "Don't merge during market hours" },
+    });
+  });
+
+  it("goes back to the default chat model", async () => {
+    savedConfig = { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("anthropic");
+    expect(model.value).toBe("claude-haiku-5-5");
+    expect(host.textContent).not.toContain("passes will fail");
+
+    provider.value = "";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: null, model: null },
+    });
+  });
+
+  it("keeps showing a saved model that left the catalogue", async () => {
+    savedConfig = { ...CONFIG, provider: "openai", model: "gpt-x" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("openai");
+    expect(provider.selectedOptions[0]?.textContent).toBe("openai (unavailable)");
+    expect(model.value).toBe("gpt-x");
+    expect(host.textContent).toContain("passes will fail until you pick another");
+
+    buttonNamed(host, "Save").click();
+    await settle();
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: savedConfig,
+    });
+  });
 });
 
 describe("applyPassEvent", () => {
   it("builds the live pass from its tool calls and results", () => {
-    let live: LivePass = { passId: "p", activity: [], thinking: "", text: "" };
+    let live: LivePass = newLivePass("p");
     live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
     live = applyPassEvent(live, { type: "tool_result", id: "c1", status: "ok", result: "[]" });
     live = applyPassEvent(live, { type: "delta", text: "Done." });
@@ -294,6 +484,27 @@ describe("applyPassEvent", () => {
       },
     ]);
     expect(live.text).toBe("Done.");
+  });
+
+  it("keeps only the latest stretch of reasoning", () => {
+    let live: LivePass = newLivePass("p");
+    live = applyPassEvent(live, { type: "reasoning", text: "First " });
+    live = applyPassEvent(live, { type: "reasoning", text: "idea." });
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ thought: "First idea.", isThinking: false });
+
+    live = applyPassEvent(live, { type: "reasoning", text: "Second." });
+    expect(live).toMatchObject({ thought: "Second.", isThinking: true });
+  });
+
+  it("shows an error without promising a retry, and clears it once work carries on", () => {
+    let live: LivePass = { ...newLivePass("p"), retrying: true };
+    live = applyPassEvent(live, { type: "error", message: "Overloaded", transient: true });
+    expect(live).toMatchObject({ error: "Overloaded", retrying: false });
+
+    live = { ...live, retrying: true };
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ error: null, retrying: false });
   });
 });
 

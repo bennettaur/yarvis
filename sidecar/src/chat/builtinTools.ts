@@ -1,5 +1,6 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
+import { buildAlarmTools } from "../alarms/tools.ts";
 import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
 import type { Config } from "../config.ts";
@@ -17,6 +18,7 @@ import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
+import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
@@ -80,7 +82,9 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     githubIssues: buildIssueTools(db, config),
     azureBoards: buildAzureBoardsTools(db, config),
     prReview: buildPrReviewTools(db),
+    mergeReview: buildMergeReviewTools(config),
     calendar: buildCalendarTools(db, config),
+    alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),
     help: buildHelpTools(config),
   };

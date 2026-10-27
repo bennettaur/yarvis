@@ -12,6 +12,8 @@ import { startMs } from "./calendarGrid";
 
 // Fire the meeting alarm shortly before the start. The alarm system then
 // escalates ~60s later (around the meeting start) if it isn't acknowledged.
+// The lead, label and match tolerance must match `sidecar/src/alarms/service.ts`,
+// which sets meeting alarms for the agents, so the calendar shows those as set.
 export const LEAD_MINUTES = 1;
 
 /** Only timed events that haven't started yet can be armed. */

@@ -40,6 +40,12 @@ most urgent first:
 - **Messages:** if it has tools that read your chat, it checks the channels you
   asked it to watch. A message that needs your answer becomes a stream that
   waits on you. A request for work becomes a ticket.
+- **Meetings:** if Google Calendar is connected, a few times a day it reads
+  your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
+  for each one you're going to that doesn't have one: ones you accepted, and
+  ones with no guest list. It skips ones you declined. When it can't tell, because
+  you haven't replied, said maybe, or are optional, it asks you ("Are you going
+  to Design review at 2pm?") and sets the alarm on a later pass if you say yes.
 
 Each pass ends by choosing how long to sleep. It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
@@ -49,6 +55,8 @@ that needs attention wakes it early.
 
 ## What it does without asking
 
+- Setting an alarm, and cancelling one it set. It can't cancel an alarm you
+  set yourself.
 - Filing a JIRA ticket.
 - Starting work on a ticket you put on a work stream in a chat, and starting a
   session on one of your tasks.
@@ -60,6 +68,28 @@ approval. That includes starting work on a ticket it found or filed itself, sinc
 instructions, and any MCP tool you haven't listed for heads-down mode. Text it
 reads in tickets, messages and pages can tell it what is going on, never what
 to do.
+
+## Merging PRs
+
+It doesn't merge outside your working hours. A merge it tries then, through
+an MCP tool or by telling a workspace's session to merge, waits for your
+approval, even with a tool you allowed for heads-down mode and even with auto
+mode on. It only tries one when your standing guidance, focus or messages say
+it may.
+
+Before a merge it judges how risky it is from the files the PR changes.
+Infrastructure and config changes, database migrations, auth, and backend
+changes that deploy on merge count as risky, and so does anything it can't
+judge. For those it asks you first and waits for a yes. Mobile changes are
+lower risk, since nothing ships until a release.
+
+Every merge pops up an alert over whatever page you have open, with the PR,
+the PR's title, how risky heads-down mode judged it and why it is merging.
+The merge doesn't wait on the alert. Press **Got it** (or Escape) to put it
+away, or **Open PR** to look at the PR. The alert is also in the attention
+bell. If it merges through an MCP tool, or tells a workspace's session to
+merge, without announcing the merge first, you still get the alert, marked
+**Risk not assessed**.
 
 ## When it needs you
 
@@ -110,26 +140,56 @@ keep it in mind for the rest of this run.
 and its tickets, workspaces, PRs and messages. Mark one **Done** or **Drop** it
 when it no longer matters.
 
+The Yarvis logo at the top of the page shows what it is doing: a spinning ring
+while a pass runs, dimmed while it sleeps until the next one, and grey when
+heads-down mode is off.
+
 **What it has been doing** shows the pass that is running, live, and the ones
-before it. Open a pass to see each tool call it made and what came back. A pass
-you stopped shows as stopped, not failed.
+before it. The live pass shows each tool call as it happens, and its latest
+thought folded to one line. Each finished pass shows its notes, how many tool
+calls it made, which ones failed with the start of their error, and which got
+no result back because the pass ended first. Open a pass
+to see each tool call it made and what came back. A pass you stopped shows as
+stopped, not failed.
+
+## When a pass fails
+
+A rate limit or a server error from the model's provider is retried a few
+times, a few seconds apart. If the provider fails part-way through a pass, for
+example by reporting that it is overloaded, the pass waits and carries on from
+where it got to, up to two more times. It is told which calls already went
+through, so it doesn't repeat them. A call whose result never came back may
+still have taken effect, so it is told to check before making it again.
+
+A pass that still fails, runs out of time, or is stopped keeps what it did:
+its tool calls show when you open it, with the error. The next pass is told
+the error and the calls the failed one made, so it checks where things stand
+instead of starting over.
 
 ## Pace and working hours
 
 Under **Pace and working hours** on the page:
 
+- The model passes run on. **Default chat model** follows whatever your chats
+  use. A change applies from the next pass. If the model you picked leaves the
+  catalogue or its provider loses its key, passes fail until you pick another.
+- **Standing guidance**: rules every pass follows, in your own words. For
+  example, "don't merge PRs while the market is open" on a work laptop, or
+  "merging is fine on my repos" on a personal one. It can't override asking
+  you for approval.
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
-- Your working hours. Outside them it sleeps longer and doesn't tag anyone in
-  a message. Pick **Any time is fine to tag people** to drop the limit. These
-  are kept per machine, so a work laptop can keep office hours and another can
-  tag people at any time.
+- Your working hours. Outside them it sleeps longer, doesn't tag anyone in
+  a message, and asks before merging a PR. Pick **Any time is fine to tag
+  people** to drop all three limits, merges included. These are kept per
+  machine, so a work laptop can keep office hours and another can tag people
+  and merge at any time.
 - The MCP tools it may use without asking. You add one from its approval
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The pace and working hours are stored in `~/.yarvis/settings.json` under
+The guidance, pace and working hours are stored in `~/.yarvis/settings.json` under
 `headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
 
@@ -138,7 +198,8 @@ use is kept in the database with the tool's other consent, not in that file.
 - It only acts through the tools Yarvis has. Reading Slack through the Chrome
   extension works, but the extension can't post, so asking for a review on
   Slack needs a Slack MCP server that you allow for heads-down mode.
-- Passes run on your default chat model and cost what a chat turn of that size
-  costs. The sleep settings are how you control that.
+- Passes run on the model you picked under **Pace and working hours**, or your
+  default chat model, and cost what a chat turn of that size costs. A cheaper
+  model and the sleep settings are how you control that.
 - It runs on one instance of the app. Another instance sharing the same
   database leaves it to the first.

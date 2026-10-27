@@ -70,6 +70,57 @@ describe("toCalendarEvent", () => {
     });
     expect(ev.meetLink).toBe("https://meet/x");
   });
+
+  it("reads the user's own RSVP and whether they are optional", () => {
+    const ev = toCalendarEvent({
+      id: "e4",
+      start: { dateTime: "2026-05-25T10:00:00Z" },
+      end: { dateTime: "2026-05-25T10:30:00Z" },
+      attendees: [
+        { email: "boss@example.com", responseStatus: "accepted" },
+        { email: "me@example.com", self: true, optional: true, responseStatus: "tentative" },
+      ],
+    });
+    expect(ev.response).toBe("tentative");
+    expect(ev.optional).toBe(true);
+  });
+
+  it("has no RSVP on an event without guests", () => {
+    const ev = toCalendarEvent({
+      id: "e5",
+      start: { dateTime: "2026-05-25T10:00:00Z" },
+      end: { dateTime: "2026-05-25T10:30:00Z" },
+    });
+    expect(ev.response).toBeNull();
+    expect(ev.optional).toBe(false);
+  });
+});
+
+describe("getEvent", () => {
+  it("returns null for an event that no longer exists", async () => {
+    const client = new GoogleCalendarClient("cid", "secret", fakeFetch({}), {
+      token: "https://token",
+      calendar: "https://cal",
+    });
+    expect(await client.getEvent("tok", "gone")).toBeNull();
+  });
+
+  it("fetches the event by id", async () => {
+    const client = new GoogleCalendarClient(
+      "cid",
+      "secret",
+      fakeFetch({
+        "/events/e1": {
+          id: "e1",
+          summary: "Standup",
+          start: { dateTime: "2026-05-25T09:00:00Z" },
+          end: { dateTime: "2026-05-25T09:15:00Z" },
+        },
+      }),
+      { token: "https://token", calendar: "https://cal" },
+    );
+    expect((await client.getEvent("tok", "e1"))?.title).toBe("Standup");
+  });
 });
 
 describe("listEvents", () => {

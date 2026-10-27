@@ -127,8 +127,18 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install --frozen-lockfile
+      # The ignored advisories are DOMPurify 3.4.15's. monaco-editor bundles its
+      # own copy and imports that, so no override can replace it. Its sanitizer
+      # doesn't use the modes they need (SAFE_FOR_TEMPLATES, IN_PLACE, an xhtml
+      # PARSER_MEDIA_TYPE). Drop them when a monaco-editor release bundles 3.4.17+.
       - name: Audit production dependencies
-        run: bun audit --prod
+        run: >-
+          bun audit --prod
+          --ignore=GHSA-cg2g-xh64-v4q7
+          --ignore=GHSA-mrv2-3pqr-j5jr
+          --ignore=GHSA-p98j-92pf-mc4p
+          --ignore=GHSA-6688-9rhm-gjv2
+          --ignore=GHSA-c6gr-qvv4-5v3f
 
   rust-fmt:
     name: Rust formatting

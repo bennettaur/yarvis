@@ -15,6 +15,8 @@ import {
 import type { Db } from "../db/client.ts";
 import {
   agentTools,
+  CUT_SHORT_RESULT,
+  chatMessages,
   type HeadsDownMessage,
   type HeadsDownPass,
   type HeadsDownQuestion,
@@ -23,6 +25,7 @@ import {
   headsDownPasses,
   headsDownQuestions,
   headsDownRuns,
+  type ToolActivity,
 } from "../db/schema.ts";
 import { type DecisionDetail, decisionContent, decisionQuery } from "../memory/decisions.ts";
 import type { MemoryService } from "../memory/index.ts";
@@ -488,6 +491,64 @@ export async function finishPass(db: Db, id: string, input: FinishPassInput): Pr
 
 export async function listPasses(db: Db, limit = 20): Promise<HeadsDownPass[]> {
   return db.select().from(headsDownPasses).orderBy(desc(headsDownPasses.startedAt)).limit(limit);
+}
+
+/** Every tool call a pass made, in order, from the transcript in its hidden session. */
+export async function passToolCalls(db: Db, chatSessionId: string): Promise<ToolActivity[]> {
+  const rows = await db
+    .select({ toolCalls: chatMessages.toolCalls })
+    .from(chatMessages)
+    .where(and(eq(chatMessages.sessionId, chatSessionId), eq(chatMessages.role, "assistant")))
+    .orderBy(asc(chatMessages.createdAt));
+  return rows.flatMap((r) => r.toolCalls ?? []);
+}
+
+/** Longest a failed call's error is kept in a pass's summary. */
+const FAILED_CALL_CHARS = 300;
+
+export interface PassCallSummary {
+  callCount: number;
+  /** Calls that failed, or whose result never came back (`noResult`), so may have gone through. */
+  failedCalls: { name: string; server: string | null; error: string | null; noResult: boolean }[];
+}
+
+/**
+ * How many calls each pass made and which failed, keyed by its session id.
+ * Counted in the database, since a pass's results run to megabytes and the
+ * page only needs the tally and the errors.
+ */
+export async function passCallSummaries(
+  db: Db,
+  chatSessionIds: string[],
+): Promise<Map<string, PassCallSummary>> {
+  const summaries = new Map<string, PassCallSummary>();
+  if (chatSessionIds.length === 0) return summaries;
+  const calls = sql`coalesce(${chatMessages.toolCalls}, '[]'::jsonb)`;
+  const rows = await db
+    .select({
+      sessionId: chatMessages.sessionId,
+      callCount: sql<number>`jsonb_array_length(${calls})`,
+      failed: sql<PassCallSummary["failedCalls"] | null>`(
+        select jsonb_agg(jsonb_build_object(
+          'name', c->>'name',
+          'server', c->>'server',
+          'error', left(c->>'result', ${FAILED_CALL_CHARS}),
+          'noResult', c->>'status' = 'pending' or c->>'result' = ${CUT_SHORT_RESULT}
+        ))
+        from jsonb_array_elements(${calls}) as c
+        where c->>'status' in ('error', 'pending')
+      )`,
+    })
+    .from(chatMessages)
+    .where(and(inArray(chatMessages.sessionId, chatSessionIds), eq(chatMessages.role, "assistant")))
+    .orderBy(asc(chatMessages.createdAt));
+  for (const row of rows) {
+    const summary = summaries.get(row.sessionId) ?? { callCount: 0, failedCalls: [] };
+    summary.callCount += row.callCount;
+    summary.failedCalls.push(...(row.failed ?? []));
+    summaries.set(row.sessionId, summary);
+  }
+  return summaries;
 }
 
 export async function getPass(db: Db, id: string): Promise<HeadsDownPass | null> {

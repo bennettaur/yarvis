@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Yarvis personal assistant"
 authors = ["Michael Bennett"]
 edition = "2021"
+# std::fs::File::lock, which serializes writes to the secrets blob.
+rust-version = "1.89"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

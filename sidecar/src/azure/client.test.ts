@@ -63,6 +63,80 @@ describe("mapReviewer", () => {
   });
 });
 
+describe("mapReviewer teams", () => {
+  it("marks a group reviewer as a team", () => {
+    expect(mapReviewer({ displayName: "[Shop]\\Web Team", isContainer: true }).isTeam).toBe(true);
+    expect(mapReviewer({ displayName: "Alex" }).isTeam).toBe(false);
+  });
+});
+
+describe("prCiChecks", () => {
+  it("keeps the build and status policies and drops the reviewer ones", async () => {
+    let policyUrl = "";
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => {
+            policyUrl = u;
+            return u.includes("/policy/evaluations");
+          },
+          body: {
+            value: [
+              {
+                status: "rejected",
+                configuration: {
+                  type: { id: "0609b952-1397-4640-95ec-e00a01b2c241", displayName: "Build" },
+                },
+              },
+              {
+                status: "running",
+                configuration: {
+                  type: { id: "status-type", displayName: "Status" },
+                  settings: { statusName: "sonar" },
+                },
+              },
+              // Rejected until someone approves; that is review, not CI.
+              {
+                status: "rejected",
+                configuration: {
+                  type: { id: "reviewers-type", displayName: "Minimum number of reviewers" },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const checks = await az.prCiChecks("Shop", "proj-1", 7);
+    expect(policyUrl).toContain(encodeURIComponent("vstfs:///CodeReview/CodeReviewId/proj-1/7"));
+    expect(checks).toEqual([
+      { name: "Build", status: "COMPLETED", conclusion: "FAILURE", url: null },
+      { name: "Status", status: "IN_PROGRESS", conclusion: null, url: null },
+    ]);
+  });
+
+  it("asks nothing without a project id", async () => {
+    let asked = false;
+    const az = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: () => {
+            asked = true;
+            return true;
+          },
+          body: { value: [] },
+        },
+      ]),
+    );
+    expect(await az.prCiChecks("Shop", "", 7)).toEqual([]);
+    expect(asked).toBe(false);
+  });
+});
+
 describe("summarizeReviewDecision", () => {
   it("lets one blocking vote outrank any number of approvals", () => {
     expect(
@@ -229,6 +303,7 @@ describe("azure client", () => {
       state: "open",
       mergeable: "MERGEABLE",
       reviewDecision: "review_required",
+      projectId: "",
     });
   });
 
@@ -604,6 +679,37 @@ describe("azure client", () => {
     expect(detail.headSha).toBe("abc");
   });
 
+  // The review header's conflict banner reads the detail, not the status.
+  it("reports conflicts on the PR detail in the shared vocabulary", async () => {
+    const detailFor = async (mergeStatus: string | undefined) => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([
+          {
+            match: (u) => /\/pullRequests\/7$/.test(u.split("?")[0]!),
+            body: {
+              pullRequestId: 7,
+              mergeStatus,
+              repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            },
+          },
+          { match: () => true, body: { value: [] } },
+        ]),
+      );
+      return az.prDetail({ project: "Shop", repo: "web", prId: 7 });
+    };
+    const conflicts = await detailFor("conflicts");
+    expect(conflicts.mergeable).toBe("CONFLICTING");
+    expect(conflicts.hasConflicts).toBe(true);
+    expect((await detailFor("succeeded")).hasConflicts).toBe(false);
+    expect((await detailFor("queued")).mergeable).toBe("UNKNOWN");
+    // A merge a branch policy refused can't merge either, but has nothing to resolve.
+    const rejected = await detailFor("rejectedByPolicy");
+    expect(rejected.mergeable).toBe("CONFLICTING");
+    expect(rejected.hasConflicts).toBe(false);
+  });
+
   it("posts a right-side line comment thread", async () => {
     let posted: any = null;
     const fetchImpl = (async (url: string, init: any) => {
@@ -682,7 +788,10 @@ describe("azure client", () => {
           body: {
             pullRequestId: 30,
             mergeStatus: "succeeded",
-            repository: { project: { id: "p1" } },
+            repository: {
+              project: { id: "p1" },
+              webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+            },
           },
         },
         { match: (u) => u.includes("/policy/evaluations"), body: { value: [] } },
@@ -691,10 +800,16 @@ describe("azure client", () => {
           body: {
             value: [
               {
+                id: 3,
                 status: "fixed",
                 threadContext: { filePath: "/src/old.ts", leftFileStart: { line: 5 } },
                 comments: [
-                  { author: { displayName: "Rev" }, content: "removed here", commentType: "text" },
+                  {
+                    id: 1,
+                    author: { displayName: "Rev" },
+                    content: "removed here",
+                    commentType: "text",
+                  },
                 ],
               },
             ],
@@ -705,12 +820,188 @@ describe("azure client", () => {
     const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 30 });
     expect(detail.reviewThreads).toEqual([
       {
+        id: "3",
         path: "src/old.ts",
         line: 5,
+        side: "LEFT",
         isResolved: true,
-        comments: [{ author: "Rev", body: "removed here", createdAt: "" }],
+        isOutdated: false,
+        canReply: true,
+        canResolve: true,
+        canUnresolve: true,
+        comments: [
+          {
+            id: "1",
+            author: "Rev",
+            body: "removed here",
+            createdAt: "",
+            url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/30?discussionId=3",
+          },
+        ],
       },
     ]);
+  });
+
+  describe("comment threads", () => {
+    const ref = { project: "Shop", repo: "web", prId: 7 };
+
+    /** Detail for PR 7 whose threads endpoint answers `threads`. */
+    function withThreads(threads: unknown[]) {
+      return new AzureDevOpsClient(
+        "pat",
+        ORG,
+        fakeFetch([
+          {
+            match: (u) => /\/pullRequests\/7$/.test(u.split("?")[0]!),
+            body: { pullRequestId: 7, repository: { project: { id: "p1" } } },
+          },
+          { match: (u) => u.includes("/policy/evaluations"), body: { value: [] } },
+          { match: (u) => u.includes("/threads"), body: { value: threads } },
+        ]),
+      );
+    }
+
+    const comment = { id: 1, author: { displayName: "Rev" }, content: "hm", commentType: "text" };
+
+    it("maps a range on the right side to its last line plus a start line", async () => {
+      const az = withThreads([
+        {
+          id: 9,
+          status: "active",
+          threadContext: {
+            filePath: "/a.ts",
+            rightFileStart: { line: 10, offset: 1 },
+            rightFileEnd: { line: 14, offset: 1 },
+          },
+          comments: [comment],
+        },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({
+        id: "9",
+        line: 14,
+        startLine: 10,
+        startSide: "RIGHT",
+        side: "RIGHT",
+      });
+    });
+
+    it("reads a range on the left side", async () => {
+      const az = withThreads([
+        {
+          id: 9,
+          status: "active",
+          threadContext: {
+            filePath: "/a.ts",
+            leftFileStart: { line: 3, offset: 1 },
+            leftFileEnd: { line: 6, offset: 1 },
+          },
+          comments: [comment],
+        },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({ line: 6, startLine: 3, startSide: "LEFT", side: "LEFT" });
+    });
+
+    // Every write addresses a thread by id, so one Azure left the id off can
+    // be read but not answered or resolved.
+    it("makes a thread without an id read-only", async () => {
+      const az = withThreads([{ status: "active", comments: [comment] }]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({
+        id: "",
+        canReply: false,
+        canResolve: false,
+        canUnresolve: false,
+      });
+      expect(thread!.comments[0]!.url).toBeUndefined();
+    });
+
+    it("offers no reply when the first comment has no id to answer", async () => {
+      const az = withThreads([
+        { id: 4, status: "active", comments: [{ ...comment, id: undefined }] },
+      ]);
+      const [thread] = (await az.prDetail(ref)).reviewThreads;
+      expect(thread).toMatchObject({ canReply: false, canResolve: true });
+    });
+
+    it("counts won't-fix as resolved and pending as open", async () => {
+      const az = withThreads([
+        { id: 1, status: "wontFix", comments: [comment] },
+        { id: 2, status: "pending", comments: [comment] },
+        { id: 3, comments: [comment] },
+      ]);
+      const threads = (await az.prDetail(ref)).reviewThreads;
+      expect(threads.map((t) => t.isResolved)).toEqual([true, false, false]);
+    });
+
+    it("drops deleted threads and deleted comments", async () => {
+      const az = withThreads([
+        { id: 1, status: "active", isDeleted: true, comments: [comment] },
+        {
+          id: 2,
+          status: "active",
+          comments: [comment, { ...comment, id: 2, content: "gone", isDeleted: true }],
+        },
+      ]);
+      const threads = (await az.prDetail(ref)).reviewThreads;
+      expect(threads.map((t) => t.id)).toEqual(["2"]);
+      expect(threads[0]!.comments.map((c) => c.body)).toEqual(["hm"]);
+    });
+
+    /** A fetch that records every write and answers it with `{}`. */
+    function recording() {
+      const calls: { url: string; method: string; body: any }[] = [];
+      const fetchImpl = (async (url: string, init: any) => {
+        calls.push({ url: String(url), method: init?.method, body: JSON.parse(init.body) });
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch;
+      return { calls, az: new AzureDevOpsClient("pat", ORG, fetchImpl) };
+    }
+
+    it("posts a left-side range", async () => {
+      const { calls, az } = recording();
+      await az.postComment(ref, { path: "a.ts", line: 8, startLine: 6, side: "LEFT", body: "x" });
+      expect(calls[0]!.body.threadContext).toEqual({
+        filePath: "/a.ts",
+        leftFileStart: { line: 6, offset: 1 },
+        leftFileEnd: { line: 8, offset: 1 },
+      });
+    });
+
+    it("replies to a thread under its first comment", async () => {
+      const { calls, az } = recording();
+      await az.replyToThread(ref, 9, "agreed");
+      expect(calls[0]!.method).toBe("POST");
+      expect(calls[0]!.url).toContain("/pullRequests/7/threads/9/comments?api-version=7.1");
+      expect(calls[0]!.body).toEqual({ content: "agreed", parentCommentId: 1, commentType: 1 });
+    });
+
+    it("replies under the comment the caller names", async () => {
+      const { calls, az } = recording();
+      await az.replyToThread(ref, 9, "agreed", 4);
+      expect(calls[0]!.body.parentCommentId).toBe(4);
+    });
+
+    it("resolves a thread as fixed and reactivates it as active", async () => {
+      const { calls, az } = recording();
+      await az.setThreadResolved(ref, 9, true);
+      await az.setThreadResolved(ref, 9, false);
+      expect(calls.map((c) => [c.method, c.body.status])).toEqual([
+        ["PATCH", 2],
+        ["PATCH", 1],
+      ]);
+      expect(calls[0]!.url).toContain("/pullRequests/7/threads/9?api-version=7.1");
+    });
+
+    it("reports a failed write with its status", async () => {
+      const az = new AzureDevOpsClient(
+        "pat",
+        ORG,
+        (async () => new Response("no", { status: 403 })) as unknown as typeof fetch,
+      );
+      await expect(az.setThreadResolved(ref, 9, true)).rejects.toThrow("-> 403");
+    });
   });
 });
 

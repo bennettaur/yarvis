@@ -24,6 +24,13 @@ export interface HeadsDownPass {
   sleepMinutes: number | null;
   sleepReason: string | null;
   error: string | null;
+  /** How many tool calls the pass made. Only on the pass list. */
+  callCount?: number;
+  /**
+   * The calls that failed, with the start of their error, and those whose
+   * result never came back (`noResult`). Only on the pass list.
+   */
+  failedCalls?: { name: string; server: string | null; error: string | null; noResult?: boolean }[];
 }
 
 export interface HeadsDownState {
@@ -72,6 +79,38 @@ export interface HeadsDownConfig {
   userAwayAfterMinutes: number;
   provider: string | null;
   model: string | null;
+  /** The user's standing rules for every pass on this machine. Null for none. */
+  guidance: string | null;
+}
+
+export type MergeRisk = "low" | "medium" | "high" | "unknown";
+
+const MERGE_RISKS: readonly MergeRisk[] = ["low", "medium", "high", "unknown"];
+
+/** A merge a pass announced, carried on its attention item's payload. */
+export interface MergeAnnouncement {
+  /** "owner/repo", or empty when the merge call didn't name one. */
+  repo: string;
+  /** Null when a workspace's session was told to merge, and the PR isn't known. */
+  number: number | null;
+  workspaceId?: string | null;
+  /** The PR's own title, as the pass read it. */
+  title?: string | null;
+  /** The pass's own judgment; "unknown" when it merged without announcing it first. */
+  risk: MergeRisk;
+  why: string;
+}
+
+/** The merge an attention item announces, if it is a heads-down merge alert. */
+export function mergeAnnouncementOf(item: {
+  source: string;
+  sessionKey: string | null;
+  payload?: unknown;
+}): MergeAnnouncement | null {
+  if (item.source !== "system" || !item.sessionKey?.startsWith("heads-down-merge:")) return null;
+  const merge = (item.payload as { headsDownMerge?: MergeAnnouncement } | null)?.headsDownMerge;
+  if (!merge || !MERGE_RISKS.includes(merge.risk)) return null;
+  return typeof merge.number === "number" || merge.number === null ? merge : null;
 }
 
 export type WorkStreamStatus =
@@ -139,13 +178,14 @@ export type PassEvent =
       result?: string;
       durationMs?: number;
     }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; transient?: boolean }
   | { type: "done"; text: string }
   | { type: "attention"; reason?: string };
 
 export type HeadsDownStreamEvent =
   | { type: "pass-started"; passId: string }
   | { type: "pass-event"; passId: string; event: PassEvent }
+  | { type: "pass-retrying"; passId: string; retryAt: string }
   | { type: "pass-finished"; passId: string; sleepMinutes: number; nextPassAt: string }
   | { type: "changed" }
   | { type: "ping" };
