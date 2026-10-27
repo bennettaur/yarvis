@@ -1,5 +1,5 @@
 {
-  "id": "2b0420a8-1b67-43b8-9859-5b6e5b153cf7",
+  "id": "dfa78023-ebef-47e2-89c7-b9383152c205",
   "prevId": "f4a4246d-6020-4987-9d72-ab52655790cf",
   "version": "7",
   "dialect": "postgresql",
@@ -705,6 +705,27 @@
             },
             {
               "expression": "due_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_check_backs_session_idx": {
+          "name": "chat_check_backs_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

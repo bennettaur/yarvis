@@ -23,7 +23,7 @@ export interface CheckBackTurnContext {
 export function buildCheckBackTools(db: Db, sessionId: string, turn: CheckBackTurnContext) {
   return {
     schedule_check_back: tool({
-      description: `Leave yourself a prompt to run later in this same chat, so you can wait on something that takes time — CI finishing, a workspace session getting to a point, a PR being reviewed. Check the thing now first; if it isn't done, schedule a check-back that says exactly what to look at and what to tell the user. When the check-back runs and it still isn't done, schedule another one. A chain stops after ${MAX_CHECK_BACK_ATTEMPTS} checks. Pick a delay that fits how fast the thing changes rather than the shortest one.`,
+      description: `Leave yourself a prompt to run later in this same chat, so you can wait on something that takes time — CI finishing, a workspace session getting to a point, a PR being reviewed. Check the thing now first; if it isn't done, schedule a check-back that says exactly what to look at and what to tell the user, in your own words. When the check-back runs and it still isn't done, schedule another one. A chain stops after ${MAX_CHECK_BACK_ATTEMPTS} checks. The future turn runs unattended with read-only tools: it can look, report and call request_attention, but it cannot start sessions, write anything, or use external (MCP) tools. Pick a delay that fits how fast the thing changes rather than the shortest one.`,
       inputSchema: z.object({
         prompt: z
           .string()
@@ -32,19 +32,21 @@ export function buildCheckBackTools(db: Db, sessionId: string, turn: CheckBackTu
           .describe(
             "Self-contained instructions for your future turn: what to check, with which tool and ids, and what to report when it is done",
           ),
-        inMinutes: z
+        delayMinutes: z
           .number()
           .int()
           .min(MIN_DELAY_MINUTES)
           .max(MAX_DELAY_MINUTES)
           .describe("How long from now to run it"),
       }),
-      execute: async ({ prompt, inMinutes }) => {
+      execute: async ({ prompt, delayMinutes }) => {
+        // A delegated specialist runs with no session. NEVER_DELEGATABLE already keeps
+        // these tools from it; this stops a row being written if that ever changes.
         if (!sessionId) return { error: "there is no chat to come back to from here" };
         const result = await scheduleCheckBack(db, {
           sessionId,
           prompt,
-          delayMinutes: inMinutes,
+          delayMinutes,
           provider: turn.provider,
           model: turn.model,
           attempt: turn.attempt + 1,

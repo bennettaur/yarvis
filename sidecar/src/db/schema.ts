@@ -1494,14 +1494,16 @@ export const chatCheckBacks = pgTable(
     /** 1 for one the user's own turn scheduled; each re-schedule adds one. */
     attempt: integer("attempt").notNull().default(1),
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
-    /** "pending" | "fired" | "cancelled". */
-    status: text("status").notNull().default("pending"),
+    status: text("status").$type<"pending" | "fired" | "cancelled">().notNull().default("pending"),
     firedAt: timestamp("fired_at", { withTimezone: true }),
     /** Why the turn failed, when it did. Redacted before it is stored. */
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("chat_check_backs_due_idx").on(t.status, t.dueAt)],
+  (t) => [
+    index("chat_check_backs_due_idx").on(t.status, t.dueAt),
+    index("chat_check_backs_session_idx").on(t.sessionId, t.status),
+  ],
 );
 
 export type ChatCheckBack = typeof chatCheckBacks.$inferSelect;

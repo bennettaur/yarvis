@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { builtinToolMetadata } from "../chat/builtinTools.ts";
+import { CHECK_BACK_TOOLS } from "../chat/destructiveTools.ts";
 import { createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
@@ -98,7 +100,27 @@ describe("claiming", () => {
   });
 });
 
+describe("claiming a cancelled check-back", () => {
+  it("never fires it", async () => {
+    const sessionId = await newChat();
+    const now = new Date();
+    const result = await scheduleCheckBack(
+      db,
+      { ...base, sessionId, prompt: "x", delayMinutes: 1 },
+      now,
+    );
+    if ("error" in result) throw new Error(result.error);
+    await cancelCheckBack(db, sessionId, result.checkBack.id);
+    expect(await claimDueCheckBacks(db, new Date(now.getTime() + 5 * 60_000), 5)).toHaveLength(0);
+  });
+});
+
 describe("tools", () => {
+  it("names only tools that exist in the check-back allowlist", () => {
+    const names = Object.keys(builtinToolMetadata());
+    expect([...CHECK_BACK_TOOLS].filter((name) => !names.includes(name))).toEqual([]);
+  });
+
   it("carries the turn's model forward and counts the attempt up", async () => {
     const sessionId = await newChat();
     const tools = buildCheckBackTools(db, sessionId, {
@@ -107,7 +129,7 @@ describe("tools", () => {
       attempt: 3,
     });
     const out = await tools.schedule_check_back.execute!(
-      { prompt: "check PR #12's CI", inMinutes: 5 },
+      { prompt: "check PR #12's CI", delayMinutes: 5 },
       opts,
     );
     expect(out).toMatchObject({ attempt: 4 });
@@ -117,7 +139,7 @@ describe("tools", () => {
 
   it("refuses to schedule outside a chat", async () => {
     const tools = buildCheckBackTools(db, "", { provider: null, model: null, attempt: 0 });
-    const out = await tools.schedule_check_back.execute!({ prompt: "x", inMinutes: 5 }, opts);
+    const out = await tools.schedule_check_back.execute!({ prompt: "x", delayMinutes: 5 }, opts);
     expect(out).toHaveProperty("error");
   });
 });
@@ -167,6 +189,37 @@ describe("the job", () => {
     expect(row).toMatchObject({ id: checkBack.id, status: "fired", error: "provider down" });
     const items = await db.select().from(schema.attentionItems);
     expect(items[0]?.kind).toBe("error");
+  });
+
+  it("tells the user when a chain runs out of attempts without an answer", async () => {
+    const sessionId = await newChat();
+    await scheduleCheckBack(db, {
+      ...base,
+      sessionId,
+      prompt: "last look",
+      delayMinutes: 1,
+      attempt: MAX_CHECK_BACK_ATTEMPTS,
+    });
+    await checkBacksJob(async () => ({})).run(soon());
+    const items = await db.select().from(schema.attentionItems);
+    expect(items[0]?.title).toContain("stopped watching");
+  });
+
+  it("runs one chat's check-backs one after another", async () => {
+    const sessionId = await newChat();
+    for (const prompt of ["first", "second"]) {
+      await scheduleCheckBack(db, { ...base, sessionId, prompt, delayMinutes: 1 });
+    }
+    let running = 0;
+    let overlapped = false;
+    await checkBacksJob(async () => {
+      running++;
+      if (running > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      running--;
+      return {};
+    }).run(soon());
+    expect(overlapped).toBe(false);
   });
 
   it("marks the message as the assistant's own check-back", async () => {

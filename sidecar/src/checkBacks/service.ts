@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type ChatCheckBack, chatCheckBacks } from "../db/schema.ts";
+import { redactSecrets } from "../llm/errors.ts";
 
 /**
  * Check-backs: prompts the chat agent leaves for itself to run later in the same
@@ -22,12 +23,13 @@ export const MAX_PENDING_PER_SESSION = 5;
 /** The scheduler ticks once a minute, so a shorter delay would not fire sooner. */
 export const MIN_DELAY_MINUTES = 1;
 
+/** A week. Anything further out is better as a scheduled job the user can see. */
 export const MAX_DELAY_MINUTES = 7 * 24 * 60;
 
 /** Cap on the prompt, which is replayed into the chat as a turn of its own. */
 export const MAX_PROMPT_CHARS = 2_000;
 
-export interface ScheduleCheckBackInput {
+interface ScheduleCheckBackInput {
   sessionId: string;
   prompt: string;
   delayMinutes: number;
@@ -36,7 +38,7 @@ export interface ScheduleCheckBackInput {
   attempt: number;
 }
 
-export type ScheduleCheckBackResult = { checkBack: ChatCheckBack } | { error: string };
+type ScheduleCheckBackResult = { checkBack: ChatCheckBack } | { error: string };
 
 export async function scheduleCheckBack(
   db: Db,
@@ -45,7 +47,7 @@ export async function scheduleCheckBack(
 ): Promise<ScheduleCheckBackResult> {
   if (input.attempt > MAX_CHECK_BACK_ATTEMPTS) {
     return {
-      error: `this has been checked ${MAX_CHECK_BACK_ATTEMPTS} times already; tell the user it still isn't done instead of scheduling another check`,
+      error: `this has been checked ${MAX_CHECK_BACK_ATTEMPTS} times already; tell the user it still isn't done and call request_attention instead of scheduling another check`,
     };
   }
   const pending = await listPendingCheckBacks(db, input.sessionId);
@@ -58,7 +60,9 @@ export async function scheduleCheckBack(
     .insert(chatCheckBacks)
     .values({
       sessionId: input.sessionId,
-      prompt: input.prompt,
+      // Shown in the thread and replayed to the model; a token the model copied
+      // out of a log must not be kept.
+      prompt: redactSecrets(input.prompt),
       provider: input.provider,
       model: input.model,
       attempt: input.attempt,
@@ -68,7 +72,7 @@ export async function scheduleCheckBack(
   return { checkBack };
 }
 
-/** Soonest first. */
+/** Earliest due first. */
 export async function listPendingCheckBacks(db: Db, sessionId: string): Promise<ChatCheckBack[]> {
   return db
     .select()
@@ -97,7 +101,7 @@ export async function cancelCheckBack(db: Db, sessionId: string, id: string): Pr
 }
 
 /**
- * Marks the due check-backs fired and returns them, oldest first.
+ * Marks the due check-backs fired and returns them, earliest due first.
  *
  * Fired before the turn runs, not after: a sidecar that dies mid-turn then loses
  * one check rather than replaying it into the chat on every restart.
