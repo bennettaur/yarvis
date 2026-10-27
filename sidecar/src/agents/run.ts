@@ -90,7 +90,14 @@ export interface SpecialistRun {
  * orchestrator's job: a specialist that could delegate could delegate to itself,
  * and one bad prompt becomes an unbounded chain of runs.
  */
-const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specialists"]);
+const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
+  "delegate",
+  "list_specialists",
+  // A check-back is a turn in a chat, and a delegated run has no chat to return to.
+  "schedule_check_back",
+  "list_check_backs",
+  "cancel_check_back",
+]);
 
 /**
  * Tools a specialist holds only if it has been granted them explicitly.

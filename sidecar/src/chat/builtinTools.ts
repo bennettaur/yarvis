@@ -1,6 +1,7 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
+import { buildCheckBackTools, type CheckBackTurnContext } from "../checkBacks/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
@@ -37,6 +38,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** What a check-back scheduled from this turn inherits. Absent off a chat turn. */
+  checkBack?: CheckBackTurnContext;
 }
 
 /**
@@ -49,10 +52,12 @@ export interface BuiltinToolDeps {
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
   const { db, config, sessionId, memory, attention, remoteControl } = deps;
+  const checkBack = deps.checkBack ?? { provider: null, model: null, attempt: 0 };
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    checkBacks: buildCheckBackTools(db, sessionId, checkBack),
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     events: buildEventTools(db),
