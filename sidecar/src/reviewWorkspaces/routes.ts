@@ -29,7 +29,6 @@ import {
 } from "./reviewMarks.ts";
 import {
   addReviewPr,
-  addStackLayers,
   answerReviewSetup,
   archiveReviewWorkspace,
   createReviewWorkspace,
@@ -49,6 +48,7 @@ import {
   reviewSetupInfo,
   reviewSymbolSearch,
   reviewTree,
+  startStackLayers,
   touchReviewWorkspace,
 } from "./service.ts";
 import {
@@ -215,9 +215,8 @@ export function createReviewWorkspaceRoutes(
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       const id = c.req.param("id");
-      const d = deps();
-      const pr = await addReviewPr(db(), config, id, parsed.data.ref, d);
-      await addStackLayers(db(), config, id, parsed.data.ref, d);
+      const pr = await addReviewPr(db(), config, id, parsed.data.ref, deps());
+      void startStackLayers(db(), config, id, [parsed.data.ref], deps());
       return c.json(pr, 201);
     } catch (e) {
       return fail(c, e);

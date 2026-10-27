@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { PrRef } from "../pr/types.ts";
-import { headSourceFor, httpsRemoteFor, ReviewWorkspaceError, reviewClonePath } from "./service.ts";
+import { NO_PULL_REQUEST, type PrRef, type StackEntry } from "../pr/types.ts";
+import {
+  headSourceFor,
+  httpsRemoteFor,
+  otherOpenLayers,
+  ReviewWorkspaceError,
+  reviewClonePath,
+} from "./service.ts";
 
 const azure: PrRef = { provider: "azure", org: "Org", project: "My Project", repo: "R&D", prId: 7 };
 
@@ -68,5 +74,43 @@ describe("httpsRemoteFor", () => {
     expect(
       httpsRemoteFor(secrets({}), { provider: "github", owner: "o", repo: "r", number: 1 }),
     ).toEqual({ url: "https://github.com/o/r.git" });
+  });
+});
+
+describe("otherOpenLayers", () => {
+  const entry = (number: number, extra: Partial<StackEntry> = {}): StackEntry => ({
+    ref: { provider: "github", owner: "o", repo: "r", number },
+    number,
+    title: "",
+    url: "",
+    baseRef: "",
+    headRef: "",
+    state: "open",
+    merged: false,
+    draft: false,
+    queued: false,
+    checks: { total: 0, success: 0, failure: 0, pending: 0 },
+    reviewDecision: null,
+    isCurrent: false,
+    needsUpdate: false,
+    statusKnown: true,
+    ...extra,
+  });
+
+  it("keeps the other open pull requests, bottom first", () => {
+    const layers = otherOpenLayers({
+      trunk: "main",
+      stackNumber: null,
+      truncated: false,
+      entries: [
+        entry(1, { state: "merged", merged: true }),
+        entry(2),
+        entry(3, { isCurrent: true }),
+        entry(4, { state: "closed" }),
+        entry(NO_PULL_REQUEST, { state: "none" }),
+        entry(5, { draft: true }),
+      ],
+    });
+    expect(layers.map((r) => (r.provider === "github" ? r.number : 0))).toEqual([2, 5]);
   });
 });

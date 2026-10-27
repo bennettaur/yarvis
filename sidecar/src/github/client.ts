@@ -474,7 +474,7 @@ export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEn
 
 /** The fields {@link toStackEntry} reads. Shared by all three stack queries. */
 const STACK_NODE_FIELDS = `
-  number title url state isDraft isInMergeQueue
+  number title url state isDraft isInMergeQueue isCrossRepository
   baseRefName headRefName mergeStateStatus reviewDecision
   commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
     __typename
@@ -500,7 +500,7 @@ query($owner:String!,$repo:String!,$number:Int!){
 const STACK_DOWN_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:1, orderBy:{field:CREATED_AT,direction:DESC}){
+    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:10, orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{ ${STACK_NODE_FIELDS} }
     }
   }
@@ -510,7 +510,7 @@ query($owner:String!,$repo:String!,$branch:String!){
 const STACK_UP_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(baseRefName:$branch, states:[OPEN], first:1, orderBy:{field:CREATED_AT,direction:ASC}){
+    pullRequests(baseRefName:$branch, states:[OPEN], first:10, orderBy:{field:CREATED_AT,direction:ASC}){
       nodes{ ${STACK_NODE_FIELDS} }
     }
   }
@@ -1587,7 +1587,9 @@ export class GitHubClient {
         query,
         { owner, repo, branch },
       );
-      const node = data.repository?.pullRequests?.nodes?.[0];
+      // A branch name matches fork PRs too, so anyone could otherwise slot a
+      // PR of theirs into the stack. A real layer's branch is in this repo.
+      const node = data.repository?.pullRequests?.nodes?.find((n) => n && !n.isCrossRepository);
       if (!node?.number || seen.has(node.number)) return null;
       seen.add(node.number);
       return node;

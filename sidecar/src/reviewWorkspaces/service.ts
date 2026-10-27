@@ -34,7 +34,7 @@ import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { type ReviewMarkProvider, recentMarkShas, reviewMarkProvider } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
-import { NO_PULL_REQUEST, type PrRef, refKey } from "../pr/types.ts";
+import { NO_PULL_REQUEST, type PrRef, type PrStack, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { git, removeWorktree, splitNulFields } from "../workspaces/git.ts";
@@ -233,9 +233,7 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
         ref.repo,
         ref.number,
       );
-      return stack.entries
-        .filter((e) => !e.isCurrent && e.number !== NO_PULL_REQUEST && e.state === "open")
-        .map((e) => e.ref);
+      return otherOpenLayers(stack);
     },
   };
 }
@@ -381,7 +379,7 @@ export async function createReviewWorkspace(
     seen.add(refKey(ref));
     await addReviewPr(db, config, ws.id, ref, deps);
   }
-  for (const ref of input.refs ?? []) await addStackLayers(db, config, ws.id, ref, deps);
+  void startStackLayers(db, config, ws.id, input.refs ?? [], deps);
   return requireWorkspace(db, ws.id);
 }
 
@@ -482,33 +480,56 @@ export async function addReviewPr(
 }
 
 /**
- * Adds the other open layers of `ref`'s stack that the workspace doesn't hold
- * yet. A layer's diff is only its own change, so it reads properly only beside
- * the layers it builds on and the ones built on it. The PR asked for is
- * reviewable without them, so a failed lookup is logged rather than thrown.
+ * The layers of a stack worth reviewing beside the one it was looked up from:
+ * open pull requests only, bottom first. A merged layer's change is already in
+ * the trunk, and a branch with no PR has nothing to check out.
  */
-export async function addStackLayers(
+export function otherOpenLayers(stack: PrStack): PrRef[] {
+  return stack.entries
+    .filter((e) => !e.isCurrent && e.number !== NO_PULL_REQUEST && e.state === "open")
+    .map((e) => e.ref);
+}
+
+/**
+ * Adds the other open layers of each ref's stack that the workspace doesn't
+ * hold yet, in the background: the lookup is a GitHub round trip per layer, and
+ * the workspace view already polls while the PR it asked for clones. A layer's
+ * diff is only its own change, so it reads properly only beside the layers
+ * around it. The PRs asked for are reviewable without them, so a failed lookup
+ * or add is logged, not thrown. Answers with the background work, for tests.
+ */
+export function startStackLayers(
   db: Db,
   config: Config,
   workspaceId: string,
-  ref: PrRef,
+  refs: PrRef[],
   deps: ReviewDeps,
-): Promise<ReviewWorkspacePr[]> {
-  let layers: PrRef[];
-  try {
-    layers = (await deps.stackOf?.(ref)) ?? [];
-  } catch (e) {
-    console.error("[review-workspaces] could not read the stack:", describeError(e));
-    return [];
-  }
-  const held = new Set((await prsFor(db, workspaceId)).map((pr) => pr.refKey));
-  const added: ReviewWorkspacePr[] = [];
-  for (const layer of layers) {
-    if (held.has(refKey(layer))) continue;
-    held.add(refKey(layer));
-    added.push(await addReviewPr(db, config, workspaceId, layer, deps));
-  }
-  return added;
+): Promise<void> {
+  return (async () => {
+    // A ref an earlier lookup already reached is in the same stack.
+    const reached = new Set<string>();
+    for (const ref of refs) {
+      if (reached.has(refKey(ref))) continue;
+      let layers: PrRef[];
+      try {
+        layers = (await deps.stackOf?.(ref)) ?? [];
+      } catch (e) {
+        console.error("[review-workspaces] could not read the stack:", describeError(e));
+        continue;
+      }
+      const held = new Set((await prsFor(db, workspaceId)).map((pr) => pr.refKey));
+      for (const layer of layers) {
+        const key = refKey(layer);
+        reached.add(key);
+        if (held.has(key)) continue;
+        try {
+          await addReviewPr(db, config, workspaceId, layer, deps);
+        } catch (e) {
+          console.error("[review-workspaces] could not add a stack layer:", describeError(e));
+        }
+      }
+    }
+  })().catch((e) => console.error("[review-workspaces] stack layers:", describeError(e)));
 }
 
 export async function getReviewPr(

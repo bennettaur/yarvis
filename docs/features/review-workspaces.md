@@ -32,6 +32,7 @@ workspaces, to add the PR to one of them instead.
 
 A GitHub PR that is part of a stack brings the rest of its stack along: every
 other open layer is added to the workspace too, after the PR you asked for.
+They appear in the nav a moment later, once GitHub has answered.
 Layers the workspace already holds, merged layers and branches with no PR are
 left out. The stack is found the same way as the PRs tab's
 [Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be

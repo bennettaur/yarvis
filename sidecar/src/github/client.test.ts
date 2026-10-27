@@ -940,8 +940,9 @@ function stackFetch(
       };
     }
     const key = query.includes("headRefName:$branch") ? "headRefName" : "baseRefName";
-    const match = nodes.find((n) => n[key] === variables.branch);
-    return { repository: { pullRequests: { nodes: match ? [match] : [] } } };
+    return {
+      repository: { pullRequests: { nodes: nodes.filter((n) => n[key] === variables.branch) } },
+    };
   });
 }
 
@@ -957,6 +958,17 @@ describe("github stacked pull requests", () => {
     expect(result.trunk).toBe("main");
     expect(result.entries.map((e) => e.number)).toEqual([1, 2, 3]);
     expect(result.entries.map((e) => e.isCurrent)).toEqual([false, true, false]);
+  });
+
+  it("skips a fork's pull request whose branch shares a layer's name", async () => {
+    const forked = [
+      node(7, "auth", "main", { isCrossRepository: true }),
+      ...stack,
+      node(8, "api", "elsewhere", { isCrossRepository: true }),
+      node(9, "x", "ui", { isCrossRepository: true }),
+    ];
+    const gh = new GitHubClient("t", stackFetch(forked));
+    expect((await gh.prStack("o", "r", 2)).entries.map((e) => e.number)).toEqual([1, 2, 3]);
   });
 
   it("reports a pull request that is not stacked as a stack of one", async () => {
