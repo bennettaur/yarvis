@@ -132,6 +132,7 @@ beforeEach(async () => {
     "create_calendar_event",
     "register_repo",
     "schedule_task",
+    "heads_down_status",
   ]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
@@ -429,7 +430,12 @@ describe("runAgentTurn", () => {
   describe("scheduled task turns", () => {
     const scheduledTaskId = "6f1c2d3e-4a5b-4c6d-8e7f-001122334455";
 
-    async function runScheduledTask(model: MockLanguageModelV3, sessionId: string, attempt = 1) {
+    async function runScheduledTask(
+      model: MockLanguageModelV3,
+      sessionId: string,
+      attempt = 1,
+      origin: "chat" | "heads-down" = "chat",
+    ) {
       const events: AgentEvent[] = [];
       for await (const event of runAgentTurn({
         config,
@@ -440,7 +446,7 @@ describe("runAgentTurn", () => {
         message: "[Scheduled task: Check CI, scheduled earlier]\nis CI green on #12?",
         userMetadata: {
           source: "scheduled-task",
-          scheduledTask: { id: scheduledTaskId, attempt, origin: "chat" },
+          scheduledTask: { id: scheduledTaskId, attempt, origin },
         },
       })) {
         events.push(event);
@@ -456,6 +462,7 @@ describe("runAgentTurn", () => {
       const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
       expect(offered).toContain("list_tasks");
       expect(offered).toContain("schedule_task");
+      expect(offered).toContain("heads_down_status");
       expect(offered).not.toContain("create_task");
       expect(offered).not.toContain("delete_task");
       expect(offered).not.toContain("register_repo");
@@ -486,8 +493,59 @@ describe("runAgentTurn", () => {
       );
       await runScheduledTask(model, session.id, 3);
 
-      const [row] = await sql`SELECT attempt, provider, model FROM chat_scheduled_tasks`;
-      expect(row).toMatchObject({ attempt: 4, provider: "test-provider", model: "test-model" });
+      const [row] = await sql`
+        SELECT attempt, provider, model, parent_id, origin FROM chat_scheduled_tasks
+      `;
+      expect(row).toMatchObject({
+        attempt: 4,
+        provider: "test-provider",
+        model: "test-model",
+        parent_id: scheduledTaskId,
+        origin: "chat",
+      });
+    });
+
+    const schedulesOnce = () =>
+      streamingModel(
+        [
+          toolCall("c1", "schedule_task", {
+            title: "Check PRs",
+            prompt: "are the PRs mergeable?",
+            delayMinutes: 60,
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("scheduled"), finish("stop")],
+      );
+
+    it("records a task scheduled from a chat as reporting to that chat", async () => {
+      const session = await createSession(db, null);
+      await collect(schedulesOnce(), session.id);
+      const [row] = await sql`SELECT origin, attempt, parent_id FROM chat_scheduled_tasks`;
+      expect(row).toMatchObject({ origin: "chat", attempt: 1, parent_id: null });
+    });
+
+    it("records a task a heads-down pass scheduled as reporting to the Heads down page", async () => {
+      const session = await createSession(db, null);
+      for await (const _ of runAgentTurn({
+        config,
+        db,
+        model: schedulesOnce(),
+        sessionId: session.id,
+        message: "pass prompt",
+        userMetadata: { source: "heads-down" },
+      })) {
+        // drain
+      }
+      const [row] = await sql`SELECT origin FROM chat_scheduled_tasks`;
+      expect(row?.origin).toBe("heads-down");
+    });
+
+    it("keeps a chain reporting where its first task was scheduled", async () => {
+      const session = await createSession(db, null);
+      await runScheduledTask(schedulesOnce(), session.id, 1, "heads-down");
+      const [row] = await sql`SELECT origin FROM chat_scheduled_tasks`;
+      expect(row?.origin).toBe("heads-down");
     });
 
     it("replays a scheduled task on later turns fenced as the assistant's note", async () => {

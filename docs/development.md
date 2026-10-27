@@ -280,8 +280,9 @@ sidecar/        Bun + TS service (Hono)
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, and your own scheduled jobs
-  src/scheduledTasks/  prompts the assistant schedules for itself in a chat,
-                   their tools, and the job that runs them
+  src/scheduledTasks/
+                   prompts the assistant schedules for itself in a chat, their
+                   tools, and the job that runs them
   src/digest/      dangling work, next-work ranking, weekly summary, dismissals
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff

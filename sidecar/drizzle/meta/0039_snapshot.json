@@ -1,5 +1,5 @@
 {
-  "id": "8c4582d2-9c30-4f26-8c12-fe797193ba30",
+  "id": "620e915f-aaaf-4f66-ab17-510c59811bee",
   "prevId": "f0f5a82d-8771-47f5-8fe5-619052fb5610",
   "version": "7",
   "dialect": "postgresql",
@@ -858,6 +858,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "due_at": {
           "name": "due_at",

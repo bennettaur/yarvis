@@ -83,7 +83,8 @@ Other limits on a Claude Code job:
 
 These are code, not rows in the Jobs tab. The first three write memory rather
 than output you read, and they are what lets the assistant answer "what did I
-do yesterday?". The scheduled-tasks job runs the tasks the assistant schedules for itself. Their status and a manual trigger are under **Settings →
+do yesterday?". The scheduled-tasks job runs the tasks the assistant schedules
+for itself. Their status and a manual trigger are under **Settings →
 Assistant**.
 
 | Job | When | What it does |

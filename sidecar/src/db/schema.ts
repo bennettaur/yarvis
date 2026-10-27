@@ -1863,8 +1863,8 @@ export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
  * goals on Wednesday".
  *
  * One row is one future turn. A task that finds the thing it watches still
- * unfinished schedules a fresh row with `attempt` one higher, which is what
- * bounds a chain that never resolves.
+ * unfinished schedules a fresh row with `attempt` one higher and `parentId`
+ * pointing back at it; the attempt is what bounds a chain that never resolves.
  */
 export const chatScheduledTasks = pgTable(
   "chat_scheduled_tasks",
@@ -1887,6 +1887,8 @@ export const chatScheduledTasks = pgTable(
     model: text("model"),
     /** 1 for one the user's own turn scheduled; each re-schedule adds one. */
     attempt: integer("attempt").notNull().default(1),
+    /** The task whose run scheduled this one; null for the first in a chain. */
+    parentId: uuid("parent_id"),
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     status: text("status").$type<"pending" | "fired" | "cancelled">().notNull().default("pending"),
     firedAt: timestamp("fired_at", { withTimezone: true }),

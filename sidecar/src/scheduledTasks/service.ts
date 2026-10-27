@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type ChatScheduledTask, chatScheduledTasks } from "../db/schema.ts";
 import { redactSecrets } from "../llm/errors.ts";
@@ -24,6 +24,12 @@ export const MAX_PENDING_PER_SESSION = 5;
 export const MIN_DELAY_MINUTES = 1;
 
 /**
+ * The shortest gap between runs of a chain. Each run replays the whole chat, so
+ * a watch that re-checks every minute would spend a turn a minute for nothing.
+ */
+export const MIN_RESCHEDULE_DELAY_MINUTES = 5;
+
+/**
  * Two weeks: far enough for "check in on Friday" from a Monday, or next week's
  * planning. Anything longer is better as a scheduled job the user can see.
  */
@@ -43,6 +49,7 @@ interface ScheduleTaskInput {
   provider: string | null;
   model: string | null;
   attempt: number;
+  parentId: string | null;
 }
 
 type ScheduleTaskResult = { scheduledTask: ChatScheduledTask } | { error: string };
@@ -54,7 +61,12 @@ export async function scheduleTask(
 ): Promise<ScheduleTaskResult> {
   if (input.attempt > MAX_SCHEDULED_TASK_ATTEMPTS) {
     return {
-      error: `this has been checked ${MAX_SCHEDULED_TASK_ATTEMPTS} times already; tell the user it still isn't done instead of scheduling another check`,
+      error: `this chain has already run ${MAX_SCHEDULED_TASK_ATTEMPTS} times; tell the user it still isn't done instead of scheduling another task`,
+    };
+  }
+  if (input.parentId && input.delayMinutes < MIN_RESCHEDULE_DELAY_MINUTES) {
+    return {
+      error: `schedule the next run at least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out`,
     };
   }
   const pending = await listPendingScheduledTasks(db, input.sessionId);
@@ -69,12 +81,13 @@ export async function scheduleTask(
       sessionId: input.sessionId,
       // Both are shown to the user and the prompt is replayed to the model; a
       // token the model copied out of a log must not be kept.
-      title: redactSecrets(input.title),
+      title: redactSecrets(collapseWhitespace(input.title)),
       prompt: redactSecrets(input.prompt),
       origin: input.origin,
       provider: input.provider,
       model: input.model,
       attempt: input.attempt,
+      parentId: input.parentId,
       dueAt: new Date(now.getTime() + input.delayMinutes * 60_000),
     })
     .returning();
@@ -151,12 +164,15 @@ export async function hasFollowUp(db: Db, scheduledTask: ChatScheduledTask): Pro
     .from(chatScheduledTasks)
     .where(
       and(
-        eq(chatScheduledTasks.sessionId, scheduledTask.sessionId),
+        eq(chatScheduledTasks.parentId, scheduledTask.id),
         eq(chatScheduledTasks.status, "pending"),
-        eq(chatScheduledTasks.attempt, scheduledTask.attempt + 1),
-        gt(chatScheduledTasks.createdAt, scheduledTask.createdAt),
       ),
     )
     .limit(1);
   return rows.length > 0;
+}
+
+/** One line: a title with a newline in it could pose as a second header. */
+export function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }

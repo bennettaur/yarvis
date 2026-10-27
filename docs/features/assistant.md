@@ -139,7 +139,10 @@ The assistant can act on your workspaces in bulk:
 ### Scheduled tasks
 
 The assistant can leave itself a **scheduled task**: a prompt it runs later in
-the same chat. It uses them to come back to something at a useful time:
+the same chat. It schedules one on its own when you asked to be told about
+something, or when it fits what you said you're working on. Otherwise it offers
+first. It always tells you what it scheduled and when. It uses them to come
+back to something at a useful time:
 
 - **Checking on progress.** Tell it you're trying to get all your PRs
   mergeable, and it can look again in an hour and tell you which ones still
@@ -151,19 +154,22 @@ the same chat. It uses them to come back to something at a useful time:
   task to look again. A run that finds it still running schedules the next one
   quietly; you hear about it when there is something to say.
 
-When a task runs, it posts in the chat it came from and rings the attention
-bell. Click the item to open that chat. A task the
-[heads-down](heads-down.md) loop scheduled opens the **Heads down** page
-instead, since its passes run in chats you don't see.
+When a task runs and has something for you, it posts in the chat it came from
+and rings the attention bell. The item's title names the task, and its text is
+the start of what the assistant found. Click it to open that chat, which also
+reloads it if it was already open. A task the [heads-down](heads-down.md) loop
+scheduled opens the **Heads down** page instead, since its passes run in chats
+you don't see.
 
 - Task messages show in the chat as **Yarvis · scheduled task**, so you can
   tell them from what you typed.
 - A task runs with nobody watching, so it only gets tools that read: it can
   look things up, report and schedule another task. It can't write tasks or
-  memories, start sessions, or use MCP tools. If you want something done when
-  it runs, ask once you've read what it found.
-- A task can be up to two weeks out. A chat can have 5 tasks waiting at once,
-  and a chain of tasks watching the same thing stops after 24 runs. Ask "what
+  memories, start sessions, read your browser tabs, or use MCP tools. If you
+  want something done when it runs, ask once you've read what it found.
+- A task can be up to two weeks out. A chat can have 5 tasks waiting at once.
+  A chain of tasks watching the same thing re-checks at most every 5 minutes
+  and stops after 24 runs. Ask "what
   have you scheduled?" to list them, or "cancel the CI check" to cancel one.
 - If a task fails to run (for example, the model is unavailable or it times out
   after 5 minutes), the bell tells you so. It also tells you when a chain stops

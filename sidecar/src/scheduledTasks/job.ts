@@ -11,6 +11,7 @@ import { redactSecrets } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import {
   claimDueScheduledTasks,
+  collapseWhitespace,
   hasFollowUp,
   MAX_SCHEDULED_TASK_ATTEMPTS,
   recordScheduledTaskError,
@@ -147,10 +148,15 @@ function navTargetFor(scheduledTask: ChatScheduledTask): AttentionNavTarget {
     : { type: "chat", sessionId: scheduledTask.sessionId };
 }
 
-function excerpt(text: string | undefined): string | null {
-  const trimmed = text?.trim();
-  if (!trimmed) return null;
-  return trimmed.length > MAX_BODY_CHARS ? `${trimmed.slice(0, MAX_BODY_CHARS)}…` : trimmed;
+/**
+ * The notification body. It is model text written after reading third-party
+ * content and is shown in the bell and as an OS notification, so it is kept to
+ * one redacted line; the full answer is in the chat.
+ */
+function notificationBody(text: string | undefined): string | null {
+  const line = redactSecrets(collapseWhitespace(text ?? ""));
+  if (!line) return null;
+  return line.length > MAX_BODY_CHARS ? `${line.slice(0, MAX_BODY_CHARS)}…` : line;
 }
 
 async function raiseAttention(
@@ -167,7 +173,6 @@ async function raiseAttention(
     title,
     body,
     navTarget: navTargetFor(scheduledTask),
-    payload: { scheduledTaskId: scheduledTask.id },
   });
   publish(item);
 }
@@ -194,7 +199,7 @@ async function runDueScheduledTask(
       db,
       scheduledTask,
       "error",
-      `Scheduled task failed: ${scheduledTask.title}`,
+      `Yarvis · scheduled task failed: ${scheduledTask.title}`,
       error,
     );
     return;
@@ -202,12 +207,14 @@ async function runDueScheduledTask(
   // A task that only scheduled its next run, with nothing to say, has nothing
   // for the user yet: a CI watch would otherwise ring the bell every ten minutes.
   if (!outcome.attentionReason && (await hasFollowUp(db, scheduledTask))) return;
-  const title =
-    outcome.attentionReason ??
-    (scheduledTask.attempt >= MAX_SCHEDULED_TASK_ATTEMPTS
-      ? `Stopped after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs: ${scheduledTask.title}`
-      : `Yarvis has an update: ${scheduledTask.title}`);
-  await raiseAttention(db, scheduledTask, "info", title, excerpt(outcome.reply));
+  // The title is always ours, naming the task the user agreed to; what the
+  // model said goes in the body, so an injected line can't pose as an app alert.
+  const stopped = !outcome.attentionReason && scheduledTask.attempt >= MAX_SCHEDULED_TASK_ATTEMPTS;
+  const title = stopped
+    ? `Yarvis · stopped after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs: ${scheduledTask.title}`
+    : `Yarvis · ${scheduledTask.title}`;
+  const body = notificationBody(outcome.attentionReason ?? outcome.reply);
+  await raiseAttention(db, scheduledTask, "info", title, body);
 }
 
 export function scheduledTasksJob(
