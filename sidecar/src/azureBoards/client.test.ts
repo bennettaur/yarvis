@@ -197,6 +197,97 @@ describe("AzureBoardsClient queries", () => {
     expect(detail.states.map((s) => s.name)).toEqual(["New", "Active", "Resolved", "Closed"]);
   });
 
+  it("asks for relations and lists linked work items with their titles", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(
+        org,
+        {
+          "/_apis/wit/workitems/7": {
+            id: 7,
+            fields: fields(),
+            relations: [
+              {
+                rel: "System.LinkTypes.Dependency-Reverse",
+                url: `${org}/_apis/wit/workItems/3`,
+                attributes: { name: "Predecessor" },
+              },
+              {
+                rel: "System.LinkTypes.Hierarchy-Reverse",
+                url: `${org}/_apis/wit/workItems/1`,
+                attributes: { name: "Parent" },
+              },
+              // A commit link: not a work item, so left out.
+              {
+                rel: "ArtifactLink",
+                url: "vstfs:///Git/Commit/abc",
+                attributes: { name: "Fixed in Commit" },
+              },
+            ],
+          },
+          "/Web%20App/_apis/wit/workItems/7/comments": { comments: [] },
+          "/Web%20App/_apis/wit/workitemtypes/Bug/states": bugStates,
+          "POST /_apis/wit/workitemsbatch": {
+            value: [
+              { id: 1, fields: fields({ "System.Title": "Auth epic", "System.State": "Active" }) },
+              { id: 3, fields: fields({ "System.Title": "Ship tokens", "System.State": "New" }) },
+            ],
+          },
+        },
+        recorder,
+      ),
+    );
+
+    const detail = await client.workItemDetail(7);
+
+    expect(recorder[0]?.url).toContain("$expand=relations");
+    expect(detail.relations).toEqual([
+      {
+        id: 3,
+        relation: "Predecessor",
+        title: "Ship tokens",
+        state: "New",
+        type: "Bug",
+        url: `${org}/Web%20App/_workitems/edit/3`,
+      },
+      {
+        id: 1,
+        relation: "Parent",
+        title: "Auth epic",
+        state: "Active",
+        type: "Bug",
+        url: `${org}/Web%20App/_workitems/edit/1`,
+      },
+    ]);
+  });
+
+  it("still lists links when the linked items can't be loaded", async () => {
+    const org = nextOrg();
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, {
+        "/_apis/wit/workitems/7": {
+          id: 7,
+          fields: fields(),
+          relations: [{ url: `${org}/_apis/wit/workItems/3`, attributes: { name: "Successor" } }],
+        },
+        "/Web%20App/_apis/wit/workItems/7/comments": { comments: [] },
+        "/Web%20App/_apis/wit/workitemtypes/Bug/states": bugStates,
+        "POST /_apis/wit/workitemsbatch": { status: 500 },
+      }),
+    );
+
+    const detail = await client.workItemDetail(7);
+
+    expect(detail.relations).toEqual([
+      { id: 3, relation: "Successor", title: "", state: "", type: "", url: "" },
+    ]);
+  });
+
   it("falls back to Repro Steps when a bug has no description", async () => {
     const org = nextOrg();
     const client = new AzureBoardsClient(
@@ -237,6 +328,84 @@ describe("AzureBoardsClient.workItems", () => {
 });
 
 describe("AzureBoardsClient mutations", () => {
+  it("puts a non-bug's text in Description and leaves out fields not given", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(
+        org,
+        {
+          "POST /Web/_apis/wit/workitems/$User%20Story": {
+            id: 13,
+            fields: fields({ "System.WorkItemType": "User Story" }),
+          },
+          "/Web%20App/_apis/wit/workitemtypes/User%20Story/states": bugStates,
+        },
+        recorder,
+      ),
+    );
+
+    await client.createWorkItem("Web", "User Story", { title: "Story", description: "Why" });
+
+    expect(recorder[0]?.body).toEqual([
+      { op: "add", path: "/fields/System.Title", value: "Story" },
+      { op: "add", path: "/fields/System.Description", value: "<div>Why</div>" },
+    ]);
+  });
+
+  it("sends a state change in the same patch as the fields", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, { "PATCH /_apis/wit/workitems/7": { id: 7 } }, recorder),
+    );
+
+    await client.updateFields(7, { title: "Renamed", state: "Closed" });
+
+    expect(recorder).toHaveLength(1);
+    expect(recorder[0]?.body).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Closed" },
+      { op: "add", path: "/fields/System.Title", value: "Renamed" },
+    ]);
+  });
+
+  it("creates a work item with a JSON patch, putting a bug's text in Repro Steps", async () => {
+    const org = nextOrg();
+    const recorder: RecordedRequest[] = [];
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(
+        org,
+        {
+          "POST /Web%20App/_apis/wit/workitems/$Bug": { id: 12, fields: fields() },
+          "/Web%20App/_apis/wit/workitemtypes/Bug/states": bugStates,
+        },
+        recorder,
+      ),
+    );
+
+    const created = await client.createWorkItem("Web App", "Bug", {
+      title: "Fix the login bug",
+      description: "Click login",
+      areaPath: "Web App\\Auth",
+      tags: ["backend", "urgent"],
+    });
+
+    expect(created).toMatchObject({ externalId: "12", statusName: "Active" });
+    expect(recorder[0]?.contentType).toBe("application/json-patch+json");
+    expect(recorder[0]?.body).toEqual([
+      { op: "add", path: "/fields/System.Title", value: "Fix the login bug" },
+      { op: "add", path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: "<div>Click login</div>" },
+      { op: "add", path: "/fields/System.AreaPath", value: "Web App\\Auth" },
+      { op: "add", path: "/fields/System.Tags", value: "backend; urgent" },
+    ]);
+  });
+
   it("writes Repro Steps, not Description, when that is the field being edited", async () => {
     const org = nextOrg();
     const recorder: RecordedRequest[] = [];

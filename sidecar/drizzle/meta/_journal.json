@@ -271,8 +271,15 @@
     {
       "idx": 38,
       "version": "7",
-      "when": 1792589580794,
-      "tag": "0038_sharp_harpoon",
+      "when": 1792588873975,
+      "tag": "0038_yielding_leper_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1792589793592,
+      "tag": "0039_black_jubilee",
       "breakpoints": true
     }
   ]

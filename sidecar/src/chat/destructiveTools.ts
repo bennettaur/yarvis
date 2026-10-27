@@ -43,8 +43,19 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Assigns and labels an issue other people can see, then provisions for it.
   "start_work_on_issue",
   "jira_start_work_on_issue",
-  // Writes to a tracker shared with other people.
+  // Each writes to a tracker shared with other people, under the user's name.
   "jira_create_issue",
+  "jira_update_issue",
+  "jira_transition_issue",
+  "jira_assign_issue",
+  "jira_comment_on_issue",
+  "create_repo_issue",
+  "update_repo_issue",
+  "comment_on_repo_issue",
+  "azure_boards_create_work_item",
+  "azure_boards_update_work_item",
+  "azure_boards_assign_work_item",
+  "azure_boards_comment_on_work_item",
   // Each launches an agent session, which can edit and push code on its own.
   "create_workspace_session",
   "create_scratch_workspace_session",
@@ -111,6 +122,7 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "get_workspace_status",
   "jira_search_issues",
   "jira_get_issue",
+  "get_repo_issue",
   "list_pr_reviews",
   "search_pr_insights",
   "list_calendar_events",
