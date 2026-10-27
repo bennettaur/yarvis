@@ -39,6 +39,11 @@ export interface HeadsDownConfig {
    * words (ex. "don't merge PRs while the market is open"). Null for none.
    */
   guidance: string | null;
+  /**
+   * The most routines (`routines.ts`) one pass takes on. Each costs steps and
+   * time a pass would otherwise spend on the work streams. 0 turns them off.
+   */
+  maxRoutinesPerPass: number;
 }
 
 export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
@@ -50,6 +55,7 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   provider: null,
   model: null,
   guidance: null,
+  maxRoutinesPerPass: 2,
 };
 
 const SETTINGS_KEY = "headsDown";
@@ -57,8 +63,15 @@ const SETTINGS_KEY = "headsDown";
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   const stored = await readSection<Partial<HeadsDownConfig>>(SETTINGS_KEY);
   const config = { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
-  // Hand-edited settings can hold anything; every pass reads the guidance.
-  return { ...config, guidance: typeof config.guidance === "string" ? config.guidance : null };
+  // Hand-edited settings can hold anything; every pass reads these.
+  return {
+    ...config,
+    guidance: typeof config.guidance === "string" ? config.guidance : null,
+    maxRoutinesPerPass:
+      Number.isInteger(config.maxRoutinesPerPass) && config.maxRoutinesPerPass >= 0
+        ? config.maxRoutinesPerPass
+        : DEFAULT_HEADS_DOWN_CONFIG.maxRoutinesPerPass,
+  };
 }
 
 export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {

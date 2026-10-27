@@ -14,9 +14,12 @@ import {
   listHeadsDownMessages,
   listOpenQuestions,
   listPasses,
+  listRoutines,
   listWorkStreams,
   nextOccurrence,
   pauseHeadsDown,
+  type RoutineList as RoutineListData,
+  reloadRoutines,
   resumeHeadsDown,
   sendHeadsDownMessage,
   setHeadsDownStopAt,
@@ -25,13 +28,14 @@ import {
   stopHeadsDown,
   type WorkStream,
 } from "../../lib/headsDown";
-import { combineResources, useCachedResource } from "../../lib/resourceCache";
+import { combineResources, primeCache, useCachedResource } from "../../lib/resourceCache";
 import RefreshingIndicator from "../RefreshingIndicator";
 import AgentMark, { type AgentState } from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
+import RoutineList from "./RoutineList";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
 
@@ -44,6 +48,7 @@ const CACHE_KEYS = {
   config: "heads-down:config",
   allowedTools: "heads-down:allowed-tools",
   autoApprovals: "heads-down:auto-approvals",
+  routines: "heads-down:routines",
 };
 
 const NO_QUESTIONS: HeadsDownQuestion[] = [];
@@ -343,6 +348,7 @@ export default function HeadsDownPanel() {
     CACHE_KEYS.autoApprovals,
     listAutoApprovals,
   );
+  const routines = useCachedResource<RoutineListData>(CACHE_KEYS.routines, listRoutines);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -351,6 +357,7 @@ export default function HeadsDownPanel() {
   const refreshPasses = passes.refresh;
   const refreshMessages = messages.refresh;
   const refreshAutoApprovals = autoApprovals.refresh;
+  const refreshRoutines = routines.refresh;
   const refreshConfig = config.refresh;
   const refreshAll = useCallback(() => {
     void refreshState();
@@ -359,6 +366,7 @@ export default function HeadsDownPanel() {
     void refreshPasses();
     void refreshMessages();
     void refreshAutoApprovals();
+    void refreshRoutines();
   }, [
     refreshState,
     refreshQuestions,
@@ -366,6 +374,7 @@ export default function HeadsDownPanel() {
     refreshPasses,
     refreshMessages,
     refreshAutoApprovals,
+    refreshRoutines,
   ]);
   const live = useLivePass(refreshAll);
   const combined = combineResources([state, questions, streams, passes, messages]);
@@ -427,6 +436,13 @@ export default function HeadsDownPanel() {
       <aside className="space-y-6">
         <Section title="Tell it something">
           <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
+        </Section>
+
+        <Section title="Routines">
+          <RoutineList
+            data={routines.data}
+            onReload={async () => primeCache(CACHE_KEYS.routines, await reloadRoutines())}
+          />
         </Section>
 
         <Section title="Pace and working hours">

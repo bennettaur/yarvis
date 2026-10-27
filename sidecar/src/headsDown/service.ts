@@ -541,6 +541,8 @@ export interface FinishPassInput {
   sleepMinutes: number;
   sleepReason: string;
   error?: string | null;
+  /** Routines the pass reported done. */
+  routinesDone?: string[];
 }
 
 export async function finishPass(db: Db, id: string, input: FinishPassInput): Promise<void> {
@@ -552,8 +554,22 @@ export async function finishPass(db: Db, id: string, input: FinishPassInput): Pr
       sleepMinutes: input.sleepMinutes,
       sleepReason: input.sleepReason,
       error: input.error ?? null,
+      routinesDone: input.routinesDone ?? [],
     })
     .where(eq(headsDownPasses.id, id));
+}
+
+/**
+ * When each routine was last done, by name, across every run: a routine's
+ * cadence is about the user's day, not about when heads-down mode was turned on.
+ */
+export async function routinesLastDone(db: Db): Promise<Map<string, Date>> {
+  const rows = await db.execute<{ name: string; last_done: Date | string }>(sql`
+    select r.name, max(${headsDownPasses.startedAt}) as last_done
+    from ${headsDownPasses}, jsonb_array_elements_text(${headsDownPasses.routinesDone}) as r(name)
+    group by r.name
+  `);
+  return new Map(rows.map((row) => [row.name, new Date(row.last_done)]));
 }
 
 export async function listPasses(db: Db, limit = 20): Promise<HeadsDownPass[]> {

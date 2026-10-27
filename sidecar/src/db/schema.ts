@@ -1646,6 +1646,8 @@ export const headsDownPasses = pgTable(
     sleepMinutes: integer("sleep_minutes"),
     sleepReason: text("sleep_reason"),
     error: text("error"),
+    /** Names of the routines (`headsDown/routines.ts`) this pass reported done. */
+    routinesDone: jsonb("routines_done").$type<string[]>().notNull().default([]),
   },
   (t) => [index("heads_down_passes_run_idx").on(t.runId, t.startedAt)],
 );

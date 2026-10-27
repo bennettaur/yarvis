@@ -17,21 +17,25 @@ export interface PassOutcome {
   notes: string | null;
   sleepMinutes: number | null;
   reason: string | null;
+  /** Routines offered this pass that it reported done. */
+  routinesDone: string[];
 }
 
 export function newPassOutcome(): PassOutcome {
-  return { finished: false, notes: null, sleepMinutes: null, reason: null };
+  return { finished: false, notes: null, sleepMinutes: null, reason: null, routinesDone: [] };
 }
 
 /**
  * `announcedMerges` collects the PRs this pass announced (see `mergeKey`), so
- * the approval hooks can tell a merge it didn't announce.
+ * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
+ * names the routines this pass was given; `finish_pass` records only those.
  */
 export function buildPassTools(
   db: Db,
   outcome: PassOutcome,
   onAsked: () => void,
   announcedMerges: Set<string>,
+  offeredRoutines: readonly string[] = [],
 ) {
   return {
     announce_merge: tool({
@@ -106,12 +110,23 @@ export function buildPassTools(
           .min(1)
           .max(24 * 60),
         reason: z.string().max(300).describe("Why that long, in a few words"),
+        routinesDone: z
+          .array(z.string().max(64))
+          .max(20)
+          .optional()
+          .describe(
+            "Names of the routines given to this pass that you finished, including ones that turned out to have nothing to do",
+          ),
       }),
-      execute: async ({ notes, sleepMinutes, reason }) => {
+      execute: async ({ notes, sleepMinutes, reason, routinesDone }) => {
         outcome.finished = true;
         outcome.notes = notes?.trim() || null;
         outcome.sleepMinutes = sleepMinutes;
         outcome.reason = reason;
+        // A name the pass wasn't given would push that routine's next run back unseen.
+        outcome.routinesDone = [...new Set(routinesDone ?? [])].filter((name) =>
+          offeredRoutines.includes(name),
+        );
         return { ok: true, message: "Pass recorded. Stop here." };
       },
     }),

@@ -22,6 +22,7 @@ import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passR
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
+import { dueRoutines, routineCatalog } from "./routines.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -34,6 +35,7 @@ import {
   mayRunPasses,
   msUntilStop,
   passToolCalls,
+  routinesLastDone,
   startPass,
   unseenMessages,
   unspentApprovals,
@@ -191,14 +193,17 @@ export async function runPass(
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
-  const [messages, earlier, last, openQuestions, lastActivity] = await Promise.all([
-    unseenMessages(db),
-    earlierMessages(db, run.startedAt),
-    lastFinishedPass(db, run.id),
-    // A question from an earlier run is stale; a long list would crowd out the work.
-    listQuestions(db, { since: run.startedAt, limit: 20 }),
-    lastUserActivityAt(db, run),
-  ]);
+  const [messages, earlier, last, openQuestions, lastActivity, catalog, lastDone] =
+    await Promise.all([
+      unseenMessages(db),
+      earlierMessages(db, run.startedAt),
+      lastFinishedPass(db, run.id),
+      // A question from an earlier run is stale; a long list would crowd out the work.
+      listQuestions(db, { since: run.startedAt, limit: 20 }),
+      lastUserActivityAt(db, run),
+      routineCatalog(),
+      routinesLastDone(db),
+    ]);
   const [answers, approvedCalls] = await Promise.all([
     answeredSince(db, last?.startedAt ?? run.startedAt),
     // The same window decideCall spends grants in: this run, and the last day.
@@ -208,6 +213,13 @@ export async function runPass(
     ),
   ]);
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
+  const routines = dueRoutines({
+    routines: catalog.routines,
+    lastDone,
+    now,
+    withinWorkingHours,
+    limit: headsDownConfig.maxRoutinesPerPass,
+  });
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -300,7 +312,13 @@ export async function runPass(
         }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: PASS_INSTRUCTIONS,
-        extraTools: buildPassTools(db, outcome, changed, announcedMerges),
+        extraTools: buildPassTools(
+          db,
+          outcome,
+          changed,
+          announcedMerges,
+          routines.map((r) => r.name),
+        ),
         budget,
         maxRetries: PASS_MODEL_RETRIES,
       })) {
@@ -329,6 +347,8 @@ export async function runPass(
       openQuestions,
       lastNotes: last?.notes ?? null,
       lastFailure,
+      routines,
+      routinesLastDone: lastDone,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];
@@ -430,6 +450,7 @@ export async function runPass(
     sleepMinutes: sleep.minutes,
     sleepReason,
     error,
+    routinesDone: outcome.routinesDone,
   });
   publish({
     type: "pass-finished",

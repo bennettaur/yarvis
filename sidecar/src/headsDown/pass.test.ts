@@ -11,11 +11,13 @@ import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
+import { reloadRoutines } from "./routines.ts";
 import {
   addMessage,
   listPasses,
   passCallSummaries,
   pauseRun,
+  routinesLastDone,
   startRun,
   unseenMessages,
 } from "./service.ts";
@@ -121,6 +123,7 @@ beforeEach(async () => {
     provider: null,
     model: null,
     guidance: null,
+    maxRoutinesPerPass: 0,
   });
 });
 
@@ -350,6 +353,7 @@ describe("a heads-down pass", () => {
       provider: null,
       model: null,
       guidance: "Merging docs PRs in acme/docs is fine any time.",
+      maxRoutinesPerPass: 0,
     });
     const run = await startRun(db, null);
     const model = streamingModel(
@@ -440,5 +444,47 @@ describe("a heads-down pass", () => {
     expect(result.sleepReason).not.toBe(REACHED_STOP_TIME);
     const [pass] = await listPasses(db);
     expect(pass?.error).toBeString();
+  });
+
+  it("hands the pass the routines that are due, and records the ones it reports done", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+      guidance: null,
+      maxRoutinesPerPass: 2,
+    });
+    await reloadRoutines();
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("f1", "finish_pass", {
+          sleepMinutes: 30,
+          reason: "routines done",
+          // meeting-notes ships turned off, so it was never offered.
+          routinesDone: ["meeting-alarms", "meeting-notes"],
+        }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("### meeting-alarms (never done before)");
+    expect(prompt).not.toContain("### meeting-notes");
+    const [pass] = await listPasses(db);
+    expect(pass?.routinesDone).toEqual(["meeting-alarms"]);
+    expect([...(await routinesLastDone(db)).keys()]).toEqual(["meeting-alarms"]);
+
+    // Done three hours ago at the earliest, so the next pass isn't given it again.
+    const next = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: next });
+    expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");
   });
 });
