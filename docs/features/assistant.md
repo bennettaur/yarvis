@@ -6,14 +6,15 @@ actually did. It can start work in a workspace and hand follow-ups to the
 Claude Code sessions running there. Tell it what matters this week, then keep
 asking it where you are and what's next.
 
-You can talk to it from four places, and they all reach the same agent and the
+You can talk to it from five places, and they all reach the same agent and the
 same memory:
 
 - the **Chat** tab (Cmd+1),
 - **Omni Chat**, the overlay you summon from anywhere with Control+Shift+Space
   (see [Chat and Omni Chat](quick-chat.md)),
 - your voice (see [Voice](voice.md)),
-- Telegram (see [Telegram](telegram.md)).
+- Telegram (see [Telegram](telegram.md)),
+- Chrome's side panel, beside the page you're on (see [Browser](browser.md)).
 
 ## Set up
 

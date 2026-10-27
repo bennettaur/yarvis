@@ -44,7 +44,9 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * Telegram bot sets it on the user messages it persists so the chat history can
  * show that a message came from Telegram and which Telegram user sent it, and
  * the Voice tab sets it so a turn the user *spoke* is distinguishable from one
- * they typed and read back.
+ * they typed and read back. The Chrome extension's side panel marks its turns
+ * `browser`. Those were typed, but they carry the open tab's page-written title
+ * and selection, so the destructive tools ask first there as well.
  *
  * That distinction is load-bearing, not cosmetic: a spoken turn was never
  * proof-read, so `runAgentTurn` puts the destructive tools behind an explicit
@@ -56,7 +58,7 @@ export interface ChatMessageMetadata {
    * watching. `scheduled-task` marks a scheduled task's turn, which the
    * assistant wrote for itself.
    */
-  source?: "telegram" | "voice" | "heads-down" | "scheduled-task";
+  source?: "telegram" | "voice" | "browser" | "heads-down" | "scheduled-task";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;

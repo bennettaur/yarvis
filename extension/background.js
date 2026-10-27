@@ -13,6 +13,9 @@
 // Each Chrome profile has its own copy of this extension, and each one tells the
 // host who it is: a random id kept for good, and a name the user sets in the
 // popup. That name is what an agent passes to reach "the work profile".
+//
+// The side panel's chat also goes through here: the panel holds a port to this
+// worker, and each request it makes is passed to the host and answered by id.
 
 import { recordActivity } from "./activity.js";
 import { loadProfile, PROFILE_KEY } from "./profile.js";
@@ -46,6 +49,7 @@ function connect() {
     // Read lastError so Chrome doesn't log an unchecked-error warning.
     void chrome.runtime.lastError;
     port = null;
+    failPendingChats("The Yarvis helper stopped.");
     setStatus({ hostConnected: false, instances: [] });
   });
   setStatus({ hostConnected: true, instances: [] });
@@ -74,6 +78,10 @@ function setStatus(status) {
 async function onMessage(message) {
   if (message?.type === "status") {
     setStatus({ hostConnected: true, instances: message.instances ?? [] });
+    return;
+  }
+  if (message?.type === "chat_event" || message?.type === "chat_reply") {
+    relayToPanel(message);
     return;
   }
   if (message?.type !== "command") return;
@@ -348,6 +356,69 @@ async function pageState(tabId) {
   const tab = await chrome.tabs.get(tabId);
   return { url: tab.url ?? "", title: tab.title ?? "" };
 }
+
+/** Which side panel asked for each chat request still in flight. */
+const chatRequests = new Map();
+
+function relayToPanel(message) {
+  const panel = chatRequests.get(message.id);
+  if (!panel) return;
+  if (message.type === "chat_reply") chatRequests.delete(message.id);
+  try {
+    panel.postMessage(message);
+  } catch {
+    // The panel closed between asking and the answer arriving.
+  }
+}
+
+function failPendingChats(error) {
+  for (const id of [...chatRequests.keys()]) {
+    relayToPanel({ type: "chat_reply", id, ok: false, error });
+  }
+}
+
+chrome.runtime.onConnect.addListener((panel) => {
+  if (panel.name !== "chat") return;
+  // Only the side panel may run turns. A content script shares the extension's
+  // id, so the sender's page is checked too, not just the id.
+  const fromPanel =
+    panel.sender?.id === chrome.runtime.id &&
+    !panel.sender.tab &&
+    panel.sender.url?.startsWith(chrome.runtime.getURL("sidepanel.html"));
+  if (!fromPanel) {
+    panel.disconnect();
+    return;
+  }
+  const panelRequestIds = new Set();
+  panel.onMessage.addListener((request) => {
+    if (typeof request?.id !== "string") return;
+    if (request.cancel) {
+      if (chatRequests.delete(request.id))
+        port?.postMessage({ type: "chat_cancel", id: request.id });
+      return;
+    }
+    connect();
+    if (!port) {
+      panel.postMessage({
+        type: "chat_reply",
+        id: request.id,
+        ok: false,
+        error: "The Yarvis helper isn't running. See the extension's popup.",
+      });
+      return;
+    }
+    panelRequestIds.add(request.id);
+    chatRequests.set(request.id, panel);
+    port.postMessage({ ...request, type: "chat" });
+  });
+  // Closing the panel stops its turn, the way leaving the in-app chat does.
+  panel.onDisconnect.addListener(() => {
+    for (const id of panelRequestIds) {
+      if (!chatRequests.delete(id)) continue;
+      port?.postMessage({ type: "chat_cancel", id });
+    }
+  });
+});
 
 // A rule left behind by a worker that died mid-command would keep blocking a tab.
 chrome.declarativeNetRequest.getSessionRules().then((rules) =>
