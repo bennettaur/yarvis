@@ -154,6 +154,32 @@ describe("azure boards tools", () => {
     );
 
     expect(calls[0]?.args[1]).toBe("User Story");
+    const logged = await listEvents(db, { type: "azure_boards.item.created" });
+    expect(logged[0]?.payload).toMatchObject({ type: "User Story" });
+  });
+
+  it("lists a project's work item types", async () => {
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: fakeBoards().client });
+
+    const result = await tools.azure_boards_list_work_item_types.execute!({ project: "Web" }, opts);
+
+    expect(result).toEqual({ project: "Web", types: ["Bug", "Task", "User Story"] });
+  });
+
+  it("leaves the type to Azure when the project's types can't be read", async () => {
+    const { client, calls } = fakeBoards();
+    client.workItemTypes = async () => {
+      throw new Error("azure boards GET -> 500");
+    };
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: client });
+
+    const result = (await tools.azure_boards_create_work_item.execute!(
+      { project: "Web", type: "Task", title: "New item" },
+      opts,
+    )) as { id: number };
+
+    expect(result.id).toBe(9);
+    expect(calls[0]?.args[1]).toBe("Task");
   });
 
   it("names the project's types instead of creating one it doesn't have", async () => {
