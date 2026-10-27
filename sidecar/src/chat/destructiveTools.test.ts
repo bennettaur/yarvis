@@ -23,6 +23,7 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
       "get_repo_issue",
       "azure_boards_search",
       "azure_boards_get_work_item",
+      "azure_boards_list_work_item_types",
       "jira_search_issues",
       "jira_get_issue",
     ]);
@@ -31,7 +32,8 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     );
     expect(names.length).toBeGreaterThan(reads.size);
     for (const name of names) {
-      expect([name, DESTRUCTIVE_BUILTIN_TOOLS.has(name)]).toEqual([name, !reads.has(name)]);
+      const asks = DESTRUCTIVE_BUILTIN_TOOLS.has(name) || ALWAYS_CONFIRM_BUILTIN_TOOLS.has(name);
+      expect([name, asks]).toEqual([name, !reads.has(name)]);
     }
   });
 });
@@ -41,6 +43,11 @@ describe("ALWAYS_CONFIRM_BUILTIN_TOOLS", () => {
   // from injected text, so a typed turn asks too.
   it("asks before registering a repo", () => {
     expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("register_repo")).toBe(true);
+  });
+
+  // Yarvis's own repo is public and not one the user registered.
+  it("asks before filing an issue on Yarvis itself", () => {
+    expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("file_yarvis_issue")).toBe(true);
   });
 
   // The spoken-turn set adds nothing to a tool that already asks every turn.

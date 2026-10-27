@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { safeHoverContents, withoutImages } from "./hoverSafety";
+import { plainHoverText, safeHoverContents, withoutImages } from "./hoverSafety";
 
 describe("withoutImages", () => {
   it("breaks inline, reference and shortcut images", () => {
@@ -35,5 +35,15 @@ describe("safeHoverContents", () => {
       isTrusted: false,
       supportHtml: false,
     });
+  });
+});
+
+describe("plainHoverText", () => {
+  it("breaks bare URLs, which GFM links with no brackets", () => {
+    expect(plainHoverText("see https://3232235777/p")).toBe("see https\\://3232235777/p");
+  });
+
+  it("keeps the text on one line, so nothing can start a heading or code block", () => {
+    expect(plainHoverText("title\n===\n    code")).toBe("title \\=\\=\\= code");
   });
 });

@@ -659,6 +659,8 @@ describe("verification report", () => {
     complexity: pass,
     performance: pass,
     comments: pass,
+    observability: pass,
+    quality: pass,
   };
   let budget: number;
   const detail = {

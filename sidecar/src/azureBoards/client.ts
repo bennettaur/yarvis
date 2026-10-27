@@ -233,6 +233,35 @@ export class AzureBoardsClient {
     return viewer;
   }
 
+  // --- Types ---
+
+  /**
+   * The work item types a project's process offers for filing, by name. Types
+   * in the hidden category (Code Review Request, Shared Steps and the like) and
+   * disabled ones are left out, since nobody files those by hand.
+   */
+  async workItemTypes(project: string): Promise<string[]> {
+    const base = this.projectBase(project);
+    const [types, categories] = await Promise.all([
+      this.request<{ value?: { name?: string; isDisabled?: boolean }[] }>(
+        "GET",
+        `${base}/_apis/wit/workitemtypes`,
+      ),
+      this.request<{
+        value?: { referenceName?: string; workItemTypes?: { name?: string }[] }[];
+      }>("GET", `${base}/_apis/wit/workitemtypecategories`),
+    ]);
+    const hidden = new Set(
+      (categories.value ?? [])
+        .filter((c) => c.referenceName === "Microsoft.HiddenCategory")
+        .flatMap((c) => c.workItemTypes ?? [])
+        .map((t) => t.name),
+    );
+    return (types.value ?? [])
+      .filter((t) => t.name && !t.isDisabled && !hidden.has(t.name))
+      .map((t) => t.name as string);
+  }
+
   // --- States ---
 
   /** The states a work item type allows in a project, cached briefly. */
