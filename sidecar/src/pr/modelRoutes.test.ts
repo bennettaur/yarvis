@@ -71,3 +71,64 @@ describe("GET/PATCH /api/pr-models", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("GET/PATCH /api/pr-models/verification", () => {
+  const patch = (body: unknown) =>
+    app().request("/api/pr-models/verification", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify(body),
+    });
+
+  it("answers the defaults before anything is saved", async () => {
+    const res = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await res.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+  });
+
+  it("saves one field and keeps the other", async () => {
+    expect(await (await patch({ maxBudgetUsd: 0.75 })).json()).toEqual({
+      model: "sonnet",
+      maxBudgetUsd: 0.75,
+    });
+    await patch({ model: "opus" });
+    const read = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await read.json()).toEqual({ model: "opus", maxBudgetUsd: 0.75 });
+  });
+
+  it("refuses a model that isn't a Claude Code alias, and a budget out of range", async () => {
+    for (const body of [
+      { model: "--model=x" },
+      { maxBudgetUsd: 0 },
+      { maxBudgetUsd: 500 },
+      { other: 1 },
+    ]) {
+      expect((await patch(body)).status).toBe(400);
+    }
+  });
+});
+
+describe("GET/PATCH /api/pr-models/rereview", () => {
+  const patch = (body: unknown) =>
+    app().request("/api/pr-models/rereview", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify(body),
+    });
+  const read = async () =>
+    (await app().request("/api/pr-models/rereview", { headers: auth })).json();
+
+  it("answers its own defaults, off until turned on, apart from the verification report's", async () => {
+    expect(await read()).toEqual({ model: "sonnet", maxBudgetUsd: 1, autoStart: false });
+    await patch({ autoStart: true, maxBudgetUsd: 0.5 });
+    await patch({ model: "haiku" });
+    expect(await read()).toEqual({ model: "haiku", maxBudgetUsd: 0.5, autoStart: true });
+    const verification = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await verification.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+  });
+
+  it("refuses values it doesn't know", async () => {
+    for (const body of [{ autoStart: "yes" }, { maxBudgetUsd: 50 }, { model: "gpt" }, { x: 1 }]) {
+      expect((await patch(body)).status).toBe(400);
+    }
+  });
+});

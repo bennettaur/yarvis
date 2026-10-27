@@ -2,7 +2,16 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { selectionSchema } from "../llm/complexityRoutes.ts";
-import { getPrModelConfig, savePrModelConfig } from "./models.ts";
+import {
+  getPrModelConfig,
+  getRereviewRunConfig,
+  getVerificationRunConfig,
+  rereviewRunConfigSchema,
+  savePrModelConfig,
+  saveRereviewRunConfig,
+  saveVerificationRunConfig,
+  verificationRunConfigSchema,
+} from "./models.ts";
 
 /**
  * PR review model routes, mounted under /api/pr-models. Kept apart from
@@ -24,6 +33,30 @@ export function createPrModelRoutes(_config: Config): Hono {
     const parsed = saveSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     return c.json(await savePrModelConfig(parsed.data));
+  });
+
+  // The verification report's Claude Code model and spend ceiling.
+  router.get("/verification", async (c) => c.json(await getVerificationRunConfig()));
+
+  router.patch("/verification", async (c) => {
+    const parsed = verificationRunConfigSchema
+      .partial()
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveVerificationRunConfig(parsed.data));
+  });
+
+  // The "What's changed" summary's model, spend ceiling and auto-start.
+  router.get("/rereview", async (c) => c.json(await getRereviewRunConfig()));
+
+  router.patch("/rereview", async (c) => {
+    const parsed = rereviewRunConfigSchema
+      .partial()
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await saveRereviewRunConfig(parsed.data));
   });
 
   return router;

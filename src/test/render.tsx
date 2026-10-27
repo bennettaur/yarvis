@@ -87,3 +87,20 @@ export function firstPaintOf(element: ReactElement): {
     },
   };
 }
+
+/**
+ * Waits until `condition` holds, polling, and fails with `what` if it doesn't
+ * within the timeout. For a test waiting on a fetch or a re-render to land,
+ * instead of guessing a fixed delay that is either slow or flaky.
+ */
+export async function waitFor(
+  condition: () => boolean,
+  what = "the condition",
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

@@ -9,6 +9,8 @@ import type { AgentEvent } from "../chat/agent.ts";
 export type HeadsDownStreamEvent =
   | { type: "pass-started"; passId: string }
   | { type: "pass-event"; passId: string; event: AgentEvent }
+  /** The provider failed the pass on a bad moment, and it tries again at `retryAt`. */
+  | { type: "pass-retrying"; passId: string; retryAt: string }
   | { type: "pass-finished"; passId: string; sleepMinutes: number; nextPassAt: string }
   /** A question or answer, a message, or the run starting or stopping. */
   | { type: "changed" }

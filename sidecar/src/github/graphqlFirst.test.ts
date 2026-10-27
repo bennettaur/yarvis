@@ -51,6 +51,7 @@ describe("reads through GraphQL", () => {
             merged: false,
             mergeable: "CONFLICTING",
             mergeStateStatus: "DIRTY",
+            headRefOid: "def",
             commits: {
               nodes: [
                 {
@@ -78,6 +79,7 @@ describe("reads through GraphQL", () => {
       merged: false,
       mergeable: false,
       mergeableState: "dirty",
+      headSha: "def",
       checks: { total: 4, success: 1, failure: 1, pending: 2 },
     });
     expect(requests).toEqual(["GRAPHQL"]);
@@ -176,6 +178,7 @@ describe("falls back to REST", () => {
     expect(await gh.prStatus("o", "r", 1)).toMatchObject({
       mergeable: true,
       mergeableState: "clean",
+      headSha: "abc",
     });
     expect(requests).toEqual([
       "GRAPHQL",

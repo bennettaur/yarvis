@@ -15,9 +15,16 @@ function describeSleep(pass: HeadsDownPass): string | null {
 }
 
 function describeCalls(pass: HeadsDownPass): string | null {
-  if (!pass.calls) return null;
-  const failed = pass.failedCalls?.length ?? 0;
-  return `${pass.calls} tool call${pass.calls === 1 ? "" : "s"}${failed > 0 ? ` · ${failed} failed` : ""}`;
+  if (!pass.callCount) return null;
+  const failed = pass.failedCalls?.filter((c) => !c.noResult).length ?? 0;
+  const noResult = (pass.failedCalls?.length ?? 0) - failed;
+  return [
+    `${pass.callCount} tool call${pass.callCount === 1 ? "" : "s"}`,
+    failed > 0 ? `${failed} failed` : null,
+    noResult > 0 ? `${noResult} with no result` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** One finished pass: what it left, how it ended, and its transcript one click away. */
@@ -68,9 +75,14 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
               {failedCalls.map((call, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: the same call can fail twice, and the list never reorders
                 <li key={i} className="break-words">
-                  <span className="text-red-400">✕</span> {call.server ? `${call.server}/` : ""}
+                  {call.noResult ? (
+                    <span className="text-amber-400">?</span>
+                  ) : (
+                    <span className="text-red-400">✕</span>
+                  )}{" "}
+                  {call.server ? `${call.server}/` : ""}
                   {call.name}
-                  {call.error ? `: ${call.error}` : ""}
+                  {call.noResult ? ": no result" : call.error ? `: ${call.error}` : ""}
                 </li>
               ))}
             </ul>
@@ -97,14 +109,16 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
 }
 
 /** The latest thing the pass thought, folded to one line until opened. */
-function LatestThought({ text, thinking }: { text: string; thinking: boolean }) {
+function LatestThought({ text, isThinking }: { text: string; isThinking: boolean }) {
   const firstLine = text.trim().split("\n")[0] ?? "";
   return (
     <details className="group mb-2 rounded-md border border-zinc-800 bg-zinc-900/60 text-xs">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-zinc-400 hover:text-zinc-200">
         <span className="shrink-0 transition-transform group-open:rotate-90">›</span>
-        <span className={`shrink-0 ${thinking ? "animate-pulse motion-reduce:animate-none" : ""}`}>
-          {thinking ? "Thinking:" : "Last thought:"}
+        <span
+          className={`shrink-0 ${isThinking ? "animate-pulse motion-reduce:animate-none" : ""}`}
+        >
+          {isThinking ? "Thinking:" : "Last thought:"}
         </span>
         <span className="truncate group-open:hidden">{firstLine}</span>
       </summary>
@@ -142,12 +156,10 @@ export default function PassList({
           </div>
           {live.error && (
             <p className="mb-2 text-xs text-amber-300">
-              {live.retrying
-                ? `The model provider failed (${live.error}). Trying again shortly.`
-                : live.error}
+              {live.retrying ? `${live.error} Trying again shortly.` : live.error}
             </p>
           )}
-          {live.thought && <LatestThought text={live.thought} thinking={live.thinking} />}
+          {live.thought && <LatestThought text={live.thought} isThinking={live.isThinking} />}
           <TurnActivity activity={live.activity} running />
           {live.text && <Markdown className="text-sm text-zinc-200">{live.text}</Markdown>}
         </div>

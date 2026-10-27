@@ -2,11 +2,12 @@ import type { LanguageModel } from "ai";
 import { runAgentTurn } from "../chat/agent.ts";
 import { builtinToolMetadataByFamily } from "../chat/builtinTools.ts";
 import { getChatBudget } from "../chat/config.ts";
-import { addMessage as addChatMessage, createSession, getMessages } from "../chat/service.ts";
+import { addMessage as addChatMessage, createSession } from "../chat/service.ts";
 import { MAX_REQUEST_CHARS } from "../chat/toolReview.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { HeadsDownRun } from "../db/schema.ts";
+import type { HeadsDownRun, ToolActivity } from "../db/schema.ts";
+import { clientError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
 import { listStreams } from "../workStreams/service.ts";
@@ -17,7 +18,7 @@ import {
   isWithinWorkingHours,
 } from "./config.ts";
 import { publish } from "./hub.ts";
-import { type AttemptRecord, newAttemptRecord, recordEvent } from "./passRecord.ts";
+import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
@@ -84,7 +85,10 @@ export const STOPPED_BY_USER = "stopped by you";
 /** How long a pass may run before it is stopped. */
 export const PASS_TIMEOUT_MS = 20 * 60_000;
 
-const TIMED_OUT = `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
+const TIMEOUT_ERROR = `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
+
+/** Longest an error is kept on a pass; the full one goes to the log. */
+const MAX_ERROR_CHARS = 500;
 
 /**
  * Retries per model call on a rate limit or server error, on top of the first
@@ -95,7 +99,9 @@ const PASS_MODEL_RETRIES = 5;
 
 /**
  * How long to wait before picking a pass up again after the provider failed it
- * mid-stream, where the AI SDK doesn't retry. One entry per retry.
+ * mid-stream, where the AI SDK doesn't retry. One entry per retry. The SDK's
+ * own retries have already spent about a minute by then, so these give an
+ * overloaded provider a few more minutes before the pass gives up.
  */
 const PASS_RETRY_DELAYS_MS = [30_000, 120_000];
 
@@ -118,21 +124,28 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
  * that fails or is stopped never does. Without this a pass that failed after
  * twenty calls shows nothing at all.
  */
-async function keepAttempt(
+async function saveAttemptTranscript(
   db: Db,
   sessionId: string,
   record: AttemptRecord,
-  ending: string,
+  endingNote: string,
 ): Promise<void> {
   if (record.activity.length === 0 && !record.text.trim()) return;
-  const messages = await getMessages(db, sessionId);
-  if (messages.at(-1)?.role === "assistant") return;
   await addChatMessage(db, {
     sessionId,
     role: "assistant",
-    content: [record.text.trim(), `(${ending})`].filter(Boolean).join("\n\n"),
+    content: [record.text.trim(), `(${endingNote})`].filter(Boolean).join("\n\n"),
     toolCalls: record.activity,
   });
+}
+
+/** How one turn of a pass ended. */
+interface AttemptResult {
+  error: string | null;
+  /** The provider failed on a bad moment, so trying again later may work. */
+  transient: boolean;
+  /** The turn saved its own transcript. */
+  saved: boolean;
 }
 
 export interface PassResult {
@@ -213,13 +226,15 @@ export async function runPass(
   });
   let promptSent = false;
   let attempt = newAttemptRecord();
+  // Whether `attempt` is already in the transcript, so a failure after it can't save it twice.
+  let attemptSaved = false;
   const timedOut = () => abort.signal.aborted && !stoppedByUser;
-  const ending = (e: string) =>
+  const endingNote = (errorMessage: string) =>
     stoppedByUser
       ? "Stopped by you here."
       : timedOut()
         ? "Ran out of time here."
-        : `Failed here: ${e}`;
+        : `Failed here: ${errorMessage}`;
   const announcedMerges = new Set<string>();
   try {
     // Stopped while the pass was getting ready: its abort wasn't registered yet.
@@ -235,26 +250,9 @@ export async function runPass(
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
     mountTools(session.id, passToolIds());
-    let message = buildPassPrompt({
-      now,
-      run,
-      guidance: headsDownConfig.guidance,
-      withinWorkingHours,
-      minutesSinceUserReplied,
-      messages,
-      earlierMessages: earlier,
-      answers,
-      approvedCalls,
-      openQuestions,
-      lastNotes: last?.notes ?? null,
-      lastFailure,
-    });
-    // Every call made this pass, across retries, for the retry prompt.
-    const made: AttemptRecord["activity"] = [];
-    for (let retry = 0; ; retry++) {
-      error = null;
-      attempt = newAttemptRecord();
-      let transient = false;
+
+    const runAttempt = async (message: string, record: AttemptRecord): Promise<AttemptResult> => {
+      const result: AttemptResult = { error: null, transient: false, saved: false };
       for await (const event of runAgentTurn({
         config,
         db,
@@ -284,28 +282,74 @@ export async function runPass(
       })) {
         promptSent = true;
         publish({ type: "pass-event", passId: pass.id, event });
-        recordEvent(attempt, event);
+        recordEvent(record, event);
         if (event.type === "error") {
-          error = event.message;
-          transient = event.transient === true;
+          result.error = event.message;
+          result.transient = event.transient === true;
+          result.saved = event.saved === true;
         }
       }
-      made.push(...attempt.activity);
-      if (error === null) break;
-      await keepAttempt(db, session.id, attempt, ending(error));
-      const delay = (options.retryDelaysMs ?? PASS_RETRY_DELAYS_MS)[retry];
-      if (outcome.finished || abort.signal.aborted || !transient || delay === undefined) break;
+      return result;
+    };
+
+    let message = buildPassPrompt({
+      now,
+      run,
+      guidance: headsDownConfig.guidance,
+      withinWorkingHours,
+      minutesSinceUserReplied,
+      messages,
+      earlierMessages: earlier,
+      answers,
+      approvedCalls,
+      openQuestions,
+      lastNotes: last?.notes ?? null,
+      lastFailure,
+    });
+    // Every call made this pass, across retries, for the retry prompt.
+    const callsThisPass: ToolActivity[] = [];
+    const retryDelaysMs = options.retryDelaysMs ?? PASS_RETRY_DELAYS_MS;
+    for (let retry = 0; ; retry++) {
+      attempt = newAttemptRecord();
+      attemptSaved = false;
+      const result = await runAttempt(message, attempt);
+      callsThisPass.push(...attempt.activity);
+      if (result.error === null) {
+        error = null;
+        break;
+      }
+      if (!result.saved) {
+        await saveAttemptTranscript(db, session.id, attempt, endingNote(result.error));
+      }
+      attemptSaved = true;
+      // Cut short by the stop or the timeout: that is the abort's doing, and a
+      // provider error from an earlier attempt stays the pass's error.
+      if (abort.signal.aborted) break;
+      error = result.error;
+      const delay = retryDelaysMs[retry];
+      // Once finish_pass has run there is nothing left to retry.
+      if (outcome.finished || !result.transient || delay === undefined) break;
+      publish({
+        type: "pass-retrying",
+        passId: pass.id,
+        retryAt: new Date(Date.now() + delay).toISOString(),
+      });
       console.warn(`[heads-down] pass hit a provider error, retrying in ${delay / 1000}s:`, error);
       await wait(delay, abort.signal);
       if (abort.signal.aborted) break;
-      message = buildRetryPrompt(error, made);
+      message = buildRetryPrompt(error, callsThisPass);
     }
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-    console.error("[heads-down] pass failed:", error);
-    await keepAttempt(db, session.id, attempt, ending(error)).catch((saveError) =>
-      console.error("[heads-down] saving the failed pass's transcript failed:", saveError),
-    );
+    // Redacted and cut short: it is stored, shown, and quoted to the next pass.
+    const message = clip(clientError(e), MAX_ERROR_CHARS);
+    console.error("[heads-down] pass failed:", message);
+    // A throw caused by the stop or the timeout isn't the pass's own failure.
+    if (!abort.signal.aborted) error = message;
+    if (!attemptSaved) {
+      await saveAttemptTranscript(db, session.id, attempt, endingNote(message)).catch((saveError) =>
+        console.error("[heads-down] saving the failed pass's transcript failed:", saveError),
+      );
+    }
   } finally {
     clearTimeout(timer);
     setPassAbort(null);
@@ -324,9 +368,11 @@ export async function runPass(
   // closing text, or fails on a later step, hasn't lost anything.
   // A stop the user asked for is their doing, not a failure.
   if (outcome.finished || stoppedByUser) error = null;
-  // The turn reports a timeout as a plain stop, which reads as the user's doing.
-  else if (timedOut()) error = TIMED_OUT;
+  // The turn reports a timeout as a plain stop, which reads as the user's doing,
+  // so the timeout is named here, with the provider error before it if there was one.
+  else if (timedOut()) error = error ? `${TIMEOUT_ERROR} (after: ${error})` : TIMEOUT_ERROR;
   else error ??= "the pass ended without calling finish_pass";
+  if (error) error = clip(error, MAX_ERROR_CHARS);
   // The pass is recorded whatever happens here: a failure to read the streams
   // just loses the idle reasons, not the record.
   const awake = await listStreams(db, { awakeAt: new Date() }).catch((e) => {

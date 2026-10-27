@@ -9,6 +9,7 @@ import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
 import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
 import {
@@ -19,9 +20,18 @@ import {
   saveInsight,
 } from "./insights.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
+import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
+import {
+  latestReviewMark,
+  providerComparisons,
+  providerMarks,
+  type ReviewMarkProvider,
+  reviewMarkProvider,
+  toMarkResponse,
+} from "./reviewMarks.ts";
 import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
-import { type PrRef, parseRefKey, refKey } from "./types.ts";
+import { COMMIT_SHA_PATTERN, type CommitsSince, type PrRef, parseRefKey, refKey } from "./types.ts";
 import { PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
 
 /**
@@ -123,7 +133,12 @@ function toGuideResponse(guide: PrGuideRow, headSha: string) {
   };
 }
 
-export function createPrRoutes(config: Config): Hono {
+export interface PrRouteOptions {
+  /** Replaces the provider the review marks read back from, for tests. */
+  markProvider?: (ref: PrRef) => ReviewMarkProvider | null;
+}
+
+export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Hono {
   const router = new Hono();
 
   router.use("*", async (c, next) => {
@@ -393,6 +408,10 @@ export function createPrRoutes(config: Config): Hono {
       console.error("[pr] posting an insight failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
     }
+    // The answer was asked about, and posted on, the head the insight records.
+    if (COMMIT_SHA_PATTERN.test(insight.headSha)) {
+      await markReviewed(dbh, config, { ref, headSha: insight.headSha, source: "comment" });
+    }
     const stamped = await markInsightPosted(dbh, insight.id);
     // The comment is already on the provider at this point. If the row went
     // away underneath us the stamp has nowhere to land, and answering with a
@@ -435,6 +454,54 @@ export function createPrRoutes(config: Config): Hono {
   }
 
   /**
+   * The user's last review of a pull request — recorded through Yarvis or read
+   * back from the provider — and how far the PR has moved on since, for the
+   * classic page's "new commits since your review" note. `head` is the head the
+   * page has loaded; without it the provider is asked. `since` is null when the
+   * provider couldn't say.
+   */
+  router.get("/review-mark", async (c) => {
+    const parsed = prRef.safeParse(parseRefQuery(c.req.query()));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const head = c.req.query("head");
+    if (head !== undefined && !COMMIT_SHA_PATTERN.test(head)) {
+      return c.json({ error: "head must be a full commit sha" }, 400);
+    }
+    const ref = parsed.data;
+    const provider = (options.markProvider ?? ((r) => reviewMarkProvider(config, r)))(ref);
+    await providerMarks.sync(db(), ref, provider);
+    const mark = await latestReviewMark(db(), ref);
+    if (!mark) return c.json({ mark: null, headSha: head ?? null, since: null });
+
+    const atMark = (sha: string | null): CommitsSince | null =>
+      sha === mark.headSha ? { exists: true, commits: 0, rewritten: false } : null;
+    if (head === mark.headSha || !provider) {
+      return c.json({
+        mark: toMarkResponse(mark),
+        headSha: head ?? null,
+        since: atMark(head ?? null),
+      });
+    }
+    // Throttled like the sync above: the page asks again on every poll.
+    const compared = await providerComparisons.get(
+      `${refKey(ref)}:${mark.headSha}:${head ?? "-"}`,
+      async () => {
+        const headSha = head ?? (await provider.headSha(ref));
+        const since =
+          atMark(headSha) ??
+          (headSha ? await provider.commitsSince(ref, mark.headSha, headSha) : null);
+        return { headSha, since };
+      },
+      "could not compare against the last review",
+    );
+    return c.json({
+      mark: toMarkResponse(mark),
+      headSha: compared?.headSha ?? head ?? null,
+      since: compared?.since ?? null,
+    });
+  });
+
+  /**
    * Opens a workspace on this pull request's branch, so the reviewer can edit
    * it or ask an agent about it rather than only reading the diff. Answers as
    * soon as the workspace row exists — provisioning runs in the background here
@@ -457,6 +524,36 @@ export function createPrRoutes(config: Config): Hono {
       // A refusal names something the reviewer can fix; anything else is the
       // provider or the database failing, which the rest of this file answers
       // 502 for.
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
+    }
+  });
+
+  /**
+   * Hands the pull request's merge conflicts to a coding agent: typed at the
+   * prompt of the agent already running in its workspace, or as the brief of a
+   * session started in it, or of a workspace created for it (see
+   * `resolveConflictsForPr`). An agent that looks busy is not interrupted
+   * unless `confirm` is set; the answer says so with `needs_confirm`. 201 means
+   * a workspace was created, as for `/workspace`.
+   */
+  router.post("/resolve-conflicts", async (c) => {
+    const parsed = z
+      .object({ ref: prRef, confirm: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const source = sourceFor(parsed.data.ref);
+    if ("error" in source) return c.json({ error: source.error }, 400);
+
+    try {
+      const result = await resolveConflictsForPr(db(), config, source, {
+        confirm: parsed.data.confirm,
+      });
+      return c.json(result, result.outcome === "created" ? 201 : 200);
+    } catch (e) {
+      console.error("[pr] could not hand the conflicts to an agent:", describeError(e));
+      if (e instanceof ResolveConflictsInFlight) return c.json({ error: clientError(e) }, 409);
       const refused = e instanceof PrWorkspaceRefusal;
       return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }

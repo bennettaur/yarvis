@@ -148,7 +148,8 @@ heads-down mode is off.
 **What it has been doing** shows the pass that is running, live, and the ones
 before it. The live pass shows each tool call as it happens, and its latest
 thought folded to one line. Each finished pass shows its notes, how many tool
-calls it made, and which ones failed with the start of their error. Open a pass
+calls it made, which ones failed with the start of their error, and which got
+no result back because the pass ended first. Open a pass
 to see each tool call it made and what came back. A pass you stopped shows as
 stopped, not failed.
 
@@ -158,7 +159,8 @@ A rate limit or a server error from the model's provider is retried a few
 times, a few seconds apart. If the provider fails part-way through a pass, for
 example by reporting that it is overloaded, the pass waits and carries on from
 where it got to, up to two more times. It is told which calls already went
-through, so it doesn't repeat them.
+through, so it doesn't repeat them. A call whose result never came back may
+still have taken effect, so it is told to check before making it again.
 
 A pass that still fails, runs out of time, or is stopped keeps what it did:
 its tool calls show when you open it, with the error. The next pass is told

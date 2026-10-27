@@ -8,6 +8,7 @@ import { createApp } from "../app.ts";
 import { addMessage as addChatMessage, createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { CUT_SHORT_RESULT } from "../db/schema.ts";
 import { askUser } from "./attention.ts";
 import { startPass, startRun } from "./service.ts";
 
@@ -198,15 +199,32 @@ describe("/api/heads-down", () => {
           status: "error",
           result: "channel_not_found",
         },
+        {
+          id: "3",
+          name: "send_workspace_instruction",
+          status: "error",
+          result: CUT_SHORT_RESULT,
+        },
       ],
+    });
+    // A retry in the same pass is a second assistant row; both count.
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [{ id: "4", name: "get_workspace_status", status: "pending" }],
     });
 
     const [listed] = (await get("/passes")) as unknown[];
 
     expect(listed).toMatchObject({
       id: pass.id,
-      calls: 2,
-      failedCalls: [{ name: "post_message", server: "Slack", error: "channel_not_found" }],
+      callCount: 4,
+      failedCalls: [
+        { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+        expect.objectContaining({ name: "send_workspace_instruction", noResult: true }),
+        expect.objectContaining({ name: "get_workspace_status", noResult: true }),
+      ],
     });
   });
 });

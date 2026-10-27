@@ -124,6 +124,80 @@ describe("github merge validation", () => {
   });
 });
 
+describe("github comment thread routes", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const post = (path: string, body?: unknown) =>
+    configured.request(`/api/github/pr/octo/repo/1${path}`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it("rejects a range that ends before it starts with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startLine: 9, body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a start side with no start line with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startSide: "LEFT", body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a thread id carrying path characters with 400", async () => {
+    const res = await post(`/threads/${encodeURIComponent("T1/../x")}/resolve`);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty reply with 400", async () => {
+    const res = await post("/threads/PRRT_1/replies", { body: "  " });
+    expect(res.status).toBe(400);
+  });
+
+  /** Stubs GitHub's GraphQL endpoint with `reply`, recording each request. */
+  function githubAnswers(reply: unknown) {
+    const sent: { query: string; variables: unknown }[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }) as unknown as typeof fetch;
+    return sent;
+  }
+
+  it("resolves a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("resolveReviewThread");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1" });
+  });
+
+  it("reopens a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/unresolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("unresolveReviewThread");
+  });
+
+  it("posts a reply and answers 201", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/replies", { body: "done" });
+    expect(res.status).toBe(201);
+    expect(sent[0]!.query).toContain("addPullRequestReviewThreadReply");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1", body: "done" });
+  });
+
+  it("passes GitHub refusing a mutation through as forbidden", async () => {
+    githubAnswers({ errors: [{ type: "FORBIDDEN", message: "not yours" }] });
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { reason: string }).reason).toBe("forbidden");
+  });
+});
+
 describe("github pr config validation", () => {
   const put = (body: unknown) =>
     configured.request("/api/github/config", {
@@ -235,6 +309,18 @@ describe("github review submission logging", () => {
     expect((await approve()).status).toBe(201);
     const [event] = await loggedEvents();
     expect(event).toMatchObject({ type: "pr.approved", externalId: null });
+  });
+
+  it("logs a thread reply as a comment marked as a reply", async () => {
+    stubSubmit({ data: {} });
+    const res = await app.request("/api/github/pr/o/r/1/threads/PRRT_1/replies", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "done" }),
+    });
+    expect(res.status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.commented", payload: { reply: true } });
   });
 });
 

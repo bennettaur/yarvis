@@ -33,6 +33,9 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Starts an unattended loop that starts work, files tickets and instructs
   // agent sessions on its own until it is stopped.
   "start_heads_down",
+  // Its approval lets the repo's CI merge the PR with nobody else reading it.
+  // Only the merge-reviewer specialist's grant may skip asking.
+  "post_merge_review",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([

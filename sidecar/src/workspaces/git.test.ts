@@ -22,6 +22,8 @@ import {
   listWorktrees,
   mergeBaseIntoWorktree,
   nearestBaseRef,
+  parseNameStatusAndNumstat,
+  parseRawNumstat,
   pushBranch,
   remoteExists,
   removeWorktree,
@@ -893,5 +895,111 @@ describe("pushBranch", () => {
   it("throws with git's own message when the push is rejected", async () => {
     const { runner } = fakeRunner(() => ({ exitCode: 1, stderr: "! [rejected] fetch first" }));
     await expect(pushBranch(runner, "/wt", "feature")).rejects.toThrow("fetch first");
+  });
+});
+
+describe("diff record parsing", () => {
+  const nameStatus = [
+    "M",
+    "src/a.ts",
+    "R087",
+    "src/old.ts",
+    "src/new.ts",
+    "D",
+    "gone.md",
+    "A",
+    "img.bin",
+    "",
+  ].join("\0");
+  const numstat = [
+    "2\t1\tsrc/a.ts",
+    "1\t1\t",
+    "src/old.ts",
+    "src/new.ts",
+    "0\t1\tgone.md",
+    "-\t-\timg.bin",
+    "",
+  ].join("\0");
+  const oid = (c: string) => c.repeat(40);
+  const raw = [
+    `:100644 100644 ${oid("a")} ${oid("b")} M`,
+    "src/a.ts",
+    `:100644 100644 ${oid("c")} ${oid("d")} R087`,
+    "src/old.ts",
+    "src/new.ts",
+    `:100644 000000 ${oid("e")} ${oid("0")} D`,
+    "gone.md",
+    `:000000 100644 ${oid("0")} ${oid("f")} A`,
+    "img.bin",
+  ].join("\0");
+  const expected = [
+    { path: "src/a.ts", code: "M", additions: 2, deletions: 1, binary: false },
+    {
+      path: "src/new.ts",
+      oldPath: "src/old.ts",
+      code: "R087",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+    },
+    { path: "gone.md", code: "D", additions: 0, deletions: 1, binary: false },
+    { path: "img.bin", code: "A", additions: 0, deletions: 0, binary: true },
+  ];
+
+  it("joins name-status and numstat, keeping renames, deletions and binaries", () => {
+    expect(parseNameStatusAndNumstat(nameStatus, numstat)).toEqual(expected);
+  });
+
+  it("reads the same records, plus blob ids, from one --raw --numstat run", () => {
+    const records = parseRawNumstat(`${raw}\0${numstat}`);
+    expect(records.map(({ oldOid: _o, newOid: _n, ...rest }) => rest)).toEqual(expected);
+    expect(records[1]).toMatchObject({ oldOid: oid("c"), newOid: oid("d") });
+  });
+
+  it("keeps a tab inside a filename as part of the path", () => {
+    expect(parseNameStatusAndNumstat("M\0a\tb.txt\0", "1\t0\ta\tb.txt\0")).toEqual([
+      { path: "a\tb.txt", code: "M", additions: 1, deletions: 0, binary: false },
+    ]);
+  });
+
+  it("agrees with itself on a real repo, whichever form git printed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-diff-parse-"));
+    const g = (...args: string[]) => {
+      const result = spawnSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+        { cwd: dir, encoding: "utf8" },
+      );
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout;
+    };
+    try {
+      g("init", "-q");
+      writeFileSync(join(dir, "keep.txt"), "one\ntwo\nthree\nfour\nfive\n");
+      writeFileSync(join(dir, "edit.txt"), "a\n");
+      writeFileSync(join(dir, "drop.txt"), "bye\n");
+      g("add", "-A");
+      g("commit", "-q", "-m", "base");
+      g("mv", "keep.txt", "moved.txt");
+      writeFileSync(join(dir, "edit.txt"), "a\nb\n");
+      writeFileSync(join(dir, "bin.dat"), Buffer.from([0, 1, 2]));
+      g("rm", "-q", "drop.txt");
+      g("add", "-A");
+      g("commit", "-q", "-m", "change");
+      const separate = parseNameStatusAndNumstat(
+        g("diff", "--name-status", "-z", "-M", "HEAD~1..HEAD"),
+        g("diff", "--numstat", "-z", "-M", "HEAD~1..HEAD"),
+      );
+      const combined = parseRawNumstat(g("diff", "--raw", "--numstat", "-z", "-M", "HEAD~1..HEAD"));
+      expect(combined.map(({ oldOid: _o, newOid: _n, ...rest }) => rest)).toEqual(separate);
+      expect(separate.map((r) => r.path).sort()).toEqual([
+        "bin.dat",
+        "drop.txt",
+        "edit.txt",
+        "moved.txt",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

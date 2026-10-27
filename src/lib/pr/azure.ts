@@ -120,14 +120,34 @@ export const azFileContent = (ref: PrRef, path: string, sha: string) =>
   get<{ content: string }>(
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
   );
-export const azPostComment = (ref: PrRef, comment: NewComment) =>
+export const azPostComment = (ref: PrRef, comment: NewComment & Record<string, unknown>) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+export const azReplyToThread = (
+  ref: PrRef,
+  threadId: string,
+  body: string,
+  parentCommentId?: number,
+) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/replies`,
+    "POST",
+    { body, parentCommentId },
+  );
+export const azSetThreadResolved = (ref: PrRef, threadId: string, resolved: boolean) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/${resolved ? "resolve" : "unresolve"}`,
+    "POST",
+  );
 
 export const azMarkReady = (ref: PrRef) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");
 
-export const azSubmitVote = (ref: PrRef, vote: number, body?: string) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/vote`, "POST", { vote, body });
+export const azSubmitVote = (
+  ref: PrRef,
+  vote: number,
+  body?: string,
+  seen: Record<string, string> = {},
+) => send<{ ok: boolean }>(`${refApiPath(ref)}/vote`, "POST", { vote, body, ...seen });
 
 export const azFilters = () => get<AzFilter[]>("/api/azure/filters");
 export const azCreateFilter = (name: string, scope: "mine" | "review", project: string | null) =>

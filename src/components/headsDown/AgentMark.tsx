@@ -7,6 +7,12 @@ const LABEL: Record<AgentState, string> = {
   off: "Heads down is off",
 };
 
+const IMAGE_STYLE: Record<AgentState, string> = {
+  working: "",
+  sleeping: "opacity-60 saturate-50",
+  off: "opacity-40 grayscale",
+};
+
 /**
  * The Yarvis logo, showing at a glance whether heads-down mode is working,
  * sleeping between passes, or off. Working spins a ring around it, sleeping
@@ -36,13 +42,7 @@ export default function AgentMark({
       <img
         src="/yarvis-logo.png"
         alt=""
-        className={`relative h-full w-full rounded-lg transition duration-500 ${
-          state === "working"
-            ? ""
-            : state === "sleeping"
-              ? "opacity-60 saturate-50"
-              : "opacity-40 grayscale"
-        }`}
+        className={`relative h-full w-full rounded-lg transition duration-500 ${IMAGE_STYLE[state]}`}
       />
       {state === "sleeping" && (
         <span
