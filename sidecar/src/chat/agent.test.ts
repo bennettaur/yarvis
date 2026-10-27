@@ -5,6 +5,7 @@ import postgres from "postgres";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import type { ChatMessageMetadata } from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import { modelToolKey } from "../mcp/chatTools.ts";
 import type { McpClientTool } from "../mcp/connectionManager.ts";
@@ -101,6 +102,7 @@ async function collect(
   signal?: AbortSignal,
   budget?: { maxSteps?: number; maxOutputTokens?: number | null; compactAtTokens?: number },
   liveTools?: Record<string, McpClientTool>,
+  userMetadata?: ChatMessageMetadata,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   for await (const event of runAgentTurn({
@@ -114,6 +116,7 @@ async function collect(
     signal,
     budget,
     liveTools,
+    userMetadata,
   })) {
     events.push(event);
   }
@@ -264,6 +267,39 @@ describe("runAgentTurn", () => {
     );
 
     expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+  });
+
+  it("asks before a destructive tool on a turn from the Chrome side panel", async () => {
+    const session = await createSession(db, null);
+    const deleteCall = () =>
+      streamingModel(
+        [
+          toolCall("c1", "delete_task", {
+            id: "00000000-0000-0000-0000-000000000000",
+            callReason: "The user asked",
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("ok"), finish("stop")],
+      );
+    const fromPanel = await collect(
+      deleteCall(),
+      session.id,
+      denyingApproval,
+      undefined,
+      undefined,
+      undefined,
+      {
+        source: "browser",
+      },
+    );
+    expect(fromPanel.find((e) => e.type === "tool_result")).toMatchObject({ status: "denied" });
+
+    // The same call typed in the app runs without asking.
+    const typed = await collect(deleteCall(), session.id, denyingApproval);
+    const typedResult = typed.find((e) => e.type === "tool_result");
+    expect(typedResult).toBeDefined();
+    expect(typedResult).not.toMatchObject({ status: "denied" });
   });
 
   it("names the MCP server a tool belongs to", async () => {

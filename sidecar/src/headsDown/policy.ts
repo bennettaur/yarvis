@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
@@ -24,8 +24,8 @@ import {
 } from "./autoApprove.ts";
 import {
   deniedApprovalExists,
-  getActiveRun,
   isToolUnattended,
+  mayRunPasses,
   recordAutoApproval,
   spendApproval,
 } from "./service.ts";
@@ -47,14 +47,17 @@ import {
 
 /**
  * Tools a pass never runs, so asking the user about them would be noise.
- * Answers are recorded by the page; heads-down mode doesn't start or stop
- * itself; and memory is kept out of reach of a turn that spends its time
+ * Answers are recorded by the page; heads-down mode doesn't start, stop, pause
+ * or schedule itself; and memory is kept out of reach of a turn that spends its time
  * reading other people's text, since a planted "fact" would outlive the pass.
  */
 export const PASS_REFUSED_TOOLS: ReadonlySet<string> = new Set([
   "record_decision",
   "start_heads_down",
   "stop_heads_down",
+  "pause_heads_down",
+  "resume_heads_down",
+  "set_heads_down_stop_time",
   "remember",
   "correct_memory",
   "confirm_memory",
@@ -88,7 +91,8 @@ const REFUSED = "Not available in heads-down mode. Don't call it again in this p
 
 const DECIDING_FAILED = "Not run: deciding whether it was allowed failed. Move on.";
 
-const STOPPED = "Not run: the user stopped heads-down mode. End the pass now with finish_pass.";
+const STOPPED =
+  "Not run: the user stopped or paused heads-down mode. End the pass now with finish_pass.";
 
 const DENIED =
   "Not run: the user denied this exact call. Don't call it again; find another way or ask them with ask_user.";
@@ -106,7 +110,11 @@ function numberArg(args: unknown, key: string): number | null {
   return typeof value === "number" ? value : null;
 }
 
-/** Whether something is linked, by a chat turn, to a stream that is still open. */
+/**
+ * Whether something is linked, by a chat turn, to a stream that is still open
+ * and not paused. A paused stream's work waits for the user's approval, like
+ * work on no stream at all.
+ */
 async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean> {
   const rows = await db
     .select({ id: workStreamLinks.id })
@@ -117,6 +125,7 @@ async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean
         eq(workStreamLinks.refKey, refKey),
         eq(workStreamLinks.createdBy, "chat"),
         inArray(workStreams.status, [...OPEN_STREAM_STATUSES]),
+        isNull(workStreams.pausedAt),
       ),
     )
     .limit(1);
@@ -198,8 +207,9 @@ export async function decideCall(
   { withinWorkingHours = true }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
-  // Stopped here or on another instance: nothing more runs, whatever the pass is still doing.
-  if ((await getActiveRun(db))?.id !== run.id) return "stopped";
+  // Stopped, paused or past its stop time, here or on another instance:
+  // nothing more runs, whatever the pass is still doing. "stopped" covers all three.
+  if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
   const outOfHoursMerge = !withinWorkingHours && isMergeCall(tool, args);
