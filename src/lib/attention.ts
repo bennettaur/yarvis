@@ -45,6 +45,16 @@ export interface AttentionItem {
 /** A frame on the live stream: a changed item, or a keep-alive ping. */
 export type AttentionStreamEvent = { type: "item"; item: AttentionItem } | { type: "ping" };
 
+/**
+ * Whether the item is answered in a dialog over the current page rather than by
+ * navigating to it: a Claude Code permission prompt for a known session, or a
+ * coding agent's question.
+ */
+export function hasAnswerDialog(item: AttentionItem): boolean {
+  if (item.kind === "question") return true;
+  return item.kind === "permission" && item.source === "claude-hook" && Boolean(item.sessionKey);
+}
+
 /** Lists attention items, optionally filtered by status. Newest-first. */
 export async function getAttention(status?: AttentionStatus): Promise<AttentionItem[]> {
   const query = status ? `?status=${status}` : "";
