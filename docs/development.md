@@ -321,6 +321,7 @@ main one:
 | Workspace and PR poller | Doubles API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would start two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
+| Alarm scheduler | Two processes would race to ring each alarm | `YARVIS_BACKGROUND_WORKERS=1` |
 | Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule. This includes scheduled tasks, so a second instance never runs the ones scheduled in its chats | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control+Shift+Space`, `Control+Shift+V`) | Only one process can hold a hotkey | `YARVIS_GLOBAL_SHORTCUTS=1` |
 

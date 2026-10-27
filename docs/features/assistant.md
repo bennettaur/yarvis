@@ -460,6 +460,9 @@ Loaded on demand:
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
+- **Alarms.** List your alarms, set one for a time or for a calendar meeting,
+  and cancel one. In heads-down mode it can only set meeting alarms, and can't
+  cancel any.
 - **Help.** Search and read Yarvis's own user docs, and check which parts of
   the app are configured (yes or no only, never a secret's value).
 

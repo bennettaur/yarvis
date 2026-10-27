@@ -2,10 +2,12 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
+import { newAttentionState } from "../chat/attentionTools.ts";
+import { builtinToolFamilies } from "../chat/builtinTools.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { saveToken } from "../google/service.ts";
-import { createAlarm, listAlarms } from "./service.ts";
+import { cancelAlarm, createAlarm, listAlarms } from "./service.ts";
 import { buildAlarmTools } from "./tools.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -18,14 +20,25 @@ const calendar = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   fetch: (req) => {
-    const id = new URL(req.url).pathname.split("/").pop();
-    if (id !== "standup") return new Response("not found", { status: 404 });
+    const id = new URL(req.url).pathname.split("/").pop() ?? "";
+    // "standup" has no guest list; the others carry the user's own reply.
+    const replies: Record<string, string | null> = {
+      standup: null,
+      accepted: "accepted",
+      maybe: "tentative",
+      declined: "declined",
+    };
+    if (!(id in replies)) return new Response("not found", { status: 404 });
+    const reply = replies[id];
     return Response.json({
-      id: "standup",
-      summary: "Standup",
+      id,
+      summary: id === "standup" ? "Standup" : `Planning (${id})`,
       start: { dateTime: meetingStart.toISOString() },
       end: { dateTime: new Date(meetingStart.getTime() + 15 * 60_000).toISOString() },
       hangoutLink: "https://meet.google.com/abc",
+      attendees: reply
+        ? [{ email: "me@example.com", self: true, responseStatus: reply }]
+        : undefined,
     });
   },
 });
@@ -64,10 +77,10 @@ describe("alarm tools", () => {
   it("sets a meeting alarm a minute before, once", async () => {
     const tools = buildAlarmTools(db, config, { unattended: true });
 
-    const first = (await tools.set_meeting_alarm.execute!({ eventId: "standup" }, opts)) as {
+    const first = (await tools.set_meeting_alarm!.execute!({ eventId: "standup" }, opts)) as {
       alreadySet: boolean;
     };
-    const second = (await tools.set_meeting_alarm.execute!({ eventId: "standup" }, opts)) as {
+    const second = (await tools.set_meeting_alarm!.execute!({ eventId: "standup" }, opts)) as {
       alreadySet: boolean;
     };
 
@@ -82,7 +95,7 @@ describe("alarm tools", () => {
 
   it("reports a calendar event that doesn't exist", async () => {
     const tools = buildAlarmTools(db, config);
-    const result = (await tools.set_meeting_alarm.execute!({ eventId: "nope" }, opts)) as {
+    const result = (await tools.set_meeting_alarm!.execute!({ eventId: "nope" }, opts)) as {
       error?: string;
     };
     expect(result.error).toContain("no calendar event");
@@ -90,7 +103,7 @@ describe("alarm tools", () => {
 
   it("won't set an alarm in the past", async () => {
     const tools = buildAlarmTools(db, config);
-    const result = (await tools.set_alarm.execute!(
+    const result = (await tools.set_alarm!.execute!(
       { label: "late", at: new Date(Date.now() - 60_000).toISOString() },
       opts,
     )) as { error?: string };
@@ -98,21 +111,79 @@ describe("alarm tools", () => {
     expect(await listAlarms(db)).toEqual([]);
   });
 
-  it("lets a pass cancel only the alarms it set", async () => {
+  it("doesn't set a meeting alarm again after the user cancelled it", async () => {
     const tools = buildAlarmTools(db, config, { unattended: true });
-    const fireAt = new Date(Date.now() + 10 * 60_000);
-    const users = await createAlarm(db, { label: "mine", fireAt, source: "app" });
-    const its = await createAlarm(db, { label: "its", fireAt, source: "heads-down" });
+    const first = (await tools.set_meeting_alarm!.execute!({ eventId: "standup" }, opts)) as {
+      id: string;
+    };
+    await cancelAlarm(db, first.id);
 
-    const refused = (await tools.cancel_alarm.execute!({ id: users.id }, opts)) as {
+    const again = (await tools.set_meeting_alarm!.execute!({ eventId: "standup" }, opts)) as {
+      alreadySet: boolean;
+      status: string;
+    };
+
+    expect(again).toMatchObject({ alreadySet: true, status: "cancelled" });
+    expect(await listAlarms(db)).toHaveLength(1);
+  });
+
+  it("in a pass, sets a meeting alarm only for a meeting the user accepted", async () => {
+    const tools = buildAlarmTools(db, config, { unattended: true });
+    const set = async (eventId: string) =>
+      (await tools.set_meeting_alarm!.execute!({ eventId }, opts)) as { error?: string };
+
+    expect((await set("maybe")).error).toContain("ask_user");
+    expect((await set("declined")).error).toContain("declined");
+    expect((await set("accepted")).error).toBeUndefined();
+    expect((await listAlarms(db)).map((a) => a.label)).toEqual(["Meeting: Planning (accepted)"]);
+  });
+
+  it("in a chat, won't set an alarm for a meeting the user declined", async () => {
+    const tools = buildAlarmTools(db, config);
+    const declined = (await tools.set_meeting_alarm!.execute!({ eventId: "declined" }, opts)) as {
       error?: string;
     };
-    const cancelled = (await tools.cancel_alarm.execute!({ id: its.id }, opts)) as { ok?: true };
+    const maybe = (await tools.set_meeting_alarm!.execute!({ eventId: "maybe" }, opts)) as {
+      error?: string;
+    };
 
-    expect(refused.error).toBeDefined();
-    expect(cancelled.ok).toBe(true);
-    const statuses = Object.fromEntries((await listAlarms(db)).map((a) => [a.label, a.status]));
-    expect(statuses).toEqual({ mine: "scheduled", its: "cancelled" });
+    expect(declined.error).toContain("declined");
+    expect(maybe.error).toBeUndefined();
+  });
+
+  it("gives a pass no way to set a free-form alarm or cancel one", () => {
+    const deps = {
+      db,
+      config,
+      sessionId: "s",
+      memory: undefined as never,
+      attention: newAttentionState(),
+      remoteControl: false,
+    };
+    const pass = builtinToolFamilies({ ...deps, atTheApp: false, unattended: true }).alarms!;
+    const chat = builtinToolFamilies({ ...deps, atTheApp: true }).alarms!;
+
+    expect(Object.keys(pass).sort()).toEqual(["list_alarms", "set_meeting_alarm"]);
+    expect(Object.keys(chat).sort()).toEqual([
+      "cancel_alarm",
+      "list_alarms",
+      "set_alarm",
+      "set_meeting_alarm",
+    ]);
+  });
+
+  it("cancels an alarm in a chat, but not one already dealt with", async () => {
+    const tools = buildAlarmTools(db, config);
+    const fireAt = new Date(Date.now() + 10 * 60_000);
+    const alarm = await createAlarm(db, { label: "mine", fireAt, source: "app" });
+
+    const first = (await tools.cancel_alarm!.execute!({ id: alarm.id }, opts)) as { ok?: true };
+    const again = (await tools.cancel_alarm!.execute!({ id: alarm.id }, opts)) as {
+      error?: string;
+    };
+
+    expect(first.ok).toBe(true);
+    expect(again.error).toContain("cancelled");
   });
 });
 
@@ -131,6 +202,7 @@ describe("/api/alarms", () => {
     const alarm = (await created.json()) as { id: string; fireAtMs: number; source: string };
     expect(alarm.fireAtMs).toBe(fireAtMs);
     expect(alarm.source).toBe("app");
+    await sql`UPDATE alarms SET status = 'fired' WHERE id = ${alarm.id}`;
 
     const ack = await app.request(`/api/alarms/${alarm.id}/acknowledge`, {
       method: "POST",
@@ -157,5 +229,76 @@ describe("/api/alarms", () => {
       body: JSON.stringify({ minutes: 5 }),
     });
     expect(missing.status).toBe(404);
+  });
+
+  it("turns away a snooze or acknowledge for an alarm that isn't ringing", async () => {
+    const alarm = await createAlarm(db, {
+      label: "later",
+      fireAt: new Date(Date.now() + 10 * 60_000),
+      source: "app",
+    });
+
+    const ack = await app.request(`/api/alarms/${alarm.id}/acknowledge`, {
+      method: "POST",
+      headers: auth,
+    });
+    const snooze = await app.request(`/api/alarms/${alarm.id}/snooze`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ minutes: 5 }),
+    });
+
+    expect(ack.status).toBe(409);
+    expect(snooze.status).toBe(409);
+  });
+
+  it("cancels an upcoming alarm and snoozes a ringing one", async () => {
+    const upcoming = await createAlarm(db, {
+      label: "upcoming",
+      fireAt: new Date(Date.now() + 10 * 60_000),
+      source: "app",
+    });
+    const ringing = await createAlarm(db, {
+      label: "ringing",
+      fireAt: new Date(Date.now() - 60_000),
+      source: "app",
+    });
+    await sql`UPDATE alarms SET status = 'fired' WHERE id = ${ringing.id}`;
+
+    const cancel = await app.request(`/api/alarms/${upcoming.id}/cancel`, {
+      method: "POST",
+      headers: auth,
+    });
+    const snooze = await app.request(`/api/alarms/${ringing.id}/snooze`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ minutes: 5 }),
+    });
+
+    expect(((await cancel.json()) as { status: string }).status).toBe("cancelled");
+    const snoozed = (await snooze.json()) as { status: string; fireAtMs: number };
+    expect(snoozed.status).toBe("scheduled");
+    expect(snoozed.fireAtMs).toBeGreaterThan(Date.now() + 4 * 60_000);
+  });
+
+  it("answers 404 for an id that isn't a UUID", async () => {
+    const res = await app.request("/api/alarms/not-an-id/cancel", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects an alarm with no label, a bad time, or a link that isn't a web link", async () => {
+    const post = (body: unknown) =>
+      app.request("/api/alarms", { method: "POST", headers: auth, body: JSON.stringify(body) });
+    const fireAtMs = Date.now() + 60_000;
+
+    expect((await post({ label: "", fireAtMs })).status).toBe(400);
+    expect((await post({ label: "Tea", fireAtMs: -5 })).status).toBe(400);
+    expect((await post({ label: "Tea", fireAtMs, meetLink: "javascript:alert(1)" })).status).toBe(
+      400,
+    );
+    expect(await listAlarms(db)).toEqual([]);
   });
 });

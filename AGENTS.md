@@ -22,7 +22,7 @@ Three processes, each with a clean ownership boundary:
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
   method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
-  `github.saveToken`)
+  `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
