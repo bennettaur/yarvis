@@ -111,7 +111,7 @@ writes these files into the root:
 | File | What it's for |
 | --- | --- |
 | `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
-| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app, and register each Claude Code session with the workspace |
+| `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), and register each Claude Code session with the workspace |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
 | `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
@@ -233,8 +233,12 @@ still blocks the merge: a branch-protection rule (required reviewers,
 CODEOWNERS, required checks), a base the branch must be updated against, or a
 merge state the provider hasn't worked out.
 
-Azure DevOps doesn't report check state or a merge verdict here. Its badges
-reflect the review only and never reach `★`.
+On GitHub, checks count both check runs (GitHub Actions and most apps) and
+commit statuses (which many outside CI services post). On Azure DevOps, checks
+come from the PR's build and status policies. Other policies, such as a minimum
+number of reviewers, are not counted as checks. If the token can't read the
+policies, the badge shows no checks. Azure DevOps doesn't report a merge
+verdict here, so its badges never reach `★`.
 
 Badges come from a background PR poll that runs every minute, so they can lag
 a change by up to a minute.
@@ -443,6 +447,12 @@ Safety rules:
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
 
+A PR's **Resolve conflicts** button uses the same path (see
+[Resolve merge conflicts](pr-review.md#resolve-merge-conflicts)). It refuses
+while a permission prompt is pending. When the workspace has no agent running,
+it writes the merge instructions to `.yarvis/resolve-conflicts.md`, leaving
+`.yarvis/brief.md` as it was, and starts an agent on them.
+
 ### Asking what a workspace is up to
 
 Ask "what was I doing in my workspaces?" or "where did the billing-api session
@@ -457,6 +467,18 @@ A small model writes the recap, so check the details. It only finds sessions
 started at the workspace's root, which is where Yarvis starts them. A workspace
 counts as viewed once it has stayed on screen for a few seconds. See
 [The assistant](assistant.md#what-it-can-see).
+
+The assistant can also tell you:
+
+- **Where a PR's review and CI stand.** Who has been asked to review (people
+  or teams) and what each has said, plus each check with its result and a
+  link. It asks GitHub or Azure DevOps each time, rather than reading the last
+  poll.
+- **Whether a session is waiting on you.** It reads the same items as
+  [the attention bell](#the-attention-bell): a permission prompt, a session idle
+  at its prompt, or one that finished. An item stays until you view the
+  workspace or the session finishes its next turn. Answering in the session
+  itself doesn't clear it, so an old permission item may already be answered.
 
 ## Archiving
 
@@ -499,6 +521,10 @@ the environment variables that make this work.
 
 How the bell behaves:
 
+- **Hard to miss.** While anything is pending, an amber band sweeps across the
+  top bar towards the bell and the bell rings, every few seconds. A new item
+  starts the sweep straight away. With macOS's Reduce Motion on, the band
+  fades in and out in place and the bell stays still.
 - **Grouped by origin.** Repeat items from one workspace collapse into one row
   with a count, naming the tabs involved. Dismissing the row clears them all.
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an
@@ -514,7 +540,9 @@ How the bell behaves:
   without you. Looking at the session doesn't clear a question; only answering,
   skipping or dismissing it does. See [MCP](mcp.md#asking-you-questions).
 
-A permission prompt can be answered straight from the bell. See
+A permission prompt, or a question Claude asks with its own question tool, can
+be answered straight from the bell. Its row reads `AskUserQuestion:` and the
+first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
 
 The assistant doesn't read the bell. It is for you.

@@ -12,6 +12,7 @@ import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
+import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
@@ -19,6 +20,7 @@ import OmniChat from "./components/omnichat/OmniChat";
 import SetupGuide from "./components/onboarding/SetupGuide";
 import Tour from "./components/onboarding/Tour";
 import PrsPanel from "./components/PrsPanel";
+import ReviewPanel from "./components/ReviewPanel";
 import ScheduledJobsPanel from "./components/ScheduledJobsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
@@ -40,10 +42,12 @@ import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
   type NewWorkspaceRequest,
+  type OpenReviewRequest,
   type OpenWorkspaceRequest,
   useNewWorkspaceListener,
   useOpenPlaceListener,
   useOpenPrListener,
+  useOpenReviewListener,
   useOpenWorkspaceListener,
 } from "./lib/nav";
 import { notify } from "./lib/notify";
@@ -91,6 +95,9 @@ export default function App() {
   const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
     null,
   );
+  // A review workspace another view (the classic PR page) asked us to show.
+  // ReviewPanel consumes and clears it.
+  const [requestedReview, setRequestedReview] = useState<OpenReviewRequest | null>(null);
   // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
   const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
   // A PTY session on the standalone Terminal tab that an attention item asked us
@@ -118,6 +125,13 @@ export default function App() {
     setTab("workspaces");
   }, []);
   useOpenWorkspaceListener(handleOpenWorkspace);
+
+  const handleOpenReview = useCallback((request: OpenReviewRequest) => {
+    setRequestedReview(request);
+    setTab("review");
+  }, []);
+  useOpenReviewListener(handleOpenReview);
+  const clearRequestedReview = useCallback(() => setRequestedReview(null), []);
 
   const handleNewWorkspace = useCallback((request: NewWorkspaceRequest) => {
     setRequestedNewWorkspace(request);
@@ -422,6 +436,9 @@ export default function App() {
             onRequestConsumed={() => setRequestedPr(null)}
             persistPlace
           />
+        ) : tab === "review" ? (
+          // Review lays out its own nav, tabs and scroll panes, like Workspaces.
+          <ReviewPanel requested={requestedReview} onRequestConsumed={clearRequestedReview} />
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.
@@ -489,6 +506,13 @@ export default function App() {
       />
 
       <AttentionAutoClear />
+
+      <MergeAlert
+        onOpen={(item) => {
+          void markAttention(item.id, "read");
+          navigateTo(item.navTarget, item.title);
+        }}
+      />
 
       <AlarmTakeover />
 

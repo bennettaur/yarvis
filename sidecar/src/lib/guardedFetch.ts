@@ -1,4 +1,4 @@
-import { assertResolvableOutbound } from "./urlSafety.ts";
+import { assertResolvableOutbound, validateOutboundUrl } from "./urlSafety.ts";
 
 /** Redirect hops followed before giving up, matching `memory/ingest.ts`. */
 const MAX_REDIRECTS = 5;
@@ -13,6 +13,14 @@ export interface GuardedFetchOptions {
    * the body and every custom header to the new host.
    */
   sameOriginOnly?: boolean;
+  /**
+   * Check each hop's URL without resolving its host, as `validateOutboundUrl`
+   * does. For a user-configured provider, whose base URL is held to that
+   * static check when saved and when the AI SDK reaches it: resolving here as
+   * well would refuse a LAN hostname that every other call to the same
+   * provider reaches.
+   */
+  staticCheckOnly?: boolean;
 }
 
 /**
@@ -29,15 +37,25 @@ export interface GuardedFetchOptions {
 export async function guardedFetch(
   url: string,
   init: RequestInit,
-  { fetchImpl, timeoutMs, allowLoopback, sameOriginOnly = false }: GuardedFetchOptions,
+  {
+    fetchImpl,
+    timeoutMs,
+    allowLoopback,
+    sameOriginOnly = false,
+    staticCheckOnly = false,
+  }: GuardedFetchOptions,
 ): Promise<Response> {
+  const assertAllowed = async (target: string) => {
+    if (staticCheckOnly) validateOutboundUrl(target, { allowLoopback });
+    else await assertResolvableOutbound(target, { allowLoopback });
+  };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const signal = init.signal
     ? AbortSignal.any([controller.signal, init.signal])
     : controller.signal;
   try {
-    await assertResolvableOutbound(url, { allowLoopback });
+    await assertAllowed(url);
     let current = url;
     let res = await fetchImpl(current, { ...init, redirect: "manual", signal });
     let hops = 0;
@@ -50,7 +68,7 @@ export async function guardedFetch(
         throw new Error(`refused a redirect to another origin (${next.origin})`);
       }
       current = next.toString();
-      await assertResolvableOutbound(current, { allowLoopback });
+      await assertAllowed(current);
       res = await fetchImpl(current, { ...init, redirect: "manual", signal });
     }
     return res;

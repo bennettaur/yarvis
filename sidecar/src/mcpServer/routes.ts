@@ -69,6 +69,33 @@ export function questionOrigin(headers: Headers): QuestionOrigin {
   };
 }
 
+/**
+ * Passes `body` through, calling `onEnd` once it finishes or the reader
+ * cancels it. A client that hangs up cancels the stream, which a
+ * TransformStream's `flush` would never see.
+ */
+function onStreamEnd(
+  body: ReadableStream<Uint8Array>,
+  onEnd: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        onEnd();
+      } else {
+        controller.enqueue(value);
+      }
+    },
+    cancel(reason) {
+      onEnd();
+      return reader.cancel(reason);
+    },
+  });
+}
+
 export function createMcpEndpointRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -104,28 +131,47 @@ export function createMcpEndpointRoutes(config: Config): Hono {
         ? { id: workspaceId, reviewComments }
         : undefined;
     const db = () => getDb(config.databaseUrl as string).db;
-    // A client that disconnects stops its wait, rather than holding a waiter
-    // until the timeout.
-    const signal = c.req.raw.signal;
+    // Fires once the reply stream ends, the client cancels it, or the request
+    // aborts. A client that disconnects stops its wait rather than holding a
+    // waiter until the timeout, and the per-request server closes with it.
+    const done = new AbortController();
+    c.req.raw.signal.addEventListener("abort", () => done.abort(), { once: true });
     const server = createYarvisMcpServer(memory, workspace, {
       origin: questionOrigin(c.req.raw.headers),
       ask: (input) => askQuestions(db(), input),
       getQuestion: (id) => getQuestion(db(), id),
-      waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, signal),
+      waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, done.signal),
     });
     const transport = new StreamableHTTPTransport({
-      enableJsonResponse: true,
+      // Streamed rather than one JSON body, so the reply's headers go out at
+      // once. Claude Code gives up on an HTTP tool call whose first byte takes
+      // over a minute, and `ask_user` waits far longer than that.
+      enableJsonResponse: false,
       enableDnsRebindingProtection: true,
       allowedHosts: allowedHosts(config.port),
     });
+    // Closing the server also releases the transport's stream mapping.
+    done.signal.addEventListener("abort", () => void server.close(), { once: true });
     try {
       await server.connect(transport);
-      // The transport answers every case itself (including 202 for a batch of
-      // notifications); the fallback only satisfies its optional return type.
-      return (await transport.handleRequest(c)) ?? c.body(null, 202);
-    } finally {
-      // Closes the transport too, releasing this request's stream mapping.
-      await server.close();
+      const res = await transport.handleRequest(c);
+      // The transport answers every case itself, even a 202 for notifications,
+      // which carries a body; this branch only satisfies its optional return type.
+      if (!res?.body) {
+        done.abort();
+        return res ?? c.body(null, 202);
+      }
+      // The stream outlives this handler, so its end is what finishes the request.
+      return new Response(
+        onStreamEnd(res.body, () => done.abort()),
+        {
+          status: res.status,
+          headers: res.headers,
+        },
+      );
+    } catch (e) {
+      done.abort();
+      throw e;
     }
   });
 

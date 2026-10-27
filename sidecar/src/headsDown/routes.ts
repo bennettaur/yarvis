@@ -21,6 +21,7 @@ import {
   listPasses,
   listQuestions,
   listUnattendedTools,
+  passCallSummaries,
   setToolUnattended,
   startRun,
   stopRun,
@@ -39,6 +40,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A stalled page can't grow the stream's queue without limit. */
 const MAX_STREAM_QUEUE = 500;
 const HEARTBEAT_MS = 25_000;
+
+/** A page of rules at most: every pass carries the guidance in its prompt. */
+const MAX_GUIDANCE_CHARS = 4000;
 
 const configSchema = z
   .object({
@@ -71,6 +75,14 @@ const configSchema = z
       .max(7 * 24 * 60),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
+    // Optional so a client that doesn't know about it can still save the rest.
+    guidance: z
+      .string()
+      .trim()
+      .max(MAX_GUIDANCE_CHARS)
+      .transform((g) => g || null)
+      .nullable()
+      .default(null),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -148,7 +160,23 @@ export function createHeadsDownRoutes(config: Config): Hono {
   // Calls the decision model approved on the user's behalf, so they can see what ran without them.
   router.get("/auto-approvals", async (c) => c.json(await listAutoApprovals(db())));
 
-  router.get("/passes", async (c) => c.json(await listPasses(db(), 50)));
+  // Each pass with how many calls it made and which failed, so a failure reads without opening it.
+  router.get("/passes", async (c) => {
+    const passes = await listPasses(db(), 50);
+    const summaries = await passCallSummaries(
+      db(),
+      passes.flatMap((p) => (p.chatSessionId ? [p.chatSessionId] : [])),
+    );
+    return c.json(
+      passes.map((p) => ({
+        ...p,
+        ...((p.chatSessionId && summaries.get(p.chatSessionId)) || {
+          callCount: 0,
+          failedCalls: [],
+        }),
+      })),
+    );
+  });
 
   // A pass with its transcript: the hidden chat session it ran in.
   router.get("/passes/:id", async (c) => {

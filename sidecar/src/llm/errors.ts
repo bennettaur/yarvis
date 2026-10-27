@@ -186,3 +186,59 @@ export function errorDetail(error: unknown): string {
   if (error === null || typeof error !== "object") return redactSecrets(errorMessage(error));
   return redactSecrets(detailParts(error, DETAIL_BODY_CHARS).join("\n"));
 }
+
+/** HTTP statuses worth another try: a timeout, a conflict, rate limiting, or the server's own fault. */
+function isTransientStatus(status: unknown): boolean {
+  return (
+    typeof status === "number" &&
+    (status === 408 || status === 409 || status === 429 || status >= 500)
+  );
+}
+
+/**
+ * What a provider says on a bad moment rather than a bad request. Anthropic
+ * reports overload inside an open stream, with no HTTP status, and a dropped
+ * connection surfaces as a bare `terminated` or `ECONNRESET`.
+ */
+const TRANSIENT_MESSAGE =
+  /overloaded|rate.?limit|too many requests|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|network error|\bterminated\b|temporarily unavailable|service unavailable|bad gateway/i;
+
+/**
+ * A host that doesn't resolve, or nothing listening on it. Both read as
+ * "fetch failed" from outside, but they point at a wrong base URL, which
+ * waiting won't fix.
+ */
+const UNREACHABLE = /ENOTFOUND|ECONNREFUSED/;
+
+function isUnreachable(error: unknown, depth = 0): boolean {
+  if (typeof error === "string") return UNREACHABLE.test(error);
+  if (error === null || typeof error !== "object" || depth > MAX_DEPTH) return false;
+  const fields = error as Record<string, unknown>;
+  if (typeof fields.code === "string" && UNREACHABLE.test(fields.code)) return true;
+  if (UNREACHABLE.test(errorMessage(error))) return true;
+  return [fields.lastError, fields.cause, fields.error].some(
+    (inner) => inner != null && inner !== error && isUnreachable(inner, depth + 1),
+  );
+}
+
+/**
+ * Whether the same call could succeed if tried again later. Follows `cause`,
+ * nested `error`, and the AI SDK's `lastError`, which is what its `RetryError`
+ * wraps once its own retries have run out.
+ */
+export function isTransientError(error: unknown, depth = 0): boolean {
+  if (depth === 0 && isUnreachable(error)) return false;
+  if (typeof error === "string") return TRANSIENT_MESSAGE.test(error);
+  if (error === null || typeof error !== "object" || depth > MAX_DEPTH) return false;
+  const fields = error as Record<string, unknown>;
+  if (fields.isRetryable === true) return true;
+  const status = fields.statusCode ?? fields.status;
+  if (isTransientStatus(status)) return true;
+  // Any other 4xx is a request the provider refused, whatever its message says.
+  if (typeof status === "number" && status >= 400 && status < 500) return false;
+  const type = typeof fields.type === "string" ? fields.type : "";
+  if (TRANSIENT_MESSAGE.test(`${type} ${errorMessage(error)}`)) return true;
+  return [fields.lastError, fields.cause, fields.error].some(
+    (inner) => inner != null && inner !== error && isTransientError(inner, depth + 1),
+  );
+}

@@ -8,6 +8,7 @@ import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../is
 import type {
   CheckItem,
   ChecksSummary,
+  CommitsSince,
   MergeMethod,
   NewComment,
   PrDetail,
@@ -20,7 +21,9 @@ import type {
   ReviewDecision,
   Reviewer,
   ReviewerState,
+  ReviewThread,
   StackEntry,
+  ViewerReview,
 } from "../pr/types.ts";
 import {
   GitHubError,
@@ -169,6 +172,32 @@ export function summarizeChecks(runs: any[]): ChecksSummary {
 }
 
 /**
+ * Buckets the legacy commit statuses from `GET /commits/:ref/status`. That
+ * endpoint already keeps only the latest status per context, so each entry is
+ * one check. `error` is a status's way of failing, like `failure`.
+ */
+export function summarizeCommitStatuses(statuses: any[]): ChecksSummary {
+  let success = 0;
+  let failure = 0;
+  let pending = 0;
+  for (const s of statuses) {
+    if (s.state === "success") success++;
+    else if (s.state === "pending") pending++;
+    else failure++;
+  }
+  return { total: statuses.length, success, failure, pending };
+}
+
+function sumCheckSummaries(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
+  return {
+    total: a.total + b.total,
+    success: a.success + b.success,
+    failure: a.failure + b.failure,
+    pending: a.pending + b.pending,
+  };
+}
+
+/**
  * Only a reviewer who could merge the PR themselves gets a say. GitHub lets
  * anyone who can see a repo approve one, and an approval is what turns the
  * workspace list green, so a drive-by from outside the project must not.
@@ -263,7 +292,12 @@ function toReviewers(pr: any): Reviewer[] {
   for (const node of reviewNodes) {
     const login = node?.author?.login;
     if (!login) continue;
-    byLogin.set(login, { login, state: mapReviewState(node.state), isRequested: false });
+    byLogin.set(login, {
+      login,
+      state: mapReviewState(node.state),
+      isRequested: false,
+      isTeam: false,
+    });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
   // Runs after `latestReviews` so a re-request overwrites the historical review
@@ -274,7 +308,12 @@ function toReviewers(pr: any): Reviewer[] {
     // GraphQL union: User/Mannequin/Bot carry `login`, Team carries `combinedSlug`.
     const login = reviewer?.login ?? reviewer?.combinedSlug;
     if (!login) continue;
-    byLogin.set(login, { login, state: "pending", isRequested: true });
+    byLogin.set(login, {
+      login,
+      state: "pending",
+      isRequested: true,
+      isTeam: reviewer?.__typename === "Team",
+    });
   }
   return Array.from(byLogin.values());
 }
@@ -303,6 +342,9 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     additions: pr.additions ?? 0,
     deletions: pr.deletions ?? 0,
     mergeable: pr.mergeable ?? "UNKNOWN",
+    // DIRTY is the merge state's name for conflicts, and may be reported
+    // when `mergeable` isn't.
+    hasConflicts: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     mergeMethods: allowedMergeMethods(repo),
     autoMergeEnabled: Boolean(pr.autoMergeRequest),
     canEnableAutoMerge: Boolean(pr.viewerCanEnableAutoMerge),
@@ -310,15 +352,52 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
-    reviewThreads: threadNodes.map((thread: any) => ({
-      path: thread.path ?? null,
-      line: thread.line ?? null,
-      isResolved: Boolean(thread.isResolved),
-      comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
-        author: comment.author?.login ?? "",
-        body: comment.body ?? "",
-        createdAt: comment.createdAt ?? "",
-      })),
+    reviewThreads: threadNodes.map(toReviewThread),
+    conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
+      id: c.id ?? "",
+      author: c.author?.login ?? "ghost",
+      body: c.body ?? "",
+      createdAt: c.createdAt ?? "",
+      url: c.url ?? undefined,
+    })),
+    conversationTruncated: (pr.comments?.totalCount ?? 0) > (pr.comments?.nodes?.length ?? 0),
+  };
+}
+
+/**
+ * Shapes one GraphQL `PullRequestReviewThread`. GitHub reports `line` against
+ * the current diff and nulls it once a push moves the code out from under the
+ * thread, which is what `isOutdated` says too. `diffSide` names the file the
+ * range ends in and `startDiffSide` the one it starts in; a range made on
+ * github.com can start in the old file and end in the new one.
+ */
+export function toReviewThread(thread: any): ReviewThread {
+  const line: number | null = thread.line ?? null;
+  const startLine: number | null = thread.startLine ?? null;
+  const side = thread.diffSide === "LEFT" ? "LEFT" : "RIGHT";
+  const startSide = thread.startDiffSide === "LEFT" ? "LEFT" : "RIGHT";
+  // GitHub sets `startLine` equal to `line` on some single-line threads; on
+  // the other side, the same number is a different line and still a range.
+  const isRange = startLine != null && line != null && (startLine !== line || startSide !== side);
+  // Without an id there is nothing to address a reply or resolve to.
+  const addressable = Boolean(thread.id);
+  return {
+    id: thread.id ?? "",
+    path: thread.path ?? null,
+    line,
+    ...(isRange ? { startLine, startSide } : {}),
+    side,
+    isResolved: Boolean(thread.isResolved),
+    isOutdated: Boolean(thread.isOutdated),
+    canReply: addressable && Boolean(thread.viewerCanReply),
+    canResolve: addressable && Boolean(thread.viewerCanResolve),
+    canUnresolve: addressable && Boolean(thread.viewerCanUnresolve),
+    comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
+      id: comment.id ?? "",
+      author: comment.author?.login ?? "",
+      body: comment.body ?? "",
+      createdAt: comment.createdAt ?? "",
+      ...(comment.url ? { url: comment.url } : {}),
     })),
   };
 }
@@ -513,6 +592,110 @@ function toPrInvolvement(node: any): PrInvolvement {
   };
 }
 
+/**
+ * The event-log `externalId` for a GitHub review, shared by the in-app submit
+ * and the review sync so each recognises what the other logged.
+ */
+export function reviewExternalId(nodeId: string): string {
+  return `github:review:${nodeId}`;
+}
+
+/** One review the viewer submitted, as the contributions API reports it. */
+export interface ReviewContribution {
+  /** The review's GraphQL node id. */
+  reviewId: string;
+  state: ReviewerState;
+  submittedAt: string;
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+export interface ReviewContributions {
+  /** Oldest first. */
+  contributions: ReviewContribution[];
+  /** True when the page cap stopped the read before the end of the window. */
+  truncated: boolean;
+  /**
+   * Contributions GitHub counted but left out because the token can't see them,
+   * e.g. an org that requires SSO the token isn't authorized for.
+   */
+  restrictedCount: number;
+}
+
+interface ReviewContributionsPage {
+  viewer?: {
+    contributionsCollection?: {
+      restrictedContributionsCount?: number;
+      pullRequestReviewContributions?: {
+        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+        nodes?: any[];
+      };
+    };
+  };
+}
+
+/**
+ * Caps one read at 500 reviews (5 pages of 100). A read that hits it reports
+ * `truncated`, so the caller can carry on from the last review it got.
+ */
+const MAX_CONTRIBUTION_PAGES = 5;
+
+/** `contributionsCollection` is an expensive query; a stalled one shouldn't hold up the job tick. */
+const CONTRIBUTIONS_TIMEOUT_MS = 20_000;
+
+const REVIEW_CONTRIBUTIONS_QUERY = `
+query($from:DateTime!,$to:DateTime!,$after:String){
+  viewer{
+    contributionsCollection(from:$from, to:$to){
+      restrictedContributionsCount
+      pullRequestReviewContributions(first:100, after:$after, orderBy:{direction:ASC}){
+        pageInfo{ hasNextPage endCursor }
+        nodes{
+          occurredAt
+          pullRequestReview{ id state submittedAt }
+          pullRequest{ number repository{ name owner{login} } }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * GitHub's own charset for owner and repo names. Checked here because these
+ * become a `refKey`, which is split on `/` when it's read back.
+ */
+const GITHUB_NAME = /^[A-Za-z0-9._-]+$/;
+
+/** Drops a node missing the fields that identify the review, its PR, or when it happened. */
+function toReviewContribution(node: any): ReviewContribution | null {
+  const review = node?.pullRequestReview;
+  const pr = node?.pullRequest;
+  const owner = pr?.repository?.owner?.login;
+  const repo = pr?.repository?.name;
+  const submittedAt = review?.submittedAt ?? node?.occurredAt;
+  if (
+    typeof review?.id !== "string" ||
+    typeof pr?.number !== "number" ||
+    typeof owner !== "string" ||
+    typeof repo !== "string" ||
+    !GITHUB_NAME.test(owner) ||
+    !GITHUB_NAME.test(repo) ||
+    typeof submittedAt !== "string" ||
+    Number.isNaN(new Date(submittedAt).getTime())
+  ) {
+    return null;
+  }
+  return {
+    reviewId: review.id,
+    state: mapReviewState(review.state),
+    submittedAt,
+    owner,
+    repo,
+    number: pr.number,
+  };
+}
+
 /** Identifies one PR for the batched involvement lookup. */
 export interface PrNumberRef {
   owner: string;
@@ -562,12 +745,46 @@ function buildBranchLookupQuery(count: number): string {
   return `query(${varDecls}){\n${fields}\n}`;
 }
 
+/** Review threads asked for per page, on the detail query and each follow-up. */
+const REVIEW_THREAD_PAGE_SIZE = 50;
+/**
+ * Follow-up pages of review threads a PR detail load will make. A PR busy
+ * enough to pass this is shown with its first threads rather than costing a
+ * request per page on every load.
+ */
+const MAX_REVIEW_THREAD_PAGES = 10;
+
+// Comments are not paginated: a thread with more than this many replies shows
+// its first ones, which is where the context for the rest lives.
+const REVIEW_THREAD_FIELDS = `
+  id isResolved isOutdated path line startLine diffSide startDiffSide
+  viewerCanReply viewerCanResolve viewerCanUnresolve
+  comments(first:100){ nodes{ id author{login} body createdAt url } }`;
+
+const REVIEW_THREADS_PAGE_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}, after:$after){
+        pageInfo{ hasNextPage endCursor }
+        nodes{ ${REVIEW_THREAD_FIELDS} }
+      }
+    }
+  }
+}`;
+
+/**
+ * Conversation comments read with the detail: the latest ones, since a PR
+ * with more than this is shown with its recent discussion and a link out.
+ */
+const CONVERSATION_PAGE_SIZE = 100;
+
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
-      number title body state isDraft additions deletions mergeable
+      number title body state isDraft additions deletions mergeable mergeStateStatus
       autoMergeRequest{ enabledAt }
       viewerCanEnableAutoMerge viewerCanDisableAutoMerge
       author{login}
@@ -586,11 +803,13 @@ query($owner:String!,$repo:String!,$number:Int!){
       latestReviews(first:50){
         nodes{ author{login} state }
       }
-      reviewThreads(first:50){
-        nodes{
-          isResolved path line
-          comments(first:50){ nodes{ author{login} body createdAt } }
-        }
+      reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
+        pageInfo{ hasNextPage endCursor }
+        nodes{ ${REVIEW_THREAD_FIELDS} }
+      }
+      comments(last:${CONVERSATION_PAGE_SIZE}){
+        totalCount
+        nodes{ id author{login} body createdAt url }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
@@ -655,6 +874,14 @@ function noteRestFallback(e: unknown): void {
 
 const VIEWER_QUERY = "query{ viewer{ login } }";
 
+const VIEWER_REVIEWS_QUERY = `query($owner:String!,$repo:String!,$number:Int!,$viewer:String!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviews(last:50, author:$viewer){ nodes{ state submittedAt commit{ oid } } }
+    }
+  }
+}`;
+
 /** The fields `restLikePr` reads. */
 const PR_SUMMARY_FIELDS = `
   number title url isDraft state createdAt updatedAt
@@ -683,15 +910,16 @@ query($owner:String!,$repo:String!,$branch:String!){
   }
 }`;
 
-/** Check runs only, matching what the REST check-runs endpoint lists. */
+/** Check runs and legacy commit statuses, matching the two REST reads. */
 const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      state merged mergeable mergeStateStatus
+      state merged mergeable mergeStateStatus headRefOid
       commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
         __typename
         ... on CheckRun { status conclusion }
+        ... on StatusContext { state }
       }}}}}}
     }
   }
@@ -1079,12 +1307,20 @@ export class GitHubClient {
             status: String(c.status ?? "").toLowerCase(),
             conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
           }));
+        // EXPECTED is a required status that hasn't reported yet, so it waits
+        // like REST's pending rather than counting as a failure.
+        const statuses = contexts
+          .filter((c: any) => c?.__typename === "StatusContext")
+          .map((c: any) => ({
+            state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
+          }));
         return {
           state: pr.state === "OPEN" ? "open" : "closed",
           merged: Boolean(pr.merged),
           mergeable: restMergeable(pr.mergeable),
           mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
-          checks: summarizeChecks(runs),
+          headSha: pr.headRefOid ?? null,
+          checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
         };
       },
       () => this.prStatusViaRest(owner, repo, number),
@@ -1093,15 +1329,28 @@ export class GitHubClient {
 
   private async prStatusViaRest(owner: string, repo: string, number: number): Promise<PrStatus> {
     const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
-    const checks = await this.api<{ check_runs?: any[] }>(
-      `/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`,
-    );
+    const commit = `/repos/${owner}/${repo}/commits/${pr.head.sha}`;
+    // CI reports through one of two APIs: check runs (Actions and most apps) or
+    // the older commit statuses (many external CI services). Reading only the
+    // first made a repo on the second look like it had no checks at all. The
+    // statuses are the extra read, so failing to get them (most often a
+    // fine-grained token without "Commit statuses") keeps the check runs rather
+    // than failing the whole status — the poller would otherwise read a 403 as
+    // a rate limit.
+    const [checks, combined] = await Promise.all([
+      this.api<{ check_runs?: any[] }>(`${commit}/check-runs`),
+      this.api<{ statuses?: any[] }>(`${commit}/status?per_page=100`).catch(() => null),
+    ]);
     return {
       state: pr.state ?? "open",
       merged: Boolean(pr.merged),
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state ?? "unknown",
-      checks: summarizeChecks(checks.check_runs ?? []),
+      headSha: pr.head?.sha ?? null,
+      checks: sumCheckSummaries(
+        summarizeChecks(checks.check_runs ?? []),
+        summarizeCommitStatuses(combined?.statuses ?? []),
+      ),
     };
   }
 
@@ -1176,7 +1425,44 @@ export class GitHubClient {
     const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
     const detail = toPrDetail(pr, data?.repository);
+    const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
+    detail.reviewThreads.push(...more.threads);
+    if (more.truncated) detail.reviewThreadsTruncated = true;
     return errors ? { ...detail, checksUnavailable: true } : detail;
+  }
+
+  /**
+   * The review threads past the detail query's first page. A page that fails
+   * to load ends the walk rather than the PR detail: the threads already read
+   * are worth showing, and `truncated` says some are missing.
+   */
+  private async remainingReviewThreads(
+    owner: string,
+    repo: string,
+    number: number,
+    pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined,
+  ): Promise<{ threads: ReviewThread[]; truncated: boolean }> {
+    const threads: ReviewThread[] = [];
+    let page = pageInfo;
+    for (let i = 0; i < MAX_REVIEW_THREAD_PAGES && page?.hasNextPage && page.endCursor; i++) {
+      let data: { repository?: { pullRequest?: any } };
+      try {
+        data = await this.graphql(REVIEW_THREADS_PAGE_QUERY, {
+          owner,
+          repo,
+          number,
+          after: page.endCursor,
+        });
+      } catch (e) {
+        console.warn(`[github] review threads page for ${owner}/${repo}#${number} failed:`, e);
+        return { threads, truncated: true };
+      }
+      const connection = data.repository?.pullRequest?.reviewThreads;
+      for (const node of connection?.nodes ?? []) threads.push(toReviewThread(node));
+      page = connection?.pageInfo;
+    }
+    // Still more to read: the cap was reached, or GitHub gave no cursor to go on.
+    return { threads, truncated: Boolean(page?.hasNextPage) };
   }
 
   /**
@@ -1545,6 +1831,9 @@ export class GitHubClient {
    * REQUEST_CHANGES blocks it, COMMENT leaves an unbinding comment. The body
    * is optional (GitHub allows a bodyless approval but requires text on a
    * request-changes review; the caller is expected to enforce that).
+   *
+   * Resolves to the review's GraphQL node id, the same id
+   * {@link reviewContributions} reports, or null if GitHub's reply omits it.
    */
   async submitReview(
     owner: string,
@@ -1552,7 +1841,7 @@ export class GitHubClient {
     number: number,
     event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
     body?: string,
-  ): Promise<void> {
+  ): Promise<{ nodeId: string | null; commitId: string | null }> {
     const res = await this.fetchImpl(
       `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
       {
@@ -1567,15 +1856,121 @@ export class GitHubClient {
       },
     );
     if (!res.ok) throw await githubErrorFrom(res, "submit review");
+    // The review is already posted, so an unreadable reply must not turn this into a failure.
+    const review = (await res.json().catch(() => null)) as {
+      node_id?: unknown;
+      commit_id?: unknown;
+    } | null;
+    const commitId = typeof review?.commit_id === "string" ? review.commit_id : null;
+    if (typeof review?.node_id === "string") return { nodeId: review.node_id, commitId };
+    console.warn("[github] submitted review reply had no node_id");
+    return { nodeId: null, commitId };
   }
 
   /**
-   * Posts a single-line review comment. GitHub anchors review comments to a
-   * commit, so the PR's head sha is fetched first; `line` + `side` target the
-   * line in the diff (the same right-side line our diff parser exposes).
+   * The viewer's submitted reviews on one PR and the commit each was made on,
+   * newest last. Drafts (`PENDING`) are left out: nobody has seen them.
    */
-  async postComment(owner: string, repo: string, number: number, input: NewComment): Promise<void> {
+  async viewerReviews(owner: string, repo: string, number: number): Promise<ViewerReview[]> {
+    const { login } = await this.viewer();
+    const data = await this.graphql<{
+      repository?: {
+        pullRequest?: {
+          reviews?: {
+            nodes?: ({
+              state?: string;
+              submittedAt?: string | null;
+              commit?: { oid?: string } | null;
+            } | null)[];
+          };
+        };
+      };
+    }>(VIEWER_REVIEWS_QUERY, { owner, repo, number, viewer: login });
+    return (data.repository?.pullRequest?.reviews?.nodes ?? []).flatMap((node) =>
+      node?.state !== "PENDING" && node?.commit?.oid && node.submittedAt
+        ? [{ headSha: node.commit.oid, submittedAt: node.submittedAt }]
+        : [],
+    );
+  }
+
+  /**
+   * How far `head` has moved on from `sha`, by GitHub's compare. A 404 means
+   * GitHub no longer has `sha` (or never did); "diverged" means `head` doesn't
+   * contain it, which is what a force-push leaves behind.
+   */
+  async commitsSince(
+    owner: string,
+    repo: string,
+    sha: string,
+    head: string,
+  ): Promise<CommitsSince> {
+    const res = await this.fetchImpl(
+      `${this.endpoints.api}/repos/${owner}/${repo}/compare/${sha}...${head}?per_page=1`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (res.status === 404) return { exists: false, commits: null, rewritten: true };
+    if (!res.ok) throw await githubErrorFrom(res, "compare commits");
+    const body = (await res.json()) as { status?: string; ahead_by?: number };
+    return {
+      exists: true,
+      commits: typeof body.ahead_by === "number" ? body.ahead_by : null,
+      rewritten: body.status === "diverged" || body.status === "behind",
+    };
+  }
+
+  /**
+   * The reviews the viewer submitted between `from` and `to`, wherever they
+   * submitted them. GitHub caps one contributions window at a year.
+   */
+  async reviewContributions(from: Date, to: Date): Promise<ReviewContributions> {
+    const contributions: ReviewContribution[] = [];
+    let restrictedCount = 0;
+    let after: string | null = null;
+    for (let page = 0; page < MAX_CONTRIBUTION_PAGES; page++) {
+      const data: ReviewContributionsPage = await this.graphql<ReviewContributionsPage>(
+        REVIEW_CONTRIBUTIONS_QUERY,
+        { from: from.toISOString(), to: to.toISOString(), after },
+        { signal: AbortSignal.timeout(CONTRIBUTIONS_TIMEOUT_MS) },
+      );
+      const collection = data.viewer?.contributionsCollection;
+      restrictedCount = collection?.restrictedContributionsCount ?? 0;
+      const connection = collection?.pullRequestReviewContributions;
+      for (const node of connection?.nodes ?? []) {
+        const contribution = toReviewContribution(node);
+        if (contribution) contributions.push(contribution);
+      }
+      if (!connection?.pageInfo?.hasNextPage || !connection.pageInfo.endCursor) {
+        return { contributions, truncated: false, restrictedCount };
+      }
+      after = connection.pageInfo.endCursor;
+    }
+    return { contributions, truncated: true, restrictedCount };
+  }
+
+  /**
+   * Posts a review comment on one line or a range. GitHub anchors review
+   * comments to a commit, so the PR's head sha is fetched first; `line` +
+   * `side` target the range's last line in the diff, and `start_line` +
+   * `start_side` its first.
+   */
+  async postComment(
+    owner: string,
+    repo: string,
+    number: number,
+    input: NewComment,
+  ): Promise<{ commitId: string }> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    const side = input.side ?? "RIGHT";
+    const range =
+      input.startLine != null
+        ? { start_line: input.startLine, start_side: input.startSide ?? side }
+        : {};
     const res = await this.fetchImpl(
       `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
       {
@@ -1591,11 +1986,33 @@ export class GitHubClient {
           commit_id: pr.head.sha,
           path: input.path,
           line: input.line,
-          side: input.side ?? "RIGHT",
+          side,
+          ...range,
         }),
       },
     );
     if (!res.ok) throw await githubErrorFrom(res, "post comment");
+    return { commitId: pr.head.sha };
+  }
+
+  /** Replies to a review thread, addressed by its GraphQL node id. */
+  async replyToThread(threadId: string, body: string): Promise<void> {
+    await this.graphql<unknown>(
+      `mutation($id:ID!,$body:String!){
+        addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id, body:$body}){
+          comment{ id }
+        }
+      }`,
+      { id: threadId, body },
+    );
+  }
+
+  /** Marks a review thread resolved, or open again. */
+  async setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
+    const mutation = resolved
+      ? `mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread{ id } } }`
+      : `mutation($id:ID!){ unresolveReviewThread(input:{threadId:$id}){ thread{ id } } }`;
+    await this.graphql<unknown>(mutation, { id: threadId });
   }
 
   // --- Issues ---
@@ -1745,6 +2162,65 @@ export class GitHubClient {
     },
   ): Promise<void> {
     await this.mutate(`/repos/${owner}/${repo}/issues/${number}`, "PATCH", input);
+  }
+
+  /**
+   * Every file a PR changes, not just `prFiles`'s first page, and whether the
+   * API stopped listing before the end, which it does at 3,000 files.
+   */
+  async allPrFiles(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ files: PrFile[]; incomplete: boolean }> {
+    const files: PrFile[] = [];
+    for (let page = 1; page <= 30; page++) {
+      const batch = await this.api<any[]>(
+        `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      files.push(
+        ...batch.map((f) => ({
+          filename: f.filename,
+          status: f.status,
+          additions: f.additions ?? 0,
+          deletions: f.deletions ?? 0,
+          patch: f.patch ?? null,
+        })),
+      );
+      if (batch.length < 100) return { files, incomplete: false };
+    }
+    return { files, incomplete: true };
+  }
+
+  /**
+   * A PR's or issue's conversation comments, oldest first, with each author's
+   * numeric ID, which unlike a login can't be re-registered after a rename.
+   * Stops after 1,000, far past any real conversation.
+   */
+  async issueComments(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ id: number; body: string; authorId: number | null; author: string }[]> {
+    const comments: any[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const batch = await this.api<any[]>(
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+      );
+      comments.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return comments.map((c) => ({
+      id: c.id,
+      body: c.body ?? "",
+      authorId: typeof c.user?.id === "number" ? c.user.id : null,
+      author: c.user?.login ?? "",
+    }));
+  }
+
+  /** The numeric ID of the account this client's token belongs to. */
+  async authenticatedUserId(): Promise<number> {
+    return (await this.api<{ id: number }>("/user")).id;
   }
 
   /** Posts a comment on an issue. */

@@ -1,7 +1,9 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
-//! instruction into a Claude Code session in a workspace PTY, and writing an MCP
-//! server's OAuth credentials or a signed-in GitHub token into the Keychain.
+//! instruction into a Claude Code session in a workspace PTY, writing an MCP
+//! server's OAuth credentials or a signed-in GitHub token into the Keychain, and
+//! ringing an alarm the sidecar found due (`alarm.fire`) or stopping one
+//! (`alarm.release`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -116,6 +118,16 @@ mod unix_impl {
         token: String,
     }
 
+    #[derive(Deserialize)]
+    struct FireAlarmParams {
+        alarm: crate::alarms::Alarm,
+    }
+
+    #[derive(Deserialize)]
+    struct ReleaseAlarmParams {
+        id: String,
+    }
+
     fn socket_path(app: &AppHandle) -> Result<PathBuf, String> {
         let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
         Ok(dir.join("core-control.sock"))
@@ -195,7 +207,14 @@ mod unix_impl {
             if trimmed.is_empty() {
                 continue;
             }
-            let resp = dispatch(&app, trimmed);
+            // On a blocking thread: a request can wait on the secrets write
+            // lock or a store prompt, which must not stall the async runtime.
+            let request = trimmed.to_string();
+            let dispatch_app = app.clone();
+            let resp =
+                tauri::async_runtime::spawn_blocking(move || dispatch(&dispatch_app, &request))
+                    .await
+                    .map_err(|e| e.to_string())?;
             let mut out = serde_json::to_string(&resp).map_err(|e| e.to_string())?;
             out.push('\n');
             write_half
@@ -274,6 +293,20 @@ mod unix_impl {
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
                 crate::keychain::store_github_token(&p.token)
             }
+            "alarm.fire" => {
+                let p: FireAlarmParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_alarm_id(&p.alarm.id)?;
+                crate::alarms::fire(app, p.alarm);
+                Ok(())
+            }
+            "alarm.release" => {
+                let p: ReleaseAlarmParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_alarm_id(&p.id)?;
+                crate::alarms::release(app, &p.id);
+                Ok(())
+            }
             other => Err(format!("unknown method: {other}")),
         }
     }
@@ -289,6 +322,12 @@ mod unix_impl {
         } else {
             Err("invalid workspaceId".into())
         }
+    }
+
+    /// Alarm ids are UUIDs too; the same bound keeps a junk id out of the
+    /// ringing state, which lives as long as the app.
+    fn validate_alarm_id(id: &str) -> Result<(), String> {
+        validate_workspace_id(id).map_err(|_| "invalid alarm id".to_string())
     }
 
     fn set_dir_private(path: &Path) {

@@ -376,6 +376,55 @@ describe("POST /api/pr/workspace", () => {
     const res = await start({});
     expect(res.status).toBe(400);
   });
+
+  describe("POST /api/pr/resolve-conflicts", () => {
+    const resolve = (body: unknown = { ref }) =>
+      withGithub.request("/api/pr/resolve-conflicts", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const conflicting = {
+      ...openPr,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
+    };
+
+    it("creates a workspace that starts on the instructions when the PR has none", async () => {
+      stubPrDetail(conflicting);
+      const res = await resolve();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { outcome: string; workspaceId: string };
+      expect(body.outcome).toBe("created");
+      const [row] =
+        await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
+      expect(row?.pending_issue_prompt).toContain("Resolve the merge conflicts on pull request #1");
+    });
+
+    it("400s a fork with the reason the button gives", async () => {
+      stubPrDetail({ ...conflicting, isCrossRepository: true });
+      const res = await resolve();
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("fork");
+    });
+
+    it("rejects a confirm flag that isn't a boolean", async () => {
+      const res = await resolve({ ref, confirm: "yes" });
+      expect(res.status).toBe(400);
+    });
+
+    it("reports a missing provider token", async () => {
+      const res = await app.request("/api/pr/resolve-conflicts", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ ref }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("github token");
+    });
+  });
 });
 
 describe("GET /api/pr/stack", () => {

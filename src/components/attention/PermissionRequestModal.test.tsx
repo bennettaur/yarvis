@@ -169,4 +169,155 @@ describe("PermissionRequestModal", () => {
     expect(text).toContain('"dangerouslyDisableSandbox": true');
     expect(text).toContain('"timeout": 600000');
   });
+
+  describe("an AskUserQuestion prompt", () => {
+    const QUESTION: PermissionRequest = {
+      ...REQUEST,
+      id: "req-q",
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [
+              { label: "Postgres", description: "What production runs" },
+              { label: "SQLite" },
+            ],
+            multiSelect: false,
+          },
+          { question: "What should the table be called?" },
+        ],
+      },
+    };
+
+    function typeNote(host: HTMLElement, index: number, value: string) {
+      const area = host.querySelectorAll("textarea")[index] as HTMLTextAreaElement;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        area,
+        value,
+      );
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    it("shows the questions and their options instead of the raw input", async () => {
+      queue = [QUESTION];
+      const host = await mount();
+      const text = host.textContent ?? "";
+      expect(text).toContain("Question");
+      expect(text).toContain("Which database?");
+      expect(text).toContain("What production runs");
+      expect(text).not.toContain('"questions"');
+      expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Approve")).toBe(
+        false,
+      );
+    });
+
+    it("sends each answer keyed by its question once every question is answered", async () => {
+      queue = [QUESTION];
+      const host = await mount();
+      await armed();
+      button(host, "SQLite").click();
+      await armed();
+      typeNote(host, 0, "Match production");
+      await armed();
+      expect(button(host, "Send answers").disabled).toBe(true);
+      typeNote(host, 1, "user_settings");
+      await armed();
+      button(host, "Send answers").click();
+      await armed();
+      expect(decisions).toEqual([
+        [
+          "req-q",
+          {
+            behavior: "answer",
+            answers: {
+              "Which database?": "SQLite\nMatch production",
+              "What should the table be called?": "user_settings",
+            },
+          },
+        ],
+      ]);
+      expect(closed).toBe(1);
+    });
+
+    it("sends several picked options comma-separated", async () => {
+      queue = [
+        {
+          ...QUESTION,
+          toolInput: {
+            questions: [
+              {
+                question: "Which checks?",
+                options: [{ label: "Lint" }, { label: "Tests" }, { label: "Types" }],
+                multiSelect: true,
+              },
+            ],
+          },
+        },
+      ];
+      const host = await mount();
+      await armed();
+      button(host, "Lint").click();
+      await armed();
+      button(host, "Types").click();
+      await armed();
+      button(host, "Send answers").click();
+      await armed();
+      expect(decisions).toEqual([
+        ["req-q", { behavior: "answer", answers: { "Which checks?": "Lint, Types" } }],
+      ]);
+    });
+
+    it("starts the next question prompt with nothing picked", async () => {
+      const next: PermissionRequest = {
+        ...QUESTION,
+        id: "req-q2",
+        toolInput: {
+          questions: [
+            { question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }] },
+          ],
+        },
+      };
+      queue = [
+        {
+          ...QUESTION,
+          toolInput: {
+            questions: [
+              {
+                question: "Which database?",
+                options: [{ label: "SQLite" }, { label: "Postgres" }],
+              },
+            ],
+          },
+        },
+        next,
+      ];
+      const host = await mount();
+      await armed();
+      button(host, "SQLite").click();
+      await armed();
+      button(host, "Send answers").click();
+      await armed();
+      expect(host.textContent).not.toContain("+1 waiting");
+      expect(button(host, "SQLite").getAttribute("aria-pressed")).toBe("false");
+      expect(button(host, "Send answers").disabled).toBe(true);
+    });
+
+    it("skips with a deny", async () => {
+      queue = [QUESTION];
+      const host = await mount();
+      await armed();
+      button(host, "Skip").click();
+      await armed();
+      expect(decisions).toEqual([["req-q", { behavior: "deny" }]]);
+    });
+
+    it("falls back to the raw input when the questions aren't in the expected shape", async () => {
+      queue = [{ ...QUESTION, toolInput: { questions: "not a list" } }];
+      const host = await mount();
+      expect(host.textContent).toContain('"questions": "not a list"');
+      expect(button(host, "Approve")).toBeDefined();
+    });
+  });
 });

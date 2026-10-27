@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { AgentQuestionRow } from "../db/schema.ts";
 import type {
   MemoryInput,
   MemoryListOptions,
@@ -10,7 +11,9 @@ import type {
   MemoryService,
   MemoryWriteInput,
 } from "../memory/index.ts";
+import { ANSWER_WAIT_MS } from "../questions/contract.ts";
 import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
+import { LONG_ANSWER_WAIT_MS, type QuestionToolDeps } from "./questionTools.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
 import { createYarvisMcpServer, type WorkspaceContext } from "./server.ts";
 
@@ -439,5 +442,91 @@ describe("yarvis mcp server in a workspace", () => {
       arguments: { id: "55555555-5555-4555-8555-555555555555" },
     });
     expect(result.isError).toBe(true);
+  });
+});
+
+describe("ask_user waits", () => {
+  const QUESTION_ID = "66666666-6666-4666-8666-666666666666";
+  const asked: AgentQuestionRow = {
+    id: QUESTION_ID,
+    sessionKey: null,
+    workspaceId: null,
+    context: { task: "Picking a database" },
+    questions: [{ question: "Which database?", options: [{ label: "A" }, { label: "B" }] }],
+    status: "pending",
+    answers: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    answeredAt: null,
+  };
+  const answered: AgentQuestionRow = {
+    ...asked,
+    status: "answered",
+    answers: [{ selected: ["A"] }],
+  };
+
+  /** A server whose questions are answered `answerAfterMs` after the wait starts. */
+  async function connectAsking(answerAfterMs: number) {
+    const waits: number[] = [];
+    const questions: QuestionToolDeps = {
+      origin: { sessionKey: null, workspaceId: null },
+      ask: async () => asked,
+      getQuestion: async () => asked,
+      waitForReply: async (_id, timeoutMs) => {
+        waits.push(timeoutMs);
+        await Bun.sleep(answerAfterMs);
+        return answered;
+      },
+      progressIntervalMs: 20,
+    };
+    const server = createYarvisMcpServer(async () => new FakeMemory(), undefined, questions);
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    return { client, waits };
+  }
+
+  const ASK_ARGS = { task: "Picking a database", questions: asked.questions };
+
+  it("sends progress while it waits, for a client that asked for it", async () => {
+    const { client, waits } = await connectAsking(150);
+    const progress: number[] = [];
+    const result = await client.callTool({ name: "ask_user", arguments: ASK_ARGS }, undefined, {
+      onprogress: (p) => progress.push(p.progress),
+    });
+    expect(payload(result)).toMatchObject({ status: "answered" });
+    expect(waits).toEqual([LONG_ANSWER_WAIT_MS]);
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+  });
+
+  it("takes the short wait once a session holds too many long ones", async () => {
+    const { client, waits } = await connectAsking(150);
+    const calls = Array.from({ length: 5 }, () =>
+      client.callTool({ name: "ask_user", arguments: ASK_ARGS }, undefined, {
+        onprogress: () => {},
+      }),
+    );
+    await Promise.all(calls);
+    expect(waits.filter((w) => w === LONG_ANSWER_WAIT_MS)).toHaveLength(4);
+    expect(waits.filter((w) => w === ANSWER_WAIT_MS)).toHaveLength(1);
+  });
+
+  it("waits only a few minutes for a client without a progress token", async () => {
+    const { client, waits } = await connectAsking(0);
+    await client.callTool({ name: "ask_user", arguments: ASK_ARGS });
+    expect(waits).toEqual([ANSWER_WAIT_MS]);
+  });
+
+  it("keeps waiting the same way through wait_for_answer", async () => {
+    const { client, waits } = await connectAsking(60);
+    const progress: number[] = [];
+    const result = await client.callTool(
+      { name: "wait_for_answer", arguments: { questionId: QUESTION_ID } },
+      undefined,
+      { onprogress: (p) => progress.push(p.progress) },
+    );
+    expect(payload(result)).toMatchObject({ status: "answered" });
+    expect(waits).toEqual([LONG_ANSWER_WAIT_MS]);
+    expect(progress.length).toBeGreaterThan(0);
   });
 });

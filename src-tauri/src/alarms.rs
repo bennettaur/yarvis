@@ -1,17 +1,20 @@
-//! Alarms with a full-screen takeover.
+//! Ringing alarms with a full-screen takeover.
 //!
-//! Alarms live in the Rust core so they fire reliably even when the window is
-//! hidden (the webview is throttled in the background). A scheduler task checks
-//! for due alarms; when one fires it takes over the main window (fullscreen +
-//! always-on-top + focus), shows a notification, plays an escalating sound, and
-//! emits an event the frontend renders as a full-screen overlay.
+//! The sidecar owns the alarm list and decides when one is due
+//! (`sidecar/src/alarms/scheduler.ts`), then asks the core over the control
+//! channel to ring it. Ringing lives here because only the core can take over
+//! the window and play sound reliably while the webview is hidden and
+//! throttled. When an alarm fires the core takes over the main window
+//! (fullscreen + always-on-top + focus), shows a notification, plays an
+//! escalating sound, and emits an event the frontend renders as a full-screen
+//! overlay. It rings until the alarm is released: acknowledged, snoozed or
+//! cancelled, from the webview or the sidecar.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Notify;
@@ -19,8 +22,8 @@ use tokio::time::sleep;
 
 /// Seconds after firing before the alert escalates (more frequent, louder).
 const ESCALATE_AFTER_SECS: i64 = 60;
-const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 
+/// An alarm as the sidecar sends it and the frontend's takeover reads it.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alarm {
@@ -41,9 +44,8 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Default)]
 pub struct AlarmState {
-    alarms: Mutex<Vec<Alarm>>,
-    path: PathBuf,
     /// Stop signals for currently-ringing alarms, keyed by alarm id.
     stops: Mutex<HashMap<String, Arc<Notify>>>,
     /// Alarms that fired this run and still hold the window takeover. Tracked
@@ -60,83 +62,29 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn random_id() -> String {
-    let mut bytes = [0u8; 8];
-    rand::rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Manages the ringing state. Call from `setup` before the control channel
+/// opens, so a fire request can never find it missing.
+pub fn init<R: Runtime>(app: &AppHandle<R>) {
+    app.manage(AlarmState::default());
 }
 
-impl AlarmState {
-    fn load(path: PathBuf) -> Self {
-        let alarms = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Vec<Alarm>>(&s).ok())
-            .unwrap_or_default();
-        Self {
-            alarms: Mutex::new(alarms),
-            path,
-            stops: Mutex::new(HashMap::new()),
-            firing: Mutex::new(HashSet::new()),
-        }
-    }
-
-    fn save(&self) {
-        if let Ok(alarms) = self.alarms.lock() {
-            if let Ok(json) = serde_json::to_string_pretty(&*alarms) {
-                // Atomic write: serialize to a sibling file then rename over the
-                // target so a crash mid-write can't leave alarms.json truncated.
-                let tmp = self.path.with_extension("json.tmp");
-                if std::fs::write(&tmp, json).is_ok() {
-                    let _ = std::fs::rename(&tmp, &self.path);
-                }
-            }
-        }
-    }
+/// The file this instance kept its alarms in before the sidecar owned them.
+pub fn legacy_store_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("alarms.json"))
 }
 
-/// Initializes alarm state and starts the scheduler. Call from `setup`.
-pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(&dir);
-    let state = AlarmState::load(dir.join("alarms.json"));
-    app.manage(state);
-
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        scheduler(handle).await;
-    });
-    Ok(())
-}
-
-async fn scheduler<R: Runtime>(app: AppHandle<R>) {
-    loop {
-        sleep(SCHEDULER_TICK).await;
-        let state = app.state::<AlarmState>();
-        let now = now_ms();
-
-        // Collect alarms that just came due, marking them fired under the lock.
-        let mut due: Vec<Alarm> = Vec::new();
-        if let Ok(mut alarms) = state.alarms.lock() {
-            for alarm in alarms.iter_mut() {
-                if alarm.status == "scheduled" && alarm.fire_at_ms <= now {
-                    alarm.status = "fired".to_string();
-                    due.push(alarm.clone());
-                }
-            }
+/// Takes over the window and rings `alarm` until it is released.
+pub fn fire<R: Runtime>(app: &AppHandle<R>, alarm: Alarm) {
+    let state = app.state::<AlarmState>();
+    if let Ok(mut firing) = state.firing.lock() {
+        // Already ringing: the sidecar retried, and a second ring loop would
+        // outlive the release that stops the first.
+        if !firing.insert(alarm.id.clone()) {
+            return;
         }
-        if due.is_empty() {
-            continue;
-        }
-        state.save();
-        for alarm in due {
-            fire(&app, alarm);
-        }
-    }
-}
-
-fn fire<R: Runtime>(app: &AppHandle<R>, alarm: Alarm) {
-    if let Ok(mut firing) = app.state::<AlarmState>().firing.lock() {
-        firing.insert(alarm.id.clone());
     }
 
     // Take over the main window on the main thread.
@@ -152,14 +100,14 @@ fn fire<R: Runtime>(app: &AppHandle<R>, alarm: Alarm) {
     });
 
     // The frontend raises its takeover straight off this payload, so the
-    // scheduler must have marked the alarm fired before emitting — see
+    // sidecar must have marked the alarm fired before asking for it — see
     // `handleFired` in src/lib/alarmStore.ts.
     let _ = app.emit("alarm-fired", &alarm);
     let _ = notify(app, &alarm);
 
     if alarm.sound {
         let stop = Arc::new(Notify::new());
-        if let Ok(mut stops) = app.state::<AlarmState>().stops.lock() {
+        if let Ok(mut stops) = state.stops.lock() {
             stops.insert(alarm.id.clone(), stop.clone());
         }
         let fired_at = now_ms();
@@ -232,10 +180,10 @@ fn restore_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Drops an alarm from the firing set and hands the window back only once no
-/// other alarm is still firing. Alarms set for the same minute all fire in one
-/// scheduler tick, so dealing with the first must not drop the takeover the
-/// others still need to stay reachable. An alarm that wasn't firing (an upcoming
-/// one being cancelled, or one left over from a previous run) leaves the window
+/// other alarm is still firing. Alarms set for the same minute all fire
+/// together, so dealing with the first must not drop the takeover the others
+/// still need to stay reachable. An alarm that wasn't firing (an upcoming one
+/// being cancelled, or one left over from a previous run) leaves the window
 /// alone entirely — it never took it over, and the user may have gone
 /// full-screen themselves.
 fn release_firing<R: Runtime>(app: &AppHandle<R>, id: &str) {
@@ -258,74 +206,21 @@ fn remove_from_firing(firing: &mut HashSet<String>, id: &str) -> bool {
     firing.remove(id) && firing.is_empty()
 }
 
-fn set_status<R: Runtime>(app: &AppHandle<R>, id: &str, status: &str) {
-    let state = app.state::<AlarmState>();
-    if let Ok(mut alarms) = state.alarms.lock() {
-        if let Some(alarm) = alarms.iter_mut().find(|a| a.id == id) {
-            alarm.status = status.to_string();
-        }
-    }
-    state.save();
+/// Stops an alarm ringing and gives up its hold on the window. Safe to call
+/// for one that isn't ringing, and more than once: the webview and the sidecar
+/// both release an alarm the user dealt with.
+pub fn release<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    stop_ringing(app, id);
+    release_firing(app, id);
 }
 
 // --- Commands ---
 
+/// Called by the webview as soon as the user acknowledges, snoozes or cancels,
+/// so the ringing stops even when the sidecar can't be reached.
 #[tauri::command]
-pub fn list_alarms(state: tauri::State<'_, AlarmState>) -> Vec<Alarm> {
-    state.alarms.lock().map(|a| a.clone()).unwrap_or_default()
-}
-
-#[tauri::command]
-pub fn create_alarm(
-    state: tauri::State<'_, AlarmState>,
-    label: String,
-    fire_at_ms: i64,
-    sound: Option<bool>,
-    meet_link: Option<String>,
-) -> Result<Alarm, String> {
-    let alarm = Alarm {
-        id: random_id(),
-        label,
-        fire_at_ms,
-        sound: sound.unwrap_or(true),
-        meet_link,
-        status: "scheduled".to_string(),
-    };
-    if let Ok(mut alarms) = state.alarms.lock() {
-        alarms.push(alarm.clone());
-    }
-    state.save();
-    Ok(alarm)
-}
-
-#[tauri::command]
-pub fn cancel_alarm<R: Runtime>(app: AppHandle<R>, id: String) {
-    stop_ringing(&app, &id);
-    // Cancel can reach an alarm that is already firing, and leaving its id in
-    // the firing set would mean the window is never handed back at all.
-    release_firing(&app, &id);
-    set_status(&app, &id, "cancelled");
-}
-
-#[tauri::command]
-pub fn acknowledge_alarm<R: Runtime>(app: AppHandle<R>, id: String) {
-    stop_ringing(&app, &id);
-    release_firing(&app, &id);
-    set_status(&app, &id, "acknowledged");
-}
-
-#[tauri::command]
-pub fn snooze_alarm<R: Runtime>(app: AppHandle<R>, id: String, minutes: i64) {
-    stop_ringing(&app, &id);
-    release_firing(&app, &id);
-    let state = app.state::<AlarmState>();
-    if let Ok(mut alarms) = state.alarms.lock() {
-        if let Some(alarm) = alarms.iter_mut().find(|a| a.id == id) {
-            alarm.fire_at_ms = now_ms() + minutes * 60_000;
-            alarm.status = "scheduled".to_string();
-        }
-    }
-    state.save();
+pub fn release_alarm<R: Runtime>(app: AppHandle<R>, id: String) {
+    release(&app, &id);
 }
 
 #[cfg(test)]
@@ -339,7 +234,7 @@ mod tests {
 
     #[test]
     fn keeps_the_window_while_another_alarm_is_still_firing() {
-        // Two alarms set for the same time fire in one tick; dealing with the
+        // Two alarms set for the same time fire together; dealing with the
         // first must leave the takeover up so the second stays reachable.
         let mut firing = firing_set(&["a", "b"]);
         assert!(!remove_from_firing(&mut firing, "a"));
@@ -363,11 +258,11 @@ mod tests {
         assert!(!remove_from_firing(&mut firing, "upcoming"));
     }
 
-    // --- Command-level tests against a mock app ---
+    // --- Tests against a mock app ---
     //
-    // These drive the real commands so the wiring is covered, not just the set
-    // arithmetic: deleting `fire`'s registration or reverting a command to an
-    // unconditional `restore_window` has to fail something.
+    // These drive the real fire/release paths so the wiring is covered, not
+    // just the set arithmetic: deleting `fire`'s registration or reverting
+    // `release` to an unconditional `restore_window` has to fail something.
 
     fn alarm(id: &str) -> Alarm {
         Alarm {
@@ -378,39 +273,19 @@ mod tests {
             // a test, and the firing set is deliberately independent of sound.
             sound: false,
             meet_link: None,
-            status: "scheduled".to_string(),
+            status: "fired".to_string(),
         }
     }
 
-    /// A mock app with alarm state managed over a scratch file.
-    fn app_with_alarms(alarms: Vec<Alarm>) -> tauri::App<MockRuntime> {
+    fn app() -> tauri::App<MockRuntime> {
         // The notification plugin has to be registered: `fire` shows one, and
         // `app.notification()` panics if the plugin's state was never managed.
         let app = mock_builder()
             .plugin(tauri_plugin_notification::init())
             .build(mock_context(noop_assets()))
             .expect("mock app");
-        // Unique per test: `save()` writes through on every status change, and
-        // parallel tests would otherwise interleave on one path.
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("yarvis-alarms-test-{n}.json"));
-        let state = AlarmState::load(path);
-        *state.alarms.lock().unwrap() = alarms;
-        app.manage(state);
+        init(app.handle());
         app
-    }
-
-    /// Mirrors the scheduler: mark the stored alarm fired, then take the window.
-    fn fire_due(app: &tauri::AppHandle<MockRuntime>, id: &str) {
-        let state = app.state::<AlarmState>();
-        let due = {
-            let mut alarms = state.alarms.lock().unwrap();
-            let alarm = alarms.iter_mut().find(|a| a.id == id).expect("alarm");
-            alarm.status = "fired".to_string();
-            alarm.clone()
-        };
-        fire(app, due);
     }
 
     fn firing_ids(app: &tauri::AppHandle<MockRuntime>) -> Vec<String> {
@@ -426,68 +301,43 @@ mod tests {
         ids
     }
 
-    fn status_of(app: &tauri::AppHandle<MockRuntime>, id: &str) -> String {
-        app.state::<AlarmState>()
-            .alarms
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|a| a.id == id)
-            .map(|a| a.status.clone())
-            .unwrap_or_default()
-    }
-
     #[test]
     fn firing_registers_the_alarm_as_holding_the_takeover() {
-        let app = app_with_alarms(vec![alarm("a")]);
+        let app = app();
         let handle = app.handle().clone();
 
-        fire_due(&handle, "a");
+        fire(&handle, alarm("a"));
 
         assert_eq!(firing_ids(&handle), vec!["a".to_string()]);
     }
 
     #[test]
-    fn acknowledging_one_of_two_leaves_the_other_holding_the_takeover() {
+    fn releasing_one_of_two_leaves_the_other_holding_the_takeover() {
         // The server-side half of issue #201: the first acknowledgement used to
         // restore the window unconditionally, dropping the takeover the second
         // alarm still needed.
-        let app = app_with_alarms(vec![alarm("a"), alarm("b")]);
+        let app = app();
         let handle = app.handle().clone();
-        fire_due(&handle, "a");
-        fire_due(&handle, "b");
+        fire(&handle, alarm("a"));
+        fire(&handle, alarm("b"));
 
-        acknowledge_alarm(handle.clone(), "a".to_string());
-
+        release_alarm(handle.clone(), "a".to_string());
         assert_eq!(firing_ids(&handle), vec!["b".to_string()]);
-        assert_eq!(status_of(&handle, "a"), "acknowledged");
-        assert_eq!(status_of(&handle, "b"), "fired");
 
-        acknowledge_alarm(handle.clone(), "b".to_string());
+        release_alarm(handle.clone(), "b".to_string());
         assert!(firing_ids(&handle).is_empty());
     }
 
     #[test]
-    fn snoozing_releases_the_takeover_and_reschedules() {
-        let app = app_with_alarms(vec![alarm("a")]);
+    fn releasing_twice_is_harmless() {
+        // The webview and the sidecar both release an alarm the user dealt with.
+        let app = app();
         let handle = app.handle().clone();
-        fire_due(&handle, "a");
+        fire(&handle, alarm("a"));
 
-        snooze_alarm(handle.clone(), "a".to_string(), 5);
+        release(&handle, "a");
+        release(&handle, "a");
 
         assert!(firing_ids(&handle).is_empty());
-        assert_eq!(status_of(&handle, "a"), "scheduled");
-    }
-
-    #[test]
-    fn cancelling_a_firing_alarm_releases_the_takeover() {
-        let app = app_with_alarms(vec![alarm("a")]);
-        let handle = app.handle().clone();
-        fire_due(&handle, "a");
-
-        cancel_alarm(handle.clone(), "a".to_string());
-
-        assert!(firing_ids(&handle).is_empty());
-        assert_eq!(status_of(&handle, "a"), "cancelled");
     }
 }

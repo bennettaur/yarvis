@@ -180,3 +180,31 @@ export async function saveMcpOAuth(
 export async function saveGitHubToken(token: string): Promise<void> {
   await rpc("github.saveToken", { token });
 }
+
+/** Whether a core is listening, so callers can skip work only it can do (alarms in tests). */
+export function hasCoreChannel(): boolean {
+  return Boolean(process.env.YARVIS_CORE_SOCK);
+}
+
+/** The alarm shape the core rings and hands on to the webview's takeover. */
+export interface CoreAlarm {
+  id: string;
+  label: string;
+  fireAtMs: number;
+  sound: boolean;
+  meetLink: string | null;
+  status: string;
+}
+
+/**
+ * Asks the core to ring an alarm the sidecar marked fired: it takes over the
+ * window, shows a notification, and plays the sound until the alarm is released.
+ */
+export async function fireAlarm(alarm: CoreAlarm): Promise<void> {
+  await rpc("alarm.fire", { alarm });
+}
+
+/** Asks the core to stop ringing an alarm and hand the window back. A no-op for one not ringing. */
+export async function releaseAlarm(id: string): Promise<void> {
+  await rpc("alarm.release", { id });
+}

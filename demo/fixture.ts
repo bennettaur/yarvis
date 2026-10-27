@@ -8,6 +8,7 @@
  * title lowercased and hyphenated.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect, type Locator, type Page } from "@playwright/test";
@@ -132,13 +133,37 @@ export class Demo {
     await this.pause(400);
   }
 
-  /** Rings an alarm, raising the full-screen takeover. */
-  async fireAlarm(alarm: Omit<Alarm, "status">): Promise<void> {
-    await this.page.evaluate((a) => {
-      const controls = window.__yarvisDemoControls;
-      if (!controls) throw new Error("the Tauri mock isn't installed");
-      return controls.fireAlarm(a);
-    }, alarm);
+  /**
+   * Rings an alarm, raising the full-screen takeover. The demo sidecar runs no
+   * scheduler, so the alarm goes into the database already fired, and the
+   * event the core would send follows.
+   */
+  async fireAlarm(alarm: Omit<Alarm, "id" | "status">): Promise<void> {
+    const insert = `INSERT INTO alarms (label, fire_at, sound, meet_link, status)
+      VALUES (:'label', to_timestamp(:fire_at / 1000.0), :sound, NULLIF(:'meet_link', ''), 'fired')
+      RETURNING id`;
+    const result = spawnSync(
+      "psql",
+      [
+        process.env.DEMO_DATABASE_URL ?? "",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        `label=${alarm.label}`,
+        "-v",
+        `fire_at=${alarm.fireAtMs}`,
+        "-v",
+        `sound=${alarm.sound}`,
+        "-v",
+        `meet_link=${alarm.meetLink ?? ""}`,
+        "-qtA",
+      ],
+      // On stdin: psql only fills in the variables in a script, not in `-c`.
+      { encoding: "utf8", input: insert },
+    );
+    if (result.status !== 0) throw new Error(`firing the alarm failed: ${result.stderr}`);
+    const fired: Alarm = { ...alarm, id: result.stdout.trim(), status: "fired" };
+    await this.emit("alarm-fired", fired);
   }
 
   /** Fires a native event, as the Rust core would (e.g. `omni-chat-summon`). */

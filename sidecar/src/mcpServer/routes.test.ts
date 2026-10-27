@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { mcpReply } from "../test/mcpResponse.ts";
 import { questionOrigin } from "./routes.ts";
 
 function testConfig(overrides: Partial<Config> = {}): Config {
@@ -84,7 +85,7 @@ describe("mcp endpoint", () => {
     const app = createApp(testConfig());
     const res = await app.request("/mcp", post(INITIALIZE));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const body = (await mcpReply(res)) as {
       result: { serverInfo: { name: string }; capabilities: { tools?: unknown } };
     };
     expect(body.result.serverInfo.name).toBe("yarvis");
@@ -102,7 +103,9 @@ describe("mcp endpoint", () => {
       post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { result: { tools: { name: string }[] } };
+    // Streamed, so a reply that takes a while still sends its headers at once.
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
     expect(body.result.tools.map((t) => t.name).sort()).toEqual([
       "ask_user",
       "forget",
@@ -123,7 +126,7 @@ describe("mcp endpoint", () => {
           "X-Yarvis-Workspace": workspace,
         }),
       );
-      const body = (await res.json()) as { result: { tools: { name: string }[] } };
+      const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
       return body.result.tools.map((t) => t.name);
     };
 
@@ -207,7 +210,7 @@ describe("mcp endpoint over a real store", () => {
       ),
     );
     expect(res.status).toBe(200);
-    return ((await res.json()) as { result: { isError?: boolean; content: { text: string }[] } })
+    return ((await mcpReply(res)) as { result: { isError?: boolean; content: { text: string }[] } })
       .result;
   };
 

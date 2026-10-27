@@ -117,7 +117,9 @@ export interface ChatEvent {
     | "done"
     | "error"
     | "attention"
-    | "tool_approval_request";
+    | "tool_approval_request"
+    // Sent on a quiet stream so the connection isn't closed as idle; carries nothing.
+    | "ping";
   text?: string;
   message?: string;
   /** `error`: the full redacted diagnosis (status, endpoint, provider body). */

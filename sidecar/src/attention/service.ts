@@ -87,6 +87,8 @@ export async function createAttention(
 
 export interface ListAttentionOptions {
   status?: AttentionStatus;
+  /** Only items one workspace raised. */
+  workspaceId?: string;
   limit?: number;
 }
 
@@ -103,7 +105,12 @@ export async function listAttention(
   return db
     .select()
     .from(attentionItems)
-    .where(options.status ? eq(attentionItems.status, options.status) : undefined)
+    .where(
+      and(
+        options.status ? eq(attentionItems.status, options.status) : undefined,
+        options.workspaceId ? eq(attentionItems.workspaceId, options.workspaceId) : undefined,
+      ),
+    )
     .orderBy(desc(attentionItems.seq))
     .limit(limit);
 }

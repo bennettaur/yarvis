@@ -14,6 +14,7 @@ export type IconName =
   | "workspaces"
   | "tasks"
   | "prs"
+  | "review"
   | "issues"
   | "memory"
   | "calendar"
@@ -86,6 +87,14 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <circle cx="18" cy="18" r="3" />
       <path d="M13 6h3a2 2 0 0 1 2 2v7" />
       <line x1="6" x2="6" y1="9" y2="21" />
+    </>
+  ),
+  review: (
+    <>
+      <rect width="18" height="16" x="3" y="4" rx="2" />
+      <path d="M9 4v16" />
+      <path d="M13 9h4" />
+      <path d="M13 13h4" />
     </>
   ),
   issues: (

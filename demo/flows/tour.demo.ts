@@ -19,7 +19,6 @@ test("tour", async ({ demo, page }) => {
   await demo.shot("dashboard");
 
   await demo.fireAlarm({
-    id: "demo-standup",
     label: "Checkout standup",
     fireAtMs: Date.now(),
     sound: false,

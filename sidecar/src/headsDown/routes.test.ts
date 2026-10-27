@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
+import { addMessage as addChatMessage, createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { CUT_SHORT_RESULT } from "../db/schema.ts";
 import { askUser } from "./attention.ts";
+import { startPass, startRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -123,6 +126,35 @@ describe("/api/heads-down", () => {
     ).toBe(400);
   });
 
+  it("saves the standing guidance, and treats a blank one as none", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, guidance: "  Merging is fine on my repos.  " })).status).toBe(
+      200,
+    );
+    expect(await get("/config")).toMatchObject({ guidance: "Merging is fine on my repos." });
+    expect((await put({ ...valid, guidance: "   " })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ guidance: null });
+    expect((await put({ ...valid, guidance: "x".repeat(4001) })).status).toBe(400);
+    expect((await put({ ...valid, guidance: null })).status).toBe(200);
+    // A client that doesn't send it can still save.
+    expect((await put(valid)).status).toBe(200);
+  });
+
   it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {
     await sql`TRUNCATE agent_tools`;
     await sql`INSERT INTO agent_tools (id, source, name, content_hash)
@@ -148,5 +180,51 @@ describe("/api/heads-down", () => {
       headers: auth,
     });
     expect(res.status).toBe(404);
+  });
+
+  it("lists each pass with how many calls it made and which failed", async () => {
+    const run = await startRun(db, null);
+    const session = await createSession(db, "Heads down", { hidden: true });
+    const pass = await startPass(db, run.id, session.id);
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [
+        { id: "1", name: "list_work_streams", status: "ok", result: "[]" },
+        {
+          id: "2",
+          name: "post_message",
+          server: "Slack",
+          status: "error",
+          result: "channel_not_found",
+        },
+        {
+          id: "3",
+          name: "send_workspace_instruction",
+          status: "error",
+          result: CUT_SHORT_RESULT,
+        },
+      ],
+    });
+    // A retry in the same pass is a second assistant row; both count.
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [{ id: "4", name: "get_workspace_status", status: "pending" }],
+    });
+
+    const [listed] = (await get("/passes")) as unknown[];
+
+    expect(listed).toMatchObject({
+      id: pass.id,
+      callCount: 4,
+      failedCalls: [
+        { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+        expect.objectContaining({ name: "send_workspace_instruction", noResult: true }),
+        expect.objectContaining({ name: "get_workspace_status", noResult: true }),
+      ],
+    });
   });
 });
