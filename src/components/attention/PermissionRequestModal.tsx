@@ -17,6 +17,12 @@ const REFRESH_MS = 2_000;
 const ARMING_MS = 400;
 
 /**
+ * The arming delay for a modal that opened by itself. A click already on its way
+ * to whatever was under the pointer takes longer to stop than a double click.
+ */
+export const AUTO_OPEN_ARMING_MS = 1_200;
+
+/**
  * The reply Claude Code reads for each question, keyed by its text: the picked
  * labels comma-separated, then any note on its own line.
  */
@@ -47,6 +53,7 @@ export default function PermissionRequestModal({
   title,
   onClose,
   onGoToSession,
+  armingMs = ARMING_MS,
 }: {
   /** The session whose prompts to show; null keeps the modal closed. */
   sessionKey: string | null;
@@ -55,6 +62,8 @@ export default function PermissionRequestModal({
   onClose: () => void;
   /** Opens the terminal the session runs in. */
   onGoToSession: () => void;
+  /** How long each request ignores clicks after it is shown. */
+  armingMs?: number;
 }) {
   const [requests, setRequests] = useState<PermissionRequest[] | null>(null);
   // Kept apart so a poll that succeeds clears its own blip but not an answer's error.
@@ -112,7 +121,7 @@ export default function PermissionRequestModal({
   useEffect(() => {
     setArmed(false);
     setMessage("");
-    const timer = setTimeout(() => setArmed(true), ARMING_MS);
+    const timer = setTimeout(() => setArmed(true), armingMs);
     return () => clearTimeout(timer);
   }, [current?.id]);
 

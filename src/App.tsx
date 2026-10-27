@@ -5,7 +5,9 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
-import PermissionRequestModal from "./components/attention/PermissionRequestModal";
+import PermissionRequestModal, {
+  AUTO_OPEN_ARMING_MS,
+} from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
@@ -80,6 +82,8 @@ export default function App() {
   const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
   // A Claude session's permission prompt being answered from the modal.
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
+  // True when the modal opened by itself rather than from a click on the bell.
+  const [permissionAutoOpened, setPermissionAutoOpened] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -335,6 +339,7 @@ export default function App() {
         setAttentionPanelOpen(false);
         if (item.kind === "question") setQuestionItem(item);
         else setPermissionItem(item);
+        setPermissionAutoOpened(false);
         return;
       }
       void markAttention(item.id, "read");
@@ -374,6 +379,7 @@ export default function App() {
         // Claimed now: a second item can arrive before the state change commits.
         overlayOpenRef.current = true;
         openAttentionItem(item);
+        setPermissionAutoOpened(true);
       }),
     [openAttentionItem],
   );
@@ -528,6 +534,7 @@ export default function App() {
         sessionKey={permissionItem?.sessionKey ?? null}
         title={permissionItem?.title ?? ""}
         onClose={() => setPermissionItem(null)}
+        armingMs={permissionAutoOpened ? AUTO_OPEN_ARMING_MS : undefined}
         onGoToSession={() => {
           if (!permissionItem) return;
           setPermissionItem(null);

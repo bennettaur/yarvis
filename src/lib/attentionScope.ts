@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
 import { type AttentionItem, hasAnswerDialog } from "./attention";
 
 /**
@@ -104,13 +105,19 @@ export function isInView(scope: ViewedScope, item: AttentionItem): boolean {
 
 /**
  * Whether a newly raised item should open its answer dialog on its own: a
- * Claude Code permission prompt or a coding agent's question, raised by the
- * workspace on screen. Unlike `isInView` this ignores window focus, so the
- * dialog is already waiting when the user switches back to the app.
+ * Claude Code permission prompt or a coding agent's question from a session
+ * running in the workspace on screen.
+ *
+ * The session id decides the workspace, not the item's `workspaceId`, which the
+ * raising terminal reports about itself. Never while the window is in the
+ * background, so the click that brings the user back can't land on Approve.
  */
 export function shouldAutoOpen(scope: ViewedScope, item: AttentionItem): boolean {
+  if (!scope.focused || !scope.workspaceId || !item.sessionKey) return false;
   return (
-    Boolean(item.workspaceId) && item.workspaceId === scope.workspaceId && hasAnswerDialog(item)
+    item.workspaceId === scope.workspaceId &&
+    sessionWorkspaceId(item.sessionKey) === scope.workspaceId &&
+    hasAnswerDialog(item)
   );
 }
 
