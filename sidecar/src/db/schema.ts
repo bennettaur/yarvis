@@ -5,6 +5,7 @@ import {
   boolean,
   check,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -16,7 +17,8 @@ import {
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
-import type { ReviewDecision } from "../pr/types.ts";
+import type { PrRef, ReviewDecision } from "../pr/types.ts";
+import type { RepoTracker } from "../workspaces/tracker.ts";
 
 /**
  * Embedding dimension of the `memories.embedding` column. This is a fixed
@@ -49,7 +51,8 @@ export const messageRole = pgEnum("message_role", ["user", "assistant", "system"
  * confirmation for it.
  */
 export interface ChatMessageMetadata {
-  source?: "telegram" | "voice";
+  /** `heads-down` marks a pass of the heads-down loop, which runs with nobody watching. */
+  source?: "telegram" | "voice" | "heads-down";
   telegramUserId?: number;
   telegramUsername?: string;
   telegramFirstName?: string;
@@ -79,12 +82,24 @@ export interface ToolActivity {
   durationMs?: number;
 }
 
+/**
+ * The result recorded for a call still running when its turn ended. Whether
+ * it took effect is unknown: the tool may have finished after the stream died.
+ */
+export const CUT_SHORT_RESULT = "The turn ended before this finished.";
+
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 export const taskScope = pgEnum("task_scope", ["daily", "weekly"]);
 
 export const chatSessions = pgTable("chat_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title"),
+  /**
+   * Kept out of the chat list. A heads-down pass runs as a chat turn so its
+   * tool calls are stored the way any turn's are, but it isn't a conversation
+   * the user had, and it is read from the Heads down page instead.
+   */
+  hidden: boolean("hidden").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -191,7 +206,8 @@ export type MemorySourceRef =
   | { type: "chat"; sessionId: string }
   | { type: "project"; projectId: string }
   | { type: "pr"; provider: string; key: string }
-  | { type: "issue"; provider: string; key: string };
+  | { type: "issue"; provider: string; key: string }
+  | { type: "heads-down-question"; questionId: string };
 
 export const memories = pgTable(
   "memories",
@@ -584,6 +600,8 @@ export const repos = pgTable(
     setupScript: text("setup_script"), // shell, run in each worktree after creation
     runScript: text("run_script"), // long-lived service command, run in a terminal
     pullIssues: boolean("pull_issues").notNull().default(false), // include this repo in the Issues dashboard
+    // Which tracker the repo's tickets are filed in; null until the user sets it.
+    tracker: jsonb("tracker").$type<RepoTracker>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -643,6 +661,47 @@ export const workspaceRepos = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("workspace_repos_ws_repo_idx").on(t.workspaceId, t.repoId)],
+);
+
+/**
+ * Claude Code sessions that have announced themselves in a workspace, written by
+ * the SessionStart/SessionEnd hooks in its `.claude/settings.json`
+ * (`workspaces/claudeSettings.ts`). One row per Claude session id and PTY: a
+ * resume keeps the session id, so it reopens the same row with the new pid, and
+ * a `/clear` starts a new one.
+ *
+ * The pid is what lets the core confirm that Claude itself is reading a PTY's
+ * prompt (see `foreground_is_agent` in `src-tauri/src/pty.rs`). SessionEnd does
+ * not fire when Claude is killed, so `endedAt` being null is not proof of life;
+ * readers check the pid as well.
+ */
+export const workspaceAgentSessions = pgTable(
+  "workspace_agent_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // The PTY the session runs in: `ws-claude:<workspaceId>` for the workspace's
+    // own agent tab, `ws:<workspaceId>/...` for one started in a terminal pane.
+    sessionKey: text("session_key").notNull(),
+    claudeSessionId: text("claude_session_id").notNull(),
+    pid: integer("pid").notNull(),
+    // Claude's SessionStart `source` (startup, resume, clear, compact) the last
+    // time this session started, and SessionEnd's `reason` once it has ended, or
+    // `process-gone` when the sidecar found the pid dead without a SessionEnd.
+    source: text("source"),
+    endReason: text("end_reason"),
+    // Kept across resumes; orders sessions so the earliest is primary.
+    // `startedAt` is the latest (re)start.
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("workspace_agent_sessions_key_session_idx").on(t.sessionKey, t.claudeSessionId),
+    index("workspace_agent_sessions_workspace_idx").on(t.workspaceId),
+  ],
 );
 
 /** Background-poller cache of the PR + checks for each workspace repo (1:1). */
@@ -922,6 +981,12 @@ export const agentTools = pgTable("agent_tools", {
   inputSchema: jsonb("input_schema"),
   policy: toolPolicy("policy").notNull().default("search"),
   approval: toolApproval("approval").notNull().default("ask"),
+  /**
+   * The user's consent for heads-down mode to call this tool with nobody
+   * watching. Separate from `approval`, which was given for chats the user
+   * reads, and reset with it when the tool's description or schema changes.
+   */
+  unattended: boolean("unattended").notNull().default(false),
   contentHash: text("content_hash").notNull(),
   embedding: vector("embedding", { dimensions: EMBED_DIM }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -958,6 +1023,12 @@ export const events = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The provider's own id for the action, e.g. `github:review:<node id>`, when
+     * the same action can reach the log twice: once from the app as it happens,
+     * and again from a sync that reads the provider's history. Null otherwise.
+     */
+    externalId: text("external_id"),
   },
   (t) => [
     // Reconciliation scans unprocessed events oldest-first.
@@ -965,6 +1036,8 @@ export const events = pgTable(
     index("events_type_idx").on(t.type),
     // The events browser pages the whole log newest-first, with no type filter.
     index("events_occurred_idx").on(t.occurredAt),
+    // Drops a second report of the same provider action. NULLs never conflict.
+    uniqueIndex("events_external_id_idx").on(t.externalId),
   ],
 );
 
@@ -981,8 +1054,10 @@ export const attentionSource = pgEnum("attention_source", ["claude-hook", "chat-
 
 /**
  * The nature of the signal. `permission`/`idle` mean a session is *blocked* and
- * cannot proceed without the user; `completed` means it finished; `error` a
- * failure; `info` a generic nudge (the chat agent's request_attention).
+ * cannot proceed without the user; `question` is a session blocked on an
+ * `ask_user` call the user can answer from the attention panel; `completed`
+ * means it finished; `error` a failure; `info` a generic nudge (the chat agent's
+ * request_attention).
  */
 export const attentionKind = pgEnum("attention_kind", [
   "permission",
@@ -990,6 +1065,7 @@ export const attentionKind = pgEnum("attention_kind", [
   "completed",
   "error",
   "info",
+  "question",
 ]);
 
 /**
@@ -1026,7 +1102,8 @@ export type AttentionNavTarget =
   // shape — the organization comes from configuration on both sides.
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
-  | { type: "task"; taskId: string };
+  | { type: "task"; taskId: string }
+  | { type: "heads-down" };
 
 /**
  * The attention stream: things that want the user's attention, most urgently a
@@ -1075,6 +1152,76 @@ export const attentionItems = pgTable(
 
 export type AttentionItemRow = typeof attentionItems.$inferSelect;
 export type NewAttentionItemRow = typeof attentionItems.$inferInsert;
+
+/** One choice offered for a question. */
+export interface AgentQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** A single question in an `ask_user` call. */
+export interface AgentQuestionItem {
+  question: string;
+  /** A short tag shown above the question, like "Auth method". */
+  header?: string;
+  /** Absent means the question is answered in free text only. */
+  options?: AgentQuestionOption[];
+  multiSelect?: boolean;
+}
+
+/** The user's reply to one question, in the same order as the questions. */
+export interface AgentQuestionAnswer {
+  /** Labels of the options picked; empty when the user only typed. */
+  selected: string[];
+  /** Free text the user added, as its own answer or alongside a choice. */
+  text?: string;
+}
+
+/** What the agent says it is working on, shown beside the questions. */
+export interface AgentQuestionContext {
+  task: string;
+  reason?: string;
+}
+
+/**
+ * `pending` until the user replies; `answered` with their answers; `declined`
+ * when they chose not to answer, which the agent is told so it can proceed on
+ * its own judgement instead of waiting.
+ */
+export const agentQuestionStatus = pgEnum("agent_question_status", [
+  "pending",
+  "answered",
+  "declined",
+]);
+
+/**
+ * Questions a coding agent asked through the MCP `ask_user` tool. Kept apart
+ * from `attention_items` because an attention item coalesces per (session,
+ * kind) while each question set needs its own answer: the item is the bell,
+ * this row is the conversation.
+ */
+export const agentQuestions = pgTable(
+  "agent_questions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // The asking session's PTY id, read from the MCP request headers; null for a
+    // client Yarvis didn't launch.
+    sessionKey: text("session_key"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    context: jsonb("context").$type<AgentQuestionContext>().notNull(),
+    questions: jsonb("questions").$type<AgentQuestionItem[]>().notNull(),
+    status: agentQuestionStatus("status").notNull().default("pending"),
+    answers: jsonb("answers").$type<AgentQuestionAnswer[]>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+  },
+  (t) => [
+    // The modal lists a session's pending questions.
+    index("agent_questions_session_status_idx").on(t.sessionKey, t.status),
+  ],
+);
+
+export type AgentQuestionRow = typeof agentQuestions.$inferSelect;
 
 /** Which work-in-progress sources are included in the roll-up. */
 export interface WipSourcesConfig {
@@ -1309,6 +1456,249 @@ export const agentTodos = pgTable(
 );
 
 /**
+ * Where a work stream stands. `waiting-on-user` and `waiting-on-others` are
+ * what let the heads-down loop skip a stream it can't move and keep pushing the
+ * rest; `done`/`dropped` are terminal.
+ */
+export const workStreamStatus = pgEnum("work_stream_status", [
+  "active",
+  "waiting-on-user",
+  "waiting-on-others",
+  "done",
+  "dropped",
+]);
+
+/**
+ * One thread of work the assistant is pushing forward: a ticket to get merged,
+ * a Slack message that needs an answer, a review to chase. The unit heads-down
+ * mode tracks, so each pass can pick up where the last left off without
+ * re-deriving it. The work itself stays where it lives (the tracker, the PR,
+ * the workspace); a stream holds what the assistant needs to keep it moving:
+ * what to do next, what it is waiting on, and its own notes.
+ */
+export const workStreams = pgTable(
+  "work_streams",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    status: workStreamStatus("status").notNull().default("active"),
+    priority: projectItemPriority("priority").notNull().default("medium"),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    /** The next step the assistant means to take. */
+    nextAction: text("next_action"),
+    /** Who or what the stream is waiting on, when it is waiting. */
+    waitingOn: text("waiting_on"),
+    /** Not worth revisiting before this, e.g. bumping a review request the next morning. */
+    wakeAt: timestamp("wake_at", { withTimezone: true }),
+    /** Append-only, so a stream carries why it is where it is across passes. */
+    notes: jsonb("notes").$type<WorkStreamNote[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
+);
+
+/** A note on a work stream: the same shape as a todo's progress note. */
+export type WorkStreamNote = AgentTodoNote;
+
+/** What a work stream link points at. */
+export const workStreamLinkKind = pgEnum("work_stream_link_kind", [
+  "ticket",
+  "workspace",
+  "pr",
+  "message",
+  "review-request",
+]);
+
+/**
+ * Who made a link: a chat turn the user typed or spoke in, or a heads-down
+ * pass. Heads-down mode only steers work the user put in its hands, so a link
+ * a pass made itself doesn't count as the user's go-ahead.
+ */
+export const workStreamLinkSource = pgEnum("work_stream_link_source", ["chat", "heads-down"]);
+
+/**
+ * The thing a link points at, by kind. A message is identified by
+ * `messageRef`: its id or permalink when the tool that read it gave one, or
+ * the author and time as shown when it didn't (the Chrome extension gives
+ * neither).
+ */
+export type WorkStreamLinkRef =
+  | { kind: "ticket"; provider: "github" | "jira" | "azure-boards"; key: string; url?: string }
+  | { kind: "workspace"; workspaceId: string }
+  | { kind: "pr"; provider: "github" | "azure"; url: string }
+  | {
+      kind: "message";
+      channel: string;
+      conversation: string;
+      messageRef: string;
+      author?: string;
+    }
+  | {
+      kind: "review-request";
+      channel: string;
+      conversation: string;
+      messageRef: string;
+      /** When the request was posted, so the loop can tell when it is due a bump. */
+      sentAt: string;
+      prUrl?: string;
+      /** Who it tagged, by the handle the channel uses. */
+      tagged?: string[];
+    };
+
+/**
+ * Something a work stream involves: its ticket, the workspace implementing it,
+ * the PR, the message that started it or asks for review. `refKey` is the
+ * link's identity within a stream, so linking the same PR twice updates the
+ * existing link instead of adding a second.
+ */
+export const workStreamLinks = pgTable(
+  "work_stream_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    streamId: uuid("stream_id")
+      .notNull()
+      .references(() => workStreams.id, { onDelete: "cascade" }),
+    kind: workStreamLinkKind("kind").notNull(),
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<WorkStreamLinkRef>().notNull(),
+    /** A human-readable name: the ticket or PR title, the channel. Third-party text. */
+    title: text("title"),
+    /** What was last seen of it ("CI failing", "approved", "replied"), in the assistant's words. */
+    state: text("state"),
+    /** When `state` was last recorded. */
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    createdBy: workStreamLinkSource("created_by").notNull().default("chat"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("work_stream_links_ref_unique_idx").on(t.streamId, t.refKey),
+    // Finding which stream a PR or workspace belongs to, from the other side.
+    index("work_stream_links_ref_key_idx").on(t.refKey),
+  ],
+);
+
+/** Whether heads-down mode is running. At most one run is `active` at a time. */
+export const headsDownRunStatus = pgEnum("heads_down_run_status", ["active", "stopped"]);
+
+/**
+ * One stretch of heads-down mode, from the user turning it on to turning it
+ * off. `focus` is what they asked it to push on, in their words.
+ */
+export const headsDownRuns = pgTable(
+  "heads_down_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    focus: text("focus"),
+    status: headsDownRunStatus("status").notNull().default("active"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("heads_down_runs_one_active_idx").on(t.status).where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * One pass of the heads-down loop. The pass runs as a hidden chat turn in
+ * `chatSessionId`, so what it did is that session's transcript. `notes` is what
+ * it left for the next pass, which starts with no memory of this one.
+ */
+export const headsDownPasses = pgTable(
+  "heads_down_passes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => headsDownRuns.id, { onDelete: "cascade" }),
+    chatSessionId: uuid("chat_session_id").references(() => chatSessions.id, {
+      onDelete: "set null",
+    }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    notes: text("notes"),
+    /** How long the loop slept after this pass, after clamping the agent's request. */
+    sleepMinutes: integer("sleep_minutes"),
+    sleepReason: text("sleep_reason"),
+    error: text("error"),
+  },
+  (t) => [index("heads_down_passes_run_idx").on(t.runId, t.startedAt)],
+);
+
+/**
+ * Something the user told heads-down mode while it runs: a direction, new work,
+ * a standing instruction. Read by the next pass, which marks it seen.
+ */
+export const headsDownMessages = pgTable(
+  "heads_down_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    seenAt: timestamp("seen_at", { withTimezone: true }),
+  },
+  (t) => [index("heads_down_messages_unseen_idx").on(t.createdAt).where(sql`${t.seenAt} is null`)],
+);
+
+/**
+ * `question`: the loop needs the user to choose. `approval`: a tool call the
+ * loop may not make on its own, waiting for the user to allow it.
+ */
+export const headsDownQuestionKind = pgEnum("heads_down_question_kind", ["question", "approval"]);
+
+/**
+ * Who answered: the user, or the decision model approving a call it was
+ * allowed to settle. Only the user's answers become decision memories, so
+ * the model's approvals never count as precedent for its next one.
+ */
+export const headsDownAnswerer = pgEnum("heads_down_answerer", ["user", "decision-model"]);
+
+export const headsDownQuestionStatus = pgEnum("heads_down_question_status", [
+  "open",
+  "answered",
+  "dismissed",
+]);
+
+/**
+ * A question heads-down mode put to the user. The loop never waits on one: the
+ * stream it belongs to waits, the rest carry on, and a later pass reads the
+ * answer. An approved `approval` is a one-time grant for that exact call,
+ * spent (`usedAt`) when the loop makes it.
+ */
+export const headsDownQuestions = pgTable(
+  "heads_down_questions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: headsDownQuestionKind("kind").notNull(),
+    streamId: uuid("stream_id").references(() => workStreams.id, { onDelete: "set null" }),
+    question: text("question").notNull(),
+    /** What is going on, so the answer can be stored as a decision and weighed later. */
+    situation: text("situation"),
+    /** Answers the loop offered, which become the decision's choice labels. */
+    options: jsonb("options").$type<string[]>().notNull().default([]),
+    /** The tool the question is about: the one an approval would let run. */
+    action: text("action"),
+    /** An approval's exact tool arguments, and their hash for matching the retry. */
+    toolArgs: jsonb("tool_args"),
+    argsHash: text("args_hash"),
+    status: headsDownQuestionStatus("status").notNull().default("open"),
+    choice: text("choice"),
+    answer: text("answer"),
+    answeredBy: headsDownAnswerer("answered_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("heads_down_questions_status_idx").on(t.status, t.createdAt),
+    index("heads_down_questions_args_idx").on(t.action, t.argsHash),
+  ],
+);
+
+/**
  * Bookkeeping for the background job scheduler: one row per job name, holding
  * its last run and a lease. The lease is what makes a job safe when several app
  * instances share one database — a tick claims it with a conditional update, so
@@ -1392,6 +1782,12 @@ export type ProjectItem = typeof projectItems.$inferSelect;
 export type NewProjectItem = typeof projectItems.$inferInsert;
 export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
+export type WorkStream = typeof workStreams.$inferSelect;
+export type WorkStreamLink = typeof workStreamLinks.$inferSelect;
+export type HeadsDownRun = typeof headsDownRuns.$inferSelect;
+export type HeadsDownPass = typeof headsDownPasses.$inferSelect;
+export type HeadsDownMessage = typeof headsDownMessages.$inferSelect;
+export type HeadsDownQuestion = typeof headsDownQuestions.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type NewJobRun = typeof jobRuns.$inferInsert;
 export type CcSessionDigest = typeof ccSessionDigests.$inferSelect;
@@ -1468,3 +1864,254 @@ export type ScheduledJob = typeof scheduledJobs.$inferSelect;
 export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
 export type ScheduledJobRun = typeof scheduledJobRuns.$inferSelect;
 export type NewScheduledJobRun = typeof scheduledJobRuns.$inferInsert;
+
+export const alarmStatus = pgEnum("alarm_status", [
+  "scheduled",
+  "fired",
+  "acknowledged",
+  "cancelled",
+]);
+
+/** Who set an alarm: the user in the app, a chat turn, or a heads-down pass. */
+export const alarmSource = pgEnum("alarm_source", ["app", "chat", "heads-down"]);
+
+/**
+ * An alarm that takes over the screen when it fires. The sidecar decides when
+ * one is due; the Rust core rings it and takes over the window, since only it
+ * can (see `alarms/scheduler.ts` and `src-tauri/src/alarms.rs`).
+ */
+export const alarms = pgTable(
+  "alarms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    label: text("label").notNull(),
+    fireAt: timestamp("fire_at", { withTimezone: true }).notNull(),
+    sound: boolean("sound").notNull().default(true),
+    /** Join URL for a meeting alarm, so the takeover can offer "Join meeting". */
+    meetLink: text("meet_link"),
+    status: alarmStatus("status").notNull().default("scheduled"),
+    source: alarmSource("source").notNull().default("app"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("alarms_status_fire_at_idx").on(t.status, t.fireAt)],
+);
+
+export type AlarmRow = typeof alarms.$inferSelect;
+/**
+ * A headless Claude Code run started by a feature (a verification report, a
+ * mutation-testing pass) and streamed to the UI while it works.
+ *
+ * The live stream is held in memory (`agentRuns/service.ts`); this row is what
+ * outlasts it — the outcome, and a trimmed copy of the events so a finished run
+ * can still be replayed. `instance` names the app instance whose process ran it:
+ * only that instance can tell whether a `running` row is still running, so its
+ * startup sweep fails its own leftovers and leaves other instances' runs alone.
+ */
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** What the run is for, e.g. "verification-report". Chosen by the feature. */
+    kind: text("kind").notNull(),
+    /** What it ran against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
+    targetKey: text("target_key").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status").notNull(),
+    /** The app instance (`YARVIS_INSTANCE`, "default" for the primary) whose sidecar ran it. */
+    instance: text("instance").notNull(),
+    /** The Claude Code process, which leads the run's process group. */
+    pid: integer("pid"),
+    /**
+     * When that process started, as `ps` reports it, so a sweep after a crash
+     * kills the run's leftovers and not whatever has since been given its pid.
+     */
+    pidStartedAt: text("pid_started_at"),
+    /** The run's validated structured output, when it produced one. */
+    result: jsonb("result"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    sessionId: text("session_id"),
+    /** Feature-specific context the run was started with. */
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    /** The tail of the event stream, redacted, written when the run ends. */
+    events: jsonb("events").$type<unknown[]>().notNull().default([]),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("agent_runs_target_idx").on(t.kind, t.targetKey, t.startedAt.desc())],
+);
+
+export type AgentRunRow = typeof agentRuns.$inferSelect;
+export type NewAgentRunRow = typeof agentRuns.$inferInsert;
+
+/**
+ * A review workspace: a named set of pull requests checked out side by side for
+ * review. Separate from `workspaces`, which are for doing work — nothing here
+ * has a branch to push, an agent session, or a repo it must be registered for.
+ */
+export const reviewWorkspaces = pgTable("review_workspaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  /** "active" | "archiving" | "archived". */
+  status: text("status").$type<"active" | "archiving" | "archived">().notNull().default("active"),
+  /** Why the last archive left something behind, if it did. */
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+});
+
+/**
+ * One pull request in a review workspace, with the detached worktree it is
+ * checked out in and the commits the review reads. The shas are what every
+ * diff and file read uses, so a refresh that moves the head moves them together.
+ */
+export const reviewWorkspacePrs = pgTable(
+  "review_workspace_prs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    /** `refKey` of `ref`, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<PrRef>().notNull(),
+    /** Cached from the provider at the last clone or refresh. */
+    title: text("title").notNull().default(""),
+    author: text("author"),
+    headRef: text("head_ref"),
+    baseRef: text("base_ref"),
+    /** Stable colour for this PR in the workspace: the lowest index unused when added. */
+    colorIndex: integer("color_index").notNull(),
+    position: integer("position").notNull(),
+    /** "pending" | "cloning" | "ready" | "error". */
+    status: text("status")
+      .$type<"pending" | "cloning" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    error: text("error"),
+    worktreePath: text("worktree_path").notNull(),
+    /**
+     * "pending" | "checking-out" | "ready" | "error". Separate from `status`
+     * because review reads come from git objects and start as soon as the shas
+     * are known; only what needs files on disk (setup, code navigation) waits
+     * for the checkout.
+     */
+    worktreeStatus: text("worktree_status")
+      .$type<"pending" | "checking-out" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    headSha: text("head_sha"),
+    baseSha: text("base_sha"),
+    mergeBaseSha: text("merge_base_sha"),
+    /** Null until the user answers; whether the PR's setup script may run. */
+    setupConsent: text("setup_consent").$type<"granted" | "declined">(),
+    /**
+     * The head commit the answer was given for. Consent is to that code: after
+     * a refresh moves the head, anything that runs the PR's code asks again.
+     */
+    setupHeadSha: text("setup_head_sha"),
+    /** "running" | "succeeded" | "failed" | "skipped" (no script to run). */
+    setupStatus: text("setup_status").$type<"running" | "succeeded" | "failed" | "skipped">(),
+    /** Capped tail of the last setup run. */
+    setupLog: text("setup_log"),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("review_workspace_prs_ws_ref_idx").on(t.workspaceId, t.refKey)],
+);
+
+export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
+export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
+
+/**
+ * A mutation-testing pass over one review PR: a planning run picks mutants, the
+ * sidecar runs them against the PR's tests in a scratch copy, and an
+ * explanation run writes up the survivors. Results are written as each mutant
+ * finishes, so a pass that is cancelled or cut off still shows what it found.
+ * The two Claude Code runs are `agent_runs` rows of their own.
+ */
+export const mutationRuns = pgTable(
+  "mutation_runs",
+  {
+    /** Also names the run's scratch copy, `<refDomKey>-mutants-<id>`. */
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    prId: uuid("pr_id")
+      .notNull()
+      .references(() => reviewWorkspacePrs.id, { onDelete: "cascade" }),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status")
+      .$type<"running" | "succeeded" | "failed" | "cancelled">()
+      .notNull()
+      .default("running"),
+    /** "copying" | "planning" | "baseline" | "control" | "mutants" | "explaining" | "done". */
+    phase: text("phase").notNull().default("copying"),
+    /** The app instance whose sidecar runs it; only that instance can know it stopped. */
+    instance: text("instance").notNull(),
+    /** The model, budget and limits it was started with. */
+    settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
+    /** The test command running now, which leads its own process group. */
+    pid: integer("pid"),
+    /** When that process started, so a sweep after a crash kills only it. */
+    pidStartedAt: text("pid_started_at"),
+    planRunId: uuid("plan_run_id"),
+    explainRunId: uuid("explain_run_id"),
+    /** The planning run's validated output. */
+    plan: jsonb("plan"),
+    /** Baselines, the positive control and mutant results so far. */
+    execution: jsonb("execution"),
+    /** Computed from `execution`, never by a model. */
+    summary: jsonb("summary"),
+    findings: jsonb("findings"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("mutation_runs_pr_idx").on(t.prId, t.startedAt.desc())],
+);
+
+export type MutationRunRow = typeof mutationRuns.$inferSelect;
+
+/**
+ * Where the user last reviewed a pull request: the head commit they were
+ * looking at, so "what changed since I last reviewed" has a starting point.
+ *
+ * Keyed by `refKey` rather than by review workspace, because a review is of
+ * the pull request — one submitted from the classic page, from a review
+ * workspace or on the provider's own site all count. `source` says which:
+ *  - `review`   a review submitted (or a vote cast) through Yarvis;
+ *  - `comment`  a line comment posted through Yarvis;
+ *  - `manual`   the user's own "Mark reviewed here";
+ *  - `provider` read back from the provider (the viewer's reviews and the
+ *               commit each was made on), so a review done elsewhere counts.
+ * Provider rows are deduplicated per commit; the others are an append-only log,
+ * of which only the latest is normally read.
+ */
+export const prReviewMarks = pgTable(
+  "pr_review_marks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha"),
+    /** Known when the mark was recorded against a checkout that had resolved it. */
+    mergeBaseSha: text("merge_base_sha"),
+    source: text("source", { enum: ["review", "comment", "manual", "provider"] }).notNull(),
+    /** For a `provider` mark, when the review was submitted there. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("pr_review_marks_ref_idx").on(t.refKey, t.createdAt.desc()),
+    uniqueIndex("pr_review_marks_provider_idx")
+      .on(t.refKey, t.headSha)
+      .where(sql`${t.source} = 'provider'`),
+  ],
+);
+
+export type PrReviewMark = typeof prReviewMarks.$inferSelect;

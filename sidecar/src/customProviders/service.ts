@@ -16,8 +16,14 @@ import { readSection, withSection } from "../settings/store.ts";
  * - `openai-chat`  → legacy `/chat/completions` endpoint, for gateways that
  *                    haven't shipped Responses support yet (e.g. litellm)
  * - `anthropic`    → Anthropic Messages API
+ * - `ollama`       → Ollama's native API (`/api/chat`), whose JSON-schema
+ *                    `format` is what decision models answer through. Chat
+ *                    turns use the same server's OpenAI-compatible `/v1`.
+ * - `systemone`    → System One API (`/v1/systemone`), which answers typed
+ *                    questions instead of generating text. Its models serve
+ *                    the decision model only, never chat.
  */
-export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic";
+export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama" | "systemone";
 
 export interface CustomProviderRow {
   id: string;

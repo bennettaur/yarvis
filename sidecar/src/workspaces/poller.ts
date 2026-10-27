@@ -7,7 +7,7 @@
  * DevOps repos are both refreshed in one cycle.
  */
 
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt } from "drizzle-orm";
 import { AzureDevOpsClient, isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
@@ -19,7 +19,13 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { type ChecksSummary, createGitHubClient, type GitHubClient } from "../github/client.ts";
+import {
+  type ChecksSummary,
+  createGitHubClient,
+  type GitHubClient,
+  summarizeCheckItems,
+} from "../github/client.ts";
+import { GitHubError } from "../github/errors.ts";
 import { parseRepoRemote } from "./service.ts";
 
 type CheckRollup = WorkspaceRepoPr["checkRollup"];
@@ -123,9 +129,7 @@ async function githubBranchPr(
   };
 }
 
-/** The PR on one Azure DevOps branch. Azure check rollups aren't fetched here
- *  (policy evaluations need a per-PR call), so it carries the PR identity and
- *  state with an empty check summary. */
+/** The PR on one Azure DevOps branch and where its CI policies stand. */
 async function azureBranchPr(
   az: AzureDevOpsClient,
   project: string,
@@ -135,14 +139,23 @@ async function azureBranchPr(
   const pr = await az.findPrByBranch(project, repo, branch);
   if (!pr) return NO_PR;
   const awaitingReview = pr.state === "open" && !pr.draft;
+  // Policy evaluations are a separate read a PAT may lack the scope for. As
+  // with GitHub's review verdict, any failure drops the checks rather than the
+  // refresh: a 403 here would otherwise be read as a rate limit and end the
+  // cycle for every repo after this one. Without a project id they can't be
+  // addressed at all, which is "unknown", not "no checks".
+  const ciChecks = pr.projectId
+    ? await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null)
+    : null;
+  const checks = ciChecks ? summarizeCheckItems(ciChecks) : null;
   return {
     prNumber: pr.number,
     prUrl: pr.url,
     prState: pr.state,
     isDraft: pr.draft,
     mergeable: pr.mergeable,
-    checkRollup: "none",
-    checks: null,
+    checkRollup: checks ? deriveRollup(checks) : "none",
+    checks,
     reviewDecision: awaitingReview ? pr.reviewDecision : null,
   };
 }
@@ -213,9 +226,12 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
       // One repo's failure (rate limit, 5xx) must not abort the cycle.
       const message = e instanceof Error ? e.message : String(e);
       await upsertPr(db, wr.id, { lastPolledAt: new Date(), lastError: message });
-      if (/-> (403|429)$/.test(message)) {
-        // Hit a rate/abuse limit (403 secondary / 429) — stop this cycle and
-        // let the next one retry. 409 (Conflict) is unrelated and not matched.
+      const rateLimited =
+        e instanceof GitHubError ? e.reason === "rate_limited" : /-> (403|429)$/.test(message);
+      if (rateLimited) {
+        // Hit a rate/abuse limit — stop this cycle and let the next one retry.
+        // GitHub's errors name the reason; Azure's only carry the status, where
+        // 403 (secondary) and 429 mean a limit and 409 (Conflict) is unrelated.
         console.warn("[workspace poller] rate limited, backing off this cycle");
         return;
       }
@@ -224,19 +240,37 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
 }
 
 /**
- * Marks workspaces left in a transient state by an interrupted run as `error`,
- * along with their repos still mid-provision. Runs once at startup. Exported
- * for testing.
+ * Unsticks workspaces left in a transient state by an interrupted run: a
+ * provision becomes `error`, along with its repos still mid-provision, and an
+ * archive records that it needs retrying. Runs once at startup. Exported for
+ * testing.
  */
 export async function reconcileOrphans(db: Db): Promise<void> {
   const cutoff = new Date(Date.now() - ORPHAN_AGE_MS);
-  // creating | archiving are the only transient states a restart can strand.
+  // An interrupted archive stays in the archive flow, where the next step is
+  // archiving again; as `error` it would offer to provision the worktrees back.
+  // One that already stopped on an error isn't running, so it's left alone.
+  const interruptedArchives = await db
+    .update(workspaces)
+    .set({ error: "archive interrupted; archive again to finish", updatedAt: new Date() })
+    .where(
+      and(
+        eq(workspaces.status, "archiving"),
+        isNull(workspaces.error),
+        lt(workspaces.updatedAt, cutoff),
+      ),
+    )
+    .returning({ id: workspaces.id });
+  if (interruptedArchives.length) {
+    console.warn(
+      `[workspace poller] flagged ${interruptedArchives.length} interrupted archive(s) for retry`,
+    );
+  }
+
   const stuck = await db
     .update(workspaces)
     .set({ status: "error", error: "interrupted; retry provisioning", updatedAt: new Date() })
-    .where(
-      and(inArray(workspaces.status, ["creating", "archiving"]), lt(workspaces.updatedAt, cutoff)),
-    )
+    .where(and(eq(workspaces.status, "creating"), lt(workspaces.updatedAt, cutoff)))
     .returning({ id: workspaces.id });
   if (stuck.length) {
     // Scope the repo reset to the stranded workspaces so a repo provisioning in

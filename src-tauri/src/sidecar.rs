@@ -287,6 +287,12 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, Str
         cmd.env("YARVIS_CORE_SOCK", &sock.0);
     }
 
+    // Where this instance kept its alarms before the sidecar owned them, so the
+    // sidecar can copy them over once.
+    if let Some(path) = crate::alarms::legacy_store_path(app) {
+        cmd.env("YARVIS_LEGACY_ALARMS_PATH", path);
+    }
+
     // The scoped attention-ingest token the sidecar validates; the same value is
     // injected into Claude session shells (pty.rs) so their hooks can post.
     if let Some(attn) = app.try_state::<AttentionIngestToken>() {
@@ -347,6 +353,9 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, Str
     }
     if let Some(token) = secret_from_root(&secrets, "jira_api_token") {
         cmd.env("JIRA_API_TOKEN", token);
+    }
+    if let Some(key) = secret_from_root(&secrets, "verify_agent_signing_key") {
+        cmd.env("VERIFY_AGENT_SIGNING_KEY", key);
     }
     if let Some(secret) = secret_from_root(&secrets, "google_client_secret") {
         cmd.env("GOOGLE_CLIENT_SECRET", secret);

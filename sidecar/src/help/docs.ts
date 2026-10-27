@@ -3,12 +3,14 @@ import assistant from "../../../docs/features/assistant.md" with { type: "text" 
 import browser from "../../../docs/features/browser.md" with { type: "text" };
 import calendarAndAlarms from "../../../docs/features/calendar-and-alarms.md" with { type: "text" };
 import clipboard from "../../../docs/features/clipboard.md" with { type: "text" };
+import headsDown from "../../../docs/features/heads-down.md" with { type: "text" };
 import issuesAndTasks from "../../../docs/features/issues-and-tasks.md" with { type: "text" };
 import keyboardShortcuts from "../../../docs/features/keyboard-shortcuts.md" with { type: "text" };
 import mcp from "../../../docs/features/mcp.md" with { type: "text" };
 import omniView from "../../../docs/features/omni-view.md" with { type: "text" };
 import prReview from "../../../docs/features/pr-review.md" with { type: "text" };
 import quickChat from "../../../docs/features/quick-chat.md" with { type: "text" };
+import reviewWorkspaces from "../../../docs/features/review-workspaces.md" with { type: "text" };
 import scheduledJobs from "../../../docs/features/scheduled-jobs.md" with { type: "text" };
 import telegram from "../../../docs/features/telegram.md" with { type: "text" };
 import terminals from "../../../docs/features/terminals.md" with { type: "text" };
@@ -35,12 +37,14 @@ const DOCS: Record<string, string> = {
   "features/browser": browser,
   "features/calendar-and-alarms": calendarAndAlarms,
   "features/clipboard": clipboard,
+  "features/heads-down": headsDown,
   "features/issues-and-tasks": issuesAndTasks,
   "features/keyboard-shortcuts": keyboardShortcuts,
   "features/mcp": mcp,
   "features/omni-view": omniView,
   "features/pr-review": prReview,
   "features/quick-chat": quickChat,
+  "features/review-workspaces": reviewWorkspaces,
   "features/scheduled-jobs": scheduledJobs,
   "features/telegram": telegram,
   "features/terminals": terminals,

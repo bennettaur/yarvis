@@ -97,6 +97,32 @@ describe("custom provider routes", () => {
     expect(res.status).toBe(201);
   });
 
+  it("accepts an ollama-kind provider at the server root", async () => {
+    const res = await app.request("/api/custom-providers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "ollama native",
+        baseUrl: "http://localhost:11434",
+        apiKind: "ollama",
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("accepts a systemone-kind provider", async () => {
+    const res = await app.request("/api/custom-providers", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        name: "system one",
+        baseUrl: "http://localhost:11434",
+        apiKind: "systemone",
+      }),
+    });
+    expect(res.status).toBe(201);
+  });
+
   it("still rejects non-loopback private baseUrls", async () => {
     const res = await app.request("/api/custom-providers", {
       method: "POST",

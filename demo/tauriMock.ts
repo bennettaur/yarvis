@@ -12,7 +12,6 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { Alarm } from "../src/lib/alarms";
 import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
@@ -23,7 +22,6 @@ declare global {
     __YARVIS_DEMO_CONFIG__?: DemoConfig;
     __yarvisDemoControls?: {
       emit: typeof emit;
-      fireAlarm: (alarm: Omit<Alarm, "status">) => Promise<void>;
     };
   }
 }
@@ -81,7 +79,6 @@ let settings: Settings = {
 };
 
 const presentSecrets = new Set(config.presentSecrets);
-let alarms: Alarm[] = [];
 // The core records copies made outside the app; the demo has none.
 const clipboardHistory: ClipboardHistoryItem[] = [];
 
@@ -93,21 +90,6 @@ const terminals = new FakeTerminals((id, chunk) => void emit(`pty-output:${id}`,
 function updateSettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
   return settings;
-}
-
-function updateAlarm(id: string, patch: Partial<Alarm>): void {
-  alarms = alarms.map((a) => (a.id === id ? { ...a, ...patch } : a));
-}
-
-/**
- * Fires an alarm the way the core's scheduler does: the alarm is marked fired
- * in the list first, because the app re-reads that list as soon as the event
- * lands and drops anything it doesn't find there.
- */
-async function fireAlarm(alarm: Omit<Alarm, "status">): Promise<void> {
-  const fired: Alarm = { ...alarm, status: "fired" };
-  alarms = [...alarms.filter((a) => a.id !== alarm.id), fired];
-  await emit("alarm-fired", fired);
 }
 
 function handleCommand(cmd: string, args: CommandArgs): unknown {
@@ -177,31 +159,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "delete_embeddings_secret":
       return null;
 
-    case "list_alarms":
-      return alarms;
-    case "create_alarm": {
-      const alarm: Alarm = {
-        id: crypto.randomUUID(),
-        label: args.label as string,
-        fireAtMs: args.fireAtMs as number,
-        sound: args.sound as boolean,
-        meetLink: (args.meetLink as string | null) ?? null,
-        status: "scheduled",
-      };
-      alarms = [...alarms, alarm];
-      return alarm;
-    }
-    case "cancel_alarm":
-      updateAlarm(args.id as string, { status: "cancelled" });
-      return null;
-    case "acknowledge_alarm":
-      updateAlarm(args.id as string, { status: "acknowledged" });
-      return null;
-    case "snooze_alarm":
-      updateAlarm(args.id as string, {
-        status: "scheduled",
-        fireAtMs: Date.now() + (args.minutes as number) * 60_000,
-      });
+    // The sidecar keeps the alarms; the core only stops one ringing.
+    case "release_alarm":
       return null;
 
     case "clipboard_history":
@@ -254,4 +213,4 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
 mockIPC((cmd, payload) => handleCommand(cmd, (payload ?? {}) as CommandArgs), {
   shouldMockEvents: true,
 });
-window.__yarvisDemoControls = { emit, fireAlarm };
+window.__yarvisDemoControls = { emit };

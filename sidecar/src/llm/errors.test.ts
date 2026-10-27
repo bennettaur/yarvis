@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { clientError, describeError, errorDetail, errorMessage, redactSecrets } from "./errors.ts";
+import {
+  clientError,
+  describeError,
+  errorDetail,
+  errorMessage,
+  isTransientError,
+  redactSecrets,
+} from "./errors.ts";
 
 describe("redactSecrets", () => {
   it("redacts api-key tokens echoed back in a provider error body", () => {
@@ -155,5 +162,64 @@ describe("redaction of what a gateway echoes back", () => {
     const thrown = { requestBodyValues: { messages: [{ content: "private notes" }] }, code: 400 };
     expect(errorDetail(thrown)).not.toContain("private notes");
     expect(errorDetail(thrown)).toContain("400");
+  });
+});
+
+describe("isTransientError", () => {
+  it("is true for rate limits, overload and server errors", () => {
+    expect(isTransientError(Object.assign(new Error("slow down"), { statusCode: 429 }))).toBe(true);
+    expect(isTransientError(Object.assign(new Error("oops"), { statusCode: 503 }))).toBe(true);
+    expect(isTransientError({ type: "overloaded_error", message: "Overloaded" })).toBe(true);
+    expect(isTransientError(Object.assign(new Error("x"), { isRetryable: true }))).toBe(true);
+  });
+
+  it("is true for a connection dropped mid-stream", () => {
+    expect(isTransientError(new TypeError("terminated"))).toBe(true);
+    expect(
+      isTransientError(
+        Object.assign(new Error("fetch failed"), { cause: new Error("ECONNRESET") }),
+      ),
+    ).toBe(true);
+  });
+
+  it("looks inside what the AI SDK wraps once its own retries run out", () => {
+    const retry = Object.assign(new Error("Failed after 3 attempts."), {
+      lastError: Object.assign(new Error("Too Many Requests"), { statusCode: 429 }),
+    });
+    expect(isTransientError(retry)).toBe(true);
+  });
+
+  it("is true for a request timeout or conflict", () => {
+    expect(isTransientError(Object.assign(new Error("timeout"), { statusCode: 408 }))).toBe(true);
+    expect(isTransientError(Object.assign(new Error("conflict"), { statusCode: 409 }))).toBe(true);
+  });
+
+  it("is false for a refused request even when its message mentions a rate limit", () => {
+    expect(
+      isTransientError(
+        Object.assign(new Error("rate limit settings invalid"), { statusCode: 400 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a host that doesn't resolve or has nothing listening", () => {
+    const dns = Object.assign(new Error("getaddrinfo ENOTFOUND api.example.invalid"), {
+      code: "ENOTFOUND",
+    });
+    expect(isTransientError(Object.assign(new Error("fetch failed"), { cause: dns }))).toBe(false);
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), {
+      code: "ECONNREFUSED",
+    });
+    expect(isTransientError(Object.assign(new Error("fetch failed"), { cause: refused }))).toBe(
+      false,
+    );
+  });
+
+  it("is false for a request the provider will never accept", () => {
+    expect(isTransientError(Object.assign(new Error("invalid model"), { statusCode: 400 }))).toBe(
+      false,
+    );
+    expect(isTransientError(Object.assign(new Error("bad key"), { statusCode: 401 }))).toBe(false);
+    expect(isTransientError(new Error("prompt is too long"))).toBe(false);
   });
 });

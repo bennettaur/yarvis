@@ -28,6 +28,7 @@ const baseRepo: WorkspaceRepoDetail = {
     setupScript: "bun install",
     runScript: null,
     pullIssues: false,
+    tracker: null,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   },

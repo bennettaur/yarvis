@@ -184,6 +184,26 @@ export interface GuardedFetchOptions extends OutboundUrlOptions {
   fetchImpl?: typeof fetch;
   /** Ends the whole request, redirects and body read included, when aborted. */
   signal?: AbortSignal;
+  /**
+   * A deadline on the headers of the whole redirect chain, for calls that sit
+   * directly in the user's latency path. It does not cover reading the body;
+   * `signal` does.
+   */
+  timeoutMs?: number;
+  /**
+   * Refuse a redirect to another origin instead of following it. For a request
+   * whose body is private, such as a chat transcript, since a redirect replays
+   * the body and every custom header to the new host.
+   */
+  sameOriginOnly?: boolean;
+  /**
+   * Check each hop's URL without resolving its host, as `validateOutboundUrl`
+   * does. For a user-configured provider, whose base URL is held to that
+   * static check when saved and when the AI SDK reaches it: resolving here as
+   * well would refuse a LAN hostname that every other call to the same
+   * provider reaches.
+   */
+  staticCheckOnly?: boolean;
 }
 
 /**
@@ -194,48 +214,73 @@ export interface GuardedFetchOptions extends OutboundUrlOptions {
  */
 export async function guardedFetch(
   url: string,
-  init: Omit<RequestInit, "signal" | "redirect">,
-  { fetchImpl, signal, allowLoopback = false }: GuardedFetchOptions = {},
+  init: Omit<RequestInit, "redirect">,
+  {
+    fetchImpl,
+    signal: callerSignal,
+    allowLoopback = false,
+    timeoutMs,
+    sameOriginOnly = false,
+    staticCheckOnly = false,
+  }: GuardedFetchOptions = {},
 ): Promise<{ response: Response; url: string }> {
   const transport = fetchImpl ?? createPinnedFetch({ allowLoopback });
-  let current = (await assertResolvableOutbound(url, { allowLoopback })).toString();
-  const origin = new URL(current).origin;
-  let method = (init.method ?? "GET").toUpperCase();
-  let body = init.body;
-  // The caller's own headers go out untouched until a redirect has to change them.
-  let headers: RequestInit["headers"] = init.headers;
-  const send = () =>
-    transport(current, { ...init, method, body, headers, redirect: "manual", signal });
+  const assertAllowed = async (target: string): Promise<string> =>
+    staticCheckOnly
+      ? validateOutboundUrl(target, { allowLoopback }).toString()
+      : (await assertResolvableOutbound(target, { allowLoopback })).toString();
 
-  let response = await send();
-  let redirects = 0;
-  while (response.status >= 300 && response.status < 400) {
-    const location = response.headers.get("location");
-    if (!location) break;
-    redirects += 1;
-    await discardBody(response);
-    if (redirects > MAX_REDIRECTS) throw new TooManyRedirectsError();
-    const next = new URL(location, current).toString();
-    current = (await assertResolvableOutbound(next, { allowLoopback })).toString();
+  const controller = new AbortController();
+  const timer =
+    timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+  const signal = AbortSignal.any(
+    [controller.signal, callerSignal, init.signal].filter((s): s is AbortSignal => s != null),
+  );
+  try {
+    let current = await assertAllowed(url);
+    const origin = new URL(current).origin;
+    let method = (init.method ?? "GET").toUpperCase();
+    let body = init.body;
+    // The caller's own headers go out untouched until a redirect has to change them.
+    let headers: RequestInit["headers"] = init.headers;
+    const send = () =>
+      transport(current, { ...init, method, body, headers, redirect: "manual", signal });
 
-    const becomesGet =
-      (response.status === 303 && method !== "HEAD") ||
-      ((response.status === 301 || response.status === 302) && method === "POST");
-    if (becomesGet) {
-      method = "GET";
-      body = undefined;
-      const withoutBody = new Headers(headers);
-      withoutBody.delete("content-type");
-      withoutBody.delete("content-length");
-      headers = withoutBody;
+    let response = await send();
+    let redirects = 0;
+    while (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) break;
+      redirects += 1;
+      await discardBody(response);
+      if (redirects > MAX_REDIRECTS) throw new TooManyRedirectsError();
+      const next = new URL(location, current);
+      if (sameOriginOnly && next.origin !== origin) {
+        throw new Error(`refused a redirect to another origin (${next.origin})`);
+      }
+      current = await assertAllowed(next.toString());
+
+      const becomesGet =
+        (response.status === 303 && method !== "HEAD") ||
+        ((response.status === 301 || response.status === 302) && method === "POST");
+      if (becomesGet) {
+        method = "GET";
+        body = undefined;
+        const withoutBody = new Headers(headers);
+        withoutBody.delete("content-type");
+        withoutBody.delete("content-length");
+        headers = withoutBody;
+      }
+      if (new URL(current).origin !== origin) {
+        if (body != null) throw new CrossOriginRedirectError();
+        headers = portableHeaders(headers);
+      }
+      response = await send();
     }
-    if (new URL(current).origin !== origin) {
-      if (body != null) throw new CrossOriginRedirectError();
-      headers = portableHeaders(headers);
-    }
-    response = await send();
+    return { response, url: current };
+  } finally {
+    clearTimeout(timer);
   }
-  return { response, url: current };
 }
 
 function portableHeaders(headers: RequestInit["headers"]): Headers {

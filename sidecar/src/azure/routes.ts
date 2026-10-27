@@ -6,7 +6,9 @@ import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { describeError } from "../llm/errors.ts";
 import { retireGuide } from "../pr/guides.ts";
+import { type SeenCommits, seenCommitFields, seenMarkInput } from "../pr/reviewMarks.ts";
 import { refKey } from "../pr/types.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { AzureDevOpsClient, type AzureRef, isAllowedAzureOrgUrl } from "./client.ts";
 import {
   addStar,
@@ -60,11 +62,28 @@ const starSchema = z.object({
   url: z.string().nullish(),
 });
 
-const commentSchema = z.object({
-  path: filePath,
-  line: z.number().int().min(1),
-  body: z.string().min(1),
-  side: z.enum(["RIGHT", "LEFT"]).optional(),
+const commentSchema = z
+  .object({
+    path: filePath,
+    line: z.number().int().min(1),
+    body: z.string().min(1).max(65_536),
+    side: z.enum(["RIGHT", "LEFT"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    startSide: z.enum(["RIGHT", "LEFT"]).optional(),
+    ...seenCommitFields,
+  })
+  // A thread's context holds one side's start and end, so a range can't cross
+  // from the old file into the new one here the way it can on GitHub.
+  .refine(
+    (c) => c.startSide == null || c.startSide === (c.side ?? "RIGHT"),
+    "a range must stay on one side",
+  )
+  .refine((c) => c.startLine == null || c.startLine < c.line, "startLine must come before line");
+
+const replySchema = z.object({
+  body: z.string().trim().min(1).max(65_536),
+  /** The comment being answered; the client defaults to the thread's first. */
+  parentCommentId: z.number().int().min(1).optional(),
 });
 
 /**
@@ -77,6 +96,7 @@ const voteSchema = z.object({
     .int()
     .refine((v) => [-10, -5, 0, 5, 10].includes(v), "invalid vote"),
   body: z.string().max(65_536).optional(),
+  ...seenCommitFields,
 });
 
 /** Azure DevOps PR dashboard routes, mounted under /api/azure. */
@@ -156,6 +176,23 @@ export function createAzureRoutes(config: Config): Hono {
     if (!Number.isInteger(prId) || prId < 1) return { error: "bad pull request id" };
     return { project: parsed.data.project, repo: parsed.data.repo, prId };
   }
+
+  /**
+   * Records where the user reviewed: the head the page said it was showing,
+   * else the PR's head as Azure reports it. Azure attaches neither a vote nor
+   * a thread to a commit, so the fallback is a read of its own; a failed read
+   * leaves no mark rather than failing the vote that already went through.
+   */
+  const recordSeen = async (
+    az: AzureDevOpsClient,
+    ref: AzureRef,
+    seen: SeenCommits,
+    source: "review" | "comment",
+  ) => {
+    const fallback = seen.headSha ? null : await az.headSha(ref).catch(() => null);
+    const input = seenMarkInput({ provider: "azure", org: az.org, ...ref }, seen, fallback, source);
+    if (input) await markReviewed(db(), config, input);
+  };
 
   // --- Live Azure DevOps queries (require a token + org URL) ---
 
@@ -316,6 +353,8 @@ export function createAzureRoutes(config: Config): Hono {
     }
     try {
       await az.submitVote(ref, parsed.data.vote, parsed.data.body);
+      // Resetting a vote to "no vote" isn't a review of anything.
+      if (parsed.data.vote !== 0) await recordSeen(az, ref, parsed.data, "review");
       // A vote either way ends the reviewer's pass over this PR, so its guide
       // has done its job. Azure has no "comment without voting" here, so unlike
       // GitHub there is no case to exclude.
@@ -342,7 +381,9 @@ export function createAzureRoutes(config: Config): Hono {
     const parsed = commentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      await az.postComment(ref, parsed.data);
+      const { headSha, baseSha, mergeBaseSha, ...comment } = parsed.data;
+      await az.postComment(ref, comment);
+      await recordSeen(az, ref, { headSha, baseSha, mergeBaseSha }, "comment");
       void emitEvent(db(), {
         type: "pr.commented",
         source: "azure",
@@ -356,6 +397,57 @@ export function createAzureRoutes(config: Config): Hono {
       return upstreamError(c, e);
     }
   });
+
+  /** The PR plus the thread a thread route addresses, or why they're invalid. */
+  function parseThreadParams(c: Context): { ref: AzureRef; threadId: number } | { error: unknown } {
+    const { project = "", repo = "", prId = "", threadId = "" } = c.req.param();
+    const ref = parsePrParams(project, repo, prId);
+    if ("error" in ref) return ref;
+    // Digits only, so nothing but a plain number reaches the upstream path.
+    if (!/^\d{1,10}$/.test(threadId) || Number(threadId) < 1) return { error: "bad thread id" };
+    return { ref, threadId: Number(threadId) };
+  }
+
+  // Reply to an existing comment thread.
+  router.post("/pr/:project/:repo/:prId/threads/:threadId/replies", async (c) => {
+    const az = requireClient(c);
+    if (az instanceof Response) return az;
+    const params = parseThreadParams(c);
+    if ("error" in params) return c.json({ error: params.error }, 400);
+    const parsed = replySchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { ref, threadId } = params;
+    try {
+      await az.replyToThread(ref, threadId, parsed.data.body, parsed.data.parentCommentId);
+      void emitEvent(db(), {
+        type: "pr.commented",
+        source: "azure",
+        payload: { ref: refKey({ provider: "azure", org: az.org, ...ref }), reply: true },
+      });
+      return c.json({ ok: true }, 201);
+    } catch (e) {
+      return upstreamError(c, e);
+    }
+  });
+
+  for (const [action, resolved] of [
+    ["resolve", true],
+    ["unresolve", false],
+  ] as const) {
+    router.post(`/pr/:project/:repo/:prId/threads/:threadId/${action}`, async (c) => {
+      const az = requireClient(c);
+      if (az instanceof Response) return az;
+      const params = parseThreadParams(c);
+      if ("error" in params) return c.json({ error: params.error }, 400);
+      const { ref, threadId } = params;
+      try {
+        await az.setThreadResolved(ref, threadId, resolved);
+        return c.json({ ok: true });
+      } catch (e) {
+        return upstreamError(c, e);
+      }
+    });
+  }
 
   // --- Saved filters (database only) ---
 

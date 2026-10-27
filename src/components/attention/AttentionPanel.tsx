@@ -17,7 +17,7 @@ import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
  * fixed, z-50 layer that stays mounted while hidden so the store subscription
  * persists, with a click-away backdrop and Esc-to-close.
  *
- * Alarms live in the Rust core rather than the sidecar's attention table, so
+ * Alarms have their own table rather than living in the attention table, so
  * they get their own section fed by the alarm store — the same shape the WIP
  * roll-up already uses.
  */
@@ -29,6 +29,7 @@ const KIND_DOT: Record<AttentionKind, string> = {
   error: "bg-red-500",
   completed: "bg-emerald-500",
   info: "bg-indigo-400",
+  question: "bg-sky-400",
 };
 
 /** Tooltip for the kind dot, which carries its meaning by colour alone. */
@@ -38,6 +39,7 @@ const KIND_HINT: Record<AttentionKind, string> = {
   error: "Hit an error",
   completed: "Finished and ready for you",
   info: "Wants your attention",
+  question: "Has a question for you",
 };
 
 const WIP_HINT: Record<WipSource, string> = {

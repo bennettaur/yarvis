@@ -1,13 +1,22 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import * as schema from "../db/schema.ts";
+import { listEvents } from "../events/service.ts";
+import { recordReviewContributions } from "../jobs/githubReviewSync.ts";
+import { reviewExternalId } from "./client.ts";
 
 /**
  * Config wired with a GitHub token + a database URL so the GitHub routes run
  * their request validation. The bad inputs below are all rejected before any
  * GitHub or database access, so no real services are needed.
  */
-function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
+function appWith(
+  secrets: Config["secrets"],
+  databaseUrl = "postgres://localhost/unused",
+): ReturnType<typeof createApp> {
   return createApp({
     port: 0,
     token: "test-token",
@@ -15,7 +24,7 @@ function appWith(secrets: Config["secrets"]): ReturnType<typeof createApp> {
     attentionToken: "test-attention-token",
     mcpToken: "test-mcp-token",
     allowedOrigins: null,
-    databaseUrl: "postgres://localhost/unused",
+    databaseUrl,
     workspacesRoot: "/tmp/yarvis-test-workspaces",
     secrets,
     customProviderSecrets: {},
@@ -115,6 +124,80 @@ describe("github merge validation", () => {
   });
 });
 
+describe("github comment thread routes", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const post = (path: string, body?: unknown) =>
+    configured.request(`/api/github/pr/octo/repo/1${path}`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it("rejects a range that ends before it starts with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startLine: 9, body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a start side with no start line with 400", async () => {
+    const res = await post("/comments", { path: "a.ts", line: 4, startSide: "LEFT", body: "x" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a thread id carrying path characters with 400", async () => {
+    const res = await post(`/threads/${encodeURIComponent("T1/../x")}/resolve`);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty reply with 400", async () => {
+    const res = await post("/threads/PRRT_1/replies", { body: "  " });
+    expect(res.status).toBe(400);
+  });
+
+  /** Stubs GitHub's GraphQL endpoint with `reply`, recording each request. */
+  function githubAnswers(reply: unknown) {
+    const sent: { query: string; variables: unknown }[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }) as unknown as typeof fetch;
+    return sent;
+  }
+
+  it("resolves a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("resolveReviewThread");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1" });
+  });
+
+  it("reopens a thread through GitHub's mutation", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/unresolve");
+    expect(res.status).toBe(200);
+    expect(sent[0]!.query).toContain("unresolveReviewThread");
+  });
+
+  it("posts a reply and answers 201", async () => {
+    const sent = githubAnswers({ data: {} });
+    const res = await post("/threads/PRRT_1/replies", { body: "done" });
+    expect(res.status).toBe(201);
+    expect(sent[0]!.query).toContain("addPullRequestReviewThreadReply");
+    expect(sent[0]!.variables).toEqual({ id: "PRRT_1", body: "done" });
+  });
+
+  it("passes GitHub refusing a mutation through as forbidden", async () => {
+    githubAnswers({ errors: [{ type: "FORBIDDEN", message: "not yours" }] });
+    const res = await post("/threads/PRRT_1/resolve");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { reason: string }).reason).toBe("forbidden");
+  });
+});
+
 describe("github pr config validation", () => {
   const put = (body: unknown) =>
     configured.request("/api/github/config", {
@@ -152,5 +235,137 @@ describe("github not-configured handling", () => {
       body: JSON.stringify({ event: "APPROVE" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("github review submission logging", () => {
+  const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
+  const sql = postgres(url, { max: 1 });
+  const db = drizzle(sql, { schema });
+  const app = appWith({ githubToken: "ghp_test" }, url);
+  const realFetch = globalThis.fetch;
+
+  beforeEach(async () => {
+    await sql`TRUNCATE events, pr_guides RESTART IDENTITY CASCADE`;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  afterAll(async () => {
+    await sql.end();
+  });
+
+  function stubSubmit(reply: unknown) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(reply), { status: 200 })) as unknown as typeof fetch;
+  }
+
+  /** The event is emitted after the response is sent, so wait for it to land. */
+  async function loggedEvents() {
+    for (let i = 0; i < 50; i++) {
+      const rows = await listEvents(db);
+      if (rows.length > 0) return rows;
+      await Bun.sleep(10);
+    }
+    return [];
+  }
+
+  const approve = () =>
+    app.request("/api/github/pr/o/r/1/reviews", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ event: "APPROVE" }),
+    });
+
+  it("logs the review under its GitHub id, which the sync then recognises", async () => {
+    stubSubmit({ id: 9, node_id: "PRR_9" });
+    expect((await approve()).status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.approved", externalId: reviewExternalId("PRR_9") });
+
+    // Hours away from the in-app event, so only the id can match it.
+    const synced = await recordReviewContributions(
+      db,
+      [
+        {
+          reviewId: "PRR_9",
+          state: "approved",
+          submittedAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+          owner: "o",
+          repo: "r",
+          number: 1,
+        },
+      ],
+      {
+        from: new Date(Date.now() - 60 * 60 * 1000),
+        to: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      },
+    );
+    expect(synced).toBe(0);
+  });
+
+  it("still logs the review when GitHub's reply has no node id", async () => {
+    stubSubmit({});
+    expect((await approve()).status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.approved", externalId: null });
+  });
+
+  it("logs a thread reply as a comment marked as a reply", async () => {
+    stubSubmit({ data: {} });
+    const res = await app.request("/api/github/pr/o/r/1/threads/PRRT_1/replies", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "done" }),
+    });
+    expect(res.status).toBe(201);
+    const [event] = await loggedEvents();
+    expect(event).toMatchObject({ type: "pr.commented", payload: { reply: true } });
+  });
+});
+
+/**
+ * `/viewer` touches no database, so a stubbed global fetch (which the GitHub
+ * client picks up) is enough to check how each refusal reaches the UI.
+ */
+describe("github refusals", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function viewerAnswering(github: () => Response | Promise<Response>) {
+    globalThis.fetch = (async () => github()) as unknown as typeof fetch;
+    const res = await configured.request("/api/github/viewer", { headers: auth });
+    return { status: res.status, body: (await res.json()) as { error: string; reason: string } };
+  }
+
+  it("401s with a sign-in hint when GitHub rejects the token", async () => {
+    const { status, body } = await viewerAnswering(
+      () => new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }),
+    );
+    expect(status).toBe(401);
+    expect(body.reason).toBe("unauthorized");
+    expect(body.error).toContain("Sign in to GitHub again");
+  });
+
+  it("429s with the reset time when the rate limit is hit", async () => {
+    const { status, body } = await viewerAnswering(
+      () =>
+        new Response("{}", {
+          status: 403,
+          headers: { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1900000000" },
+        }),
+    );
+    expect(status).toBe(429);
+    expect(body.reason).toBe("rate_limited");
+  });
+
+  it("502s when GitHub can't be reached", async () => {
+    const { status, body } = await viewerAnswering(() => {
+      throw new TypeError("fetch failed");
+    });
+    expect(status).toBe(502);
+    expect(body.reason).toBe("upstream_error");
   });
 });

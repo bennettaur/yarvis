@@ -4,6 +4,7 @@ import AppearanceSection from "./AppearanceSection";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
+import DecisionModelSection from "./DecisionModelSection";
 import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import IntegrationSettingsSection from "./IntegrationSettingsSection";
@@ -12,6 +13,7 @@ import KeychainSection from "./KeychainSection";
 import McpEndpointSection from "./McpEndpointSection";
 import McpServerSection from "./McpServerSection";
 import ModelCatalogSection from "./ModelCatalogSection";
+import MutationTestingSection from "./MutationTestingSection";
 import PrModelSection from "./PrModelSection";
 import PrReviewSection from "./PrReviewSection";
 import ReposSection from "./ReposSection";
@@ -75,6 +77,7 @@ export default function SettingsPanel({
           <McpServerSection />
           <McpEndpointSection />
           <ToolManagerSection />
+          <DecisionModelSection />
         </div>
       )}
       {active === "repos" && (
@@ -96,6 +99,7 @@ export default function SettingsPanel({
         <div className="space-y-5">
           <PrReviewSection />
           <PrModelSection />
+          <MutationTestingSection />
         </div>
       )}
       {active === "voice" && <VoiceSection />}

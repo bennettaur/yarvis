@@ -1,19 +1,26 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
+import { buildAlarmTools } from "../alarms/tools.ts";
+import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
 import { buildEventTools } from "../events/tools.ts";
 import { buildCalendarTools } from "../google/tools.ts";
+import { buildHeadsDownTools } from "../headsDown/tools.ts";
 import { buildHelpTools } from "../help/tools.ts";
+import { buildIssueTools } from "../issues/tools.ts";
 import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
+import { buildQuestionTools } from "../questions/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
+import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWebTools } from "../web/tools.ts";
+import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
 import { newUntrustedReads, type UntrustedReads } from "./destructiveTools.ts";
@@ -41,6 +48,15 @@ export interface BuiltinToolDeps {
   remoteControl: boolean;
   /** Records which third-party content this turn has read, for its approvals. */
   untrustedReads: UntrustedReads;
+  /**
+   * Whether the user can answer a question from the attention bell. False on
+   * Telegram, in a heads-down pass and in a delegated run: the question tools
+   * are left out there rather than refused, so a pass keeps its own `ask_user`,
+   * which never waits, as the only one.
+   */
+  atTheApp: boolean;
+  /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
+  unattended?: boolean;
 }
 
 /**
@@ -52,20 +68,37 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl, untrustedReads } = deps;
+  const {
+    db,
+    config,
+    sessionId,
+    memory,
+    attention,
+    remoteControl,
+    untrustedReads,
+    atTheApp,
+    unattended,
+  } = deps;
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
+    workStreams: buildWorkStreamTools(db, { unattended }),
+    headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),
     workspaces: buildWorkspaceTools(db, config, { remoteControl }),
     jira: buildJiraTools(db, config, { remoteControl }),
+    githubIssues: buildIssueTools(db, config),
+    azureBoards: buildAzureBoardsTools(db, config),
     prReview: buildPrReviewTools(db),
+    mergeReview: buildMergeReviewTools(config),
     calendar: buildCalendarTools(db, config),
+    alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),
     web: buildWebTools({ reads: untrustedReads }),
     help: buildHelpTools(config),
@@ -103,5 +136,6 @@ function inertDeps(): BuiltinToolDeps {
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
     untrustedReads: newUntrustedReads(),
+    atTheApp: true,
   };
 }

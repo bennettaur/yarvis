@@ -21,7 +21,8 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`)
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
+  `github.saveToken`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -68,6 +69,9 @@ bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
 bun run --cwd sidecar db:migrate   # apply sidecar DB migrations
+bun run verify:collect             # facts for a PR's verification report;
+                                    #   the /verify-pr skill runs it and
+                                    #   verify:report, which posts the report
 
 bun run typecheck                  # frontend tsc --noEmit
 bun run sidecar:typecheck          # sidecar tsc --noEmit
@@ -92,7 +96,12 @@ sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
 trailing comment. `nightly.yml`
-and `codeql.yml` follow neither convention yet. A pre-commit
+and `codeql.yml` follow neither convention yet. `verify.yml` is the one
+workflow that writes: it runs on PR comments, as the default branch's copy,
+checks out no PR code, and acts through the yarvis GitHub App to set the
+verification status, approve and turn on auto-merge. Keep it that way, since
+it holds write access on a public repo; see `docs/development.md` ("Verifying a
+PR for merge"). A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
@@ -149,8 +158,13 @@ back to ad-hoc.
   module doc and is the thing to preserve: because every write is a
   read-modify-write of that one shared blob, a read that *fails* must never
   look like an empty store, so `read_root` is fallible and no caller writes on
-  an error. Historical migrations off the Keychain (`settings.rs`'s legacy
-  non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
+  an error. For the same reason two writes must never overlap, or the second
+  drops the first's change: every write holds `keychain::lock_for_write` from
+  the read to the write, usually through `update_root` (or
+  `update_subtree`/`update_root_in`) — a mutex within the process plus
+  `~/.yarvis/secrets.lock`, since instances share the item. `write_root_to`
+  takes that lock's guard, so a write without it doesn't compile. Historical
+  migrations off the Keychain (`settings.rs`'s legacy non-secret values, `embeddings_secrets.rs`'s standalone item) are pinned to
   the Keychain rather than routed through the choice: they are about what a
   past build wrote there. Non-secret configuration the user is expected
   to change from the UI goes in `src-tauri/src/settings.rs`'s
@@ -202,7 +216,7 @@ back to ad-hoc.
   worktree does.
 - What models a provider offers is data, not code: `llm/catalog.ts` holds the
   bundled defaults and the capability tags (`chat`, `stt`, `tts`, `vision`,
-  `embed`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
+  `embed`, `decision`), and entries in `~/.yarvis/settings.json`'s `providerModels` section
   take a provider's catalogue over the moment the user saves one — no database
   needed, so custom providers and the model catalogue work even without
   Postgres configured. Surfaces ask for the capability they need rather than
@@ -223,17 +237,22 @@ back to ad-hoc.
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
-  URL ingest, `read_web_page` — go through `lib/guardedFetch.ts`, never a bare
-  `fetch`. It re-runs the SSRF guard on every redirect hop rather than only the
-  first (`redirect: "manual"`): `fetch` strips `Authorization` across origins but
-  not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named. Its default transport,
-  `createPinnedFetch`, goes through `node:http(s)` with `createSafeLookup` from
-  `lib/urlSafety.ts` as the connection's own DNS lookup, so the address checked
-  is the address connected to; checking first and letting `fetch` resolve again
-  leaves a DNS-rebinding host room to answer differently. Bun's `fetch` offers no
-  such hook. The cost is that these calls skip an HTTP proxy set in the
-  environment. Callers own their deadline and pass it as `signal`.
+  Ollama decision calls, URL ingest, `read_web_page` — go through
+  `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every
+  redirect hop rather than only the first (`redirect: "manual"`): `fetch` strips
+  `Authorization` across origins but not a custom provider's own auth headers, so
+  following a redirect unchecked would hand those to whatever host it named. Its
+  default transport, `createPinnedFetch`, goes through `node:http(s)` with
+  `createSafeLookup` from `lib/urlSafety.ts` as the connection's own DNS lookup,
+  so the address checked is the address connected to; checking first and letting
+  `fetch` resolve again leaves a DNS-rebinding host room to answer differently.
+  Bun's `fetch` offers no such hook. The cost is that these calls skip an HTTP
+  proxy set in the environment. `timeoutMs` puts a deadline on the whole chain
+  and `signal` covers the body read. A call whose body is private (the decision
+  model's review carries the conversation) also sets `sameOriginOnly`, since a
+  redirect replays the body too. A user-configured provider also sets
+  `staticCheckOnly` (and passes its own `fetchImpl`), so it is held to the same
+  check its base URL got when saved rather than a stricter one.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
@@ -242,18 +261,28 @@ back to ad-hoc.
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome.
 - Secrets flow one way — the webview writes them to the Keychain, the core
-  injects them into the sidecar at spawn. MCP OAuth tokens are the single
+  injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
   and a refresh must not need an app restart to be durable. They travel back the
   other way through `mcp.saveOAuth` on the control channel, which is scoped so it
-  can only write the `oauth` subtree of one server's Keychain entry. Anything
-  else that wants to write a secret from the sidecar owes the same narrowing —
-  or, better, belongs in Postgres like the Google Calendar tokens.
+  can only write the `oauth` subtree of one server's Keychain entry. The GitHub
+  sign-in (`sidecar/src/github/deviceFlow.ts`) is the other: the device flow
+  runs in the sidecar so the token never passes through the webview, which
+  never reads a secret back. The token lands in the same `github_token` key a pasted token
+  uses, so the rest of the app can't tell them apart. `github.saveToken` can
+  write that key and nothing else. Anything else that wants to write a secret
+  from the sidecar owes the same narrowing — or, better, belongs in Postgres
+  like the Google Calendar tokens.
 - `sidecar/src/mcp/` is the MCP *client* (servers Yarvis connects out to);
   `sidecar/src/mcpServer/` is the MCP endpoint Yarvis *serves*. A tool exposed
   over that endpoint is reached by outside clients holding only the scoped
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
+  It grants the memory tools and, for a session whose `.mcp.json` names its
+  workspace, listing and resolving that workspace's review comments. Review
+  comment bodies go out unfenced, the one exception to the rule below, because
+  the user is their only author; a feature that writes them from anywhere else
+  has to fence them first.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -290,7 +319,20 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three.
+  three. Which process is the agent comes from the pids Claude Code's
+  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
+  executable's file name as the fallback for an agent that registers nothing.
+  A registered pid counts only while it leads the PTY's foreground process
+  group, so a stale one matches nothing. Every PTY holds the same ingest token,
+  so registration (and a permission prompt sent to `/ingest/permission`, or the
+  hook that settles one at `/ingest/permission/settled`) also
+  needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
+  its session key under the sidecar's full-access bearer, which no PTY holds.
+  The sidecar recomputes it, so a process can't mint a token for a terminal it
+  isn't running in, and anything in the agent's own terminal already has that
+  terminal. Signing with the ingest token instead would let any terminal mint
+  any other's. This is not a boundary against a determined process running as
+  the same user, which can read another process's environment.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
@@ -328,7 +370,28 @@ back to ad-hoc.
   and a resync that finds a tool's description or schema changed resets it to
   "ask", since consent was given for the tool as it was described then. Neither
   mechanism gives MCP tools to a surface that cannot prompt: that still requires
-  `approval` hooks to exist at all.
+  `approval` hooks to exist at all. Auto mode (`chat/toolReview.ts`) is a third
+  gate in front of the same prompt, and it can only say yes: the decision model
+  reviews an MCP call against the chat, and anything short of a clear approval —
+  a refusal, an error, a timeout — raises the prompt as before. It follows
+  standing consent's limits (off on a spoken turn) and never reviews a built-in,
+  since the built-ins that ask are the ones whose answer must come from the user.
+  Every call that goes through approval also carries a required `callReason`
+  (`mcp/callReason.ts`), added to the tool's schema and stripped before the tool
+  runs. The approval bar shows it and the reviewer weighs it, both as the
+  model's own claim about its call: it explains intent, it never counts as the
+  user asking.
+
+  Heads-down mode has its own version (`headsDown/autoApprove.ts`), switched on
+  separately, because nobody is watching a pass: it reviews an MCP call only
+  when the user's own answers to approvals of that tool already say yes (this
+  exact call, or their last few answers all approvals), judges it against the
+  user's words for the run rather than the pass's app-written prompt, and
+  records its approvals as answered by the decision model, so it can't build
+  consent from its own answers. The precedent is read from the approval rows
+  the page writes, not from decision memory: a chat turn and a pass's own
+  `ask_user` question can both add decision memories, and neither is the user
+  approving a tool.
 - A list a tab shows is read through `lib/resourceCache`, not fetched into local
   state on mount. `App` renders one panel at a time (the Chat tab aside, kept
   mounted so a turn outlives the switch), so a tab switch unmounts a page
@@ -439,6 +502,12 @@ back to ad-hoc.
   its input consumed only after its output is stored — `consolidate-events`
   claims a window of events after the summary memory exists, so a failed run
   leaves the window for the next one instead of losing it.
+  - An action that can reach the event log twice — logged by the app as it
+    happens, then read back from the provider by a sync — carries the
+    provider's id in `events.external_id` and is written with `recordEventOnce`,
+    which a unique index makes idempotent. `github-review-sync` is the worked
+    example: the in-app review submit records the same GitHub review id the sync
+    reads, so it doesn't matter which one writes first.
   - The user's own scheduled jobs are rows rather than code, and they reach the
     tick as `JobDefinition`s too (`jobs/agentJobs.ts`): the scheduler takes a
     provider rather than an array, so a job saved in the panel runs on the next
@@ -464,6 +533,57 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A feature that needs Claude Code to work *while the user watches* (a
+  verification report, mutation testing) starts it with `startClaudeRun` in
+  `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
+  program lookup, directory check and built environment (`lib/claudeCli.ts`),
+  streams `--output-format stream-json` into typed events any number of viewers
+  follow over `/api/agent-runs/:id/events`, and ends in an `agent_runs` row.
+  These runs are pointed at a pull request's checkout, which its author
+  controls, so they read no settings files at all (`--setting-sources ""`):
+  the checkout's can declare hooks, which are shell commands Claude Code runs
+  itself, and the user's were written for sessions the user drives — their
+  allow rules, hooks, plugins and `CLAUDE.md` (which may say to push and open
+  PRs) don't belong in an unattended run. `lockedDownSettings` applies instead:
+  no hooks or auto-memory, a deny list for publishing and the network, and Bash
+  in a network-less sandbox that refuses to run when the sandbox can't start.
+  The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
+  `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
+  Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
+  suite's own file reads never pass through the rules. The plugins compiled
+  into Claude Code (`cc-plugin-*@builtin`) load with no settings file at all,
+  so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
+  security default managed settings seat. Claude Code's core agents and skills
+  aren't plugins and stay.
+  The permission mode is always set and never one that approves on its own, a
+  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  checkout is material rather than instructions (`spotlight` fences PR text a
+  caller interpolates), and no session is saved, so the transcript never
+  reaches the nightly session digest and from there memory.
+  `agentRuns/canary.ts` checks all of that against the real CLI.
+  Cancelling kills the process group, since the tools a run starts outlive a
+  kill aimed only at Claude Code; so does the sidecar exiting, and the startup
+  sweep kills what a crashed sidecar left, matched by pid and start time. The
+  agents and skills these runs load ship as a plugin under
+  `sidecar/claude-plugins/`, embedded like the agent definitions and written
+  to a fresh private temp directory for each run, so nothing between runs can
+  edit it; a file reaches a run only once it is listed in `agentRuns/plugins.ts`.
+  Mutation testing splits the work: a run like that only *plans* the mutants,
+  read-only, and the sidecar applies them and runs the tests itself
+  (`reviewWorkspaces/mutationExecutor.ts`), so what ran and how it scored is
+  never a model's say. Claude Code's sandbox only wraps the commands Claude
+  Code runs, so those tests run under `reviewWorkspaces/testSandbox.ts`
+  instead: a deny-by-default `sandbox-exec` profile with no network or DNS,
+  loopback only to the ephemeral port range, writes only to the scratch copy
+  and a temp folder (which holds a fake `HOME`), no reads of the home folder
+  beyond the toolchains or of other checkouts, no setsid, and no launchd,
+  LaunchServices or keychain. One helper per pass runs every command, so the
+  profile compiles once.
+  A probe script checks it holds before any test runs, and where it can't
+  apply (anything but macOS) the tests don't run. The user already agreed to
+  run the PR's code and its setup runs unsandboxed, so this is defence in
+  depth, not the trust boundary; the sidecar's own writes into the copy still
+  assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
@@ -492,8 +612,11 @@ back to ad-hoc.
     itself. A tool that writes where other people can see it sits between those
     two cases: available, but only to a definition that also names it under
     `unattended:`, which Settings flags on the row as "acts unattended".
-    `project-manager` filing tickets is the one shipped grant — turning a
-    discussion into tickets is the job.
+    Two shipped definitions have a grant, each because the action is the job:
+    `project-manager` files tickets, and `merge-reviewer` posts a signed
+    approval a repo's CI can merge on. The second is narrowed again at the
+    tool: `post_merge_review` re-reads the PR and its report itself, and posts
+    only for a current report whose verdict asked for an agent.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

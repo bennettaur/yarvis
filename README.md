@@ -103,14 +103,16 @@ but it isn't notarized, so macOS blocks its first launch.
 | [Workspaces](docs/features/workspaces.md) | Multi-repo git worktrees, each with its own Claude Code session, diffs, self-review and stacked PRs |
 | [Terminals](docs/features/terminals.md) | Tabbed, split terminals that keep running while you switch views |
 | [PR review](docs/features/pr-review.md) | GitHub and Azure DevOps reviews with guided tours and per-line questions |
+| [Review workspaces](docs/features/review-workspaces.md) | Review PRs checked out locally, in tabs, side by side, several at once |
 | [Issues and tasks](docs/features/issues-and-tasks.md) | GitHub issues, JIRA tickets and Azure Boards work items, your task list, and one-click "Start work" |
 | [Omni view](docs/features/omni-view.md) | Describe a dashboard and get one, built from live widgets |
 | [Voice](docs/features/voice.md) | Talk to the assistant and hear it answer, fully local if you like |
 | [Calendar and alarms](docs/features/calendar-and-alarms.md) | Google Calendar, and full-screen meeting alarms |
 | [Clipboard](docs/features/clipboard.md) | Copy buttons everywhere, and a palette of saved snippets and history |
-| [MCP](docs/features/mcp.md) | Connect MCP servers to Yarvis, and give Claude Code sessions Yarvis's memory |
+| [MCP](docs/features/mcp.md) | Connect MCP servers to Yarvis, and give Claude Code sessions Yarvis's memory and a way to ask you questions |
 | [Browser](docs/features/browser.md) | Let the assistant read Slack, Gmail, Calendar and other pages open in your Chrome |
 | [Telegram](docs/features/telegram.md) | Drive the assistant from your phone |
+| [Heads-down mode](docs/features/heads-down.md) | Let Yarvis keep your work moving on its own while you focus, asking only what it must |
 | [Scheduled jobs](docs/features/scheduled-jobs.md) | Run a prompt on a cron schedule |
 | [Keyboard shortcuts](docs/features/keyboard-shortcuts.md) | Every shortcut in one place |
 
@@ -123,6 +125,8 @@ but it isn't notarized, so macOS blocks its first launch.
   speech-to-text and text-to-speech server for voice.
 - [Development](docs/development.md): architecture, commands, tests, running a
   second instance, nightly builds, and the project layout.
+- [How PRs merge through verification](docs/verification.md): the signed
+  verification report, the CI gate, the merge reviewer and `/approve`.
 - [Showcase deck](docs/showcase/yarvis-showcase.html): a slide deck on the
   weekly workflow. Open it in a browser.
 - [Showcase video source](video/README.md): the reel and walkthrough, rendered

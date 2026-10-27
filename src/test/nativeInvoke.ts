@@ -13,8 +13,6 @@
  */
 
 const DEFAULTS: Record<string, unknown> = {
-  // An empty list so alarm-aware components render without any alarms set.
-  list_alarms: [],
   // The core always resolves an agent with non-empty fields, and the workspace
   // view renders its name unguarded.
   get_agent_config: { name: "Claude", command: "claude --permission-mode auto" },

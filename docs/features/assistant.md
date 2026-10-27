@@ -125,7 +125,14 @@ The assistant can act on your workspaces in bulk:
   Yarvis can only confirm the text was delivered, not that the work got done,
   and it says so.
 - **"What's the state of the billing-api workspace?"** It reports the PR,
-  checks and mergeability from the last poll (refreshed every minute).
+  checks, mergeability and review verdict from the last poll (refreshed every
+  minute).
+- **"Who's reviewing the billing-api PR, and which check failed?"** It asks
+  GitHub or Azure DevOps for the PR's reviewers (people and teams) and where
+  each stands, and for each check with its result and link.
+- **"Which of my sessions are waiting on me?"** It lists each workspace's
+  pending attention items: a permission prompt, a session idle at its prompt,
+  or one that finished its turn.
 - **"What was I doing in my workspaces?"** For each active workspace, or the
   one you name, it reports when you last had it open in Yarvis and when its
   Claude Code session last did anything. It also gives a short recap of what
@@ -149,6 +156,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
 | **Activity log** | A record of what you did in the app | Memory → Activity |
@@ -175,6 +183,37 @@ they can be matched exactly.
 
 When a fact changes, the assistant corrects the memory instead of storing a
 contradiction. The old version stays for the record but drops out of search.
+
+### Decisions it learns from you
+
+When the assistant has to ask you to choose, such as which channel to ask for
+a review in or which approach to take, it first checks how you answered the
+same question before:
+
+- **You answered it in the same situation before.** It goes with your most
+  recent answer instead of asking, and tells you it did, so you can overrule
+  it.
+- **You gave the same answer in at least three related situations.** It goes
+  with that answer too.
+- **Otherwise it asks.** That covers no past answer, too few, or past answers
+  that disagree.
+
+Each answer you give is saved as a `decision` memory, with the situation, the
+question and your answer, so it has more to go on next time. Only a reply you
+sent after it asked is saved, never something it read in a ticket or a page.
+When you overrule a choice it made, that is saved too. In the same situation
+your newest answer wins from then on. In related situations a change of mind
+means your answers now disagree, so it asks again. An answer that only holds
+for a while ("don't tag Sam this week") gets a window like any other memory,
+and stops counting once it expires. To make it forget an answer, find it under
+Memory → Memories and delete it. Changing your mind is done by answering
+again: it won't edit a saved answer.
+
+It only does this for choices, not for facts only you know, like a date or a
+name. A past answer never stands in for your go-ahead on an action that needs
+it, like starting work on a ticket or archiving a workspace: it asks about
+those every time. On a spoken turn, saving an answer shows the approval prompt
+first, so a misheard "yes" isn't kept.
 
 ### When a memory holds
 
@@ -223,8 +262,10 @@ Yarvis records meaningful actions as events. Examples:
 - the assistant's own todos and projects.
 
 Otherwise, clicking around the UI is not an event. Workspace views stay out of the
-4-hour and daily summaries. The log only records what you do *in
-Yarvis*, so a PR you review on github.com doesn't show up.
+4-hour and daily summaries. The log mostly records what you do *in Yarvis*. The
+one exception is review verdicts: approvals and change requests you give on
+github.com are copied in every 30 minutes by the GitHub review sync (source
+`github-sync`). Comments you leave on github.com still don't show up.
 
 Browse and search it under **Memory → Activity**.
 
@@ -239,12 +280,15 @@ can read the end of that workspace's latest Claude Code transcript.
 - your tasks, projects, todos and memories,
 - the activity log, as events happen,
 - when you last had each workspace open,
-- workspace PR state, checks and mergeability (polled every minute),
+- workspace PR state, checks, mergeability and review verdict (polled every
+  minute),
+- which workspace sessions are waiting on you, from the attention bell,
 - live GitHub searches: your PRs and review requests,
 - anything a Claude Code session saved to Yarvis memory.
 
-**It sees after the nightly jobs:**
+**It sees after the background jobs run:**
 
+- approvals and change requests you gave on github.com (within 30 minutes),
 - what happened inside a Claude Code session, if you turned on the
   transcript digest,
 - summaries of each 4-hour window and each day.
@@ -255,7 +299,7 @@ can read the end of that workspace's latest Claude Code transcript.
   that workspace, and then only the latest prompts and reply,
 - whether an instruction it sent was carried out,
 - the attention bell (a session waiting on a prompt),
-- PRs you reviewed on github.com rather than in Yarvis.
+- comments you left on github.com or dev.azure.com rather than in Yarvis.
 
 Two ways to close the gap during the day:
 
@@ -284,12 +328,18 @@ only until the session moves on.
 ## What it asks before doing
 
 Some actions pause and ask you in the approval bar above the message box (press
-**A** to approve, **D** to deny):
+**A** to approve, **D** to deny). The bar shows what the assistant says it is
+calling the tool for: it has to give a one-sentence reason with every call that
+needs your approval. It's the assistant's own account, so check it against what
+you asked.
 
 - **Booking a calendar event** asks every time.
 - **Registering a repo** asks every time. Later tools clone the repo and run
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
+- **Going heads down** asks every time, since it starts a loop that keeps
+  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
+  for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Reading a web page** asks when the link isn't one you typed in the
   conversation, such as a link the assistant found on a page. A link can carry
@@ -298,8 +348,9 @@ Some actions pause and ask you in the approval bar above the message box (press
   irreversible, the same list as spoken turns below, and auto-approved MCP
   tools ask again too. The page may have been written to steer it.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
-  a workspace, starting work, adding a repo to a workspace, filing a JIRA
-  ticket, syncing branches, sending an instruction to a session, launching a
+  a workspace, starting work, adding a repo to a workspace, filing, editing,
+  moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
+  syncing branches, sending an instruction to a session, launching a
   session, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
 
@@ -324,7 +375,8 @@ Always available:
 
 - **Tasks.** Create, list, update, complete, delete, roll over and find
   finished tasks.
-- **Memory.** Remember, recall, correct, confirm, list, forget and take notes.
+- **Memory.** Remember, recall, correct, confirm, list, forget, take notes,
+  and check or record how you answered a question before.
 - **Projects.** Create, read and update projects, and track, list and untrack
   tickets with priorities.
 - **Todos.** The assistant's own todo list.
@@ -333,13 +385,32 @@ Always available:
   suggestion, and summarize the week.
 - **Delegation.** List specialists and delegate to one.
 - **Attention.** Raise a notification when it needs you.
+- **Questions.** Ask you something and wait for the answer (`ask_user`,
+  `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
+  you answer in a dialog from wherever you are in the app. It is meant for when
+  you may not be watching the chat; when you're talking to it, it asks in its
+  reply. A turn sent from Telegram can't use them, since you aren't at the app
+  to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
+  for you, and specialists and scheduled jobs never get these. See
+  [MCP](mcp.md#asking-you-questions).
+- **Heads down.** Start heads-down mode once you agree, stop it, and check
+  whether it's running.
 
 Loaded on demand:
 
 - **Workspaces.** List and add repos and issues, start work, create and start
   sessions (including a scratch session with no repo), add a repo to a
   workspace, check status, sync with base, send instructions, archive.
-- **JIRA.** Search, read, create, and start work on a ticket.
+- **JIRA.** Search, read, create, edit, move to another status, assign, comment
+  on, and start work on a ticket.
+- **GitHub issues.** Read, open, edit (title, body, open or closed, labels,
+  assignees) and comment on an issue in a registered repo.
+- **Azure Boards.** Search with WIQL or title words, read a work item with its
+  links (parent, children, what blocks it), create one, edit its title,
+  description, tags or state, assign it to you or unassign it, and comment.
+- **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
+  messages and review requests, mark what it's waiting on, and find the stream
+  something belongs to.
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
@@ -470,10 +541,11 @@ act on them.
 
 ## Background jobs
 
-Three jobs ship with the app and keep memory up to date: a summary of recent
-activity every 4 hours, the transcript digest at 02:00 (if on), and a daily
-rollup at 03:00. Their status and a **Run now** button are under **Settings →
-Assistant**. See [Scheduled jobs](scheduled-jobs.md#background-jobs-that-ship-with-the-app)
+Four jobs ship with the app and keep memory and the activity log up to date: a
+sync of the reviews you gave on github.com every 30 minutes, a summary of
+recent activity every 4 hours, the transcript digest at 02:00 (if on), and a
+daily rollup at 03:00. Their status and a **Run now** button are under
+**Settings → Assistant**. See [Scheduled jobs](scheduled-jobs.md#background-jobs-that-ship-with-the-app)
 for the details, and for scheduling your own prompts.
 
 ## Tips

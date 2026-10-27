@@ -14,6 +14,7 @@ describe("built-in tool registry", () => {
       "create_task",
       "remember",
       "request_attention",
+      "ask_user",
       "list_repos",
       "jira_get_issue",
       "list_pr_reviews",
@@ -21,6 +22,7 @@ describe("built-in tool registry", () => {
       "create_todo",
       "search_events",
       "search_yarvis_docs",
+      "post_merge_review",
     ]) {
       expect(names).toContain(name);
     }

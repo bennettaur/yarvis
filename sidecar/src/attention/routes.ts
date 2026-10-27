@@ -1,18 +1,41 @@
 import { eq } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import { readSessionActivityById } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { type AttentionNavTarget, workspaces } from "../db/schema.ts";
-import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
+import { workspaces } from "../db/schema.ts";
+import { disableIdleTimeout } from "../lib/idleTimeout.ts";
 import {
-  type AttentionKind,
+  SESSION_KEY_HEADER,
+  SESSION_TOKEN_HEADER,
+  sessionTokenMatches,
+} from "../workspaces/agentSessions.ts";
+import { PERMISSION_HOOK_TIMEOUT_S } from "../workspaces/claudeSettings.ts";
+import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
+import { navTargetFor } from "./navTarget.ts";
+import {
+  answerQuestionPrompt,
+  awaitPermissionDecision,
+  canHoldAnotherPermission,
+  decidePermission,
+  hasPendingPermission,
+  hookOutputFor,
+  listPendingPermissions,
+  type PermissionRequestInfo,
+  settlePermissions,
+  summarizePermission,
+  truncate,
+} from "./permissions.ts";
+import {
   type AttentionStatus,
   clearAttentionScope,
   createAttention,
   listAttention,
+  resolvePermissionItems,
   updateAttentionStatus,
 } from "./service.ts";
 
@@ -24,12 +47,12 @@ const KIND = z.enum(["permission", "idle", "completed", "error", "info"]);
  * with zod's `.uuid()`, which additionally enforces RFC version/variant bits
  * that Postgres itself does not.
  */
-const UUID = z
+export const UUID = z
   .string()
   .regex(/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/, "must be a uuid");
 
 /** Bounds what a token holder can persist per item (stored twice: column + payload). */
-const MAX_SESSION_KEY = 256;
+export const MAX_SESSION_KEY = 256;
 
 /** Cap on a single stream's pending-write queue, so a stalled reader is bounded. */
 const MAX_STREAM_QUEUE = 256;
@@ -49,8 +72,59 @@ export const ingestSchema = z.object({
   hookEvent: z.string().max(64).optional(),
 });
 
-/** A human summary for each kind, used when the hook carries no message. */
-function defaultBody(kind: AttentionKind): string {
+/**
+ * How long the ingest route holds a permission request open waiting for the
+ * user. Claude Code shows its own dialog while the hook waits, and whichever is
+ * answered first wins, so a long hold never keeps the user from the terminal.
+ * The hook's own `timeout` in `claudeSettings.ts` sits just above this.
+ */
+export const PERMISSION_HOLD_MS = (PERMISSION_HOOK_TIMEOUT_S - 10) * 1000;
+
+/**
+ * Largest hook body accepted. A Write's input carries the whole file, so this
+ * is generous, but it stops a token holder parking huge bodies in memory.
+ */
+const MAX_PERMISSION_BODY_BYTES = 2 * 1024 * 1024;
+
+/** Caps on what a reply or prompt pulled from the transcript adds to the request. */
+const MAX_CONTEXT_CHARS = 2_000;
+
+/**
+ * The stdin Claude Code gives a `PermissionRequest` hook, which the hook posts
+ * as-is. Only the fields the app shows are read; the rest are ignored.
+ */
+export const permissionHookSchema = z.object({
+  session_id: z.string().max(256).optional(),
+  cwd: z.string().max(4096).optional(),
+  permission_mode: z.string().max(64).optional(),
+  tool_name: z.string().min(1).max(256),
+  tool_input: z.record(z.string(), z.unknown()).default({}),
+});
+
+/** The stdin of the hooks that settle held prompts; only these fields are read. */
+const settledHookSchema = z.object({
+  hook_event_name: z.string().max(64),
+  tool_name: z.string().max(256).optional(),
+  tool_input: z.record(z.string(), z.unknown()).optional(),
+});
+
+/**
+ * Who is asking. The hook can't put these in the body, which is Claude Code's
+ * stdin, so it sends them as headers with the same values the attention hook
+ * bakes in.
+ */
+const permissionOriginSchema = z.object({
+  workspaceId: UUID.optional(),
+  sessionKey: z.string().min(1).max(MAX_SESSION_KEY),
+});
+
+const clip = (text: string | undefined | null) => (text ? truncate(text, MAX_CONTEXT_CHARS) : null);
+
+/**
+ * A human summary for each kind, used when the hook carries no message. Typed on
+ * the ingest enum, which leaves out `question`: only `ask_user` raises those.
+ */
+function defaultBody(kind: z.infer<typeof KIND>): string {
   switch (kind) {
     case "permission":
       return "Needs permission to continue";
@@ -66,23 +140,11 @@ function defaultBody(kind: AttentionKind): string {
 }
 
 /**
- * Where clicking the item lands. A workspace's pinned Claude session keeps the
- * `workspace-claude` target (the frontend already knows how to focus that tab);
- * anything else is a specific terminal session, so we address the tab directly
- * and carry the workspace along when there is one.
- */
-function navTargetFor(sessionKey: string, workspaceId?: string): AttentionNavTarget {
-  if (workspaceId && sessionKey === `ws-claude:${workspaceId}`) {
-    return { type: "workspace-claude", workspaceId };
-  }
-  return { type: "terminal", sessionKey, ...(workspaceId ? { workspaceId } : {}) };
-}
-
-/**
  * Attention-ingest, mounted at `/ingest` OUTSIDE the main bearer wall. Its own
  * middleware accepts only the scoped attention token, and it can only create
- * attention items — so a Claude session shell holding that token can raise a
- * flag without gaining access to the rest of the API.
+ * attention items and put permission prompts in front of the user — so a Claude
+ * session shell holding that token can raise a flag, or ask, without gaining
+ * access to the rest of the API. Answering a prompt needs the main bearer.
  */
 export function createAttentionIngestRoutes(config: Config): Hono {
   const router = new Hono();
@@ -95,6 +157,46 @@ export function createAttentionIngestRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+
+  /**
+   * Raises (or refreshes) the session's permission item to show this request.
+   * A failure to store it is logged and never blocks the request itself.
+   */
+  const raisePermissionItem = (info: PermissionRequestInfo): Promise<void> => {
+    const summary = summarizePermission(info.toolName, info.toolInput);
+    return createAttention(db(), {
+      source: "claude-hook",
+      sessionKey: info.sessionKey,
+      workspaceId: info.workspaceId,
+      kind: "permission",
+      title: info.workspaceName ?? "Claude session",
+      body: summary,
+      navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
+      payload: { requestId: info.id, toolName: info.toolName },
+    })
+      .then(publish)
+      .catch((e) => {
+        console.error("[attention] could not raise a permission item:", e?.message ?? e);
+      });
+  };
+
+  /**
+   * The session a hook speaks for, from its headers, or the error to reply
+   * with. Every terminal holds the ingest token; only this one holds its own
+   * session token, so a hook can't act under another terminal's name.
+   */
+  const sessionOrigin = (c: Context) => {
+    const origin = permissionOriginSchema.safeParse({
+      workspaceId: c.req.header("x-yarvis-workspace-id") || undefined,
+      sessionKey: c.req.header(SESSION_KEY_HEADER),
+    });
+    if (!origin.success) return { error: c.json({ error: origin.error.flatten() }, 400) };
+    const token = c.req.header(SESSION_TOKEN_HEADER) ?? "";
+    if (!sessionTokenMatches(config.token, origin.data.sessionKey, token)) {
+      return { error: c.json({ error: "session token does not match the session key" }, 403) };
+    }
+    return { origin: origin.data };
+  };
 
   router.post("/attention", async (c) => {
     const parsed = ingestSchema.safeParse(await c.req.json().catch(() => null));
@@ -122,8 +224,125 @@ export function createAttentionIngestRoutes(config: Config): Hono {
     return c.json({ id: item.id }, 201);
   });
 
+  // Holds the hook's connection until the user answers in the app. The reply
+  // is the hook's stdout: a decision, or an empty body to leave the prompt to
+  // Claude Code's own dialog.
+  router.post(
+    "/permission",
+    // A refusal prints nothing from the hook, so Claude Code shows its own dialog.
+    bodyLimit({ maxSize: MAX_PERMISSION_BODY_BYTES, onError: (c) => c.body(null, 413) }),
+    async (c) => {
+      const arrivedAt = Date.now();
+      if (!canHoldAnotherPermission()) return c.body(null, 204);
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
+      const parsed = permissionHookSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      const { workspaceId, sessionKey } = checked.origin;
+      const hook = parsed.data;
+      if (!canHoldAnotherPermission(sessionKey)) return c.body(null, 204);
+
+      const [ws] = workspaceId
+        ? await db()
+            .select({ name: workspaces.name })
+            .from(workspaces)
+            .where(eq(workspaces.id, workspaceId))
+        : [];
+
+      // What the agent said just before asking is the best answer to "why does it
+      // want this". Missing context never blocks the request.
+      const activity =
+        hook.cwd && hook.session_id
+          ? await readSessionActivityById(hook.cwd, hook.session_id, 1).catch(() => null)
+          : null;
+
+      // Only now, with the caller checked and the body read, may the wait
+      // outlast the server's idle timeout.
+      disableIdleTimeout(c);
+      let raised: Promise<void> = Promise.resolve();
+
+      const decision = await awaitPermissionDecision(
+        {
+          sessionKey,
+          workspaceId: workspaceId ?? null,
+          workspaceName: ws?.name ?? null,
+          toolName: hook.tool_name,
+          toolInput: hook.tool_input,
+          cwd: hook.cwd ?? null,
+          permissionMode: hook.permission_mode ?? null,
+          lastReply: clip(activity?.lastReply?.text),
+          lastPrompt: clip(activity?.prompts.at(-1)?.text),
+        },
+        {
+          // Counted from arrival, so the lookups above can't push the reply
+          // past curl's own deadline.
+          timeoutMs: PERMISSION_HOLD_MS - (Date.now() - arrivedAt),
+          signal: c.req.raw.signal,
+          onRegistered: (info) => {
+            raised = raisePermissionItem(info);
+          },
+        },
+      );
+
+      // Answered here or in the terminal, or the hook ended, means this request
+      // no longer blocks anyone. A timeout or a hand-back leaves the terminal
+      // dialog waiting, so the item stays for the user to follow.
+      const handled = decision !== null && decision.behavior !== "terminal";
+      const hookGone = decision === null && c.req.raw.signal.aborted;
+      // The item may still be on its way in; resolving first would leave it pending.
+      await raised;
+      if ((handled || hookGone) && !hasPendingPermission(sessionKey)) {
+        const rows = await resolvePermissionItems(db(), sessionKey).catch(() => []);
+        for (const row of rows) publish(row);
+        // Another request from the session may have arrived while that ran;
+        // raise its item again so it isn't lost.
+        const next = listPendingPermissions({ sessionKey }).at(-1);
+        if (next) await raisePermissionItem(next);
+      }
+
+      const output = hookOutputFor(decision);
+      return output ? c.json(output) : c.body(null, 204);
+    },
+  );
+
+  // Tells the app a session has moved past its held prompts, which the user
+  // answered in Claude Code's own dialog. PostToolUse names the call that ran;
+  // Stop and UserPromptSubmit mean the turn is over, so nothing it asked waits.
+  router.post(
+    "/permission/settled",
+    bodyLimit({ maxSize: MAX_PERMISSION_BODY_BYTES, onError: (c) => c.body(null, 413) }),
+    async (c) => {
+      const checked = sessionOrigin(c);
+      if (checked.error) return checked.error;
+      const parsed = settledHookSchema.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+      const { hook_event_name: event, tool_name, tool_input } = parsed.data;
+      if (event === "PostToolUse" && tool_name) {
+        settlePermissions(checked.origin.sessionKey, {
+          toolName: tool_name,
+          toolInput: tool_input ?? {},
+        });
+      } else if (event === "Stop" || event === "UserPromptSubmit") {
+        settlePermissions(checked.origin.sessionKey);
+      }
+      return c.body(null, 204);
+    },
+  );
+
   return router;
 }
+
+/** `answer` replies to an AskUserQuestion prompt, keyed by each question's text. */
+const decisionSchema = z.discriminatedUnion("behavior", [
+  z.object({ behavior: z.literal("allow") }),
+  z.object({
+    behavior: z.literal("answer"),
+    // Keys aren't capped: each must equal one of the request's own question texts.
+    answers: z.record(z.string(), z.string().trim().min(1).max(4_000)),
+  }),
+  z.object({ behavior: z.literal("deny"), message: z.string().trim().max(4_000).optional() }),
+  z.object({ behavior: z.literal("terminal") }),
+]);
 
 const patchSchema = z.object({
   status: z.enum(["read", "resolved", "dismissed"]),
@@ -238,6 +457,29 @@ export function createAttentionRoutes(config: Config): Hono {
     const rows = await clearAttentionScope(db(), scope, status);
     for (const row of rows) publish(row);
     return c.json(rows);
+  });
+
+  // Permission requests still waiting on this sidecar, optionally for one session.
+  router.get("/permissions", (c) =>
+    c.json(listPendingPermissions({ sessionKey: c.req.query("sessionKey") || undefined })),
+  );
+
+  router.post("/permissions/:id", async (c) => {
+    const parsed = decisionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const decision = parsed.data;
+    if (decision.behavior === "answer") {
+      const result = answerQuestionPrompt(c.req.param("id"), decision.answers);
+      if (result === "gone") return c.json({ error: "no longer waiting" }, 410);
+      if (result === "mismatch") {
+        return c.json({ error: "answers don't match the prompt's questions" }, 400);
+      }
+      return c.json({ ok: true });
+    }
+    if (!decidePermission(c.req.param("id"), decision)) {
+      return c.json({ error: "no longer waiting" }, 410);
+    }
+    return c.json({ ok: true });
   });
 
   router.patch("/:id", async (c) => {

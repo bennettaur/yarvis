@@ -10,7 +10,7 @@ import {
   updateCustomProvider,
 } from "./service.ts";
 
-const apiKind = z.enum(["openai", "openai-chat", "anthropic"]);
+const apiKind = z.enum(["openai", "openai-chat", "anthropic", "ollama", "systemone"]);
 
 /** RFC 7230 token characters, the legal set for HTTP header names. */
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;

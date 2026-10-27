@@ -2,6 +2,8 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { mcpReply } from "../test/mcpResponse.ts";
+import { questionOrigin } from "./routes.ts";
 
 function testConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -36,7 +38,12 @@ const INITIALIZE = {
 /** Host a real client presents when it dials the loopback endpoint. */
 const HOST = "127.0.0.1:8765";
 
-function post(body: unknown, token = "test-mcp-token", host = HOST): RequestInit {
+function post(
+  body: unknown,
+  token = "test-mcp-token",
+  host = HOST,
+  extraHeaders: Record<string, string> = {},
+): RequestInit {
   return {
     method: "POST",
     headers: {
@@ -44,6 +51,7 @@ function post(body: unknown, token = "test-mcp-token", host = HOST): RequestInit
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       Host: host,
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   };
@@ -77,7 +85,7 @@ describe("mcp endpoint", () => {
     const app = createApp(testConfig());
     const res = await app.request("/mcp", post(INITIALIZE));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const body = (await mcpReply(res)) as {
       result: { serverInfo: { name: string }; capabilities: { tools?: unknown } };
     };
     expect(body.result.serverInfo.name).toBe("yarvis");
@@ -95,14 +103,40 @@ describe("mcp endpoint", () => {
       post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { result: { tools: { name: string }[] } };
+    // Streamed, so a reply that takes a while still sends its headers at once.
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
     expect(body.result.tools.map((t) => t.name).sort()).toEqual([
+      "ask_user",
       "forget",
       "list_memories",
       "recall",
       "remember",
       "take_note",
+      "wait_for_answer",
     ]);
+  });
+
+  it("adds the review comment tools for a session that names a workspace", async () => {
+    const app = createApp(testConfig());
+    const listTools = async (workspace: string) => {
+      const res = await app.request(
+        "/mcp",
+        post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, undefined, HOST, {
+          "X-Yarvis-Workspace": workspace,
+        }),
+      );
+      const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
+      return body.result.tools.map((t) => t.name);
+    };
+
+    expect(await listTools("11111111-1111-4111-8111-111111111111")).toContain(
+      "resolve_review_comment",
+    );
+    // A mangled id falls back to the memory tools rather than failing the session.
+    const fallback = await listTools("not-a-uuid");
+    expect(fallback).not.toContain("list_review_comments");
+    expect(fallback).toContain("recall");
   });
 
   it("refuses a request addressed to a host that is not ours", async () => {
@@ -160,17 +194,56 @@ describe("mcp endpoint over a real store", () => {
     await sql.end();
   });
 
-  const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
+  const rawCallTool = async (
+    id: number,
+    name: string,
+    args: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ) => {
     const res = await app.request(
       "/mcp",
-      post({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+      post(
+        { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+        undefined,
+        HOST,
+        headers,
+      ),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      result: { isError?: boolean; content: { text: string }[] };
-    };
-    expect(body.result.isError).toBeFalsy();
-    return JSON.parse(body.result.content[0]?.text ?? "{}") as Record<string, unknown>;
+    return ((await mcpReply(res)) as { result: { isError?: boolean; content: { text: string }[] } })
+      .result;
+  };
+
+  const callTool = async (
+    id: number,
+    name: string,
+    args: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ) => {
+    const result = await rawCallTool(id, name, args, headers);
+    expect(result.isError).toBeFalsy();
+    return JSON.parse(result.content[0]?.text ?? "{}") as Record<string, unknown>;
+  };
+
+  /** A workspace with one repo and one open review comment, inserted directly. */
+  const workspaceWithComment = async (slug: string) => {
+    const [repo] = await sql`
+      INSERT INTO repos (name, owner, repo, clone_url, primary_clone_path)
+      VALUES (${slug}, 'acme', ${slug}, ${`git@github.com:acme/${slug}.git`}, ${`/clones/${slug}`})
+      RETURNING id`;
+    const [ws] = await sql`
+      INSERT INTO workspaces (name, slug, root_path)
+      VALUES (${slug}, ${slug}, ${`/ws/${slug}`})
+      RETURNING id`;
+    const [wr] = await sql`
+      INSERT INTO workspace_repos (workspace_id, repo_id, branch, base_branch, worktree_path)
+      VALUES (${ws?.id}, ${repo?.id}, 'feature', 'main', ${`/ws/${slug}/${slug}`})
+      RETURNING id`;
+    const [comment] = await sql`
+      INSERT INTO workspace_review_comments (workspace_repo_id, path, start_line, end_line, body)
+      VALUES (${wr?.id}, 'src/a.ts', 1, 2, ${`Fix ${slug}.`})
+      RETURNING id`;
+    return { workspaceId: String(ws?.id), commentId: String(comment?.id) };
   };
 
   it("stores a memory and recalls it back", async () => {
@@ -189,5 +262,70 @@ describe("mcp endpoint over a real store", () => {
 
     const listed = await callTool(5, "list_memories", {});
     expect(listed.memories).toEqual([]);
+  });
+
+  it("lists and resolves review comments in the workspace the header names, and no other", async () => {
+    await sql`TRUNCATE repos, workspaces RESTART IDENTITY CASCADE`;
+    const mine = await workspaceWithComment("mcp-mine");
+    const theirs = await workspaceWithComment("mcp-theirs");
+    const header = { "X-Yarvis-Workspace": mine.workspaceId };
+
+    const listed = await callTool(2, "list_review_comments", {}, header);
+    expect(listed.comments).toEqual([
+      expect.objectContaining({
+        id: mine.commentId,
+        repo: "mcp-mine",
+        worktreePath: "/ws/mcp-mine/mcp-mine",
+        body: "Fix mcp-mine.",
+        resolved: false,
+      }),
+    ]);
+
+    const resolved = await callTool(3, "resolve_review_comment", { id: mine.commentId }, header);
+    expect(resolved).toEqual({ id: mine.commentId, resolved: true });
+    const [mineRow] =
+      await sql`SELECT resolved_at FROM workspace_review_comments WHERE id = ${mine.commentId}`;
+    expect(mineRow?.resolved_at).not.toBeNull();
+
+    const refused = await rawCallTool(
+      4,
+      "resolve_review_comment",
+      { id: theirs.commentId },
+      header,
+    );
+    expect(refused.isError).toBe(true);
+    const [theirRow] =
+      await sql`SELECT resolved_at FROM workspace_review_comments WHERE id = ${theirs.commentId}`;
+    expect(theirRow?.resolved_at).toBeNull();
+  });
+});
+
+describe("questionOrigin", () => {
+  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers));
+
+  it("reads the session and workspace a workspace's .mcp.json sends", () => {
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": "ws-claude:11111111-1111-1111-1111-111111111111",
+        "X-Yarvis-Workspace": "11111111-1111-1111-1111-111111111111",
+      }),
+    ).toEqual({
+      sessionKey: "ws-claude:11111111-1111-1111-1111-111111111111",
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+    });
+  });
+
+  it("treats missing, empty, malformed or oversized values as absent", () => {
+    const absent = { sessionKey: null, workspaceId: null };
+    expect(origin({})).toEqual(absent);
+    // What an unset `${VAR:-}` expands to.
+    expect(origin({ "X-Yarvis-Session-Key": "", "X-Yarvis-Workspace": "" })).toEqual(absent);
+    expect(
+      origin({ "X-Yarvis-Session-Key": "x".repeat(257), "X-Yarvis-Workspace": "not-a-uuid" }),
+    ).toEqual(absent);
+  });
+
+  it("refuses a chat session key, which only the in-app assistant may use", () => {
+    expect(origin({ "X-Yarvis-Session-Key": "chat:some-chat" }).sessionKey).toBeNull();
   });
 });

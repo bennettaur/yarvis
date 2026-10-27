@@ -86,19 +86,65 @@ variables:
 
 | Variable | What it's for |
 | --- | --- |
-| `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item jumps back to it |
+| `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item or an `ask_user` question jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
-| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, and nothing else |
-| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint and its memory tools |
+| `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, pass permission prompts to the app and register a Claude Code session, and nothing else |
+| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations and permission prompts, so one terminal can't send either under another's name |
+| `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory and question tools and, in a workspace, its review comment tools |
 
 What this gives you:
 
 - **A flagged tab shows an amber ●** with the tooltip "needs you". Opening the
   attention item switches to that exact tab and pane. Looking at the pane
-  clears it. See [Workspaces](workspaces.md#the-attention-bell).
-- **Claude Code runs here share Yarvis memory.** In a workspace, the `.mcp.json`
+  clears it, except a question from `ask_user`, which stays until you answer,
+  skip or dismiss it. See [Workspaces](workspaces.md#the-attention-bell).
+- **Claude Code runs here share Yarvis memory** and can ask you questions
+  through the bell. In a workspace, the `.mcp.json`
   Yarvis writes points at the endpoint. For the Terminal tab, or any other
   client, see [MCP](mcp.md).
+
+## Answering permission prompts
+
+When a Claude session in a workspace asks permission to run something, the bell
+shows what it wants, for example `Bash: bun test`. Click the item to answer it
+in a window over whatever page you're on. It shows:
+
+- the tool and its full input, with Claude's own description of a command,
+- the workspace and the directory the session runs in,
+- what Claude said just before asking, and the last prompt you typed.
+
+You can **Approve**, **Deny**, or type what Claude should do instead and press
+**Send**, which denies the request and passes your note to Claude. **Answer in
+terminal** hands the prompt back to Claude Code's own dialog, for its other
+options such as "don't ask again". **Go to session** opens the terminal without
+answering.
+
+When Claude asks you a question with its own question tool, the window shows
+the questions and their options the way the terminal would. Pick an option or
+type an answer for each one and press **Send answers**, and Claude carries on
+with them. **Skip** tells Claude you won't answer.
+
+Some details:
+
+- **The prompt waits in both places.** Claude Code shows its own dialog in the
+  terminal while Yarvis holds the prompt, and whichever you answer first wins.
+  Yarvis holds it for up to a day.
+- **Looking at the session doesn't clear the item.** It clears once you answer
+  it here, once Claude runs a call you approved in the terminal, when the turn
+  ends or you send your next prompt, or when the session finishes. A prompt you
+  deny in the terminal clears at one of the last three.
+- **Several prompts from one session queue up.** The window shows the oldest
+  first with a count of the rest.
+- **Only the app instance that launched the session can answer it.** Another
+  instance sharing the database shows the item but not the prompt.
+- **A workspace made by an older version of Yarvis** may have an older hook:
+  one that only flags the prompt in the bell, one that gives up after about four
+  minutes, or none of the hooks that clear a prompt answered in the terminal.
+  It gets the current hooks the next time it is provisioned, or when the
+  assistant starts a session in it.
+- **A Claude run outside Yarvis is unaffected.** The hook needs a Yarvis
+  terminal's environment and stands aside without it, so Claude Code shows its
+  normal dialog.
 
 ## Known gap
 

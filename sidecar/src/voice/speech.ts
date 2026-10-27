@@ -1,5 +1,5 @@
 import type { CustomProviderSecrets } from "../config.ts";
-import { guardedFetch } from "../lib/guardedFetch.ts";
+import { type GuardedFetchOptions, guardedFetch } from "../lib/guardedFetch.ts";
 import { redactSecrets } from "../llm/errors.ts";
 
 /**
@@ -192,40 +192,6 @@ function readTranscript(payload: unknown): string {
   return text.trim();
 }
 
-interface DeadlineFetchOptions {
-  /** Replaces the pinned transport from `lib/guardedFetch.ts`; tests pass a fake. */
-  fetchImpl?: typeof fetch;
-  timeoutMs: number;
-  allowLoopback: boolean;
-}
-
-/**
- * Fetches through `lib/guardedFetch.ts`, which re-runs the SSRF guard on every
- * redirect hop and pins the connection to the checked address. That matters
- * here because `fetch` strips only `Authorization` on a cross-origin redirect,
- * so a custom provider's own auth headers would otherwise ride along to
- * wherever a redirect pointed. The deadline covers the whole chain, since these
- * calls sit directly in the user's latency path.
- */
-async function fetchWithDeadline(
-  url: string,
-  init: RequestInit,
-  { fetchImpl, timeoutMs, allowLoopback }: DeadlineFetchOptions,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const { response } = await guardedFetch(url, init, {
-      fetchImpl,
-      allowLoopback,
-      signal: controller.signal,
-    });
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * Hugging Face Inference. ASR takes the raw audio bytes as the request body and
  * answers `{ text }`; TTS takes `{ inputs }` and answers audio bytes. A cold
@@ -244,7 +210,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async transcribe({ audio, contentType, model }: TranscribeInput): Promise<string> {
-    const res = await fetchWithDeadline(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -262,7 +228,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async synthesize({ text, model }: SynthesizeInput): Promise<SpeechAudio> {
-    const res = await fetchWithDeadline(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -385,7 +351,7 @@ export class GeminiSpeech implements SpeechClient {
   }
 
   private async call(model: string, body: unknown, what: string, timeoutMs: number) {
-    const res = await fetchWithDeadline(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -533,7 +499,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     return headers;
   }
 
-  private fetchOptions(timeoutMs: number): DeadlineFetchOptions {
+  private fetchOptions(timeoutMs: number): GuardedFetchOptions {
     return { fetchImpl: this.fetchImpl, timeoutMs, allowLoopback: this.allowLoopback };
   }
 
@@ -548,7 +514,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     form.set("response_format", "json");
     if (language) form.set("language", language);
 
-    const res = await fetchWithDeadline(
+    const { response: res } = await guardedFetch(
       `${this.baseUrl}/audio/transcriptions`,
       {
         method: "POST",
@@ -588,7 +554,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
       body[key] = value;
     }
 
-    const res = await fetchWithDeadline(
+    const { response: res } = await guardedFetch(
       `${this.baseUrl}/audio/speech`,
       {
         method: "POST",

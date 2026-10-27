@@ -44,7 +44,7 @@ describe("the yarvis-guide specialist's link list", () => {
     join(import.meta.dir, "../../sidecar/src/agents/definitions/yarvis-guide.md"),
     "utf8",
   );
-  const links = [...prompt.matchAll(/yarvis:\/\/[a-z/]*[a-z]/g)].map((m) => m[0]);
+  const links = [...prompt.matchAll(/yarvis:\/\/[a-z/-]*[a-z]/g)].map((m) => m[0]);
 
   it("names only addresses the app can open", () => {
     expect(links.length).toBeGreaterThan(0);

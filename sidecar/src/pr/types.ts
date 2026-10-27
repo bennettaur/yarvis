@@ -52,6 +52,32 @@ export function parseRefKey(key: string): PrRef | null {
   return null;
 }
 
+/**
+ * A review the signed-in user made on the provider's side, and the commit it
+ * was made against. What a "since your last review" read starts from when the
+ * review didn't go through Yarvis.
+ */
+export interface ViewerReview {
+  headSha: string;
+  /** The merge-base the provider computed for that push, when it reports one (Azure). */
+  mergeBaseSha?: string;
+  /** ISO time the review was submitted. */
+  submittedAt: string;
+}
+
+/** A full commit id, sha-1 or sha-256: anything else is refused before it reaches git or a URL. */
+export const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** How a pull request's current head relates to an earlier commit of it. */
+export interface CommitsSince {
+  /** The provider still has the earlier commit. */
+  exists: boolean;
+  /** Commits on the head that the earlier commit doesn't have; null when unknown. */
+  commits: number | null;
+  /** The head no longer contains the earlier commit: a force-push or rebase. */
+  rewritten: boolean;
+}
+
 export interface PrSummary {
   number: number;
   title: string;
@@ -95,24 +121,59 @@ export interface PrStatus {
   merged: boolean;
   mergeable: boolean | null;
   mergeableState: string;
+  /** The PR's head commit, so a poll can tell a new push without reading the whole PR; null when unknown. */
+  headSha: string | null;
   checks: ChecksSummary;
 }
 
 /** A merge strategy the repo allows, in GitHub's GraphQL vocabulary. */
 export type MergeMethod = "MERGE" | "SQUASH" | "REBASE";
 
-/** A single review comment within a thread. */
+/** Which file of a diff a line belongs to: the base ("LEFT") or the head ("RIGHT"). */
+export type DiffSide = "LEFT" | "RIGHT";
+
+/**
+ * A single review comment within a thread. `id` is the provider's own: a
+ * GraphQL node id on GitHub, the comment's number within its thread on Azure.
+ */
 export interface ReviewComment {
+  id: string;
   author: string;
+  /**
+   * The author's provider identity id, where `author` is only a display name
+   * that two people can share (Azure). Absent on GitHub, whose login is unique.
+   */
+  authorId?: string;
   body: string;
   createdAt: string;
+  /** Link to the comment on the provider's site, when it reports one. */
+  url?: string;
 }
 
-/** A review thread anchored to a file/line, with its comments. */
+/**
+ * A review thread anchored to a file/line, with its comments. `line` is the
+ * last line of the range on `side`; a multi-line thread also has `startLine`
+ * on `startSide`, which GitHub lets differ from `side` (a range starting in the
+ * old file and ending in the new one). A thread the provider can no longer
+ * place on the current diff (GitHub's "outdated") has a null `line`.
+ *
+ * `id` addresses the thread for replies and resolving: a GraphQL node id on
+ * GitHub, the numeric thread id on Azure.
+ */
 export interface ReviewThread {
+  id: string;
   path: string | null;
   line: number | null;
+  startLine?: number;
+  startSide?: DiffSide;
+  side: DiffSide;
   isResolved: boolean;
+  isOutdated: boolean;
+  canReply: boolean;
+  /** Whether the viewer may mark the thread resolved. */
+  canResolve: boolean;
+  /** Whether the viewer may reopen the thread once it is resolved. */
+  canUnresolve: boolean;
   comments: ReviewComment[];
 }
 
@@ -146,6 +207,12 @@ export interface Reviewer {
   state: ReviewerState;
   /** True when the reviewer's review is still outstanding (a fresh request). */
   isRequested: boolean;
+  /**
+   * True when the reviewer is a team or group rather than a person. A request to
+   * a team is answered by whichever member picks it up, so chasing it means
+   * asking the team, not the name on the request.
+   */
+  isTeam: boolean;
 }
 
 /** A normalized CI check (CheckRun, commit status, or policy evaluation). */
@@ -166,6 +233,8 @@ export interface PrDetail {
   state: string;
   draft: boolean;
   author: string;
+  /** The author's provider identity id, as on {@link ReviewComment.authorId}. */
+  authorId?: string;
   baseRef: string;
   headRef: string;
   /**
@@ -185,6 +254,13 @@ export interface PrDetail {
   /** GraphQL/Azure mergeable enum: "MERGEABLE" | "CONFLICTING" | "UNKNOWN". */
   mergeable: string;
   /**
+   * True when the head branch conflicts with the base, in each provider's own
+   * terms: GitHub's CONFLICTING or DIRTY, Azure's `conflicts`. Narrower than
+   * `mergeable` not being MERGEABLE, which on Azure also covers a merge a
+   * branch policy rejected.
+   */
+  hasConflicts: boolean;
+  /**
    * Merge methods the repo permits, so the UI only offers valid ones. Empty
    * when the provider doesn't expose them (Azure) — merge buttons stay hidden.
    */
@@ -203,6 +279,18 @@ export interface PrDetail {
    */
   checksUnavailable?: boolean;
   reviewThreads: ReviewThread[];
+  /**
+   * True when the PR has more review threads than `reviewThreads` holds: the
+   * page cap was reached, or a later page failed to load.
+   */
+  reviewThreadsTruncated?: boolean;
+  /**
+   * Comments on the PR itself rather than on a line, oldest first. GitHub
+   * only: Azure's general comments are threads with no file, in `reviewThreads`.
+   */
+  conversation?: ReviewComment[];
+  /** True when the PR has more conversation comments than `conversation` holds. */
+  conversationTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
 }
@@ -216,13 +304,19 @@ export interface PrFile {
   patch: string | null;
 }
 
-/** A line comment the user wants to post to a PR. */
+/**
+ * A line comment the user wants to post to a PR. A multi-line comment names
+ * its first line in `startLine`; `line` is always the last.
+ */
 export interface NewComment {
   path: string;
   line: number;
   body: string;
   /** Side of the diff the line belongs to; defaults to the new ("RIGHT") file. */
-  side?: "RIGHT" | "LEFT";
+  side?: DiffSide;
+  startLine?: number;
+  /** Side of `startLine`; defaults to `side`. */
+  startSide?: DiffSide;
 }
 
 export interface Viewer {

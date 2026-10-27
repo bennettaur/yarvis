@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { AgentQuestionRow } from "../db/schema.ts";
 import type {
   MemoryInput,
   MemoryListOptions,
@@ -10,7 +11,11 @@ import type {
   MemoryService,
   MemoryWriteInput,
 } from "../memory/index.ts";
-import { createYarvisMcpServer } from "./server.ts";
+import { ANSWER_WAIT_MS } from "../questions/contract.ts";
+import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
+import { LONG_ANSWER_WAIT_MS, type QuestionToolDeps } from "./questionTools.ts";
+import type { ReviewCommentStore } from "./reviewCommentTools.ts";
+import { createYarvisMcpServer, type WorkspaceContext } from "./server.ts";
 
 /** Minimal in-process stand-in so the tool contract is testable without Postgres. */
 class FakeMemory implements MemoryService {
@@ -98,9 +103,29 @@ class FakeMemory implements MemoryService {
   }
 }
 
+/** Review comments for one workspace, held in memory. */
+class FakeReviewComments implements ReviewCommentStore {
+  constructor(
+    readonly workspaceId: string,
+    public comments: LocatedReviewComment[],
+  ) {}
+
+  async list(workspaceId: string): Promise<LocatedReviewComment[]> {
+    return workspaceId === this.workspaceId ? this.comments : [];
+  }
+
+  async setResolved(workspaceId: string, commentId: string, resolved: boolean) {
+    if (workspaceId !== this.workspaceId) return null;
+    const comment = this.comments.find((c) => c.id === commentId);
+    if (!comment) return null;
+    comment.resolvedAt = resolved ? new Date("2026-01-03T00:00:00Z") : null;
+    return comment;
+  }
+}
+
 /** Connects an MCP client to a server backed by `memory`, over a linked pair. */
-async function connect(memory: MemoryService) {
-  const server = createYarvisMcpServer(async () => memory);
+async function connect(memory: MemoryService, workspace?: WorkspaceContext) {
+  const server = createYarvisMcpServer(async () => memory, workspace);
   const client = new Client({ name: "test-client", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -315,5 +340,193 @@ describe("yarvis mcp server", () => {
     })) as { isError?: boolean };
     expect(result.isError).toBe(true);
     expect(memory.records).toHaveLength(1);
+  });
+});
+
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+const OPEN_COMMENT_ID = "22222222-2222-4222-8222-222222222222";
+const RESOLVED_COMMENT_ID = "33333333-3333-4333-8333-333333333333";
+
+function reviewComment(id: string, body: string, resolvedAt: Date | null): LocatedReviewComment {
+  return {
+    id,
+    workspaceRepoId: "44444444-4444-4444-8444-444444444444",
+    path: "src/app.ts",
+    startLine: 3,
+    endLine: 5,
+    commitSha: "abc123",
+    body,
+    resolvedAt,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    repoName: "service-a",
+    worktreePath: "/ws/service-a",
+  };
+}
+
+async function connectToWorkspace() {
+  const store = new FakeReviewComments(WORKSPACE_ID, [
+    reviewComment(OPEN_COMMENT_ID, "rename this", null),
+    reviewComment(RESOLVED_COMMENT_ID, "done already", new Date("2026-01-02T00:00:00Z")),
+  ]);
+  const client = await connect(new FakeMemory(), {
+    id: WORKSPACE_ID,
+    reviewComments: () => store,
+  });
+  return { client, store };
+}
+
+describe("yarvis mcp server in a workspace", () => {
+  it("offers the review comment tools only to a session that names its workspace", async () => {
+    const outside = await connect(new FakeMemory());
+    const outsideTools = (await outside.listTools()).tools.map((t) => t.name);
+    expect(outsideTools).not.toContain("list_review_comments");
+
+    const { client } = await connectToWorkspace();
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    expect(tools).toContain("list_review_comments");
+    expect(tools).toContain("resolve_review_comment");
+  });
+
+  it("lists open comments with where to find the file", async () => {
+    const { client } = await connectToWorkspace();
+    const result = await client.callTool({ name: "list_review_comments", arguments: {} });
+    expect(payload(result).comments).toEqual([
+      {
+        id: OPEN_COMMENT_ID,
+        repo: "service-a",
+        worktreePath: "/ws/service-a",
+        path: "src/app.ts",
+        startLine: 3,
+        endLine: 5,
+        commitSha: "abc123",
+        resolved: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        body: "rename this",
+      },
+    ]);
+  });
+
+  it("includes resolved comments when asked", async () => {
+    const { client } = await connectToWorkspace();
+    const result = await client.callTool({
+      name: "list_review_comments",
+      arguments: { includeResolved: true },
+    });
+    const ids = (payload(result).comments as { id: string }[]).map((c) => c.id);
+    expect(ids).toEqual([OPEN_COMMENT_ID, RESOLVED_COMMENT_ID]);
+  });
+
+  it("resolves a comment, and reopens it with resolved: false", async () => {
+    const { client, store } = await connectToWorkspace();
+
+    const resolved = await client.callTool({
+      name: "resolve_review_comment",
+      arguments: { id: OPEN_COMMENT_ID },
+    });
+    expect(payload(resolved)).toEqual({ id: OPEN_COMMENT_ID, resolved: true });
+    expect(store.comments[0]?.resolvedAt).not.toBeNull();
+
+    const reopened = await client.callTool({
+      name: "resolve_review_comment",
+      arguments: { id: OPEN_COMMENT_ID, resolved: false },
+    });
+    expect(payload(reopened)).toEqual({ id: OPEN_COMMENT_ID, resolved: false });
+    expect(store.comments[0]?.resolvedAt).toBeNull();
+  });
+
+  it("reports an unknown comment id as an error", async () => {
+    const { client } = await connectToWorkspace();
+    const result = await client.callTool({
+      name: "resolve_review_comment",
+      arguments: { id: "55555555-5555-4555-8555-555555555555" },
+    });
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("ask_user waits", () => {
+  const QUESTION_ID = "66666666-6666-4666-8666-666666666666";
+  const asked: AgentQuestionRow = {
+    id: QUESTION_ID,
+    sessionKey: null,
+    workspaceId: null,
+    context: { task: "Picking a database" },
+    questions: [{ question: "Which database?", options: [{ label: "A" }, { label: "B" }] }],
+    status: "pending",
+    answers: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    answeredAt: null,
+  };
+  const answered: AgentQuestionRow = {
+    ...asked,
+    status: "answered",
+    answers: [{ selected: ["A"] }],
+  };
+
+  /** A server whose questions are answered `answerAfterMs` after the wait starts. */
+  async function connectAsking(answerAfterMs: number) {
+    const waits: number[] = [];
+    const questions: QuestionToolDeps = {
+      origin: { sessionKey: null, workspaceId: null },
+      ask: async () => asked,
+      getQuestion: async () => asked,
+      waitForReply: async (_id, timeoutMs) => {
+        waits.push(timeoutMs);
+        await Bun.sleep(answerAfterMs);
+        return answered;
+      },
+      progressIntervalMs: 20,
+    };
+    const server = createYarvisMcpServer(async () => new FakeMemory(), undefined, questions);
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    return { client, waits };
+  }
+
+  const ASK_ARGS = { task: "Picking a database", questions: asked.questions };
+
+  it("sends progress while it waits, for a client that asked for it", async () => {
+    const { client, waits } = await connectAsking(150);
+    const progress: number[] = [];
+    const result = await client.callTool({ name: "ask_user", arguments: ASK_ARGS }, undefined, {
+      onprogress: (p) => progress.push(p.progress),
+    });
+    expect(payload(result)).toMatchObject({ status: "answered" });
+    expect(waits).toEqual([LONG_ANSWER_WAIT_MS]);
+    expect(progress.length).toBeGreaterThan(0);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+  });
+
+  it("takes the short wait once a session holds too many long ones", async () => {
+    const { client, waits } = await connectAsking(150);
+    const calls = Array.from({ length: 5 }, () =>
+      client.callTool({ name: "ask_user", arguments: ASK_ARGS }, undefined, {
+        onprogress: () => {},
+      }),
+    );
+    await Promise.all(calls);
+    expect(waits.filter((w) => w === LONG_ANSWER_WAIT_MS)).toHaveLength(4);
+    expect(waits.filter((w) => w === ANSWER_WAIT_MS)).toHaveLength(1);
+  });
+
+  it("waits only a few minutes for a client without a progress token", async () => {
+    const { client, waits } = await connectAsking(0);
+    await client.callTool({ name: "ask_user", arguments: ASK_ARGS });
+    expect(waits).toEqual([ANSWER_WAIT_MS]);
+  });
+
+  it("keeps waiting the same way through wait_for_answer", async () => {
+    const { client, waits } = await connectAsking(60);
+    const progress: number[] = [];
+    const result = await client.callTool(
+      { name: "wait_for_answer", arguments: { questionId: QUESTION_ID } },
+      undefined,
+      { onprogress: (p) => progress.push(p.progress) },
+    );
+    expect(payload(result)).toMatchObject({ status: "answered" });
+    expect(waits).toEqual([LONG_ANSWER_WAIT_MS]);
+    expect(progress.length).toBeGreaterThan(0);
   });
 });

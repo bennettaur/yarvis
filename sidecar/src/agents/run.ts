@@ -239,6 +239,9 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // Nothing reads this: a delegated run has no approval channel, and its
     // outward-facing tools need an explicit grant instead.
     untrustedReads: newUntrustedReads(),
+    // The question tools wait on the user for longer than a run may last, holding
+    // up the chat or job that started it, and a run has no chat to show them in.
+    atTheApp: false,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {
