@@ -204,3 +204,7 @@ use is kept in the database with the tool's other consent, not in that file.
   model and the sleep settings are how you control that.
 - It runs on one instance of the app. Another instance sharing the same
   database leaves it to the first.
+- A pass can schedule a task to look at something later (see
+  [Scheduled tasks](assistant.md#scheduled-tasks)). When it runs, its item in
+  the attention bell opens this page rather than a chat, since passes run in
+  chats you don't see.

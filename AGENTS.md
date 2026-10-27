@@ -250,7 +250,8 @@ back to ad-hoc.
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
   because a transcript can be misheard or picked up from the room. A surface
   that can't prompt gets those tools dropped rather than run unattended —
-  silently doing the irreversible thing is the one unacceptable outcome.
+  silently doing the irreversible thing is the one unacceptable outcome. A
+  `scheduled-task` turn (below) is unreviewed in the same way.
 - Secrets flow one way — the webview writes them to the Keychain, the core
   injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
@@ -524,6 +525,27 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A scheduled task (`sidecar/src/scheduledTasks/`) is a prompt the chat agent
+  schedules for itself, run later by the `scheduled-tasks` job as a turn in the
+  chat it came from, ringing the attention bell when the run has something to
+  report. It is how "check on my PRs in an hour" or "tell me when CI goes
+  green" works without a shell.
+  The prompt is model-composed, often just after reading a CI log or a PR
+  comment, so three things hold it down. The turn gets only
+  `SCHEDULED_TASK_TOOLS` (`chat/destructiveTools.ts`), a read-only allowlist,
+  because anything it writes would be read back later as if the user had
+  agreed. Its stored row has the user role so the thread reads in order, but it
+  reaches the model fenced as the assistant's own note
+  (`scheduledTasks/message.ts`), on its own turn and every later one, since a
+  typed turn runs the destructive tools without asking. And a chain is bounded
+  by an attempt counter that comes from the row, never from the model. Unlike
+  the memory jobs, a row is marked fired *before* its turn runs: a sidecar that
+  dies mid-turn loses one run rather than replaying it into the chat on every
+  restart. A run that only schedules its next one (`parentId` points back at
+  it) stays quiet. The bell item's title is always ours, naming the task; the
+  model's words go in the body, so injected text can't pose as an app alert.
+  A heads-down pass runs in a hidden chat, so a task it schedules carries
+  `origin: "heads-down"` and its bell item opens the Heads down page.
 - A feature that needs Claude Code to work *while the user watches* (a
   verification report, mutation testing) starts it with `startClaudeRun` in
   `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
