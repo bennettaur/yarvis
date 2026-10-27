@@ -27,15 +27,22 @@ const EMPTY_HINT =
  * or they overwrite each other's. `focusOnShow` moves focus to the composer
  * each time the panel comes on screen; it is for the Chat tab, not for a panel
  * that appears beside other inputs, such as an Omni widget.
+ * `requestedSessionId` opens that chat, re-reading it even when it is already
+ * open, since a scheduled task may have added to it in the background; the
+ * panel calls `onRequestConsumed` once it has.
  */
 export default function ChatPanel({
   active = true,
   sessionStorageKey,
   focusOnShow = false,
+  requestedSessionId = null,
+  onRequestConsumed,
 }: {
   active?: boolean;
   sessionStorageKey?: string;
   focusOnShow?: boolean;
+  requestedSessionId?: string | null;
+  onRequestConsumed?: () => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
@@ -74,6 +81,14 @@ export default function ChatPanel({
   } = useChatThread({ onSessionCreated: addSession, reasoning, sessionStorageKey });
 
   const voice = useVoice({ send, streaming, busy });
+
+  useEffect(() => {
+    if (!requestedSessionId) return;
+    // Re-reading the open chat mid-reply would cancel the reply; it is already
+    // on screen, so leave it be.
+    if (requestedSessionId !== sessionId || !busy) void loadSession(requestedSessionId);
+    onRequestConsumed?.();
+  }, [requestedSessionId, sessionId, busy, loadSession, onRequestConsumed]);
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
   // own, so ours must stop answering the keyboard while it is up.

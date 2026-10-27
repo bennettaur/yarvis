@@ -372,6 +372,112 @@ describe("buildClaudeSettings", () => {
   });
 });
 
+describe("sandbox paths", () => {
+  const GIT = "/ws/.repos/acme-api/.git";
+  const REPO = { clonePath: "/ws/.repos/acme-api", branch: "yarvis/fix-it", adminName: "api" };
+  type Filesystem = { allowWrite?: unknown[]; denyWrite?: unknown[]; denyRead?: string[] };
+  type WithSandbox = { sandbox?: { enabled?: boolean; filesystem?: Filesystem } };
+  const filesystemOf = (settings: Record<string, unknown>) =>
+    (settings as WithSandbox).sandbox?.filesystem;
+
+  it("lets the sandbox commit to this workspace's branch and worktree, and nothing else's", () => {
+    expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.allowWrite).toEqual([
+      `${GIT}/objects`,
+      `${GIT}/refs/heads/yarvis/fix-it`,
+      `${GIT}/refs/heads/yarvis/fix-it.lock`,
+      `${GIT}/logs/refs/heads/yarvis/fix-it`,
+      `${GIT}/refs/remotes/origin/yarvis/fix-it`,
+      `${GIT}/refs/remotes/origin/yarvis/fix-it.lock`,
+      `${GIT}/logs/refs/remotes/origin/yarvis/fix-it`,
+      `${GIT}/worktrees/api`,
+    ]);
+  });
+
+  it("keeps what decides what git runs, or what other workspaces see, out of reach", () => {
+    // Tags among them: git resolves `origin/main` to a tag of that name before
+    // the remote-tracking ref.
+    expect(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.denyWrite).toEqual([
+      `${GIT}/config`,
+      `${GIT}/config.lock`,
+      `${GIT}/hooks`,
+      `${GIT}/commondir`,
+      `${GIT}/modules`,
+      `${GIT}/info`,
+      `${GIT}/refs/replace`,
+      `${GIT}/refs/tags`,
+      `${GIT}/objects/info`,
+      `${GIT}/packed-refs`,
+      `${GIT}/packed-refs.lock`,
+      `${GIT}/worktrees/api/commondir`,
+      `${GIT}/worktrees/api/gitdir`,
+      `${GIT}/worktrees/api/config.worktree`,
+      `${GIT}/worktrees/api/modules`,
+    ]);
+  });
+
+  it("grants no worktree or branch it can't place safely", () => {
+    const fs = filesystemOf(
+      buildClaudeSettings(WORKSPACE_ID, {}, [{ ...REPO, branch: "../../config", adminName: null }]),
+    );
+    expect(fs?.allowWrite).toEqual([`${GIT}/objects`]);
+  });
+
+  it("keeps the user's own sandbox settings and paths", () => {
+    const fs = filesystemOf(
+      buildClaudeSettings(
+        WORKSPACE_ID,
+        {
+          sandbox: {
+            enabled: true,
+            filesystem: {
+              allowWrite: ["~/scratch", "/ws/.repos/notes.txt"],
+              denyWrite: ["~/scratch/keep"],
+              denyRead: ["~/secrets"],
+            },
+          },
+        },
+        [REPO],
+      ),
+    );
+    expect(fs?.denyRead).toEqual(["~/secrets"]);
+    expect(fs?.allowWrite?.slice(0, 2)).toEqual(["~/scratch", "/ws/.repos/notes.txt"]);
+    expect(fs?.denyWrite?.[0]).toBe("~/scratch/keep");
+  });
+
+  it("replaces its own paths, including an earlier version's, and drops a repo that left", () => {
+    const earlier = {
+      sandbox: {
+        filesystem: {
+          allowWrite: [`${GIT}`, "/ws/.repos/acme-api/.claude/worktrees", "/ws/.repos-backup/x"],
+        },
+      },
+    };
+    const before = buildClaudeSettings(WORKSPACE_ID, earlier, [
+      REPO,
+      { clonePath: "/ws/.repos/acme-web", branch: "main", adminName: "web" },
+    ]);
+    const after = filesystemOf(buildClaudeSettings(WORKSPACE_ID, before, [REPO]));
+    expect(after?.allowWrite).toEqual([
+      "/ws/.repos-backup/x",
+      ...(filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.allowWrite ?? []),
+    ]);
+    expect(after?.denyWrite).toEqual(
+      filesystemOf(buildClaudeSettings(WORKSPACE_ID, {}, [REPO]))?.denyWrite,
+    );
+  });
+
+  it("clears its paths when the workspace's last repo has gone", () => {
+    const before = buildClaudeSettings(WORKSPACE_ID, {}, [REPO]);
+    const after = filesystemOf(buildClaudeSettings(WORKSPACE_ID, before, []));
+    expect(after?.allowWrite).toEqual([]);
+    expect(after?.denyWrite).toEqual([]);
+  });
+
+  it("adds no sandbox settings to a workspace that never had repos", () => {
+    expect((buildClaudeSettings(WORKSPACE_ID) as WithSandbox).sandbox).toBeUndefined();
+  });
+});
+
 describe("permissionSettledHookCommand", () => {
   async function run(reply: (req: Request) => Response | Promise<Response>, stdin: string) {
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: reply });

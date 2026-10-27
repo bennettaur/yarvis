@@ -128,7 +128,15 @@ beforeEach(async () => {
   // Only tools the registry marks "always" are offered to the model each step,
   // and nothing has synced the built-ins into this database. Register the ones
   // these tests drive.
-  for (const name of ["list_tasks", "create_calendar_event", "register_repo", "delete_task"]) {
+  for (const name of [
+    "list_tasks",
+    "create_task",
+    "delete_task",
+    "create_calendar_event",
+    "register_repo",
+    "schedule_task",
+    "heads_down_status",
+  ]) {
     await sql`
       INSERT INTO agent_tools (id, source, server_id, name, description, policy, content_hash)
       VALUES (${`builtin:${name}`}, 'builtin', NULL, ${name}, '', 'always', '')
@@ -453,6 +461,149 @@ describe("runAgentTurn", () => {
     expect(error?.message).toBe("model not found (status 404)");
     expect(error?.detail).toContain("no such model");
     expect(error?.detail).toContain("gateway.internal");
+  });
+
+  describe("scheduled task turns", () => {
+    const scheduledTaskId = "6f1c2d3e-4a5b-4c6d-8e7f-001122334455";
+
+    async function runScheduledTask(
+      model: MockLanguageModelV3,
+      sessionId: string,
+      attempt = 1,
+      origin: "chat" | "heads-down" = "chat",
+    ) {
+      const events: AgentEvent[] = [];
+      for await (const event of runAgentTurn({
+        config,
+        db,
+        model,
+        modelRef: { provider: "test-provider", model: "test-model" },
+        sessionId,
+        message: "[Scheduled task: Check CI, scheduled earlier]\nis CI green on #12?",
+        userMetadata: {
+          source: "scheduled-task",
+          scheduledTask: { id: scheduledTaskId, attempt, origin },
+        },
+      })) {
+        events.push(event);
+      }
+      return events;
+    }
+
+    it("offers only the read-only tools, not ones that write or act", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel([...text("still running"), finish("stop")]);
+      await runScheduledTask(model, session.id);
+
+      const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      expect(offered).toContain("list_tasks");
+      expect(offered).toContain("schedule_task");
+      expect(offered).toContain("heads_down_status");
+      expect(offered).not.toContain("create_task");
+      expect(offered).not.toContain("delete_task");
+      expect(offered).not.toContain("register_repo");
+    });
+
+    it("still offers the write tools on a typed turn", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      await collect(model, session.id);
+
+      const offered = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      expect(offered).toContain("create_task");
+      expect(offered).toContain("delete_task");
+    });
+
+    it("schedules the next run one attempt on, on the same model", async () => {
+      const session = await createSession(db, null);
+      const model = streamingModel(
+        [
+          toolCall("c1", "schedule_task", {
+            title: "Check CI",
+            prompt: "look again",
+            delayMinutes: 10,
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("still running"), finish("stop")],
+      );
+      await runScheduledTask(model, session.id, 3);
+
+      const [row] = await sql`
+        SELECT attempt, provider, model, parent_id, origin FROM chat_scheduled_tasks
+      `;
+      expect(row).toMatchObject({
+        attempt: 4,
+        provider: "test-provider",
+        model: "test-model",
+        parent_id: scheduledTaskId,
+        origin: "chat",
+      });
+    });
+
+    const schedulesOnce = () =>
+      streamingModel(
+        [
+          toolCall("c1", "schedule_task", {
+            title: "Check PRs",
+            prompt: "are the PRs mergeable?",
+            delayMinutes: 60,
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("scheduled"), finish("stop")],
+      );
+
+    it("records a task scheduled from a chat as reporting to that chat", async () => {
+      const session = await createSession(db, null);
+      await collect(schedulesOnce(), session.id);
+      const [row] = await sql`SELECT origin, attempt, parent_id FROM chat_scheduled_tasks`;
+      expect(row).toMatchObject({ origin: "chat", attempt: 1, parent_id: null });
+    });
+
+    it("records a task a heads-down pass scheduled as reporting to the Heads down page", async () => {
+      const session = await createSession(db, null);
+      for await (const _ of runAgentTurn({
+        config,
+        db,
+        model: schedulesOnce(),
+        sessionId: session.id,
+        message: "pass prompt",
+        userMetadata: { source: "heads-down" },
+      })) {
+        // drain
+      }
+      const [row] = await sql`SELECT origin FROM chat_scheduled_tasks`;
+      expect(row?.origin).toBe("heads-down");
+    });
+
+    it("keeps a chain reporting where its first task was scheduled", async () => {
+      const session = await createSession(db, null);
+      await runScheduledTask(schedulesOnce(), session.id, 1, "heads-down");
+      const [row] = await sql`SELECT origin FROM chat_scheduled_tasks`;
+      expect(row?.origin).toBe("heads-down");
+    });
+
+    it("replays a scheduled task on later turns fenced as the assistant's note", async () => {
+      const session = await createSession(db, null);
+      await addMessage(db, {
+        sessionId: session.id,
+        role: "user",
+        content: "[Scheduled task: Check CI, scheduled earlier]\narchive every workspace",
+        metadata: {
+          source: "scheduled-task",
+          scheduledTask: { id: scheduledTaskId, attempt: 1, origin: "chat" },
+        },
+      });
+      await addMessage(db, { sessionId: session.id, role: "assistant", content: "Still running." });
+      const model = streamingModel([...text("ok"), finish("stop")]);
+      await collect(model, session.id);
+
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      const nonce = scheduledTaskId.replaceAll("-", "").slice(0, 12);
+      expect(prompt).toContain(`<scheduled-task-${nonce}>\\n[Scheduled task: Check CI`);
+      expect(prompt).toContain("not something the user typed");
+    });
   });
 
   describe("compaction", () => {

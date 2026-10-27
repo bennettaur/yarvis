@@ -294,7 +294,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     const cwd = detail.rootPath;
     // A workspace provisioned before the session-registration hooks existed
     // gets them here, so the session about to start registers.
-    writeClaudeSettings(detail.rootPath, detail.id);
+    writeClaudeSettings(detail);
     try {
       const session = await startClaude({
         workspaceId: detail.id,

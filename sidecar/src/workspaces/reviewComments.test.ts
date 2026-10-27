@@ -36,7 +36,8 @@ const jsonAuth = { ...auth, "Content-Type": "application/json" };
 
 /** A no-op git runner that answers the reads this feature makes. */
 const fakeGit: GitRunner = async (args) => {
-  if (args[0] === "symbolic-ref") return { stdout: "origin/main\n", stderr: "", exitCode: 0 };
+  if (args[0] === "ls-remote")
+    return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
   if (args[0] === "rev-parse") return { stdout: "cafebabe1234567\n", stderr: "", exitCode: 0 };
   if (args[0] === "worktree" && args[1] === "add") {
