@@ -27,7 +27,7 @@ import {
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { reapAndListAgentSessions } from "./agentSessions.ts";
-import { writeClaudeSettings } from "./claudeSettings.ts";
+import { type WorkspaceForSettings, writeClaudeSettings } from "./claudeSettings.ts";
 
 export interface StartClaudeSessionInput {
   /** Workspace the session belongs to; forms the PTY session key. */
@@ -173,7 +173,7 @@ export type AgentSendResult =
  */
 export async function sendToWorkspaceAgent(
   db: Db,
-  workspace: { id: string; name: string; rootPath: string },
+  workspace: WorkspaceForSettings & { name: string },
   instruction: string,
   {
     agentPids,
@@ -197,7 +197,7 @@ export async function sendToWorkspaceAgent(
     else if (error.includes(AGENT_SESSION_EXITED_ERROR)) failure = "exited";
     else if (error.includes(AGENT_NOT_RECOGNISED_ERROR)) failure = "not_recognised";
     if (failure === "not_recognised" && agentPids.length === 0) {
-      writeClaudeSettings(workspace.rootPath, workspace.id);
+      writeClaudeSettings(workspace);
     }
     return { delivered: false, failure, error };
   }

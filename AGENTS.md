@@ -300,6 +300,43 @@ back to ad-hoc.
   is used only after `resolveWorktree` in `workspaces/worktrees.ts` matches it
   against a fresh `git worktree list` of that repo's clone, and what is used is
   git's path, not the caller's.
+- A workspace session's sandbox can write part of its repo's shared clone, so
+  the clone's git data is not trusted either. `sandboxPaths.ts` grants only
+  what that workspace's own commits need and denies what decides which program
+  git runs or what other workspaces see (config, hooks, submodule git folders,
+  `commondir`, replace refs, packed refs, tags). Claude Code's sandbox also
+  refuses writes to a worktree's existing `.git` file, which is what keeps a
+  session from pointing the worktree at a git folder of its own; nothing in
+  Yarvis enforces that. Three rules follow:
+  - Every git the sidecar starts, `gh` included, runs with `hardenedGitEnv`
+    from `git.ts`. It switches off a short, named list of settings (the
+    fsmonitor and submodule recursion a staged fake submodule would use, and
+    replace refs), and command-scope config reaches the git processes started
+    for submodules. It is not a general barrier: a repo whose config an
+    attacker could write would still get its other settings honoured. Anything
+    new that spawns git outside `defaultGitRunner` owes the same env, and
+    status and diff calls also pass `--ignore-submodules=all`.
+  - A remote-tracking ref is always named in full (`remoteRef`), because a
+    short `origin/main` resolves a tag or a local branch of that name first.
+  - Yarvis never runs git on a clone or worktree whose git data holds a
+    symlink: `defaultGitRunner` and `ghRunner` call `symlinkRefusal` first,
+    because the sidecar's git runs outside the sandbox and would write through
+    a link a session planted (moving another workspace's branch, or
+    overwriting one of the user's files). Anything new that spawns git owes the
+    same call. It is checked right before each command, so a session that is
+    still running can still plant one in between; the narrow grants in
+    `sandboxPaths.ts` (only the workspace's own refs' leaves, never a folder in
+    `refs`) are what keep it from making directory links there at all.
+  - The object store is the accepted gap. A session has to write it to commit,
+    so it can also overwrite an object every workspace on the repo shares, and
+    git doesn't re-hash an object when it checks it out. Nothing here detects
+    that short of `git fsck`, and `docs/features/workspaces.md` says so.
+  - `integrity.ts` is best-effort detection of the traces such a session
+    leaves, for the user's own terminal, which nothing in Yarvis hardens.
+    Yarvis refuses to merge or push for a workspace while any are there, and
+    the check run right before (`checkBeforeWrite`) fails closed. It is not
+    what protects Yarvis's own git: a running session can act between a check
+    and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` is the only such path and it is guarded on both
