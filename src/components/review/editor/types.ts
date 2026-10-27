@@ -40,6 +40,7 @@ export interface LineDecoration {
   className?: string;
   /** Applied to the line-number gutter. */
   marginClassName?: string;
+  /** Rendered as markdown; pass untrusted text through `plainHoverText`. */
   hoverMessage?: string;
 }
 

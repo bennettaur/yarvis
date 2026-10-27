@@ -65,3 +65,22 @@
   white-space: normal;
   cursor: auto;
 }
+
+/*
+ * Lines the verification report points at: a must-read range, and the line a
+ * finding cites. The margin bar marks them where the background is too faint.
+ */
+.review-must-read-line {
+  background: color-mix(in srgb, var(--color-amber-500, #f59e0b) 8%, transparent);
+}
+.review-must-read-margin {
+  border-left: 3px solid var(--color-amber-500, #f59e0b);
+  margin-left: 3px;
+}
+.review-finding-line {
+  background: color-mix(in srgb, var(--color-red-400, #f87171) 10%, transparent);
+}
+.review-finding-margin {
+  border-left: 3px solid var(--color-red-400, #f87171);
+  margin-left: 3px;
+}

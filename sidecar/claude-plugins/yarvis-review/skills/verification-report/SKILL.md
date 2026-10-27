@@ -1,6 +1,6 @@
 ---
 name: verification-report
-description: Writes a pull request verification report by running the summary, risk, completeness, test, complexity, performance and comment checks in parallel and merging their answers. Use when asked for a verification report on a checked-out PR.
+description: Writes a pull request verification report by running the summary, risk, completeness, test, complexity, performance, comment, observability and quality checks in parallel and merging their answers. Use when asked for a verification report on a checked-out PR.
 ---
 
 # Verification report
@@ -32,9 +32,11 @@ parallel:
 | `yarvis-review:complexity-reviewer` | `complexity` | one per group |
 | `yarvis-review:performance-reviewer` | `performance` | one per group |
 | `yarvis-review:comment-reviewer` | `comments` | one per group |
+| `yarvis-review:observability-reviewer` | `observability` | one per group |
+| `yarvis-review:quality-reviewer` | `quality` | one per group |
 
 When READING_GROUPS is 0 or 1, "one per group" is one, with no GROUP line.
-Otherwise start each of those six once for each group, 1 to READING_GROUPS,
+Otherwise start each of those eight once for each group, 1 to READING_GROUPS,
 with that group's number as GROUP.
 
 Give each one exactly this prompt, with the values filled in, and nothing else
@@ -60,7 +62,8 @@ answer.
 With one agent per group, put the groups' answers for a check together, still
 without rewording anything:
 
-- a check (`completeness`, `tests`, `complexity`, `performance`, `comments`):
+- a check (`completeness`, `tests`, `complexity`, `performance`, `comments`,
+  `observability`, `quality`):
   every group's findings in one list, most severe first, keeping the five most
   severe; `status` is `issues` when any finding is left, else `pass`;
 - `risk`: the highest `level` any group gave, with that group's

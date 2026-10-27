@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { updateWorkStream, type WorkStream, type WorkStreamLink } from "../../lib/headsDown";
+import {
+  updateWorkStream,
+  type WorkStream,
+  type WorkStreamLink,
+  type WorkStreamPatch,
+} from "../../lib/headsDown";
 import { openExternal } from "../../lib/url";
 
 const STATUS_LABEL: Record<WorkStream["status"], string> = {
@@ -47,11 +52,13 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const closeStream = async (status: "done" | "dropped") => {
+  const paused = stream.pausedAt !== null;
+
+  const applyPatch = async (patch: WorkStreamPatch) => {
     setBusy(true);
     setError(null);
     try {
-      await updateWorkStream(stream.id, { status });
+      await updateWorkStream(stream.id, patch);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -68,6 +75,11 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
             <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATUS_STYLE[stream.status]}`}>
               {STATUS_LABEL[stream.status]}
             </span>
+            {paused && (
+              <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[11px] text-sky-300">
+                Paused
+              </span>
+            )}
             <span className="text-[11px] uppercase text-zinc-500">{stream.priority}</span>
           </div>
           <div className="mt-1 text-sm font-medium text-zinc-100">{stream.title}</div>
@@ -76,7 +88,16 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
           <button
             type="button"
             disabled={busy}
-            onClick={() => void closeStream("done")}
+            onClick={() => void applyPatch({ paused: !paused })}
+            aria-label={`${paused ? "Resume" : "Pause"} ${stream.title}`}
+            className="text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
+          >
+            {paused ? "Resume" : "Pause"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void applyPatch({ status: "done" })}
             aria-label={`Mark ${stream.title} done`}
             className="text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
           >
@@ -85,7 +106,7 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
           <button
             type="button"
             disabled={busy}
-            onClick={() => void closeStream("dropped")}
+            onClick={() => void applyPatch({ status: "dropped" })}
             aria-label={`Drop ${stream.title}`}
             className="text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
           >

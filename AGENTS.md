@@ -257,7 +257,9 @@ back to ad-hoc.
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
-  because a transcript can be misheard or picked up from the room. A surface
+  because a transcript can be misheard or picked up from the room. A `browser`
+  turn (the Chrome side panel) does the same: it was typed, but it carries the
+  open tab's page-written title and selection on every turn. A surface
   that can't prompt gets those tools dropped rather than run unattended —
   silently doing the irreversible thing is the one unacceptable outcome. A
   `scheduled-task` turn (below) is unreviewed in the same way.
@@ -725,7 +727,16 @@ back to ad-hoc.
   inspected one, a CSS selector the model wrote — ends in its one set of
   screens, applied to what the click actually lands on. Per-site behaviour goes
   in `extension/adapters/` and may change what a tool returns, never what it may
-  do.
+  do. The side panel's chat runs the other way through the same host: it maps
+  each panel request onto a fixed `/browser/chat` route (`scripts/browser/chat.ts`),
+  so the browser token also runs agent turns and reads recent chats from every
+  surface (the panel picks from them). Approval requests travel back on the
+  turn's stream and answers on `/browser/chat/approvals/:id`, which only decides
+  calls a panel turn asked about. That leaves the token able to approve its own
+  turn's calls, so anything that can read the discovery file can use every tool
+  the panel can; it is as scoped as the user's own account, not narrower. The
+  tab it sends as context is fenced like any
+  screen context.
 - `read_web_page` (`sidecar/src/web/`) reads a public page as an anonymous
   visitor: no cookies, the SSRF guard on every redirect hop, and the deadline
   covering the body read. Before the model sees a page, `web/extract.ts` drops

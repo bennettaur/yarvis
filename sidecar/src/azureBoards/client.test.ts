@@ -327,6 +327,37 @@ describe("AzureBoardsClient.workItems", () => {
   });
 });
 
+describe("AzureBoardsClient.workItemTypes", () => {
+  it("lists the types a project files, leaving out hidden and disabled ones", async () => {
+    const org = nextOrg();
+    const client = new AzureBoardsClient(
+      "pat",
+      org,
+      fakeFetch(org, {
+        "/Web%20App/_apis/wit/workitemtypes": {
+          value: [
+            { name: "Bug" },
+            { name: "Task" },
+            { name: "Shared Steps" },
+            { name: "Epic", isDisabled: true },
+          ],
+        },
+        "/Web%20App/_apis/wit/workitemtypecategories": {
+          value: [
+            { referenceName: "Microsoft.BugCategory", workItemTypes: [{ name: "Bug" }] },
+            {
+              referenceName: "Microsoft.HiddenCategory",
+              workItemTypes: [{ name: "Shared Steps" }],
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(await client.workItemTypes("Web App")).toEqual(["Bug", "Task"]);
+  });
+});
+
 describe("AzureBoardsClient mutations", () => {
   it("puts a non-bug's text in Description and leaves out fields not given", async () => {
     const org = nextOrg();

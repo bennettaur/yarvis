@@ -43,14 +43,24 @@ async function pendingQuestionId(): Promise<string> {
   throw new Error("question never appeared");
 }
 
+/** askQuestions writes the attention item after the question row, so wait for it too. */
+async function questionAttentionItem(): Promise<Record<string, unknown>> {
+  for (let i = 0; i < 100; i++) {
+    const [item] = await sql`
+      SELECT source, session_key, title, nav_target FROM attention_items WHERE kind = 'question'`;
+    if (item) return item;
+    await Bun.sleep(20);
+  }
+  throw new Error("attention item never appeared");
+}
+
 describe("the in-app agent's question tools", () => {
   it("asks through the bell as Yarvis and returns the user's answer", async () => {
     const tools = chatTools("chat-1");
     const call = tools.ask_user.execute!(ASK, callOptions());
     const id = await pendingQuestionId();
 
-    const [item] = await sql`SELECT source, session_key, title, nav_target FROM attention_items`;
-    expect(item).toMatchObject({
+    expect(await questionAttentionItem()).toMatchObject({
       source: "chat-agent",
       session_key: "chat:chat-1",
       title: "Yarvis",

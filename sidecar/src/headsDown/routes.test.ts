@@ -41,8 +41,15 @@ const post = (path: string, body?: unknown) =>
     headers: jsonAuth,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-const get = async (path: string) =>
+// biome-ignore lint/suspicious/noExplicitAny: test reads of JSON bodies
+const get = async (path: string): Promise<any> =>
   (await app.request(`/api/heads-down${path}`, { headers: auth })).json();
+
+/** A finished pass of the active run that chose to sleep `minutes`. */
+async function seedFinishedPass(minutes: number) {
+  await sql`INSERT INTO heads_down_passes (run_id, finished_at, sleep_minutes)
+            SELECT id, now(), ${minutes} FROM heads_down_runs WHERE status = 'active'`;
+}
 
 let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
@@ -71,6 +78,54 @@ describe("/api/heads-down", () => {
     expect(await get("/questions")).toEqual([]);
     const items = await sql`SELECT status FROM attention_items`;
     expect(items.map((r) => r.status)).toEqual(["resolved"]);
+  });
+
+  it("pauses and resumes without dropping the questions it asked", async () => {
+    expect((await post("/pause")).status).toBe(409);
+    await post("/start", {});
+    await askUser(db, { kind: "question", question: "Which repo?" });
+    await seedFinishedPass(30);
+    expect((await get("")).nextPassAt).toBeString();
+    expect((await post("/resume")).status).toBe(409);
+
+    expect((await post("/pause")).status).toBe(200);
+    // No pass is due while paused.
+    expect(await get("")).toMatchObject({ run: { status: "active" }, nextPassAt: null });
+    expect((await get("")).run.pausedAt).not.toBeNull();
+    expect(await get("/questions")).toEqual([expect.objectContaining({ question: "Which repo?" })]);
+
+    expect((await post("/resume")).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { pausedAt: null } });
+  });
+
+  it("shows no next pass when the run stops before it", async () => {
+    await post("/start", { stopAt: new Date(Date.now() + 10 * 60_000).toISOString() });
+    await seedFinishedPass(30);
+    expect((await get("")).nextPassAt).toBeNull();
+  });
+
+  it("sets and clears the stop time, and refuses one already passed", async () => {
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/stop-at", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const later = new Date(Date.now() + 60 * 60_000).toISOString();
+    expect((await put({ stopAt: later })).status).toBe(409);
+
+    expect(
+      (await post("/start", { stopAt: new Date(Date.now() - 60_000).toISOString() })).status,
+    ).toBe(400);
+    expect((await post("/start", { stopAt: "7pm" })).status).toBe(400);
+    expect((await post("/start", { stopAt: later })).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { stopAt: later } });
+    expect((await put({ stopAt: new Date(Date.now() - 60_000).toISOString() })).status).toBe(400);
+    expect((await put({ stopAt: null })).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { stopAt: null } });
+    // A local time is its next occurrence.
+    expect((await put({ stopAt: "23:59" })).status).toBe(200);
+    expect(new Date((await get("")).run.stopAt).getTime()).toBeGreaterThan(Date.now());
   });
 
   it("takes a message for the next pass, and refuses an empty one", async () => {

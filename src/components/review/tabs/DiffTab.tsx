@@ -8,6 +8,7 @@ import { MonacoDiffView } from "../editor";
 import { useReviewNavigation } from "../navigation";
 import { AnnotationBar, CenteredNote } from "./FileChrome";
 import FileTab from "./FileTab";
+import { type FileNote, fileNotes, reportDecorations } from "./reportHighlights";
 import {
   modelUri,
   mustReadFor,
@@ -126,7 +127,10 @@ function ChangedFileDiff({
   );
   const viewed = useReviewViewed(ctx.prRef);
   const latest = useLatestVerification(ctx.workspaceId, ctx.pr.id);
-  const mustRead = mustReadFor(reportOf(latest.data), path);
+  const report = reportOf(latest.data);
+  const mustRead = mustReadFor(report, path);
+  const notes = useMemo(() => fileNotes(report, path), [report, path]);
+  const decorations = useMemo(() => reportDecorations(mustRead, notes), [mustRead, notes]);
   const [showAll, setShowAll] = useState(false);
   const reveal = useReveal(revealLine, revealNonce);
   const { onOpenLocation } = useReviewNavigation(ctx);
@@ -183,6 +187,7 @@ function ChangedFileDiff({
         sideBySide={ctx.diffMode === "split"}
         hideUnchanged={!showAll}
         zones={annotations.zones}
+        decorations={decorations}
         onLineAction={annotations.onLineAction}
         revealLine={reveal.line}
         revealKey={reveal.key}
@@ -254,13 +259,52 @@ function ChangedFileDiff({
           )}
         </span>
       </div>
-      {mustRead && (
-        <div className="border-b border-amber-900/60 bg-amber-950/30 px-3 py-1 text-xs text-amber-200">
-          {mustRead.reason}
-        </div>
+      {(mustRead || notes.length > 0) && (
+        <ReportNotes reason={mustRead?.reason} notes={notes} onJump={reveal.jump} />
       )}
       <AnnotationBar annotations={annotations} error={viewed.error} />
       <div className="relative min-h-0 flex-1">{body}</div>
+    </div>
+  );
+}
+
+/**
+ * Why the verification report wants this file read, and what its checks
+ * found in it, each a click from its line. The same lines are highlighted in
+ * the diff.
+ */
+function ReportNotes({
+  reason,
+  notes,
+  onJump,
+}: {
+  reason?: string;
+  notes: FileNote[];
+  onJump: (line: number) => void;
+}) {
+  return (
+    <div className="space-y-0.5 border-b border-amber-900/60 bg-amber-950/30 px-3 py-1 text-xs text-amber-200">
+      {reason && <div>{reason}</div>}
+      {notes.length > 0 && (
+        <ul className="space-y-0.5">
+          {notes.map((note) => (
+            <li key={`${note.source}:${note.line}:${note.title}`} className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onJump(note.line)}
+                className="shrink-0 font-mono text-sky-400 hover:text-sky-300"
+              >
+                :{note.line}
+              </button>
+              <span className="min-w-0 text-zinc-300" title={note.detail}>
+                <span className="text-zinc-500">{note.source}</span>
+                {note.severity && <span className="text-zinc-500"> · {note.severity}</span>}{" "}
+                {note.title}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

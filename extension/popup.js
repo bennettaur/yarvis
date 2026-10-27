@@ -62,7 +62,7 @@ let windowId;
 chrome.windows.getCurrent().then((current) => {
   windowId = current.id;
 });
-document.getElementById("activity").addEventListener("click", (event) => {
+document.getElementById("side-panel").addEventListener("click", (event) => {
   const button = event.currentTarget;
   if (windowId === undefined) return;
   chrome.sidePanel

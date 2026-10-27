@@ -6,14 +6,15 @@ actually did. It can start work in a workspace and hand follow-ups to the
 Claude Code sessions running there. Tell it what matters this week, then keep
 asking it where you are and what's next.
 
-You can talk to it from four places, and they all reach the same agent and the
+You can talk to it from five places, and they all reach the same agent and the
 same memory:
 
 - the **Chat** tab (Cmd+1),
 - **Omni Chat**, the overlay you summon from anywhere with Control+Shift+Space
   (see [Chat and Omni Chat](quick-chat.md)),
 - your voice (see [Voice](voice.md)),
-- Telegram (see [Telegram](telegram.md)).
+- Telegram (see [Telegram](telegram.md)),
+- Chrome's side panel, beside the page you're on (see [Browser](browser.md)).
 
 ## Set up
 
@@ -378,9 +379,12 @@ you asked.
 - **Registering a repo** asks every time. Later tools clone the repo and run
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
+- **Filing an issue on Yarvis itself** asks every time. The Yarvis repo is
+  public, so read the title and body before you approve.
 - **Going heads down** asks every time, since it starts a loop that keeps
-  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
-  for what it may do without asking.
+  acting on its own until you stop it. So do resuming it after a pause and
+  changing when it stops, which keep that loop going. See
+  [Heads-down mode](heads-down.md) for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Reading a web page** asks when the link isn't one you typed in the
   conversation, such as a link the assistant found on a page. A link can carry
@@ -438,8 +442,8 @@ Always available:
   to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
   for you, and specialists and scheduled jobs never get these. See
   [MCP](mcp.md#asking-you-questions).
-- **Heads down.** Start heads-down mode once you agree, stop it, and check
-  whether it's running.
+- **Heads down.** Start heads-down mode once you agree, pause, resume or stop
+  it, set when it stops, and check whether it's running.
 
 Loaded on demand:
 
@@ -450,8 +454,11 @@ Loaded on demand:
   on, and start work on a ticket.
 - **GitHub issues.** Read, open, edit (title, body, open or closed, labels,
   assignees) and comment on an issue in a registered repo.
+  Separately, file an issue on Yarvis itself when one of its tools misbehaves
+  or you ask for a change to the app.
 - **Azure Boards.** Search with WIQL or title words, read a work item with its
-  links (parent, children, what blocks it), create one, edit its title,
+  links (parent, children, what blocks it), list a project's work item types,
+  create one, edit its title,
   description, tags or state, assign it to you or unassign it, and comment.
 - **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
   messages and review requests, mark what it's waiting on, and find the stream

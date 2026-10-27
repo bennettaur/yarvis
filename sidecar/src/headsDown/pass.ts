@@ -31,12 +31,14 @@ import {
   lastUserActivityAt,
   listQuestions,
   markMessagesSeen,
+  mayRunPasses,
+  msUntilStop,
   passToolCalls,
   startPass,
   unseenMessages,
   unspentApprovals,
 } from "./service.ts";
-import { setPassAbort } from "./wake.ts";
+import { setPassAbort, setPassStopTimeHandler } from "./wake.ts";
 
 /**
  * The built-in families a pass works with, mounted for it so it doesn't spend
@@ -81,6 +83,9 @@ export function userRequestFor(
 
 /** The sleep reason recorded for a pass the user stopped; the page shows it as stopped. */
 export const STOPPED_BY_USER = "stopped by you";
+
+/** The sleep reason recorded for a pass cut short by the run's stop time. */
+export const REACHED_STOP_TIME = "reached the stop time";
 
 /** How long a pass may run before it is stopped. */
 export const PASS_TIMEOUT_MS = 20 * 60_000;
@@ -218,28 +223,47 @@ export async function runPass(
   const changed = () => publish({ type: "changed" });
   let error: string | null = null;
   const abort = new AbortController();
-  let stoppedByUser = false;
-  const timer = setTimeout(() => abort.abort(), PASS_TIMEOUT_MS);
-  setPassAbort(() => {
-    stoppedByUser = true;
+  /** Why the pass was cut short on purpose, as opposed to failing or timing out. */
+  let stoppedBy: "user" | "stop-time" | null = null;
+  const stopPass = (by: "user" | "stop-time") => {
+    stoppedBy ??= by;
     abort.abort();
-  });
+  };
+  const timer = setTimeout(() => abort.abort(), PASS_TIMEOUT_MS);
+  setPassAbort(() => stopPass("user"));
+  // The run's stop time ends the pass, and moves with it while the pass runs.
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStopTimer = (stopAt: Date | null) => {
+    clearTimeout(stopTimer);
+    stopTimer = undefined;
+    const untilStop = stopAt ? stopAt.getTime() - Date.now() : null;
+    // Past the pass timeout it can't matter, and setTimeout overflows on delays past ~24 days.
+    if (untilStop !== null && untilStop < PASS_TIMEOUT_MS) {
+      stopTimer = setTimeout(() => stopPass("stop-time"), Math.max(0, untilStop));
+    }
+  };
+  armStopTimer(run.stopAt);
+  setPassStopTimeHandler(armStopTimer);
   let promptSent = false;
   let attempt = newAttemptRecord();
   // Whether `attempt` is already in the transcript, so a failure after it can't save it twice.
   let attemptSaved = false;
-  const timedOut = () => abort.signal.aborted && !stoppedByUser;
+  const timedOut = () => abort.signal.aborted && !stoppedBy;
   const endingNote = (errorMessage: string) =>
-    stoppedByUser
+    stoppedBy === "user"
       ? "Stopped by you here."
-      : timedOut()
-        ? "Ran out of time here."
-        : `Failed here: ${errorMessage}`;
+      : stoppedBy === "stop-time"
+        ? "Stopped at the stop time here."
+        : timedOut()
+          ? "Ran out of time here."
+          : `Failed here: ${errorMessage}`;
   const announcedMerges = new Set<string>();
   try {
-    // Stopped while the pass was getting ready: its abort wasn't registered yet.
-    if ((await getActiveRun(db))?.id !== run.id) {
-      stoppedByUser = true;
+    // Stopped, paused or past its stop time while the pass was getting ready:
+    // its handlers weren't registered yet.
+    if (!(await mayRunPasses(db, run.id))) {
+      const active = await getActiveRun(db);
+      stoppedBy = active?.id === run.id && msUntilStop(active) === 0 ? "stop-time" : "user";
       throw new Error("stopped before it started");
     }
     const saidMessages = [...earlier, ...messages];
@@ -352,7 +376,9 @@ export async function runPass(
     }
   } finally {
     clearTimeout(timer);
+    clearTimeout(stopTimer);
     setPassAbort(null);
+    setPassStopTimeHandler(null);
     unmountAll(session.id);
     // Seen once a pass has had them in its prompt, even one that failed
     // part-way: re-sending the same instruction every pass would loop on it.
@@ -366,8 +392,8 @@ export async function runPass(
 
   // Once finish_pass has run, the pass is done: a turn that then ends with no
   // closing text, or fails on a later step, hasn't lost anything.
-  // A stop the user asked for is their doing, not a failure.
-  if (outcome.finished || stoppedByUser) error = null;
+  // A stop the user asked for, or the stop time they set, is not a failure.
+  if (outcome.finished || stoppedBy) error = null;
   // The turn reports a timeout as a plain stop, which reads as the user's doing,
   // so the timeout is named here, with the provider error before it if there was one.
   else if (timedOut()) error = error ? `${TIMEOUT_ERROR} (after: ${error})` : TIMEOUT_ERROR;
@@ -375,7 +401,7 @@ export async function runPass(
   if (error) error = clip(error, MAX_ERROR_CHARS);
   // The pass is recorded whatever happens here: a failure to read the streams
   // just loses the idle reasons, not the record.
-  const awake = await listStreams(db, { awakeAt: new Date() }).catch((e) => {
+  const awake = await listStreams(db, { awakeAt: new Date(), excludePaused: true }).catch((e) => {
     console.error("[heads-down] reading streams for the sleep failed:", e);
     return null;
   });
@@ -391,11 +417,14 @@ export async function runPass(
     },
     headsDownConfig,
   );
-  const sleepReason = stoppedByUser
-    ? STOPPED_BY_USER
-    : outcome.reason
-      ? `${outcome.reason} (${sleep.reason})`
-      : sleep.reason;
+  const sleepReason =
+    stoppedBy === "user"
+      ? STOPPED_BY_USER
+      : stoppedBy === "stop-time"
+        ? REACHED_STOP_TIME
+        : outcome.reason
+          ? `${outcome.reason} (${sleep.reason})`
+          : sleep.reason;
   await finishPass(db, pass.id, {
     notes: outcome.notes,
     sleepMinutes: sleep.minutes,

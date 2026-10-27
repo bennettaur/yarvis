@@ -75,6 +75,9 @@ export interface VerificationReport {
   complexity: VerificationCheck;
   performance: VerificationCheck;
   comments: VerificationCheck;
+  /** Absent on a report from before these checks were added. */
+  observability?: VerificationCheck;
+  quality?: VerificationCheck;
   /** Absent on a report from before coverage was counted. */
   coverage?: VerificationCoverage | UnknownCoverage;
 }
@@ -105,6 +108,8 @@ export const VERIFICATION_CHECKS = [
   "complexity",
   "performance",
   "comments",
+  "observability",
+  "quality",
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 

@@ -6,7 +6,8 @@ import { waitForApproval } from "../mcp/approvals.ts";
 import { readDecision } from "../memory/decisions.ts";
 import { HashEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
-import { createStream, linkToStream } from "../workStreams/service.ts";
+import { createStream, linkToStream, updateStream } from "../workStreams/service.ts";
+import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge } from "./attention.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { decideCall, isMergeInstruction, mergeCallTarget, passApprovalHooks } from "./policy.ts";
@@ -18,6 +19,10 @@ import {
   getActiveRun,
   lastUserActivityAt,
   markMessagesSeen,
+  mayRunPasses,
+  pauseRun,
+  resumeRun,
+  setStopAt,
   spendApproval,
   startRun,
   stopRun,
@@ -48,6 +53,38 @@ describe("heads-down runs and messages", () => {
     expect((await getActiveRun(db))?.focus).toBe("ship billing, then docs");
     await stopRun(db);
     expect(await getActiveRun(db)).toBeNull();
+  });
+
+  it("keeps the stop time when started again without one, and clears it on null", async () => {
+    const stopAt = new Date(Date.now() + 60 * 60_000);
+    await startRun(db, "ship billing", { stopAt });
+    expect((await startRun(db, "ship docs")).stopAt).toEqual(stopAt);
+    expect((await startRun(db, null, { stopAt: null })).stopAt).toBeNull();
+  });
+
+  it("keeps a paused run as the active one, so starting again doesn't open another", async () => {
+    const run = await startRun(db, null);
+    const paused = await pauseRun(db);
+    expect(paused?.pausedAt).toBeInstanceOf(Date);
+    expect(await mayRunPasses(db, run.id)).toBe(false);
+    expect((await startRun(db, null)).id).toBe(run.id);
+
+    await resumeRun(db);
+    expect(await mayRunPasses(db, run.id)).toBe(true);
+  });
+
+  it("resumes only a paused run", async () => {
+    await startRun(db, null);
+    expect(await resumeRun(db)).toBeNull();
+    await pauseRun(db);
+    expect((await resumeRun(db))?.pausedAt).toBeNull();
+  });
+
+  it("lets a run's passes go on only until its stop time", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 60 * 60_000) });
+    expect(await mayRunPasses(db, run.id)).toBe(true);
+    await setStopAt(db, new Date(Date.now() - 1000));
+    expect(await mayRunPasses(db, run.id)).toBe(false);
   });
 
   it("hands each message to a pass until it is marked seen", async () => {
@@ -228,6 +265,54 @@ describe("what a pass may do", () => {
     const run = await startRun(db, null);
     await stopRun(db);
     expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("stopped");
+  });
+
+  it("refuses everything while paused, and carries on once resumed", async () => {
+    const run = await startRun(db, null);
+    await pauseRun(db);
+    expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("stopped");
+    await resumeRun(db);
+    expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("run");
+  });
+
+  it("never lets a pass start, stop, pause or resume heads-down mode, or move its stop time", async () => {
+    const run = await startRun(db, null);
+    for (const tool of [
+      "start_heads_down",
+      "stop_heads_down",
+      "pause_heads_down",
+      "resume_heads_down",
+      "set_heads_down_stop_time",
+    ]) {
+      expect(await decideCall(db, run, tool, { stopAt: null })).toBe("refuse");
+    }
+  });
+
+  it("won't ask the user about a stream they paused", async () => {
+    const stream = await createStream(db, { title: "ship billing" });
+    await updateStream(db, stream.id, { paused: true });
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+
+    const result = await tools.ask_user.execute!(
+      { question: "Ready to merge?", situation: "CI is green", streamId: stream.id },
+      {} as never,
+    );
+    expect(result).toEqual({ error: STREAM_PAUSED });
+    const asked = await sql`SELECT id FROM heads_down_questions`;
+    expect(asked.length).toBe(0);
+  });
+
+  it("asks before steering a workspace whose stream the user paused", async () => {
+    const run = await startRun(db, null);
+    await seedWorkspace(new Date(Date.now() - 60 * 60_000));
+    const args = { workspaceId, instruction: "fix CI" };
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+
+    await updateStream(db, stream.id, { paused: true });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("ask");
+    await updateStream(db, stream.id, { paused: false });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
   });
 
   it("runs an MCP tool unattended only with the user's consent for heads-down mode", async () => {

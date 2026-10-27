@@ -37,6 +37,8 @@ export const VERIFICATION_AGENTS: readonly { agent: string; label: string }[] = 
   { agent: "complexity-reviewer", label: "Complexity" },
   { agent: "performance-reviewer", label: "Performance" },
   { agent: "comment-reviewer", label: "Comment quality" },
+  { agent: "observability-reviewer", label: "Observability" },
+  { agent: "quality-reviewer", label: "Code quality" },
 ];
 
 export function initialProgress(): RunProgress {
