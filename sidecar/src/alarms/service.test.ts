@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { fireAlarm } from "../core/controlClient.ts";
+import { fireAlarm, releaseAlarm } from "../core/controlClient.ts";
 import * as schema from "../db/schema.ts";
 import { subscribe } from "./hub.ts";
 import { importLegacyAlarms } from "./legacyImport.ts";
@@ -348,6 +348,17 @@ describe("alarms on the core", () => {
       status: "fired",
     });
     expect(requests[1]?.params).toEqual({ id: alarm.id });
+  });
+
+  it("reaches the core once its socket is set, after a call made without one failed", async () => {
+    const path = process.env.YARVIS_CORE_SOCK;
+    delete process.env.YARVIS_CORE_SOCK;
+    await expect(releaseAlarm("a")).rejects.toThrow("YARVIS_CORE_SOCK is not set");
+    process.env.YARVIS_CORE_SOCK = path;
+
+    await releaseAlarm("a");
+
+    expect(requests).toEqual([{ method: "alarm.release", params: { id: "a" } }]);
   });
 
   it("doesn't ask the core about a change that didn't happen", async () => {
