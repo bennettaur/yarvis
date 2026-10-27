@@ -35,8 +35,24 @@ let running = false;
 // shouldn't replay a backlog as fresh alerts.
 let primed = false;
 
+// Told about each item raised live, so the app can react to the arrival itself
+// rather than diffing snapshots.
+const arrivalListeners = new Set<(item: AttentionItem) => void>();
+
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+/**
+ * Calls `listener` with each pending item that arrives over the live stream
+ * after the first hydrate. Backlog and refreshes of an item already pending
+ * don't count. Returns an unsubscribe function.
+ */
+export function onAttentionArrived(listener: (item: AttentionItem) => void): () => void {
+  arrivalListeners.add(listener);
+  return () => {
+    arrivalListeners.delete(listener);
+  };
 }
 
 const bySeqDesc = (a: AttentionItem, b: AttentionItem) => b.seq - a.seq;
@@ -102,9 +118,11 @@ function applyItem(item: AttentionItem): void {
   // Streamed while the app was watching, so it is no longer backlog.
   backlog.delete(item.id);
   emit();
-  if (added && primed && !isInView(getViewedScope(), item)) {
+  if (!added || !primed) return;
+  if (!isInView(getViewedScope(), item)) {
     void notify(item.title, item.body ?? "Wants your attention");
   }
+  for (const listener of arrivalListeners) listener(item);
 }
 
 async function hydrate(): Promise<void> {

@@ -107,7 +107,8 @@ What this gives you:
 
 When a Claude session in a workspace asks permission to run something, the bell
 shows what it wants, for example `Bash: bun test`. Click the item to answer it
-in a window over whatever page you're on. It shows:
+in a window over whatever page you're on. If you already have that workspace
+open, the window opens by itself. It shows:
 
 - the tool and its full input, with Claude's own description of a command,
 - the workspace and the directory the session runs in,

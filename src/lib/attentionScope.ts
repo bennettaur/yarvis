@@ -102,6 +102,18 @@ export function isInView(scope: ViewedScope, item: AttentionItem): boolean {
   return Boolean(item.workspaceId) && item.workspaceId === scope.workspaceId;
 }
 
+/**
+ * Whether a newly raised item should open its answer dialog on its own: a
+ * Claude Code permission prompt or a coding agent's question, raised by the
+ * workspace on screen. Unlike `isInView` this ignores window focus, so the
+ * dialog is already waiting when the user switches back to the app.
+ */
+export function shouldAutoOpen(scope: ViewedScope, item: AttentionItem): boolean {
+  if (!item.workspaceId || item.workspaceId !== scope.workspaceId) return false;
+  if (item.kind === "question") return true;
+  return item.kind === "permission" && item.source === "claude-hook" && Boolean(item.sessionKey);
+}
+
 export function getViewedScope(): ViewedScope {
   return snapshot;
 }

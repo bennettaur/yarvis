@@ -612,4 +612,10 @@ be answered straight from the bell. Its row reads `AskUserQuestion:` and the
 first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
 
+When the prompt or question comes from the workspace you have open, its window
+opens on its own, so you don't have to reach for the bell. It still opens while
+Yarvis is in the background, ready for when you switch back. It doesn't open
+over another prompt or question window, or over Omni Chat; the item waits on
+the bell instead.
+
 The assistant doesn't read the bell. It is for you.

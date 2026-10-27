@@ -5,6 +5,7 @@ import {
   isInView,
   setViewedSessions,
   setViewedWorkspace,
+  shouldAutoOpen,
   type ViewedScope,
 } from "./attentionScope";
 
@@ -66,6 +67,39 @@ describe("isInView", () => {
   it("never matches an item with no origin", () => {
     const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
     expect(isInView(viewing, item({ workspaceId: null, sessionKey: null }))).toBe(false);
+  });
+});
+
+describe("shouldAutoOpen", () => {
+  it("opens a permission prompt from the workspace on screen", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w1" }), item())).toBe(true);
+  });
+
+  it("opens a question from the workspace on screen", () => {
+    const question = item({ kind: "question", source: "system" });
+    expect(shouldAutoOpen(scope({ workspaceId: "w1" }), question)).toBe(true);
+  });
+
+  it("opens even while the window is in the background", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w1", focused: false }), item())).toBe(true);
+  });
+
+  it("leaves items from another workspace in the stream", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w2" }), item())).toBe(false);
+  });
+
+  it("leaves items alone when no workspace is on screen", () => {
+    const sessionless = item({ workspaceId: null });
+    expect(shouldAutoOpen(scope(), sessionless)).toBe(false);
+  });
+
+  it("ignores kinds that have no answer dialog", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w1" }), item({ kind: "idle" }))).toBe(false);
+  });
+
+  it("ignores a permission item with no session to answer for", () => {
+    const orphan = item({ sessionKey: null });
+    expect(shouldAutoOpen(scope({ workspaceId: "w1" }), orphan)).toBe(false);
   });
 });
 

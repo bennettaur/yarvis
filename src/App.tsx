@@ -37,7 +37,8 @@ import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
 import type { AttentionItem } from "./lib/attention";
-import { markAttention } from "./lib/attentionStore";
+import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
+import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
@@ -345,6 +346,24 @@ export default function App() {
       navigateTo(item.navTarget, item.title);
     },
     [navigateTo],
+  );
+
+  // A prompt or question from the workspace on screen opens straight away,
+  // unless another dialog or Omni Chat already holds the user's attention.
+  const dialogOpenRef = useRef(false);
+  useEffect(() => {
+    dialogOpenRef.current = permissionItem !== null || questionItem !== null;
+  }, [permissionItem, questionItem]);
+
+  useEffect(
+    () =>
+      onAttentionArrived((item) => {
+        if (dialogOpenRef.current || openRef.current) return;
+        if (!shouldAutoOpen(getViewedScope(), item)) return;
+        dialogOpenRef.current = true;
+        openAttentionItem(item);
+      }),
+    [openAttentionItem],
   );
 
   const openQuestionSession = useCallback(
