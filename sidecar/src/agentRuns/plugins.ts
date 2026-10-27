@@ -14,7 +14,13 @@ import completenessReviewer from "../../claude-plugins/yarvis-review/agents/comp
 import complexityReviewer from "../../claude-plugins/yarvis-review/agents/complexity-reviewer.md" with {
   type: "text",
 };
+import observabilityReviewer from "../../claude-plugins/yarvis-review/agents/observability-reviewer.md" with {
+  type: "text",
+};
 import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
+  type: "text",
+};
+import qualityReviewer from "../../claude-plugins/yarvis-review/agents/quality-reviewer.md" with {
   type: "text",
 };
 import rereviewer from "../../claude-plugins/yarvis-review/agents/rereviewer.md" with {
@@ -50,7 +56,7 @@ export const REREVIEW_INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:rereview-inp
  * A review agent with the shared section spliced in. Claude Code agent files
  * have no include, and the system prompt a run appends never reaches its
  * subagents, so each agent carries the trust rules itself; keeping them in
- * one file is what stops seven copies drifting apart. Throws at load when an
+ * one file is what stops the copies drifting apart. Throws at load when an
  * agent lacks the marker, so a missing guardrail can't ship.
  */
 export function withInputsAndTrust(
@@ -90,6 +96,8 @@ const PLUGINS = {
     "agents/complexity-reviewer.md": withInputsAndTrust(complexityReviewer),
     "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
+    "agents/observability-reviewer.md": withInputsAndTrust(observabilityReviewer),
+    "agents/quality-reviewer.md": withInputsAndTrust(qualityReviewer),
     "agents/rereviewer.md": withInputsAndTrust(
       rereviewer,
       rereviewInputsAndTrust,

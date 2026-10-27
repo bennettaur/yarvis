@@ -40,6 +40,8 @@ function report(overrides: Record<string, unknown> = {}) {
     complexity: pass,
     performance: pass,
     comments: pass,
+    observability: pass,
+    quality: pass,
     ...overrides,
   };
 }
@@ -526,8 +528,8 @@ describe("the size a warning states", () => {
     const lock = [f("package-lock.json", 40_000)];
     const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
     expect(estimateReadBytes(lock, new Set(), asBulk)).toBe(200 * 115);
-    // Any other file: 115 bytes a changed line, by each of the 7 agents.
-    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toBe(100 * 115 * 7);
+    // Any other file: 115 bytes a changed line, by each of the 9 check agents.
+    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toBe(100 * 115 * 9);
   });
 
   it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
@@ -538,6 +540,8 @@ describe("the size a warning states", () => {
 
   it("lands near what the calibration runs cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
+    // Those runs had seven check agents and a report now has nine, so the code-heavy
+    // run is allowed above the measured cost by the two extra readers.
     const code = verificationSize(
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
@@ -545,7 +549,7 @@ describe("the size a warning states", () => {
       { model: "haiku", maxBudgetUsd: 1 },
     );
     expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
-    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25);
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25 * (9 / 7));
     const bulk = new Map(
       ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
         p,

@@ -1,5 +1,6 @@
 // The review editor's public surface. Nothing here imports Monaco itself; it
 // loads on the first mount of a view, or the first `addExtraModel`.
+export { plainHoverText } from "./hoverSafety";
 export { monacoLanguageForPath } from "./language";
 export { loadMonaco } from "./loader";
 export { MonacoDiffView, type MonacoDiffViewProps } from "./MonacoDiffView";

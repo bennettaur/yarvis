@@ -1,9 +1,9 @@
 /**
  * The verification report: a headless Claude Code run over a review PR's
  * checkout that summarises the change, picks the files that must be read, and
- * runs the risk, completeness, test, complexity, performance and comment
- * checks — each a subagent of the `yarvis-review` plugin, fanned out by its
- * `verification-report` skill.
+ * runs the risk, completeness, test, complexity, performance, comment,
+ * observability and quality checks — each a subagent of the `yarvis-review`
+ * plugin, fanned out by its `verification-report` skill.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a
@@ -148,6 +148,8 @@ export const CHECK_SECTIONS = [
   "performance",
   "complexity",
   "comments",
+  "observability",
+  "quality",
   // Last: a specialist's finding in its own lane beats completeness reporting
   // the same problem, which it tends to when a review comment raised it.
   "completeness",
@@ -310,6 +312,8 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       complexity: checkSchema,
       performance: checkSchema,
       comments: checkSchema,
+      observability: checkSchema,
+      quality: checkSchema,
     })
     .transform((report) => {
       const relative = (check: Check): Check => ({
@@ -380,10 +384,12 @@ const LARGE_PR = { changedLines: 4_000, files: 150 };
  * changed lines of code beside 16,000 skimmed lines of bulk (15 KB read;
  * $0.018). Solving the formula for those two points gives BASE_TOKENS ≈
  * 62,000 and RESEND ≈ 15. In both runs every agent read every patch that
- * wasn't bulk, docs included, hence 7 readers for any file; the code patches
- * came to about 115 bytes per changed line. Two points fix two constants
- * exactly and test nothing, and the other models are this formula at their
- * own rates, unmeasured: a warning's estimate, not a bill.
+ * wasn't bulk, docs included, hence one reader per check agent for any file;
+ * the code patches came to about 115 bytes per changed line. Those runs had
+ * seven reading agents; the observability and quality checks are counted as
+ * two more readers but BASE_TOKENS was not re-measured for them. Two points
+ * fix two constants exactly and test nothing, and the other models are this
+ * formula at their own rates, unmeasured: a warning's estimate, not a bill.
  */
 const BASE_TOKENS = 62_000;
 const RESEND = 15;
@@ -393,8 +399,8 @@ const MODEL_IDS: Record<VerificationModel, string> = {
   sonnet: "claude-sonnet-5",
   opus: "claude-opus-5-5",
 };
-/** Agents that read a file: all seven, measured; a bulk file's first page by one. */
-const READERS = { file: 7, bulk: 1 };
+/** Agents that read a file: every check agent; a bulk file's first page by one. */
+const READERS = { file: 9, bulk: 1 };
 /** A numbered patch line is about this long, its share of context lines included. */
 const BYTES_PER_CHANGED_LINE = 115;
 const BYTES_PER_TOKEN = 3.5;

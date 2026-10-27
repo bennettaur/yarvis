@@ -9,7 +9,7 @@ const stateOf = (progress: ReturnType<typeof run>, agent: string) =>
 describe("reduceProgress", () => {
   it("starts with every check waiting", () => {
     expect(initialProgress().checks.every((c) => c.state === "waiting")).toBe(true);
-    expect(initialProgress().checks).toHaveLength(7);
+    expect(initialProgress().checks).toHaveLength(9);
   });
 
   it("follows each check from its subagent's start and stop", () => {
