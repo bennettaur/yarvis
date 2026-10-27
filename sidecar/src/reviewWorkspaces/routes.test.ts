@@ -63,6 +63,7 @@ let loadFails: boolean;
 let checkoutFails: boolean;
 let loadGate: ReturnType<typeof gate> | null;
 let checkoutGate: ReturnType<typeof gate> | null;
+let stack: PrRef[] | Error;
 
 /** Real git against the local test remote, with the checkout under the test's control. */
 function controlledGit(): ReviewGit {
@@ -90,6 +91,10 @@ const deps = (): ReviewDeps => ({
   credentialsFor: () => undefined,
   setupScriptFor: async () => setupScript,
   git: controlledGit,
+  stackOf: async () => {
+    if (stack instanceof Error) throw stack;
+    return stack;
+  },
 });
 
 const app = new Hono().route("/rw", createReviewWorkspaceRoutes(config, { deps }));
@@ -166,6 +171,7 @@ beforeEach(async () => {
   checkoutFails = false;
   loadGate = null;
   checkoutGate = null;
+  stack = [];
 });
 
 afterEach(() => {
@@ -291,6 +297,40 @@ describe("reads", () => {
     );
     // The merge preview's second parent is the PR head.
     expect((await prRow(prId)).headSha).toBe(sh(remote.work, "rev-parse", "feature").trim());
+  });
+});
+
+describe("stacks", () => {
+  const layer = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
+
+  /** The workspace's PRs in order, once every clone has finished. */
+  async function settled(wsId: string): Promise<string[]> {
+    const ws = (await (await call("GET", `/${wsId}`)).json()) as {
+      prs: { id: string; refKey: string }[];
+    };
+    for (const pr of ws.prs) await progress(wsId, pr.id);
+    return ws.prs.map((pr) => pr.refKey);
+  }
+
+  it("brings the rest of the stack along, with the PR asked for first", async () => {
+    stack = [layer(2), layer(3)];
+    const { wsId } = await startWorkspace(layer(1));
+    expect(await settled(wsId)).toEqual(["gh:o/r/1", "gh:o/r/2", "gh:o/r/3"]);
+  });
+
+  it("adds only the layers the workspace doesn't already hold", async () => {
+    const { wsId } = await startWorkspace(layer(1));
+    stack = [layer(1), layer(5)];
+    const res = await call("POST", `/${wsId}/prs`, { ref: layer(4) });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { refKey: string }).refKey).toBe("gh:o/r/4");
+    expect(await settled(wsId)).toEqual(["gh:o/r/1", "gh:o/r/4", "gh:o/r/5"]);
+  });
+
+  it("adds the PR alone when the stack can't be read", async () => {
+    stack = new Error("rate limited");
+    const { wsId } = await startWorkspace(layer(1));
+    expect(await settled(wsId)).toEqual(["gh:o/r/1"]);
   });
 });
 

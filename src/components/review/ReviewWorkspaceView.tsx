@@ -317,6 +317,8 @@ export default function ReviewWorkspaceView({
       // Shown straight away: the row is all the nav and description need.
       if (ws) primeCache(reviewWorkspaceKey(workspaceId), { ...ws, prs: [...ws.prs, pr] });
       invalidatePrefix(REVIEW_WORKSPACES_KEY);
+      // The rest of the PR's stack came along with it.
+      void refresh();
       open({ kind: "description", prId: pr.id });
     });
 

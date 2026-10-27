@@ -30,6 +30,13 @@ From the PRs tab, the PR's header has **Open in review workspace**, which does
 the same and switches to the Review tab. Its **▾** lists your review
 workspaces, to add the PR to one of them instead.
 
+A GitHub PR that is part of a stack brings the rest of its stack along: every
+other open layer is added to the workspace too, after the PR you asked for.
+Layers the workspace already holds, merged layers and branches with no PR are
+left out. The stack is found the same way as the PRs tab's
+[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be
+read, the PR you asked for is still added on its own.
+
 The nav and the description show straight away. The PR's commits are fetched
 in the background, and the PR's header in the nav says how far that has got.
 The description, reviewers, checks and comments come from the provider, so
