@@ -266,7 +266,10 @@ describe("runAgentTurn", () => {
     const deleteCall = () =>
       streamingModel(
         [
-          toolCall("c1", "delete_task", { id: "00000000-0000-0000-0000-000000000000" }),
+          toolCall("c1", "delete_task", {
+            id: "00000000-0000-0000-0000-000000000000",
+            callReason: "The user asked",
+          }),
           finish("tool-calls"),
         ],
         [...text("ok"), finish("stop")],
