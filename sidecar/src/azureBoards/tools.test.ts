@@ -76,6 +76,7 @@ function fakeBoards() {
     workItems: async () => [row()],
     stateInfo: async () => ({ state: "Active", states: detail().states }),
     viewer: async () => ({ login: "Me", uniqueName: "me@acme.com" }),
+    workItemTypes: async () => ["Bug", "Task", "User Story"],
     createWorkItem: async (...args: unknown[]) => {
       calls.push({ method: "createWorkItem", args });
       return row({ externalId: "9", title: "New item" });
@@ -141,6 +142,32 @@ describe("azure boards tools", () => {
     });
     const logged = await listEvents(db, { type: "azure_boards.item.created" });
     expect(logged[0]?.payload).toMatchObject({ id: 9, project: "Web" });
+  });
+
+  it("files under the type as the project spells it", async () => {
+    const { client, calls } = fakeBoards();
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: client });
+
+    await tools.azure_boards_create_work_item.execute!(
+      { project: "Web", type: "user story", title: "New item" },
+      opts,
+    );
+
+    expect(calls[0]?.args[1]).toBe("User Story");
+  });
+
+  it("names the project's types instead of creating one it doesn't have", async () => {
+    const { client, calls } = fakeBoards();
+    const tools = buildAzureBoardsTools(db, config, { boardsClient: client });
+
+    const result = (await tools.azure_boards_create_work_item.execute!(
+      { project: "Web", type: "Ticket", title: "New item" },
+      opts,
+    )) as { error: string; allowedTypes: string[] };
+
+    expect(result.error).toMatch(/not a work item type/);
+    expect(result.allowedTypes).toEqual(["Bug", "Task", "User Story"]);
+    expect(calls).toEqual([]);
   });
 
   it("writes a new description back to the field it was read from, and sets the state", async () => {

@@ -46,7 +46,7 @@ function workItemResult(i: IssueSummary) {
 
 /**
  * Azure Boards tools for the chat agent: search with WIQL, read a work item with
- * its links, create one, edit its fields or state, assign it, and comment. They
+ * its links, list a project's work item types, create one, edit its fields or state, assign it, and comment. They
  * use the Azure DevOps PAT and org URL the PR dashboard already has, so they
  * reach only that org.
  */
@@ -116,9 +116,23 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
       },
     }),
 
+    azure_boards_list_work_item_types: tool({
+      description:
+        "List the work item types a project can file (e.g. Task, Bug, User Story, Issue — it depends on the project's process). Call it before azure_boards_create_work_item when you don't know which types the project has. Requires Azure DevOps to be configured.",
+      inputSchema: z.object({ project: projectName.describe("The Azure DevOps project name") }),
+      execute: async ({ project }) => {
+        if (!boards) return NOT_CONFIGURED;
+        try {
+          return { project, types: await boards.workItemTypes(project) };
+        } catch (e) {
+          return { error: errorMessage(e) };
+        }
+      },
+    }),
+
     azure_boards_create_work_item: tool({
       description:
-        "Create an Azure Boards work item. Pass the project name, the work item type (e.g. 'Task', 'Bug', 'User Story', 'Issue' — whatever the project's process has), a title, and optionally a description, an area path and tags. Use the project and area path from the repo's tracker in list_repos when the work belongs to a repo. Returns the new item's id and url. Requires Azure DevOps to be configured.",
+        "Create an Azure Boards work item. Pass the project name, the work item type, a title, and optionally a description, an area path and tags. The type must be one azure_boards_list_work_item_types returns for the project. If the user didn't name one, pick the type that fits from that list (Bug for a defect, otherwise Task or the process's nearest equivalent) and say which you used, rather than asking. Use the project and area path from the repo's tracker in list_repos when the work belongs to a repo. Returns the new item's id and url. Requires Azure DevOps to be configured.",
       inputSchema: z.object({
         project: projectName.describe("The Azure DevOps project name"),
         type: z.string().trim().min(1).max(128).describe("Work item type, e.g. 'Task' or 'Bug'"),
@@ -134,11 +148,21 @@ export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsT
       execute: async ({ project, type, ...input }) => {
         if (!boards) return NOT_CONFIGURED;
         try {
-          const created = await boards.createWorkItem(project, type, input);
+          // Azure's own error for an unknown type doesn't list the valid ones,
+          // so the model would have to ask the user instead of retrying.
+          const types = await boards.workItemTypes(project);
+          const matched = types.find((t) => t.toLowerCase() === type.toLowerCase());
+          if (!matched) {
+            return {
+              error: `"${type}" is not a work item type in ${project}`,
+              allowedTypes: types,
+            };
+          }
+          const created = await boards.createWorkItem(project, matched, input);
           void emitEvent(db, {
             type: "azure_boards.item.created",
             source: "chat",
-            payload: { id: Number(created.externalId), project, type },
+            payload: { id: Number(created.externalId), project, type: matched },
           });
           return workItemResult(created);
         } catch (e) {
