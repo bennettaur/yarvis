@@ -19,7 +19,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Repo, repos, type WorkspaceRepo, workspaceRepos, workspaces } from "../db/schema.ts";
 import { redactSecrets } from "../llm/errors.ts";
-import { canonicalPath, type GitRunner, listWorktrees, nearestBaseRef } from "./git.ts";
+import { canonicalPath, type GitRunner, listWorktrees, nearestBaseRef, remoteRef } from "./git.ts";
 
 export interface WorkspaceWorktree {
   path: string;
@@ -214,7 +214,7 @@ export function worktreeDiffBase(runner: GitRunner, worktree: ResolvedWorktree):
   return nearestBaseRef(
     runner,
     worktree.path,
-    `origin/${worktree.workspaceRepo.baseBranch}`,
+    remoteRef(worktree.workspaceRepo.baseBranch),
     candidates,
   );
 }

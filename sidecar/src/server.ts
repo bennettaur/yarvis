@@ -34,7 +34,7 @@ import {
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
-import { resumeKickOffs } from "./workspaces/service.ts";
+import { registerSymlinkAlerts, resumeKickOffs } from "./workspaces/service.ts";
 
 // Before anything else logs: the buffer this fills is what the app's
 // Diagnostics view reads, and a line written during boot is exactly the one
@@ -116,6 +116,9 @@ if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
       await importLegacyAlarmsOnStart(config);
+      // Yarvis's git refuses a clone with a symlink in its git data either way;
+      // this raises the workspace alert when it does, on every instance.
+      registerSymlinkAlerts(getDb(config.databaseUrl as string).db);
       // Every instance sweeps its own agent runs, secondaries included: only the
       // instance that started a run can know its process is gone.
       failInterruptedAgentRuns(getDb(config.databaseUrl as string).db, instance.name, bootedAt)
