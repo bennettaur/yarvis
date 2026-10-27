@@ -11,6 +11,7 @@
 
 import type {
   CheckItem,
+  CommitsSince,
   NewComment,
   PrDetail,
   PrFile,
@@ -20,6 +21,7 @@ import type {
   ReviewerState,
   ReviewThread,
   Viewer,
+  ViewerReview,
 } from "../pr/types.ts";
 import type {
   AzureChanges,
@@ -33,6 +35,7 @@ import type {
   AzurePullRequest,
   AzureReviewer,
   AzureThread,
+  AzureThreadContext,
 } from "./apiTypes.ts";
 import { buildPatch } from "./diff.ts";
 
@@ -51,6 +54,10 @@ const SEARCH_API_VERSION = "7.1-preview.1";
 // Azure comment/thread enum values used when posting a thread.
 const COMMENT_TYPE_TEXT = 1;
 const THREAD_STATUS_ACTIVE = 1;
+const THREAD_STATUS_FIXED = 2;
+
+/** Commits `commitsSince` reads of a PR's list, newest first. */
+const COMMITS_PAGE = 500;
 
 // The PR's base/head commit pair is invariant for the life of an iteration, but
 // every per-file diff needs it. Cache it briefly so opening an N-file PR doesn't
@@ -64,6 +71,11 @@ const commitCache = new Map<string, { base: string; head: string; ts: number }>(
 // would repeat on every search. Cache it module-wide, keyed by org + token so a
 // changed PAT or org URL is a new key and re-resolves on its own.
 const viewerIdCache = new Map<string, string>();
+
+/** Test hook: forget every cached viewer id. */
+export function resetViewerIds(): void {
+  viewerIdCache.clear();
+}
 
 const ALLOWED_AZURE_HOSTS = ["dev.azure.com", "visualstudio.com"];
 
@@ -208,6 +220,39 @@ export function mapPolicyEvaluation(evaluation: AzurePolicyEvaluation): CheckIte
     status: normalized,
     conclusion,
     url: null,
+  };
+}
+
+/**
+ * Whether an Azure thread status counts as resolved. Azure's UI files every
+ * status but the open ones under "resolved" — won't fix and by design close a
+ * thread just as fixed does. A thread with no status is a plain comment.
+ */
+function isResolvedStatus(status: string | undefined): boolean {
+  return status != null && !["active", "pending", "unknown"].includes(status);
+}
+
+/**
+ * Where a thread sits in the diff. A range is anchored by its start and end
+ * positions on one side; the right (new file) side wins when both are set,
+ * matching where Azure's own UI draws such a thread.
+ */
+function threadAnchor(
+  ctx: AzureThreadContext | null | undefined,
+): Pick<ReviewThread, "line" | "startLine" | "startSide" | "side"> {
+  const right = { side: "RIGHT" as const, start: ctx?.rightFileStart, end: ctx?.rightFileEnd };
+  const left = { side: "LEFT" as const, start: ctx?.leftFileStart, end: ctx?.leftFileEnd };
+  const isRightSide = right.start?.line != null;
+  const anchor = isRightSide ? right : left;
+  const start = anchor.start?.line;
+  const end = anchor.end?.line ?? start;
+  if (start == null || end == null) {
+    return { line: null, side: "RIGHT" };
+  }
+  return {
+    line: end,
+    ...(start < end ? { startLine: start, startSide: anchor.side } : {}),
+    side: anchor.side,
   };
 }
 
@@ -442,6 +487,83 @@ export class AzureDevOpsClient {
     return { base, head };
   }
 
+  /** The PR's head commit as Azure last merged it, or null before it has one. */
+  async headSha(ref: AzureRef): Promise<string | null> {
+    return (await this.commitPair(ref)).head ?? null;
+  }
+
+  /**
+   * The commits the viewer voted on. Azure keeps no commit on a vote, so each
+   * vote is matched to the push it followed: a vote leaves a `VoteUpdate`
+   * system thread stamped with the voter and the time, and each iteration
+   * records when it was pushed and at which head. A vote reset to "no vote"
+   * isn't a review and is skipped. A vote cast from a page loaded before the
+   * latest push is still matched to that push, so it can claim a commit the
+   * viewer never saw; the marks Yarvis records itself carry the page's head
+   * and don't have this problem.
+   */
+  async viewerVotes(ref: AzureRef): Promise<ViewerReview[]> {
+    const [viewerId, threads, iterations] = await Promise.all([
+      this.resolveViewerId(),
+      this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`),
+      this.get<AzureList<AzureIteration>>(
+        `${this.repoBase(ref)}/pullRequests/${ref.prId}/iterations`,
+      ),
+    ]);
+    const pushes = (iterations.value ?? [])
+      .flatMap((it) =>
+        it.sourceRefCommit?.commitId && it.createdDate
+          ? [{ at: Date.parse(it.createdDate), iteration: it }]
+          : [],
+      )
+      .sort((a, b) => a.at - b.at);
+    const votes: ViewerReview[] = [];
+    for (const thread of threads.value ?? []) {
+      const props = thread.properties ?? {};
+      if (props.CodeReviewThreadType?.$value !== "VoteUpdate") continue;
+      if (Number(props.CodeReviewVoteResult?.$value) === 0) continue;
+      const comment = thread.comments?.[0];
+      const votedBy = props.CodeReviewVotedByIdentity?.$value;
+      const voter =
+        (votedBy != null ? thread.identities?.[String(votedBy)]?.id : undefined) ??
+        comment?.author?.id;
+      if (voter !== viewerId || !comment?.publishedDate) continue;
+      const at = Date.parse(comment.publishedDate);
+      const push = pushes.filter((p) => p.at <= at).at(-1)?.iteration;
+      const headSha = push?.sourceRefCommit?.commitId;
+      if (!headSha) continue;
+      votes.push({
+        headSha,
+        ...(push.commonRefCommit?.commitId ? { mergeBaseSha: push.commonRefCommit.commitId } : {}),
+        submittedAt: comment.publishedDate,
+      });
+    }
+    return votes.sort((a, b) => Date.parse(a.submittedAt) - Date.parse(b.submittedAt));
+  }
+
+  /**
+   * How far the PR has moved on from `sha`. The PR's own commit list (newest
+   * first) answers while `sha` is still in it; once a force-push has dropped
+   * it, only whether the repository still has the commit can be said. A full
+   * page that doesn't have it says nothing either way — `sha` may just be
+   * older than the page — so that is an unknown count, not a rewrite.
+   */
+  async commitsSince(ref: AzureRef, sha: string): Promise<CommitsSince> {
+    const list = await this.get<AzureList<{ commitId?: string }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/commits?$top=${COMMITS_PAGE}`,
+    );
+    const commits = list.value ?? [];
+    const index = commits.findIndex((c) => c.commitId === sha);
+    if (index >= 0) return { exists: true, commits: index, rewritten: false };
+    if (commits.length >= COMMITS_PAGE) return { exists: true, commits: null, rewritten: false };
+    const res = await this.fetchImpl(
+      this.withVersion(`${this.repoBase(ref)}/commits/${encodeURIComponent(sha)}`, API_VERSION),
+      { headers: { Authorization: this.authHeader(), Accept: "application/json" } },
+    );
+    if (!res.ok && res.status !== 404) throw new Error(`azure GET commit -> ${res.status}`);
+    return { exists: res.ok, commits: null, rewritten: true };
+  }
+
   /** Lightweight per-row status: one call, no policy evaluations. */
   async prStatus(ref: AzureRef): Promise<PrStatus> {
     const pr = await this.prRaw(ref);
@@ -451,6 +573,7 @@ export class AzureDevOpsClient {
       merged: pr.status === "completed",
       mergeable: merge.mergeable,
       mergeableState: pr.mergeStatus ?? "unknown",
+      headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       checks: { total: 0, success: 0, failure: 0, pending: 0 },
     };
   }
@@ -460,7 +583,7 @@ export class AzureDevOpsClient {
     const projectId = pr.repository?.project?.id ?? "";
     const [checks, reviewThreads] = await Promise.all([
       this.checks(ref.project, projectId, ref.prId),
-      this.threads(ref),
+      this.threads(ref, this.prWebUrl(pr)),
     ]);
     return {
       number: pr.pullRequestId,
@@ -469,6 +592,7 @@ export class AzureDevOpsClient {
       state: pr.status ?? "active",
       draft: Boolean(pr.isDraft),
       author: pr.createdBy?.displayName ?? "",
+      ...(pr.createdBy?.id ? { authorId: pr.createdBy.id } : {}),
       baseRef: (pr.targetRefName ?? "").replace("refs/heads/", ""),
       headRef: (pr.sourceRefName ?? "").replace("refs/heads/", ""),
       // Azure names the source repository only when it differs from the target.
@@ -477,6 +601,9 @@ export class AzureDevOpsClient {
       additions: 0,
       deletions: 0,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
+      // Not `mergeable`: a merge a branch policy rejected maps to CONFLICTING
+      // there, but has nothing to resolve.
+      hasConflicts: pr.mergeStatus === "conflicts",
       // Azure's completion/auto-complete flow isn't wired to the review UI yet,
       // so the merge controls stay hidden for Azure PRs.
       mergeMethods: [],
@@ -524,31 +651,47 @@ export class AzureDevOpsClient {
       .filter((c): c is CheckItem => c !== null);
   }
 
-  private async threads(ref: AzureRef): Promise<ReviewThread[]> {
-    const data = await this.get<AzureList<AzureThread>>(
-      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
-    );
+  /** `prUrl` is the PR's web page, which each thread links into. */
+  private async threads(ref: AzureRef, prUrl: string): Promise<ReviewThread[]> {
+    const data = await this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`);
     return (data.value ?? [])
-      .map((thread) => this.toThread(thread))
+      .map((thread) => this.toThread(thread, prUrl))
       .filter((t): t is ReviewThread => t !== null);
   }
 
-  private toThread(thread: AzureThread): ReviewThread | null {
+  private toThread(thread: AzureThread, prUrl: string): ReviewThread | null {
+    if (thread.isDeleted) return null;
     const comments = (thread.comments ?? []).filter(
-      (c: AzureComment) => c.commentType !== "system",
+      (c: AzureComment) => c.commentType !== "system" && !c.isDeleted,
     );
     if (comments.length === 0) return null;
     const ctx = thread.threadContext;
     const path = ctx?.filePath ? ctx.filePath.replace(/^\//, "") : null;
-    const line = ctx?.rightFileStart?.line ?? ctx?.leftFileStart?.line ?? null;
+    const anchor = threadAnchor(ctx);
+    // Azure reports no per-thread permissions and no "outdated" flag: anyone
+    // who can read a PR can comment on it and set a thread's status. What a
+    // write needs is the ids to address: the thread's, and for a reply the
+    // comment it answers.
+    const hasThreadId = thread.id != null;
+    const hasParentId = comments[0]?.id != null;
+    // The PR page opens on a thread named by `discussionId`.
+    const url = hasThreadId ? `${prUrl}?discussionId=${thread.id}` : undefined;
     return {
+      id: hasThreadId ? String(thread.id) : "",
       path,
-      line,
-      isResolved: thread.status === "closed" || thread.status === "fixed",
+      ...anchor,
+      isResolved: isResolvedStatus(thread.status),
+      isOutdated: false,
+      canReply: hasThreadId && hasParentId,
+      canResolve: hasThreadId,
+      canUnresolve: hasThreadId,
       comments: comments.map((c) => ({
+        id: c.id != null ? String(c.id) : "",
         author: c.author?.displayName ?? "",
+        ...(c.author?.id ? { authorId: c.author.id } : {}),
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
+        ...(url ? { url } : {}),
       })),
     };
   }
@@ -734,48 +877,86 @@ export class AzureDevOpsClient {
    * not attach a body to the vote itself.
    */
   private async postPrComment(ref: AzureRef, body: string): Promise<void> {
-    const url = this.withVersion(
-      `${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`,
-      API_VERSION,
+    await this.sendJson(
+      "POST",
+      `${this.prBase(ref)}/threads`,
+      {
+        comments: [{ content: body, commentType: COMMENT_TYPE_TEXT }],
+        status: THREAD_STATUS_ACTIVE,
+      },
+      "post pr comment",
     );
-    const res = await this.fetchImpl(url, {
-      method: "POST",
+  }
+
+  /**
+   * Opens a comment thread on one line or a range, in the old ("LEFT") or new
+   * ("RIGHT") file. Azure's thread context holds one side's start and end, so
+   * a range keeps to the side it ends on. Offsets are 1: the caller knows lines,
+   * not columns, and Azure anchors the thread by line either way.
+   */
+  async postComment(ref: AzureRef, input: NewComment): Promise<void> {
+    const range = {
+      start: { line: input.startLine ?? input.line, offset: 1 },
+      end: { line: input.line, offset: 1 },
+    };
+    const anchor =
+      input.side === "LEFT"
+        ? { leftFileStart: range.start, leftFileEnd: range.end }
+        : { rightFileStart: range.start, rightFileEnd: range.end };
+    const body = {
+      comments: [{ content: input.body, commentType: COMMENT_TYPE_TEXT }],
+      status: THREAD_STATUS_ACTIVE,
+      threadContext: { filePath: `/${input.path.replace(/^\//, "")}`, ...anchor },
+    };
+    await this.sendJson("POST", `${this.prBase(ref)}/threads`, body, "post comment");
+  }
+
+  /**
+   * Replies to a thread. `parentCommentId` is the comment being answered. A
+   * caller that doesn't name one answers the thread's first comment, which
+   * Azure numbers 1 and which is what Azure's own UI replies to.
+   */
+  async replyToThread(
+    ref: AzureRef,
+    threadId: number,
+    body: string,
+    parentCommentId = 1,
+  ): Promise<void> {
+    await this.sendJson(
+      "POST",
+      `${this.prBase(ref)}/threads/${threadId}/comments`,
+      { content: body, parentCommentId, commentType: COMMENT_TYPE_TEXT },
+      "reply to thread",
+    );
+  }
+
+  /**
+   * Resolves a thread as fixed, or reopens it as active. Those are the two
+   * statuses Azure's own resolve and reactivate buttons set.
+   */
+  async setThreadResolved(ref: AzureRef, threadId: number, resolved: boolean): Promise<void> {
+    await this.sendJson(
+      "PATCH",
+      `${this.prBase(ref)}/threads/${threadId}`,
+      { status: resolved ? THREAD_STATUS_FIXED : THREAD_STATUS_ACTIVE },
+      resolved ? "resolve thread" : "reactivate thread",
+    );
+  }
+
+  private prBase(ref: AzureRef): string {
+    return `${this.repoBase(ref)}/pullRequests/${ref.prId}`;
+  }
+
+  private async sendJson(method: string, url: string, body: unknown, label: string): Promise<void> {
+    const res = await this.fetchImpl(this.withVersion(url, API_VERSION), {
+      method,
       headers: {
         Authorization: this.authHeader(),
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        comments: [{ content: body, commentType: COMMENT_TYPE_TEXT }],
-        status: THREAD_STATUS_ACTIVE,
-      }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`azure post pr comment -> ${res.status}`);
-  }
-
-  /** Posts a single-line comment thread anchored to the right side of the diff. */
-  async postComment(ref: AzureRef, input: NewComment): Promise<void> {
-    const body = {
-      comments: [{ content: input.body, commentType: COMMENT_TYPE_TEXT }],
-      status: THREAD_STATUS_ACTIVE,
-      threadContext: {
-        filePath: `/${input.path.replace(/^\//, "")}`,
-        rightFileStart: { line: input.line, offset: 1 },
-        rightFileEnd: { line: input.line, offset: 1 },
-      },
-    };
-    const res = await this.fetchImpl(
-      this.withVersion(`${this.repoBase(ref)}/pullRequests/${ref.prId}/threads`, API_VERSION),
-      {
-        method: "POST",
-        headers: {
-          Authorization: this.authHeader(),
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!res.ok) throw new Error(`azure post comment -> ${res.status}`);
+    if (!res.ok) throw new Error(`azure ${label} -> ${res.status}`);
   }
 }

@@ -8,8 +8,10 @@ import {
   summarizeChecks,
   summarizeReviewDecision,
   toPrDetail,
+  toReviewThread,
   toStackEntry,
 } from "./client.ts";
+import { GitHubError } from "./errors.ts";
 
 function fakeFetch(routes: Record<string, unknown>): typeof fetch {
   return (async (url: string) => {
@@ -236,6 +238,45 @@ describe("github client", () => {
     );
     const st = await gh.prStatus("o", "r", 1);
     expect(st.checks).toEqual({ total: 1, success: 0, failure: 0, pending: 1 });
+  });
+
+  it("reads the PR's conversation comments and says when there are more", () => {
+    const base = { number: 5, title: "t", state: "OPEN", reviewThreads: { nodes: [] } };
+    const detail = toPrDetail({
+      ...base,
+      comments: {
+        totalCount: 5,
+        nodes: [
+          null,
+          {
+            id: "IC_1",
+            author: { login: "rev" },
+            body: "Looks good overall",
+            createdAt: "2026-01-02T00:00:00Z",
+            url: "https://github.com/o/r/pull/5#issuecomment-1",
+          },
+          { id: "IC_2", author: null, body: "+1", createdAt: "2026-01-03T00:00:00Z" },
+        ],
+      },
+    });
+    expect(detail.conversation).toEqual([
+      {
+        id: "IC_1",
+        author: "rev",
+        body: "Looks good overall",
+        createdAt: "2026-01-02T00:00:00Z",
+        url: "https://github.com/o/r/pull/5#issuecomment-1",
+      },
+      {
+        id: "IC_2",
+        author: "ghost",
+        body: "+1",
+        createdAt: "2026-01-03T00:00:00Z",
+        url: undefined,
+      },
+    ]);
+    expect(detail.conversationTruncated).toBe(true);
+    expect(toPrDetail(base).conversation).toEqual([]);
   });
 
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
@@ -827,6 +868,20 @@ describe("github client", () => {
     expect(toPrDetail({ number: 7, isCrossRepository: true }).fromFork).toBe(true);
     expect(toPrDetail({ number: 7 }).fromFork).toBe(false);
   });
+
+  // DIRTY is how GitHub's merge state names conflicts; the review header reads both.
+  it("reports conflicts from either the mergeable verdict or the merge state", () => {
+    expect(toPrDetail({ number: 7, mergeable: "CONFLICTING" }).hasConflicts).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }).hasConflicts,
+    ).toBe(true);
+    expect(
+      toPrDetail({ number: 7, mergeable: "MERGEABLE", mergeStateStatus: "BEHIND" }).hasConflicts,
+    ).toBe(false);
+    const computing = toPrDetail({ number: 7 });
+    expect(computing.mergeable).toBe("UNKNOWN");
+    expect(computing.hasConflicts).toBe(false);
+  });
 });
 
 /**
@@ -1139,18 +1194,23 @@ describe("review contributions", () => {
     expect(read.truncated).toBe(true);
   });
 
-  it("returns the submitted review's node id", async () => {
+  it("returns the submitted review's node id and the commit it was made on", async () => {
+    const commit = "a".repeat(40);
     const gh = new GitHubClient(
       "t",
-      fakeFetch({ "/repos/o/r/pulls/1/reviews": { id: 9, node_id: "PRR_9" } }),
+      fakeFetch({ "/repos/o/r/pulls/1/reviews": { id: 9, node_id: "PRR_9", commit_id: commit } }),
     );
-    expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({ nodeId: "PRR_9" });
+    expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({
+      nodeId: "PRR_9",
+      commitId: commit,
+    });
   });
 
   it("still succeeds when the submit reply has no readable node id", async () => {
     const empty = (async () => new Response("", { status: 200 })) as unknown as typeof fetch;
     expect(await new GitHubClient("t", empty).submitReview("o", "r", 1, "APPROVE")).toEqual({
       nodeId: null,
+      commitId: null,
     });
   });
 });
@@ -1204,5 +1264,219 @@ describe("github endpoints", () => {
       globalThis.fetch = original;
     }
     expect(urls[0]).toBe("https://api.github.com/graphql");
+  });
+});
+
+describe("github review threads", () => {
+  const threadNode = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: "src/a.ts",
+    line: 12,
+    startLine: null,
+    diffSide: "RIGHT",
+    viewerCanReply: true,
+    viewerCanResolve: true,
+    viewerCanUnresolve: false,
+    comments: {
+      nodes: [
+        {
+          id: `${id}-c`,
+          author: { login: "rev" },
+          body: "nit",
+          createdAt: "",
+          url: "https://github.com/o/r/pull/4#discussion_r1",
+        },
+      ],
+    },
+    ...extra,
+  });
+
+  it("keeps the ids, side, range, permissions and links a reply or resolve needs", () => {
+    expect(
+      toReviewThread(
+        threadNode("T1", {
+          startLine: 9,
+          diffSide: "LEFT",
+          startDiffSide: "LEFT",
+          isResolved: true,
+          viewerCanUnresolve: true,
+          viewerCanResolve: false,
+        }),
+      ),
+    ).toEqual({
+      id: "T1",
+      path: "src/a.ts",
+      line: 12,
+      startLine: 9,
+      startSide: "LEFT",
+      side: "LEFT",
+      isResolved: true,
+      isOutdated: false,
+      canReply: true,
+      canResolve: false,
+      canUnresolve: true,
+      comments: [
+        {
+          id: "T1-c",
+          author: "rev",
+          body: "nit",
+          createdAt: "",
+          url: "https://github.com/o/r/pull/4#discussion_r1",
+        },
+      ],
+    });
+  });
+
+  it("drops a start line that only repeats the line", () => {
+    expect(toReviewThread(threadNode("T1", { startLine: 12 })).startLine).toBeUndefined();
+  });
+
+  // Old line 12 and new line 12 are different lines, so this is a range.
+  it("keeps a range that crosses from the old file to the new one", () => {
+    const thread = toReviewThread(
+      threadNode("T1", { startLine: 12, startDiffSide: "LEFT", diffSide: "RIGHT" }),
+    );
+    expect(thread).toMatchObject({ startLine: 12, startSide: "LEFT", line: 12, side: "RIGHT" });
+  });
+
+  /**
+   * A fetch answering the detail query with `pages[0]` and each follow-up
+   * (`after` = the previous page's cursor) with the next, or failing it when
+   * the page is `"fail"`.
+   */
+  function pagedFetch(
+    pages: ({ ids: string[]; next: string | null; hasNextPage?: boolean } | "fail")[],
+  ) {
+    const afters: unknown[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      afters.push(body.variables.after);
+      const page = pages[afters.length - 1] ?? { ids: [], next: null };
+      if (page === "fail") return new Response("boom", { status: 500 });
+      const reviewThreads = {
+        pageInfo: { hasNextPage: page.hasNextPage ?? page.next != null, endCursor: page.next },
+        nodes: page.ids.map((id) => threadNode(id)),
+      };
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                number: 4,
+                state: "OPEN",
+                author: { login: "me" },
+                commits: { nodes: [] },
+                reviewThreads,
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    return { afters, gh: new GitHubClient("t", fetchImpl) };
+  }
+
+  it("pages through threads past the first page", async () => {
+    const { afters, gh } = pagedFetch([
+      { ids: ["T1"], next: "c1" },
+      { ids: ["T2"], next: "c2" },
+      { ids: ["T3"], next: null },
+    ]);
+    const detail = await gh.prDetail("o", "r", 4);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2", "T3"]);
+    expect(detail.reviewThreadsTruncated).toBeUndefined();
+    expect(afters).toEqual([undefined, "c1", "c2"]);
+  });
+
+  it("stops at the page cap and says threads are missing", async () => {
+    const pages = Array.from({ length: 15 }, (_, i) => ({ ids: [`T${i}`], next: `c${i}` }));
+    const { afters, gh } = pagedFetch(pages);
+    const detail = await gh.prDetail("o", "r", 4);
+    // The detail query plus ten follow-up pages.
+    expect(afters).toHaveLength(11);
+    expect(detail.reviewThreads).toHaveLength(11);
+    expect(detail.reviewThreadsTruncated).toBe(true);
+  });
+
+  it("stops when GitHub says there is more but gives no cursor to it", async () => {
+    const { afters, gh } = pagedFetch([
+      { ids: ["T1"], next: "c1" },
+      { ids: ["T2"], next: null, hasNextPage: true },
+    ]);
+    const detail = await gh.prDetail("o", "r", 4);
+    expect(afters).toHaveLength(2);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2"]);
+    expect(detail.reviewThreadsTruncated).toBe(true);
+  });
+
+  it("keeps the threads it read when a later page fails", async () => {
+    const { gh } = pagedFetch([{ ids: ["T1"], next: "c1" }, { ids: ["T2"], next: "c2" }, "fail"]);
+    const detail = await gh.prDetail("o", "r", 4);
+    expect(detail.reviewThreads.map((t) => t.id)).toEqual(["T1", "T2"]);
+    expect(detail.reviewThreadsTruncated).toBe(true);
+  });
+
+  /** Records each request and answers GraphQL and REST alike with `reply`. */
+  function capture(reply: unknown = { data: {} }) {
+    const calls: { url: string; body: any }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify(reply), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { calls, gh: new GitHubClient("t", fetchImpl) };
+  }
+
+  it("posts a range with its start line and side", async () => {
+    const { calls, gh } = capture({ head: { sha: "abc" } });
+    await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      startLine: 9,
+      side: "LEFT",
+      body: "x",
+    });
+    expect(calls[1]!.url).toBe("https://api.github.com/repos/o/r/pulls/4/comments");
+    expect(calls[1]!.body).toEqual({
+      body: "x",
+      commit_id: "abc",
+      path: "a.ts",
+      line: 12,
+      side: "LEFT",
+      start_line: 9,
+      start_side: "LEFT",
+    });
+  });
+
+  it("posts a single line without range fields", async () => {
+    const { calls, gh } = capture({ head: { sha: "abc" } });
+    await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(calls[1]!.body).not.toHaveProperty("start_line");
+    expect(calls[1]!.body.side).toBe("RIGHT");
+  });
+
+  it("replies through the thread reply mutation", async () => {
+    const { calls, gh } = capture();
+    await gh.replyToThread("T1", "agreed");
+    expect(calls[0]!.body.query).toContain("addPullRequestReviewThreadReply");
+    expect(calls[0]!.body.variables).toEqual({ id: "T1", body: "agreed" });
+  });
+
+  it("resolves and unresolves by thread id", async () => {
+    const { calls, gh } = capture();
+    await gh.setThreadResolved("T1", true);
+    await gh.setThreadResolved("T1", false);
+    expect(calls[0]!.body.query).toContain("resolveReviewThread");
+    expect(calls[1]!.body.query).toContain("unresolveReviewThread");
+    expect(calls.map((c) => c.body.variables)).toEqual([{ id: "T1" }, { id: "T1" }]);
+  });
+
+  it("fails a mutation GitHub refused", async () => {
+    const { gh } = capture({ errors: [{ type: "FORBIDDEN", message: "no" }] });
+    const error = await gh.setThreadResolved("T1", true).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(error).toMatchObject({ status: 403, reason: "forbidden" });
   });
 });

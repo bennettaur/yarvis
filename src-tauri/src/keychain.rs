@@ -72,6 +72,7 @@ pub const SECRET_KEYS: &[&str] = &[
     "jira_api_token",
     "database_url",
     "google_client_secret",
+    "verify_agent_signing_key",
     "telegram_bot_token",
     "telegram_allowed_chat_ids",
     "telegram_otp_secret",

@@ -447,6 +447,12 @@ Safety rules:
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
 
+A PR's **Resolve conflicts** button uses the same path (see
+[Resolve merge conflicts](pr-review.md#resolve-merge-conflicts)). It refuses
+while a permission prompt is pending. When the workspace has no agent running,
+it writes the merge instructions to `.yarvis/resolve-conflicts.md`, leaving
+`.yarvis/brief.md` as it was, and starts an agent on them.
+
 ### Asking what a workspace is up to
 
 Ask "what was I doing in my workspaces?" or "where did the billing-api session
@@ -515,6 +521,10 @@ the environment variables that make this work.
 
 How the bell behaves:
 
+- **Hard to miss.** While anything is pending, an amber band sweeps across the
+  top bar towards the bell and the bell rings, every few seconds. A new item
+  starts the sweep straight away. With macOS's Reduce Motion on, the band
+  fades in and out in place and the bell stays still.
 - **Grouped by origin.** Repeat items from one workspace collapse into one row
   with a count, naming the tabs involved. Dismissing the row clears them all.
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an

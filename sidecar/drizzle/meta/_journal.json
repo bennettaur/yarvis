@@ -292,8 +292,36 @@
     {
       "idx": 41,
       "version": "7",
-      "when": 1792811939277,
-      "tag": "0041_orange_killer_shrike",
+      "when": 1792900911273,
+      "tag": "0041_green_secret_warriors",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1792900922958,
+      "tag": "0042_rare_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792900964028,
+      "tag": "0043_windy_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1792900985237,
+      "tag": "0044_glossy_sugar_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1793075216057,
+      "tag": "0045_mighty_snowbird",
       "breakpoints": true
     }
   ]

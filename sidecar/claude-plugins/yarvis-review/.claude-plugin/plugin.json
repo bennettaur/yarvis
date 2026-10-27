@@ -1,0 +1,5 @@
+{
+  "name": "yarvis-review",
+  "version": "0.1.0",
+  "description": "Agents and skills Yarvis hands to the headless Claude Code runs behind its PR review workspaces."
+}

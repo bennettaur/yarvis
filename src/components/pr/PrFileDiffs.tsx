@@ -76,7 +76,7 @@ export function DiffBody({
   insights?: InsightsController;
   headSha?: string;
 }) {
-  const comments = useLineComments(prRef, file, threads);
+  const comments = useLineComments(prRef, file, threads, { headSha });
   const ask = useAskSelection(file.filename, expansion.rows, insights);
   const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
@@ -101,6 +101,15 @@ export function DiffBody({
         // Hoisted so the null check narrows inside the click handlers below —
         // TypeScript won't carry a narrowed property access into a closure.
         const rightLine = row.rightLine;
+        const leftLine = row.leftLine;
+        // A line that exists only in the old file is commented on there; every
+        // other line takes its comments on the new file.
+        const commentAt =
+          rightLine != null
+            ? { side: "RIGHT" as const, line: rightLine }
+            : leftLine != null
+              ? { side: "LEFT" as const, line: leftLine }
+              : null;
         const marked =
           highlight != null &&
           rightLine != null &&
@@ -117,19 +126,27 @@ export function DiffBody({
               {...(marked && rightLine === highlight.start ? { [FOCUS_ATTR]: "true" } : {})}
             >
               <span className="relative flex w-12 shrink-0 select-none items-center justify-end pr-2 text-zinc-600">
-                {rightLine != null && (
+                {commentAt && (
                   <LineActions>
-                    {insights && (
+                    {insights && rightLine != null && (
                       <AskAboutLineButton onClick={(extend) => ask(rightLine, extend)} />
                     )}
-                    <AddCommentButton onClick={() => comments.openComposer(rightLine)} />
+                    <AddCommentButton
+                      extendable
+                      onClick={(extend) =>
+                        comments.openComposer(commentAt.side, commentAt.line, extend)
+                      }
+                    />
                   </LineActions>
                 )}
                 <span>{rightLine ?? ""}</span>
               </span>
               <CodeText html={rowHtml(row, syntax)} text={row.text} />
             </div>
-            <LineCommentBlock line={rightLine} comments={comments} />
+            {/* An unchanged line is on both sides, so a thread left on its old
+                side shows here too, above the new side's. */}
+            <LineCommentBlock side="LEFT" line={leftLine} comments={comments} />
+            <LineCommentBlock side="RIGHT" line={rightLine} comments={comments} />
             {insights && (
               <InsightBlock
                 path={file.filename}

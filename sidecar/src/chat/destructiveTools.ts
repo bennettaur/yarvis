@@ -36,6 +36,9 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "start_heads_down",
   "resume_heads_down",
   "set_heads_down_stop_time",
+  // Its approval lets the repo's CI merge the PR with nobody else reading it.
+  // Only the merge-reviewer specialist's grant may skip asking.
+  "post_merge_review",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([

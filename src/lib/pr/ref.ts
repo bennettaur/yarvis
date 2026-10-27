@@ -2,6 +2,9 @@ import type { PrRef } from "./types";
 
 const enc = encodeURIComponent;
 
+/** A full commit sha, SHA-1 or SHA-256: what the sidecar accepts wherever it takes one. */
+export const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 /** Stable identity string for cache keys and equality checks. */
 export function refKey(ref: PrRef): string {
   return ref.provider === "github"

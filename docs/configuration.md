@@ -34,6 +34,7 @@ reads one back.
 | Azure DevOps token | Azure PRs, Azure Boards | `AZURE_DEVOPS_TOKEN` |
 | JIRA API token | JIRA issues | `JIRA_API_TOKEN` |
 | Google client secret | Google Calendar | `GOOGLE_CLIENT_SECRET` |
+| Merge reviewer signing key | Signing the merge reviewer's PR approvals | `VERIFY_AGENT_SIGNING_KEY` |
 | Telegram bot token | The Telegram bot | `TELEGRAM_BOT_TOKEN` |
 | Telegram allowed chat ids | Who the bot answers | `TELEGRAM_ALLOWED_CHAT_IDS` |
 | Telegram OTP secret | The bot's optional second factor | `TELEGRAM_OTP_SECRET` |
@@ -202,6 +203,9 @@ has written your providers and MCP servers into it.
 | `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
+| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the most one report may spend (2 by default, from 0.25 to 20) | Settings → PR review |
+| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, from 0.25 to 20), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
+| `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, from 0.1 to 20; a planning run that reaches it ends the pass) and `explanationBudgetUsd` (0.5, from 0.05 to 20), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
 | `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), the `provider` and `model` its passes run on (unset uses the default chat model), and `guidance`, your standing rules for every pass in your own words (`null` for none). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
@@ -299,8 +303,9 @@ The tabs in **Settings**, in order:
    the Tool manager, and the decision model behind auto mode.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
-5. **PR review.** The Needs review search, the Reviewing lookback, and the
-   models behind guided reviews and line questions.
+5. **PR review.** The Needs review search, the Reviewing lookback, the
+   models behind guided reviews and line questions, and the model, budget and
+   mutant cap for mutation testing.
 6. **Voice.** Speech to text and text to speech.
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.

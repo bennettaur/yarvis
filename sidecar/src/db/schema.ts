@@ -5,6 +5,7 @@ import {
   boolean,
   check,
   date,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -16,7 +17,7 @@ import {
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
-import type { ReviewDecision } from "../pr/types.ts";
+import type { PrRef, ReviewDecision } from "../pr/types.ts";
 import type { RepoTracker } from "../workspaces/tracker.ts";
 
 /**
@@ -1910,3 +1911,220 @@ export const alarms = pgTable(
 );
 
 export type AlarmRow = typeof alarms.$inferSelect;
+/**
+ * A headless Claude Code run started by a feature (a verification report, a
+ * mutation-testing pass) and streamed to the UI while it works.
+ *
+ * The live stream is held in memory (`agentRuns/service.ts`); this row is what
+ * outlasts it — the outcome, and a trimmed copy of the events so a finished run
+ * can still be replayed. `instance` names the app instance whose process ran it:
+ * only that instance can tell whether a `running` row is still running, so its
+ * startup sweep fails its own leftovers and leaves other instances' runs alone.
+ */
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** What the run is for, e.g. "verification-report". Chosen by the feature. */
+    kind: text("kind").notNull(),
+    /** What it ran against, e.g. `<refKey>@<headSha>` for a PR at one commit. */
+    targetKey: text("target_key").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status").notNull(),
+    /** The app instance (`YARVIS_INSTANCE`, "default" for the primary) whose sidecar ran it. */
+    instance: text("instance").notNull(),
+    /** The Claude Code process, which leads the run's process group. */
+    pid: integer("pid"),
+    /**
+     * When that process started, as `ps` reports it, so a sweep after a crash
+     * kills the run's leftovers and not whatever has since been given its pid.
+     */
+    pidStartedAt: text("pid_started_at"),
+    /** The run's validated structured output, when it produced one. */
+    result: jsonb("result"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    sessionId: text("session_id"),
+    /** Feature-specific context the run was started with. */
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
+    /** The tail of the event stream, redacted, written when the run ends. */
+    events: jsonb("events").$type<unknown[]>().notNull().default([]),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("agent_runs_target_idx").on(t.kind, t.targetKey, t.startedAt.desc())],
+);
+
+export type AgentRunRow = typeof agentRuns.$inferSelect;
+export type NewAgentRunRow = typeof agentRuns.$inferInsert;
+
+/**
+ * A review workspace: a named set of pull requests checked out side by side for
+ * review. Separate from `workspaces`, which are for doing work — nothing here
+ * has a branch to push, an agent session, or a repo it must be registered for.
+ */
+export const reviewWorkspaces = pgTable("review_workspaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  /** "active" | "archiving" | "archived". */
+  status: text("status").$type<"active" | "archiving" | "archived">().notNull().default("active"),
+  /** Why the last archive left something behind, if it did. */
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+});
+
+/**
+ * One pull request in a review workspace, with the detached worktree it is
+ * checked out in and the commits the review reads. The shas are what every
+ * diff and file read uses, so a refresh that moves the head moves them together.
+ */
+export const reviewWorkspacePrs = pgTable(
+  "review_workspace_prs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    /** `refKey` of `ref`, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<PrRef>().notNull(),
+    /** Cached from the provider at the last clone or refresh. */
+    title: text("title").notNull().default(""),
+    author: text("author"),
+    headRef: text("head_ref"),
+    baseRef: text("base_ref"),
+    /** Stable colour for this PR in the workspace: the lowest index unused when added. */
+    colorIndex: integer("color_index").notNull(),
+    position: integer("position").notNull(),
+    /** "pending" | "cloning" | "ready" | "error". */
+    status: text("status")
+      .$type<"pending" | "cloning" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    error: text("error"),
+    worktreePath: text("worktree_path").notNull(),
+    /**
+     * "pending" | "checking-out" | "ready" | "error". Separate from `status`
+     * because review reads come from git objects and start as soon as the shas
+     * are known; only what needs files on disk (setup, code navigation) waits
+     * for the checkout.
+     */
+    worktreeStatus: text("worktree_status")
+      .$type<"pending" | "checking-out" | "ready" | "error">()
+      .notNull()
+      .default("pending"),
+    headSha: text("head_sha"),
+    baseSha: text("base_sha"),
+    mergeBaseSha: text("merge_base_sha"),
+    /** Null until the user answers; whether the PR's setup script may run. */
+    setupConsent: text("setup_consent").$type<"granted" | "declined">(),
+    /**
+     * The head commit the answer was given for. Consent is to that code: after
+     * a refresh moves the head, anything that runs the PR's code asks again.
+     */
+    setupHeadSha: text("setup_head_sha"),
+    /** "running" | "succeeded" | "failed" | "skipped" (no script to run). */
+    setupStatus: text("setup_status").$type<"running" | "succeeded" | "failed" | "skipped">(),
+    /** Capped tail of the last setup run. */
+    setupLog: text("setup_log"),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("review_workspace_prs_ws_ref_idx").on(t.workspaceId, t.refKey)],
+);
+
+export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
+export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
+
+/**
+ * A mutation-testing pass over one review PR: a planning run picks mutants, the
+ * sidecar runs them against the PR's tests in a scratch copy, and an
+ * explanation run writes up the survivors. Results are written as each mutant
+ * finishes, so a pass that is cancelled or cut off still shows what it found.
+ * The two Claude Code runs are `agent_runs` rows of their own.
+ */
+export const mutationRuns = pgTable(
+  "mutation_runs",
+  {
+    /** Also names the run's scratch copy, `<refDomKey>-mutants-<id>`. */
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => reviewWorkspaces.id, { onDelete: "cascade" }),
+    prId: uuid("pr_id")
+      .notNull()
+      .references(() => reviewWorkspacePrs.id, { onDelete: "cascade" }),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    /** "running" | "succeeded" | "failed" | "cancelled". */
+    status: text("status")
+      .$type<"running" | "succeeded" | "failed" | "cancelled">()
+      .notNull()
+      .default("running"),
+    /** "copying" | "planning" | "baseline" | "control" | "mutants" | "explaining" | "done". */
+    phase: text("phase").notNull().default("copying"),
+    /** The app instance whose sidecar runs it; only that instance can know it stopped. */
+    instance: text("instance").notNull(),
+    /** The model, budget and limits it was started with. */
+    settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
+    /** The test command running now, which leads its own process group. */
+    pid: integer("pid"),
+    /** When that process started, so a sweep after a crash kills only it. */
+    pidStartedAt: text("pid_started_at"),
+    planRunId: uuid("plan_run_id"),
+    explainRunId: uuid("explain_run_id"),
+    /** The planning run's validated output. */
+    plan: jsonb("plan"),
+    /** Baselines, the positive control and mutant results so far. */
+    execution: jsonb("execution"),
+    /** Computed from `execution`, never by a model. */
+    summary: jsonb("summary"),
+    findings: jsonb("findings"),
+    error: text("error"),
+    costUsd: doublePrecision("cost_usd"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => [index("mutation_runs_pr_idx").on(t.prId, t.startedAt.desc())],
+);
+
+export type MutationRunRow = typeof mutationRuns.$inferSelect;
+
+/**
+ * Where the user last reviewed a pull request: the head commit they were
+ * looking at, so "what changed since I last reviewed" has a starting point.
+ *
+ * Keyed by `refKey` rather than by review workspace, because a review is of
+ * the pull request — one submitted from the classic page, from a review
+ * workspace or on the provider's own site all count. `source` says which:
+ *  - `review`   a review submitted (or a vote cast) through Yarvis;
+ *  - `comment`  a line comment posted through Yarvis;
+ *  - `manual`   the user's own "Mark reviewed here";
+ *  - `provider` read back from the provider (the viewer's reviews and the
+ *               commit each was made on), so a review done elsewhere counts.
+ * Provider rows are deduplicated per commit; the others are an append-only log,
+ * of which only the latest is normally read.
+ */
+export const prReviewMarks = pgTable(
+  "pr_review_marks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    refKey: text("ref_key").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha"),
+    /** Known when the mark was recorded against a checkout that had resolved it. */
+    mergeBaseSha: text("merge_base_sha"),
+    source: text("source", { enum: ["review", "comment", "manual", "provider"] }).notNull(),
+    /** For a `provider` mark, when the review was submitted there. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("pr_review_marks_ref_idx").on(t.refKey, t.createdAt.desc()),
+    uniqueIndex("pr_review_marks_provider_idx")
+      .on(t.refKey, t.headSha)
+      .where(sql`${t.source} = 'provider'`),
+  ],
+);
+
+export type PrReviewMark = typeof prReviewMarks.$inferSelect;
