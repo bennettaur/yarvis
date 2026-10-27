@@ -10,6 +10,9 @@ import type { IssueDetail, IssueSummary } from "./types.ts";
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Where Yarvis's own bugs and feature requests are tracked. */
+const YARVIS_REPO = { owner: "bennettaur", repo: "yarvis" } as const;
+
 /**
  * The slice of the GitHub client these tools use, narrowed so tests can inject
  * a fake without a token or network.
@@ -69,7 +72,8 @@ function githubIssueResult(i: IssueSummary) {
  * (title, body, open/closed, labels, assignees), and comment. Every tool takes a
  * registered repo's id rather than a free owner/repo, so the agent can only
  * touch repos the user put in Yarvis — the same boundary `list_repo_issues`
- * draws.
+ * draws. `file_yarvis_issue` is the one exception: it can only open an issue,
+ * and only on Yarvis's own repo.
  */
 export function buildIssueTools(db: Db, config: Config, deps: IssueToolDeps = {}) {
   const github: IssueToolsGitHubClient | null =
@@ -227,6 +231,37 @@ export function buildIssueTools(db: Db, config: Config, deps: IssueToolDeps = {}
             payload: { key: `${target.owner}/${target.repo}#${number}` },
           });
           return { commented: true, number };
+        } catch (e) {
+          return { error: errorMessage(e) };
+        }
+      },
+    }),
+
+    file_yarvis_issue: tool({
+      description:
+        "Open a GitHub issue on Yarvis itself (bennettaur/yarvis) for a bug you hit in your own tools or a feature the user wants in this app. The repo is public: write the title and body yourself and describe which tool failed and the shape of the input. Leave out anything private to the user: names, emails, org, project, repo and area names, URLs, ticket or work item ids and contents, tokens, and raw error text that contains any of them. Returns the new issue's number and url. Requires a configured GitHub token.",
+      inputSchema: z.object({
+        title: titleArg.describe("Issue title"),
+        // Short enough that the user reads the whole body in the approval
+        // prompt before it goes public.
+        body: z.string().max(8000).optional().describe("Issue body (Markdown)"),
+      }),
+      execute: async ({ title, body }) => {
+        if (!github) return { error: "GitHub token not configured in Settings" };
+        try {
+          const created = await github.createIssue(YARVIS_REPO.owner, YARVIS_REPO.repo, {
+            title,
+            body,
+          });
+          void emitEvent(db, {
+            type: "issue.created",
+            source: "chat",
+            payload: {
+              key: `${YARVIS_REPO.owner}/${YARVIS_REPO.repo}#${created.externalId}`,
+              title: sanitizeIssueText(created.title),
+            },
+          });
+          return githubIssueResult(created);
         } catch (e) {
           return { error: errorMessage(e) };
         }

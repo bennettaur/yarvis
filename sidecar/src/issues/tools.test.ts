@@ -116,6 +116,24 @@ describe("github issue tools", () => {
     expect(logged[0]?.payload).toMatchObject({ key: "acme/widget#8" });
   });
 
+  it("files an issue on Yarvis's own repo without a registered repo", async () => {
+    const { client, calls } = fakeGitHub();
+    const tools = buildIssueTools(db, config, { githubClient: client });
+
+    const result = (await tools.file_yarvis_issue.execute!(
+      { title: "Boards tool rejects type", body: "Steps" },
+      opts,
+    )) as { number: number };
+
+    expect(result.number).toBe(8);
+    expect(calls[0]).toEqual({
+      method: "createIssue",
+      args: ["bennettaur", "yarvis", { title: "Boards tool rejects type", body: "Steps" }],
+    });
+    const logged = await listEvents(db, { type: "issue.created" });
+    expect(logged[0]?.payload).toMatchObject({ key: "bennettaur/yarvis#8" });
+  });
+
   it("sends only the fields given to update_repo_issue and reports what GitHub stored", async () => {
     const repo = await addRepo();
     const { client, calls } = fakeGitHub();

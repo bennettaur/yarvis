@@ -379,6 +379,8 @@ you asked.
 - **Registering a repo** asks every time. Later tools clone the repo and run
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
+- **Filing an issue on Yarvis itself** asks every time. The Yarvis repo is
+  public, so read the title and body before you approve.
 - **Going heads down** asks every time, since it starts a loop that keeps
   acting on its own until you stop it. So do resuming it after a pause and
   changing when it stops, which keep that loop going. See
@@ -446,8 +448,11 @@ Loaded on demand:
   on, and start work on a ticket.
 - **GitHub issues.** Read, open, edit (title, body, open or closed, labels,
   assignees) and comment on an issue in a registered repo.
+  Separately, file an issue on Yarvis itself when one of its tools misbehaves
+  or you ask for a change to the app.
 - **Azure Boards.** Search with WIQL or title words, read a work item with its
-  links (parent, children, what blocks it), create one, edit its title,
+  links (parent, children, what blocks it), list a project's work item types,
+  create one, edit its title,
   description, tags or state, assign it to you or unassign it, and comment.
 - **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
   messages and review requests, mark what it's waiting on, and find the stream
