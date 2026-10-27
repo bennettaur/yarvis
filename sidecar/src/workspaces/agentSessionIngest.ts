@@ -5,7 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { MAX_SESSION_KEY, UUID } from "../attention/routes.ts";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
+import { type Db, getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
 import {
   recordAgentSessionEnd,
@@ -15,6 +15,7 @@ import {
   sessionKeyBelongsTo,
   sessionTokenMatches,
 } from "./agentSessions.ts";
+import { checkWorkspaceIntegrity, getWorkspace } from "./service.ts";
 
 /** Claude's hook input is a few hundred bytes; this only bounds a token holder. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -62,6 +63,16 @@ const hookInputSchema = z.object({
  * carry its PTY's own session token, so all a caller can do is record that a
  * Claude session in its own terminal started or ended.
  */
+/** The integrity check run when a session ends; never throws into the request. */
+async function checkEndedSessionWorkspace(db: Db, workspaceId: string): Promise<void> {
+  try {
+    const detail = await getWorkspace(db, workspaceId);
+    if (detail?.status === "active") await checkWorkspaceIntegrity(db, detail);
+  } catch (e) {
+    console.error("[workspaces] git integrity check after a session ended failed:", e);
+  }
+}
+
 export function createAgentSessionIngestRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -112,6 +123,10 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         claudeSessionId: session_id,
         reason: reason ?? null,
       });
+      // A session that ended is when anything it planted in the clone is
+      // complete, so look then rather than at the next push. In the background:
+      // the hook is waiting on this answer while Claude exits.
+      void checkEndedSessionWorkspace(db(), workspaceId);
     }
     return c.body(null, 204);
   });

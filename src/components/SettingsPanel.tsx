@@ -74,10 +74,10 @@ export default function SettingsPanel({
       )}
       {active === "tools" && (
         <div className="space-y-5">
+          <DecisionModelSection />
           <McpServerSection />
           <McpEndpointSection />
           <ToolManagerSection />
-          <DecisionModelSection />
         </div>
       )}
       {active === "repos" && (

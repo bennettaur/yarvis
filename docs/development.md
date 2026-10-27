@@ -321,7 +321,7 @@ main one:
 | Workspace and PR poller | Doubles API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would start two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
-| Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule. This includes scheduled tasks, so a second instance never runs the ones scheduled in its chats | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control+Shift+Space`, `Control+Shift+V`) | Only one process can hold a hotkey | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should do the work, or `0` on the
@@ -446,6 +446,9 @@ sidecar/        Bun + TS service (Hono)
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, GitHub review sync, and your own scheduled jobs
+  src/scheduledTasks/
+                   prompts the assistant schedules for itself in a chat, their
+                   tools, and the job that runs them
   src/digest/      dangling work, next-work ranking, weekly summary, dismissals
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff

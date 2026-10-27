@@ -196,6 +196,7 @@ export function createChatRoutes(config: Config): Hono {
           config,
           db: dbh,
           model: chatModel,
+          modelRef: { provider, model },
           sessionId,
           message,
           context,

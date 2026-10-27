@@ -316,7 +316,7 @@ async function deliverToWorkspace(
   await writeResolveFile(rootPath, instructions);
   // A workspace provisioned before the registration hooks existed gets them,
   // so the session about to start registers and a later send can find it.
-  writeClaudeSettings(rootPath, id);
+  writeClaudeSettings(workspace);
   await startSession({
     workspaceId: id,
     cwd: rootPath,
