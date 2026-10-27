@@ -7,7 +7,12 @@ import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
-import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
+import {
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  MAX_ROUTINES_PER_PASS,
+  saveHeadsDownConfig,
+} from "./config.ts";
 import {
   NOT_RUNNING,
   parseStopTime,
@@ -32,7 +37,7 @@ import {
   listQuestions,
   listUnattendedTools,
   passCallSummaries,
-  routinesLastDone,
+  routineHistory,
   setToolUnattended,
 } from "./service.ts";
 import { wakeHeadsDown } from "./wake.ts";
@@ -49,9 +54,6 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A stalled page can't grow the stream's queue without limit. */
 const MAX_STREAM_QUEUE = 500;
 const HEARTBEAT_MS = 25_000;
-
-/** Past this a pass spends its time on routines rather than the work streams. */
-const MAX_ROUTINES_PER_PASS = 10;
 
 /** A page of rules at most: every pass carries the guidance in its prompt. */
 const MAX_GUIDANCE_CHARS = 4000;
@@ -197,13 +199,19 @@ export function createHeadsDownRoutes(config: Config): Hono {
   // Read-only, like the specialists: the files are the source of truth, so the
   // page lists what loaded, names the directory, and shows files that failed.
   const routinesResponse = async (load: () => Promise<RoutineCatalog>) => {
-    const [{ routines, problems, userDir }, lastDone] = await Promise.all([
+    const [{ routines, problems, userDir }, { lastDone }] = await Promise.all([
       load(),
-      routinesLastDone(db()),
+      routineHistory(db()),
     ]);
     return {
+      // Not the body: the page doesn't show it, and it is the user's file to read.
       routines: routines.map((r) => ({
-        ...r,
+        name: r.name,
+        description: r.description,
+        everyMinutes: r.everyMinutes,
+        workingHoursOnly: r.workingHoursOnly,
+        enabled: r.enabled,
+        source: r.source,
         lastDoneAt: lastDone.get(r.name)?.toISOString() ?? null,
       })),
       problems,

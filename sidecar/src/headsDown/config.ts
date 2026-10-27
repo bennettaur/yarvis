@@ -58,6 +58,9 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   maxRoutinesPerPass: 2,
 };
 
+/** Past this a pass spends its time on routines rather than the work streams. */
+export const MAX_ROUTINES_PER_PASS = 10;
+
 const SETTINGS_KEY = "headsDown";
 
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
@@ -69,7 +72,7 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
     guidance: typeof config.guidance === "string" ? config.guidance : null,
     maxRoutinesPerPass:
       Number.isInteger(config.maxRoutinesPerPass) && config.maxRoutinesPerPass >= 0
-        ? config.maxRoutinesPerPass
+        ? Math.min(config.maxRoutinesPerPass, MAX_ROUTINES_PER_PASS)
         : DEFAULT_HEADS_DOWN_CONFIG.maxRoutinesPerPass,
   };
 }

@@ -35,7 +35,7 @@ export function buildPassTools(
   outcome: PassOutcome,
   onAsked: () => void,
   announcedMerges: Set<string>,
-  offeredRoutines: readonly string[] = [],
+  offeredRoutines: readonly string[],
 ) {
   return {
     announce_merge: tool({
@@ -124,9 +124,15 @@ export function buildPassTools(
         outcome.sleepMinutes = sleepMinutes;
         outcome.reason = reason;
         // A name the pass wasn't given would push that routine's next run back unseen.
-        outcome.routinesDone = [...new Set(routinesDone ?? [])].filter((name) =>
-          offeredRoutines.includes(name),
-        );
+        const reported = [...new Set(routinesDone ?? [])];
+        outcome.routinesDone = reported.filter((name) => offeredRoutines.includes(name));
+        const ignored = reported.filter((name) => !offeredRoutines.includes(name));
+        if (ignored.length > 0) {
+          return {
+            ok: true,
+            message: `Pass recorded. Not recorded as done, since this pass wasn't given them: ${ignored.join(", ")}. Stop here.`,
+          };
+        }
         return { ok: true, message: "Pass recorded. Stop here." };
       },
     }),

@@ -1,4 +1,3 @@
-import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +6,7 @@ import {
   assertKnownKeys,
   FrontmatterError,
   parseDocument,
+  readMarkdownDir,
 } from "../agents/frontmatter.ts";
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
@@ -78,13 +78,16 @@ const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] a
  */
 const MIN_EVERY_MINUTES = 15;
 
+/** Every pass due carries the whole body in its prompt, so a routine stays to about a page. */
+const MAX_BODY_CHARS = 4000;
+
 const DURATION_UNITS: Record<string, number> = { m: 1, h: 60, d: 24 * 60 };
 
 /** `30m`, `3h` or `1d`, in minutes. */
 export function parseEvery(value: string): number | null {
   const match = /^(\d+)\s*([mhd])$/.exec(value.trim().toLowerCase());
-  if (!match) return null;
-  return Number(match[1]) * DURATION_UNITS[match[2]!]!;
+  const unit = match?.[2] ? DURATION_UNITS[match[2]] : undefined;
+  return match && unit ? Number(match[1]) * unit : null;
 }
 
 export function parseRoutine(path: string, content: string, source: RoutineSource): Routine {
@@ -100,6 +103,13 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
     throw new FrontmatterError(
       path,
       "the body is what the pass is told to do and cannot be empty",
+      1,
+    );
+  }
+  if (body.length > MAX_BODY_CHARS) {
+    throw new FrontmatterError(
+      path,
+      `the body cannot be longer than ${MAX_BODY_CHARS} characters`,
       1,
     );
   }
@@ -123,28 +133,6 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
   };
 }
 
-type UserFile = { path: string; content: string } | { path: string; error: string };
-
-async function readUserFiles(dir: string): Promise<UserFile[]> {
-  let names: string[];
-  try {
-    names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
-  } catch {
-    return [];
-  }
-  const files: UserFile[] = [];
-  for (const name of names.sort()) {
-    const path = join(dir, name);
-    try {
-      files.push({ path, content: await readFile(path, "utf8") });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "EISDIR") continue;
-      files.push({ path, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  return files;
-}
-
 /** Loads every routine. A user file replaces a shipped one of the same name outright. */
 export async function loadRoutines(): Promise<RoutineCatalog> {
   const problems: RoutineProblem[] = [];
@@ -161,7 +149,7 @@ export async function loadRoutines(): Promise<RoutineCatalog> {
 
   for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
   const dir = routinesDir();
-  for (const file of await readUserFiles(dir)) {
+  for (const file of await readMarkdownDir(dir)) {
     if ("error" in file) problems.push({ path: file.path, message: file.error });
     else add(file.path, file.content, "user");
   }
@@ -186,10 +174,19 @@ export function reloadRoutines(): Promise<RoutineCatalog> {
   return cached;
 }
 
+/**
+ * How long a routine a pass was given but didn't finish waits before it is
+ * given again, at most. Without it a routine that keeps failing would be given
+ * to every pass and take a slot from the routines that work.
+ */
+const RETRY_AFTER_MINUTES = 60;
+
 export interface DueInput {
   routines: Routine[];
   /** When each routine was last done, by name. A routine missing from it never has been. */
   lastDone: ReadonlyMap<string, Date>;
+  /** When each routine was last given to a pass, done or not, by name. */
+  lastOffered: ReadonlyMap<string, Date>;
   now: Date;
   withinWorkingHours: boolean;
   /** The most routines one pass takes on. */
@@ -201,19 +198,28 @@ export interface DueInput {
  * least their cadence since they were last done. When more are due than the
  * limit, the most overdue go first, measured against their own cadence, so a
  * daily routine a few hours late doesn't lose to one that runs every hour.
- * The rest stay due and get the next pass.
+ * The rest stay due and get the next pass. One a pass was given and didn't
+ * finish waits its cadence or an hour, whichever is shorter, before it is
+ * given again.
  */
 export function dueRoutines(input: DueInput): Routine[] {
-  const overdue = (routine: Routine): number => {
+  const minutesSince = (at: Date) => (input.now.getTime() - at.getTime()) / 60_000;
+  const cadencesSinceDone = (routine: Routine): number => {
     const last = input.lastDone.get(routine.name);
-    if (!last) return Number.POSITIVE_INFINITY;
-    return (input.now.getTime() - last.getTime()) / 60_000 / routine.everyMinutes;
+    return last ? minutesSince(last) / routine.everyMinutes : Number.POSITIVE_INFINITY;
+  };
+  const waitingToRetry = (routine: Routine): boolean => {
+    const offered = input.lastOffered.get(routine.name);
+    const done = input.lastDone.get(routine.name);
+    if (!offered || (done && done >= offered)) return false;
+    return minutesSince(offered) < Math.min(routine.everyMinutes, RETRY_AFTER_MINUTES);
   };
   return input.routines
     .filter((r) => r.enabled && (input.withinWorkingHours || !r.workingHoursOnly))
-    .map((routine) => ({ routine, overdue: overdue(routine) }))
+    .filter((r) => !waitingToRetry(r))
+    .map((routine) => ({ routine, overdue: cadencesSinceDone(routine) }))
     .filter(({ overdue }) => overdue >= 1)
     .sort((a, b) => b.overdue - a.overdue || a.routine.name.localeCompare(b.routine.name))
-    .slice(0, Math.max(0, input.limit))
+    .slice(0, input.limit)
     .map(({ routine }) => routine);
 }

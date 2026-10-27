@@ -1,5 +1,5 @@
 {
-  "id": "7edd9864-d27a-48d0-ad45-7333cce0d2b2",
+  "id": "138d7d09-eac4-4a65-b53c-843bf85ff068",
   "prevId": "de31d028-12b6-43ab-a902-263c25c09944",
   "version": "7",
   "dialect": "postgresql",
@@ -1943,6 +1943,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "routines_offered": {
+          "name": "routines_offered",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "routines_done": {
           "name": "routines_done",

@@ -1,1 +1,0 @@
-ALTER TABLE "heads_down_passes" ADD COLUMN "routines_done" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { RoutineList as RoutineListData } from "../../lib/headsDown";
+import type { RoutinesResponse } from "../../lib/headsDown";
 import { formatRelativeTime } from "../../lib/time";
 
+/** `everyMinutes` back in the `30m`/`3h`/`1d` form the file was written in. */
 function cadence(minutes: number): string {
   if (minutes % (24 * 60) === 0) return `every ${minutes / (24 * 60)}d`;
   if (minutes % 60 === 0) return `every ${minutes / 60}h`;
@@ -16,7 +17,7 @@ export default function RoutineList({
   data,
   onReload,
 }: {
-  data: RoutineListData | null;
+  data: RoutinesResponse | null;
   onReload: () => Promise<void>;
 }) {
   const [reloading, setReloading] = useState(false);
@@ -42,7 +43,12 @@ export default function RoutineList({
         {data.routines.map((r) => (
           <li key={r.name} className={`text-xs ${r.enabled ? "" : "opacity-50"}`}>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-mono text-zinc-200">{r.name}</span>
+              <span className="font-mono text-zinc-200">
+                {r.name}
+                {r.source === "user" && (
+                  <span className="ml-1 font-sans text-zinc-500">(yours)</span>
+                )}
+              </span>
               <span className="shrink-0 text-zinc-500">
                 {r.enabled
                   ? `${cadence(r.everyMinutes)}${r.workingHoursOnly ? ", working hours" : ""}`

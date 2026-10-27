@@ -291,7 +291,7 @@ describe("what a pass may do", () => {
   it("won't ask the user about a stream they paused", async () => {
     const stream = await createStream(db, { title: "ship billing" });
     await updateStream(db, stream.id, { paused: true });
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), []);
 
     const result = await tools.ask_user.execute!(
       { question: "Ready to merge?", situation: "CI is green", streamId: stream.id },
@@ -545,7 +545,7 @@ describe("what a pass may do", () => {
 describe("merge alerts", () => {
   it("shows an announced merge in the bell with its risk, and remembers it for the pass", async () => {
     const announced = new Set<string>();
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced);
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced, []);
     await tools.announce_merge.execute!(
       {
         repo: "acme/infra",
@@ -567,7 +567,7 @@ describe("merge alerts", () => {
   });
 
   it("keeps the higher risk when a PR is announced again", async () => {
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), []);
     const announce = (risk: "low" | "high", why: string) =>
       tools.announce_merge.execute!({ repo: "acme/infra", number: 7, risk, why }, {
         toolCallId: "t",

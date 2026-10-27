@@ -35,7 +35,7 @@ import {
   mayRunPasses,
   msUntilStop,
   passToolCalls,
-  routinesLastDone,
+  routineHistory,
   startPass,
   unseenMessages,
   unspentApprovals,
@@ -193,7 +193,7 @@ export async function runPass(
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
-  const [messages, earlier, last, openQuestions, lastActivity, catalog, lastDone] =
+  const [messages, earlier, last, openQuestions, lastActivity, catalog, history] =
     await Promise.all([
       unseenMessages(db),
       earlierMessages(db, run.startedAt),
@@ -202,7 +202,7 @@ export async function runPass(
       listQuestions(db, { since: run.startedAt, limit: 20 }),
       lastUserActivityAt(db, run),
       routineCatalog(),
-      routinesLastDone(db),
+      routineHistory(db),
     ]);
   const [answers, approvedCalls] = await Promise.all([
     answeredSince(db, last?.startedAt ?? run.startedAt),
@@ -215,7 +215,7 @@ export async function runPass(
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
   const routines = dueRoutines({
     routines: catalog.routines,
-    lastDone,
+    ...history,
     now,
     withinWorkingHours,
     limit: headsDownConfig.maxRoutinesPerPass,
@@ -228,7 +228,12 @@ export async function runPass(
       : null;
 
   const session = await createSession(db, `Heads down · ${now.toISOString()}`, { hidden: true });
-  const pass = await startPass(db, run.id, session.id);
+  const pass = await startPass(
+    db,
+    run.id,
+    session.id,
+    routines.map((r) => r.name),
+  );
   publish({ type: "pass-started", passId: pass.id });
 
   const outcome = newPassOutcome();
@@ -348,7 +353,7 @@ export async function runPass(
       lastNotes: last?.notes ?? null,
       lastFailure,
       routines,
-      routinesLastDone: lastDone,
+      routinesLastDone: history.lastDone,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];

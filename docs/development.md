@@ -82,9 +82,9 @@ database.
 Settings kept in `settings.json` (custom providers, voice config and so on)
 aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
-`YARVIS_AGENTS_DIR` at an empty temp folder for the whole suite when it runs
-from `sidecar/`, so your own `~/.yarvis/agents` definitions never change what
-the tests load. A test that writes settings should still set its own path per
+`YARVIS_AGENTS_DIR` and `YARVIS_ROUTINES_DIR` at empty temp folders for the
+whole suite when it runs from `sidecar/`, so your own `~/.yarvis/agents`
+definitions and `~/.yarvis/routines` never change what the tests load. A test that writes settings should still set its own path per
 test.
 
 The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
@@ -438,7 +438,7 @@ sidecar/        Bun + TS service (Hono)
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
-  src/headsDown/   the heads-down loop: passes, its tool policy, questions and messages
+  src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs
   src/agentRuns/   headless Claude Code runs streamed to the UI, and the
                    Claude Code plugins shipped to them

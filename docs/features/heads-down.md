@@ -74,8 +74,10 @@ streams. Each one says how often it runs. A pass is only given the routines
 that are due, and at most a few of them (**Routines per pass** under **Pace
 and working hours**, 2 by default), so they don't crowd out your work. When
 more are due than that, the most overdue go first and the rest wait for the
-next pass. A routine the pass couldn't finish stays due, so a later pass tries
-again.
+next pass. A routine a pass couldn't finish stays due, and a later pass tries
+again after an hour, or sooner if the routine runs more often than that. When
+a routine asks you something, your answer is acted on as soon as it arrives,
+not on the routine's next run.
 
 Yarvis ships with two:
 
@@ -87,12 +89,12 @@ Yarvis ships with two:
   you going to Design review at 2pm?") and sets the alarm on a later pass if
   you say yes.
 - **meeting-notes**, off by default: reads the notes attached to your recent
-  meetings, such as Gemini notes, and turns the action items assigned to you
-  into tickets or stream updates. It needs a tool that can open the notes,
+  meetings, such as Gemini notes, and turns the action items they assign to
+  you by name into tickets or stream updates. It needs a tool that can open the notes,
   such as a Google Drive MCP server.
 
 The **Routines** list on the Heads down page shows each one, how often it
-runs, and when a pass last did it.
+runs, when a pass last did it, and which ones are your own files.
 
 ### Write your own
 
@@ -113,6 +115,7 @@ and leave a three-line summary in your notes for me to paste.
 
 - `name`: lowercase letters, digits and hyphens.
 - `description`: one line, shown on the page.
+- The body: what to do, up to 4000 characters.
 - `every`: how long between runs, such as `30m`, `3h` or `1d`. At least 15
   minutes.
 - `workingHours`: `true` to run it only within your working hours. Off by
@@ -266,8 +269,8 @@ Under **Pace and working hours** on the page:
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
-- **Routines per pass**: the most [routines](#routines) one pass takes on. 0
-  turns them off.
+- **Routines per pass**: the most [routines](#routines) one pass takes on, up
+  to 10. 0 turns them off, including the meeting alarms.
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
   people** to drop all three limits, merges included. These are kept per
@@ -277,8 +280,9 @@ Under **Pace and working hours** on the page:
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The guidance, pace, routines per pass and working hours are stored in `~/.yarvis/settings.json` under
-`headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
+The guidance, pace, routines per pass and working hours are stored in
+`~/.yarvis/settings.json` under `headsDown` (see
+[Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
 
 ## Good to know

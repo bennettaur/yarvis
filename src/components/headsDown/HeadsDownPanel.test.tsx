@@ -116,7 +116,6 @@ const ROUTINES = {
       workingHoursOnly: false,
       enabled: true,
       source: "builtin",
-      path: "routines/meeting-alarms.md",
       lastDoneAt: null,
     },
   ],

@@ -1,5 +1,13 @@
-import { describe, expect, it } from "bun:test";
-import { chooseSleep, DEFAULT_HEADS_DOWN_CONFIG, isWithinWorkingHours } from "./config.ts";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  chooseSleep,
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  isWithinWorkingHours,
+} from "./config.ts";
 
 const officeHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
 const nights = { days: [1, 2, 3, 4, 5], start: "20:00", end: "02:00" };
@@ -70,5 +78,34 @@ describe("chooseSleep", () => {
       DEFAULT_HEADS_DOWN_CONFIG,
     );
     expect(sleep).toEqual({ minutes: 60, reason: "nothing to push" });
+  });
+});
+
+describe("getHeadsDownConfig", () => {
+  let dir: string;
+  const original = process.env.YARVIS_SETTINGS_PATH;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "heads-down-config-"));
+    process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
+  });
+  afterEach(() => {
+    process.env.YARVIS_SETTINGS_PATH = original;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const withRoutines = async (value: unknown) => {
+    writeFileSync(
+      join(dir, "settings.json"),
+      JSON.stringify({ headsDown: { maxRoutinesPerPass: value } }),
+    );
+    return (await getHeadsDownConfig()).maxRoutinesPerPass;
+  };
+
+  it("keeps a hand-edited routines-per-pass within what the page allows", async () => {
+    expect(await withRoutines(0)).toBe(0);
+    expect(await withRoutines(4)).toBe(4);
+    expect(await withRoutines(50)).toBe(10);
+    for (const bad of ["3", -1, 1.5, null]) expect(await withRoutines(bad)).toBe(2);
   });
 });

@@ -18,7 +18,7 @@ import {
   listWorkStreams,
   nextOccurrence,
   pauseHeadsDown,
-  type RoutineList as RoutineListData,
+  type RoutinesResponse,
   reloadRoutines,
   resumeHeadsDown,
   sendHeadsDownMessage,
@@ -348,7 +348,7 @@ export default function HeadsDownPanel() {
     CACHE_KEYS.autoApprovals,
     listAutoApprovals,
   );
-  const routines = useCachedResource<RoutineListData>(CACHE_KEYS.routines, listRoutines);
+  const routines = useCachedResource<RoutinesResponse>(CACHE_KEYS.routines, listRoutines);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;

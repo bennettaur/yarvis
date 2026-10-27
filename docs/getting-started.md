@@ -232,6 +232,7 @@ rest of the app is built around.
 | Secrets (DB URL, API keys, tokens) | One macOS Keychain item: service `com.mikebennett.yarvis`, account `secrets`. You can move it to 1Password. |
 | Other settings | `~/.yarvis/settings.json` |
 | Your own specialist agents | `~/.yarvis/agents/*.md` |
+| Your own heads-down routines | `~/.yarvis/routines/*.md` |
 | Chat, memory, tasks, workspaces, PR notes | The Postgres database |
 | Workspace clones and worktrees | `~/dev/yarvis-workspaces` (set `YARVIS_WORKSPACES_ROOT` to change it) |
 | Sidecar log | `~/Library/Logs/com.mikebennett.yarvis/sidecar.log`, and **Settings → Diagnostics** |

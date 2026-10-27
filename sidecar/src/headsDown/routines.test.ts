@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,15 @@ describe("parseRoutine", () => {
     expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h`, ""), "user")).toThrow(
       "cannot be empty",
     );
+    expect(() =>
+      parseRoutine("a.md", file(`${base}\nevery: 1h`, "x".repeat(4001)), "user"),
+    ).toThrow("cannot be longer than 4000");
+  });
+
+  it("rejects a name that can't be a heading in the prompt or a name finish_pass reports", () => {
+    expect(() =>
+      parseRoutine("a.md", file("name: Meeting Alarms\ndescription: y\nevery: 1h"), "user"),
+    ).toThrow("lowercase letters, digits and hyphens");
   });
 });
 
@@ -95,6 +105,8 @@ describe("loadRoutines", () => {
     );
     writeFileSync(join(dir, "broken.md"), "no frontmatter");
     mkdirSync(join(dir, "folder.md"));
+    // A FIFO would block a plain read forever, and every pass with it.
+    execFileSync("mkfifo", [join(dir, "pipe.md")]);
 
     const { routines, problems } = await loadRoutines();
     expect(routines.find((r) => r.name === "meeting-alarms")).toMatchObject({
@@ -102,14 +114,15 @@ describe("loadRoutines", () => {
       enabled: false,
       everyMinutes: 60,
     });
-    expect(problems.map((p) => p.path)).toEqual([join(dir, "broken.md")]);
+    expect(problems.map((p) => p.path)).toEqual([join(dir, "broken.md"), join(dir, "pipe.md")]);
+    expect(problems[1]?.message).toContain("not a regular file");
   });
 });
 
 describe("dueRoutines", () => {
   const now = new Date("2026-10-27T15:00:00Z");
   const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60_000);
-  const base = { now, withinWorkingHours: true, limit: 5 };
+  const base = { now, withinWorkingHours: true, limit: 5, lastOffered: new Map<string, Date>() };
 
   it("offers a routine once its cadence has passed since it was last done", () => {
     const routines = [routine("hourly", 60), routine("daily", 24 * 60), routine("fresh", 60)];
@@ -143,5 +156,35 @@ describe("dueRoutines", () => {
     const lastDone = new Map<string, Date>();
     expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual(["office"]);
     expect(dueRoutines({ ...base, routines, lastDone, withinWorkingHours: false })).toEqual([]);
+  });
+
+  it("waits before giving a pass a routine an earlier one was given and didn't finish", () => {
+    const routines = [routine("flaky", 3 * 60), routine("quick", 30)];
+    const lastDone = new Map([
+      ["flaky", hoursAgo(10)],
+      ["quick", hoursAgo(5)],
+    ]);
+    const due = (lastOffered: Map<string, Date>) =>
+      dueRoutines({ ...base, routines, lastDone, lastOffered }).map((r) => r.name);
+
+    // Given 30 minutes ago and not done: an hour for flaky, its own 30m for quick.
+    expect(
+      due(
+        new Map([
+          ["flaky", hoursAgo(0.5)],
+          ["quick", hoursAgo(0.5)],
+        ]),
+      ),
+    ).toEqual(["quick"]);
+    expect(due(new Map([["flaky", hoursAgo(1)]]))).toEqual(["quick", "flaky"]);
+    // Given and done in the same pass is not a failure to retry.
+    expect(
+      dueRoutines({
+        ...base,
+        routines,
+        lastDone: new Map([["flaky", hoursAgo(4)]]),
+        lastOffered: new Map([["flaky", hoursAgo(4)]]),
+      }).map((r) => r.name),
+    ).toEqual(["quick", "flaky"]);
   });
 });

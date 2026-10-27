@@ -249,13 +249,13 @@ export interface Routine {
   everyMinutes: number;
   workingHoursOnly: boolean;
   enabled: boolean;
+  /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";
-  path: string;
   /** ISO time of the last pass that reported it done. Null if none has. */
   lastDoneAt: string | null;
 }
 
-export interface RoutineList {
+export interface RoutinesResponse {
   routines: Routine[];
   /** Files that couldn't be read as a routine, with why. */
   problems: { path: string; message: string }[];
@@ -263,9 +263,10 @@ export interface RoutineList {
   userDir: string;
 }
 
-export const listRoutines = () => request<RoutineList>("/api/heads-down/routines");
+export const listRoutines = () => request<RoutinesResponse>("/api/heads-down/routines");
 
-export const reloadRoutines = () => request<RoutineList>("/api/heads-down/routines/reload", "POST");
+export const reloadRoutines = () =>
+  request<RoutinesResponse>("/api/heads-down/routines/reload", "POST");
 
 /** An MCP tool heads-down mode may call without asking. */
 export interface AllowedTool {

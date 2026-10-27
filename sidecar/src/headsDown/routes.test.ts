@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -208,6 +208,90 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, guidance: null })).status).toBe(200);
     // A client that doesn't send it can still save.
     expect((await put(valid)).status).toBe(200);
+  });
+
+  it("saves how many routines a pass takes on, 0 to 10", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, maxRoutinesPerPass: 0 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 0 });
+    expect((await put({ ...valid, maxRoutinesPerPass: 10 })).status).toBe(200);
+    for (const bad of [11, -1, 1.5]) {
+      expect((await put({ ...valid, maxRoutinesPerPass: bad })).status).toBe(400);
+    }
+    expect((await put(valid)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 2 });
+  });
+
+  it("lists the routines with when each was last done, and reloads the files", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    try {
+      await post("/routines/reload");
+      await startRun(db, null);
+      // Two runs' worth of passes: the latest one that did it counts, and an
+      // empty list counts for nothing.
+      await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
+                SELECT id, t.at::timestamptz, t.done::jsonb FROM heads_down_runs,
+                  (VALUES ('2026-10-27T09:00:00Z', '["meeting-alarms"]'),
+                          ('2026-10-27T12:00:00Z', '["meeting-alarms"]'),
+                          ('2026-10-27T13:00:00Z', '[]')) AS t(at, done)
+                WHERE status = 'active'`;
+
+      const body = await get("/routines");
+      expect(body.problems).toEqual([]);
+      expect(body.userDir).toBe(routinesDir);
+      expect(body.routines).toContainEqual({
+        name: "meeting-alarms",
+        description: expect.any(String),
+        everyMinutes: 180,
+        workingHoursOnly: false,
+        enabled: true,
+        source: "builtin",
+        lastDoneAt: "2026-10-27T12:00:00.000Z",
+      });
+      expect(body.routines).toContainEqual(
+        expect.objectContaining({ name: "meeting-notes", enabled: false, lastDoneAt: null }),
+      );
+
+      writeFileSync(
+        join(routinesDir, "standup.md"),
+        "---\nname: standup\ndescription: Standup notes\nevery: 1d\n---\n\nWrite them.\n",
+      );
+      writeFileSync(join(routinesDir, "broken.md"), "no frontmatter");
+      // Served from the cache until reloaded.
+      expect((await get("/routines")).routines.map((r: { name: string }) => r.name)).not.toContain(
+        "standup",
+      );
+      const reloaded = (await (await post("/routines/reload")).json()) as {
+        routines: unknown[];
+        problems: { path: string }[];
+      };
+      expect(reloaded.routines).toContainEqual(
+        expect.objectContaining({ name: "standup", source: "user", everyMinutes: 24 * 60 }),
+      );
+      expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      // Later tests in this process read the shared cache.
+      await post("/routines/reload");
+      rmSync(routinesDir, { recursive: true, force: true });
+    }
   });
 
   it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {

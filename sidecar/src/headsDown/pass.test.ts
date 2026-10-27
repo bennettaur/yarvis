@@ -17,7 +17,7 @@ import {
   listPasses,
   passCallSummaries,
   pauseRun,
-  routinesLastDone,
+  routineHistory,
   startRun,
   unseenMessages,
 } from "./service.ts";
@@ -479,10 +479,13 @@ describe("a heads-down pass", () => {
     expect(prompt).toContain("### meeting-alarms (never done before)");
     expect(prompt).not.toContain("### meeting-notes");
     const [pass] = await listPasses(db);
+    expect(pass?.routinesOffered).toEqual(["meeting-alarms"]);
     expect(pass?.routinesDone).toEqual(["meeting-alarms"]);
-    expect([...(await routinesLastDone(db)).keys()]).toEqual(["meeting-alarms"]);
+    const { lastDone } = await routineHistory(db);
+    expect([...lastDone.keys()]).toEqual(["meeting-alarms"]);
+    expect(lastDone.get("meeting-alarms")?.getTime()).toBe(pass?.startedAt.getTime());
 
-    // Done three hours ago at the earliest, so the next pass isn't given it again.
+    // Done just now and due every 3 hours, so the next pass isn't given it again.
     const next = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: next });
     expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");

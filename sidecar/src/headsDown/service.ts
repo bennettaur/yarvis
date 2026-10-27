@@ -9,6 +9,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  max,
   type SQL,
   sql,
 } from "drizzle-orm";
@@ -527,12 +528,21 @@ export async function isToolUnattended(db: Db, id: string): Promise<boolean> {
   return row?.unattended ?? false;
 }
 
+/**
+ * Records a pass as started. The routines it is given are recorded now rather
+ * than when it finishes, so a sidecar that dies mid-pass still counts as having
+ * tried them.
+ */
 export async function startPass(
   db: Db,
   runId: string,
   chatSessionId: string,
+  routinesOffered: string[] = [],
 ): Promise<HeadsDownPass> {
-  const [row] = await db.insert(headsDownPasses).values({ runId, chatSessionId }).returning();
+  const [row] = await db
+    .insert(headsDownPasses)
+    .values({ runId, chatSessionId, routinesOffered })
+    .returning();
   return row!;
 }
 
@@ -559,17 +569,39 @@ export async function finishPass(db: Db, id: string, input: FinishPassInput): Pr
     .where(eq(headsDownPasses.id, id));
 }
 
+export interface RoutineHistory {
+  /** When a pass last reported each routine done, by name. */
+  lastDone: Map<string, Date>;
+  /** When each routine was last given to a pass, by name. */
+  lastOffered: Map<string, Date>;
+}
+
+/** The latest pass start each name appears in, for one of the routine name columns. */
+async function latestPassByName(
+  db: Db,
+  column: typeof headsDownPasses.routinesDone | typeof headsDownPasses.routinesOffered,
+): Promise<Map<string, Date>> {
+  const name = sql<string>`r.name`;
+  const rows = await db
+    .select({ name, at: max(headsDownPasses.startedAt) })
+    .from(headsDownPasses)
+    .crossJoin(sql`jsonb_array_elements_text(${column}) as r(name)`)
+    .where(sql`${column} <> '[]'::jsonb`)
+    .groupBy(name);
+  return new Map(rows.flatMap((r) => (r.at ? [[r.name, r.at] as const] : [])));
+}
+
 /**
- * When each routine was last done, by name, across every run: a routine's
- * cadence is about the user's day, not about when heads-down mode was turned on.
+ * When each routine was last given to a pass and last done, across every run:
+ * a routine's cadence is about the user's day, not about when heads-down mode
+ * was turned on.
  */
-export async function routinesLastDone(db: Db): Promise<Map<string, Date>> {
-  const rows = await db.execute<{ name: string; last_done: Date | string }>(sql`
-    select r.name, max(${headsDownPasses.startedAt}) as last_done
-    from ${headsDownPasses}, jsonb_array_elements_text(${headsDownPasses.routinesDone}) as r(name)
-    group by r.name
-  `);
-  return new Map(rows.map((row) => [row.name, new Date(row.last_done)]));
+export async function routineHistory(db: Db): Promise<RoutineHistory> {
+  const [lastDone, lastOffered] = await Promise.all([
+    latestPassByName(db, headsDownPasses.routinesDone),
+    latestPassByName(db, headsDownPasses.routinesOffered),
+  ]);
+  return { lastDone, lastOffered };
 }
 
 export async function listPasses(db: Db, limit = 20): Promise<HeadsDownPass[]> {
