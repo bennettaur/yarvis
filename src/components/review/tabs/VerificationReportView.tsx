@@ -14,6 +14,8 @@ export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   complexity: "Complexity",
   performance: "Performance",
   comments: "Comment quality",
+  observability: "Observability",
+  quality: "Code quality",
 };
 
 const SEVERITY_CLASS: Record<Severity, string> = {
@@ -78,6 +80,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 /**
+ * The files the reviewer has marked viewed. An item in a file they've viewed
+ * is crossed off, so the report doubles as the review's to-do list.
+ */
+type Viewed = ReadonlySet<string>;
+
+const isDone = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
+
+/** Struck through and dimmed once its file is viewed. */
+const doneClass = (done: boolean) => (done ? "line-through opacity-50" : "");
+
+/**
  * A check passing is one line and nothing more: the reader's time goes to the
  * checks that found something, which open with their findings showing.
  */
@@ -85,10 +98,12 @@ function CheckRow({
   label,
   check,
   onOpen,
+  viewed,
 }: {
   label: string;
   check: VerificationCheck;
   onOpen: OpenLocation;
+  viewed: Viewed;
 }) {
   if (check.status === "pass" || check.findings.length === 0) {
     return (
@@ -114,7 +129,10 @@ function CheckRow({
       </summary>
       <ul className="mt-1 space-y-2 pl-5">
         {check.findings.map((f) => (
-          <li key={`${f.title}:${f.path}:${f.line}`} className="space-y-0.5">
+          <li
+            key={`${f.title}:${f.path}:${f.line}`}
+            className={`space-y-0.5 ${doneClass(isDone(viewed, f.path))}`}
+          >
             <div className="flex flex-wrap items-center gap-2">
               <span
                 className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[f.severity]}`}
@@ -243,11 +261,14 @@ const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 export default function VerificationReportView({
   report,
   onOpen,
+  viewed = new Set(),
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
+  viewed?: Viewed;
 }) {
   const { risk } = report;
+  const mustReadDone = report.mustRead.filter((entry) => viewed.has(entry.path)).length;
   return (
     <div className="space-y-5">
       <Coverage report={report} onOpen={onOpen} />
@@ -257,10 +278,10 @@ export default function VerificationReportView({
       </Section>
 
       {report.mustRead.length > 0 && (
-        <Section title="Must read">
+        <Section title={`Must read · ${mustReadDone} of ${report.mustRead.length} viewed`}>
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
-              <li key={entry.path} className="text-sm">
+              <li key={entry.path} className={`text-sm ${doneClass(viewed.has(entry.path))}`}>
                 <Location
                   path={entry.path}
                   line={entry.lines?.start}
@@ -294,7 +315,10 @@ export default function VerificationReportView({
           {risk.concerns.length > 0 && (
             <ul className="space-y-1.5">
               {risk.concerns.map((c) => (
-                <li key={`${c.title}:${c.path}:${c.line}`}>
+                <li
+                  key={`${c.title}:${c.path}:${c.line}`}
+                  className={doneClass(isDone(viewed, c.path))}
+                >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-zinc-200">{c.title}</span>
                     <Location path={c.path} line={c.line} onOpen={onOpen} />
@@ -309,9 +333,20 @@ export default function VerificationReportView({
 
       <Section title="Checks">
         <div className="space-y-2">
-          {VERIFICATION_CHECKS.map((key) => (
-            <CheckRow key={key} label={CHECK_LABEL[key]} check={report[key]} onOpen={onOpen} />
-          ))}
+          {VERIFICATION_CHECKS.map((key) => {
+            const check = report[key];
+            // A report from before a check existed has nothing to say about it.
+            if (!check) return null;
+            return (
+              <CheckRow
+                key={key}
+                label={CHECK_LABEL[key]}
+                check={check}
+                onOpen={onOpen}
+                viewed={viewed}
+              />
+            );
+          })}
         </div>
       </Section>
     </div>

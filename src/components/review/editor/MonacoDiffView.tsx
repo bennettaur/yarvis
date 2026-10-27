@@ -3,10 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { monacoLanguageForPath } from "./language";
 import { attachLineActions } from "./lineActions";
 import { type MonacoApi, useMonaco } from "./loader";
-import { BASE_EDITOR_OPTIONS, EditorPlaceholder } from "./MonacoFileView";
+import { BASE_EDITOR_OPTIONS, EditorPlaceholder, monacoDecorations } from "./MonacoFileView";
 import { acquireModel, ModelHold, syncModel } from "./models";
 import { type OpenLocationHandler, setOpenLocationHandler } from "./navigation";
-import type { EditorZone, LineAction } from "./types";
+import type { EditorZone, LineAction, LineDecoration } from "./types";
 import { type PlacedZone, useZonePortals } from "./useZonePortals";
 import { type LineChange, placeZones } from "./zones";
 
@@ -24,6 +24,8 @@ export interface MonacoDiffViewProps {
   /** Folds unchanged stretches away behind a bar that expands them. */
   hideUnchanged: boolean;
   zones?: EditorZone[];
+  /** Highlights on the modified side, by head line. */
+  decorations?: LineDecoration[];
   onLineAction?: (action: LineAction) => void;
   /** A line of the modified side, scrolled to and centred whenever it changes. */
   revealLine?: number;
@@ -76,6 +78,7 @@ function DiffEditor({
   sideBySide,
   hideUnchanged,
   zones,
+  decorations,
   onLineAction,
   revealLine,
   revealKey,
@@ -83,6 +86,8 @@ function DiffEditor({
 }: MonacoDiffViewProps & { monaco: MonacoApi }) {
   const container = useRef<HTMLDivElement>(null);
   const [diff, setDiff] = useState<Monaco.editor.IStandaloneDiffEditor | null>(null);
+  const [lineDecorations, setLineDecorations] =
+    useState<Monaco.editor.IEditorDecorationsCollection | null>(null);
   // The models on screen and the URIs they were made for, so content is only
   // ever written into the models it belongs to.
   const [held, setHeld] = useState<{
@@ -119,6 +124,7 @@ function DiffEditor({
     // `getLineChanges` is the only public view of the computed diff in this
     // Monaco version; the richer `getDiffComputationResult` is internal.
     const diffUpdates = made.onDidUpdateDiff(() => setChanges(made.getLineChanges() ?? []));
+    setLineDecorations(made.getModifiedEditor().createDecorationsCollection());
     setDiff(made);
     return () => {
       diffUpdates.dispose();
@@ -128,6 +134,7 @@ function DiffEditor({
       hold.current = null;
       made.dispose();
       setDiff(null);
+      setLineDecorations(null);
     };
   }, [monaco]);
 
@@ -169,6 +176,11 @@ function DiffEditor({
     // `revealKey` is read by its change alone.
     void revealKey;
   }, [diff, held, revealLine, revealKey]);
+
+  useEffect(() => {
+    if (!lineDecorations || !held) return;
+    lineDecorations.set(monacoDecorations(monaco, decorations));
+  }, [monaco, lineDecorations, held, decorations]);
 
   const placed = useMemo<PlacedZone[]>(() => {
     if (!diff || !zones?.length) return [];

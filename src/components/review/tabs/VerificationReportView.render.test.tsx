@@ -174,4 +174,49 @@ describe("VerificationReportView", () => {
     expect(text).toContain("Eviction is untested");
     expect(text).not.toContain("Test qualitypasses");
   });
+
+  it("shows the observability and quality checks, and leaves them out of a report without them", async () => {
+    const withChecks = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: { ...report, observability: pass, quality: pass },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(withChecks).toContain("Observabilitypasses");
+    expect(withChecks).toContain("Code qualitypasses");
+    const old = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(old).not.toContain("Observability");
+    expect(old).not.toContain("Code quality");
+  });
+
+  it("crosses off must-reads and findings in files the reviewer has viewed", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          mustRead: [...report.mustRead, { path: "src/other.ts", reason: "Calls the cache" }],
+        },
+        onOpen: { open: () => {}, canOpen: () => true },
+        viewed: new Set(["src/cache.ts"]),
+      }),
+    );
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    expect(host.textContent).toContain("Must read · 1 of 2 viewed");
+    const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
+    // The must-read and the risk concern are in the viewed file; the test finding isn't.
+    expect(struck.some((t) => t.includes("Holds the eviction logic"))).toBe(true);
+    expect(struck.some((t) => t.includes("No invalidation on write"))).toBe(true);
+    expect(struck.some((t) => t.includes("Calls the cache"))).toBe(false);
+    expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(false);
+  });
 });

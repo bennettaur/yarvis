@@ -32,11 +32,12 @@ a missing piece can be anywhere, tests and docs included.
 5. Review comments that asked for a change in what the code does: flag one
    still unaddressed in the code.
 
-Only completeness and drift. Tests, performance, complexity and code comments
-have their own checks in the same report; don't report them here, even when a
-review comment raised them. A loop that queries once per item is performance,
-a docstring that says the wrong thing is comments, a weak test is tests —
-skip each of those, whoever asked for it.
+Only completeness and drift. Tests, performance, complexity, code comments,
+observability and code quality have their own checks in the same report; don't
+report them here, even when a review comment raised them. A loop that queries
+once per item is performance, a docstring that says the wrong thing is
+comments, a weak test is tests, a swallowed error is observability, a
+misleading name is quality — skip each of those, whoever asked for it.
 
 ## Output rules
 

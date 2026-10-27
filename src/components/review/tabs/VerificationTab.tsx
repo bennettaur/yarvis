@@ -12,6 +12,7 @@ import {
   useLatestVerification,
   useReviewChangedFiles,
   useReviewTree,
+  useReviewViewed,
   verificationKey,
 } from "./reviewData";
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
@@ -104,7 +105,8 @@ function CheckLine({ check }: { check: CheckProgress }) {
 /**
  * The verification report: an agent review of the whole change — summary,
  * the files that must be read, risk, and the completeness, test, complexity,
- * performance and comment checks — run on the PR's checkout. Shows the run's
+ * performance, comment, observability and quality checks — run on the PR's
+ * checkout. Shows the run's
  * progress while it works and the report once it is done; every location in
  * it opens the file's diff at that line.
  */
@@ -126,6 +128,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const report = reportOf(latest.data);
   const good = latest.data?.lastSucceeded ?? null;
   const size = latest.data?.size ?? null;
+  const viewed = useReviewViewed(ctx.prRef);
 
   const start = async (confirmed = false) => {
     if ((size?.large || size?.overBudget) && !confirmed) {
@@ -259,9 +262,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         {!run && !running && (
           <p className="text-sm text-zinc-400">
             Agents read every changed file's diff and report what the change does, which files must
-            be read, how risky it is, and whether it is complete, tested, simple, fast and well
-            commented. Checks that pass say so in a line, and the report lists any file the checks
-            didn't read.
+            be read, how risky it is, and whether it is complete, tested, simple, fast, well
+            commented, observable and well written. Checks that pass say so in a line, and the
+            report lists any file the checks didn't read.
           </p>
         )}
 
@@ -330,7 +333,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           </div>
         )}
 
-        {report && !running && <VerificationReportView report={report} onOpen={open} />}
+        {report && !running && (
+          <VerificationReportView report={report} onOpen={open} viewed={viewed.viewed} />
+        )}
       </div>
     </div>
   );

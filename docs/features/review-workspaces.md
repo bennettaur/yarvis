@@ -90,6 +90,12 @@ head in a tab of its own.
   **Viewed, next →** marks it and opens the next file you haven't viewed.
 - A **Must read** badge, from the verification report, says why the file
   matters and jumps to the lines it points at.
+- When the [verification report](#verification-report) has something to say
+  about the file, a strip above the diff gives the must-read reason and lists
+  each risk concern and check finding that cites a line, with the check's
+  name. Click a line number to jump there. The must-read lines are marked in
+  amber on the new side of the diff, and each cited line in red; hover one to
+  read why.
 
 A **file tab** shows any file at the PR's head whole, with the PR's threads
 on it. Questions work on any file; comments only on files the PR changes,
@@ -152,9 +158,25 @@ marks its files viewed.
 **Verification** in the PR bar opens a tab where agents (Claude Code,
 running on your machine against the PR's checkout) read every changed file's
 diff and report: a summary, the files that must be read and why, the risk, and
-checks for completeness, tests, complexity, performance and comments. Its
-progress shows check by check while it runs, and **Cancel** stops it. Every
-file and line in the report opens the diff there.
+checks for completeness, tests, complexity, performance, comments,
+observability and code quality. Its progress shows check by check while it
+runs, and **Cancel** stops it. Every file and line in the report opens the diff
+there.
+
+- **Observability** looks for errors that are swallowed, logging at the wrong
+  level (errors for failures someone must look at, warnings for things that
+  matter when they pile up), logging that is too noisy or missing where a
+  failure would go unseen, sensitive data in logs, and a metric only where a
+  new process clearly needs one.
+- **Code quality** looks for code that goes against the language's or the
+  codebase's own practice, weak error handling, and names that mislead.
+  Complexity, comments and logging are left to their own checks.
+- A report made before these two checks existed shows only the checks it had.
+
+The report doubles as a to-do list. Once you mark a file viewed (in its diff,
+the Changed files tree or the PRs tab), every must-read, risk concern and
+finding in that file is struck through, and **Must read** counts how many of
+its files you've viewed.
 
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the

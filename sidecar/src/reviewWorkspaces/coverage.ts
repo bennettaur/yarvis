@@ -76,6 +76,8 @@ const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:complexity-reviewer": "Complexity",
   "yarvis-review:performance-reviewer": "Performance",
   "yarvis-review:comment-reviewer": "Comment quality",
+  "yarvis-review:observability-reviewer": "Observability",
+  "yarvis-review:quality-reviewer": "Code quality",
 };
 
 const SOURCE_FILE =
