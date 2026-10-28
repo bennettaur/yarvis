@@ -236,14 +236,23 @@ back to ad-hoc.
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
-- Outbound speech and Ollama decision calls go through `guardedFetch` in
-  `sidecar/src/lib/guardedFetch.ts`, never a bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
-  the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
-  deadline on the whole chain. `fetch` strips `Authorization` across origins but
-  not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named. A call whose body is private (the
-  decision model's review carries the conversation) also sets `sameOriginOnly`,
-  since a redirect replays the body too.
+- Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
+  Ollama decision calls, URL ingest, `read_web_page` — go through
+  `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every
+  redirect hop rather than only the first (`redirect: "manual"`): `fetch` strips
+  `Authorization` across origins but not a custom provider's own auth headers, so
+  following a redirect unchecked would hand those to whatever host it named. Its
+  default transport, `createPinnedFetch`, goes through `node:http(s)` with
+  `createSafeLookup` from `lib/urlSafety.ts` as the connection's own DNS lookup,
+  so the address checked is the address connected to; checking first and letting
+  `fetch` resolve again leaves a DNS-rebinding host room to answer differently.
+  Bun's `fetch` offers no such hook. The cost is that these calls skip an HTTP
+  proxy set in the environment. `timeoutMs` puts a deadline on the whole chain
+  and `signal` covers the body read. A call whose body is private (the decision
+  model's review carries the conversation) also sets `sameOriginOnly`, since a
+  redirect replays the body too. A user-configured provider also sets
+  `staticCheckOnly` (and passes its own `fetchImpl`), so it is held to the same
+  check its base URL got when saved rather than a stricter one.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
@@ -742,5 +751,19 @@ back to ad-hoc.
   the panel can; it is as scoped as the user's own account, not narrower. The
   tab it sends as context is fenced like any
   screen context.
+- `read_web_page` (`sidecar/src/web/`) reads a public page as an anonymous
+  visitor: no cookies, the SSRF guard on every redirect hop, and the deadline
+  covering the body read. Before the model sees a page, `web/extract.ts` drops
+  what a browser wouldn't show and strips invisible Unicode, `detectInjection`
+  flags instruction-like text, and the result is nonce-fenced. Extraction runs
+  synchronously on up to 5MB, so its regexes must stay linear and nesting is
+  tracked with counters rather than stack scans. A page is also a way in and a
+  URL a way out, so two approvals hang off it, both decided at call time by
+  `conditionalConfirmations` in `chat/destructiveTools.ts`: a URL the user didn't
+  type in the conversation (`web/provenance.ts`) asks before it is fetched, and
+  once a turn has read a page the destructive set and auto-approved MCP tools ask
+  for the rest of it, as on a spoken turn. A surface with no approval channel
+  gets those calls refused (`wrapToolWithConditionalApproval`), and an unattended
+  run needs an explicit grant in `agents/run.ts` to have the tool at all.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

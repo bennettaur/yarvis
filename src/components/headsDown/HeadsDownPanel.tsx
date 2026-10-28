@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import {
   type AllowedTool,
+  clearHeadsDown,
   getHeadsDownConfig,
   getHeadsDownState,
   type HeadsDownConfig,
@@ -63,6 +64,50 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * Starts heads-down mode over by dropping its work streams and messages. Asks
+ * once more before doing it, since dropped streams leave the page.
+ */
+function ClearButton({ disabled, onClear }: { disabled: boolean; onClear: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setConfirming(true)}
+        title="Drop every open work stream, delete your messages and dismiss open questions, so the next run starts fresh"
+        className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+      >
+        Clear old work
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-xs text-zinc-400">
+      <span>Drop all open work streams, messages and questions?</span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          setConfirming(false);
+          onClear();
+        }}
+        className="rounded-md bg-red-600/80 px-2 py-1 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+      >
+        Yes, clear
+      </button>
+      <button
+        type="button"
+        onClick={() => setConfirming(false)}
+        className="text-zinc-400 hover:text-zinc-200"
+      >
+        Cancel
+      </button>
+    </div>
   );
 }
 
@@ -148,8 +193,6 @@ function RunHeader({
     setError(null);
     try {
       await action();
-      setFocus("");
-      setStopTime("");
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -201,7 +244,10 @@ function RunHeader({
               />
             </div>
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="flex shrink-0 items-start gap-2">
+            {run.pausedAt !== null && (
+              <ClearButton disabled={busy} onClear={() => void runAction(clearHeadsDown)} />
+            )}
             <button
               type="button"
               disabled={busy}
@@ -227,9 +273,11 @@ function RunHeader({
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void runAction(() =>
-              startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined),
-            );
+            void runAction(async () => {
+              await startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined);
+              setFocus("");
+              setStopTime("");
+            });
           }}
         >
           <div className="flex items-start gap-3">
@@ -262,6 +310,7 @@ function RunHeader({
             >
               Go heads down
             </button>
+            <ClearButton disabled={busy} onClear={() => void runAction(clearHeadsDown)} />
           </div>
         </form>
       )}

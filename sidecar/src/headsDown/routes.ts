@@ -14,6 +14,7 @@ import {
   saveHeadsDownConfig,
 } from "./config.ts";
 import {
+  clearHeadsDown,
   NOT_RUNNING,
   parseStopTime,
   pauseHeadsDown,
@@ -186,6 +187,12 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const run = await setHeadsDownStopTime(db(), parsed.data.stopAt);
     if ("error" in run) return c.json({ error: run.error }, run.error === NOT_RUNNING ? 409 : 400);
     return c.json(run);
+  });
+
+  router.post("/clear", async (c) => {
+    const result = await clearHeadsDown(db());
+    if ("error" in result) return c.json(result, 409);
+    return c.json(result);
   });
 
   router.get("/config", async (c) => c.json(await getHeadsDownConfig()));

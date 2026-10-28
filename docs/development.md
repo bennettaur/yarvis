@@ -436,6 +436,7 @@ sidecar/        Bun + TS service (Hono)
   src/tasks/       daily and weekly tasks, dedupe, "did I already finish this?"
   src/events/      the local activity log
   src/memory/      pgvector memory, notes, ingestion, recaps
+  src/web/         reading public web pages, with hidden text and injections screened
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
   src/workStreams/ threads of work heads-down mode pushes forward, and their links

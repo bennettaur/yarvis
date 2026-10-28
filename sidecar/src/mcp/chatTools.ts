@@ -89,6 +89,26 @@ export function wrapToolWithApproval(
   hooks: ApprovalHooks,
   reviewer?: ToolCallReviewer,
 ): Tool {
+  return wrapToolWithConditionalApproval(id, t, hooks, () => true, reviewer);
+}
+
+/**
+ * Like {@link wrapToolWithApproval}, but asks only when `needsApproval` says so,
+ * decided when the tool is called rather than when the turn is assembled. That
+ * is what a condition on the arguments (a URL the user never gave) or on what
+ * the turn has done so far (it read a web page) needs.
+ *
+ * With no `hooks` a call that needs approval is refused rather than run: the
+ * tool can't be left out of the turn up front, since most of its calls won't
+ * need asking.
+ */
+export function wrapToolWithConditionalApproval(
+  id: string,
+  t: Tool | McpClientTool,
+  hooks: ApprovalHooks | undefined,
+  needsApproval: (args: unknown) => boolean,
+  reviewer?: ToolCallReviewer,
+): Tool {
   const original = (t as McpClientTool).execute;
   if (!original) return t as unknown as Tool;
   const run = (args: unknown, opts: ToolExecutionOptions<unknown>) =>
@@ -100,6 +120,16 @@ export function wrapToolWithApproval(
       const { reason, args } = (await reasoned.takesReason())
         ? splitCallReason(input)
         : { reason: null, args: input };
+      if (!needsApproval(args)) return run(args, opts);
+      // Not `denied`: the user didn't refuse anything, and the model is told a
+      // denial is the user's answer.
+      if (!hooks) {
+        return {
+          needsApproval: true,
+          message:
+            "This call needs the user's approval, which this surface can't ask for. Tell the user to make the request from the Yarvis app instead.",
+        };
+      }
       const autoApproved = reviewer
         ? await reviewer({
             id,
@@ -263,6 +293,19 @@ async function readRegistryWithBuiltins(config: Config, db: Db): Promise<Registr
 }
 
 /**
+ * The reviewer, or none where it must not be asked: while standing consent
+ * isn't honoured, and from the point a conditional consent stops applying.
+ */
+function reviewerForTurn(
+  reviewer: ToolCallReviewer | undefined,
+  honourStandingConsent: boolean | (() => boolean),
+): ToolCallReviewer | undefined {
+  if (!reviewer || honourStandingConsent === false) return undefined;
+  if (honourStandingConsent === true) return reviewer;
+  return async (call) => honourStandingConsent() && reviewer(call);
+}
+
+/**
  * Assembles the agent's tool set for one chat request from the unified registry:
  * non-disabled built-in tools, wrapped live MCP tools, and the meta tools. Also
  * returns a `computeActiveTools` closure for `prepareStep` that gates which tools
@@ -288,18 +331,26 @@ export async function assembleAgentToolset(opts: {
    */
   confirmBuiltins?: ReadonlySet<string>;
   /**
+   * Built-ins that ask only when their condition holds at call time. A tool in
+   * `confirmBuiltins` too always asks; that set wins.
+   */
+  confirmBuiltinsWhen?: ReadonlyMap<string, (args: unknown) => boolean>;
+  /**
    * False on a turn the user didn't proof-read, which makes every MCP tool ask
    * regardless of stored consent. Consent is given in Settings or from the chat
    * bar — both places where the turn was typed and read back — and a spoken
-   * turn or a scheduled task is neither.
+   * turn or a scheduled task is neither. A function is checked at call time, for
+   * consent that lapses partway through a turn (once it has read a web page).
    */
-  honourStandingConsent?: boolean;
+  honourStandingConsent?: boolean | (() => boolean);
   /**
    * Auto mode's decision model, asked before the user for an MCP tool call.
    * Ignored when `honourStandingConsent` is false, for the same reason stored
    * consent is: a turn nobody proof-read can't tell the reviewer what the user
-   * asked for. Built-ins never get it — the ones that ask are the ones whose
-   * answer has to come from the user.
+   * asked for. It is also skipped from the point a turn has read third-party
+   * content, which the reviewer would otherwise be judging alongside the chat.
+   * Built-ins never get it — the ones that ask are the ones whose answer has to
+   * come from the user.
    */
   reviewer?: ToolCallReviewer;
   /** The connected MCP tools to assemble; defaults to whatever is live. */
@@ -312,9 +363,10 @@ export async function assembleAgentToolset(opts: {
     builtinTools,
     approval,
     confirmBuiltins,
+    confirmBuiltinsWhen,
     honourStandingConsent = true,
   } = opts;
-  const reviewer = honourStandingConsent ? opts.reviewer : undefined;
+  const turnReviewer = reviewerForTurn(opts.reviewer, honourStandingConsent);
   const registry = await readRegistryWithBuiltins(config, db);
   const policyById = new Map(registry.map((r) => [r.id, r.policy]));
   const approvalById = new Map(registry.map((r) => [r.id, r.approval]));
@@ -326,7 +378,8 @@ export async function assembleAgentToolset(opts: {
   // A built-in this turn wants confirmed is wrapped like an MCP tool — but only
   // when there is a channel to ask on. With no `approval` hooks nobody could
   // answer the prompt, so it is dropped instead: on a surface that can't ask,
-  // silently running it is the one thing that must not happen.
+  // silently running it is the one thing that must not happen. A built-in in
+  // `confirmBuiltinsWhen` stays, and only its calls that need asking are refused.
   for (const [name, t] of Object.entries(builtinTools)) {
     if (policyById.get(`builtin:${name}`) === "disabled") continue;
     if (confirmBuiltins?.has(name)) {
@@ -334,7 +387,8 @@ export async function assembleAgentToolset(opts: {
       tools[name] = wrapToolWithApproval(name, t, approval);
       continue;
     }
-    tools[name] = t;
+    const condition = confirmBuiltinsWhen?.get(name);
+    tools[name] = condition ? wrapToolWithConditionalApproval(name, t, approval, condition) : t;
   }
 
   // Live MCP tools: keyed by `modelToolKey`, wrapped with approval, excluded when
@@ -354,10 +408,19 @@ export async function assembleAgentToolset(opts: {
       const key = modelToolKey(id);
       if (registryIdByKey.has(key)) collided.add(key);
       registryIdByKey.set(key, id);
-      tools[key] =
-        honourStandingConsent && approvalById.get(id) === "auto"
-          ? (t as unknown as Tool)
-          : wrapToolWithApproval(id, t, approval, reviewer);
+      if (approvalById.get(id) !== "auto" || honourStandingConsent === false) {
+        tools[key] = wrapToolWithApproval(id, t, approval, turnReviewer);
+      } else if (honourStandingConsent === true) {
+        tools[key] = t as unknown as Tool;
+      } else {
+        tools[key] = wrapToolWithConditionalApproval(
+          id,
+          t,
+          approval,
+          () => !honourStandingConsent(),
+          turnReviewer,
+        );
+      }
     }
     // Neither side of a collision is offered: keeping either would let one
     // server's tool answer to the name the model has for another's.
