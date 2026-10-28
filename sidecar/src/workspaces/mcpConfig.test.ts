@@ -26,13 +26,38 @@ describe("workspace .mcp.json", () => {
     });
   });
 
+  it("starts the channel relay with the session's own environment, never a literal token", () => {
+    const servers = buildMcpConfig(
+      WORKSPACE_ID,
+      {},
+      {
+        command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
+        args: ["channel-relay"],
+      },
+    ).mcpServers as Record<string, Record<string, unknown>>;
+    expect(servers["yarvis-channel"]).toEqual({
+      command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
+      args: ["channel-relay"],
+      env: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SIDECAR_PORT: "${YARVIS_SIDECAR_PORT:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_ATTENTION_TOKEN: "${YARVIS_ATTENTION_TOKEN:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
+      },
+    });
+  });
+
   it("keeps the user's own servers and unrelated keys", () => {
     const merged = buildMcpConfig(WORKSPACE_ID, {
       mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
       somethingElse: true,
     });
     const servers = merged.mcpServers as Record<string, unknown>;
-    expect(Object.keys(servers).sort()).toEqual(["linear", "yarvis"]);
+    expect(Object.keys(servers).sort()).toEqual(["linear", "yarvis", "yarvis-channel"]);
     expect(merged.somethingElse).toBe(true);
   });
 
@@ -41,7 +66,7 @@ describe("workspace .mcp.json", () => {
       mcpServers: { yarvis: { type: "http", url: "http://127.0.0.1:1234/mcp" } },
     });
     const servers = stale.mcpServers as Record<string, Record<string, unknown>>;
-    expect(Object.keys(servers)).toEqual(["yarvis"]);
+    expect(Object.keys(servers)).toEqual(["yarvis", "yarvis-channel"]);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
     expect(servers.yarvis?.url).toBe("http://127.0.0.1:${YARVIS_SIDECAR_PORT}/mcp");
   });
@@ -60,7 +85,7 @@ describe("workspace .mcp.json", () => {
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, { url?: string }>;
     };
-    expect(Object.keys(written.mcpServers).sort()).toEqual(["linear", "yarvis"]);
+    expect(Object.keys(written.mcpServers).sort()).toEqual(["linear", "yarvis", "yarvis-channel"]);
     expect(written.mcpServers.linear?.url).toBe("https://mcp.linear.app/mcp");
   });
 
@@ -73,6 +98,6 @@ describe("workspace .mcp.json", () => {
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, unknown>;
     };
-    expect(Object.keys(written.mcpServers)).toEqual(["yarvis"]);
+    expect(Object.keys(written.mcpServers)).toEqual(["yarvis", "yarvis-channel"]);
   });
 });

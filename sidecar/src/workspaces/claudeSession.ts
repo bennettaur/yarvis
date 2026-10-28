@@ -19,6 +19,7 @@
  * inside the session itself.
  */
 
+import { type ChannelSendOptions, sendOverChannel } from "../channel/send.ts";
 import {
   killClaudeSession,
   sendClaudeInstruction,
@@ -157,13 +158,18 @@ export type AgentSendFailure =
   | "error";
 
 export type AgentSendResult =
-  | { delivered: true }
+  /** Typed at the session's prompt. */
+  | { delivered: true; via: "pty" }
+  /** Handed to the session's channel relay; replies come back under `messageId`. */
+  | { delivered: true; via: "channel"; messageId: string }
   | { delivered: false; failure: AgentSendFailure; error: string };
 
 /**
- * Types an instruction at a workspace's agent tab and records that it did,
- * shared by every caller that forwards text into a session so they all keep
- * the same rules. The event logs the instruction's length, not its text: it
+ * Gives an instruction to a workspace's agent and records that it did, shared
+ * by every caller that forwards text into a session so they all keep the same
+ * rules. It goes over the session's channel when one is listening, where it
+ * arrives as its own turn and can't land in a dialog or a half-typed prompt,
+ * and is typed at the agent tab otherwise. The event logs the instruction's length, not its text: it
  * can be composed from data an outside party influenced, and the event log is
  * read back into later prompts.
  *
@@ -178,16 +184,36 @@ export async function sendToWorkspaceAgent(
   {
     agentPids,
     send = sendSessionInstruction,
+    channel,
     eventSource,
     eventPayload = {},
   }: {
     /** From {@link agentTabPids}, which the caller has usually read already. */
     agentPids: number[];
     send?: ClaudeSessionMessenger;
+    channel?: ChannelSendOptions;
     eventSource: string;
     eventPayload?: Record<string, unknown>;
   },
 ): Promise<AgentSendResult> {
+  const recordSent = (result: Extract<AgentSendResult, { delivered: true }>) => {
+    void emitEvent(db, {
+      type: "workspace.instruction_sent",
+      source: eventSource,
+      payload: {
+        workspaceId: workspace.id,
+        name: workspace.name,
+        chars: instruction.length,
+        via: result.via,
+        ...eventPayload,
+      },
+    });
+    return result;
+  };
+
+  const message = await sendOverChannel(`ws-claude:${workspace.id}`, instruction, channel);
+  if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
+
   try {
     await send({ workspaceId: workspace.id, instruction, agentPids });
   } catch (e) {
@@ -201,15 +227,5 @@ export async function sendToWorkspaceAgent(
     }
     return { delivered: false, failure, error };
   }
-  void emitEvent(db, {
-    type: "workspace.instruction_sent",
-    source: eventSource,
-    payload: {
-      workspaceId: workspace.id,
-      name: workspace.name,
-      chars: instruction.length,
-      ...eventPayload,
-    },
-  });
-  return { delivered: true };
+  return recordSent({ delivered: true, via: "pty" });
 }

@@ -171,6 +171,7 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_workspaces",
   "get_workspace_activity",
   "get_workspace_status",
+  "read_workspace_replies",
   "jira_search_issues",
   "jira_get_issue",
   "get_repo_issue",

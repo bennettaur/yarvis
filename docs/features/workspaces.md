@@ -514,6 +514,40 @@ Safety rules:
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
 
+#### Messaging a session over a channel (experimental)
+
+Yarvis can also send a session a message instead of typing it. The message
+arrives as its own turn, so it can't land in a permission prompt or a
+half-typed line, and the session can answer it. This lets you ask the
+assistant things like "ask the billing-api session what it changed" and get
+the answer back in Yarvis.
+
+It uses Claude Code's channels, which are a research preview. To turn it on:
+
+1. Add `--dangerously-load-development-channels server:yarvis-channel` to the
+   agent command in **Settings → Repositories → Agent**.
+2. Start a new session in the workspace. A session that was already running
+   keeps receiving typed instructions.
+3. Accept the dialog Claude Code shows at startup. It shows every time,
+   because Yarvis's relay isn't on Claude Code's approved list of channels.
+   A session started on an issue waits at that dialog until you accept it.
+
+How it works:
+
+- Every workspace's `.mcp.json` has a `yarvis-channel` server. That server is
+  the Yarvis sidecar running as a small relay. It collects messages for its own
+  terminal and gives the session a `reply` tool. Claude Code asks you to
+  approve it the first time, like the `yarvis` server.
+- The assistant sends over the channel only when the agent command has the
+  flag and the session's relay is connected. Otherwise it types the
+  instruction as before. Yarvis reads the flag from the stored agent command,
+  so it can't see it when `YARVIS_CLAUDE_COMMAND` sets the command.
+- Replies are kept in memory until Yarvis restarts. The assistant reads them
+  with `read_workspace_replies`, and treats them as untrusted text.
+- Channels need a claude.ai login. They don't work with an API key or a
+  third-party provider. On a Team or Enterprise plan, an admin must also set
+  `channelsEnabled` in managed settings.
+
 A PR's **Resolve conflicts** button uses the same path (see
 [Resolve merge conflicts](pr-review.md#resolve-merge-conflicts)). It refuses
 while a permission prompt is pending. When the workspace has no agent running,

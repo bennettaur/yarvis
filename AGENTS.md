@@ -359,7 +359,17 @@ back to ad-hoc.
   prompt forbids relaying third-party text as an instruction. What no layer can
   establish is *what the agent is showing*, so a send is reported as delivered,
   never as done. Anything new that forwards text into a session owes the same
-  three. Which process is the agent comes from the pids Claude Code's
+  three. The channel (`sidecar/src/channel/`) is the one other path, and
+  `sendToWorkspaceAgent` tries it first. There the message reaches Claude Code
+  as a channel event rather than keystrokes, so there is no prompt line to
+  submit early and no command prefix to read. The relay is a stdio MCP server
+  Claude Code itself started, which settles who is listening, and it collects
+  only its own terminal's messages, proven with the same `YARVIS_SESSION_TOKEN`.
+  The chat agent's rule on third-party text still applies. What a session
+  answers through the relay's `reply` tool is model-written and goes back to
+  the chat agent fenced. The relay is the sidecar binary run with
+  `channel-relay` (`sidecar/src/main.ts`), since a packaged build ships one
+  executable. Which process is the agent comes from the pids Claude Code's
   SessionStart hook registered (`workspaces/agentSessions.ts`), with the
   executable's file name as the fallback for an agent that registers nothing.
   A registered pid counts only while it leads the PTY's foreground process
