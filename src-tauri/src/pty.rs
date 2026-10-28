@@ -633,6 +633,12 @@ const MAX_INSTRUCTION_CHARS: usize = 4000;
 /// legitimate instruction needs to open with punctuation.
 const INSTRUCTION_PREFIXES_REJECTED: [char; 4] = ['!', '/', '#', '@'];
 
+/// How long to wait between typing an instruction and pressing Enter. Claude
+/// Code reads text that arrives in one burst as a paste, and a carriage return
+/// inside a paste becomes a newline in the prompt rather than a submit. The
+/// pause lets the paste settle so the Enter arrives as its own keypress.
+const INSTRUCTION_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Prepares an instruction for typing at a live agent prompt, or explains why it
 /// can't be sent.
 ///
@@ -705,9 +711,44 @@ pub fn send_session_instruction(
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
     let id = format!("ws-claude:{workspace_id}");
+    // The lock covers every PTY, so it is released during the pause rather than
+    // stalling the other terminals.
+    let shell_pid = {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let session = agent_session_for_input(app, &mut sessions, &id, agent_pids)?;
+        session
+            .writer
+            .write_all(text.as_bytes())
+            .map_err(|e| e.to_string())?;
+        session.writer.flush().map_err(|e| e.to_string())?;
+        session.child.process_id()
+    };
+    std::thread::sleep(INSTRUCTION_SUBMIT_DELAY);
+    // Checked again before the Enter: if the agent exited or was replaced during
+    // the pause, the Enter would run the typed text in whatever reads it now.
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = agent_session_for_input(app, &mut sessions, &id, agent_pids)
+        .map_err(|e| format!("the instruction was typed but not submitted: {e}"))?;
+    if session.child.process_id() != shell_pid {
+        return Err(
+            "the instruction was typed but not submitted: the agent session was restarted".into(),
+        );
+    }
+    session.writer.write_all(b"\r").map_err(|e| e.to_string())?;
+    session.writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The running session `id`, when the configured agent is what reads its
+/// prompt; otherwise why text must not be typed there.
+fn agent_session_for_input<'a>(
+    app: &AppHandle,
+    sessions: &'a mut HashMap<String, PtySession>,
+    id: &str,
+    agent_pids: &[u32],
+) -> Result<&'a mut PtySession, String> {
     let session = sessions
-        .get_mut(&id)
+        .get_mut(id)
         .ok_or("no agent session is running for that workspace")?;
     if !matches!(session.child.try_wait(), Ok(None)) {
         return Err("the agent session has exited".into());
@@ -717,12 +758,7 @@ pub fn send_session_instruction(
             "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
         );
     }
-    session
-        .writer
-        .write_all(format!("{text}\r").as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(session)
 }
 
 /// True when a non-shell process holds the PTY's foreground — the session's
