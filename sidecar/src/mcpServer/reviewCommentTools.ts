@@ -47,7 +47,9 @@ export function registerReviewCommentTools(
     },
     async ({ includeResolved }) => {
       try {
-        const comments = await store().list(workspaceId);
+        const comments = (await store().list(workspaceId)).filter(
+          (c) => includeResolved || c.resolvedAt === null,
+        );
         // The user's own bodies go out unfenced: acting on them is the point of
         // the tool. A report finding was written by a model reading the PR's
         // code, so it is fenced like any other untrusted text.
@@ -55,21 +57,19 @@ export function registerReviewCommentTools(
         const fenced = comments.some((c) => c.source !== "user");
         return jsonResult({
           ...(fenced ? { warning: untrustedWarning(nonce, "finding") } : {}),
-          comments: comments
-            .filter((c) => includeResolved || c.resolvedAt === null)
-            .map((c) => ({
-              id: c.id,
-              repo: c.repoName,
-              worktreePath: c.worktreePath,
-              path: c.path,
-              startLine: c.startLine,
-              endLine: c.endLine,
-              commitSha: c.commitSha,
-              resolved: c.resolvedAt !== null,
-              createdAt: c.createdAt.toISOString(),
-              source: c.source,
-              body: c.source === "user" ? c.body : fence(c.body, nonce, "finding"),
-            })),
+          comments: comments.map((c) => ({
+            id: c.id,
+            repo: c.repoName,
+            worktreePath: c.worktreePath,
+            path: c.path,
+            startLine: c.startLine,
+            endLine: c.endLine,
+            commitSha: c.commitSha,
+            resolved: c.resolvedAt !== null,
+            createdAt: c.createdAt.toISOString(),
+            source: c.source,
+            body: c.source === "user" ? c.body : fence(c.body, nonce, "finding"),
+          })),
         });
       } catch (e) {
         return toolError("list_review_comments", e);

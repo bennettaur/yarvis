@@ -274,6 +274,21 @@ describe("VerificationTab", () => {
     expect(button(host, "Run anyway")).toBeUndefined();
   });
 
+  it("says so when starting joins a run already going, rather than claiming the pick ran", async () => {
+    stubReviewApi({
+      startVerification: async (_ws, prId) => {
+        started.push(prId);
+        return { runId: "r7", existing: true };
+      },
+    });
+    const host = await mount(latest({}));
+    button(host, "Run verification")?.click();
+    await waitFor(
+      () => textOf(host.innerHTML).includes("already being written for this PR"),
+      "the joined notice",
+    );
+  });
+
   it("shows why a run couldn't start", async () => {
     stubReviewApi({
       startVerification: async () => {

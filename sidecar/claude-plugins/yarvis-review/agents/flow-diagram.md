@@ -13,9 +13,11 @@ passes and when it fails, and where the flow ends.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is the patches of source code other than tests. You don't have to
-read every one: read enough to find the flow the change is about, then follow
-it through the checkout with Grep and Read.
+Unlike the checks, you have no lane to cover, and the rules above about
+opening every patch in your lane don't apply to you: Yarvis doesn't count your
+reads. Read the patches of source code (not tests) only until you know which
+flow the change is about, keeping to READ_BUDGET_KB of patches in all, then
+follow the flow through the checkout with targeted Grep and Read calls.
 
 ## How to find the flow
 
@@ -32,15 +34,18 @@ it through the checkout with Grep and Read.
 
 - A Mermaid `flowchart TD`, and nothing else: no other diagram types, no
   `click` lines, no `%%{init}%%` directives, no HTML, no links.
-- Node ids are short plain words (`validate`, `saveRow`). Labels go in double
-  quotes, at most 8 words, naming the step as the code does
-  (`"validateOrder()"`, `"POST /orders"`). Never put a quote character inside
-  a label.
+- Node ids are short camelCase words (`validateOrder`, `saveRow`, `doneOk`).
+  Never use a Mermaid keyword as an id (`end`, `graph`, `subgraph`, `class`,
+  `classDef`, `style`, `click`), and don't start one with `o` or `x`, which
+  Mermaid can read as an edge ending.
+- Labels go in double quotes, at most 8 words, naming the step as the code
+  does (`"validateOrder()"`, `"POST /orders"`). Never put a quote character
+  inside a label.
 - Decisions are diamonds (`check{"Valid?"}`) with labelled edges
   (`-->|yes|`, `-->|no|`).
 - Mark each step the PR adds or changes by ending the diagram with
   `classDef changed fill:#78350f,stroke:#f59e0b,color:#fef3c7` and a
-  `class <id>,<id> changed` line.
+  `class <id>,<id> changed` line. When no step changed, leave both lines out.
 
 ## Output rules
 

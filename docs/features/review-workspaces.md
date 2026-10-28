@@ -185,6 +185,8 @@ Above **Run verification** you pick which sections to run: risk, each check,
 and the **Flow diagram**. The summary and must-read files always run. The
 diagram is off unless you tick it; the others start ticked, and after a run
 the boxes start where that run's did. The cost estimate follows what you pick.
+If a report is already being written for the PR, starting another joins that
+run, with the sections it was started with.
 A report shows only the sections its run was asked for.
 
 The **Flow diagram** traces the whole flow the change sits in, not just the
@@ -192,7 +194,7 @@ diff. An agent follows the changed code up to what starts the flow (a route, a
 job, a UI action) and down to where it ends, and draws it as a Mermaid
 flowchart with the changed steps highlighted, plus a short explanation.
 Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
-is too long, isn't drawn. The diagram is model-written from the PR's code, so
+is too long, isn't drawn, and the section says so. The diagram is model-written from the PR's code, so
 it is drawn in Mermaid's strict mode and shown as an image, where it can't run
 anything.
 
@@ -203,11 +205,14 @@ its files you've viewed.
 
 A risk concern or finding that names a file and line can be sent on once you've
 read it. **Post to PR** posts it as a line comment on the PR, marked as coming
-from the verification report. The provider refuses a line outside the diff, and
+from the verification report, with its text quoted and any `@` mentions
+broken so nobody is notified and no bot takes it as a command. The provider refuses a line outside the diff, and
 the error shows beside the button. When the PR was raised from a Yarvis
 workspace, **Add to *workspace*** adds it to that workspace's
 [review comments](workspaces.md#the-right-column) instead, where its agent can
-pick it up. Nothing is sent until you click.
+pick it up. There it carries a **report finding** badge, and the agent reads
+it as a problem to check rather than as your request. Nothing is sent until
+you click.
 
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the

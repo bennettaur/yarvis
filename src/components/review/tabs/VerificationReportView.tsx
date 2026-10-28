@@ -96,7 +96,7 @@ function PostFinding({
   section,
   poster,
 }: {
-  finding: Omit<Located, "path" | "line"> & { path?: string; line?: number };
+  finding: Partial<Located> & Pick<Located, "title" | "detail">;
   section: string;
   poster?: FindingPoster;
 }) {

@@ -4,25 +4,40 @@ import type { VerificationFlow } from "../../../lib/reviewWorkspaces/verificatio
 /** The flowchart forms the flow agent is told to write; anything else is shown as source only. */
 const FLOWCHART = /^(flowchart|graph)\s/;
 
+/**
+ * Mermaid, loaded on first use and configured once. The source it draws comes
+ * from an agent that read the PR's code, so it runs in strict mode (labels
+ * escaped, no click handlers), and a diagram's own directives can't lower that.
+ */
+let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
+function loadMermaid() {
+  mermaidReady ??= import("mermaid").then(({ default: mermaid }) => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      htmlLabels: false,
+      theme: "dark",
+    });
+    return mermaid;
+  });
+  return mermaidReady;
+}
+
+/** Mermaid needs a fresh element id for every render. */
 let renders = 0;
 
-/**
- * Renders model-written Mermaid to an SVG image. The source comes from an
- * agent that read the PR's code, so Mermaid runs in strict mode (labels
- * escaped, no click handlers) and its SVG is shown through an `<img>`, where
- * it can neither run script nor load anything.
- */
+/** Model-written Mermaid as SVG, shown through an `<img>` where it can neither run script nor load anything. */
 async function renderSvg(source: string): Promise<string> {
-  const { default: mermaid } = await import("mermaid");
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    htmlLabels: false,
-    theme: "dark",
-  });
+  const mermaid = await loadMermaid();
   renders += 1;
-  const { svg } = await mermaid.render(`verification-flow-${renders}`, source);
-  return svg;
+  const id = `verification-flow-${renders}`;
+  try {
+    const { svg } = await mermaid.render(id, source);
+    return svg;
+  } finally {
+    // A failed render can leave its scratch element in the page.
+    document.getElementById(`d${id}`)?.remove();
+  }
 }
 
 const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
@@ -62,6 +77,11 @@ export default function FlowDiagram({ flow }: { flow: VerificationFlow }) {
         />
       )}
       {error && <p className="text-xs text-amber-300">Couldn't draw the diagram: {error}</p>}
+      {flow.tooLarge && (
+        <p className="text-xs text-amber-300">
+          The diagram was too large to draw, so it was left out.
+        </p>
+      )}
       {source && (
         <details className="text-xs text-zinc-500">
           <summary className="cursor-pointer">Mermaid source</summary>

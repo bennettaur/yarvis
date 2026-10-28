@@ -64,6 +64,7 @@ interface Comment {
   endLine: number;
   commitSha: string | null;
   body: string;
+  source: string;
   resolvedAt: string | null;
 }
 
@@ -154,6 +155,23 @@ describe("review comment routes", () => {
       fakeGit,
     );
     expect(comment?.commitSha).toBe("cafebabe1234567");
+  });
+
+  it("stores the source a request names, takes the user's by default, and refuses others", async () => {
+    const ws = await workspaceWithRepo();
+    const at = { workspaceRepoId: ws.repoId, path: "src/a.ts", startLine: 1, endLine: 1 };
+    const finding = await post(ws.id, { ...at, body: "From the report", source: "verification" });
+    expect(finding.status).toBe(201);
+    const own = await post(ws.id, { ...at, body: "Mine" });
+    expect((await post(ws.id, { ...at, body: "x", source: "bogus" })).status).toBe(400);
+    expect(((await finding.json()) as Comment).source).toBe("verification");
+    expect(((await own.json()) as Comment).source).toBe("user");
+    // What the MCP tool reads, which fences by this field.
+    const located = await listLocatedReviewComments(db, ws.id);
+    expect(located.map((c) => [c.body, c.source])).toEqual([
+      ["From the report", "verification"],
+      ["Mine", "user"],
+    ]);
   });
 
   it("keeps a report finding's body out of the event log", async () => {

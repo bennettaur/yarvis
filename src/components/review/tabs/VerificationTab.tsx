@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
@@ -51,11 +51,12 @@ export function useVerificationRun(
   sections: readonly ReportSection[],
 ): RunProgress | null {
   const [progress, setProgress] = useState<RunProgress | null>(null);
-  // Read when a run starts; the sections can't change during one.
-  const sectionsAtStart = useRef(sections);
-  sectionsAtStart.current = sections;
+  // Keyed by value: a run's sections are fixed, so a re-render with an equal
+  // list must not restart the stream.
+  const sectionsKey = sections.join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sections is read through its key
   useEffect(() => {
-    const initial = () => initialProgress(sectionsAtStart.current);
+    const initial = () => initialProgress(sections);
     setProgress(runId ? initial() : null);
     if (!runId) return;
     const abort = new AbortController();
@@ -74,7 +75,7 @@ export function useVerificationRun(
       if (!abort.signal.aborted) invalidate(verificationKey(prId));
     })();
     return () => abort.abort();
-  }, [prId, runId]);
+  }, [prId, runId, sectionsKey]);
   return progress;
 }
 
@@ -225,7 +226,12 @@ function CheckLine({ check }: { check: CheckProgress }) {
 export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
   const latest = useLatestVerification(workspaceId, pr.id);
-  const [startedId, setStartedId] = useState<string | null>(null);
+  // The run this window started, with the sections it was asked for.
+  const [started, setStarted] = useState<{
+    id: string;
+    sections: readonly ReportSection[];
+  } | null>(null);
+  const [joined, setJoined] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // A large PR, or one the estimate says will outrun the budget, asks first.
@@ -237,8 +243,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const lastSections = runSections(run?.meta);
   const sections = pickedSections ?? lastSections;
   const runningHere = run?.status === "running" && run.live ? run.id : null;
-  const followId = startedId ?? runningHere;
-  const progress = useVerificationRun(pr.id, followId, startedId ? sections : lastSections);
+  const followId = started?.id ?? runningHere;
+  // A run followed but not started here lists the sections its own meta records.
+  const progress = useVerificationRun(pr.id, followId, started?.sections ?? lastSections);
   const running = followId !== null && progress !== null && progress.finished === null;
   const runningElsewhere = !running && run?.status === "running" && !run.live;
   const report = reportOf(latest.data);
@@ -259,9 +266,13 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setConfirmingLarge(false);
     setStarting(true);
     setActionError(null);
+    setJoined(false);
     try {
-      const { runId } = await startVerification(workspaceId, pr.id, sections);
-      setStartedId(runId);
+      const { runId, existing } = await startVerification(workspaceId, pr.id, sections);
+      // A run already going was started with its own sections, not these; it
+      // is followed as `runningHere` once the latest run is re-read.
+      if (existing) setJoined(true);
+      else setStarted({ id: runId, sections });
       invalidate(verificationKey(pr.id));
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -393,6 +404,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         {actionError && (
           <p role="alert" className="text-xs text-red-400">
             {actionError}
+          </p>
+        )}
+        {joined && (
+          <p className="text-xs text-zinc-400">
+            A report was already being written for this PR, so no new run started. Below is that
+            run, with the sections it was started with.
           </p>
         )}
         {latest.error && <p className="text-xs text-red-400">{latest.error}</p>}

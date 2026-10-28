@@ -65,6 +65,8 @@ export interface VerificationFlow {
   title: string;
   explanation: string;
   mermaid: string;
+  /** The agent's diagram was over the size limit, so it was dropped. */
+  tooLarge?: boolean;
 }
 
 /**
@@ -106,8 +108,9 @@ export interface VerificationSize {
   skimmed: string[];
   /** A rough estimate for the configured model and the default sections. */
   estimatedCostUsd: number;
-  /** What each section more or fewer than the default changes the estimate by. */
+  /** About what one section adds to the estimate, or takes off it. */
   sectionCostUsd: number;
+  /** The sections `estimatedCostUsd` assumes. */
   defaultSections: ReportSection[];
   budgetUsd: number;
   /** The estimate is over the budget: the run may stop before it answers. */
@@ -156,16 +159,28 @@ export function sizeFor(
 }
 
 /**
- * A finding as a review comment's text: its title, then what the report said.
- * Marked as coming from the report so a reader on the PR doesn't take it for
- * the reviewer's own words.
+ * Mentions as plain text: a zero-width space after the `@` keeps GitHub from
+ * notifying anyone, or a bot from reading a command addressed to it.
+ */
+const unmention = (text: string) => text.replace(/@(?=[\w-])/g, "@\u200b");
+
+/**
+ * A finding as a review comment's text: its title, then what the report said,
+ * quoted. Marked as coming from the report so a reader on the PR doesn't take
+ * it for the reviewer's own words. The text is model-written from the PR's
+ * code, so it is quoted and stripped of mentions: posted under the reviewer's
+ * account, a `/approve` line or an `@bot` in it would carry their authority.
  */
 export function findingCommentBody(
   finding: { title: string; detail: string; severity?: Severity },
   section: string,
 ): string {
   const tag = finding.severity ? `${section}, ${finding.severity}` : section;
-  return `**${finding.title}** (verification report: ${tag})\n\n${finding.detail}`;
+  const quoted = unmention(finding.detail)
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `**${unmention(finding.title)}** (verification report: ${tag})\n\n${quoted}`;
 }
 
 /** A verification run as the route returns it. */

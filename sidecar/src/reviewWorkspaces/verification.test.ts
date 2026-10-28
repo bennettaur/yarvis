@@ -175,7 +175,22 @@ describe("the report schema", () => {
       mustRead: [],
       flow: { title: "t", explanation: "e", mermaid: "x".repeat(MAX_MERMAID_CHARS + 1) },
     });
-    expect(parsed.flow?.mermaid).toBe("");
+    expect(parsed.flow).toMatchObject({ mermaid: "", tooLarge: true });
+  });
+
+  it("strips a section it didn't ask for unread, so a malformed one can't fail the run", () => {
+    const picked = verificationReportSchema({ ...limits, sections: ["flow"] });
+    const parsed = picked.parse({
+      summary: "s",
+      mustRead: [],
+      flow: { title: "t", explanation: "e", mermaid: "flowchart TD\n a --> b" },
+      tests: { status: "ok", findings: "not a list" },
+      risk: { level: "extreme" },
+    });
+    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary"]);
+    // Claude Code is shown only the fields to write.
+    const sent = JSON.parse(jsonSchemaArg(picked));
+    expect(Object.keys(sent.properties).sort()).toEqual(["flow", "mustRead", "summary"]);
   });
 
   it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
@@ -553,6 +568,24 @@ describe("the size a warning states", () => {
     const whole = verificationSize(files, [], bulk, sonnet);
     expect(whole.estimatedCostUsd).toBeGreaterThan(size.estimatedCostUsd * 3);
     expect(whole.overBudget).toBe(true);
+  });
+
+  it("prices the default sections, and one more section as one more full reader", () => {
+    const files = [f("src/a.ts", 2_000), f("package-lock.json", 40_000)];
+    const bulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    const size = verificationSize(files, [], bulk, sonnet);
+    const read = estimateReadBytes(files, new Set(), bulk);
+    expect(size.defaultSections).toEqual(DEFAULT_SECTIONS);
+    // The summary agent plus one per default section reads every file.
+    expect(size.estimatedCostUsd).toBe(
+      estimateRunCostUsd("sonnet", read.perReader * (1 + DEFAULT_SECTIONS.length) + read.bulk),
+    );
+    const oneMore = estimateRunCostUsd(
+      "sonnet",
+      read.perReader * (2 + DEFAULT_SECTIONS.length) + read.bulk,
+    );
+    expect(size.sectionCostUsd).toBeCloseTo(oneMore - size.estimatedCostUsd, 1);
+    expect(size.sectionCostUsd).toBeGreaterThan(0);
   });
 
   it("reads bulk by the same rule the run skims by: a page, by one reader", () => {

@@ -145,14 +145,19 @@ const mustReadSchema = z.object({
 /** Past this a diagram is dropped rather than cut, since a cut one doesn't render. */
 export const MAX_MERMAID_CHARS = 6000;
 
-const flowSchema = z.object({
-  title: boundedText(TITLE_CHARS),
-  explanation: boundedText(600),
-  mermaid: z
-    .string()
-    .transform((m) => (m.length > MAX_MERMAID_CHARS ? "" : m.trim()))
-    .meta({ description: `A Mermaid flowchart, at most ${MAX_MERMAID_CHARS} characters.` }),
-});
+const flowSchema = z
+  .object({
+    title: boundedText(TITLE_CHARS),
+    explanation: boundedText(700),
+    mermaid: z
+      .string()
+      .meta({ description: `A Mermaid flowchart, at most ${MAX_MERMAID_CHARS} characters.` }),
+  })
+  .transform((flow) =>
+    flow.mermaid.length > MAX_MERMAID_CHARS
+      ? { ...flow, mermaid: "", tooLarge: true }
+      : { ...flow, mermaid: flow.mermaid.trim() },
+  );
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
@@ -330,68 +335,73 @@ function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string
  * takes out goes into `audit`.
  */
 export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
-  const asked = new Set<ReportSection>(limits.sections);
-  // Required when asked for, so the schema Claude Code is given says so too.
-  const section = <T extends z.ZodType>(name: ReportSection, schema: T) =>
-    asked.has(name) ? schema : schema.optional();
-  return (
-    z
-      .object({
-        summary: z
-          .string()
-          .transform((s) => clipWords(s, limits.summaryWords))
-          .meta({ description: `At most ${limits.summaryWords} words.` }),
-        mustRead: boundedList(mustReadSchema, MAX_MUST_READ).transform((entries) => {
-          const seen = new Set<string>();
-          const known = entries
-            .map((e) => withRepoPath(e, limits.checkoutDir))
-            .filter((e) => {
-              if (!limits.changedPaths.has(e.path)) {
-                audit.droppedMustReads.push(e.path);
-                return false;
-              }
-              if (seen.has(e.path)) return false;
-              seen.add(e.path);
-              return true;
-            });
-          return known.slice(0, limits.mustReadMax);
-        }),
-        risk: section("risk", riskSchema),
-        completeness: section("completeness", checkSchema),
-        tests: section("tests", checkSchema),
-        complexity: section("complexity", checkSchema),
-        performance: section("performance", checkSchema),
-        comments: section("comments", checkSchema),
-        observability: section("observability", checkSchema),
-        quality: section("quality", checkSchema),
-        flow: section("flow", flowSchema),
-      })
-      // A section nobody asked for is dropped, whatever the model sent.
-      .transform(({ summary, mustRead, risk, flow, ...answered }) => {
-        const checks: Partial<Record<CheckSection, Check>> = {};
-        for (const section of CHECK_SECTIONS) {
-          const check = answered[section];
-          if (!check || !asked.has(section)) continue;
-          checks[section] = {
-            ...check,
-            findings: check.findings.map((f) => withRepoPath(f, limits.checkoutDir)),
-          };
-        }
-        return {
-          summary,
-          mustRead,
-          ...(risk &&
-            asked.has("risk") && {
-              risk: {
-                ...risk,
-                concerns: risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
-              },
-            }),
-          ...dedupeChecks(checks, audit),
-          ...(flow && asked.has("flow") && { flow }),
-        };
-      })
+  const sectionSchemas = {
+    risk: riskSchema,
+    completeness: checkSchema,
+    tests: checkSchema,
+    complexity: checkSchema,
+    performance: checkSchema,
+    comments: checkSchema,
+    observability: checkSchema,
+    quality: checkSchema,
+    flow: flowSchema,
+  };
+  // Only the asked-for sections are in the shape, all required: Claude Code is
+  // shown only what to write, and a section the model adds anyway is stripped
+  // unread, so a malformed extra can't fail the run.
+  const askedSchemas: Record<string, z.ZodType> = Object.fromEntries(
+    limits.sections.map((name) => [name, sectionSchemas[name]]),
   );
+  type Answered = {
+    [K in keyof typeof sectionSchemas]?: z.output<(typeof sectionSchemas)[K]>;
+  };
+  const fixed = z.object({
+    summary: z
+      .string()
+      .transform((s) => clipWords(s, limits.summaryWords))
+      .meta({ description: `At most ${limits.summaryWords} words.` }),
+    mustRead: boundedList(mustReadSchema, MAX_MUST_READ).transform((entries) => {
+      const seen = new Set<string>();
+      const known = entries
+        .map((e) => withRepoPath(e, limits.checkoutDir))
+        .filter((e) => {
+          if (!limits.changedPaths.has(e.path)) {
+            audit.droppedMustReads.push(e.path);
+            return false;
+          }
+          if (seen.has(e.path)) return false;
+          seen.add(e.path);
+          return true;
+        });
+      return known.slice(0, limits.mustReadMax);
+    }),
+  });
+  return fixed.extend(askedSchemas).transform((report) => {
+    // The shape is built per run, so its type can't say which sections it has.
+    const { summary, mustRead, risk, flow, ...answered } = report as z.output<typeof fixed> &
+      Answered;
+    const checks: Partial<Record<CheckSection, Check>> = {};
+    for (const name of CHECK_SECTIONS) {
+      const check = answered[name];
+      if (!check) continue;
+      checks[name] = {
+        ...check,
+        findings: check.findings.map((f) => withRepoPath(f, limits.checkoutDir)),
+      };
+    }
+    return {
+      summary,
+      mustRead,
+      ...(risk && {
+        risk: {
+          ...risk,
+          concerns: risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
+        },
+      }),
+      ...dedupeChecks(checks, audit),
+      ...(flow && { flow }),
+    };
+  });
 }
 
 export type VerificationReport = z.output<ReturnType<typeof verificationReportSchema>>;
@@ -507,11 +517,11 @@ const perTokenUsd = (model: VerificationModel) => {
   return (1.25 * rates.input + RESEND * rates.cacheRead) / 1_000_000;
 };
 
-const cents = (usd: number) => Math.round(usd * 100) / 100;
+const roundToCents = (usd: number) => Math.round(usd * 100) / 100;
 
 /** About what a run whose agents read `readBytes` of patch costs with `model`, in USD. */
 export function estimateRunCostUsd(model: VerificationModel, readBytes: number): number {
-  return cents((BASE_TOKENS + readBytes / BYTES_PER_TOKEN) * perTokenUsd(model));
+  return roundToCents((BASE_TOKENS + readBytes / BYTES_PER_TOKEN) * perTokenUsd(model));
 }
 
 /** About what one more agent reading every file adds, in USD, unrounded so a client can sum it. */
@@ -991,7 +1001,12 @@ export interface VerificationSize {
   skimmed: string[];
   /** A rough figure from {@link estimateRunCostUsd}, for the configured model and the default sections. */
   estimatedCostUsd: number;
-  /** About what each section added to or taken from the default changes that figure by. */
+  /**
+   * About what one section adds: one more agent reading every file. The
+   * estimate moves by this much per section added to or taken from the
+   * defaults. It leaves out the agent's own fixed overhead and, for the flow
+   * diagram, its reads of the checkout, so it runs low.
+   */
   sectionCostUsd: number;
   /** The sections {@link estimatedCostUsd} assumes. */
   defaultSections: readonly ReportSection[];

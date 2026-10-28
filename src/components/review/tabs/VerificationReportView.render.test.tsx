@@ -269,4 +269,28 @@ describe("VerificationReportView", () => {
       unmount();
     }
   });
+
+  it("shows only the sections a run was asked for, with the flow when it has one", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            tests: pass,
+            flow: {
+              title: "How a lookup is cached",
+              explanation: "Reads go through the cache.",
+              mermaid: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("How a lookup is cached");
+    expect(text).toContain("Test quality");
+    expect(text).not.toContain("Risk");
+    expect(text).not.toContain("Performance");
+  });
 });

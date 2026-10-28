@@ -205,6 +205,12 @@ describe("coverage from a run's reads", () => {
       "Code quality",
     ]);
     expect(coverage.laneGaps.every((g) => g.paths.join() === "src/core.ts")).toBe(true);
+    // A check the run wasn't asked for has no lane to miss.
+    const picked = coverageOf(index, activity, {
+      ...where,
+      lanes: new Set(["yarvis-review:test-reviewer", "yarvis-review:performance-reviewer"]),
+    });
+    expect(picked.coverage.laneGaps.map((g) => g.check)).toEqual(["Test quality"]);
     // Each agent's reading: a whole 40 KB patch per Read.
     expect(volumes.map((v) => [v.name, v.bytes])).toEqual([
       ["yarvis-review:test-reviewer", 80_000],
