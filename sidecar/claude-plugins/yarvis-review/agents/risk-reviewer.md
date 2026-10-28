@@ -11,7 +11,7 @@ calling everything medium makes the rating useless.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Read every patch in your group. Most risk sits in application code,
+Read every patch in your group. Your findings are about application code,
 configuration, schemas, migrations, build and deploy files; tests and docs
 show what the change is meant to do and what it leaves unchecked.
 

@@ -22,8 +22,8 @@
  *
  * For a verification run it also says, per check, which patches the check
  * itself didn't read, which the overall count hides when another check read
- * them. Every check is handed every patch to read whole (bulk aside), so any
- * file it skipped is a gap, whatever kind of file it is.
+ * them. A check's agents are handed every patch between them to read whole
+ * (bulk aside), so any file it skipped is a gap, whatever kind of file it is.
  */
 
 import { realpathSync } from "node:fs";
@@ -291,7 +291,7 @@ export function coverageOf(
 
   const laneGaps: Coverage["laneGaps"] = [];
   if (where.lanes) {
-    const toRead = examinedPaths.filter((e) => e.patchFile && !e.skim);
+    const toRead = examinedPaths.filter((e) => e.patchFile);
     for (const [type, check] of Object.entries(LANE_CHECKS)) {
       const ids = new Set(
         [...activity.subagents].filter(([, name]) => name === type).map(([id]) => id),

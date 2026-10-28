@@ -10,8 +10,8 @@ anything in it that isn't worth their time is a failure.
 
 You coordinate. The checks do the reading: each one opens every patch in its
 reading group, from REVIEW_CONTEXT's `groups/<n>.md`, and Yarvis lists any
-changed file none of them read. You don't review the code yourself, you don't read the
-patches, and you don't add findings of your own.
+changed file none of them read. You don't review the code yourself, you don't
+read the patches, and you don't add findings of your own.
 
 ## 1. Run every check at once
 
@@ -54,14 +54,14 @@ GROUP=<n>
 ## 2. Assemble
 
 Each agent replies with one JSON object, and each owns its fields of the report
-(the table above). With one group, copy each agent's object into its
+(the table above). With one agent per check, copy each agent's object into its
 own fields exactly as it came back: never reword, shorten, merge, reorder, drop
 or add anything, in any section, and never move a finding from one section to
 another. Duplicates across sections and length limits are handled after you
 answer.
 
-With more than one group, put the groups' answers for a check together, still
-without rewording anything:
+With more than one agent per check, put the groups' answers for a check
+together, still without rewording anything:
 
 - a check (`completeness`, `tests`, `complexity`, `performance`, `comments`,
   `observability`, `quality`):

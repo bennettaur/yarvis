@@ -298,7 +298,7 @@ describe("reading groups", () => {
     const [first] = readingGroups([sized("a.ts", 300), sized("big.ts", 2500, 1000)], 1000);
     const file = groupFile(first as ReturnType<typeof readingGroups>[number], 1);
     expect(file).toStartWith("# Reading group 1\n");
-    expect(file).toContain("\npatches/a.ts.diff\n");
+    expect(file).toMatch(/<reading-group-([0-9a-f]+)>\npatches\/a\.ts\.diff\n<\/reading-group-\1>/);
     expect(file).not.toContain("big.ts");
     const [, split] = readingGroups([sized("big.ts", 2500, 1000)], 1000);
     expect(groupFile(split as ReturnType<typeof readingGroups>[number], 2)).toContain(

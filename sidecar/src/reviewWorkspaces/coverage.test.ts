@@ -200,7 +200,7 @@ describe("coverage from a run's reads", () => {
     const gaps = Object.fromEntries(coverage.laneGaps.map((g) => [g.check, g.paths]));
     expect(gaps["Test quality"]).toEqual(["src/core.ts"]);
     expect(gaps.Performance).toEqual(["src/core.test.ts", "docs/x.md"]);
-    // A check that read nothing missed every patch, but not the skimmed bulk.
+    // A check that read nothing missed every patch; skimmed bulk is never owed a whole read.
     expect(gaps.Risk).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
     expect(Object.keys(gaps)).toHaveLength(8);
     // Each agent's reading: a whole 40 KB patch per Read, and the lockfile's first page.
