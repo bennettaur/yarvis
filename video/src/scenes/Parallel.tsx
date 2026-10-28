@@ -228,6 +228,7 @@ export function Parallel({ walkthrough = false }: { walkthrough?: boolean }) {
                     endLine: 44,
                     commitSha: null,
                     body: "Back off with jitter here, or every retry lands on the same second.",
+                    source: "user",
                     resolvedAt: null,
                     createdAt: COMMENT_TIME,
                     updatedAt: COMMENT_TIME,

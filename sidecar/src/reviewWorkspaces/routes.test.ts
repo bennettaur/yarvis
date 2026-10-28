@@ -851,8 +851,13 @@ cat "${fakeDir}/result.jsonl"`,
 
     const res = await start({ sections: ["tests"] });
     expect(res.status).toBe(202);
-    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
-    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("SECTIONS=tests\n");
+    // The fake creates stdin.txt before it has written the prompt into it.
+    const stdin = join(fakeDir, "stdin.txt");
+    await until(
+      async () => existsSync(stdin) && readFileSync(stdin, "utf8").includes("SECTIONS="),
+      "the fake's stdin",
+    );
+    expect(readFileSync(stdin, "utf8")).toContain("SECTIONS=tests\n");
     release();
     await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the report");
     const { run } = await latest(wsId, prId);
