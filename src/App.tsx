@@ -5,7 +5,9 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
-import PermissionRequestModal from "./components/attention/PermissionRequestModal";
+import PermissionRequestModal, {
+  AUTO_OPEN_ARMING_MS,
+} from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
@@ -36,8 +38,9 @@ import TasksPanel from "./components/TasksPanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
-import type { AttentionItem } from "./lib/attention";
-import { markAttention } from "./lib/attentionStore";
+import { type AttentionItem, hasAnswerDialog } from "./lib/attention";
+import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
+import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
@@ -79,6 +82,8 @@ export default function App() {
   const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
   // A Claude session's permission prompt being answered from the modal.
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
+  // True when the modal opened by itself rather than from a click on the bell.
+  const [permissionAutoOpened, setPermissionAutoOpened] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -327,24 +332,56 @@ export default function App() {
 
   const openAttentionItem = useCallback(
     (item: AttentionItem) => {
-      // A prompt can be answered where the user already is. The item stays
-      // pending until it is answered, which resolves it on the sidecar.
-      if (item.kind === "permission" && item.source === "claude-hook" && item.sessionKey) {
+      // A prompt or question is answered where the user already is. The item
+      // stays pending until it is answered, which resolves it on the sidecar.
+      // The panel closes so Esc reaches only the dialog.
+      if (hasAnswerDialog(item)) {
         setAttentionPanelOpen(false);
-        setPermissionItem(item);
-        return;
-      }
-      // A question is answered in place too; it leaves the stream once answered,
-      // not when it is opened. The panel closes so Esc reaches only the dialog.
-      if (item.kind === "question") {
-        setAttentionPanelOpen(false);
-        setQuestionItem(item);
+        if (item.kind === "question") setQuestionItem(item);
+        else setPermissionItem(item);
+        setPermissionAutoOpened(false);
         return;
       }
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },
     [navigateTo],
+  );
+
+  // A prompt or question from the workspace on screen opens straight away,
+  // unless an overlay is already open. Opening would replace or close it while
+  // the user is in it; the item still waits on the bell.
+  const overlayOpenRef = useRef(false);
+  useEffect(() => {
+    overlayOpenRef.current =
+      permissionItem !== null ||
+      questionItem !== null ||
+      omniChatOpen ||
+      attentionPanelOpen ||
+      clipboardOpen ||
+      setupGuideOpen ||
+      tourOpen;
+  }, [
+    permissionItem,
+    questionItem,
+    omniChatOpen,
+    attentionPanelOpen,
+    clipboardOpen,
+    setupGuideOpen,
+    tourOpen,
+  ]);
+
+  useEffect(
+    () =>
+      onAttentionArrived((item) => {
+        if (overlayOpenRef.current) return;
+        if (!shouldAutoOpen(getViewedScope(), item)) return;
+        // Claimed now: a second item can arrive before the state change commits.
+        overlayOpenRef.current = true;
+        openAttentionItem(item);
+        setPermissionAutoOpened(true);
+      }),
+    [openAttentionItem],
   );
 
   const openQuestionSession = useCallback(
@@ -497,6 +534,7 @@ export default function App() {
         sessionKey={permissionItem?.sessionKey ?? null}
         title={permissionItem?.title ?? ""}
         onClose={() => setPermissionItem(null)}
+        armingMs={permissionAutoOpened ? AUTO_OPEN_ARMING_MS : undefined}
         onGoToSession={() => {
           if (!permissionItem) return;
           setPermissionItem(null);

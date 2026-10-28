@@ -612,4 +612,11 @@ be answered straight from the bell. Its row reads `AskUserQuestion:` and the
 first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
 
+When the prompt or question comes from a session in the workspace you have
+open, its window opens on its own, so you don't have to reach for the bell. Its
+buttons ignore clicks for just over a second, so a click you'd already started
+doesn't answer it. It doesn't open while Yarvis is in the background, or while
+another window is up, such as another prompt, Omni Chat or the attention panel
+itself; the item waits on the bell instead.
+
 The assistant doesn't read the bell. It is for you.

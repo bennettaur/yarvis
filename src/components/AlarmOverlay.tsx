@@ -26,6 +26,19 @@ export default function AlarmOverlay({ alarm, remaining }: { alarm: Alarm; remai
   }, [alarm.fireAtMs]);
 
   const escalated = secondsPast >= 60;
+  // The ringing stops either way; this says the choice wasn't recorded, so a
+  // snooze, say, won't ring again unless the user tries once more.
+  const [error, setError] = useState<string | null>(null);
+  const act = async (action: () => Promise<void>) => {
+    setError(null);
+    try {
+      await action();
+    } catch (e) {
+      setError(
+        `Couldn't reach Yarvis to record that (${e instanceof Error ? e.message : String(e)}). Try again.`,
+      );
+    }
+  };
 
   return (
     <div
@@ -45,12 +58,17 @@ export default function AlarmOverlay({ alarm, remaining }: { alarm: Alarm; remai
           {remaining} more {remaining === 1 ? "alarm" : "alarms"} waiting behind this one
         </div>
       )}
+      {error && (
+        <div role="alert" className="max-w-xl px-8 text-center text-sm text-red-300">
+          {error}
+        </div>
+      )}
       <div className="flex gap-4">
         {alarm.meetLink && (
           <button
-            onClick={async () => {
+            onClick={() => {
               openExternal(alarm.meetLink);
-              await acknowledgeAlarm(alarm.id);
+              void act(() => acknowledgeAlarm(alarm.id));
             }}
             className="rounded-lg bg-emerald-600 px-8 py-3 text-lg font-medium hover:bg-emerald-700"
           >
@@ -58,17 +76,13 @@ export default function AlarmOverlay({ alarm, remaining }: { alarm: Alarm; remai
           </button>
         )}
         <button
-          onClick={async () => {
-            await acknowledgeAlarm(alarm.id);
-          }}
+          onClick={() => void act(() => acknowledgeAlarm(alarm.id))}
           className="rounded-lg bg-indigo-600 px-8 py-3 text-lg font-medium hover:bg-indigo-500"
         >
           Acknowledge
         </button>
         <button
-          onClick={async () => {
-            await snoozeAlarm(alarm.id, 5);
-          }}
+          onClick={() => void act(() => snoozeAlarm(alarm.id, 5))}
           className="rounded-lg border border-zinc-600 px-8 py-3 text-lg text-zinc-200 hover:bg-zinc-800"
         >
           Snooze 5 min

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import type { AttentionItem } from "./attention";
+import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
+import { type AttentionItem, hasAnswerDialog } from "./attention";
 
 /**
  * What the user is currently looking at, as far as the attention stream cares:
@@ -100,6 +101,24 @@ export function isInView(scope: ViewedScope, item: AttentionItem): boolean {
   if (!scope.focused) return false;
   if (item.sessionKey) return scope.sessionKeys.has(item.sessionKey);
   return Boolean(item.workspaceId) && item.workspaceId === scope.workspaceId;
+}
+
+/**
+ * Whether a newly raised item should open its answer dialog on its own: a
+ * Claude Code permission prompt or a coding agent's question from a session
+ * running in the workspace on screen.
+ *
+ * The session id decides the workspace, not the item's `workspaceId`, which the
+ * raising terminal reports about itself. Never while the window is in the
+ * background, so the click that brings the user back can't land on Approve.
+ */
+export function shouldAutoOpen(scope: ViewedScope, item: AttentionItem): boolean {
+  if (!scope.focused || !scope.workspaceId || !item.sessionKey) return false;
+  return (
+    item.workspaceId === scope.workspaceId &&
+    sessionWorkspaceId(item.sessionKey) === scope.workspaceId &&
+    hasAnswerDialog(item)
+  );
 }
 
 export function getViewedScope(): ViewedScope {
