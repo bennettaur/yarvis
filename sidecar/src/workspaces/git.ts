@@ -635,11 +635,11 @@ async function registeredWorktree(
   worktreePath: string,
 ): Promise<WorktreeEntry | undefined> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
-  const target = existsSync(worktreePath)
-    ? canonicalPath(worktreePath)
-    : join(canonicalPath(dirname(worktreePath)), basename(worktreePath));
+  const canonical = (path: string) =>
+    existsSync(path) ? canonicalPath(path) : join(canonicalPath(dirname(path)), basename(path));
+  const target = canonical(worktreePath);
   return (await listWorktrees(runner, primaryClonePath)).find(
-    (entry) => canonicalPath(entry.path) === target,
+    (entry) => canonical(entry.path) === target,
   );
 }
 

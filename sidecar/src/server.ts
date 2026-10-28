@@ -1,6 +1,6 @@
 import { failInterruptedAgentRuns, pruneAgentRunEvents } from "./agentRuns/service.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
-import { importLegacyAlarms } from "./alarms/legacyImport.ts";
+import { importLegacyAlarmsOnStart } from "./alarms/legacyImport.ts";
 import { startAlarmScheduler } from "./alarms/scheduler.ts";
 import { createApp } from "./app.ts";
 import { browserBridge } from "./browser/bridge.ts";
@@ -115,19 +115,7 @@ try {
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
-      // Every instance had its own alarms.json, so each copies its own, background workers or not.
-      const legacyAlarms = process.env.YARVIS_LEGACY_ALARMS_PATH;
-      if (legacyAlarms) {
-        try {
-          const count = await importLegacyAlarms(
-            getDb(config.databaseUrl as string).db,
-            legacyAlarms,
-          );
-          if (count > 0) console.log(`[sidecar] imported ${count} alarms from alarms.json`);
-        } catch (e) {
-          console.error("[sidecar] alarm import failed:", redactSecrets(String(e)));
-        }
-      }
+      await importLegacyAlarmsOnStart(config);
       // Yarvis's git refuses a clone with a symlink in its git data either way;
       // this raises the workspace alert when it does, on every instance.
       registerSymlinkAlerts(getDb(config.databaseUrl as string).db);

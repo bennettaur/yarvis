@@ -73,8 +73,9 @@ that needs attention wakes it early.
 
 ## What it does without asking
 
-- Setting an alarm, and cancelling one it set. It can't cancel an alarm you
-  set yourself.
+- Setting an alarm for a meeting you accepted, or one with no guest list.
+  That's the only kind of alarm it can set, and it can't cancel alarms. If you
+  cancel a meeting alarm, it doesn't set it again.
 - Filing a JIRA ticket.
 - Starting work on a ticket you put on a work stream in a chat, and starting a
   session on one of your tasks.
