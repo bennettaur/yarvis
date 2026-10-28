@@ -157,7 +157,7 @@ export async function listMessages(db: Db, limit = 50): Promise<HeadsDownMessage
 }
 
 /** Deletes every message, read or not. Returns how many there were. */
-export async function deleteMessages(db: Db): Promise<number> {
+export async function deleteAllMessages(db: Db): Promise<number> {
   const deleted = await db.delete(headsDownMessages).returning({ id: headsDownMessages.id });
   return deleted.length;
 }

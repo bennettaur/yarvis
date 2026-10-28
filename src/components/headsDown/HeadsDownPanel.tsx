@@ -74,7 +74,7 @@ function ClearButton({ disabled, onClear }: { disabled: boolean; onClear: () => 
         type="button"
         disabled={disabled}
         onClick={() => setConfirming(true)}
-        title="Drop every open work stream and delete your messages, so the next run starts fresh"
+        title="Drop every open work stream, delete your messages and dismiss open questions, so the next run starts fresh"
         className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
       >
         Clear old work
@@ -83,7 +83,7 @@ function ClearButton({ disabled, onClear }: { disabled: boolean; onClear: () => 
   }
   return (
     <div className="flex items-center gap-2 text-xs text-zinc-400">
-      <span>Drop all open work streams and messages?</span>
+      <span>Drop all open work streams, messages and questions?</span>
       <button
         type="button"
         disabled={disabled}
@@ -188,8 +188,6 @@ function RunHeader({
     setError(null);
     try {
       await action();
-      setFocus("");
-      setStopTime("");
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -270,9 +268,11 @@ function RunHeader({
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void runAction(() =>
-              startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined),
-            );
+            void runAction(async () => {
+              await startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined);
+              setFocus("");
+              setStopTime("");
+            });
           }}
         >
           <div className="flex items-start gap-3">

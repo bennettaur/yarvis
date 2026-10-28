@@ -56,7 +56,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, work_streams, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, work_streams, job_runs, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-routes-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
@@ -137,28 +137,53 @@ describe("/api/heads-down", () => {
     ]);
   });
 
-  it("clears work streams, messages and questions, but not while a pass may run", async () => {
+  it("clears work streams, messages and questions while heads-down mode is off", async () => {
     await createStream(db, { title: "Ship billing" });
     await createStream(db, { title: "Chase review", status: "waiting-on-others" });
     await createStream(db, { title: "Old fix", status: "done" });
     await post("/messages", { body: "watch #billing-intake" });
     await askUser(db, { kind: "question", question: "Which repo?" });
 
-    await post("/start", {});
-    expect((await post("/clear")).status).toBe(409);
-    expect(await get("/messages")).toHaveLength(1);
-
-    await post("/pause");
     const res = await post("/clear");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ droppedStreams: 2, deletedMessages: 1 });
 
-    const streams = await sql`SELECT id, status FROM work_streams ORDER BY title`;
+    const streams = await sql`SELECT status, closed_at FROM work_streams ORDER BY title`;
     expect(streams.map((r) => r.status)).toEqual(["dropped", "done", "dropped"]);
+    expect(streams.every((r) => r.closed_at !== null)).toBe(true);
     expect(await get("/messages")).toEqual([]);
     expect(await get("/questions")).toEqual([]);
-    // The paused run itself is left alone.
+    const items = await sql`SELECT status FROM attention_items`;
+    expect(items.map((r) => r.status)).toEqual(["resolved"]);
+    const closed = await sql`SELECT 1 FROM events WHERE type = 'work_stream.closed'`;
+    expect(closed).toHaveLength(2);
+  });
+
+  it("clears a paused run's work and keeps the run", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await post("/start", {});
+    await post("/pause");
+
+    expect(await (await post("/clear")).json()).toEqual({ droppedStreams: 1, deletedMessages: 0 });
     expect(await get("")).toMatchObject({ run: { status: "active" } });
+  });
+
+  it("changes nothing while a run is going or a pass holds the lease", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await post("/messages", { body: "watch #billing-intake" });
+
+    await post("/start", {});
+    expect((await post("/clear")).status).toBe(409);
+    await post("/stop");
+
+    await sql`INSERT INTO job_runs (name, lease_until) VALUES ('heads-down', now() + interval '5 minutes')
+              ON CONFLICT (name) DO UPDATE SET lease_until = excluded.lease_until`;
+    expect((await post("/clear")).status).toBe(409);
+    await sql`UPDATE job_runs SET lease_until = NULL WHERE name = 'heads-down'`;
+
+    const streams = await sql`SELECT status FROM work_streams`;
+    expect(streams.map((r) => r.status)).toEqual(["active"]);
+    expect(await get("/messages")).toHaveLength(1);
   });
 
   it("answers a question once, and clears it from the attention bell", async () => {

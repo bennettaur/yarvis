@@ -1,11 +1,12 @@
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import type { HeadsDownRun } from "../db/schema.ts";
+import { claimJob, finishJob } from "../jobs/store.ts";
 import { dropOpenStreams } from "../workStreams/service.ts";
 import { dismissOpenQuestions } from "./attention.ts";
 import { publish } from "./hub.ts";
 import {
-  deleteMessages,
+  deleteAllMessages,
   getActiveRun,
   pauseRun,
   resumeRun,
@@ -24,13 +25,25 @@ import {
 /**
  * Starting, stopping, pausing and resuming heads-down mode, and setting when
  * it stops, shared by the page, the chat tools and the loop's scheduled stop
- * so each does the same steps.
+ * so each does the same steps. Clearing out its old work lives here too.
  */
 
 export const NOT_RUNNING = "heads-down mode isn't on";
 
 /** A stop time has to be ahead, or the run would stop the moment it starts. */
 export const STOP_TIME_PASSED = "that stop time has already passed";
+
+const CLEAR_WHILE_RUNNING = "pause or stop heads-down mode before clearing";
+
+/** A pass paused on another instance can still be finishing its last tool call. */
+const CLEAR_WHILE_PASS_RUNS = "a pass is still finishing; try again in a minute";
+
+/**
+ * The database lease a pass holds while it runs, on whichever instance runs
+ * it. Clearing holds it too, so no pass starts partway through.
+ */
+export const PASS_LEASE_NAME = "heads-down";
+const CLEAR_LEASE_MS = 60_000;
 
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const ISO_WITH_OFFSET = z.string().datetime({ offset: true });
@@ -110,25 +123,29 @@ export async function pauseHeadsDown(db: Db): Promise<HeadsDownRun | null> {
   return run;
 }
 
-/** Clearing would pull streams and messages out from under a pass that is reading them. */
-export const CLEAR_WHILE_RUNNING = "pause or stop heads-down mode before clearing";
-
 /**
  * Starts heads-down mode over: drops every open work stream, deletes the
  * user's messages, and dismisses open questions, which were about that work.
- * Refused while a run is going and not paused, since a pass may be mid-way
- * through those streams.
+ * Refused while a run is going and not paused, or while a pass holds the
+ * lease, since a pass may be partway through those streams.
  */
 export async function clearHeadsDown(
   db: Db,
 ): Promise<{ droppedStreams: number; deletedMessages: number } | { error: string }> {
-  const run = await getActiveRun(db);
-  if (run && run.pausedAt === null) return { error: CLEAR_WHILE_RUNNING };
-  const dropped = await dropOpenStreams(db);
-  const deletedMessages = await deleteMessages(db);
-  await dismissOpenQuestions(db);
-  publish({ type: "changed" });
-  return { droppedStreams: dropped.length, deletedMessages };
+  if (!(await claimJob(db, PASS_LEASE_NAME, CLEAR_LEASE_MS))) {
+    return { error: CLEAR_WHILE_PASS_RUNS };
+  }
+  try {
+    const run = await getActiveRun(db);
+    if (run && run.pausedAt === null) return { error: CLEAR_WHILE_RUNNING };
+    const droppedStreams = await dropOpenStreams(db);
+    const deletedMessages = await deleteAllMessages(db);
+    await dismissOpenQuestions(db);
+    publish({ type: "changed" });
+    return { droppedStreams: droppedStreams.length, deletedMessages };
+  } finally {
+    await finishJob(db, PASS_LEASE_NAME, { status: "skipped" });
+  }
 }
 
 /** Resumes a paused run and wakes the loop for a pass. Null when no run was paused. */

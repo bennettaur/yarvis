@@ -125,7 +125,7 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
 } = CONFIG;
 
 /** The run the page loads; a test may replace it. */
-let currentRun = RUN;
+let currentRun: typeof RUN | null = RUN;
 
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
@@ -337,6 +337,31 @@ describe("HeadsDownPanel pausing", () => {
     buttonNamed(host, "Yes, clear").click();
     await settle(50);
     expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/clear", body: null });
+  });
+
+  it("keeps the focus the user typed when they clear old work with heads-down off", async () => {
+    currentRun = null;
+    const host = await mount();
+    const focus = host.querySelector<HTMLInputElement>('[aria-label="Focus"]');
+    if (!focus) throw new Error("no focus input");
+    // React tracks the value itself, so set it through the native setter for onChange to fire.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      focus,
+      "Ship billing",
+    );
+    focus.dispatchEvent(new Event("input", { bubbles: true }));
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    buttonNamed(host, "Cancel").click();
+    await settle(20);
+    expect(writes).toEqual([]);
+
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    buttonNamed(host, "Yes, clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/clear", body: null });
+    expect(focus.value).toBe("Ship billing");
   });
 
   it("shows when the run stops, and clears it", async () => {

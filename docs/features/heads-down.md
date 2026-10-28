@@ -42,11 +42,13 @@ both keep it running.
 Work streams carry over from one run to the next, so over days the page can
 fill up with work you no longer care about. **Clear old work** drops every open
 work stream, deletes the messages you left it, and dismisses its open
-questions, so the next pass starts with nothing. It asks you to confirm first.
-Dropped streams leave the page, and the messages are gone for good.
+questions, so the next pass starts with nothing. Streams you paused yourself
+are dropped too. It asks you to confirm first. Dropped streams leave the page,
+and the messages are gone for good.
 
 The button shows only while heads-down mode is off or paused, since a pass
-that is running could be partway through those streams. Clearing a paused run
+that is running could be partway through those streams. If a pass is still
+finishing right after you pause, it asks you to try again in a minute. Clearing a paused run
 keeps the run itself, with its focus and stop time.
 
 ## What it does
