@@ -5,7 +5,10 @@ import {
   type WorkStreamLink,
   type WorkStreamPatch,
 } from "../../lib/headsDown";
+import { requestOpenWorkspace } from "../../lib/nav";
 import { openExternal } from "../../lib/url";
+import { useWorkspaceNames, type WorkspaceNames } from "../../lib/workspaceMentions";
+import WorkspaceMentionText from "../WorkspaceMentionText";
 
 const STATUS_LABEL: Record<WorkStream["status"], string> = {
   active: "Moving",
@@ -23,8 +26,11 @@ const STATUS_STYLE: Record<WorkStream["status"], string> = {
   dropped: "bg-zinc-800 text-zinc-500",
 };
 
-/** A link's one-line label: what it is and what was last seen of it. */
-export function linkLabel(link: WorkStreamLink): string {
+/**
+ * A link's one-line label: what it is and what was last seen of it. A
+ * workspace with no title of its own goes by its current name.
+ */
+export function linkLabel(link: WorkStreamLink, workspaceNames?: WorkspaceNames): string {
   const ref = link.ref;
   const kind =
     ref.kind === "review-request"
@@ -37,20 +43,23 @@ export function linkLabel(link: WorkStreamLink): string {
       : ref.kind === "pr"
         ? ref.url
         : ref.kind === "workspace"
-          ? null
+          ? (workspaceNames?.get(ref.workspaceId.toLowerCase()) ?? null)
           : ref.conversation);
   return `${name ? `${kind}: ${name}` : kind}${link.state ? ` · ${link.state}` : ""}`;
 }
 
-/** The web address a link opens, when it has one. */
-function linkUrl(link: WorkStreamLink): string | null {
+/** What clicking a link does, when it goes anywhere. */
+function linkAction(link: WorkStreamLink): (() => void) | null {
   const ref = link.ref;
-  return ref.kind === "pr" || ref.kind === "ticket" ? (ref.url ?? null) : null;
+  if (ref.kind === "workspace") return () => requestOpenWorkspace({ id: ref.workspaceId });
+  const url = ref.kind === "pr" || ref.kind === "ticket" ? ref.url : undefined;
+  return url ? () => openExternal(url) : null;
 }
 
 function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workspaceNames = useWorkspaceNames();
 
   const paused = stream.pausedAt !== null;
 
@@ -116,9 +125,15 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
       </div>
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
       {stream.waitingOn && (
-        <p className="mt-1 text-xs text-amber-200/80">Waiting on: {stream.waitingOn}</p>
+        <p className="mt-1 text-xs text-amber-200/80">
+          Waiting on: <WorkspaceMentionText text={stream.waitingOn} names={workspaceNames} />
+        </p>
       )}
-      {stream.nextAction && <p className="mt-1 text-xs text-zinc-400">Next: {stream.nextAction}</p>}
+      {stream.nextAction && (
+        <p className="mt-1 text-xs text-zinc-400">
+          Next: <WorkspaceMentionText text={stream.nextAction} names={workspaceNames} />
+        </p>
+      )}
       {stream.wakeAt && new Date(stream.wakeAt) > new Date() && (
         <p className="mt-1 text-xs text-zinc-500">
           Not before {new Date(stream.wakeAt).toLocaleString()}
@@ -127,19 +142,16 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
       {stream.links.length > 0 && (
         <ul className="mt-2 space-y-0.5">
           {stream.links.map((link) => {
-            const url = linkUrl(link);
+            const action = linkAction(link);
+            const label = linkLabel(link, workspaceNames);
             return (
               <li key={link.id} className="truncate text-xs text-zinc-400">
-                {url ? (
-                  <button
-                    type="button"
-                    onClick={() => openExternal(url)}
-                    className="text-left hover:text-zinc-200"
-                  >
-                    {linkLabel(link)}
+                {action ? (
+                  <button type="button" onClick={action} className="text-left hover:text-zinc-200">
+                    {label}
                   </button>
                 ) : (
-                  linkLabel(link)
+                  label
                 )}
               </li>
             );

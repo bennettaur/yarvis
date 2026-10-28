@@ -40,6 +40,8 @@ const APPROVAL = {
   toolArgs: { channel: "#billing-reviews", text: "Could someone review this?" },
 };
 
+const WORKSPACE_ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
+
 const STREAM = {
   id: "s1",
   title: "Ship the billing PR",
@@ -60,6 +62,14 @@ const STREAM = {
       state: "CI passing",
       observedAt: "2026-10-19T10:00:00.000Z",
     },
+    {
+      id: "l2",
+      kind: "workspace",
+      ref: { kind: "workspace", workspaceId: WORKSPACE_ID },
+      title: null,
+      state: "session idle",
+      observedAt: "2026-10-19T10:00:00.000Z",
+    },
   ],
 };
 
@@ -69,7 +79,7 @@ const PASS = {
   chatSessionId: "c1",
   startedAt: "2026-10-19T10:00:00.000Z",
   finishedAt: "2026-10-19T10:02:00.000Z",
-  notes: "Asked where to request review.",
+  notes: `Asked where to request review. Workspace \`${WORKSPACE_ID}\` is idle.`,
   sleepMinutes: 60,
   sleepReason: "every stream is waiting",
   error: null,
@@ -181,6 +191,7 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM]);
+    if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
     if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(savedConfig);
@@ -212,6 +223,7 @@ const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
+const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
 const mounted: (() => void)[] = [];
@@ -258,6 +270,28 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("names the workspaces it mentions by id and opens them on click", async () => {
+    const opened: string[] = [];
+    const stop = onOpenWorkspace((request) => opened.push(request.id));
+    try {
+      const host = await mount();
+      await waitForText(host, "workspace: Billing invoices");
+
+      expect(host.textContent).toContain("workspace: Billing invoices · session idle");
+      expect(host.textContent).toContain("Workspace Billing invoices is idle.");
+      expect(host.textContent).not.toContain(WORKSPACE_ID);
+
+      buttonNamed(host, "workspace: Billing invoices · session idle").click();
+      const noteLink = [...host.querySelectorAll("a")].find(
+        (a) => a.textContent === "Billing invoices",
+      );
+      noteLink?.click();
+      expect(opened).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
+    } finally {
+      stop();
+    }
   });
 
   it("shows it is sleeping between passes", async () => {
@@ -609,6 +643,21 @@ describe("applyPassEvent", () => {
 });
 
 describe("linkLabel", () => {
+  it("names a workspace by its current name, and says only what it is when unknown", () => {
+    const link = {
+      id: "l",
+      kind: "workspace" as const,
+      ref: { kind: "workspace" as const, workspaceId: WORKSPACE_ID },
+      title: null,
+      state: null,
+      observedAt: null,
+    };
+    expect(linkLabel(link, new Map([[WORKSPACE_ID, "Billing invoices"]]))).toBe(
+      "workspace: Billing invoices",
+    );
+    expect(linkLabel(link, new Map())).toBe("workspace");
+  });
+
   it("says when a review request was sent", () => {
     const label = linkLabel({
       id: "l",

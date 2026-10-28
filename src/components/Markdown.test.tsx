@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { AppPlace } from "../lib/appPlace";
-import { onOpenPlace } from "../lib/nav";
+import { onOpenPlace, onOpenWorkspace } from "../lib/nav";
 import { mountForInteraction, renderToHtml } from "../test/render";
 import Markdown from "./Markdown";
 
@@ -91,6 +91,57 @@ describe("Markdown yarvis:// links", () => {
 
   it("is dropped by the default URL filter unless the caller opts in", async () => {
     const html = await renderToHtml(<Markdown>{LINK}</Markdown>);
+    expect(html).not.toContain("yarvis://");
+  });
+});
+
+describe("Markdown workspaceNames", () => {
+  const ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
+  const NAMES = new Map([[ID, "Billing invoices"]]);
+  let cleanup: (() => void) | null = null;
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+  });
+
+  it("shows a known workspace's id as its name, and opens it when clicked", async () => {
+    const opened: string[] = [];
+    const stop = onOpenWorkspace((request) => opened.push(request.id));
+    const { host, unmount } = await mountForInteraction(
+      <Markdown workspaceNames={NAMES}>{`Told ${ID.toUpperCase()} to push a PR.`}</Markdown>,
+    );
+    cleanup = () => {
+      stop();
+      unmount();
+    };
+
+    expect(host.textContent).toBe("Told Billing invoices to push a PR.");
+    host.querySelector("a")?.click();
+    expect(opened).toEqual([ID]);
+  });
+
+  it("links a bare id in backticks, but leaves longer code alone", async () => {
+    const html = await renderToHtml(
+      <Markdown workspaceNames={NAMES}>{`\`${ID}\` and \`get_workspace_status ${ID}\``}</Markdown>,
+    );
+    expect(html).toContain(`href="yarvis://workspace/${ID}"`);
+    expect(html).toContain(
+      `<code class="rounded bg-zinc-800 px-1 py-0.5 font-mono text-xs text-zinc-200">get_workspace_status ${ID}</code>`,
+    );
+  });
+
+  it("leaves an unknown id and an existing link as written", async () => {
+    const other = "11111111-2222-4333-8444-555555555555";
+    const html = await renderToHtml(
+      <Markdown workspaceNames={NAMES}>{`${other} and [see ${ID}](https://a.test)`}</Markdown>,
+    );
+    expect(html).toContain(other);
+    expect(html).toContain(`see ${ID}`);
+    expect(html).not.toContain("yarvis://workspace/");
+  });
+
+  it("drops workspace links unless the caller passes names", async () => {
+    const html = await renderToHtml(<Markdown>{`[ws](yarvis://workspace/${ID})`}</Markdown>);
     expect(html).not.toContain("yarvis://");
   });
 });

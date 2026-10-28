@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { getPass, type HeadsDownPass, type PassMessage } from "../../lib/headsDown";
+import { useWorkspaceNames } from "../../lib/workspaceMentions";
 import Markdown from "../Markdown";
 import TurnActivity from "../TurnActivity";
 import AgentMark from "./AgentMark";
@@ -31,6 +32,7 @@ function describeCalls(pass: HeadsDownPass): string | null {
 
 /** One finished pass: what it left, how it ended, and its transcript one click away. */
 function PassRow({ pass }: { pass: HeadsDownPass }) {
+  const workspaceNames = useWorkspaceNames();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<PassMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +72,11 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
       </button>
       {(pass.notes || pass.error || failedCalls.length > 0) && (
         <div className="space-y-1 px-3 pb-2">
-          {pass.notes && <Markdown className="text-xs text-zinc-400">{pass.notes}</Markdown>}
+          {pass.notes && (
+            <Markdown className="text-xs text-zinc-400" workspaceNames={workspaceNames}>
+              {pass.notes}
+            </Markdown>
+          )}
           {pass.error && <p className="text-xs text-red-300/80">{pass.error}</p>}
           {failedCalls.length > 0 && (
             <ul className="space-y-0.5 text-xs text-zinc-500">
@@ -101,7 +107,11 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
           {replies.map((m) => (
             <div key={m.id}>
               <TurnActivity activity={m.toolCalls ?? []} />
-              {m.content && <Markdown className="text-sm text-zinc-200">{m.content}</Markdown>}
+              {m.content && (
+                <Markdown className="text-sm text-zinc-200" workspaceNames={workspaceNames}>
+                  {m.content}
+                </Markdown>
+              )}
             </div>
           ))}
         </div>
@@ -143,6 +153,7 @@ export default function PassList({
   loading: boolean;
 }) {
   const finished = passes.filter((p) => p.finishedAt !== null);
+  const workspaceNames = useWorkspaceNames();
   return (
     <div className="space-y-2">
       {live && (
@@ -163,7 +174,11 @@ export default function PassList({
           )}
           {live.thought && <LatestThought text={live.thought} isThinking={live.isThinking} />}
           <TurnActivity activity={live.activity} running />
-          {live.text && <Markdown className="text-sm text-zinc-200">{live.text}</Markdown>}
+          {live.text && (
+            <Markdown className="text-sm text-zinc-200" workspaceNames={workspaceNames}>
+              {live.text}
+            </Markdown>
+          )}
         </div>
       )}
       {finished.length === 0 && !live ? (
