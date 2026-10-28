@@ -528,22 +528,31 @@ It uses Claude Code's channels, which are a research preview. To turn it on:
    agent command in **Settings → Repositories → Agent**.
 2. Start a new session in the workspace. A session that was already running
    keeps receiving typed instructions.
-3. Accept the dialog Claude Code shows at startup. It shows every time,
-   because Yarvis's relay isn't on Claude Code's approved list of channels.
-   A session started on an issue waits at that dialog until you accept it.
+3. Accept the channel dialog Claude Code shows at startup. It shows every
+   time, because Yarvis's relay isn't on Claude Code's approved list of
+   channels.
+
+**A session started on an issue waits at that dialog until you accept it.**
 
 How it works:
 
 - Every workspace's `.mcp.json` has a `yarvis-channel` server. That server is
   the Yarvis sidecar running as a small relay. It collects messages for its own
   terminal and gives the session a `reply` tool. Claude Code asks you to
-  approve it the first time, like the `yarvis` server.
-- The assistant sends over the channel only when the agent command has the
-  flag and the session's relay is connected. Otherwise it types the
-  instruction as before. Yarvis reads the flag from the stored agent command,
-  so it can't see it when `YARVIS_CLAUDE_COMMAND` sets the command.
-- Replies are kept in memory until Yarvis restarts. The assistant reads them
-  with `read_workspace_replies`, and treats them as untrusted text.
+  approve this server once, the same way it asks for the `yarvis` server. That
+  approval is separate from the channel dialog, which comes back every startup.
+- The assistant sends over the channel only when the session was launched with
+  the flag, and its relay belongs to the Claude Code that registered itself in
+  the agent tab. Otherwise it types the instruction as before. The relay
+  checks the flag when it starts, against `YARVIS_CLAUDE_COMMAND` if that is
+  set and the saved agent command otherwise.
+- If no answer comes back, the session may not have seen the message. The
+  assistant can only confirm the message was handed to the relay.
+- Replies are kept in memory until Yarvis restarts or the session is stopped.
+  The assistant reads them with `read_workspace_replies` and treats them as
+  untrusted text. Once it has read one, the actions it would normally take
+  without asking (such as commenting on an issue) ask you first for the rest
+  of that turn, as they do after it reads a web page.
 - Channels need a claude.ai login. They don't work with an API key or a
   third-party provider. On a Team or Enterprise plan, an admin must also set
   `channelsEnabled` in managed settings.

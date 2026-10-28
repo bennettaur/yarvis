@@ -19,6 +19,7 @@
  * inside the session itself.
  */
 
+import { channelHub } from "../channel/hub.ts";
 import { type ChannelSendOptions, sendOverChannel } from "../channel/send.ts";
 import {
   killClaudeSession,
@@ -75,16 +76,23 @@ export function sessionStartedMessage(name: string, remoteControl: boolean): str
     : `Started a Claude Code session in workspace "${name}". View it live in the Workspaces tab. It is not remotely controllable — say so if the user asks to drive it from elsewhere.`;
 }
 
+/** The PTY id of a workspace's agent tab, which the core and the channel both key by. */
+export function agentTabSessionKey(workspaceId: string): string {
+  return `ws-claude:${workspaceId}`;
+}
+
 /** Asks the core to start the session; returns the key the frontend attaches to. */
 export async function startClaudeSession(
   input: StartClaudeSessionInput,
 ): Promise<ClaudeSessionResult> {
   await spawnClaudeSession(input);
-  return { sessionKey: `ws-claude:${input.workspaceId}` };
+  return { sessionKey: agentTabSessionKey(input.workspaceId) };
 }
 
 /** Best-effort stop of a workspace's Claude session via the core. */
 export async function stopClaudeSession(workspaceId: string): Promise<void> {
+  // The session's replies go with it, so an archived workspace's don't linger.
+  channelHub.forget(agentTabSessionKey(workspaceId));
   await killClaudeSession(workspaceId);
 }
 
@@ -142,7 +150,7 @@ export async function sendSessionInstruction(input: SendSessionInstructionInput)
 
 /** Pids of the Claude sessions registered in a workspace's agent tab, oldest first. */
 export async function agentTabPids(db: Db, workspaceId: string): Promise<number[]> {
-  const sessionKey = `ws-claude:${workspaceId}`;
+  const sessionKey = agentTabSessionKey(workspaceId);
   const sessions = (await reapAndListAgentSessions(db, [workspaceId])).get(workspaceId) ?? [];
   return sessions.filter((s) => s.sessionKey === sessionKey).map((s) => s.pid);
 }
@@ -158,7 +166,6 @@ export type AgentSendFailure =
   | "error";
 
 export type AgentSendResult =
-  /** Typed at the session's prompt. */
   | { delivered: true; via: "pty" }
   /** Handed to the session's channel relay; replies come back under `messageId`. */
   | { delivered: true; via: "channel"; messageId: string }
@@ -169,12 +176,12 @@ export type AgentSendResult =
  * by every caller that forwards text into a session so they all keep the same
  * rules. It goes over the session's channel when one is listening, where it
  * arrives as its own turn and can't land in a dialog or a half-typed prompt,
- * and is typed at the agent tab otherwise. The event logs the instruction's length, not its text: it
- * can be composed from data an outside party influenced, and the event log is
- * read back into later prompts.
+ * and is typed at the agent tab otherwise. The event logs the instruction's
+ * length, not its text: it can be composed from data an outside party
+ * influenced, and the event log is read back into later prompts.
  *
- * When the core can't tell what holds the prompt and nothing has registered,
- * the agent most likely predates the workspace's registration hooks; writing
+ * On the typed path, when the core can't tell what holds the prompt and
+ * nothing has registered, the agent most likely predates the workspace's registration hooks; writing
  * them now means a restarted session registers.
  */
 export async function sendToWorkspaceAgent(
@@ -211,7 +218,12 @@ export async function sendToWorkspaceAgent(
     return result;
   };
 
-  const message = await sendOverChannel(`ws-claude:${workspace.id}`, instruction, channel);
+  const message = sendOverChannel(
+    agentTabSessionKey(workspace.id),
+    instruction,
+    agentPids,
+    channel,
+  );
   if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
 
   try {

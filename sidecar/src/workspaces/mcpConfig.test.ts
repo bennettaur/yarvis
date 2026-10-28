@@ -47,6 +47,8 @@ describe("workspace .mcp.json", () => {
         YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
         YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_CLAUDE_COMMAND: "${YARVIS_CLAUDE_COMMAND:-}",
       },
     });
   });

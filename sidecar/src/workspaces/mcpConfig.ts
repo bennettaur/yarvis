@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { CHANNEL_RELAY_ARG, CHANNEL_SERVER_NAME } from "../channel/relay.ts";
+import { CHANNEL_RELAY_ARG } from "../channel/relay.ts";
+import { CHANNEL_SERVER_NAME } from "../channel/send.ts";
 import { MCP_SERVER_NAME, WORKSPACE_HEADER } from "../mcpServer/server.ts";
 
 /**
@@ -74,14 +75,19 @@ function channelRelayEntry(relay: RelayCommand): Record<string, unknown> {
       YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
+      // The relay checks the command the session was launched with for the
+      // channel flag, and this override wins over the stored one.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_CLAUDE_COMMAND: "${YARVIS_CLAUDE_COMMAND:-}",
     },
   };
 }
 
 /**
- * Merges our server entries into any existing `.mcp.json`. Other servers the user
- * configured are preserved, as are unrelated top-level keys; our own entries are
- * recomputed every time, so a re-provision refreshes it rather than stacking.
+ * Merges our server entries into any existing `.mcp.json`. Other servers the
+ * user configured are preserved, as are unrelated top-level keys; our own
+ * entries are recomputed every time, so a re-provision refreshes them rather
+ * than stacking.
  */
 export function buildMcpConfig(
   workspaceId: string,
