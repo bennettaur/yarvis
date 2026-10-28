@@ -321,6 +321,24 @@ describe("HeadsDownPanel pausing", () => {
     expect(text).not.toContain("Sleeping until");
   });
 
+  it("clears old work from a paused run once the user confirms", async () => {
+    const running = await mount();
+    expect([...running.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+      "Clear old work",
+    );
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+
+    currentRun = { ...RUN, pausedAt: "2026-10-19T12:00:00.000Z" };
+    const host = await mount();
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    expect(writes).toEqual([]);
+    buttonNamed(host, "Yes, clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/clear", body: null });
+  });
+
   it("shows when the run stops, and clears it", async () => {
     currentRun = { ...RUN, stopAt: "2026-10-19T23:00:00.000Z" };
     const host = await mount();

@@ -227,6 +227,13 @@ export const startHeadsDown = (focus: string, stopAt?: string) =>
 
 export const stopHeadsDown = () => request<{ stopped: boolean }>("/api/heads-down/stop", "POST");
 
+/**
+ * Drops every open work stream, deletes the user's messages and dismisses open
+ * questions. The sidecar refuses it while a run is going and not paused.
+ */
+export const clearHeadsDown = () =>
+  request<{ droppedStreams: number; deletedMessages: number }>("/api/heads-down/clear", "POST");
+
 export const pauseHeadsDown = () => request<HeadsDownRun>("/api/heads-down/pause", "POST");
 
 export const resumeHeadsDown = () => request<HeadsDownRun>("/api/heads-down/resume", "POST");

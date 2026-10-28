@@ -37,6 +37,18 @@ You can also ask the assistant to pause it, resume it, or stop it at a given
 time. It asks you first before resuming it or changing when it stops, since
 both keep it running.
 
+## Start fresh
+
+Work streams carry over from one run to the next, so over days the page can
+fill up with work you no longer care about. **Clear old work** drops every open
+work stream, deletes the messages you left it, and dismisses its open
+questions, so the next pass starts with nothing. It asks you to confirm first.
+Dropped streams leave the page, and the messages are gone for good.
+
+The button shows only while heads-down mode is off or paused, since a pass
+that is running could be partway through those streams. Clearing a paused run
+keeps the run itself, with its focus and stop time.
+
 ## What it does
 
 It works in passes. Each pass starts fresh, with no memory of the last one, so

@@ -1,9 +1,12 @@
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import type { HeadsDownRun } from "../db/schema.ts";
+import { dropOpenStreams } from "../workStreams/service.ts";
 import { dismissOpenQuestions } from "./attention.ts";
 import { publish } from "./hub.ts";
 import {
+  deleteMessages,
+  getActiveRun,
   pauseRun,
   resumeRun,
   type StartRunOptions,
@@ -105,6 +108,27 @@ export async function pauseHeadsDown(db: Db): Promise<HeadsDownRun | null> {
   if (run) abortHeadsDownPass();
   publish({ type: "changed" });
   return run;
+}
+
+/** Clearing would pull streams and messages out from under a pass that is reading them. */
+export const CLEAR_WHILE_RUNNING = "pause or stop heads-down mode before clearing";
+
+/**
+ * Starts heads-down mode over: drops every open work stream, deletes the
+ * user's messages, and dismisses open questions, which were about that work.
+ * Refused while a run is going and not paused, since a pass may be mid-way
+ * through those streams.
+ */
+export async function clearHeadsDown(
+  db: Db,
+): Promise<{ droppedStreams: number; deletedMessages: number } | { error: string }> {
+  const run = await getActiveRun(db);
+  if (run && run.pausedAt === null) return { error: CLEAR_WHILE_RUNNING };
+  const dropped = await dropOpenStreams(db);
+  const deletedMessages = await deleteMessages(db);
+  await dismissOpenQuestions(db);
+  publish({ type: "changed" });
+  return { droppedStreams: dropped.length, deletedMessages };
 }
 
 /** Resumes a paused run and wakes the loop for a pass. Null when no run was paused. */

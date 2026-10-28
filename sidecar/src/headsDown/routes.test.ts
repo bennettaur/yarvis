@@ -9,6 +9,7 @@ import { addMessage as addChatMessage, createSession } from "../chat/service.ts"
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { CUT_SHORT_RESULT } from "../db/schema.ts";
+import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
 import { startPass, startRun } from "./service.ts";
 
@@ -55,7 +56,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, work_streams, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-routes-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
@@ -134,6 +135,30 @@ describe("/api/heads-down", () => {
     expect(await get("/messages")).toEqual([
       expect.objectContaining({ body: "Send Alex the PR link", seenAt: null }),
     ]);
+  });
+
+  it("clears work streams, messages and questions, but not while a pass may run", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await createStream(db, { title: "Chase review", status: "waiting-on-others" });
+    await createStream(db, { title: "Old fix", status: "done" });
+    await post("/messages", { body: "watch #billing-intake" });
+    await askUser(db, { kind: "question", question: "Which repo?" });
+
+    await post("/start", {});
+    expect((await post("/clear")).status).toBe(409);
+    expect(await get("/messages")).toHaveLength(1);
+
+    await post("/pause");
+    const res = await post("/clear");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ droppedStreams: 2, deletedMessages: 1 });
+
+    const streams = await sql`SELECT id, status FROM work_streams ORDER BY title`;
+    expect(streams.map((r) => r.status)).toEqual(["dropped", "done", "dropped"]);
+    expect(await get("/messages")).toEqual([]);
+    expect(await get("/questions")).toEqual([]);
+    // The paused run itself is left alone.
+    expect(await get("")).toMatchObject({ run: { status: "active" } });
   });
 
   it("answers a question once, and clears it from the attention bell", async () => {
