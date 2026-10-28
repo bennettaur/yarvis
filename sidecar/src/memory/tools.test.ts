@@ -260,4 +260,18 @@ describe("decision tools", () => {
     expect(corrected.error).toContain("record_decision");
     expect(confirmed.error).toContain("record_decision");
   });
+
+  // A pass consults with the same question it then gives ask_user, which takes 1000 characters.
+  it("accepts a question up to ask_user's 1000-character limit", () => {
+    const tools = newTurn();
+    const accepts = (schema: unknown, input: unknown) =>
+      (schema as { safeParse(v: unknown): { success: boolean } }).safeParse(input).success;
+    const consult = (question: string) => ({ situation, question });
+    const record = (question: string) => ({ questionId: "q", situation, question, choice: "yes" });
+
+    expect(accepts(tools.consult_decisions.inputSchema, consult("x".repeat(1000)))).toBe(true);
+    expect(accepts(tools.consult_decisions.inputSchema, consult("x".repeat(1001)))).toBe(false);
+    expect(accepts(tools.record_decision.inputSchema, record("x".repeat(1000)))).toBe(true);
+    expect(accepts(tools.record_decision.inputSchema, record("x".repeat(1001)))).toBe(false);
+  });
 });
