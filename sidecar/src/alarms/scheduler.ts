@@ -3,7 +3,7 @@ import { type CoreAlarm, fireAlarm, hasCoreChannel } from "../core/controlClient
 import type { Db } from "../db/client.ts";
 import { getDb } from "../db/client.ts";
 import { publish, subscribe } from "./hub.ts";
-import { claimDueAlarms, nextDueAt, toAlarm } from "./service.ts";
+import { claimDueAlarms, nextDueAt, toAlarm, unclaimAlarm } from "./service.ts";
 
 /**
  * Rings alarms when they come due. The sidecar decides an alarm is due and
@@ -19,6 +19,9 @@ import { claimDueAlarms, nextDueAt, toAlarm } from "./service.ts";
  * sharing the database publishes nothing here.
  */
 export const MAX_WAIT_MS = 30_000;
+
+/** How soon it tries again to ring an alarm the core couldn't, e.g. while it restarts. */
+export const FIRE_RETRY_MS = 5_000;
 
 export interface SchedulerDeps {
   db: Db;
@@ -57,19 +60,25 @@ export function createAlarmScheduler(deps: SchedulerDeps): AlarmScheduler {
     let nextMs = MAX_WAIT_MS;
     try {
       const due = await claimDueAlarms(deps.db, new Date());
+      let rang = 0;
+      let failed = 0;
       for (const row of due) {
-        await deps
-          .fire(toAlarm(row))
-          .catch((e) =>
-            console.error(
-              "[alarms] ringing on the core failed:",
-              e instanceof Error ? e.message : e,
-            ),
-          );
+        try {
+          await deps.fire(toAlarm(row));
+          rang++;
+        } catch (e) {
+          failed++;
+          console.error("[alarms] ringing on the core failed:", e instanceof Error ? e.message : e);
+          await unclaimAlarm(deps.db, row.id);
+        }
       }
-      if (due.length > 0) publish({ type: "changed" });
+      // Only a change worth telling the page about: an alarm put back after a
+      // failed ring is where it was, and announcing it would wake this loop
+      // straight into the same failure.
+      if (rang > 0) publish({ type: "changed" });
       const next = await nextDueAt(deps.db);
       if (next) nextMs = Math.min(MAX_WAIT_MS, Math.max(0, next.getTime() - Date.now()));
+      if (failed > 0) nextMs = Math.max(nextMs, FIRE_RETRY_MS);
     } catch (e) {
       console.error("[alarms] scheduler check failed:", e instanceof Error ? e.message : e);
     } finally {
@@ -97,7 +106,9 @@ export function startAlarmScheduler(config: Config): () => void {
     db: getDb(config.databaseUrl).db,
     fire: async (alarm) => {
       if (!hasCoreChannel()) {
-        console.warn(`[alarms] no core to ring alarm ${alarm.id}; it shows as ringing in the app`);
+        // `sidecar:dev` and tests run with no core: the alarm shows as ringing
+        // on the Alarms tab, with no window takeover or sound.
+        console.warn(`[alarms] no core to ring alarm ${alarm.id}`);
         return;
       }
       await fireAlarm(alarm);

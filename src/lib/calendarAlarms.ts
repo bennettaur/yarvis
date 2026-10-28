@@ -15,6 +15,7 @@ import { startMs } from "./calendarGrid";
 // The lead, label and match tolerance must match `sidecar/src/alarms/service.ts`,
 // which sets meeting alarms for the agents, so the calendar shows those as set.
 export const LEAD_MINUTES = 1;
+const MEETING_LABEL_PREFIX = "Meeting: ";
 
 /** Only timed events that haven't started yet can be armed. */
 export function isArmable(event: CalendarEvent): boolean {
@@ -25,7 +26,7 @@ export function isArmable(event: CalendarEvent): boolean {
 
 /** The alarm label used for an event, also the key for recognizing it later. */
 export function alarmLabel(event: CalendarEvent): string {
-  return `Meeting: ${event.title}`;
+  return `${MEETING_LABEL_PREFIX}${event.title}`;
 }
 
 /** When an event's alarm should fire (ms epoch), or null if start is unknown. */

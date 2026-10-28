@@ -68,8 +68,11 @@ function onClose(): void {
 async function getSocket(): Promise<net.Socket> {
   if (socket && !socket.destroyed) return socket;
   if (connecting) return connecting;
+  // Read before the promise exists: a throw inside it would leave `connecting`
+  // holding a rejection that every later call returns, even once the path is set.
+  const path = socketPath();
   connecting = new Promise<net.Socket>((resolve, reject) => {
-    const s = net.createConnection({ path: socketPath() });
+    const s = net.createConnection({ path });
     s.setEncoding("utf8");
     const onConnectError = (e: Error) => {
       connecting = null;
@@ -181,7 +184,7 @@ export async function saveGitHubToken(token: string): Promise<void> {
   await rpc("github.saveToken", { token });
 }
 
-/** Whether a core is listening, so callers can skip work only it can do (alarms in tests). */
+/** Whether a core is listening. False under `sidecar:dev` and in tests, where nothing can ring an alarm. */
 export function hasCoreChannel(): boolean {
   return Boolean(process.env.YARVIS_CORE_SOCK);
 }

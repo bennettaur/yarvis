@@ -35,8 +35,24 @@ let running = false;
 // shouldn't replay a backlog as fresh alerts.
 let primed = false;
 
+// Listeners for items raised live, so the app can react to an arrival without
+// diffing snapshots.
+const arrivalListeners = new Set<(item: AttentionItem) => void>();
+
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+/**
+ * Calls `listener` with each pending item that arrives over the live stream
+ * after the first hydrate. Backlog and refreshes of an item already pending
+ * don't count. Returns an unsubscribe function.
+ */
+export function onAttentionArrived(listener: (item: AttentionItem) => void): () => void {
+  arrivalListeners.add(listener);
+  return () => {
+    arrivalListeners.delete(listener);
+  };
 }
 
 const bySeqDesc = (a: AttentionItem, b: AttentionItem) => b.seq - a.seq;
@@ -92,8 +108,9 @@ function hydrateFrom(items: AttentionItem[]): void {
 
 /**
  * Applies one streamed item to the live snapshot, notifying on genuinely-new
- * items. An item whose origin is already on screen doesn't notify — the user is
- * looking straight at it, and the auto-clear pass is about to drop it anyway.
+ * items and passing them to arrival listeners. An item whose origin is already
+ * on screen doesn't notify — the user is looking straight at it, and the
+ * auto-clear pass is about to drop it anyway.
  */
 function applyItem(item: AttentionItem): void {
   const { list, added, changed } = applyAttentionItem(snapshot, item);
@@ -102,8 +119,17 @@ function applyItem(item: AttentionItem): void {
   // Streamed while the app was watching, so it is no longer backlog.
   backlog.delete(item.id);
   emit();
-  if (added && primed && !isInView(getViewedScope(), item)) {
+  if (!added || !primed) return;
+  if (!isInView(getViewedScope(), item)) {
     void notify(item.title, item.body ?? "Wants your attention");
+  }
+  for (const listener of arrivalListeners) {
+    // Caught here so one failing listener can't skip the rest or drop the stream.
+    try {
+      listener(item);
+    } catch (e) {
+      console.error("[attention] arrival listener failed:", e);
+    }
   }
 }
 
