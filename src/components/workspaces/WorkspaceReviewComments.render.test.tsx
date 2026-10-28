@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ReviewComment } from "../../lib/workspaceReview";
 import type { WorkspaceRepoDetail } from "../../lib/workspaces";
 import { mountForInteraction } from "../../test/render";
+import { resetReviewComments, stubReviewComments } from "../../test/reviewCommentsApi";
 
 /**
  * The clipboard itself is left alone here: `src/test/clipboard.ts` owns the
@@ -13,21 +14,6 @@ import { mountForInteraction } from "../../test/render";
 let stored: ReviewComment[] = [];
 const patched: { id: string; resolved?: boolean }[] = [];
 const deleted: string[] = [];
-
-const actualReview = await import("../../lib/workspaceReview");
-mock.module("../../lib/workspaceReview", () => ({
-  ...actualReview,
-  listReviewComments: async () => stored,
-  updateReviewComment: async (_ws: string, id: string, patch: { resolved?: boolean }) => {
-    patched.push({ id, ...patch });
-    const found = stored.find((c) => c.id === id);
-    if (!found) throw new Error("no such comment");
-    return { ...found, resolvedAt: patch.resolved ? "2026-06-01T10:00:00.000Z" : null };
-  },
-  deleteReviewComment: async (_ws: string, id: string) => {
-    deleted.push(id);
-  },
-}));
 
 const { default: WorkspaceReviewComments } = await import("./WorkspaceReviewComments");
 
@@ -58,15 +44,24 @@ beforeEach(() => {
   stored = [comment()];
   patched.length = 0;
   deleted.length = 0;
+  stubReviewComments({
+    listReviewComments: async () => stored,
+    updateReviewComment: async (_ws, id, patch) => {
+      patched.push({ id, ...patch });
+      const found = stored.find((c) => c.id === id);
+      if (!found) throw new Error("no such comment");
+      return { ...found, resolvedAt: patch.resolved ? "2026-06-01T10:00:00.000Z" : null };
+    },
+    deleteReviewComment: async (_ws, id) => {
+      deleted.push(id);
+    },
+  });
 });
 
 afterEach(() => {
   unmount?.();
   unmount = null;
-  // A module mock outlives the file that registered it, and `WorkspaceSidePanel`
-  // reads the same hook for its tab badge. Emptying the list here means a suite
-  // running after this one sees no comments however the files are ordered.
-  stored = [];
+  resetReviewComments();
 });
 
 const mount = async (onOpenFile: (repoId: string, path: string) => void = () => {}) => {

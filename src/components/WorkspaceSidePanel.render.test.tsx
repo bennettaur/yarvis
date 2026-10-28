@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { ChangedFile, WorkspaceRepoDetail, WorkspaceRepoWorktrees } from "../lib/workspaces";
 import { clipboardWrites, resetClipboardWrites } from "../test/clipboard";
 import { mountForInteraction, textOf } from "../test/render";
+// The comments tab reads its list through this, never through the `lib/api`
+// stubs other suites leave behind.
+import "../test/reviewCommentsApi";
 
 let files: string[] = [];
 let changes: ChangedFile[] = [];

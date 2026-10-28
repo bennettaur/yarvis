@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { useState } from "react";
 import { mountForInteraction } from "../test/render";
+import { resetReviewComments, stubReviewComments } from "../test/reviewCommentsApi";
 import type { ReviewComment } from "./workspaceReview";
 
 /**
@@ -18,18 +19,6 @@ import type { ReviewComment } from "./workspaceReview";
 let stored: Record<string, ReviewComment[]> = {};
 let loadCount = 0;
 const deleted: string[] = [];
-
-const actual = await import("./workspaceReview");
-mock.module("./workspaceReview", () => ({
-  ...actual,
-  listReviewComments: async (workspaceId: string) => {
-    loadCount++;
-    return stored[workspaceId] ?? [];
-  },
-  deleteReviewComment: async (_workspaceId: string, commentId: string) => {
-    deleted.push(commentId);
-  },
-}));
 
 const { useReviewComments } = await import("./workspaceReview");
 
@@ -74,11 +63,21 @@ beforeEach(() => {
   };
   loadCount = 0;
   deleted.length = 0;
+  stubReviewComments({
+    listReviewComments: async (workspaceId) => {
+      loadCount++;
+      return stored[workspaceId] ?? [];
+    },
+    deleteReviewComment: async (_workspaceId, commentId) => {
+      deleted.push(commentId);
+    },
+  });
 });
 
 afterEach(() => {
   unmount?.();
   unmount = null;
+  resetReviewComments();
 });
 
 describe("useReviewComments", () => {
