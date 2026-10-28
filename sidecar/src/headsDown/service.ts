@@ -156,6 +156,12 @@ export async function listMessages(db: Db, limit = 50): Promise<HeadsDownMessage
     .limit(limit);
 }
 
+/** Deletes every message, read or not. Returns how many there were. */
+export async function deleteAllMessages(db: Db): Promise<number> {
+  const deleted = await db.delete(headsDownMessages).returning({ id: headsDownMessages.id });
+  return deleted.length;
+}
+
 /** The oldest messages a pass hasn't read, so a backlog reaches it in order rather than all at once. */
 export async function unseenMessages(db: Db, limit = 20): Promise<HeadsDownMessage[]> {
   return db
