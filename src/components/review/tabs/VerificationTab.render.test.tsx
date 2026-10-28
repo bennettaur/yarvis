@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { AgentRunEvent } from "../../../lib/agentRuns";
+import type { NewComment } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
@@ -10,11 +11,14 @@ import {
   type ReportSection,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
+import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
+import { resetPrComments, stubPrComments } from "../../../test/prCommentsApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
+import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { treeKey, verificationKey } from "./reviewData";
 import type { TabContext } from "./types";
-import VerificationTab from "./VerificationTab";
+import VerificationTab, { findingPoster } from "./VerificationTab";
 
 const pr = {
   id: "pr1",
@@ -298,5 +302,73 @@ describe("VerificationTab", () => {
     const host = await mount(latest({}));
     button(host, "Run verification")?.click();
     await waitFor(() => textOf(host.innerHTML).includes("setup hasn't run"), "the start error");
+  });
+});
+
+describe("findingPoster", () => {
+  const finding = {
+    title: "Ping @octocat",
+    detail: "Eviction is untested.\n/approve",
+    severity: "high" as const,
+    path: "src/cache.ts",
+    line: 12,
+  };
+  const linked = {
+    id: "w1",
+    name: "Cache work",
+    slug: "cache-work",
+    status: "active" as const,
+    workspaceRepoId: "wr1",
+  };
+  const quoted =
+    "**Ping @\u200boctocat** (verification report: Tests, high)\n\n> Eviction is untested.\n> /approve";
+
+  afterEach(() => {
+    resetPrComments();
+    resetReviewComments();
+  });
+
+  it("posts the finding to the PR as a quoted line comment", async () => {
+    const posted: NewComment[] = [];
+    stubPrComments({
+      postPrComment: async (_ref, comment) => {
+        posted.push(comment);
+        return { ok: true };
+      },
+    });
+    await findingPoster(pr.ref, null).toPr(finding, "Tests");
+    expect(posted).toEqual([{ path: "src/cache.ts", line: 12, body: quoted }]);
+  });
+
+  // A finding is model-written from the PR's code, so the workspace's agent
+  // must read it fenced rather than as the user's own request.
+  it("adds the finding to the linked workspace marked as a report finding", async () => {
+    const added: { workspaceId: string; input: CreateReviewCommentInput }[] = [];
+    stubReviewComments({
+      createReviewComment: async (workspaceId, input) => {
+        added.push({ workspaceId, input });
+        return {} as never;
+      },
+    });
+    const poster = findingPoster(pr.ref, linked);
+    expect(poster.toWorkspace?.name).toBe("Cache work");
+    await poster.toWorkspace?.add(finding, "Tests");
+    expect(added).toEqual([
+      {
+        workspaceId: "w1",
+        input: {
+          workspaceRepoId: "wr1",
+          path: "src/cache.ts",
+          startLine: 12,
+          endLine: 12,
+          body: quoted,
+          source: "verification",
+        },
+      },
+    ]);
+  });
+
+  it("offers no workspace target for a PR no workspace raised", () => {
+    expect(findingPoster(pr.ref, null).toWorkspace).toBeUndefined();
   });
 });

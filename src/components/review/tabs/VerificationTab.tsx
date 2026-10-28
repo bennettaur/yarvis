@@ -101,7 +101,7 @@ function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
  * linked workspace's review comments, marked as a report finding so the agent
  * there reads it fenced.
  */
-function findingPoster(prRef: PrRef, linked: WorkspaceForPr | null): FindingPoster {
+export function findingPoster(prRef: PrRef, linked: WorkspaceForPr | null): FindingPoster {
   return {
     toPr: async (f, section) => {
       await postPrComment(prRef, {

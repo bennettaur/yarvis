@@ -971,6 +971,12 @@ describe("github stacked pull requests", () => {
     expect((await gh.prStack("o", "r", 2)).entries.map((e) => e.number)).toEqual([1, 2, 3]);
   });
 
+  it("finds no layers above a fork's pull request, whose head branch isn't in this repo", async () => {
+    const fromFork = node(5, "main", "api", { isCrossRepository: true });
+    const gh = new GitHubClient("t", stackFetch([node(6, "docs", "main"), ...stack, fromFork]));
+    expect((await gh.prStack("o", "r", 5)).entries.map((e) => e.number)).toEqual([1, 2, 5]);
+  });
+
   it("reports a pull request that is not stacked as a stack of one", async () => {
     const gh = new GitHubClient("t", stackFetch([node(9, "solo", "main")]));
     expect((await gh.prStack("o", "r", 9)).entries.map((e) => e.number)).toEqual([9]);

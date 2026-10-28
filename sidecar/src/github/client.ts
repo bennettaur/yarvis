@@ -1604,9 +1604,11 @@ export class GitHubClient {
       cursor = next;
     }
 
+    // A fork PR's head branch lives in the fork, so this repo's PRs based on a
+    // branch of that name (often main) aren't layers above it.
     const above: any[] = [];
     cursor = pr;
-    while (above.length < STACK_MAX_DEPTH) {
+    while (!pr.isCrossRepository && above.length < STACK_MAX_DEPTH) {
       const next = await step(STACK_UP_QUERY, cursor.headRefName);
       if (!next) break;
       above.push(next);
