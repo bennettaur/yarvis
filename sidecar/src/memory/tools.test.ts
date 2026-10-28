@@ -260,4 +260,22 @@ describe("decision tools", () => {
     expect(corrected.error).toContain("record_decision");
     expect(confirmed.error).toContain("record_decision");
   });
+
+  it("takes any question ask_user takes, since a pass consults with the question it will ask", () => {
+    const longest = `${"x".repeat(999)}?`;
+    const tools = newTurn();
+    const consultSchema = tools.consult_decisions.inputSchema as unknown as {
+      safeParse(v: unknown): { success: boolean };
+    };
+    const recordSchema = tools.record_decision.inputSchema as unknown as {
+      safeParse(v: unknown): { success: boolean };
+    };
+
+    expect(consultSchema.safeParse({ situation, question: longest }).success).toBe(true);
+    expect(
+      recordSchema.safeParse({ questionId: "q", situation, question: longest, choice: "yes" })
+        .success,
+    ).toBe(true);
+    expect(consultSchema.safeParse({ situation, question: `${longest}x` }).success).toBe(false);
+  });
 });
