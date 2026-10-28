@@ -1,6 +1,8 @@
 import { readFile, rename } from "node:fs/promises";
-import type { Db } from "../db/client.ts";
+import type { Config } from "../config.ts";
+import { type Db, getDb } from "../db/client.ts";
 import { type AlarmRow, alarms } from "../db/schema.ts";
+import { redactSecrets } from "../llm/errors.ts";
 
 /**
  * One-time copy of the alarms the Rust core kept in its own `alarms.json`
@@ -10,6 +12,9 @@ import { type AlarmRow, alarms } from "../db/schema.ts";
  */
 
 const STATUSES: ReadonlySet<string> = new Set(["scheduled", "fired", "acknowledged", "cancelled"]);
+
+/** The route's own limit on a label. */
+const MAX_LABEL_CHARS = 300;
 
 interface LegacyAlarm {
   label: string;
@@ -26,7 +31,11 @@ function isLegacyAlarm(value: unknown): value is LegacyAlarm {
     typeof v.fireAtMs === "number" &&
     Number.isFinite(v.fireAtMs) &&
     typeof v.status === "string" &&
-    STATUSES.has(v.status)
+    STATUSES.has(v.status) &&
+    (v.sound === undefined || typeof v.sound === "boolean") &&
+    (v.meetLink === undefined ||
+      v.meetLink === null ||
+      (typeof v.meetLink === "string" && /^https?:\/\//i.test(v.meetLink)))
   );
 }
 
@@ -46,21 +55,41 @@ export async function importLegacyAlarms(db: Db, path: string): Promise<number> 
     return 0;
   }
   const legacy = Array.isArray(parsed) ? parsed.filter(isLegacyAlarm) : [];
-  if (legacy.length > 0) {
-    // The list is shown in creation order, which the file kept as array order.
-    const base = Date.now() - legacy.length;
-    await db.insert(alarms).values(
-      legacy.map((a, i) => ({
-        label: a.label,
-        fireAt: new Date(a.fireAtMs),
-        sound: a.sound ?? true,
-        meetLink: a.meetLink ?? null,
-        status: a.status,
-        source: "app" as const,
-        createdAt: new Date(base + i),
-      })),
-    );
-  }
-  await rename(path, `${path}.imported`);
+  // The rename happens inside the transaction, so a rename that fails rolls the
+  // copy back, and the next start can't copy the same alarms twice.
+  await db.transaction(async (tx) => {
+    if (legacy.length > 0) {
+      // Stamped a millisecond apart, ending now: the list shows creation order,
+      // which the file kept as array order.
+      const base = Date.now() - legacy.length;
+      await tx.insert(alarms).values(
+        legacy.map((a, i) => ({
+          label: a.label.slice(0, MAX_LABEL_CHARS),
+          fireAt: new Date(a.fireAtMs),
+          sound: a.sound ?? true,
+          meetLink: a.meetLink ?? null,
+          status: a.status,
+          source: "app" as const,
+          createdAt: new Date(base + i),
+        })),
+      );
+    }
+    await rename(path, `${path}.imported`);
+  });
   return legacy.length;
+}
+
+/**
+ * Runs the import at startup when the core passed a path. Every instance had
+ * its own alarms.json, so each copies its own, background workers or not.
+ */
+export async function importLegacyAlarmsOnStart(config: Config): Promise<void> {
+  const path = process.env.YARVIS_LEGACY_ALARMS_PATH;
+  if (!path || !config.databaseUrl) return;
+  try {
+    const count = await importLegacyAlarms(getDb(config.databaseUrl).db, path);
+    if (count > 0) console.log(`[sidecar] imported ${count} alarms from alarms.json`);
+  } catch (e) {
+    console.error("[sidecar] alarm import failed:", redactSecrets(String(e)));
+  }
 }

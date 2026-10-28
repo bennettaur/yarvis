@@ -5,7 +5,7 @@ import { getDb } from "../db/client.ts";
 import type { AttentionItemRow, HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
 import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
-import { stopHeadsDown } from "./control.ts";
+import { PASS_LEASE_NAME, stopHeadsDown } from "./control.ts";
 import { PASS_TIMEOUT_MS, type PassResult, runPass } from "./pass.ts";
 import { getActiveRun, msUntilStop } from "./service.ts";
 import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
@@ -23,7 +23,6 @@ import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
 
 /** Held for a pass, longer than one can run, so a crashed pass's lease just expires. */
 const LEASE_MS = PASS_TIMEOUT_MS + 5 * 60_000;
-const LEASE_NAME = "heads-down";
 
 /** How often the loop looks again when there is no run, or another instance holds the lease. */
 export const IDLE_CHECK_MS = 60_000;
@@ -92,7 +91,7 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
       const run = await getActiveRun(db);
       if (run && msUntilStop(run) === 0) {
         await stopHeadsDown(db);
-      } else if (run && !run.pausedAt && (await claimJob(db, LEASE_NAME, LEASE_MS))) {
+      } else if (run && !run.pausedAt && (await claimJob(db, PASS_LEASE_NAME, LEASE_MS))) {
         let status: "ok" | "error" = "ok";
         try {
           nextMs = (await deps.runPass(run)).sleepMinutes * 60_000;
@@ -100,7 +99,7 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
           status = "error";
           console.error("[heads-down] pass failed:", e);
         } finally {
-          await finishJob(db, LEASE_NAME, { status });
+          await finishJob(db, PASS_LEASE_NAME, { status });
         }
       }
       // Woken during the pass: something changed that the pass may not have seen.

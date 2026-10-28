@@ -294,9 +294,9 @@ mod unix_impl {
                 crate::keychain::store_github_token(&p.token)
             }
             "alarm.fire" => {
-                let p: FireAlarmParams =
+                let mut p: FireAlarmParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
-                validate_alarm_id(&p.alarm.id)?;
+                check_alarm(&mut p.alarm)?;
                 crate::alarms::fire(app, p.alarm);
                 Ok(())
             }
@@ -330,6 +330,26 @@ mod unix_impl {
         validate_workspace_id(id).map_err(|_| "invalid alarm id".to_string())
     }
 
+    /// The longest label the takeover and notification show; past it, cut.
+    const MAX_ALARM_LABEL_CHARS: usize = 500;
+
+    /// An alarm to ring is checked like any input from the socket: a UUID id, a
+    /// label short enough for a notification, and only a web link behind the
+    /// takeover's Join button.
+    fn check_alarm(alarm: &mut crate::alarms::Alarm) -> Result<(), String> {
+        validate_alarm_id(&alarm.id)?;
+        if let Some(link) = &alarm.meet_link {
+            let lower = link.to_ascii_lowercase();
+            if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+                return Err("meetLink must be an http(s) link".into());
+            }
+        }
+        if alarm.label.chars().count() > MAX_ALARM_LABEL_CHARS {
+            alarm.label = alarm.label.chars().take(MAX_ALARM_LABEL_CHARS).collect();
+        }
+        Ok(())
+    }
+
     fn set_dir_private(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
@@ -348,6 +368,68 @@ mod unix_impl {
             }
             Ok(_) => Err("control socket path is occupied by a non-socket file".into()),
             Err(_) => Ok(()), // nothing there yet
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        /// Shaped exactly like `toAlarm()` in `sidecar/src/alarms/service.ts`.
+        fn sidecar_payload(meet_link: Value, label: &str) -> Value {
+            json!({
+                "alarm": {
+                    "id": "0f8b5a4e-1c2d-4e3f-9a8b-7c6d5e4f3a2b",
+                    "label": label,
+                    "fireAtMs": 1_760_000_000_000_i64,
+                    "sound": true,
+                    "meetLink": meet_link,
+                    "status": "fired",
+                    "source": "heads-down",
+                }
+            })
+        }
+
+        #[test]
+        fn reads_the_alarm_the_sidecar_sends() {
+            let mut p: FireAlarmParams = serde_json::from_value(sidecar_payload(
+                json!("https://meet.google.com/abc"),
+                "Meeting: Standup",
+            ))
+            .expect("sidecar payload");
+            check_alarm(&mut p.alarm).expect("valid alarm");
+            assert_eq!(p.alarm.label, "Meeting: Standup");
+            assert_eq!(p.alarm.fire_at_ms, 1_760_000_000_000);
+            assert_eq!(
+                p.alarm.meet_link.as_deref(),
+                Some("https://meet.google.com/abc")
+            );
+        }
+
+        #[test]
+        fn refuses_a_join_link_that_isnt_a_web_link() {
+            let mut p: FireAlarmParams =
+                serde_json::from_value(sidecar_payload(json!("file:///etc/passwd"), "x"))
+                    .expect("sidecar payload");
+            assert!(check_alarm(&mut p.alarm).is_err());
+        }
+
+        #[test]
+        fn cuts_a_long_label() {
+            let mut p: FireAlarmParams =
+                serde_json::from_value(sidecar_payload(Value::Null, &"é".repeat(2_000)))
+                    .expect("sidecar payload");
+            check_alarm(&mut p.alarm).expect("valid alarm");
+            assert_eq!(p.alarm.label.chars().count(), MAX_ALARM_LABEL_CHARS);
+        }
+
+        #[test]
+        fn refuses_a_junk_alarm_id() {
+            assert!(validate_alarm_id("").is_err());
+            assert!(validate_alarm_id("../../etc").is_err());
+            assert!(validate_alarm_id(&"a".repeat(65)).is_err());
+            assert!(validate_alarm_id("0f8b5a4e-1c2d-4e3f-9a8b-7c6d5e4f3a2b").is_ok());
         }
     }
 }

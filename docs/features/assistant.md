@@ -386,6 +386,12 @@ you asked.
   changing when it stops, which keep that loop going. See
   [Heads-down mode](heads-down.md) for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
+- **Reading a web page** asks when the link isn't one you typed in the
+  conversation, such as a link the assistant found on a page. A link can carry
+  data out in its address, so you see the exact URL first.
+- **After it reads a web page**, the rest of that turn asks before anything
+  irreversible, the same list as spoken turns below, and auto-approved MCP
+  tools ask again too. The page may have been written to steer it.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
@@ -460,11 +466,51 @@ Loaded on demand:
 - **PR review.** List your guided reviews and search the notes you took while
   reviewing.
 - **Calendar.** List events and create one.
+- **Alarms.** List your alarms, set one for a time or for a calendar meeting,
+  and cancel one. In heads-down mode it can only set meeting alarms, and can't
+  cancel any.
+- **Web.** Read a public web page you link to.
 - **Help.** Search and read Yarvis's own user docs, and check which parts of
   the app are configured (yes or no only, never a secret's value).
 
 The full list, with each tool's policy, is in **Settings → Tools & MCP → Tool
 Manager**.
+
+### Reading web pages
+
+Paste a link and ask the assistant to read, summarize or answer questions
+about it. It fetches the page as a logged-out visitor would: no cookies, no
+sign-in, and nothing on your local network. For a page behind a login, open it
+in Chrome and use the [browser](browser.md) tools instead. It reads web pages
+and plain text, not PDFs or images, and returns about the first 20,000
+characters of a long page. What it reads goes into the chat like any other
+tool result, so it reaches your LLM provider and stays in the chat history.
+
+A web page can carry text written for an AI rather than for you, such as an
+instruction tucked into a hidden block. Before the assistant sees a page,
+Yarvis:
+
+- removes elements a browser wouldn't show: `hidden`, `aria-hidden`, closed
+  dialogs, common hiding classes like `sr-only`, and inline styles such as
+  `display: none`, zero font size, zero opacity or off-screen positions,
+- removes HTML comments from Markdown and plain-text pages,
+- removes characters that render as nothing, such as zero-width spaces,
+  direction overrides and Unicode tag characters,
+- flags text that looks like instructions to an AI, whether it was visible or
+  hidden, and the assistant tells you when a page tried this,
+- marks the whole page as untrusted data the assistant must not follow.
+
+This is a screen, not a guarantee. Text hidden by a stylesheet, or colored to
+match its background, still comes through, and the flagging is pattern-based.
+Fetching a link you typed doesn't ask. Any other link asks first, and so does
+anything irreversible for the rest of the turn (see
+[What it asks before doing](#what-it-asks-before-doing)). On Telegram, where
+it can't ask, those calls are refused instead. Specialists and scheduled jobs
+can't read web pages unless you grant it to them.
+
+Requests go straight to the site's address after it is checked, which keeps a
+site from passing the check and then pointing its name at your local network.
+That also means they don't go through an HTTP proxy set in your environment.
 
 ## Specialists
 

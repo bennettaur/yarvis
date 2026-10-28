@@ -246,6 +246,27 @@ export async function updateStream(
 }
 
 /**
+ * Drops every open stream, so heads-down mode starts the next run with none.
+ * Dropped rather than deleted, so each still reaches the activity log as closed.
+ */
+export async function dropOpenStreams(db: Db): Promise<WorkStream[]> {
+  const now = new Date();
+  const rows = await db
+    .update(workStreams)
+    .set({ status: "dropped", closedAt: now, updatedAt: now })
+    .where(inArray(workStreams.status, [...OPEN_STREAM_STATUSES]))
+    .returning();
+  for (const row of rows) {
+    await emitEvent(db, {
+      type: "work_stream.closed",
+      source: "work_streams",
+      payload: { streamId: row.id, title: row.title, status: row.status },
+    });
+  }
+  return rows;
+}
+
+/**
  * Links something to a stream, or updates the link when the stream already
  * has it. A title or state left out keeps the one already recorded.
  */

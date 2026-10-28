@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { buildBuiltinTools } from "../chat/builtinTools.ts";
+import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import { getDb } from "../db/client.ts";
 import { replyToQuestion } from "./service.ts";
 import { buildQuestionTools } from "./tools.ts";
@@ -114,6 +115,7 @@ describe("the in-app agent's question tools", () => {
           memory: undefined as never,
           attention: newAttentionState(),
           remoteControl: false,
+          untrustedReads: newUntrustedReads(),
           atTheApp,
         }),
       );

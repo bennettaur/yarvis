@@ -20,9 +20,11 @@ import { buildQuestionTools } from "../questions/tools.ts";
 import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildMergeReviewTools } from "../verify/tools.ts";
+import { buildWebTools } from "../web/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
+import { newUntrustedReads, type UntrustedReads } from "./destructiveTools.ts";
 import { buildTaskTools } from "./tools.ts";
 
 /**
@@ -45,6 +47,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** Records which third-party content this turn has read, for its approvals. */
+  untrustedReads: UntrustedReads;
   /**
    * Whether the user can answer a question from the attention bell. False on
    * Telegram, in a heads-down pass and in a delegated run: the question tools
@@ -67,7 +71,17 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
+  const {
+    db,
+    config,
+    sessionId,
+    memory,
+    attention,
+    remoteControl,
+    untrustedReads,
+    atTheApp,
+    unattended,
+  } = deps;
   // Only a chat turn can schedule a task; the others get a context that is never used.
   const scheduledTask = deps.scheduledTask ?? {
     provider: null,
@@ -98,6 +112,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     calendar: buildCalendarTools(db, config),
     alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),
+    web: buildWebTools({ reads: untrustedReads }),
     help: buildHelpTools(config),
   };
 }
@@ -132,6 +147,7 @@ function inertDeps(): BuiltinToolDeps {
     // A metadata read starts no sessions, so remote control is irrelevant here —
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
+    untrustedReads: newUntrustedReads(),
     atTheApp: true,
   };
 }

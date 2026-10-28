@@ -202,7 +202,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = HUGGINGFACE_BASE_URL,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   private modelUrl(model: string): string {
@@ -210,7 +210,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async transcribe({ audio, contentType, model }: TranscribeInput): Promise<string> {
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -228,7 +228,7 @@ export class HuggingFaceSpeech implements SpeechClient {
   }
 
   async synthesize({ text, model }: SynthesizeInput): Promise<SpeechAudio> {
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -343,7 +343,7 @@ export class GeminiSpeech implements SpeechClient {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = GEMINI_BASE_URL,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl?: typeof fetch,
   ) {}
 
   private modelUrl(model: string): string {
@@ -351,7 +351,7 @@ export class GeminiSpeech implements SpeechClient {
   }
 
   private async call(model: string, body: unknown, what: string, timeoutMs: number) {
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       this.modelUrl(model),
       {
         method: "POST",
@@ -484,13 +484,13 @@ export class OpenAICompatibleSpeech implements SpeechClient {
   private readonly baseUrl: string;
   private readonly secrets: CustomProviderSecrets;
   private readonly allowLoopback: boolean;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl?: typeof fetch;
 
   constructor(options: OpenAISpeechOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.secrets = options.secrets ?? { headers: {} };
     this.allowLoopback = options.allowLoopback ?? false;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl;
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -514,7 +514,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
     form.set("response_format", "json");
     if (language) form.set("language", language);
 
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       `${this.baseUrl}/audio/transcriptions`,
       {
         method: "POST",
@@ -554,7 +554,7 @@ export class OpenAICompatibleSpeech implements SpeechClient {
       body[key] = value;
     }
 
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       `${this.baseUrl}/audio/speech`,
       {
         method: "POST",
