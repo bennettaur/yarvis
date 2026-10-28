@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { builtinToolMetadata, builtinToolMetadataByFamily } from "./builtinTools.ts";
-import { ALWAYS_CONFIRM_BUILTIN_TOOLS, DESTRUCTIVE_BUILTIN_TOOLS } from "./destructiveTools.ts";
+import {
+  ALWAYS_CONFIRM_BUILTIN_TOOLS,
+  conditionalConfirmations,
+  DESTRUCTIVE_BUILTIN_TOOLS,
+  newUntrustedReads,
+} from "./destructiveTools.ts";
 
 describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
   // A name in the set that no tool has would confirm nothing.
@@ -53,5 +58,49 @@ describe("ALWAYS_CONFIRM_BUILTIN_TOOLS", () => {
   // The spoken-turn set adds nothing to a tool that already asks every turn.
   it("does not also list it as destructive", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("register_repo")).toBe(false);
+  });
+});
+
+describe("conditionalConfirmations", () => {
+  const given = (url: string) => url === "https://given.test/";
+
+  it("asks before destructive tools only once a typed turn has read a web page", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const deleteTask = conditions.get("delete_task");
+    expect(deleteTask?.({})).toBe(false);
+    reads.hasReadWebPage = true;
+    expect(deleteTask?.({})).toBe(true);
+  });
+
+  it("leaves destructive tools to the always-ask set on a spoken turn", () => {
+    const conditions = conditionalConfirmations({
+      spoken: true,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    expect(conditions.has("delete_task")).toBe(false);
+  });
+
+  it("asks before reading a URL the user didn't give", () => {
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    const readPage = conditions.get("read_web_page");
+    expect(readPage?.({ url: "https://given.test/" })).toBe(false);
+    expect(readPage?.({ url: "https://evil.test/?q=memories" })).toBe(true);
+    expect(readPage?.({})).toBe(true);
+  });
+
+  it("names tools that exist", () => {
+    const names = Object.keys(builtinToolMetadata());
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    for (const name of conditions.keys()) expect(names).toContain(name);
   });
 });

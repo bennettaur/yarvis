@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { builtinToolFamilies } from "../chat/builtinTools.ts";
+import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { saveToken } from "../google/service.ts";
@@ -159,6 +160,7 @@ describe("alarm tools", () => {
       memory: undefined as never,
       attention: newAttentionState(),
       remoteControl: false,
+      untrustedReads: newUntrustedReads(),
     };
     const pass = builtinToolFamilies({ ...deps, atTheApp: false, unattended: true }).alarms!;
     const chat = builtinToolFamilies({ ...deps, atTheApp: true }).alarms!;

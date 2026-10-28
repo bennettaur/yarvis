@@ -34,6 +34,24 @@ describe("ToolApprovalBar", () => {
     expect(await renderToHtml(<ToolApprovalBar approvals={[]} onRespond={() => {}} />)).toBe("");
   });
 
+  it("shows a call's URL in full without opening the arguments", async () => {
+    const target = "https://evil.test/collect?q=the-users-memories";
+    const html = await renderToHtml(
+      <ToolApprovalBar
+        approvals={[
+          approval({
+            toolId: "read_web_page",
+            name: "read_web_page",
+            server: "",
+            args: { url: target },
+          }),
+        ]}
+        onRespond={() => {}}
+      />,
+    );
+    expect(textOf(html)).toContain(target);
+  });
+
   it("shows why the assistant says it is making the call", async () => {
     const html = await renderToHtml(
       <ToolApprovalBar

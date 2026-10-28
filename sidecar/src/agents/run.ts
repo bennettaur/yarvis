@@ -6,6 +6,7 @@ import { buildBuiltinTools } from "../chat/builtinTools.ts";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
+  newUntrustedReads,
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -112,6 +113,10 @@ const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
 const NEEDS_EXPLICIT_GRANT: ReadonlySet<string> = new Set([
   ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
   ...DESTRUCTIVE_BUILTIN_TOOLS,
+  // Writes nothing, but the URL it fetches is the model's choice, so an
+  // instruction in the material a specialist reads could send data out in a
+  // query string with nobody watching.
+  "read_web_page",
 ]);
 
 export interface SelectToolsOptions {
@@ -238,6 +243,9 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // A delegated run is not the user asking for a session, so nothing it starts
     // is made remotely controllable.
     remoteControl: false,
+    // Nothing reads this: a delegated run has no approval channel, and its
+    // outward-facing tools need an explicit grant instead.
+    untrustedReads: newUntrustedReads(),
     // The question tools wait on the user for longer than a run may last, holding
     // up the chat or job that started it, and a run has no chat to show them in.
     atTheApp: false,
