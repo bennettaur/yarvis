@@ -15,19 +15,22 @@ Your task message gives REVIEW_CONTEXT, a directory holding:
 
 The working directory is the PR checkout at its head; the base versions of
 files aren't there, so the patch is the only place to see what was removed.
-Read `index.md` first, then open the patches your instructions say are in
-your lane, by their full path (`<REVIEW_CONTEXT>/patches/…`).
+Read `index.md` first, then `groups/<n>.md` when you have a GROUP, and open
+patches by their full path (`<REVIEW_CONTEXT>/patches/…`).
 
-- If your task gives `GROUP=<n>`, your lane is only the patches (or the line
-  ranges) listed under that reading group; other agents of your kind have the
-  other groups. Without one, your lane is every reading group.
-- Open every patch in your lane, each one whole (or the whole range given).
+- If your task gives `GROUP=<n>`, your group is the patches (or the line
+  ranges) listed in `<REVIEW_CONTEXT>/groups/<n>.md`, one per line; other
+  agents of your kind have the other groups. Without one, your instructions
+  below say what to read.
+- Open every patch in your group, each one whole (or the whole range given),
+  whatever kind of file it is: a test, a doc or a config file is part of the
+  change too. Which ones your findings are about is a separate question, below.
   Yarvis records which patches each check reads, and the report names every
-  file in your lane you didn't read.
+  file in your group you didn't read.
 - Read several patches in one turn when you can. A patch over 800 lines
   doesn't fit in one Read: read it in pages with `offset` and `limit` (lines
   1–800, 801–1600, …) until its end.
-- A `SKIM` patch is never in your lane to read whole: when you need to know
+- A `SKIM` patch is never in a group to read whole: when you need to know
   what one is, read its first 200 lines and no more.
 - Open head files only where the patch alone can't answer the question. A
   renamed file goes by its new path.

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bulkKind,
+  groupFile,
   headHunksOf,
   mirroredPatchPath,
   PATCH_LIMITS,
@@ -290,6 +291,18 @@ describe("reading groups", () => {
     expect(groups.flatMap((g) => g.items).some((i) => i.path === "lock.json")).toBe(false);
     expect(patchIndex([sized("a.ts", 300)], { title: "x", groups })).toContain(
       "patches/big.ts.diff lines 401-800",
+    );
+  });
+
+  it("lists a group's patches one per line, fenced, for the agents given that group", () => {
+    const [first] = readingGroups([sized("a.ts", 300), sized("big.ts", 2500, 1000)], 1000);
+    const file = groupFile(first as ReturnType<typeof readingGroups>[number], 1);
+    expect(file).toStartWith("# Reading group 1\n");
+    expect(file).toContain("\npatches/a.ts.diff\n");
+    expect(file).not.toContain("big.ts");
+    const [, split] = readingGroups([sized("big.ts", 2500, 1000)], 1000);
+    expect(groupFile(split as ReturnType<typeof readingGroups>[number], 2)).toContain(
+      "patches/big.ts.diff lines 401-800\n",
     );
   });
 });

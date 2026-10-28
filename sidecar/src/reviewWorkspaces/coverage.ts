@@ -20,9 +20,10 @@
  * for its size never counts, unless it is a pure addition whose head file was
  * read.
  *
- * For a verification run it also says, per check, which source files in that
- * check's lane the check itself didn't read, which the overall count hides
- * when another check read them.
+ * For a verification run it also says, per check, which patches the check
+ * itself didn't read, which the overall count hides when another check read
+ * them. Every check is handed every patch to read whole (bulk aside), so any
+ * file it skipped is a gap, whatever kind of file it is.
  */
 
 import { realpathSync } from "node:fs";
@@ -49,7 +50,7 @@ export const coverageSchema = z.object({
   skimmed: z.array(z.object({ path: z.string(), kind: z.string() })),
   /** In the index's order. */
   notExamined: z.array(z.object({ path: z.string(), reason: z.string() })),
-  /** Per check: source files in its lane it didn't read, though another check did. */
+  /** Per check: patches it didn't read, though another check did. */
   laneGaps: z.array(z.object({ check: z.string(), paths: z.array(z.string()) })),
 });
 
@@ -68,7 +69,7 @@ export interface ReadVolume {
   bytes: number;
 }
 
-/** The verification checks with a lane, by their subagent type. */
+/** The verification checks that read every patch, by their subagent type. */
 const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:risk-reviewer": "Risk",
   "yarvis-review:completeness-reviewer": "Completeness",
@@ -79,13 +80,6 @@ const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:observability-reviewer": "Observability",
   "yarvis-review:quality-reviewer": "Code quality",
 };
-
-const SOURCE_FILE =
-  /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|kts|swift|c|cc|cpp|h|hpp|cs|php|scala|m|mm|sql|sh|vue|svelte)$/;
-const TEST_FILE = /(^|\/)(test|tests|__tests__|spec|specs)\/|[._-](test|spec)\.[^/]+$|_test\.go$/;
-
-/** Application source, which every lane-bound check is told to read. */
-export const isSourceFile = (path: string) => SOURCE_FILE.test(path) && !TEST_FILE.test(path);
 
 /**
  * A path's canonical form: resolved against `cwd`, through symlinks when it
@@ -270,8 +264,8 @@ export interface CoverageResult {
 }
 
 /**
- * Which of `entries` the run examined. With `lanes`, also which source files
- * each verification check missed in its own lane.
+ * Which of `entries` the run examined. With `lanes`, also which patches each
+ * verification check missed.
  */
 export function coverageOf(
   entries: PatchIndexEntry[],
@@ -297,7 +291,7 @@ export function coverageOf(
 
   const laneGaps: Coverage["laneGaps"] = [];
   if (where.lanes) {
-    const sources = examinedPaths.filter((e) => isSourceFile(e.path) && e.patchFile);
+    const toRead = examinedPaths.filter((e) => e.patchFile && !e.skim);
     for (const [type, check] of Object.entries(LANE_CHECKS)) {
       const ids = new Set(
         [...activity.subagents].filter(([, name]) => name === type).map(([id]) => id),
@@ -306,7 +300,7 @@ export function coverageOf(
         activity.reads.filter((r) => r.subagentId !== null && ids.has(r.subagentId)),
         where.cwd,
       );
-      const missed = sources.filter((e) => judge(e, own, where).state !== "examined");
+      const missed = toRead.filter((e) => judge(e, own, where).state !== "examined");
       if (missed.length > 0) laneGaps.push({ check, paths: missed.map((e) => e.path) });
     }
   }
