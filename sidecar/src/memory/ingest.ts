@@ -1,4 +1,5 @@
-import { assertResolvableOutbound, validateOutboundUrl } from "../lib/urlSafety.ts";
+import { BodyTooLargeError, discardBody, guardedFetch, readCapped } from "../lib/guardedFetch.ts";
+import { validateOutboundUrl } from "../lib/urlSafety.ts";
 import type { MemoryService } from "./index.ts";
 
 /** Hard cap on a fetched document, after which the fetch is aborted. */
@@ -111,70 +112,46 @@ export function assertFetchableUrl(url: string): URL {
 }
 
 /**
- * Fetches a URL and returns its body as plain text (HTML stripped). Enforces
- * DNS-resolved SSRF protection, rejects redirects that would jump to a
- * disallowed host, caps body size, and times out on slow hosts.
+ * Fetches a URL and returns its body as plain text (HTML stripped), through
+ * `lib/guardedFetch.ts`: the SSRF guard on every redirect hop, a connection
+ * pinned to the checked address, a size cap, and a deadline that covers the
+ * body read.
  */
 export async function fetchUrlText(
   url: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
 ): Promise<{ text: string; title: string }> {
-  await assertResolvableOutbound(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   let res: Response;
+  let bytes: Uint8Array;
   try {
-    res = await fetchImpl(url, {
-      headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
-      // Manual redirect handling: re-validate the target host before following,
-      // so a 302 to an internal address can't bypass the SSRF guard.
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    let hops = 0;
-    while (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-      if (hops++ >= 5) throw new Error("too many redirects");
-      const next = new URL(res.headers.get("location")!, url).toString();
-      await assertResolvableOutbound(next);
-      res = await fetchImpl(next, {
-        headers: { "User-Agent": "yarvis/0.1 (+local assistant)" },
-        redirect: "manual",
-        signal: controller.signal,
-      });
+    ({ response: res } = await guardedFetch(
+      url,
+      { headers: { "User-Agent": "yarvis/0.1 (+local assistant)" } },
+      { fetchImpl, signal: controller.signal },
+    ));
+    if (!res.ok) {
+      await discardBody(res);
+      throw new Error(`fetch ${url} -> ${res.status}`);
     }
+
+    const contentLength = Number(res.headers.get("content-length") ?? 0);
+    if (contentLength > MAX_FETCH_BYTES) {
+      await discardBody(res);
+      throw new Error(`response too large: ${contentLength} bytes`);
+    }
+    if (!res.body) throw new Error("empty response body");
+    bytes = await readCapped(res, MAX_FETCH_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      throw new Error(`response too large: exceeded ${MAX_FETCH_BYTES} bytes`);
+    }
+    throw e;
   } finally {
     clearTimeout(timeout);
   }
-  if (!res.ok) throw new Error(`fetch ${url} -> ${res.status}`);
-
-  const contentLength = Number(res.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_FETCH_BYTES) {
-    throw new Error(`response too large: ${contentLength} bytes`);
-  }
-
-  // Stream the body so an oversize response (without/with lying Content-Length)
-  // is aborted before it fills memory.
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error("empty response body");
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_FETCH_BYTES) {
-      await reader.cancel();
-      throw new Error(`response too large: exceeded ${MAX_FETCH_BYTES} bytes`);
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  const body = new TextDecoder().decode(merged);
+  const body = new TextDecoder().decode(bytes);
 
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("html")) {

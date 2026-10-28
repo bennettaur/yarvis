@@ -172,6 +172,51 @@ export function validateOutboundUrl(input: string, options: OutboundUrlOptions =
   return parsed;
 }
 
+/** Resolves a hostname to every address it has, the way `dns.lookup(host, { all: true })` does. */
+export type Resolver = (hostname: string) => Promise<LookupAddress[]>;
+
+const resolveAll: Resolver = (hostname) => dns.lookup(hostname, { all: true });
+
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number,
+) => void;
+
+/**
+ * A `lookup` for `node:http(s)` that refuses a host when any of its addresses is
+ * private, and otherwise hands back exactly the addresses it checked.
+ *
+ * This is what closes DNS rebinding. `assertResolvableOutbound` resolves the
+ * host, and then `fetch` resolves it again on its own, so a host with a zero TTL
+ * can answer the check with a public address and the connection with a private
+ * one. Checking inside the lookup the connection itself uses leaves no second
+ * resolution to race.
+ */
+export function createSafeLookup(options: OutboundUrlOptions & { resolve?: Resolver } = {}) {
+  const resolve = options.resolve ?? resolveAll;
+  const allowLoopback = options.allowLoopback === true;
+  return (hostname: string, lookupOptions: { all?: boolean }, callback: LookupCallback): void => {
+    resolve(hostname).then(
+      (records) => {
+        if (records.length === 0) {
+          callback(new UrlSafetyError(`dns lookup returned no addresses for ${hostname}`), []);
+          return;
+        }
+        for (const r of records) {
+          if (isPrivateAddress(r.address) && !(allowLoopback && isLoopbackAddress(r.address))) {
+            callback(new UrlSafetyError("refusing to reach a private address"), []);
+            return;
+          }
+        }
+        if (lookupOptions?.all) callback(null, records);
+        else callback(null, records[0]!.address, records[0]!.family);
+      },
+      () => callback(new UrlSafetyError(`dns lookup failed for ${hostname}`), []),
+    );
+  };
+}
+
 /**
  * Full guard: static checks plus DNS resolution. Use immediately before the
  * actual outbound fetch so a DNS-rebinding host can't slip past a CRUD-time

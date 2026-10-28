@@ -41,7 +41,7 @@ const responseSchema = z.object({
  * non-OK status, a reply that is not System One's shape, or a missing answer.
  */
 export async function systemOneAsk(request: SystemOneRequest): Promise<Record<string, number>> {
-  const res = await guardedFetch(
+  const { response: res } = await guardedFetch(
     request.target.url,
     {
       method: "POST",
