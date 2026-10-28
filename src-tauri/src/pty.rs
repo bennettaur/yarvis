@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -636,8 +637,9 @@ const INSTRUCTION_PREFIXES_REJECTED: [char; 4] = ['!', '/', '#', '@'];
 /// How long to wait between typing an instruction and pressing Enter. Claude
 /// Code reads text that arrives in one burst as a paste, and a carriage return
 /// inside a paste becomes a newline in the prompt rather than a submit. The
-/// pause lets the paste settle so the Enter arrives as its own keypress.
-const INSTRUCTION_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+/// pause lets the paste settle so the Enter arrives as its own keypress. The
+/// value is a margin chosen by hand, not a measured threshold.
+const INSTRUCTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
 
 /// Prepares an instruction for typing at a live agent prompt, or explains why it
 /// can't be sent.
@@ -702,6 +704,11 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// foreground, and there the trailing carriage return answers the dialog rather
 /// than submitting a request. Callers must not describe this as unable to
 /// answer a prompt.
+///
+/// The text and the Enter are separate writes, `INSTRUCTION_SUBMIT_DELAY`
+/// apart, and the checks above run before each. An error that says the
+/// instruction was "typed but not submitted" means the text is sitting in the
+/// prompt unsent.
 pub fn send_session_instruction(
     app: &AppHandle,
     state: &PtyState,
@@ -713,7 +720,7 @@ pub fn send_session_instruction(
     let id = format!("ws-claude:{workspace_id}");
     // The lock covers every PTY, so it is released during the pause rather than
     // stalling the other terminals.
-    let shell_pid = {
+    let typed_into = {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         let session = agent_session_for_input(app, &mut sessions, &id, agent_pids)?;
         session
@@ -721,22 +728,30 @@ pub fn send_session_instruction(
             .write_all(text.as_bytes())
             .map_err(|e| e.to_string())?;
         session.writer.flush().map_err(|e| e.to_string())?;
-        session.child.process_id()
+        (session.child.process_id(), foreground_pid(session))
     };
     std::thread::sleep(INSTRUCTION_SUBMIT_DELAY);
+    let not_submitted = |e: String| format!("the instruction was typed but not submitted: {e}");
     // Checked again before the Enter: if the agent exited or was replaced during
     // the pause, the Enter would run the typed text in whatever reads it now.
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = agent_session_for_input(app, &mut sessions, &id, agent_pids)
-        .map_err(|e| format!("the instruction was typed but not submitted: {e}"))?;
-    if session.child.process_id() != shell_pid {
-        return Err(
-            "the instruction was typed but not submitted: the agent session was restarted".into(),
-        );
+    // Comparing pids also catches a different agent process that would still
+    // pass `foreground_is_agent`.
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|e| not_submitted(e.to_string()))?;
+    let session =
+        agent_session_for_input(app, &mut sessions, &id, agent_pids).map_err(not_submitted)?;
+    if (session.child.process_id(), foreground_pid(session)) != typed_into {
+        return Err(not_submitted(
+            "the agent was replaced during the pause".into(),
+        ));
     }
-    session.writer.write_all(b"\r").map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    session
+        .writer
+        .write_all(b"\r")
+        .and_then(|()| session.writer.flush())
+        .map_err(|e| not_submitted(e.to_string()))
 }
 
 /// The running session `id`, when the configured agent is what reads its
