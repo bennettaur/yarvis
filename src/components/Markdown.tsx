@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import ReactMarkdown, { type Components, defaultUrlTransform } from "react-markdown";
+import ReactMarkdown, { type Components, defaultUrlTransform, type Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { parseAppPlace } from "../lib/appPlace";
@@ -11,6 +11,8 @@ import {
   remarkWorkspaceMentions,
   type WorkspaceNames,
 } from "../lib/workspaceMentions";
+
+type PluggableList = NonNullable<Options["remarkPlugins"]>;
 
 type LinkProps = { href?: string; children?: ReactNode };
 
@@ -170,8 +172,13 @@ function keepAppLinks(url: string): string {
   return parseAppPlace(url) ? url : defaultUrlTransform(url);
 }
 
-function keepWorkspaceLinks(transform: (url: string) => string) {
-  return (url: string) => (parseWorkspaceLink(url) ? url : transform(url));
+/** Keeps `yarvis://workspace/` links; `remarkWorkspaceMentions` has already dropped any to an unknown workspace. */
+function keepWorkspaceLinks(url: string): string {
+  return parseWorkspaceLink(url) ? url : defaultUrlTransform(url);
+}
+
+function keepAppAndWorkspaceLinks(url: string): string {
+  return parseWorkspaceLink(url) ? url : keepAppLinks(url);
 }
 
 /** Opens a workspace link in the Workspaces tab, and hands any other link to `fallback`. */
@@ -229,26 +236,22 @@ export default function Markdown({
   workspaceNames?: WorkspaceNames;
 }): ReactNode {
   const base = allowImages ? components : componentsWithDeferredImages;
-  const link = workspaceNames
-    ? allowAppLinks
-      ? workspaceOrAppLink
-      : workspaceOrExternalLink
-    : allowAppLinks
-      ? appLink
-      : externalLink;
-  const transform = allowAppLinks ? keepAppLinks : defaultUrlTransform;
+  let link = allowAppLinks ? appLink : externalLink;
+  let urlTransform = allowAppLinks ? keepAppLinks : defaultUrlTransform;
+  const remarkPlugins: PluggableList = [remarkGfm, remarkBreaks];
+  if (workspaceNames) {
+    link = allowAppLinks ? workspaceOrAppLink : workspaceOrExternalLink;
+    urlTransform = allowAppLinks ? keepAppAndWorkspaceLinks : keepWorkspaceLinks;
+    remarkPlugins.push(remarkWorkspaceMentions(workspaceNames));
+  }
   return (
     <div className={className}>
       {/* remark-breaks keeps a single newline a line break, the way GitHub
           renders one — chat replies and issue bodies both rely on it. */}
       <ReactMarkdown
-        remarkPlugins={
-          workspaceNames
-            ? [remarkGfm, remarkBreaks, remarkWorkspaceMentions(workspaceNames)]
-            : [remarkGfm, remarkBreaks]
-        }
+        remarkPlugins={remarkPlugins}
         components={{ ...base, a: link }}
-        urlTransform={workspaceNames ? keepWorkspaceLinks(transform) : transform}
+        urlTransform={urlTransform}
       >
         {children}
       </ReactMarkdown>

@@ -8,12 +8,16 @@ import { listWorkspaces, WORKSPACES_KEY, type WorkspaceSummary } from "./workspa
  * the workspace's name. An id that matches no workspace is left as written.
  */
 
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+// A standalone id only: one inside a path or URL is part of that, not a mention.
+const MENTION = new RegExp(`(?<![\\w/-])${UUID_PATTERN}(?![\\w/-])`, "gi");
+const EXACT_UUID = new RegExp(`^${UUID_PATTERN}$`, "i");
 const WORKSPACE_SCHEME = "yarvis://workspace/";
 
-/** Workspace names by id. */
+/** Workspace names, keyed by lowercased id. */
 export type WorkspaceNames = ReadonlyMap<string, string>;
 
+/** A stable empty list, so the names map isn't rebuilt while the list loads. */
 const NO_WORKSPACES: WorkspaceSummary[] = [];
 
 /** The names of the user's workspaces, read through the Workspaces tab's cache. */
@@ -23,7 +27,7 @@ export function useWorkspaceNames(): WorkspaceNames {
   return useMemo(() => new Map(list.map((w) => [w.id.toLowerCase(), w.name])), [list]);
 }
 
-export function workspaceLink(id: string): string {
+function workspaceLink(id: string): string {
   return `${WORKSPACE_SCHEME}${id}`;
 }
 
@@ -31,16 +35,16 @@ export function workspaceLink(id: string): string {
 export function parseWorkspaceLink(href: string | undefined): string | null {
   if (!href?.startsWith(WORKSPACE_SCHEME)) return null;
   const id = href.slice(WORKSPACE_SCHEME.length);
-  return new RegExp(`^${UUID.source}$`, "i").test(id) ? id.toLowerCase() : null;
+  return EXACT_UUID.test(id) ? id.toLowerCase() : null;
 }
 
-export type MentionSegment = string | { workspaceId: string; name: string };
+type MentionSegment = string | { workspaceId: string; name: string };
 
 /** Splits text around the ids of known workspaces. */
 export function splitWorkspaceMentions(text: string, names: WorkspaceNames): MentionSegment[] {
   const segments: MentionSegment[] = [];
   let last = 0;
-  for (const match of text.matchAll(UUID)) {
+  for (const match of text.matchAll(MENTION)) {
     const id = match[0].toLowerCase();
     const name = names.get(id);
     if (name === undefined) continue;
@@ -69,19 +73,26 @@ function linkNode(workspaceId: string, name: string): MdNode {
 }
 
 function replaceMentions(node: MdNode, names: WorkspaceNames): void {
-  // Text that is already a link keeps the link it has.
-  if (!node.children || node.type === "link" || node.type === "linkReference") return;
+  if (!node.children || node.type === "linkReference") return;
   node.children = node.children.flatMap((child): MdNode[] => {
+    if (child.type === "link") {
+      // A workspace link the text wrote itself opens only a known workspace,
+      // and shows its real name rather than whatever label the text chose.
+      const id = parseWorkspaceLink(child.url);
+      if (id === null) return [child];
+      const name = names.get(id);
+      return name === undefined ? (child.children ?? []) : [linkNode(id, name)];
+    }
     // A bare id in backticks becomes the link; code with more in it stays code.
     if (child.type === "inlineCode" && child.value) {
-      const segments = splitWorkspaceMentions(child.value.trim(), names);
-      const only = segments[0];
-      return segments.length === 1 && typeof only !== "string"
-        ? [linkNode(only.workspaceId, only.name)]
-        : [child];
+      const [first, ...rest] = splitWorkspaceMentions(child.value.trim(), names);
+      const isBareKnownId = first !== undefined && typeof first !== "string" && rest.length === 0;
+      return isBareKnownId ? [linkNode(first.workspaceId, first.name)] : [child];
     }
     if (child.type === "text" && child.value) {
-      return splitWorkspaceMentions(child.value, names).map((segment) =>
+      const segments = splitWorkspaceMentions(child.value, names);
+      if (segments.length === 1 && typeof segments[0] === "string") return [child];
+      return segments.map((segment) =>
         typeof segment === "string"
           ? { type: "text", value: segment }
           : linkNode(segment.workspaceId, segment.name),
@@ -92,9 +103,12 @@ function replaceMentions(node: MdNode, names: WorkspaceNames): void {
   });
 }
 
-/** A remark plugin that links the ids of known workspaces. */
+/**
+ * A remark plugin that links the ids of known workspaces. Remark calls the
+ * returned attacher to get the tree transform.
+ */
 export function remarkWorkspaceMentions(names: WorkspaceNames) {
   return () => (tree: MdNode) => {
-    if (names.size > 0) replaceMentions(tree, names);
+    replaceMentions(tree, names);
   };
 }

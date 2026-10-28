@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { getPass, type HeadsDownPass, type PassMessage } from "../../lib/headsDown";
-import { useWorkspaceNames } from "../../lib/workspaceMentions";
+import { useWorkspaceNames, type WorkspaceNames } from "../../lib/workspaceMentions";
 import Markdown from "../Markdown";
 import TurnActivity from "../TurnActivity";
 import AgentMark from "./AgentMark";
@@ -31,8 +31,13 @@ function describeCalls(pass: HeadsDownPass): string | null {
 }
 
 /** One finished pass: what it left, how it ended, and its transcript one click away. */
-function PassRow({ pass }: { pass: HeadsDownPass }) {
-  const workspaceNames = useWorkspaceNames();
+function PassRow({
+  pass,
+  workspaceNames,
+}: {
+  pass: HeadsDownPass;
+  workspaceNames: WorkspaceNames;
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<PassMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -186,7 +191,7 @@ export default function PassList({
       ) : (
         <ul className="space-y-2">
           {finished.map((pass) => (
-            <PassRow key={pass.id} pass={pass} />
+            <PassRow key={pass.id} pass={pass} workspaceNames={workspaceNames} />
           ))}
         </ul>
       )}

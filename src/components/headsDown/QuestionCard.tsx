@@ -22,9 +22,9 @@ export default function QuestionCard({
   onAllowTool?: (toolId: string) => Promise<void>;
 }) {
   const [answerText, setAnswerText] = useState("");
-  const workspaceNames = useWorkspaceNames();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workspaceNames = useWorkspaceNames();
 
   const send = async (input: { choice?: string; answer?: string }) => {
     setBusy(true);

@@ -14,12 +14,14 @@ const RUN = {
   stopAt: null as string | null,
 };
 
+const WORKSPACE_ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
+
 const QUESTION = {
   id: "q1",
   kind: "question",
   streamId: "s1",
   question: "Where should I ask for review?",
-  situation: "The billing PR is ready",
+  situation: `The billing PR in ${WORKSPACE_ID} is ready`,
   options: ["#billing-reviews", "Ask Sam"],
   action: null,
   toolArgs: null,
@@ -40,15 +42,13 @@ const APPROVAL = {
   toolArgs: { channel: "#billing-reviews", text: "Could someone review this?" },
 };
 
-const WORKSPACE_ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
-
 const STREAM = {
   id: "s1",
   title: "Ship the billing PR",
   summary: null,
   status: "waiting-on-user",
   priority: "high",
-  nextAction: "Ask for review",
+  nextAction: `Ask for review of ${WORKSPACE_ID.toUpperCase()}`,
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
   pausedAt: null,
@@ -283,12 +283,22 @@ describe("HeadsDownPanel", () => {
       expect(host.textContent).toContain("Workspace Billing invoices is idle.");
       expect(host.textContent).not.toContain(WORKSPACE_ID);
 
+      expect(host.textContent).toContain("The billing PR in Billing invoices is ready");
+      expect(host.textContent).toContain("Next: Ask for review of Billing invoices");
+
       buttonNamed(host, "workspace: Billing invoices · session idle").click();
       const noteLink = [...host.querySelectorAll("a")].find(
         (a) => a.textContent === "Billing invoices",
       );
+      expect(noteLink).toBeDefined();
       noteLink?.click();
-      expect(opened).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
+      // The question's situation and the stream's next step.
+      const mentions = [...host.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Billing invoices",
+      );
+      expect(mentions).toHaveLength(2);
+      for (const mention of mentions) mention.click();
+      expect(opened).toEqual([WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID]);
     } finally {
       stop();
     }
@@ -659,20 +669,23 @@ describe("linkLabel", () => {
   });
 
   it("says when a review request was sent", () => {
-    const label = linkLabel({
-      id: "l",
-      kind: "review-request",
-      ref: {
+    const label = linkLabel(
+      {
+        id: "l",
         kind: "review-request",
-        channel: "slack",
-        conversation: "#billing-reviews",
-        messageRef: "1712345678.0001",
-        sentAt: "2026-10-19T14:00:00.000Z",
+        ref: {
+          kind: "review-request",
+          channel: "slack",
+          conversation: "#billing-reviews",
+          messageRef: "1712345678.0001",
+          sentAt: "2026-10-19T14:00:00.000Z",
+        },
+        title: null,
+        state: "no reply yet",
+        observedAt: null,
       },
-      title: null,
-      state: "no reply yet",
-      observedAt: null,
-    });
+      new Map(),
+    );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
   });

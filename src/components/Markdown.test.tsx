@@ -140,6 +140,27 @@ describe("Markdown workspaceNames", () => {
     expect(html).not.toContain("yarvis://workspace/");
   });
 
+  it("names a hand-written workspace link by the workspace, and unlinks an unknown one", async () => {
+    const other = "11111111-2222-4333-8444-555555555555";
+    const html = await renderToHtml(
+      <Markdown workspaceNames={NAMES}>
+        {`[the docs](yarvis://workspace/${ID}) and [elsewhere](yarvis://workspace/${other})`}
+      </Markdown>,
+    );
+    expect(html).toContain(`href="yarvis://workspace/${ID}"`);
+    expect(html).toContain(">Billing invoices</a>");
+    expect(html).not.toContain("the docs");
+    expect(html).not.toContain(other);
+    expect(html).toContain("elsewhere");
+  });
+
+  it("leaves an id inside a path or URL alone", async () => {
+    const html = await renderToHtml(
+      <Markdown workspaceNames={NAMES}>{`See /tmp/${ID}/log and ws-${ID}x.`}</Markdown>,
+    );
+    expect(html).not.toContain("Billing invoices");
+  });
+
   it("drops workspace links unless the caller passes names", async () => {
     const html = await renderToHtml(<Markdown>{`[ws](yarvis://workspace/${ID})`}</Markdown>);
     expect(html).not.toContain("yarvis://");
