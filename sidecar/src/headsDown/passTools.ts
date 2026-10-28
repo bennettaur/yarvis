@@ -62,16 +62,42 @@ export function buildPassTools(
 
     ask_user: tool({
       description:
-        "Ask the user something only they can answer. They answer on the Heads down page, maybe hours later; you don't wait. Their answer reaches a later pass. Give a streamId and that stream is marked waiting on them. Offer options when the answer is a choice, so it can be stored as a decision and reused.",
+        "Ask the user something only they can answer. They answer on the Heads down page, maybe hours later; you don't wait. Their answer reaches a later pass. Give a streamId and that stream is marked waiting on them. Offer options when the answer is a choice, so it can be stored as a decision and reused. question and situation are both required. Keep the question short and put the background in situation; a call over any limit below fails.",
       inputSchema: z.object({
-        question: z.string().min(1).max(1000),
+        question: z
+          .string()
+          .min(1)
+          .max(1000)
+          .describe(
+            "Required. The question itself, ending with a question mark. At most 1000 characters: summarize long lists instead of pasting them",
+          ),
         situation: z
           .string()
           .max(1000)
-          .describe("What is going on, self-contained, so the answer can be reused later"),
-        streamId: z.string().uuid().optional(),
-        options: z.array(z.string().min(1).max(80)).max(6).optional(),
-        action: z.string().max(100).optional().describe("The tool the question is about, if any"),
+          .describe(
+            "Required. What is going on, self-contained, so the answer can be reused later. At most 1000 characters",
+          ),
+        streamId: z
+          .string()
+          .uuid()
+          .optional()
+          .describe(
+            "The id of the work stream this holds up, exactly as list_work_streams gives it",
+          ),
+        options: z
+          .array(z.string().min(1).max(80))
+          .max(6)
+          .optional()
+          .describe(
+            "The choices, when the answer is one. At most 6, each a short label of at most 80 characters; put the detail in situation",
+          ),
+        action: z
+          .string()
+          .max(100)
+          .optional()
+          .describe(
+            "The name of the tool the question is about, if any, e.g. jira_transition_issue",
+          ),
       }),
       execute: async ({ question, situation, streamId, options, action }) => {
         if (streamId) {
