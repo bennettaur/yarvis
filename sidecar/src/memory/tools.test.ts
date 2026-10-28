@@ -261,21 +261,17 @@ describe("decision tools", () => {
     expect(confirmed.error).toContain("record_decision");
   });
 
-  it("takes any question ask_user takes, since a pass consults with the question it will ask", () => {
-    const longest = `${"x".repeat(999)}?`;
+  // A pass consults with the same question it then gives ask_user, which takes 1000 characters.
+  it("accepts a question up to ask_user's 1000-character limit", () => {
     const tools = newTurn();
-    const consultSchema = tools.consult_decisions.inputSchema as unknown as {
-      safeParse(v: unknown): { success: boolean };
-    };
-    const recordSchema = tools.record_decision.inputSchema as unknown as {
-      safeParse(v: unknown): { success: boolean };
-    };
+    const accepts = (schema: unknown, input: unknown) =>
+      (schema as { safeParse(v: unknown): { success: boolean } }).safeParse(input).success;
+    const consult = (question: string) => ({ situation, question });
+    const record = (question: string) => ({ questionId: "q", situation, question, choice: "yes" });
 
-    expect(consultSchema.safeParse({ situation, question: longest }).success).toBe(true);
-    expect(
-      recordSchema.safeParse({ questionId: "q", situation, question: longest, choice: "yes" })
-        .success,
-    ).toBe(true);
-    expect(consultSchema.safeParse({ situation, question: `${longest}x` }).success).toBe(false);
+    expect(accepts(tools.consult_decisions.inputSchema, consult("x".repeat(1000)))).toBe(true);
+    expect(accepts(tools.consult_decisions.inputSchema, consult("x".repeat(1001)))).toBe(false);
+    expect(accepts(tools.record_decision.inputSchema, record("x".repeat(1000)))).toBe(true);
+    expect(accepts(tools.record_decision.inputSchema, record("x".repeat(1001)))).toBe(false);
   });
 });

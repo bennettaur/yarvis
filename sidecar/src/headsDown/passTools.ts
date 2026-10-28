@@ -69,7 +69,7 @@ export function buildPassTools(
           .min(1)
           .max(1000)
           .describe(
-            "The question itself, ending with a question mark. At most 1000 characters: summarize long lists instead of pasting them",
+            "Required. The question itself, ending with a question mark. At most 1000 characters: summarize long lists instead of pasting them",
           ),
         situation: z
           .string()
