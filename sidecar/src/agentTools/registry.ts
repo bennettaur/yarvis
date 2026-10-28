@@ -55,6 +55,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   calendar: "search",
   alarms: "search",
   browser: "search",
+  web: "search",
   help: "search",
 };
 

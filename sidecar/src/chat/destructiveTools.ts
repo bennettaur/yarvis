@@ -95,6 +95,45 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "delegate",
 ]);
 
+/** What a turn has read so far that someone else wrote. The tools that read it set it. */
+export interface UntrustedReads {
+  hasReadWebPage: boolean;
+}
+
+export function newUntrustedReads(): UntrustedReads {
+  return { hasReadWebPage: false };
+}
+
+/**
+ * Built-ins that ask only under a condition checked when they are called.
+ *
+ * A web page is written by whoever runs the site, and the user never saw it
+ * before the model did. So once a turn has read one, the destructive set asks
+ * first exactly as it does on a spoken turn: the request reaching those tools
+ * may now be the page's rather than the user's. (On a spoken turn they already
+ * always ask.)
+ *
+ * `read_web_page` itself asks for any URL the user didn't type in this
+ * conversation, because the URL is also a way out: a page can ask for a fetch
+ * whose query string carries the user's memories.
+ */
+export function conditionalConfirmations(options: {
+  spoken: boolean;
+  reads: UntrustedReads;
+  isUserGivenUrl: (url: string) => boolean;
+}): Map<string, (args: unknown) => boolean> {
+  const { spoken, reads, isUserGivenUrl } = options;
+  const conditions = new Map<string, (args: unknown) => boolean>();
+  if (!spoken) {
+    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) conditions.set(name, () => reads.hasReadWebPage);
+  }
+  conditions.set("read_web_page", (args) => {
+    const url = (args as { url?: unknown } | null)?.url;
+    return typeof url !== "string" || !isUserGivenUrl(url);
+  });
+  return conditions;
+}
+
 /**
  * The only built-ins a scheduled task's turn is offered.
  *

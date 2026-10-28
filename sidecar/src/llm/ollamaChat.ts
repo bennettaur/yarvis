@@ -44,7 +44,7 @@ const responseSchema = z.object({
  * left for the caller to parse.
  */
 export async function ollamaChat(request: OllamaChatRequest): Promise<OllamaChatReply> {
-  const res = await guardedFetch(
+  const { response: res } = await guardedFetch(
     request.target.url,
     {
       method: "POST",
