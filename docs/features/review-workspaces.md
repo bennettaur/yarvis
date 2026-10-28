@@ -186,6 +186,14 @@ the Changed files tree or the PRs tab), every must-read, risk concern and
 finding in that file is struck through, and **Must read** counts how many of
 its files you've viewed.
 
+A risk concern or finding that names a file and line can be sent on once you've
+read it. **Post to PR** posts it as a line comment on the PR, marked as coming
+from the verification report. The provider refuses a line outside the diff, and
+the error shows beside the button. When the PR was raised from a Yarvis
+workspace, **Add to *workspace*** adds it to that workspace's
+[review comments](workspaces.md#the-right-column) instead, where its agent can
+pick it up. Nothing is sent until you click.
+
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the
 tests check reads the tests and the code they cover, for example). Only a

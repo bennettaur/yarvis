@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { postPrComment } from "../../../lib/pr/api";
+import { prDetailKey } from "../../../lib/pr/cache";
+import { refKey } from "../../../lib/pr/ref";
+import type { PrRef } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
 import {
+  findingCommentBody,
   startVerification,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
+import { createReviewComment } from "../../../lib/workspaceReview";
+import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import LoadingIndicator from "../../LoadingIndicator";
 import { Spinner } from "../../ThinkingIndicator";
 import {
@@ -17,7 +24,10 @@ import {
 } from "./reviewData";
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
-import VerificationReportView, { type OpenLocation } from "./VerificationReportView";
+import VerificationReportView, {
+  type FindingPoster,
+  type OpenLocation,
+} from "./VerificationReportView";
 import {
   type CheckProgress,
   initialProgress,
@@ -53,6 +63,57 @@ export function useVerificationRun(prId: string, runId: string | null): RunProgr
     return () => abort.abort();
   }, [prId, runId]);
   return progress;
+}
+
+/** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
+function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
+  const [workspace, setWorkspace] = useState<WorkspaceForPr | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on ref identity, not the unstable ref object
+  useEffect(() => {
+    let live = true;
+    setWorkspace(null);
+    findWorkspaceForPr(prRef)
+      .then((w) => live && setWorkspace(w))
+      .catch(() => live && setWorkspace(null));
+    return () => {
+      live = false;
+    };
+  }, [refKey(prRef)]);
+  return workspace;
+}
+
+/**
+ * Sends a finding the reviewer chose: to the PR as a line comment, or into the
+ * linked workspace's review comments, marked as a report finding so the agent
+ * there reads it fenced.
+ */
+function findingPoster(prRef: PrRef, linked: WorkspaceForPr | null): FindingPoster {
+  return {
+    toPr: async (f, section) => {
+      await postPrComment(prRef, {
+        path: f.path,
+        line: f.line,
+        body: findingCommentBody(f, section),
+      });
+      // So the PR's diff tabs show the new thread.
+      invalidate(prDetailKey(prRef));
+    },
+    ...(linked && {
+      toWorkspace: {
+        name: linked.name,
+        add: async (f, section) => {
+          await createReviewComment(linked.id, {
+            workspaceRepoId: linked.workspaceRepoId,
+            path: f.path,
+            startLine: f.line,
+            endLine: f.line,
+            body: findingCommentBody(f, section),
+            source: "verification",
+          });
+        },
+      },
+    }),
+  };
 }
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
@@ -128,6 +189,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const good = latest.data?.lastSucceeded ?? null;
   const size = latest.data?.size ?? null;
   const viewed = useReviewViewed(ctx.prRef);
+  const linked = useLinkedWorkspace(ctx.prRef);
+  const poster = useMemo(() => findingPoster(ctx.prRef, linked), [ctx.prRef, linked]);
 
   const start = async (confirmed = false) => {
     if ((size?.large || size?.overBudget) && !confirmed) {
@@ -333,7 +396,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         )}
 
         {report && !running && (
-          <VerificationReportView report={report} onOpen={open} viewed={viewed.viewed} />
+          <VerificationReportView
+            report={report}
+            onOpen={open}
+            viewed={viewed.viewed}
+            poster={poster}
+          />
         )}
       </div>
     </div>

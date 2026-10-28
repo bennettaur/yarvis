@@ -48,7 +48,7 @@ const fakeGit: GitRunner = async (args) => {
 };
 
 beforeEach(async () => {
-  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_review_comments, tasks, issue_links RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_review_comments, tasks, issue_links, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -154,6 +154,28 @@ describe("review comment routes", () => {
       fakeGit,
     );
     expect(comment?.commitSha).toBe("cafebabe1234567");
+  });
+
+  it("keeps a report finding's body out of the event log", async () => {
+    const ws = await workspaceWithRepo();
+    const at = { workspaceRepoId: ws.repoId, path: "src/a.ts", startLine: 1, endLine: 1 };
+    const finding = await createReviewComment(
+      db,
+      ws.id,
+      { ...at, body: "Model-written finding", source: "verification" },
+      fakeGit,
+    );
+    expect(finding?.source).toBe("verification");
+    await createReviewComment(db, ws.id, { ...at, body: "My own note" }, fakeGit);
+
+    const logged = async () =>
+      (
+        await sql<{ body: string }[]>`
+          SELECT payload->>'body' AS body FROM events
+          WHERE type = 'workspace.comment_added' AND payload->>'workspaceId' = ${ws.id}`
+      ).map((r) => r.body);
+    for (let i = 0; i < 50 && (await logged()).length === 0; i++) await Bun.sleep(10);
+    expect(await logged()).toEqual(["My own note"]);
   });
 
   it("records a comment even when the branch has no commits to name", async () => {

@@ -233,4 +233,40 @@ describe("VerificationReportView", () => {
     const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
     expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(true);
   });
+
+  it("posts a finding with a location to the PR or the linked workspace, once each", async () => {
+    const sent: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: async (f, section) => {
+            sent.push(`pr ${section} ${f.path}:${f.line}`);
+          },
+          toWorkspace: {
+            name: "cache-work",
+            add: async () => {
+              throw new Error("workspace repo not found");
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const buttons = (label: string) =>
+        [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+      // Only the risk concern has a line; the test finding names no line.
+      expect(buttons("Post to PR")).toHaveLength(1);
+      buttons("Post to PR")[0]?.click();
+      buttons("Add to cache-work")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sent).toEqual(["pr Risk src/cache.ts:22"]);
+      const posted = buttons("Posted to PR")[0];
+      expect(posted?.disabled).toBe(true);
+      expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
 });

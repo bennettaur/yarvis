@@ -113,6 +113,19 @@ export const VERIFICATION_CHECKS = [
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
+/**
+ * A finding as a review comment's text: its title, then what the report said.
+ * Marked as coming from the report so a reader on the PR doesn't take it for
+ * the reviewer's own words.
+ */
+export function findingCommentBody(
+  finding: { title: string; detail: string; severity?: Severity },
+  section: string,
+): string {
+  const tag = finding.severity ? `${section}, ${finding.severity}` : section;
+  return `**${finding.title}** (verification report: ${tag})\n\n${finding.detail}`;
+}
+
 /** A verification run as the route returns it. */
 export interface VerificationRun {
   id: string;

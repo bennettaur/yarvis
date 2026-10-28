@@ -36,6 +36,8 @@ export interface CreateReviewCommentInput {
   startLine: number;
   endLine: number;
   body: string;
+  /** `verification` for a report finding, which an agent reads fenced. */
+  source?: "user" | "verification";
 }
 
 export async function listReviewComments(workspaceId: string): Promise<ReviewComment[]> {
