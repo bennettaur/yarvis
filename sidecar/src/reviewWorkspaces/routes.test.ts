@@ -839,6 +839,34 @@ cat "${fakeDir}/result.jsonl"`,
     rmSync(fakeDir, { recursive: true, force: true });
   });
 
+  it("runs only the sections asked for, and refuses one it doesn't know", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const start = (body: unknown) =>
+      verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await start({ sections: ["tests", "vibes"] })).status).toBe(400);
+
+    const res = await start({ sections: ["tests"] });
+    expect(res.status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
+    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("SECTIONS=tests\n");
+    release();
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the report");
+    const { run } = await latest(wsId, prId);
+    // The fake answers every section; only the one asked for is kept.
+    expect(Object.keys(run?.result ?? {}).sort()).toEqual([
+      "coverage",
+      "mustRead",
+      "summary",
+      "tests",
+    ]);
+    const [row] = await db.select().from(agentRuns);
+    expect((row?.meta as { sections?: string[] } | undefined)?.sections).toEqual(["tests"]);
+  });
+
   it("refuses to start before the checkout is ready", async () => {
     checkoutGate = gate();
     const { wsId, prId } = await startWorkspace();

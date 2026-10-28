@@ -69,7 +69,7 @@ export interface ReadVolume {
 }
 
 /** The verification checks with a lane, by their subagent type. */
-const LANE_CHECKS: Record<string, string> = {
+export const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:risk-reviewer": "Risk",
   "yarvis-review:completeness-reviewer": "Completeness",
   "yarvis-review:test-reviewer": "Test quality",
@@ -270,13 +270,14 @@ export interface CoverageResult {
 }
 
 /**
- * Which of `entries` the run examined. With `lanes`, also which source files
- * each verification check missed in its own lane.
+ * Which of `entries` the run examined. With `lanes` (the subagent types of the
+ * checks that ran), also which source files each of those missed in its own
+ * lane.
  */
 export function coverageOf(
   entries: PatchIndexEntry[],
   activity: RunActivity,
-  where: Where & { lanes?: boolean },
+  where: Where & { lanes?: ReadonlySet<string> },
 ): CoverageResult {
   const all = readMap(activity.reads, where.cwd);
   const skimmed: Coverage["skimmed"] = [];
@@ -299,6 +300,7 @@ export function coverageOf(
   if (where.lanes) {
     const sources = examinedPaths.filter((e) => isSourceFile(e.path) && e.patchFile);
     for (const [type, check] of Object.entries(LANE_CHECKS)) {
+      if (!where.lanes.has(type)) continue;
       const ids = new Set(
         [...activity.subagents].filter(([, name]) => name === type).map(([id]) => id),
       );

@@ -9,6 +9,7 @@ import {
   type VerificationFinding,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import FlowDiagram from "./FlowDiagram";
 
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   completeness: "Completeness",
@@ -26,7 +27,7 @@ const SEVERITY_CLASS: Record<Severity, string> = {
   low: "border-zinc-700 text-zinc-400",
 };
 
-const RISK_CLASS: Record<VerificationReport["risk"]["level"], string> = {
+const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], string> = {
   high: "border-red-700 bg-red-950/40 text-red-300",
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
@@ -383,61 +384,71 @@ export default function VerificationReportView({
         </Section>
       )}
 
-      <Section title="Risk">
-        <div className="space-y-2 text-sm">
-          <div className="flex items-start gap-2">
-            <span
-              className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
-            >
-              {risk.level} risk
-            </span>
-            <span className="text-zinc-300">{risk.clientImpact}</span>
-          </div>
-          {risk.mitigations.length > 0 && (
-            <div className="text-xs text-zinc-400">
-              <span className="text-zinc-500">Mitigations: </span>
-              {risk.mitigations.join(" · ")}
-            </div>
-          )}
-          {risk.concerns.length > 0 && (
-            <ul className="space-y-1.5">
-              {risk.concerns.map((c) => (
-                <li
-                  key={`${c.title}:${c.path}:${c.line}`}
-                  className={viewedClass(isViewed(viewed, c.path))}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-zinc-200">{c.title}</span>
-                    <Location path={c.path} line={c.line} onOpen={onOpen} />
-                  </div>
-                  <p className="text-xs text-zinc-400">{c.detail}</p>
-                  <PostFinding finding={c} section="Risk" poster={poster} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </Section>
+      {report.flow && (
+        <Section title="Flow">
+          <FlowDiagram flow={report.flow} />
+        </Section>
+      )}
 
-      <Section title="Checks">
-        <div className="space-y-2">
-          {VERIFICATION_CHECKS.map((key) => {
-            const check = report[key];
-            // A report from before a check existed has nothing to say about it.
-            if (!check) return null;
-            return (
-              <CheckRow
-                key={key}
-                label={CHECK_LABEL[key]}
-                check={check}
-                onOpen={onOpen}
-                viewed={viewed}
-                poster={poster}
-              />
-            );
-          })}
-        </div>
-      </Section>
+      {risk && (
+        <Section title="Risk">
+          <div className="space-y-2 text-sm">
+            <div className="flex items-start gap-2">
+              <span
+                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+              >
+                {risk.level} risk
+              </span>
+              <span className="text-zinc-300">{risk.clientImpact}</span>
+            </div>
+            {risk.mitigations.length > 0 && (
+              <div className="text-xs text-zinc-400">
+                <span className="text-zinc-500">Mitigations: </span>
+                {risk.mitigations.join(" · ")}
+              </div>
+            )}
+            {risk.concerns.length > 0 && (
+              <ul className="space-y-1.5">
+                {risk.concerns.map((c) => (
+                  <li
+                    key={`${c.title}:${c.path}:${c.line}`}
+                    className={viewedClass(isViewed(viewed, c.path))}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-zinc-200">{c.title}</span>
+                      <Location path={c.path} line={c.line} onOpen={onOpen} />
+                    </div>
+                    <p className="text-xs text-zinc-400">{c.detail}</p>
+                    <PostFinding finding={c} section="Risk" poster={poster} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {VERIFICATION_CHECKS.some((key) => report[key]) && (
+        <Section title="Checks">
+          <div className="space-y-2">
+            {VERIFICATION_CHECKS.map((key) => {
+              const check = report[key];
+              // Absent when the run wasn't asked for it, or was made before the check existed.
+              if (!check) return null;
+              return (
+                <CheckRow
+                  key={key}
+                  label={CHECK_LABEL[key]}
+                  check={check}
+                  onOpen={onOpen}
+                  viewed={viewed}
+                  poster={poster}
+                />
+              );
+            })}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }

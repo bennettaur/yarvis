@@ -181,6 +181,21 @@ there.
   Complexity, comments and logging are left to their own checks.
 - A report made before these two checks existed shows only the checks it had.
 
+Above **Run verification** you pick which sections to run: risk, each check,
+and the **Flow diagram**. The summary and must-read files always run. The
+diagram is off unless you tick it; the others start ticked, and after a run
+the boxes start where that run's did. The cost estimate follows what you pick.
+A report shows only the sections its run was asked for.
+
+The **Flow diagram** traces the whole flow the change sits in, not just the
+diff. An agent follows the changed code up to what starts the flow (a route, a
+job, a UI action) and down to where it ends, and draws it as a Mermaid
+flowchart with the changed steps highlighted, plus a short explanation.
+Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
+is too long, isn't drawn. The diagram is model-written from the PR's code, so
+it is drawn in Mermaid's strict mode and shown as an image, where it can't run
+anything.
+
 The report doubles as a to-do list. Once you mark a file viewed (in its diff,
 the Changed files tree or the PRs tab), every must-read, risk concern and
 finding in that file is struck through, and **Must read** counts how many of

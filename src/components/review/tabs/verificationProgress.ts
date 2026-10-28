@@ -1,4 +1,5 @@
 import type { AgentRunEvent, AgentRunFinalStatus } from "../../../lib/agentRuns";
+import { DEFAULT_SECTIONS, type ReportSection } from "../../../lib/reviewWorkspaces/verification";
 
 /**
  * A verification run's progress as its events tell it: which of the checks
@@ -28,22 +29,35 @@ export interface RunProgress {
   delegations: Record<string, string>;
 }
 
-/** The checks the report's skill fans out, in the order the report shows them. */
-export const VERIFICATION_AGENTS: readonly { agent: string; label: string }[] = [
-  { agent: "change-summary", label: "Summary and must-read files" },
-  { agent: "risk-reviewer", label: "Risk" },
-  { agent: "completeness-reviewer", label: "Completeness" },
-  { agent: "test-reviewer", label: "Test quality" },
-  { agent: "complexity-reviewer", label: "Complexity" },
-  { agent: "performance-reviewer", label: "Performance" },
-  { agent: "comment-reviewer", label: "Comment quality" },
-  { agent: "observability-reviewer", label: "Observability" },
-  { agent: "quality-reviewer", label: "Code quality" },
+/**
+ * The agents the report's skill fans out, in the order the report shows them,
+ * with the section each writes. The summary agent always runs.
+ */
+export const VERIFICATION_AGENTS: readonly {
+  agent: string;
+  label: string;
+  section: ReportSection | null;
+}[] = [
+  { agent: "change-summary", label: "Summary and must-read files", section: null },
+  { agent: "risk-reviewer", label: "Risk", section: "risk" },
+  { agent: "completeness-reviewer", label: "Completeness", section: "completeness" },
+  { agent: "test-reviewer", label: "Test quality", section: "tests" },
+  { agent: "complexity-reviewer", label: "Complexity", section: "complexity" },
+  { agent: "performance-reviewer", label: "Performance", section: "performance" },
+  { agent: "comment-reviewer", label: "Comment quality", section: "comments" },
+  { agent: "observability-reviewer", label: "Observability", section: "observability" },
+  { agent: "quality-reviewer", label: "Code quality", section: "quality" },
+  { agent: "flow-diagram", label: "Flow diagram", section: "flow" },
 ];
 
-export function initialProgress(): RunProgress {
+/** A run's progress before any event: every agent it was asked to run, waiting. */
+export function initialProgress(
+  sections: readonly ReportSection[] = DEFAULT_SECTIONS,
+): RunProgress {
   return {
-    checks: VERIFICATION_AGENTS.map((a) => ({ ...a, state: "waiting", activity: null })),
+    checks: VERIFICATION_AGENTS.filter(
+      (a) => a.section === null || sections.includes(a.section),
+    ).map(({ agent, label }) => ({ agent, label, state: "waiting", activity: null })),
     activity: null,
     finished: null,
     error: null,

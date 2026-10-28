@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunActivity } from "../agentRuns/service.ts";
 import { StreamJsonParser } from "../agentRuns/streamJson.ts";
-import { coverageOf, safeCoverage } from "./coverage.ts";
+import { coverageOf, LANE_CHECKS, safeCoverage } from "./coverage.ts";
 import type { PatchIndexEntry } from "./patchFiles.ts";
 
 // Real folders, so real paths resolve: the context folder sits in the temp
@@ -189,7 +189,10 @@ describe("coverage from a run's reads", () => {
       whole("docs/x.md", tests.id),
       whole("src/core.ts", perf.id),
     ]);
-    const { coverage, volumes } = coverageOf(index, activity, { ...where, lanes: true });
+    const { coverage, volumes } = coverageOf(index, activity, {
+      ...where,
+      lanes: new Set(Object.keys(LANE_CHECKS)),
+    });
     expect(coverage.notExamined).toEqual([]);
     // Each lane-bound check that didn't read src/core.ts itself, the test reviewer among them.
     expect(coverage.laneGaps.map((g) => g.check)).toEqual([

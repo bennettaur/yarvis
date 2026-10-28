@@ -4,9 +4,11 @@ import type { AgentRunEvent } from "../../../lib/agentRuns";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
-import type {
-  LatestVerification,
-  VerificationSize,
+import {
+  DEFAULT_SECTIONS,
+  type LatestVerification,
+  type ReportSection,
+  type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
@@ -33,14 +35,17 @@ const ctx: TabContext = {
 };
 
 let started: string[] = [];
+let startedSections: (readonly ReportSection[])[] = [];
 let cancelled: string[] = [];
 
 beforeEach(() => {
   started = [];
+  startedSections = [];
   cancelled = [];
   stubReviewApi({
-    startVerification: async (_ws, prId) => {
+    startVerification: async (_ws, prId, sections) => {
       started.push(prId);
+      startedSections.push(sections);
       return { runId: "r9", existing: false };
     },
     // A live run that never ends on its own, so it stays "running".
@@ -166,9 +171,37 @@ describe("VerificationTab", () => {
     truncated: [],
     skimmed: [],
     estimatedCostUsd: 1.4,
+    sectionCostUsd: 0.1,
+    defaultSections: [...DEFAULT_SECTIONS],
     budgetUsd: 2,
     overBudget: false,
     ...over,
+  });
+
+  it("runs the sections picked, with the estimate moved to match", async () => {
+    const host = await mount(latest({ size: size() }));
+    const box = (label: string) =>
+      [...host.querySelectorAll("label")]
+        .find((l) => l.textContent === label)
+        ?.querySelector("input") as HTMLInputElement;
+    // The diagram is off by default.
+    expect(box("Flow diagram").checked).toBe(false);
+    expect(box("Risk").checked).toBe(true);
+    box("Flow diagram").click();
+    await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
+    box("Risk").click();
+    box("Performance").click();
+    await waitFor(() => !box("Performance").checked, "two sections to be dropped");
+    button(host, "Run verification")?.click();
+    await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
+    // One section more and two fewer than the default: $1.40 less $0.10.
+    expect(textOf(host.innerHTML)).toContain("about $1.30");
+    button(host, "Run anyway")?.click();
+    await waitFor(() => started.length > 0, "the run to start");
+    expect(startedSections[0]).not.toContain("risk");
+    expect(startedSections[0]).not.toContain("performance");
+    expect(startedSections[0]).toContain("flow");
+    expect(startedSections[0]).toContain("tests");
   });
 
   it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {

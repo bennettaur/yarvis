@@ -10,11 +10,14 @@ import type { BulkClass } from "./service.ts";
 import {
   buildVerificationMaterial,
   checkOutcome,
+  DEFAULT_SECTIONS,
   emptyAudit,
   estimateReadBytes,
   estimateRunCostUsd,
+  MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   mustReadCap,
+  normalizeSections,
   similarTitles,
   summaryWordCap,
   type VerificationInput,
@@ -26,6 +29,7 @@ const limits = {
   summaryWords: 10,
   mustReadMax: 2,
   changedPaths: new Set(["src/a.ts", "src/b.ts", "src/c.ts"]),
+  sections: DEFAULT_SECTIONS,
 };
 
 const pass = { status: "pass", findings: [] };
@@ -111,11 +115,11 @@ describe("the report schema", () => {
         },
       }),
     );
-    expect(parsed.tests.status).toBe("issues");
-    expect(parsed.tests.findings.map((f) => f.title)).toEqual(["f2", "f1"]);
-    expect(parsed.tests.findings[1]).toMatchObject({ path: undefined, line: undefined });
+    expect(parsed.tests?.status).toBe("issues");
+    expect(parsed.tests?.findings.map((f) => f.title)).toEqual(["f2", "f1"]);
+    expect(parsed.tests?.findings[1]).toMatchObject({ path: undefined, line: undefined });
     expect(parsed.complexity).toEqual({ status: "pass", findings: [] });
-    expect(parsed.performance.findings).toHaveLength(5);
+    expect(parsed.performance?.findings).toHaveLength(5);
   });
 
   it("cuts over-long text instead of failing the run", () => {
@@ -129,10 +133,10 @@ describe("the report schema", () => {
         },
       }),
     );
-    expect(parsed.risk.clientImpact.length).toBe(240);
-    expect(parsed.risk.clientImpact.endsWith("…")).toBe(true);
-    expect(parsed.risk.mitigations).toEqual(["a", "b", "c"]);
-    expect(parsed.risk.concerns[0]?.title.length).toBe(100);
+    expect(parsed.risk?.clientImpact.length).toBe(240);
+    expect(parsed.risk?.clientImpact.endsWith("…")).toBe(true);
+    expect(parsed.risk?.mitigations).toEqual(["a", "b", "c"]);
+    expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
   });
 
   it("refuses values outside its enums and missing sections", () => {
@@ -146,6 +150,32 @@ describe("the report schema", () => {
     ).toBe(false);
     const { comments: _c, ...partial } = report();
     expect(schema.safeParse(partial).success).toBe(false);
+  });
+
+  it("asks for only the picked sections, and drops any it wasn't asked for", () => {
+    const picked = verificationReportSchema({ ...limits, sections: ["tests", "flow"] });
+    const flow = {
+      title: "How uploads retry",
+      explanation: "e",
+      mermaid: "flowchart TD\n a --> b",
+    };
+    const parsed = picked.parse({ ...report(), flow });
+    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect(parsed.flow).toEqual(flow);
+    const { flow: _f, ...withoutFlow } = { ...report(), flow };
+    expect(picked.safeParse(withoutFlow).success).toBe(false);
+    // Only the summary and the picked sections are required of the answer.
+    const required = JSON.parse(jsonSchemaArg(picked)).required;
+    expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+  });
+
+  it("drops a diagram too long to render rather than cutting it", () => {
+    const parsed = verificationReportSchema({ ...limits, sections: ["flow"] }).parse({
+      summary: "s",
+      mustRead: [],
+      flow: { title: "t", explanation: "e", mermaid: "x".repeat(MAX_MERMAID_CHARS + 1) },
+    });
+    expect(parsed.flow?.mermaid).toBe("");
   });
 
   it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
@@ -279,8 +309,8 @@ describe("paths an agent cites", () => {
       }),
     );
     expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
-    expect(parsed.complexity.findings[0]?.path).toBe("src/a.ts");
-    expect(parsed.completeness.findings).toEqual([]);
+    expect(parsed.complexity?.findings[0]?.path).toBe("src/a.ts");
+    expect(parsed.completeness?.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);
   });
 });
@@ -425,6 +455,7 @@ function hostileInput(): VerificationInput {
     detail,
     fallbackTitle: "cached",
     index,
+    sections: DEFAULT_SECTIONS,
   };
 }
 
@@ -527,9 +558,12 @@ describe("the size a warning states", () => {
   it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
     const lock = [f("package-lock.json", 40_000)];
     const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
-    expect(estimateReadBytes(lock, new Set(), asBulk)).toBe(200 * 115);
-    // Any other file: 115 bytes a changed line, by each of the 9 check agents.
-    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toBe(100 * 115 * 9);
+    expect(estimateReadBytes(lock, new Set(), asBulk)).toEqual({ perReader: 0, bulk: 200 * 115 });
+    // Any other file: 115 bytes a changed line, by each agent that reads every file.
+    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toEqual({
+      perReader: 100 * 115,
+      bulk: 0,
+    });
   });
 
   it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
@@ -597,5 +631,21 @@ describe("sweeping leftover context folders", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("picking sections", () => {
+  it("keeps report order and drops repeats, and runs the default set when none are picked", () => {
+    expect(normalizeSections(["flow", "risk", "flow"])).toEqual(["risk", "flow"]);
+    expect(normalizeSections([])).toEqual([...DEFAULT_SECTIONS]);
+    expect(normalizeSections()).not.toContain("flow");
+  });
+
+  it("tells the run which sections to write", () => {
+    const material = buildVerificationMaterial(
+      { ...hostileInput(), sections: ["tests", "flow"] },
+      "/tmp/ctx",
+    );
+    expect(material.prompt).toContain("SECTIONS=tests,flow");
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
@@ -7,6 +7,10 @@ import type { PrRef } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
 import {
   findingCommentBody,
+  REPORT_SECTIONS,
+  type ReportSection,
+  runSections,
+  sizeFor,
   startVerification,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
@@ -25,6 +29,7 @@ import {
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 import VerificationReportView, {
+  CHECK_LABEL,
   type FindingPoster,
   type OpenLocation,
 } from "./VerificationReportView";
@@ -40,21 +45,29 @@ import {
  * replays what already happened) to its `done`. When it ends the PR's latest
  * report is re-read, which is where the finished report comes from.
  */
-export function useVerificationRun(prId: string, runId: string | null): RunProgress | null {
+export function useVerificationRun(
+  prId: string,
+  runId: string | null,
+  sections: readonly ReportSection[],
+): RunProgress | null {
   const [progress, setProgress] = useState<RunProgress | null>(null);
+  // Read when a run starts; the sections can't change during one.
+  const sectionsAtStart = useRef(sections);
+  sectionsAtStart.current = sections;
   useEffect(() => {
-    setProgress(runId ? initialProgress() : null);
+    const initial = () => initialProgress(sectionsAtStart.current);
+    setProgress(runId ? initial() : null);
     if (!runId) return;
     const abort = new AbortController();
     void (async () => {
       try {
         for await (const event of streamAgentRun(runId, abort.signal)) {
-          setProgress((p) => reduceProgress(p ?? initialProgress(), event));
+          setProgress((p) => reduceProgress(p ?? initial(), event));
         }
       } catch (e) {
         if (abort.signal.aborted) return;
         setProgress((p) => ({
-          ...(p ?? initialProgress()),
+          ...(p ?? initial()),
           error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
         }));
       }
@@ -137,6 +150,45 @@ function SizeWarning({ size }: { size: VerificationSize }) {
   );
 }
 
+const SECTION_LABEL: Record<ReportSection, string> = {
+  risk: "Risk",
+  ...CHECK_LABEL,
+  flow: "Flow diagram",
+};
+
+/** Which sections the next run writes. The summary and must-read files always come with it. */
+function SectionPicker({
+  picked,
+  onChange,
+  disabled,
+}: {
+  picked: readonly ReportSection[];
+  onChange: (sections: ReportSection[]) => void;
+  disabled: boolean;
+}) {
+  const toggle = (section: ReportSection) =>
+    onChange(
+      REPORT_SECTIONS.filter((s) => (s === section ? !picked.includes(s) : picked.includes(s))),
+    );
+  return (
+    <fieldset className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
+      <legend className="sr-only">Sections to run</legend>
+      <span className="text-zinc-500">Run:</span>
+      {REPORT_SECTIONS.map((section) => (
+        <label key={section} className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={picked.includes(section)}
+            onChange={() => toggle(section)}
+            disabled={disabled}
+          />
+          {SECTION_LABEL[section]}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
 function CheckLine({ check }: { check: CheckProgress }) {
   const icon =
     check.state === "running" ? (
@@ -180,14 +232,21 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const [confirmingLarge, setConfirmingLarge] = useState(false);
 
   const run = latest.data?.run ?? null;
+  // The last run's sections until the reviewer changes them.
+  const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
+  const lastSections = runSections(run?.meta);
+  const sections = pickedSections ?? lastSections;
   const runningHere = run?.status === "running" && run.live ? run.id : null;
   const followId = startedId ?? runningHere;
-  const progress = useVerificationRun(pr.id, followId);
+  const progress = useVerificationRun(pr.id, followId, startedId ? sections : lastSections);
   const running = followId !== null && progress !== null && progress.finished === null;
   const runningElsewhere = !running && run?.status === "running" && !run.live;
   const report = reportOf(latest.data);
   const good = latest.data?.lastSucceeded ?? null;
-  const size = latest.data?.size ?? null;
+  const size = useMemo(() => {
+    const facts = latest.data?.size;
+    return facts ? sizeFor(facts, sections) : null;
+  }, [latest.data?.size, sections]);
   const viewed = useReviewViewed(ctx.prRef);
   const linked = useLinkedWorkspace(ctx.prRef);
   const poster = useMemo(() => findingPoster(ctx.prRef, linked), [ctx.prRef, linked]);
@@ -201,7 +260,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { runId } = await startVerification(workspaceId, pr.id);
+      const { runId } = await startVerification(workspaceId, pr.id, sections);
       setStartedId(runId);
       invalidate(verificationKey(pr.id));
     } catch (e) {
@@ -272,8 +331,14 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                 <button
                   type="button"
                   onClick={() => void start()}
-                  disabled={starting || notReady}
-                  title={notReady ? "Waiting for the checkout" : undefined}
+                  disabled={starting || notReady || sections.length === 0}
+                  title={
+                    notReady
+                      ? "Waiting for the checkout"
+                      : sections.length === 0
+                        ? "Pick at least one section"
+                        : undefined
+                  }
                   className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
                 >
                   {starting ? "Starting…" : run ? "Re-run" : "Run verification"}
@@ -282,6 +347,17 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             )}
           </span>
         </div>
+
+        {!running && !runningElsewhere && (
+          <SectionPicker
+            picked={sections}
+            onChange={(next) => {
+              setPickedSections(next);
+              setConfirmingLarge(false);
+            }}
+            disabled={starting}
+          />
+        )}
 
         {confirmingLarge && size && !running && (
           <div
@@ -326,7 +402,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             Agents read every changed file's diff and report what the change does, which files must
             be read, how risky it is, and whether it is complete, tested, simple, fast, well
             commented, observable and well written. Checks that pass say so in a line, and the
-            report lists any file the checks didn't read.
+            report lists any file the checks didn't read. Pick the sections above; the flow diagram
+            traces the whole flow the change sits in and is off unless you ask for it.
           </p>
         )}
 

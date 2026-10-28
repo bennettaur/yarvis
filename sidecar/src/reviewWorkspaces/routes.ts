@@ -54,6 +54,7 @@ import {
 import {
   defaultVerificationDeps,
   latestVerification,
+  REPORT_SECTIONS,
   startVerification,
   type VerificationDeps,
 } from "./verification.ts";
@@ -107,6 +108,10 @@ const setupSchema = z.object({
   headSha: z.string().nullable().default(null),
 });
 const idSchema = z.string().uuid();
+// No body, or no sections, runs the default set.
+const startVerificationSchema = z
+  .object({ sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional() })
+  .nullable();
 /** The path is checked as a repo path by the search itself; the symbol only here. */
 const symbolQuerySchema = z.object({
   path: z.string().min(1).max(4096),
@@ -469,6 +474,8 @@ export function createReviewWorkspaceRoutes(
   // Starts the PR's verification report, or answers with the run already
   // going for it. The run is followed on `/api/agent-runs/:runId/events`.
   router.post("/:id/prs/:prId/verification", async (c) => {
+    const parsed = startVerificationSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       const started = await startVerification(
         db(),
@@ -477,6 +484,7 @@ export function createReviewWorkspaceRoutes(
         c.req.param("prId"),
         deps(),
         options.verification ?? defaultVerificationDeps(config),
+        parsed.data?.sections,
       );
       return c.json(started, started.existing ? 200 : 202);
     } catch (e) {
