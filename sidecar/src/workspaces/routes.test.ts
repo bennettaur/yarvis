@@ -1715,6 +1715,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(agents).not.toContain("## Skills and agents");
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
+    expect(agents).toContain("## Extra worktrees");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");
   });
@@ -2084,6 +2085,19 @@ describe("provision + archive (injected git runner)", () => {
     const forced = await archiveWorkspace(db, ws.id, { force: true }, dirtyExtraGit);
     expect(forced.status).toBe("archived");
     expect(existsSync(ws.rootPath)).toBe(false);
+  });
+
+  it("still archives when the landed branch can't be deleted", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "branch-stuck", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const stuckBranchGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "branch") return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+      return fakeGit(args, opts);
+    };
+    const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
+    expect(result.status).toBe("archived");
   });
 
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
