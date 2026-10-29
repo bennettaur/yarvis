@@ -201,7 +201,7 @@ describe("WorkspacesPanel", () => {
 
 describe("groupWorkspaces", () => {
   const summary = (id: string, repoNames: string[]) =>
-    ({ ...EXISTING, id, repoNames, prs: [] }) as WorkspaceSummary;
+    ({ ...EXISTING, id, repoNames, prs: [], lastActiveAt: null }) as WorkspaceSummary;
 
   it("puts multi-repo workspaces holding the same repos in one group", () => {
     const groups = groupWorkspaces([

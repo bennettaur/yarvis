@@ -44,6 +44,11 @@ const fakeGit: GitRunner = async (args) => {
     const path = args[2] === "-b" ? args[4] : args[2];
     if (path) mkdirSync(path, { recursive: true });
   }
+  // Removing deletes the folder, as real git does.
+  if (args[0] === "worktree" && args[1] === "remove") {
+    const path = args[args.length - 1];
+    if (path) rmSync(path, { recursive: true, force: true });
+  }
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
