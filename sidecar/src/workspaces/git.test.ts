@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { run } from "./exec.ts";
 import {
   addExistingBranchWorktree,
@@ -32,8 +32,8 @@ import {
   removeWorktree,
   updateDefaultBranch,
   worktreeStatus,
-  worktreesInside,
 } from "./git.ts";
+import { extraWorktrees } from "./worktrees.ts";
 
 /** A scripted GitRunner that records calls and answers based on the args. */
 function fakeRunner(handler: (args: string[]) => Partial<GitRunResult>): {
@@ -591,8 +591,8 @@ describe("archive cleanup helpers", () => {
     git("worktree", "add", "-q", "-b", "nested", join(workspaceRoot, "worktrees", "nested"));
     git("worktree", "add", "-q", "-b", "elsewhere", join(workspaceRoot, "..", "elsewhere"));
 
-    const found = await worktreesInside(defaultGitRunner, clone, workspaceRoot, own);
-    expect(found.map((e) => e.branch).sort()).toEqual(["layer-2", "nested"]);
+    const found = await extraWorktrees(defaultGitRunner, clone, workspaceRoot, own);
+    expect(found.map((path) => basename(path)).sort()).toEqual(["nested", "service-a-layer-2"]);
   });
 
   it("counts a branch the base already contains as landed", async () => {
@@ -610,6 +610,24 @@ describe("archive cleanup helpers", () => {
     });
     expect(await branchLanded(defaultGitRunner, clone, "task", "main", false)).toBe(false);
     expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+  });
+
+  it("keeps a merged branch with commits its remote branch doesn't have", async () => {
+    const { clone, own } = cloneWithOrigin();
+    const commit = (name: string) => {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    };
+    commit("pushed.txt");
+    spawnSync("git", ["update-ref", "refs/remotes/origin/task", "refs/heads/task"], { cwd: clone });
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+
+    commit("after-merge.txt");
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(false);
   });
 
   it("doesn't count a branch that isn't there as landed", async () => {

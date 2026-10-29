@@ -2051,6 +2051,41 @@ describe("provision + archive (injected git runner)", () => {
     expect(existsSync(ws.rootPath)).toBe(false);
   });
 
+  it("stops on a dirty extra worktree, and removes it on a forced retry", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "dirty-extra", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const extra = join(ws.rootPath, "widget-layer-2");
+    mkdirSync(extra);
+
+    const dirtyExtraGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return existsSync(extra)
+          ? { stdout: `worktree ${extra}\0\0`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      }
+      const target = args[args.length - 1];
+      if (
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        target === extra &&
+        !args.includes("--force")
+      ) {
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      return fakeGit(args, opts);
+    };
+
+    const blocked = await archiveWorkspace(db, ws.id, {}, dirtyExtraGit);
+    expect(blocked.status).toBe("archiving");
+    expect(blocked.errors[0]?.message).toContain("modified files");
+    expect(existsSync(extra)).toBe(true);
+
+    const forced = await archiveWorkspace(db, ws.id, { force: true }, dirtyExtraGit);
+    expect(forced.status).toBe("archived");
+    expect(existsSync(ws.rootPath)).toBe(false);
+  });
+
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "with-notes", repoIds: [repo.id] });
@@ -2082,9 +2117,13 @@ describe("provision + archive (injected git runner)", () => {
       .values({ workspaceRepoId: wr!.id, prNumber: 1, prState: "merged" });
 
     const deleted: string[] = [];
-    // The branch exists, and the base doesn't contain it (a squash merge).
+    // The local branch exists, the base doesn't contain it (a squash merge), and
+    // the remote branch was deleted when the PR merged.
     const branchGit: GitRunner = async (args, opts) => {
-      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+      }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
       return fakeGit(args, opts);

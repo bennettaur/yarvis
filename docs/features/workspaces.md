@@ -551,8 +551,8 @@ The assistant can also tell you:
 
 Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
-saw. Archiving stops the session, removes the worktrees, and marks linked
-tasks complete. It runs in the background. While it runs, the right column is
+saw. Archiving stops the session, removes the worktrees, the workspace folder
+and any branch whose work has landed, and marks linked tasks complete. It runs in the background. While it runs, the right column is
 replaced by a "Removing worktrees…" note, since the worktrees it reads are being
 deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
@@ -571,13 +571,15 @@ stack. These follow the same rule: uncommitted work stops the archive until you
 force it.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
-landed: its PR merged, or the base branch already contains it. Any other branch
-is kept in the shared clone.
+landed: the base branch already contains it, or its PR merged and the remote
+branch, if it's still there, has every local commit. Any other branch is kept
+in the shared clone.
 
 Last, the archive deletes the workspace folder. If anything other than the
-files Yarvis wrote there (`.claude`, `.yarvis`, `AGENTS.md`, `CLAUDE.md`,
-`.mcp.json`) is left, such as notes or a checkout made outside Yarvis, the
-archive stops and lists them. **Force remove** deletes the folder with them.
+files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,
+and the settings and copied skills and agents in `.claude`) is left, such as
+notes, your own skills, or a checkout made outside Yarvis, the archive stops
+and lists them. Finder's `.DS_Store` doesn't count. **Force remove** deletes the folder with them.
 
 An active workspace that hasn't been opened, and whose agent session hasn't
 done anything, for 7 days is dimmed in the list with an "idle" label giving the
