@@ -601,6 +601,56 @@ export async function removeWorktree(
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
+/**
+ * Worktrees of the clone that live inside `folder`, other than `except`. These
+ * are the ones an agent added in a workspace on its own (a second checkout of
+ * the same repo, say), which Yarvis has no row for.
+ */
+export async function worktreesInside(
+  runner: GitRunner,
+  primaryClonePath: string,
+  folder: string,
+  except: string,
+): Promise<WorktreeEntry[]> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  const prefix = `${canonicalPath(folder)}/`;
+  const skip = canonicalPath(except);
+  return (await listWorktrees(runner, primaryClonePath)).filter((entry) => {
+    const path = canonicalPath(entry.path);
+    return path.startsWith(prefix) && path !== skip;
+  });
+}
+
+/**
+ * Whether a local branch's work has landed, so deleting it loses nothing: its
+ * PR merged (a squash merge leaves the branch's commits off the base), or the
+ * base already contains its tip.
+ */
+export async function branchLanded(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  baseBranch: string,
+  prMerged: boolean,
+): Promise<boolean> {
+  if (!(await branchExists(runner, primaryClonePath, branch))) return false;
+  if (prMerged) return true;
+  const result = await runner(
+    ["merge-base", "--is-ancestor", `refs/heads/${branch}`, remoteRef(baseBranch)],
+    { cwd: primaryClonePath },
+  );
+  return result.exitCode === 0;
+}
+
+/** Deletes a local branch. Git refuses while a worktree has it checked out. */
+export async function deleteBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+}
+
 async function removeLeftover(
   worktreePath: string,
   opts: { force: boolean; workspaceRoot: string },

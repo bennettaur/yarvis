@@ -565,6 +565,25 @@ A worktree whose folder is already gone counts as removed. If git has let go of
 a worktree but its folder still has files in it, the archive stops and names
 the folder. **Force remove** deletes it.
 
+The archive also removes any other worktree of the workspace's repos that sits
+inside the workspace folder, such as one an agent added for another branch of a
+stack. These follow the same rule: uncommitted work stops the archive until you
+force it.
+
+Once a repo's worktrees are gone, its local branch is deleted if the work has
+landed: its PR merged, or the base branch already contains it. Any other branch
+is kept in the shared clone.
+
+Last, the archive deletes the workspace folder. If anything other than the
+files Yarvis wrote there (`.claude`, `.yarvis`, `AGENTS.md`, `CLAUDE.md`,
+`.mcp.json`) is left, such as notes or a checkout made outside Yarvis, the
+archive stops and lists them. **Force remove** deletes the folder with them.
+
+An active workspace that hasn't been opened, and whose agent session hasn't
+done anything, for 7 days is dimmed in the list with an "idle" label giving the
+number of days. It's a hint that the work may be done and the workspace can be
+archived to free its disk space.
+
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
 

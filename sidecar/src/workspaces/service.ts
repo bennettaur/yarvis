@@ -9,6 +9,7 @@ import { basename, dirname, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
+import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -24,7 +25,7 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { emitEvent } from "../events/service.ts";
+import { emitEvent, lastWorkspaceViews } from "../events/service.ts";
 import {
   deleteLinkForWorkspace,
   listLinksForWorkspace,
@@ -52,11 +53,13 @@ import {
   addExistingBranchWorktree,
   type BranchSync,
   branchExists,
+  branchLanded,
   branchSync,
   type ChangedFile,
   canonicalPath,
   createWorktree,
   defaultGitRunner,
+  deleteBranch,
   detectDefaultBranch,
   ensurePrimaryClone,
   existingWorktree,
@@ -73,6 +76,7 @@ import {
   removeWorktree,
   updateDefaultBranch,
   worktreeStatus,
+  worktreesInside,
 } from "./git.ts";
 import {
   checkBeforeWrite,
@@ -84,6 +88,7 @@ import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
 import type { RepoTracker } from "./tracker.ts";
+import { removeWorkspaceFolder } from "./workspaceFolder.ts";
 import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
 
 // ---------------------------------------------------------------------------
@@ -629,6 +634,12 @@ export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
    * the row has nothing to say about them.
    */
   prs: WorkspaceSummaryPr[];
+  /**
+   * The last time the user opened the workspace in Yarvis or its agent session
+   * wrote to its transcript, or its creation if neither happened since. Null
+   * for an archived workspace, which isn't checked.
+   */
+  lastActiveAt: Date | null;
 }
 
 /** The slice of a workspace repo's PR cache the list rows render. */
@@ -688,11 +699,40 @@ export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
     prsByWorkspace.set(m.workspaceId, prs);
   }
 
+  const lastActive = await lastActivity(
+    db,
+    wsRows.filter((w) => w.status !== "archived"),
+  );
+
   return wsRows.map((w) => ({
     ...w,
     repoNames: namesByWorkspace.get(w.id) ?? [],
     prs: prsByWorkspace.get(w.id) ?? [],
+    lastActiveAt: lastActive.get(w.id) ?? null,
   }));
+}
+
+/** The latest of each workspace's creation, last view and last agent transcript write. */
+async function lastActivity(
+  db: Db,
+  rows: { id: string; rootPath: string; createdAt: Date }[],
+): Promise<Map<string, Date>> {
+  if (rows.length === 0) return new Map();
+  const views = await lastWorkspaceViews(db);
+  const entries = await Promise.all(
+    rows.map(async (w): Promise<[string, Date]> => {
+      // The agent tab is launched at the workspace root, so that is the project
+      // its transcripts are filed under.
+      const transcript = await latestSessionFile(ccProjectDirFor(w.rootPath)).catch(() => null);
+      const times = [
+        w.createdAt.getTime(),
+        views.get(w.id)?.getTime() ?? 0,
+        transcript?.mtimeMs ?? 0,
+      ];
+      return [w.id, new Date(Math.max(...times))];
+    }),
+  );
+  return new Map(entries);
 }
 
 export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail | null> {
@@ -1437,6 +1477,15 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "husky, pre-commit) call its tools, so run `git commit` and `git push` from",
       "inside the repo's directory. With mise that is `mise exec -- git commit`.",
       "From this root the hooks fail, or run against the wrong tool versions.",
+      "",
+      "## Extra worktrees",
+      "",
+      "If you need another worktree of a repo (one per branch of a stack, say),",
+      "put it directly in this workspace folder, beside the repo's own:",
+      "`git -C <repo> worktree add ../<repo>-<topic> <branch>`. Yarvis shows",
+      "worktrees in this folder and removes them when the workspace is archived.",
+      "Don't create worktrees or clones anywhere else, such as a temp folder:",
+      "nothing tracks those, and they stay on disk after the work is done.",
     );
   }
 
@@ -2123,6 +2172,23 @@ function trackArchive(
   return run;
 }
 
+/**
+ * Deletes a torn-down repo's local branch once its work has landed, so archived
+ * workspaces don't pile up branches in the shared clone. Best-effort: a branch
+ * left behind costs nothing, so a failure is logged and the archive goes on.
+ */
+async function deleteLandedBranch(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+  const clone = wr.repo.primaryClonePath;
+  try {
+    const prMerged = wr.pr?.prState === "merged";
+    if (await branchLanded(runner, clone, wr.branch, wr.baseBranch, prMerged)) {
+      await deleteBranch(runner, clone, wr.branch);
+    }
+  } catch (e) {
+    console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
+  }
+}
+
 async function removeWorktreesAndFinish(
   db: Db,
   detail: WorkspaceDetail,
@@ -2145,15 +2211,25 @@ async function removeWorktreesAndFinish(
 
   const errors: { repo: string; message: string }[] = [];
 
+  const force = input.force ?? false;
   for (const wr of detail.repos) {
     if (wr.status === "removed") continue;
     try {
-      await withRepoLock(wr.repoId, () =>
-        removeWorktree(runner, wr.repo.primaryClonePath, wr.worktreePath, {
-          force: input.force ?? false,
+      await withRepoLock(wr.repoId, async () => {
+        const clone = wr.repo.primaryClonePath;
+        const extras = await worktreesInside(runner, clone, detail.rootPath, wr.worktreePath);
+        for (const extra of extras) {
+          await removeWorktree(runner, clone, extra.path, {
+            force,
+            workspaceRoot: detail.rootPath,
+          });
+        }
+        await removeWorktree(runner, clone, wr.worktreePath, {
+          force,
           workspaceRoot: detail.rootPath,
-        }),
-      );
+        });
+        await deleteLandedBranch(runner, wr);
+      });
       await db
         .update(workspaceRepos)
         .set({ status: "removed", error: null })
@@ -2168,6 +2244,16 @@ async function removeWorktreesAndFinish(
     }
   }
 
+  let folderError: string | null = null;
+  if (errors.length === 0) {
+    try {
+      await removeWorkspaceFolder(detail.rootPath, detail.slug, { force });
+    } catch (e) {
+      folderError = e instanceof Error ? e.message : String(e);
+      errors.push({ repo: "workspace folder", message: folderError });
+    }
+  }
+
   const fullyRemoved = errors.length === 0;
   const status: Workspace["status"] = fullyRemoved ? "archived" : "archiving";
   await db
@@ -2176,7 +2262,7 @@ async function removeWorktreesAndFinish(
       status,
       summary: input.summary ?? detail.summary,
       mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
-      error: fullyRemoved ? null : "one or more worktrees could not be removed",
+      error: fullyRemoved ? null : (folderError ?? "one or more worktrees could not be removed"),
       // A torn-down workspace has no session left to hand a kick-off to, so a
       // brief still pending on it is only a copy of the work kept alive for
       // nobody.
