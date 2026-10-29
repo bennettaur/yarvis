@@ -80,6 +80,20 @@ export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
   /** One entry per repo that has a PR; empty until the poller finds one. */
   prs: WorkspaceSummaryPr[];
+  /** Last time it was opened or its agent wrote to its transcript, else its creation; null when archived. */
+  lastActiveAt: string | null;
+}
+
+/** How long an active workspace can sit untouched before the list marks it idle. */
+export const IDLE_AFTER_DAYS = 7;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days an active workspace has gone untouched, or null when it isn't active or was used within `IDLE_AFTER_DAYS`. */
+export function idleDays(ws: WorkspaceSummary, now: number = Date.now()): number | null {
+  if (ws.status !== "active" || !ws.lastActiveAt) return null;
+  const days = Math.floor((now - Date.parse(ws.lastActiveAt)) / DAY_MS);
+  return days >= IDLE_AFTER_DAYS ? days : null;
 }
 
 export interface ChangedFile {

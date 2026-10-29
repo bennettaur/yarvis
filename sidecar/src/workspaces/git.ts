@@ -601,6 +601,44 @@ export async function removeWorktree(
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
+/**
+ * Whether a local branch's work has landed, so it is safe to delete: its PR
+ * merged (a squash merge leaves the branch's commits off the base), or
+ * `origin/<base>` as last fetched already contains its tip. A merged PR counts
+ * only while the remote branch, if it is still there, holds every local commit,
+ * so work added after the merge isn't deleted with the branch.
+ */
+export async function branchLanded(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  baseBranch: string,
+  prMerged: boolean,
+): Promise<boolean> {
+  if (!(await branchExists(runner, primaryClonePath, branch))) return false;
+  const contains = async (ref: string) =>
+    (
+      await runner(["merge-base", "--is-ancestor", `refs/heads/${branch}`, ref], {
+        cwd: primaryClonePath,
+      })
+    ).exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return true;
+  if (!prMerged) return false;
+  const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
+    cwd: primaryClonePath,
+  });
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
+}
+
+/** Deletes a local branch. Git refuses while a worktree has it checked out. */
+export async function deleteBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+}
+
 async function removeLeftover(
   worktreePath: string,
   opts: { force: boolean; workspaceRoot: string },

@@ -83,6 +83,11 @@ const fakeGit: GitRunner = async (args) => {
     const path = args[2] === "-b" ? args[4] : args[2];
     if (path) mkdirSync(path, { recursive: true });
   }
+  // Removing deletes the folder, as real git does.
+  if (args[0] === "worktree" && args[1] === "remove") {
+    const path = args[args.length - 1];
+    if (path) rmSync(path, { recursive: true, force: true });
+  }
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
@@ -854,6 +859,20 @@ describe("workspace routes", () => {
     const list = (await res.json()) as { repoNames: string[]; prs: { repoName: string }[] }[];
     expect(list[0]?.repoNames.sort()).toEqual(["gadget", "widget"]);
     expect(list[0]?.prs.map((pr) => pr.repoName)).toEqual(["gadget"]);
+  });
+
+  it("reports when each live workspace was last active", async () => {
+    const repo = await addRepo();
+    const live = await createWorkspace(db, config, { name: "live", repoIds: [repo.id] });
+    const gone = await createWorkspace(db, config, { name: "gone", repoIds: [repo.id] });
+    await db.update(workspaces).set({ status: "archived" }).where(eq(workspaces.id, gone.id));
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { id: string; lastActiveAt: string | null }[];
+    const byId = new Map(list.map((w) => [w.id, w.lastActiveAt]));
+    // Never opened and no transcript, so it falls back to when it was created.
+    expect(byId.get(live.id)).toBe(live.createdAt.toISOString());
+    expect(byId.get(gone.id)).toBeNull();
   });
 
   it("drops the PR of a repo torn down by an archive, whose cache is frozen", async () => {
@@ -1696,6 +1715,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(agents).not.toContain("## Skills and agents");
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
+    expect(agents).toContain("## Extra worktrees");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");
   });
@@ -1902,13 +1922,16 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
     // Removal fails only for the "other" repo's worktree.
-    const failingGit: GitRunner = async (args) => {
+    const failingGit: GitRunner = async (args, opts) => {
       const path = args[args.length - 1] ?? "";
       if (args[0] === "worktree" && args[1] === "remove" && path.includes("other")) {
         refusedWorktrees.add(path);
         return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
       }
-      if (args[0] === "worktree" && args[1] === "list") return listRefusedWorktrees();
+      // Only the other repo's clone holds the refused worktree.
+      if (args[0] === "worktree" && args[1] === "list") {
+        return opts.cwd?.includes("other") ? listRefusedWorktrees() : fakeGit(args, opts);
+      }
       return { stdout: "", stderr: "", exitCode: 0 };
     };
     const result = await archiveWorkspace(db, ws.id, {}, failingGit);
@@ -2003,6 +2026,132 @@ describe("provision + archive (injected git runner)", () => {
     expect(item.status).toBe("resolved");
   });
 
+  it("removes other worktrees in the folder, then the folder itself", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-extra", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const extra = join(ws.rootPath, "widget-layer-2");
+    mkdirSync(extra);
+
+    const removed: string[] = [];
+    const extraGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "remove") removed.push(args[args.length - 1] ?? "");
+      if (args[0] === "worktree" && args[1] === "list") {
+        return {
+          stdout: `worktree ${extra}\0branch refs/heads/layer-2\0\0`,
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      return fakeGit(args, opts);
+    };
+    const result = await archiveWorkspace(db, ws.id, {}, extraGit);
+
+    expect(result.status).toBe("archived");
+    expect(removed[0]).toBe(extra);
+    expect(existsSync(ws.rootPath)).toBe(false);
+  });
+
+  it("stops on a dirty extra worktree, and removes it on a forced retry", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "dirty-extra", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const extra = join(ws.rootPath, "widget-layer-2");
+    mkdirSync(extra);
+
+    const dirtyExtraGit: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return existsSync(extra)
+          ? { stdout: `worktree ${extra}\0\0`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      }
+      const target = args[args.length - 1];
+      if (
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        target === extra &&
+        !args.includes("--force")
+      ) {
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      return fakeGit(args, opts);
+    };
+
+    const blocked = await archiveWorkspace(db, ws.id, {}, dirtyExtraGit);
+    expect(blocked.status).toBe("archiving");
+    expect(blocked.errors[0]?.message).toContain("modified files");
+    expect(existsSync(extra)).toBe(true);
+
+    const forced = await archiveWorkspace(db, ws.id, { force: true }, dirtyExtraGit);
+    expect(forced.status).toBe("archived");
+    expect(existsSync(ws.rootPath)).toBe(false);
+  });
+
+  it("still archives when the landed branch can't be deleted", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "branch-stuck", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const stuckBranchGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "branch") return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+      return fakeGit(args, opts);
+    };
+    const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
+    expect(result.status).toBe("archived");
+  });
+
+  it("stops on files left in the folder, and deletes them on a forced retry", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-notes", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    writeFileSync(join(ws.rootPath, "notes.md"), "keep me?");
+
+    const blocked = await archiveWorkspace(db, ws.id, {}, fakeGit);
+    expect(blocked.status).toBe("archiving");
+    const detail = await getWorkspace(db, ws.id);
+    expect(detail?.error).toContain("notes.md");
+    expect(detail?.repos[0]?.status).toBe("removed");
+    expect(existsSync(join(ws.rootPath, "notes.md"))).toBe(true);
+
+    const forced = await archiveWorkspace(db, ws.id, { force: true }, fakeGit);
+    expect(forced.status).toBe("archived");
+    expect(existsSync(ws.rootPath)).toBe(false);
+  });
+
+  it("deletes the local branch once its PR merged, and keeps one that hasn't landed", async () => {
+    const landed = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "merged-work", repoIds: [landed.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 1, prState: "merged" });
+
+    const deleted: string[] = [];
+    // The local branch exists, the base doesn't contain it (a squash merge), and
+    // the remote branch was deleted when the PR merged.
+    const branchGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+      }
+      if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      return fakeGit(args, opts);
+    };
+    await archiveWorkspace(db, ws.id, {}, branchGit);
+    expect(deleted).toEqual([wr!.branch]);
+
+    const open = await createWorkspace(db, config, { name: "unmerged-work", repoIds: [landed.id] });
+    await provisionWorkspace(db, open.id, () => {}, { runner: fakeGit });
+    deleted.length = 0;
+    await archiveWorkspace(db, open.id, {}, branchGit);
+    expect(deleted).toEqual([]);
+  });
+
   it("completes a linked task when the workspace is fully archived", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
@@ -2037,13 +2186,16 @@ describe("provision + archive (injected git runner)", () => {
     });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
 
-    const failingGit: GitRunner = async (args) => {
+    const failingGit: GitRunner = async (args, opts) => {
       const path = args[args.length - 1] ?? "";
       if (args[0] === "worktree" && args[1] === "remove" && path.includes("other")) {
         refusedWorktrees.add(path);
         return { stdout: "", stderr: "dirty", exitCode: 1 };
       }
-      if (args[0] === "worktree" && args[1] === "list") return listRefusedWorktrees();
+      // Only the other repo's clone holds the refused worktree.
+      if (args[0] === "worktree" && args[1] === "list") {
+        return opts.cwd?.includes("other") ? listRefusedWorktrees() : fakeGit(args, opts);
+      }
       return { stdout: "", stderr: "", exitCode: 0 };
     };
     const result = await archiveWorkspace(db, ws.id, {}, failingGit);

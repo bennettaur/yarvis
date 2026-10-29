@@ -11,6 +11,7 @@ import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  idleDays,
   ignoreWorkspaceError,
   listWorkspaces,
   renameWorkspace,
@@ -404,6 +405,7 @@ export default function WorkspacesPanel({
             <ul>
               {group.items.map((ws) => {
                 const needsAttention = workspacesNeedingAttention.has(ws.id);
+                const idleForDays = idleDays(ws);
                 return (
                   <li key={ws.id}>
                     <button
@@ -431,9 +433,19 @@ export default function WorkspacesPanel({
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
                           />
                         )}
-                        <span className="truncate">{ws.name}</span>
+                        <span className={`truncate ${idleForDays !== null ? "opacity-60" : ""}`}>
+                          {ws.name}
+                        </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
+                        {idleForDays !== null && (
+                          <span
+                            title={`Not opened and no agent activity for ${idleForDays} days — archive it if the work is done`}
+                            className="text-xs text-zinc-500"
+                          >
+                            idle {idleForDays}d
+                          </span>
+                        )}
                         <WorkspacePrBadges prs={ws.prs} />
                         <StatusBadge status={ws.status} />
                       </span>

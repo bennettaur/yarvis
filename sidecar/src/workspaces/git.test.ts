@@ -2,14 +2,16 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { run } from "./exec.ts";
 import {
   addExistingBranchWorktree,
   branchExists,
+  branchLanded,
   branchSync,
   createWorktree,
   defaultGitRunner,
+  deleteBranch,
   detectDefaultBranch,
   ensurePrimaryClone,
   existingWorktree,
@@ -31,6 +33,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { extraWorktrees } from "./worktrees.ts";
 
 /** A scripted GitRunner that records calls and answers based on the args. */
 function fakeRunner(handler: (args: string[]) => Partial<GitRunResult>): {
@@ -560,6 +563,84 @@ describe("removeWorktree", () => {
     };
     await removeWorktree(runner, clone, worktreePath, { force: false, workspaceRoot });
     expect(timeouts[0]).toBeGreaterThan(120_000);
+  });
+});
+
+describe("archive cleanup helpers", () => {
+  /** A clone whose `origin/main` is its first commit, with a worktree in a workspace folder. */
+  function cloneWithOrigin() {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-landed-"));
+    tmpDirs.push(parent);
+    const clone = join(parent, "clone");
+    mkdirSync(clone);
+    const git = (...args: string[]) =>
+      spawnSync("git", args, { cwd: clone, env: { ...process.env, ...GIT_TEST_ENV } });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(clone, "a.txt"), "a");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const workspaceRoot = join(parent, "ws");
+    git("worktree", "add", "-q", "-b", "task", join(workspaceRoot, "service-a"));
+    return { clone, git, workspaceRoot, own: join(workspaceRoot, "service-a") };
+  }
+
+  it("finds the other worktrees inside the workspace folder, and none outside it", async () => {
+    const { clone, git, workspaceRoot, own } = cloneWithOrigin();
+    git("worktree", "add", "-q", "-b", "layer-2", join(workspaceRoot, "service-a-layer-2"));
+    git("worktree", "add", "-q", "-b", "nested", join(workspaceRoot, "worktrees", "nested"));
+    git("worktree", "add", "-q", "-b", "elsewhere", join(workspaceRoot, "..", "elsewhere"));
+
+    const found = await extraWorktrees(defaultGitRunner, clone, workspaceRoot, own);
+    expect(found.map((path) => basename(path)).sort()).toEqual(["nested", "service-a-layer-2"]);
+  });
+
+  it("counts a branch the base already contains as landed", async () => {
+    const { clone } = cloneWithOrigin();
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", false)).toBe(true);
+  });
+
+  it("doesn't count a branch with its own commits as landed unless its PR merged", async () => {
+    const { clone, own } = cloneWithOrigin();
+    writeFileSync(join(own, "b.txt"), "b");
+    spawnSync("git", ["add", "-A"], { cwd: own });
+    spawnSync("git", ["commit", "-qm", "work"], {
+      cwd: own,
+      env: { ...process.env, ...GIT_TEST_ENV },
+    });
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", false)).toBe(false);
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+  });
+
+  it("keeps a merged branch with commits its remote branch doesn't have", async () => {
+    const { clone, own } = cloneWithOrigin();
+    const commit = (name: string) => {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    };
+    commit("pushed.txt");
+    spawnSync("git", ["update-ref", "refs/remotes/origin/task", "refs/heads/task"], { cwd: clone });
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+
+    commit("after-merge.txt");
+    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(false);
+  });
+
+  it("doesn't count a branch that isn't there as landed", async () => {
+    const { clone } = cloneWithOrigin();
+    expect(await branchLanded(defaultGitRunner, clone, "gone", "main", true)).toBe(false);
+  });
+
+  it("deletes a branch once no worktree has it checked out", async () => {
+    const { clone, workspaceRoot, own } = cloneWithOrigin();
+    await expect(deleteBranch(defaultGitRunner, clone, "task")).rejects.toThrow("branch -D");
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+    await deleteBranch(defaultGitRunner, clone, "task");
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(false);
   });
 });
 
