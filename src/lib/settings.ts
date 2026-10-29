@@ -53,9 +53,9 @@ export interface Settings {
   /** Font size every terminal renders at (`lib/terminalFont`); null means the
    *  default size. */
   terminalFontSize: number | null;
-  /** Whether the top bar sweeps while the bell has something pending
-   *  (`lib/attentionSweep`); null means on. */
-  attentionSweep: boolean | null;
+  /** Whether the top bar's sweep and the bell's shake run while the bell has
+   *  something pending (`lib/attentionAnimation`); null means on. */
+  attentionAnimation: boolean | null;
 }
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
@@ -84,10 +84,10 @@ export const saveColorTheme = (value: string | null) =>
 export const saveTerminalFontSize = (value: number | null) =>
   invoke<Settings>("set_terminal_font_size", { value });
 
-/** Stores whether the top bar's attention sweep runs; `null` clears it back to
+/** Stores whether the top bar's attention animation runs; `null` clears it back to
  * the default (on). Like the theme, it is already applied when this is called. */
-export const saveAttentionSweep = (value: boolean | null) =>
-  invoke<Settings>("set_attention_sweep", { value });
+export const saveAttentionAnimation = (value: boolean | null) =>
+  invoke<Settings>("set_attention_animation", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn

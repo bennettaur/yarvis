@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import * as realApi from "../../lib/api";
 import type { AttentionItem } from "../../lib/attention";
-import { loadAttentionSweep } from "../../lib/attentionSweep";
+import { loadAttentionAnimation } from "../../lib/attentionAnimation";
 import { mountForInteraction, renderToHtml } from "../../test/render";
 
 let pending: AttentionItem[] = [];
@@ -112,15 +112,16 @@ describe("TopBar attention animation", () => {
     expect(sweep()).toBe(afterArrival);
   });
 
-  it("rings the bell without the sweep when the sweep is turned off", async () => {
+  it("keeps the count but neither sweeps nor rings when the animation is turned off", async () => {
     pending = [item("a", 2)];
-    loadAttentionSweep(false);
+    loadAttentionAnimation(false);
     try {
       const html = await renderToHtml(<TopBar title="Chat" onOpenAttention={() => {}} />);
       expect(html).not.toContain('data-testid="attention-sweep"');
-      expect(html).toContain("yarvis-bell-ring");
+      expect(html).not.toContain("yarvis-bell-ring");
+      expect(html).toContain("Attention: 1 pending");
     } finally {
-      loadAttentionSweep(null);
+      loadAttentionAnimation(null);
     }
   });
 
