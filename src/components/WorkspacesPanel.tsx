@@ -405,7 +405,7 @@ export default function WorkspacesPanel({
             <ul>
               {group.items.map((ws) => {
                 const needsAttention = workspacesNeedingAttention.has(ws.id);
-                const idle = idleDays(ws);
+                const idleForDays = idleDays(ws);
                 return (
                   <li key={ws.id}>
                     <button
@@ -433,17 +433,17 @@ export default function WorkspacesPanel({
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
                           />
                         )}
-                        <span className={`truncate ${idle !== null ? "opacity-60" : ""}`}>
+                        <span className={`truncate ${idleForDays !== null ? "opacity-60" : ""}`}>
                           {ws.name}
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
-                        {idle !== null && (
+                        {idleForDays !== null && (
                           <span
-                            title={`Not opened and no agent activity for ${idle} days — archive it if the work is done`}
+                            title={`Not opened and no agent activity for ${idleForDays} days — archive it if the work is done`}
                             className="text-xs text-zinc-500"
                           >
-                            idle {idle}d
+                            idle {idleForDays}d
                           </span>
                         )}
                         <WorkspacePrBadges prs={ws.prs} />

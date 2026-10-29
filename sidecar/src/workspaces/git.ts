@@ -602,29 +602,11 @@ export async function removeWorktree(
 }
 
 /**
- * Worktrees of the clone that live inside `folder`, other than `except`. These
- * are the ones an agent added in a workspace on its own (a second checkout of
- * the same repo, say), which Yarvis has no row for.
- */
-export async function worktreesInside(
-  runner: GitRunner,
-  primaryClonePath: string,
-  folder: string,
-  except: string,
-): Promise<WorktreeEntry[]> {
-  await git(runner, ["worktree", "prune"], primaryClonePath);
-  const prefix = `${canonicalPath(folder)}/`;
-  const skip = canonicalPath(except);
-  return (await listWorktrees(runner, primaryClonePath)).filter((entry) => {
-    const path = canonicalPath(entry.path);
-    return path.startsWith(prefix) && path !== skip;
-  });
-}
-
-/**
- * Whether a local branch's work has landed, so deleting it loses nothing: its
- * PR merged (a squash merge leaves the branch's commits off the base), or the
- * base already contains its tip.
+ * Whether a local branch's work has landed, so it is safe to delete: its PR
+ * merged (a squash merge leaves the branch's commits off the base), or
+ * `origin/<base>` as last fetched already contains its tip. A merged PR counts
+ * only while the remote branch, if it is still there, holds every local commit,
+ * so work added after the merge isn't deleted with the branch.
  */
 export async function branchLanded(
   runner: GitRunner,
@@ -634,12 +616,18 @@ export async function branchLanded(
   prMerged: boolean,
 ): Promise<boolean> {
   if (!(await branchExists(runner, primaryClonePath, branch))) return false;
-  if (prMerged) return true;
-  const result = await runner(
-    ["merge-base", "--is-ancestor", `refs/heads/${branch}`, remoteRef(baseBranch)],
-    { cwd: primaryClonePath },
-  );
-  return result.exitCode === 0;
+  const contains = async (ref: string) =>
+    (
+      await runner(["merge-base", "--is-ancestor", `refs/heads/${branch}`, ref], {
+        cwd: primaryClonePath,
+      })
+    ).exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return true;
+  if (!prMerged) return false;
+  const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
+    cwd: primaryClonePath,
+  });
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
 }
 
 /** Deletes a local branch. Git refuses while a worktree has it checked out. */

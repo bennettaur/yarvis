@@ -76,7 +76,6 @@ import {
   removeWorktree,
   updateDefaultBranch,
   worktreeStatus,
-  worktreesInside,
 } from "./git.ts";
 import {
   checkBeforeWrite,
@@ -89,7 +88,7 @@ import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
 import type { RepoTracker } from "./tracker.ts";
 import { removeWorkspaceFolder } from "./workspaceFolder.ts";
-import { resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
+import { extraWorktrees, resolveWorktree, worktreeDiffBase } from "./worktrees.ts";
 
 // ---------------------------------------------------------------------------
 // Repo registry
@@ -636,8 +635,8 @@ export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
   prs: WorkspaceSummaryPr[];
   /**
    * The last time the user opened the workspace in Yarvis or its agent session
-   * wrote to its transcript, or its creation if neither happened since. Null
-   * for an archived workspace, which isn't checked.
+   * wrote to its transcript, falling back to when it was created. Null for an
+   * archived workspace, whose activity isn't looked up.
    */
   lastActiveAt: Date | null;
 }
@@ -2113,7 +2112,8 @@ async function beginArchive(
 }
 
 /**
- * Tears down a workspace's worktrees and marks it archived. Idempotent and
+ * Tears down a workspace's worktrees, its landed branches and its folder, and
+ * marks it archived. Idempotent and
  * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
  * changes without `force`) keeps the workspace in `archiving` with the error
  * recorded, so the operation can be retried.
@@ -2178,11 +2178,11 @@ function trackArchive(
  * left behind costs nothing, so a failure is logged and the archive goes on.
  */
 async function deleteLandedBranch(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
-  const clone = wr.repo.primaryClonePath;
+  const primaryClonePath = wr.repo.primaryClonePath;
   try {
     const prMerged = wr.pr?.prState === "merged";
-    if (await branchLanded(runner, clone, wr.branch, wr.baseBranch, prMerged)) {
-      await deleteBranch(runner, clone, wr.branch);
+    if (await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged)) {
+      await deleteBranch(runner, primaryClonePath, wr.branch);
     }
   } catch (e) {
     console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
@@ -2213,23 +2213,31 @@ async function removeWorktreesAndFinish(
 
   const force = input.force ?? false;
   for (const wr of detail.repos) {
-    if (wr.status === "removed") continue;
     try {
       await withRepoLock(wr.repoId, async () => {
-        const clone = wr.repo.primaryClonePath;
-        const extras = await worktreesInside(runner, clone, detail.rootPath, wr.worktreePath);
+        const primaryClonePath = wr.repo.primaryClonePath;
+        // Swept for a repo already torn down too: an agent can add a worktree
+        // after that repo's turn, and the folder can't go while git holds one.
+        const extras = await extraWorktrees(
+          runner,
+          primaryClonePath,
+          detail.rootPath,
+          wr.worktreePath,
+        );
         for (const extra of extras) {
-          await removeWorktree(runner, clone, extra.path, {
+          await removeWorktree(runner, primaryClonePath, extra, {
             force,
             workspaceRoot: detail.rootPath,
           });
         }
-        await removeWorktree(runner, clone, wr.worktreePath, {
+        if (wr.status === "removed") return;
+        await removeWorktree(runner, primaryClonePath, wr.worktreePath, {
           force,
           workspaceRoot: detail.rootPath,
         });
         await deleteLandedBranch(runner, wr);
       });
+      if (wr.status === "removed") continue;
       await db
         .update(workspaceRepos)
         .set({ status: "removed", error: null })
@@ -2245,6 +2253,8 @@ async function removeWorktreesAndFinish(
   }
 
   let folderError: string | null = null;
+  // Only once every worktree is gone: deleting the folder under one git still
+  // holds would leave the clone pointing at a missing checkout.
   if (errors.length === 0) {
     try {
       await removeWorkspaceFolder(detail.rootPath, detail.slug, { force });
