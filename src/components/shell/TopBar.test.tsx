@@ -73,42 +73,37 @@ const item = (id: string, seq: number): AttentionItem => ({
 });
 
 describe("TopBar attention animation", () => {
-  it("sweeps the bar and rings the bell while something is pending", async () => {
+  it("rings the bell without sweeping the bar while something is pending", async () => {
     pending = [item("a", 2), item("b", 1)];
     const html = await renderToHtml(<TopBar title="Chat" onOpenAttention={() => {}} />);
 
-    expect(html).toContain('data-testid="attention-sweep"');
     expect(html).toContain("yarvis-bell-ring");
+    expect(html).not.toContain("yarvis-attention-sweep");
   });
 
-  it("restarts the sweep and the bell when a newer item arrives, and only then", async () => {
+  it("restarts the bell when a newer item arrives, and only then", async () => {
     pending = [item("a", 2)];
     const mounted = await mountForInteraction(<TopBar title="Chat" onOpenAttention={() => {}} />);
     unmount = mounted.unmount;
-    const sweep = () => mounted.host.querySelector('[data-testid="attention-sweep"]');
     const bell = () => mounted.host.querySelector("svg");
-    const firstSweep = sweep();
     const firstBell = bell();
-    expect(firstSweep).not.toBeNull();
+    expect(firstBell).not.toBeNull();
 
     // An update to an item already on screen keeps the cycle running as it was.
     pushFrame(JSON.stringify({ type: "item", item: { ...item("a", 2), title: "Edited" } }));
     await settle();
-    expect(sweep()).toBe(firstSweep);
     expect(bell()).toBe(firstBell);
 
     pushFrame(JSON.stringify({ type: "item", item: item("c", 5) }));
     await settle();
-    expect(sweep()).not.toBeNull();
-    expect(sweep()).not.toBe(firstSweep);
     expect(bell()).not.toBe(firstBell);
 
     // Clearing the newest item leaves an older one as the newest; that is no
     // reason to announce again.
-    const afterArrival = sweep();
+    const afterArrival = bell();
     pushFrame(JSON.stringify({ type: "item", item: { ...item("c", 5), status: "dismissed" } }));
     await settle();
-    expect(sweep()).toBe(afterArrival);
+    expect(bell()).toBe(afterArrival);
   });
 
   // Runs last so the shared store is left empty for any later test file.
@@ -116,7 +111,6 @@ describe("TopBar attention animation", () => {
     pending = [];
     const html = await renderToHtml(<TopBar title="Chat" onOpenAttention={() => {}} />);
 
-    expect(html).not.toContain('data-testid="attention-sweep"');
     expect(html).not.toContain("yarvis-bell-ring");
   });
 });

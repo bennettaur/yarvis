@@ -8,8 +8,8 @@ type Health = "checking" | "ok" | "down";
 /**
  * Thin top bar: current view title on the left; a persistent attention indicator
  * and live sidecar status on the right. The indicator shows the pending count and
- * opens the attention panel. While anything is pending, an amber band sweeps
- * across the bar and the bell rings every few seconds (see `index.css`).
+ * opens the attention panel. While anything is pending, the bell rings every
+ * few seconds (see `index.css`).
  */
 export default function TopBar({
   title,
@@ -21,8 +21,8 @@ export default function TopBar({
   const [health, setHealth] = useState<Health>("checking");
   // Counts origins, not items, so the badge matches the grouped rows in the panel.
   const count = useAttentionGroups().length;
-  // The sweep and ring are keyed on the highest seq seen, so a fresh arrival
-  // restarts them right away. Clearing the newest item doesn't, because the key
+  // The ring is keyed on the highest seq seen, so a fresh arrival restarts it
+  // right away. Clearing the newest item doesn't, because the key
   // never goes back down.
   const newestSeq = useAttentionItems()[0]?.seq ?? 0;
   const [restartKey, setRestartKey] = useState(newestSeq);
@@ -57,15 +57,7 @@ export default function TopBar({
     health === "checking" ? "bg-zinc-500" : health === "ok" ? "bg-emerald-500" : "bg-red-500";
 
   return (
-    <header className="relative isolate flex h-12 shrink-0 items-center justify-between overflow-hidden border-b border-zinc-800 px-5">
-      {count > 0 && (
-        <span
-          key={restartKey}
-          aria-hidden="true"
-          data-testid="attention-sweep"
-          className="yarvis-attention-sweep pointer-events-none absolute inset-0 -z-10"
-        />
-      )}
+    <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-800 px-5">
       <h1 className="text-sm font-medium tracking-tight text-zinc-200">{title}</h1>
       <div className="flex items-center gap-4">
         <button
