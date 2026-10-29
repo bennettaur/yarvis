@@ -188,6 +188,7 @@ has written your providers and MCP servers into it.
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
 | `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
 | `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
+| `attentionSweep` | `true` | `false` stops the amber band sweeping across the top bar while the bell has something pending. The bell still rings. |
 
 `null` and a missing key both mean "use the default".
 
@@ -316,5 +317,7 @@ The tabs in **Settings**, in order:
     jobs.
 11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
-    `settings.json`.
+    `settings.json`. Below it, a toggle turns off the amber band that sweeps
+    across the top bar while the bell has something pending, saved as
+    `attentionSweep`.
 12. **Diagnostics.** The sidecar log.

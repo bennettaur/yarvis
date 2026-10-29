@@ -87,6 +87,9 @@ pub struct Settings {
     /// it supports on read (`lib/terminalFont.ts`), so a hand edit can't push
     /// it out of bounds.
     pub terminal_font_size: Option<u32>,
+    /// Whether an amber band sweeps across the top bar while the attention bell
+    /// has something pending. Unset means on; only `false` turns it off.
+    pub attention_sweep: Option<bool>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -379,6 +382,17 @@ impl SettingsState {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
             settings.telegram_otp_window_minutes = value;
+        }
+        self.save()
+    }
+
+    /// Stores whether the top bar's attention sweep runs, or clears it back to
+    /// the default (on) with `None`.
+    fn set_attention_sweep(&self, value: Option<bool>) -> Result<(), String> {
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.attention_sweep = value;
         }
         self.save()
     }
@@ -740,6 +754,18 @@ pub fn set_terminal_font_size(
     Ok(state.snapshot().into())
 }
 
+/// Turns the top bar's attention sweep on or off, or clears it back to the
+/// default (on) with `None`. Applied by the webview as it is toggled; this only
+/// makes it survive a restart.
+#[tauri::command]
+pub fn set_attention_sweep(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<bool>,
+) -> Result<SettingsView, String> {
+    state.set_attention_sweep(value)?;
+    Ok(state.snapshot().into())
+}
+
 /// Points the app at the macOS Keychain or at a 1Password item, copying the
 /// stored secrets into the new store first. See
 /// `SettingsState::set_secret_backend` for the ordering and what is rejected.
@@ -891,6 +917,7 @@ mod tests {
         assert!(json["onePasswordItem"].is_null());
         assert!(json["colorTheme"].is_null());
         assert!(json["terminalFontSize"].is_null());
+        assert!(json["attentionSweep"].is_null());
     }
 
     #[test]
@@ -977,10 +1004,12 @@ mod tests {
             .set_text_field(Some("palenight".to_string()), |s| &mut s.color_theme)
             .unwrap();
         store.set_terminal_font_size(Some(18)).unwrap();
+        store.set_attention_sweep(Some(false)).unwrap();
 
         let reloaded = SettingsState::load(store.path.clone()).snapshot();
         assert_eq!(reloaded.color_theme.as_deref(), Some("palenight"));
         assert_eq!(reloaded.terminal_font_size, Some(18));
+        assert_eq!(reloaded.attention_sweep, Some(false));
     }
 
     #[test]

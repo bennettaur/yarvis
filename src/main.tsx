@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import BootGate from "./components/shell/BootGate";
 import "./index.css";
+import { loadAttentionSweep } from "./lib/attentionSweep";
 import { getSettings } from "./lib/settings";
 import { loadTerminalFontSize } from "./lib/terminalFont";
 import { loadColorTheme } from "./lib/theme";
@@ -25,6 +26,7 @@ getSettings()
   .then((settings) => {
     loadColorTheme(settings.colorTheme);
     loadTerminalFontSize(settings.terminalFontSize);
+    loadAttentionSweep(settings.attentionSweep);
   })
   .catch((e) => console.error("[settings] loading appearance failed:", e))
   .finally(render);
