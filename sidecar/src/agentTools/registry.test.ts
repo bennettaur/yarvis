@@ -20,6 +20,7 @@ describe("built-in tool registry", () => {
       "list_pr_reviews",
       "upsert_project",
       "create_todo",
+      "create_artifact",
       "search_events",
       "search_yarvis_docs",
       "post_merge_review",

@@ -1,6 +1,7 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
 import { buildAlarmTools } from "../alarms/tools.ts";
+import { buildArtifactTools } from "../artifacts/tools.ts";
 import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
 import type { Config } from "../config.ts";
@@ -98,6 +99,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
+    artifacts: buildArtifactTools(db),
     workStreams: buildWorkStreamTools(db, { unattended }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),

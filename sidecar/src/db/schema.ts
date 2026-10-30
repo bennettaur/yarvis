@@ -1465,6 +1465,31 @@ export const agentTodos = pgTable(
 );
 
 /**
+ * How an artifact's content is meant to be read. Only markdown for now; a
+ * format goes here once the models in use can write it reliably.
+ */
+export const artifactFormat = pgEnum("artifact_format", ["markdown"]);
+
+/**
+ * A document the assistant writes and comes back to: a morning brief, a
+ * scratchpad of its own notes, a list heads-down mode builds up over several
+ * passes. Unlike a memory it is one piece of text the agent edits as a whole,
+ * and unlike a todo it is the product rather than a reminder to make one.
+ */
+export const artifacts = pgTable(
+  "artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    format: artifactFormat("format").notNull().default("markdown"),
+    content: text("content").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("artifacts_updated_at_idx").on(t.updatedAt)],
+);
+
+/**
  * Where a work stream stands. `waiting-on-user` and `waiting-on-others` are
  * what let the heads-down loop skip a stream it can't move and keep pushing the
  * rest; `done`/`dropped` are terminal.
@@ -1804,6 +1829,7 @@ export type ProjectItem = typeof projectItems.$inferSelect;
 export type NewProjectItem = typeof projectItems.$inferInsert;
 export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
+export type Artifact = typeof artifacts.$inferSelect;
 export type WorkStream = typeof workStreams.$inferSelect;
 export type WorkStreamLink = typeof workStreamLinks.$inferSelect;
 export type HeadsDownRun = typeof headsDownRuns.$inferSelect;

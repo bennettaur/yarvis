@@ -87,6 +87,8 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
+  // No trash or history to restore it from.
+  "delete_artifact",
   // Stores an answer that later turns act on without asking, typed ones
   // included, so a misheard "yes" would outlive the turn it was heard in.
   "record_decision",
@@ -158,6 +160,8 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_project_items",
   "list_todos",
   "get_todo",
+  "list_artifacts",
+  "get_artifact",
   "list_work_streams",
   "get_work_stream",
   "find_work_streams_for",
