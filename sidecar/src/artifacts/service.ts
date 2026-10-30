@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, ne, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Artifact, artifacts } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
@@ -27,6 +27,14 @@ export class ArtifactTooLargeError extends Error {
   }
 }
 
+/** A heads-down pass or specialist tried to rewrite or rename an artifact from a chat. */
+export class ArtifactAppendOnlyError extends Error {
+  constructor() {
+    super("only a chat turn can rewrite or rename an artifact a chat turn created");
+  }
+}
+
+/** Who is making a write: a chat turn, a heads-down pass, or a specialist run. */
 export type ArtifactWriter = Artifact["createdBy"];
 
 export interface CreateArtifactInput {
@@ -34,6 +42,8 @@ export interface CreateArtifactInput {
   content?: string;
   format?: Artifact["format"];
   writer?: ArtifactWriter;
+  /** The writer has read something untrusted, so this text may come from it. */
+  untrusted?: boolean;
 }
 
 export interface UpdateArtifactInput {
@@ -43,14 +53,8 @@ export interface UpdateArtifactInput {
   /** Added to the end of the content, after `content` if both are given. */
   append?: string;
   writer?: ArtifactWriter;
-}
-
-/**
- * True once a heads-down pass or a specialist run has written to it, so the text
- * may carry instructions from something it read rather than from the user.
- */
-export function isWrittenUnattended(artifact: Pick<Artifact, "createdBy" | "writtenUnattended">) {
-  return artifact.createdBy !== "chat" || artifact.writtenUnattended;
+  /** The writer has read something untrusted, so this text may come from it. */
+  untrusted?: boolean;
 }
 
 /** What a listing shows: everything but the content, which can be large. */
@@ -67,7 +71,7 @@ export async function createArtifact(db: Db, input: CreateArtifactInput): Promis
       content,
       format: input.format ?? "markdown",
       createdBy: writer,
-      writtenUnattended: writer !== "chat",
+      untrusted: writer !== "chat" || Boolean(input.untrusted),
     })
     .returning();
   await emitEvent(db, {
@@ -95,7 +99,7 @@ export async function listArtifacts(
       title: artifacts.title,
       format: artifacts.format,
       createdBy: artifacts.createdBy,
-      writtenUnattended: artifacts.writtenUnattended,
+      untrusted: artifacts.untrusted,
       createdAt: artifacts.createdAt,
       updatedAt: artifacts.updatedAt,
       length: sql<number>`char_length(${artifacts.content})`.mapWith(Number),
@@ -113,6 +117,9 @@ function escapeLike(value: string): string {
 /**
  * Appending happens in SQL rather than as read-then-write, so two passes adding
  * to the same scratchpad at once both land.
+ *
+ * A heads-down pass or specialist can only append to an artifact a chat turn
+ * created: a rewrite would wipe the user's document with no history to restore.
  */
 export async function updateArtifact(
   db: Db,
@@ -123,6 +130,9 @@ export async function updateArtifact(
   if (patch.title === undefined && patch.content === undefined && !patch.append) {
     return getArtifact(db, id);
   }
+  const writer = patch.writer ?? "chat";
+  const rewrites = patch.title !== undefined || patch.content !== undefined;
+  const appendOnly = writer !== "chat" && rewrites;
   const base = patch.content !== undefined ? sql`${patch.content}` : sql`${artifacts.content}`;
   const next = patch.append ? sql`${base} || ${patch.append}` : base;
 
@@ -131,17 +141,24 @@ export async function updateArtifact(
     .set({
       ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
       content: next,
-      ...(patch.writer && patch.writer !== "chat" ? { writtenUnattended: true } : {}),
+      ...(writer !== "chat" || patch.untrusted ? { untrusted: true } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(artifacts.id, id), sql`char_length(${next}) <= ${MAX_ARTIFACT_CHARS}`))
+    .where(
+      and(
+        eq(artifacts.id, id),
+        sql`char_length(${next}) <= ${MAX_ARTIFACT_CHARS}`,
+        appendOnly ? ne(artifacts.createdBy, "chat") : undefined,
+      ),
+    )
     .returning();
 
   if (!row) {
-    // No row means either no such artifact or the size check failed; only the
-    // second is worth a distinct error.
-    if (await getArtifact(db, id)) throw new ArtifactTooLargeError();
-    return null;
+    // No row: no such artifact, or one of the checks in the WHERE failed.
+    const current = await getArtifact(db, id);
+    if (!current) return null;
+    if (appendOnly && current.createdBy === "chat") throw new ArtifactAppendOnlyError();
+    throw new ArtifactTooLargeError();
   }
   await emitEvent(db, {
     type: "artifact.updated",

@@ -1491,8 +1491,12 @@ export const artifacts = pgTable(
     format: artifactFormat("format").notNull().default("markdown"),
     content: text("content").notNull().default(""),
     createdBy: artifactWriter("created_by").notNull().default("chat"),
-    /** Set once anything but a chat turn writes to it; reading it back is then untrusted. */
-    writtenUnattended: boolean("written_unattended").notNull().default(false),
+    /**
+     * Set once something other than the user may have shaped its text: a pass or
+     * specialist wrote to it, or a chat turn did after reading a web page or
+     * another untrusted artifact. Reading it back then counts as an untrusted read.
+     */
+    untrusted: boolean("untrusted").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
