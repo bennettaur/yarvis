@@ -38,6 +38,8 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   questions: "always",
   projects: "always",
   todos: "always",
+  // Always on so a scheduled job can write its morning brief without searching.
+  artifacts: "always",
   events: "always",
   digest: "always",
   delegation: "always",

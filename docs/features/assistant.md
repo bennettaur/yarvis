@@ -198,6 +198,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Artifacts** | Markdown documents the assistant wrote and can read back, such as a morning brief, a report, or a scratchpad it adds to over time | Memory → Artifacts |
 | **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
@@ -205,6 +206,19 @@ named. It works well for status updates and brag docs.
 
 Tasks and agent todos are separate on purpose. One is your plan, the other is
 the assistant's.
+
+### Artifacts
+
+Ask the assistant to write something up, like "put together my morning brief",
+and it saves the result as an artifact rather than only replying in the chat.
+It can read an artifact back later and add to it, so it also uses them as
+scratchpads: notes it builds up over a heads-down run, or a list it keeps
+across conversations. A scheduled job can write one too, so a weekday-morning
+job can leave a fresh brief waiting for you.
+
+Open **Memory → Artifacts** to read them. You can delete one there; only the
+assistant edits them. Artifacts are markdown for now, and each one is capped
+at 100,000 characters.
 
 ### Memory kinds
 
