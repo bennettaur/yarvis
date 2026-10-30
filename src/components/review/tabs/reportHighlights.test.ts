@@ -78,7 +78,6 @@ describe("fileNotes with must-read flags", () => {
     expect(notes.find((n) => n.source === "Must read")).toEqual({
       source: "Must read",
       title: "TTL is read but never applied",
-      detail: "",
       line: 30,
     });
     expect(notes.map((n) => n.line)).toEqual([9, 22, 30]);

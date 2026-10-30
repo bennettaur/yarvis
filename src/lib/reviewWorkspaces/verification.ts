@@ -31,7 +31,7 @@ export interface VerificationConcern {
 }
 
 /** Something in a must-read file that already looks off or unclear. */
-export interface VerificationFlag {
+export interface VerificationMustReadFlag {
   note: string;
   line?: number;
 }
@@ -41,7 +41,7 @@ export interface VerificationMustRead {
   reason: string;
   lines?: { start: number; end: number };
   /** Absent on a report from before must-reads carried flags. */
-  flags?: VerificationFlag[];
+  flags?: VerificationMustReadFlag[];
 }
 
 /**

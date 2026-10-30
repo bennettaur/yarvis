@@ -12,7 +12,8 @@ export interface FileNote {
   /** The check that raised it, "Risk" for a risk concern, or "Must read" for a must-read's flag. */
   source: string;
   title: string;
-  detail: string;
+  /** Absent for a must-read flag, which is only a note. */
+  detail?: string;
   /** Absent for a risk concern or a must-read flag, which have none. */
   severity?: Severity;
   line: number;
@@ -28,7 +29,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
   const notes: FileNote[] = [];
   for (const flag of report.mustRead.find((m) => m.path === path)?.flags ?? []) {
     if (flag.line) {
-      notes.push({ source: "Must read", title: flag.note, detail: "", line: flag.line });
+      notes.push({ source: "Must read", title: flag.note, line: flag.line });
     }
   }
   for (const c of report.risk.concerns) {

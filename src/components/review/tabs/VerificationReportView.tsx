@@ -44,18 +44,16 @@ export interface OpenLocation {
   canOpen: (path: string) => boolean;
 }
 
-/**
- * Posts a finding as a line comment on the PR. The draft is the report's
- * model-written text, so the user edits and sends it; nothing is posted
- * without that.
- */
-export type PostFinding = (
-  finding: VerificationFinding & { path: string; line: number },
-  body: string,
-) => Promise<void>;
+/** Posting a finding as a line comment on the PR. */
+export interface FindingComments {
+  /** Posts `body` as a line comment at a finding's location. */
+  post: (location: { path: string; line: number }, body: string) => Promise<void>;
+  /** Whether `path` is a file the PR changes, the only kind the providers take comments on. */
+  canComment: (path: string) => boolean;
+}
 
 /** The draft a finding's comment starts from. */
-export const findingCommentDraft = (f: Pick<VerificationFinding, "title" | "detail">) =>
+const findingCommentDraft = (f: Pick<VerificationFinding, "title" | "detail">) =>
   `**${f.title}**\n\n${f.detail}`;
 
 function Location({
@@ -109,57 +107,54 @@ const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
 /**
  * One finding, with a way to post it as a comment when it cites a line of one
- * of the PR's files: the providers only take a comment anchored to one.
+ * of the PR's files: the providers only take a comment anchored to one. The
+ * draft is the report's model-written text, so the user edits and sends it;
+ * nothing is posted without that.
  */
 function FindingItem({
-  finding: f,
+  finding,
   onOpen,
   viewed,
-  onPost,
+  comments,
 }: {
   finding: VerificationFinding;
   onOpen: OpenLocation;
   viewed: Viewed;
-  onPost?: PostFinding;
+  comments?: FindingComments;
 }) {
   const [composing, setComposing] = useState(false);
   const [posted, setPosted] = useState(false);
-  const { path, line } = f;
-  const canPost = !!onPost && !!path && !!line && onOpen.canOpen(path);
+  const { title, detail, severity, path, line } = finding;
+  const target = comments && path && line && comments.canComment(path) ? { path, line } : null;
   return (
-    <li className={`space-y-0.5 ${viewedClass(isViewed(viewed, f.path))}`}>
-      <div className="space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[f.severity]}`}
+    <li className={`space-y-0.5 ${viewedClass(isViewed(viewed, path))}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[severity]}`}
+        >
+          {severity}
+        </span>
+        <span className="font-medium text-zinc-200">{title}</span>
+        <Location path={path} line={line} onOpen={onOpen} />
+        {target && posted && <span className="text-[11px] text-emerald-400">Commented</span>}
+        {target && !posted && !composing && (
+          <button
+            type="button"
+            onClick={() => setComposing(true)}
+            className="text-[11px] text-zinc-500 hover:text-zinc-300"
           >
-            {f.severity}
-          </span>
-          <span className="font-medium text-zinc-200">{f.title}</span>
-          <Location path={f.path} line={f.line} onOpen={onOpen} />
-          {canPost &&
-            !composing &&
-            (posted ? (
-              <span className="text-[11px] text-emerald-400">Commented</span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setComposing(true)}
-                className="text-[11px] text-zinc-500 hover:text-zinc-300"
-              >
-                Comment
-              </button>
-            ))}
-        </div>
-        <p className="text-xs text-zinc-400">{f.detail}</p>
+            Comment
+          </button>
+        )}
       </div>
-      {canPost && composing && path && line && (
+      <p className="text-xs text-zinc-400">{detail}</p>
+      {target && composing && (
         <CommentComposer
-          label={`Comment on ${path}:${line}`}
-          initialBody={findingCommentDraft(f)}
+          label={`Comment on ${target.path}:${target.line}`}
+          initialBody={findingCommentDraft(finding)}
           submitLabel="Post comment"
           onSubmit={async (body) => {
-            await onPost({ ...f, path, line }, body);
+            await comments?.post(target, body);
             setComposing(false);
             setPosted(true);
           }}
@@ -179,13 +174,13 @@ function CheckRow({
   check,
   onOpen,
   viewed,
-  onPost,
+  comments,
 }: {
   label: string;
   check: VerificationCheck;
   onOpen: OpenLocation;
   viewed: Viewed;
-  onPost?: PostFinding;
+  comments?: FindingComments;
 }) {
   if (check.status === "pass" || check.findings.length === 0) {
     return (
@@ -216,7 +211,7 @@ function CheckRow({
             finding={f}
             onOpen={onOpen}
             viewed={viewed}
-            onPost={onPost}
+            comments={comments}
           />
         ))}
       </ul>
@@ -384,13 +379,13 @@ export default function VerificationReportView({
   report,
   onOpen,
   viewed = NONE_VIEWED,
-  onPostFinding,
+  comments,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
   /** Lets a finding be posted as a PR comment; without it, findings are read-only. */
-  onPostFinding?: PostFinding;
+  comments?: FindingComments;
 }) {
   const { risk } = report;
   const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
@@ -460,7 +455,7 @@ export default function VerificationReportView({
                 check={check}
                 onOpen={onOpen}
                 viewed={viewed}
-                onPost={onPostFinding}
+                comments={comments}
               />
             );
           })}
