@@ -430,9 +430,6 @@ describe("runAgentTurn", () => {
     expect(assistant?.content).toBe("answer");
   });
 
-  // Retrying a failed turn re-sends the same text. The failed turn already
-  // persisted it, so recording it twice would leave the thread asking twice —
-  // and every later replay of that thread with it.
   it("replays an earlier turn's tool calls so the next turn can reuse them", async () => {
     const session = await createSession(db, null);
     await collect(
@@ -459,6 +456,52 @@ describe("runAgentTurn", () => {
     expect(JSON.stringify(prompt[recordAt + 1])).toContain("You have no tasks.");
   });
 
+  // The case from #536: a lookup ran, the send was denied, and the follow-up
+  // asking for another format repeated the lookup.
+  it("tells the next turn which earlier calls ran and which the user denied", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("c1", "list_tasks", {}), finish("tool-calls")],
+        [
+          toolCall("c2", "create_calendar_event", {
+            title: "sync",
+            start: "2026-01-01T10:00:00Z",
+            end: "2026-01-01T10:30:00Z",
+            callReason: "The user asked for a sync",
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("Not created."), finish("stop")],
+      ),
+      session.id,
+      denyingApproval,
+    );
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("- list_tasks {} -> ok");
+    expect(prompt).toMatch(/- create_calendar_event \{[^\n]*\} -> denied/);
+  });
+
+  it("replays the calls of a turn that ran tools but wrote no reply", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel([toolCall("c1", "list_tasks", {}), finish("tool-calls")]),
+      session.id,
+      undefined,
+      undefined,
+      { maxSteps: 1 },
+    );
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("- list_tasks {} -> ok");
+  });
+
   it("leaves a reply that made no tool calls as it was", async () => {
     const session = await createSession(db, null);
     await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
@@ -469,6 +512,9 @@ describe("runAgentTurn", () => {
     expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain("earlier-tool-calls");
   });
 
+  // Retrying a failed turn re-sends the same text. The failed turn already
+  // persisted it, so recording it twice would leave the thread asking twice —
+  // and every later replay of that thread with it.
   it("treats a resend of the last user message as the same turn", async () => {
     const session = await createSession(db, null);
     await collect(streamingModel([finish("tool-calls")]), session.id);

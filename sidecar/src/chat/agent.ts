@@ -392,9 +392,9 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
       const scheduledTaskId = m.metadata?.scheduledTask?.id;
       if (scheduledTaskId) return [scheduledTaskModelMessage(scheduledTaskId, m.content)];
       const reply: ModelMessage = { role: m.role as "user" | "assistant", content: m.content };
-      const calls =
+      const toolRecord =
         m.role === "assistant" ? toolActivityModelMessage(m.id, m.toolCalls ?? []) : null;
-      return calls ? [calls, reply] : [reply];
+      return toolRecord ? [toolRecord, reply] : [reply];
     }),
   ];
   // Attach the summoning screen as an ephemeral user message (not persisted)

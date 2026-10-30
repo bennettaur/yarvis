@@ -19,14 +19,15 @@ describe("toolActivityModelMessage", () => {
         status: "ok",
         result: '{"id":"C123"}',
       },
-      { id: "c2", name: "post_message", server: "Slack", args: "{…", status: "denied" },
+      // Arguments over the storage cap are kept as a cut-off string.
+      { id: "c2", name: "post_message", server: "Slack", args: '{"text":"Hi…', status: "denied" },
     ]);
 
     expect(message?.role).toBe("user");
     const content = message?.content as string;
     expect(content).toContain(`<earlier-tool-calls-${nonce}>`);
     expect(content).toContain('- find_channel (Slack) {"name":"eng"} -> ok: {"id":"C123"}');
-    expect(content).toContain("- post_message (Slack) {… -> denied");
+    expect(content).toContain('- post_message (Slack) {"text":"Hi… -> denied');
   });
 
   it("keeps a result from closing the fence early", () => {
