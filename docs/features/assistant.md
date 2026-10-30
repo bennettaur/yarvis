@@ -396,8 +396,8 @@ you asked.
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
   syncing branches, sending an instruction to a session, launching a
-  session, handing a task to Claude Code, forgetting a memory, or delegating. A transcript can be misheard,
-  or picked up from the room.
+  session, handing a task to Claude Code, forgetting a memory, or delegating.
+  A transcript can be misheard, or picked up from the room.
 - **Scheduled tasks** can't ask, because nobody is watching them. They only
   get tools that read. See [Scheduled tasks](#scheduled-tasks).
 
@@ -525,15 +525,19 @@ starts in a new empty folder under your workspaces root
 finishes, the attention bell tells you, and the assistant can show you its
 summary and the files it made.
 
-Each run is locked down the same way as the review agents' runs:
+Each run is locked down more tightly than the review agents' runs:
 
-- It has no network access, so it can't install packages or fetch anything.
-  Put all the content it needs in your request.
-- It can read files on your machine, apart from credentials such as SSH keys
-  and `~/.yarvis`, but it can only write inside its own folder.
+- It can only read and write inside its own folder. It can't see your repos or
+  any other file, so put everything it needs in your request, or ask the
+  assistant to pass along a ticket or page it has read.
+- It has no shell and no network access, so it can't install packages or
+  fetch anything. It builds with plain files: HTML, CSS, JavaScript, Markdown.
 - It reads none of your Claude Code settings, hooks, plugins or MCP servers,
   and it can't publish or push anything.
-- It stops after 30 minutes or US$5 of usage, whichever comes first.
+- It stops after 30 minutes or US$5 of usage, whichever comes first, and at
+  most 3 tasks run at once.
+
+Task folders are kept until you delete them.
 
 It runs on the Claude Code build set in Settings, and its usage counts against
 that Claude Code account.
