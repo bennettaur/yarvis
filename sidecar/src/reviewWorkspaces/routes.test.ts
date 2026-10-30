@@ -340,6 +340,13 @@ describe("stacks", () => {
     expect(stackLookups).toBe(1);
   });
 
+  it("still adds the other layers when one can't be added", async () => {
+    // An owner that can't name a folder fails the add before anything is written.
+    stack = [{ provider: "github", owner: "..", repo: "r", number: 2 }, layer(3)];
+    const { wsId } = await startWorkspace(layer(1));
+    expect(await settled(wsId, 2)).toEqual(["gh:o/r/1", "gh:o/r/3"]);
+  });
+
   it("adds the PR alone when the stack can't be read", async () => {
     stack = new Error("rate limited");
     const { wsId } = await startWorkspace(layer(1));

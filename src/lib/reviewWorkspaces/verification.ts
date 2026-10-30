@@ -168,8 +168,9 @@ const unmention = (text: string) => text.replace(/@(?=[\w-])/g, "@\u200b");
  * A finding as a review comment's text: its title, then what the report said,
  * quoted. Marked as coming from the report so a reader on the PR doesn't take
  * it for the reviewer's own words. The text is model-written from the PR's
- * code, so it is quoted and stripped of mentions: posted under the reviewer's
- * account, a `/approve` line or an `@bot` in it would carry their authority.
+ * code, so it is quoted and stripped of mentions, and the title is kept to one
+ * line: posted under the reviewer's account, a `/approve` line or an `@bot` in
+ * it would carry their authority.
  */
 export function findingCommentBody(
   finding: { title: string; detail: string; severity?: Severity },
@@ -180,7 +181,8 @@ export function findingCommentBody(
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
-  return `**${unmention(finding.title)}** (verification report: ${tag})\n\n${quoted}`;
+  const title = unmention(finding.title).replace(/\s+/g, " ").trim();
+  return `**${title}** (verification report: ${tag})\n\n${quoted}`;
 }
 
 /** A verification run as the route returns it. */

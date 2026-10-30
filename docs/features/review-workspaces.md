@@ -212,7 +212,9 @@ workspace, **Add to *workspace*** adds it to that workspace's
 [review comments](workspaces.md#the-right-column) instead, where its agent can
 pick it up. There it carries a **report finding** badge, and the agent reads
 it as a problem to check rather than as your request. Nothing is sent until
-you click.
+you click. A report for an older head offers neither button, since its line
+numbers may point at different code now; re-run it first. Like any comment
+you post, a posted finding records where you reviewed.
 
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the

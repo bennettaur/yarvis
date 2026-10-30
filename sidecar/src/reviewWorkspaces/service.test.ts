@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { NO_PULL_REQUEST, type PrRef, type StackEntry } from "../pr/types.ts";
 import {
+  defaultReviewDeps,
   headSourceFor,
   httpsRemoteFor,
   otherOpenLayers,
@@ -112,5 +113,20 @@ describe("otherOpenLayers", () => {
       ],
     });
     expect(layers.map((r) => (r.provider === "github" ? r.number : 0))).toEqual([2, 5]);
+  });
+});
+
+describe("the default stack lookup", () => {
+  const deps = (secrets: Record<string, string>) =>
+    defaultReviewDeps(
+      {} as Parameters<typeof defaultReviewDeps>[0],
+      { secrets } as unknown as Parameters<typeof defaultReviewDeps>[1],
+    );
+
+  it("finds no layers for an Azure PR, or for a GitHub PR without a token, asking nobody", async () => {
+    expect(await deps({ githubToken: "t" }).stackOf?.(azure)).toEqual([]);
+    expect(
+      await deps({}).stackOf?.({ provider: "github", owner: "o", repo: "r", number: 1 }),
+    ).toEqual([]);
   });
 });

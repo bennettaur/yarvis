@@ -3,8 +3,9 @@ import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
-import type { PrRef } from "../../../lib/pr/types";
+import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
+import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
   findingCommentBody,
   REPORT_SECTIONS,
@@ -101,16 +102,21 @@ function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
  * linked workspace's review comments, marked as a report finding so the agent
  * there reads it fenced.
  */
-export function findingPoster(prRef: PrRef, linked: WorkspaceForPr | null): FindingPoster {
+export function findingPoster(
+  prRef: PrRef,
+  seen: SeenCommits,
+  linked: WorkspaceForPr | null,
+): FindingPoster {
   return {
     toPr: async (f, section) => {
-      await postPrComment(prRef, {
-        path: f.path,
-        line: f.line,
-        body: findingCommentBody(f, section),
-      });
-      // So the PR's diff tabs show the new thread.
+      await postPrComment(
+        prRef,
+        { path: f.path, line: f.line, body: findingCommentBody(f, section) },
+        seen,
+      );
+      // So the PR's diff tabs show the new thread, and the review mark the post recorded.
       invalidate(prDetailKey(prRef));
+      invalidateLastReview(prRef);
     },
     ...(linked && {
       toWorkspace: {
@@ -256,7 +262,15 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   }, [latest.data?.size, sections]);
   const viewed = useReviewViewed(ctx.prRef);
   const linked = useLinkedWorkspace(ctx.prRef);
-  const poster = useMemo(() => findingPoster(ctx.prRef, linked), [ctx.prRef, linked]);
+  const poster = useMemo(
+    () =>
+      findingPoster(
+        ctx.prRef,
+        { headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha },
+        linked,
+      ),
+    [ctx.prRef, ctx.pr.headSha, ctx.pr.mergeBaseSha, linked],
+  );
 
   const start = async (confirmed = false) => {
     if ((size?.large || size?.overBudget) && !confirmed) {
@@ -494,7 +508,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             report={report}
             onOpen={open}
             viewed={viewed.viewed}
-            poster={poster}
+            // An older head's line numbers may point at different code now.
+            poster={good?.current ? poster : undefined}
           />
         )}
       </div>

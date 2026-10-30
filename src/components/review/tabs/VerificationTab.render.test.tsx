@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { AgentRunEvent } from "../../../lib/agentRuns";
-import type { NewComment } from "../../../lib/pr/types";
+import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
@@ -148,6 +148,42 @@ describe("VerificationTab", () => {
     button(host, "Re-run")?.click();
     await waitFor(() => started.length > 0, "the re-run to start");
     expect(started).toEqual(["pr1"]);
+  });
+
+  // Its line numbers are for the head it read, which may be different code now.
+  it("offers posting a finding only from a report on the current head", async () => {
+    const located = {
+      ...(goodRun as { result: object }),
+      result: {
+        ...(goodRun as { result: { risk: object } }).result,
+        risk: {
+          level: "medium",
+          clientImpact: "None.",
+          mitigations: [],
+          concerns: [
+            { title: "Stale reads", detail: "Edits stay stale.", path: "src/cache.ts", line: 3 },
+          ],
+        },
+      },
+    } as never;
+    const current = await mount(
+      latest({
+        run: located,
+        current: true,
+        lastSucceeded: { run: located, headSha: pr.headSha, current: true },
+      }),
+    );
+    expect(button(current, "Post to PR")).toBeDefined();
+    unmount();
+
+    const older = await mount(
+      latest({
+        run: located,
+        lastSucceeded: { run: located, headSha: "g".repeat(40), current: false },
+      }),
+    );
+    expect(textOf(older.innerHTML)).toContain("Stale reads");
+    expect(button(older, "Post to PR")).toBeUndefined();
   });
 
   it("follows a run going here and cancels it", async () => {
@@ -320,6 +356,8 @@ describe("findingPoster", () => {
     status: "active" as const,
     workspaceRepoId: "wr1",
   };
+  // The head the tab shows, which the post records as where the user reviewed.
+  const seen = { headSha: pr.headSha, mergeBaseSha: pr.mergeBaseSha };
   const quoted =
     "**Ping @\u200boctocat** (verification report: Tests, high)\n\n> Eviction is untested.\n> /approve";
 
@@ -329,15 +367,15 @@ describe("findingPoster", () => {
   });
 
   it("posts the finding to the PR as a quoted line comment", async () => {
-    const posted: NewComment[] = [];
+    const posted: { comment: NewComment; seen?: SeenCommits }[] = [];
     stubPrComments({
-      postPrComment: async (_ref, comment) => {
-        posted.push(comment);
+      postPrComment: async (_ref, comment, seen) => {
+        posted.push({ comment, seen });
         return { ok: true };
       },
     });
-    await findingPoster(pr.ref, null).toPr(finding, "Tests");
-    expect(posted).toEqual([{ path: "src/cache.ts", line: 12, body: quoted }]);
+    await findingPoster(pr.ref, seen, null).toPr(finding, "Tests");
+    expect(posted).toEqual([{ comment: { path: "src/cache.ts", line: 12, body: quoted }, seen }]);
   });
 
   // A finding is model-written from the PR's code, so the workspace's agent
@@ -350,7 +388,7 @@ describe("findingPoster", () => {
         return {} as never;
       },
     });
-    const poster = findingPoster(pr.ref, linked);
+    const poster = findingPoster(pr.ref, seen, linked);
     expect(poster.toWorkspace?.name).toBe("Cache work");
     await poster.toWorkspace?.add(finding, "Tests");
     expect(added).toEqual([
@@ -369,6 +407,6 @@ describe("findingPoster", () => {
   });
 
   it("offers no workspace target for a PR no workspace raised", () => {
-    expect(findingPoster(pr.ref, null).toWorkspace).toBeUndefined();
+    expect(findingPoster(pr.ref, seen, null).toWorkspace).toBeUndefined();
   });
 });

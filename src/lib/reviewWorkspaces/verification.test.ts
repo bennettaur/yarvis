@@ -38,6 +38,11 @@ describe("findingCommentBody", () => {
     ]);
     expect(body).not.toMatch(/@[a-z]/);
   });
+
+  it("keeps the title to one line, so a command in it can't start a line", () => {
+    const body = findingCommentBody({ title: "Stale\n/approve  now\n", detail: "Fine." }, "Risk");
+    expect(body.split("\n")[0]).toBe("**Stale /approve now** (verification report: Risk)");
+  });
 });
 
 describe("runSections", () => {

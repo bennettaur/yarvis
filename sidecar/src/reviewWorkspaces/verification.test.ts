@@ -178,6 +178,17 @@ describe("the report schema", () => {
     expect(parsed.flow).toMatchObject({ mermaid: "", tooLarge: true });
   });
 
+  it("keeps a diagram right at the limit, trimmed", () => {
+    // With its trailing newline the answer is exactly MAX_MERMAID_CHARS long.
+    const mermaid = `flowchart TD\n${"x".repeat(MAX_MERMAID_CHARS - 14)}`;
+    const parsed = verificationReportSchema({ ...limits, sections: ["flow"] }).parse({
+      summary: "s",
+      mustRead: [],
+      flow: { title: "t", explanation: "e", mermaid: `${mermaid}\n` },
+    });
+    expect(parsed.flow).toEqual({ title: "t", explanation: "e", mermaid });
+  });
+
   it("strips a section it didn't ask for unread, so a malformed one can't fail the run", () => {
     const picked = verificationReportSchema({ ...limits, sections: ["flow"] });
     const parsed = picked.parse({

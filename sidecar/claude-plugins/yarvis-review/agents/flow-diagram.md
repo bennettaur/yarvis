@@ -17,7 +17,10 @@ Unlike the checks, you have no lane to cover, and the rules above about
 opening every patch in your lane don't apply to you: Yarvis doesn't count your
 reads. Read the patches of source code (not tests) only until you know which
 flow the change is about, keeping to READ_BUDGET_KB of patches in all, then
-follow the flow through the checkout with targeted Grep and Read calls.
+follow the flow through the checkout with targeted Grep and Read calls. Make
+at most 20 of those calls in the checkout, reading only the parts of a file
+the flow passes through. When you reach 20, draw the flow as far as you have
+traced it.
 
 ## How to find the flow
 
