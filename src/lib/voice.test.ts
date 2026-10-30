@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
-import * as api from "./api";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 /**
  * The transport is stubbed by spreading the real `./api` and replacing only
@@ -15,13 +15,12 @@ interface Recorded {
 const requests: Recorded[] = [];
 let nextResponse: () => Response = () => new Response("{}");
 
-mock.module("./api", () => ({
-  ...api,
+stubSidecarApi({
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     requests.push({ path, init });
     return nextResponse();
   },
-}));
+});
 
 const { listVoiceProviders, speak, transcribe } = await import("./voice");
 
@@ -130,3 +129,5 @@ describe("listVoiceProviders", () => {
     expect(await listVoiceProviders()).toEqual(catalog);
   });
 });
+
+afterAll(resetSidecarApi);

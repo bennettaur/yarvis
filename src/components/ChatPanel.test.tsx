@@ -1,12 +1,13 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
-import * as realApi from "../lib/api";
+import type * as realApi from "../lib/api";
 import * as realChat from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { mountForInteraction, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
 /**
@@ -43,8 +44,7 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
-mock.module("../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   getHealth: async () => {
     await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
     if (health instanceof Error) throw health;
@@ -70,7 +70,7 @@ mock.module("../lib/api", () => ({
     // gives out.
     return new Response("unexpected request", { status: 404 });
   },
-}));
+});
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, token: "t" }) }));
 
@@ -154,7 +154,7 @@ async function say(host: HTMLElement, text: string) {
 let unmount: (() => void) | null = null;
 
 afterAll(() => {
-  mock.module("../lib/api", () => realApi);
+  resetSidecarApi();
   mock.module("../lib/chat", () => realChat);
 });
 

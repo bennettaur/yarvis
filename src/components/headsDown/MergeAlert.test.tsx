@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { AttentionItem } from "../../lib/attention";
 import { mountForInteraction } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 const MERGE: AttentionItem = {
   id: "a1",
@@ -52,12 +53,7 @@ const OTHER: AttentionItem = {
 let pending: AttentionItem[] = [];
 const patches: { path: string; body: unknown }[] = [];
 
-// Only the transport is stubbed; see ScheduledJobsPanel.test.tsx for why the
-// rest of the module is kept.
-const actualApi = await import("../../lib/api");
-mock.module("../../lib/api", () => ({
-  ...actualApi,
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+stubSidecarApi({
   // Held open until the store stops, so it doesn't loop on reconnects.
   streamSSE: (_path: string, init?: RequestInit) =>
     (async function* () {
@@ -80,7 +76,7 @@ mock.module("../../lib/api", () => ({
     if (path.startsWith("/api/attention")) return json(pending);
     return new Response("{}", { status: 404 });
   },
-}));
+});
 
 const MergeAlert = (await import("./MergeAlert")).default;
 
@@ -182,3 +178,5 @@ describe("MergeAlert", () => {
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
   });
 });
+
+afterAll(resetSidecarApi);

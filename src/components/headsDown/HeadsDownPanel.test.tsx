@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../../lib/resourceCache";
 import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import type { LivePass } from "./useLivePass";
 
 const RUN = {
@@ -152,14 +153,9 @@ async function* frameStream(signal?: AbortSignal | null): AsyncGenerator<string>
   });
 }
 
-// Only the transport is stubbed; see ScheduledJobsPanel.test.tsx for why the
-// rest of the module is kept.
-const actualApi = await import("../../lib/api");
-mock.module("../../lib/api", () => ({
-  ...actualApi,
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Stubbed directly: another file's mock of this module may be the one the
-  // real streamSSE ends up calling, depending on test order.
+stubSidecarApi({
+  // Stubbed directly: the real streamSSE calls the real sidecarFetch, not the
+  // stub below.
   streamSSE: (path: string, init?: RequestInit) => {
     if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
       return frameStream(init?.signal);
@@ -217,7 +213,7 @@ mock.module("../../lib/api", () => ({
     // ends before.
     return json({ error: `unexpected path: ${path}` }, 404);
   },
-}));
+});
 
 const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
@@ -690,3 +686,5 @@ describe("linkLabel", () => {
     expect(label).toEndWith(": #billing-reviews · no reply yet");
   });
 });
+
+afterAll(resetSidecarApi);

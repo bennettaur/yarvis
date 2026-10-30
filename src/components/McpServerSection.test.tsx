@@ -1,8 +1,8 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import * as realApi from "../lib/api";
 import type { McpServer, ServerStatus } from "../lib/mcp";
 import { mountForInteraction, renderToHtml } from "../test/render";
+import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import McpServerSection from "./McpServerSection";
 
 /**
@@ -40,13 +40,10 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
-// `mock.module` replaces the module for the whole test process, not just this
-// file, so this stub has to be invisible to every other suite: real exports are
-// passed through, and a path this file doesn't care about goes to the real
-// `sidecarFetch` rather than to a catch-all. Answering everything with `{}` once
-// fed an empty object to unrelated components that expected a list.
-mock.module("../lib/api", () => ({
-  ...realApi,
+// A path this file doesn't care about goes to the real `sidecarFetch` rather
+// than to a catch-all. Answering everything with `{}` once fed an empty object
+// to unrelated components that expected a list.
+stubSidecarApi({
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path === "/api/mcp/servers") return json(servers);
     if (path.startsWith("/api/mcp/servers/") && path.endsWith("/status")) return json(status);
@@ -54,9 +51,9 @@ mock.module("../lib/api", () => ({
       authorizeCalls.push(path);
       return json({ authorizationUrl: "https://as.example.com/authorize?client_id=cl" });
     }
-    return realApi.sidecarFetch(path, init);
+    return realSidecarApi.sidecarFetch(path, init);
   },
-}));
+});
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => [] }));
 mock.module("@tauri-apps/plugin-opener", () => ({
@@ -69,7 +66,7 @@ let unmount: (() => void) | null = null;
 
 // Hand the real module back, so nothing after this file runs against the stub.
 afterAll(() => {
-  mock.module("../lib/api", () => realApi);
+  resetSidecarApi();
 });
 
 afterEach(() => {
