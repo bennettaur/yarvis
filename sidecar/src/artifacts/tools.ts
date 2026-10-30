@@ -1,13 +1,16 @@
 import { tool } from "ai";
 import { z } from "zod";
+import type { UntrustedReads } from "../chat/destructiveTools.ts";
 import type { Db } from "../db/client.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   ARTIFACT_LIST_LIMIT,
   ArtifactTooLargeError,
+  type ArtifactWriter,
   createArtifact,
   deleteArtifact,
   getArtifact,
+  isWrittenUnattended,
   listArtifacts,
   MAX_ARTIFACT_CHARS,
   updateArtifact,
@@ -24,7 +27,19 @@ const content = z.string().max(MAX_ARTIFACT_CHARS);
 
 const TOO_LARGE = `That would make the artifact longer than ${MAX_ARTIFACT_CHARS} characters. Summarize or trim it, or start a new artifact.`;
 
-export function buildArtifactTools(db: Db) {
+const NOT_YOURS =
+  "This artifact came from a chat with the user, so you can only append to it. Start a new artifact to rewrite or rename it.";
+
+/**
+ * `writer` is who is calling: what it creates is marked as its own, and a heads-
+ * down pass or specialist run can only append to an artifact a chat turn wrote,
+ * since a rewrite would wipe the user's document with no history to restore.
+ * `reads` records a read of an artifact one of those wrote.
+ */
+export function buildArtifactTools(
+  db: Db,
+  { writer = "chat", reads }: { writer?: ArtifactWriter; reads?: UntrustedReads } = {},
+) {
   return {
     create_artifact: tool({
       description:
@@ -35,7 +50,7 @@ export function buildArtifactTools(db: Db) {
       }),
       execute: async ({ title: t, content: c }) => {
         try {
-          const artifact = await createArtifact(db, { title: t, content: c });
+          const artifact = await createArtifact(db, { title: t, content: c, writer });
           return { id: artifact.id, title: artifact.title, length: artifact.content.length };
         } catch (err) {
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
@@ -71,6 +86,7 @@ export function buildArtifactTools(db: Db) {
       execute: async ({ id }) => {
         const artifact = await getArtifact(db, id);
         if (!artifact) return { error: "no artifact with that id" };
+        if (reads && isWrittenUnattended(artifact)) reads.hasReadUnattendedArtifact = true;
         // Fenced because an artifact can quote what a pass read (a ticket, a
         // Slack message), and that text must not read as an instruction later.
         const nonce = newNonce();
@@ -86,8 +102,11 @@ export function buildArtifactTools(db: Db) {
     }),
 
     update_artifact: tool({
-      description:
-        "Change one of your artifacts. Use append to add to the end (a new note, today's entry) without resending what is there; use content to rewrite it whole. Read it with get_artifact first if you are rewriting.",
+      description: `Change one of your artifacts. Use append to add to the end (a new note, today's entry) without resending what is there; use content to rewrite it whole. Read it with get_artifact first if you are rewriting.${
+        writer === "chat"
+          ? ""
+          : " You can only append to an artifact written in a chat with the user, not rewrite or rename it."
+      }`,
       inputSchema: z.object({
         id: uuid,
         title: title.optional(),
@@ -97,8 +116,13 @@ export function buildArtifactTools(db: Db) {
           .describe("Added to the end as-is; start it with a newline to begin a new line"),
       }),
       execute: async ({ id, ...patch }) => {
+        if (writer !== "chat" && (patch.content !== undefined || patch.title !== undefined)) {
+          const current = await getArtifact(db, id);
+          if (!current) return { error: "no artifact with that id" };
+          if (current.createdBy === "chat") return { error: NOT_YOURS };
+        }
         try {
-          const artifact = await updateArtifact(db, id, patch);
+          const artifact = await updateArtifact(db, id, { ...patch, writer });
           return artifact
             ? { id: artifact.id, length: artifact.content.length }
             : { error: "no artifact with that id" };

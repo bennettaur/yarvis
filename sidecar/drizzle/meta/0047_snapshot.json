@@ -1,5 +1,5 @@
 {
-  "id": "317bf710-a592-4646-9112-538a5c5b8082",
+  "id": "97a7bcde-972f-44fa-bcd0-07898bff2f61",
   "prevId": "de31d028-12b6-43ab-a902-263c25c09944",
   "version": "7",
   "dialect": "postgresql",
@@ -597,6 +597,21 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "artifact_writer",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'chat'"
+        },
+        "written_unattended": {
+          "name": "written_unattended",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -5672,6 +5687,15 @@
       "schema": "public",
       "values": [
         "markdown"
+      ]
+    },
+    "public.artifact_writer": {
+      "name": "artifact_writer",
+      "schema": "public",
+      "values": [
+        "chat",
+        "heads-down",
+        "specialist"
       ]
     },
     "public.attention_kind": {

@@ -27,10 +27,13 @@ export class ArtifactTooLargeError extends Error {
   }
 }
 
+export type ArtifactWriter = Artifact["createdBy"];
+
 export interface CreateArtifactInput {
   title: string;
   content?: string;
   format?: Artifact["format"];
+  writer?: ArtifactWriter;
 }
 
 export interface UpdateArtifactInput {
@@ -39,6 +42,15 @@ export interface UpdateArtifactInput {
   content?: string;
   /** Added to the end of the content, after `content` if both are given. */
   append?: string;
+  writer?: ArtifactWriter;
+}
+
+/**
+ * True once a heads-down pass or a specialist run has written to it, so the text
+ * may carry instructions from something it read rather than from the user.
+ */
+export function isWrittenUnattended(artifact: Pick<Artifact, "createdBy" | "writtenUnattended">) {
+  return artifact.createdBy !== "chat" || artifact.writtenUnattended;
 }
 
 /** What a listing shows: everything but the content, which can be large. */
@@ -47,9 +59,16 @@ export type ArtifactSummary = Omit<Artifact, "content"> & { length: number };
 export async function createArtifact(db: Db, input: CreateArtifactInput): Promise<Artifact> {
   const content = input.content ?? "";
   if (content.length > MAX_ARTIFACT_CHARS) throw new ArtifactTooLargeError();
+  const writer = input.writer ?? "chat";
   const [row] = await db
     .insert(artifacts)
-    .values({ title: input.title.trim(), content, format: input.format ?? "markdown" })
+    .values({
+      title: input.title.trim(),
+      content,
+      format: input.format ?? "markdown",
+      createdBy: writer,
+      writtenUnattended: writer !== "chat",
+    })
     .returning();
   await emitEvent(db, {
     type: "artifact.created",
@@ -75,6 +94,8 @@ export async function listArtifacts(
       id: artifacts.id,
       title: artifacts.title,
       format: artifacts.format,
+      createdBy: artifacts.createdBy,
+      writtenUnattended: artifacts.writtenUnattended,
       createdAt: artifacts.createdAt,
       updatedAt: artifacts.updatedAt,
       length: sql<number>`char_length(${artifacts.content})`.mapWith(Number),
@@ -110,6 +131,7 @@ export async function updateArtifact(
     .set({
       ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
       content: next,
+      ...(patch.writer && patch.writer !== "chat" ? { writtenUnattended: true } : {}),
       updatedAt: new Date(),
     })
     .where(and(eq(artifacts.id, id), sql`char_length(${next}) <= ${MAX_ARTIFACT_CHARS}`))

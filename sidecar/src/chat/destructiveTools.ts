@@ -100,10 +100,16 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */
 export interface UntrustedReads {
   hasReadWebPage: boolean;
+  /** An artifact a heads-down pass or specialist run wrote, which may quote what it read. */
+  hasReadUnattendedArtifact: boolean;
 }
 
 export function newUntrustedReads(): UntrustedReads {
-  return { hasReadWebPage: false };
+  return { hasReadWebPage: false, hasReadUnattendedArtifact: false };
+}
+
+export function hasReadUntrusted(reads: UntrustedReads): boolean {
+  return reads.hasReadWebPage || reads.hasReadUnattendedArtifact;
 }
 
 /**
@@ -113,7 +119,8 @@ export function newUntrustedReads(): UntrustedReads {
  * before the model did. So once a turn has read one, the destructive set asks
  * first exactly as it does on a spoken turn: the request reaching those tools
  * may now be the page's rather than the user's. (On a spoken turn they already
- * always ask.)
+ * always ask.) An artifact a heads-down pass wrote counts the same, since the
+ * pass may have copied a page or message into it.
  *
  * `read_web_page` itself asks for any URL the user didn't type in this
  * conversation, because the URL is also a way out: a page can ask for a fetch
@@ -127,7 +134,8 @@ export function conditionalConfirmations(options: {
   const { spoken, reads, isUserGivenUrl } = options;
   const conditions = new Map<string, (args: unknown) => boolean>();
   if (!spoken) {
-    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) conditions.set(name, () => reads.hasReadWebPage);
+    for (const name of DESTRUCTIVE_BUILTIN_TOOLS)
+      conditions.set(name, () => hasReadUntrusted(reads));
   }
   conditions.set("read_web_page", (args) => {
     const url = (args as { url?: unknown } | null)?.url;

@@ -73,6 +73,13 @@ describe("conditionalConfirmations", () => {
     expect(deleteTask?.({})).toBe(true);
   });
 
+  it("asks before destructive tools once a typed turn has read an agent-written artifact", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    reads.hasReadUnattendedArtifact = true;
+    expect(conditions.get("delete_task")?.({})).toBe(true);
+  });
+
   it("leaves destructive tools to the always-ask set on a spoken turn", () => {
     const conditions = conditionalConfirmations({
       spoken: true,
