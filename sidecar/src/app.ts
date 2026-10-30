@@ -161,7 +161,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/custom-providers", createCustomProviderRoutes(config));
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/complexity-models", createComplexityModelRoutes(config));
-  app.route("/api/decision-model", createDecisionModelRoutes());
+  app.route("/api/decision-model", createDecisionModelRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());

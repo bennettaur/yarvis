@@ -14,6 +14,8 @@ const CATALOG = {
     {
       name: "planner",
       description: "Suggests what to work on next.",
+      kind: "task",
+      choices: [],
       prompt: "You advise on what to do next.",
       tools: ["recall", "list_todos"],
       unattended: [],
@@ -28,6 +30,8 @@ const CATALOG = {
     {
       name: "project-manager",
       description: "Keeps a project's tickets straight.",
+      kind: "task",
+      choices: [],
       prompt: "You manage project tracking.",
       tools: ["get_project", "jira_create_issue"],
       unattended: ["jira_create_issue"],
@@ -42,6 +46,8 @@ const CATALOG = {
     {
       name: "session-summarizer",
       description: "Summarizes a coding session.",
+      kind: "task",
+      choices: [],
       prompt: "You summarize a session.",
       tools: [],
       unattended: [],
@@ -52,6 +58,22 @@ const CATALOG = {
       enabled: true,
       source: "builtin",
       path: "definitions/session-summarizer.md",
+    },
+    {
+      name: "complexity-router",
+      description: "Picks a complexity tier.",
+      kind: "decision",
+      choices: ["low", "medium", "max"],
+      prompt: "You decide how capable a model a task needs.",
+      tools: [],
+      unattended: [],
+      provider: null,
+      model: null,
+      complexityTier: null,
+      maxSteps: 8,
+      enabled: true,
+      source: "builtin",
+      path: "definitions/complexity-router.md",
     },
   ],
 };
@@ -110,6 +132,13 @@ describe("SpecialistSection", () => {
     expect(text).toContain("no way to ask you first");
     // One badge for the one grant, not one per specialist.
     expect(html.match(/acts unattended/g)).toHaveLength(1);
+  });
+
+  it("shows a decision specialist's options instead of tools and steps", async () => {
+    const text = textOf(await renderToHtml(createElement(SpecialistSection)));
+    expect(text).toContain("decision");
+    expect(text).toContain("low / medium / max");
+    expect(text).not.toContain("8 steps");
   });
 
   it("keeps each prompt behind a toggle, so the list stays readable", async () => {

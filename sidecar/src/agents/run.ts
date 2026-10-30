@@ -10,13 +10,18 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { resolveComplexityModel } from "../llm/complexity.ts";
+import {
+  type ComplexityTier,
+  isComplexityTier,
+  resolveComplexityModel,
+} from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import type { SpecialistDefinition } from "./catalog.ts";
 import { findSpecialist } from "./catalog.ts";
+import { consultDecisionSpecialist } from "./decide.ts";
 
 /**
  * Running a specialist: one bounded, tool-limited turn that returns text.
@@ -185,12 +190,17 @@ export function materialBlock(material: string, nonce: string): string {
 /**
  * Resolves a specialist's own choice of model, from whichever of `provider`/
  * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
- * sets both, so this never has to choose between them. Falls back to the
- * default chat model when the specialist named neither.
+ * sets both, so this never has to choose between them. When it named neither,
+ * the decision model may pick a tier for the task; otherwise, or when it can't,
+ * this falls back to the default chat model.
+ *
+ * @param fetchImpl Injected by tests in place of the network.
  */
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
+  task: string,
+  fetchImpl?: typeof fetch,
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -198,7 +208,23 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
+  const routed = await routedTier(config, task, fetchImpl);
+  if (routed) return resolveComplexityModel(config, routed);
   return defaultProviderModel(config);
+}
+
+async function routedTier(
+  config: Config,
+  task: string,
+  fetchImpl?: typeof fetch,
+): Promise<ComplexityTier | null> {
+  const answer = await consultDecisionSpecialist(config, "routeComplexity", "complexity-router", {
+    input: task,
+    fetchImpl,
+  });
+  // The router's `choices` can be overridden by a user file, so its answer is
+  // checked rather than trusted to be a tier.
+  return answer && isComplexityTier(answer.choice) ? answer.choice : null;
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
@@ -223,11 +249,14 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
  */
 export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
   const { config, db, specialist, task, material, signal } = input;
+  if (specialist.kind === "decision") {
+    throw new Error(`"${specialist.name}" is a decision specialist and can't run a task`);
+  }
 
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, specialist);
+      : await specialistModel(config, specialist, task);
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 

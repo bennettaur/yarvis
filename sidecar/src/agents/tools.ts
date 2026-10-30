@@ -4,6 +4,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { fence, untrustedWarning } from "../lib/fencing.ts";
 import { listSpecialists, searchSpecialists } from "./catalog.ts";
+import { consultDecisionSpecialist, MAX_OPTIONS } from "./decide.ts";
 import { runSpecialist } from "./run.ts";
 
 /**
@@ -27,6 +28,33 @@ const DELEGATE_TIMEOUT_MS = 120_000;
  */
 const MAX_DELEGATIONS_PER_TURN = 3;
 
+/** The picker's answer when no specialist fits; not a valid specialist name. */
+const NO_SPECIALIST = "_none";
+
+/**
+ * Asks `specialist-picker` which specialist fits the task, or answers null so
+ * the orchestrator picks for itself.
+ */
+export async function pickSpecialist(
+  config: Config,
+  task: string,
+  fetchImpl?: typeof fetch,
+): Promise<{ name: string; reason: string } | null> {
+  const specialists = await listSpecialists({ enabledOnly: true, kind: "task" });
+  // One option is kept for "none".
+  if (specialists.length === 0 || specialists.length > MAX_OPTIONS - 1) return null;
+  const answer = await consultDecisionSpecialist(config, "pickSpecialists", "specialist-picker", {
+    input: task,
+    options: [
+      ...specialists.map((s) => ({ value: s.name, description: s.description })),
+      { value: NO_SPECIALIST, description: "No specialist clearly fits this task." },
+    ],
+    fetchImpl,
+  });
+  if (!answer || answer.choice === NO_SPECIALIST) return null;
+  return { name: answer.choice, reason: answer.reason };
+}
+
 export function buildDelegationTools(db: Db, config: Config) {
   // Per-toolset, and a toolset is built once per turn, so this counts
   // delegations within the turn that owns it.
@@ -46,7 +74,7 @@ export function buildDelegationTools(db: Db, config: Config) {
       execute: async ({ about }) => {
         const matches = about?.trim()
           ? (await searchSpecialists(about)).map((m) => m.specialist)
-          : await listSpecialists({ enabledOnly: true });
+          : await listSpecialists({ enabledOnly: true, kind: "task" });
         return {
           specialists: matches.map((s) => ({
             name: s.name,
@@ -67,7 +95,10 @@ export function buildDelegationTools(db: Db, config: Config) {
           .string()
           .min(1)
           .max(64)
-          .describe("Name of the specialist (from list_specialists)"),
+          .optional()
+          .describe(
+            "Name of the specialist (from list_specialists). Leave it out to have one picked for the task; if none can be, you are asked to name one.",
+          ),
         task: z
           .string()
           .min(1)
@@ -85,18 +116,27 @@ export function buildDelegationTools(db: Db, config: Config) {
             error: `already delegated ${delegations} times this turn; work with what you have or ask the user`,
           };
         }
+        const picked = specialist ? null : await pickSpecialist(config, task);
+        const name = specialist ?? picked?.name;
+        if (!name) {
+          return {
+            error:
+              "No specialist was picked for this task. Call list_specialists and delegate again with a specialist name.",
+          };
+        }
         delegations += 1;
         try {
           const run = await runSpecialist({
             config,
             db,
-            name: specialist,
+            name,
             task,
             material,
             signal: AbortSignal.timeout(DELEGATE_TIMEOUT_MS),
           });
           return {
             specialist: run.specialist,
+            ...(picked ? { pickedBecause: picked.reason } : {}),
             toolCalls: run.toolCalls,
             // Fenced with the run's own nonce: the specialist composed this from
             // ticket bodies, PR titles and recalled memories, so it is exactly as

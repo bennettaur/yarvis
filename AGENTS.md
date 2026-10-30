@@ -655,6 +655,14 @@ back to ad-hoc.
   improves with the app while a user's definition stays theirs, with no
   seed-once rule and nothing to reset. Adding a specialist is writing a file,
   which is what "let the agent reach for one it needs" requires.
+  - A file with `kind: decision` is a decision specialist: no tools, no model
+    of its own, and one call to the decision model that picks one of a set of
+    options (`agents/decide.ts`). Callers go through
+    `consultDecisionSpecialist`, which answers null when the feature's toggle
+    is off or the call fails, and the caller then does what it did before. Same
+    rule as auto mode: a failed or unsure decision model means the old
+    behavior, never a guessed answer. `runSpecialistDefinition` refuses one, so
+    it can't be delegated to or scheduled.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to

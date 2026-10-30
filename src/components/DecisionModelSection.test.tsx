@@ -132,6 +132,29 @@ describe("DecisionModelSection", () => {
     expect(JSON.parse(saved?.body ?? "{}")).toEqual({ autoApproveHeadsDown: true });
   });
 
+  it("turns on specialist picking on its own", async () => {
+    config = { model: SAVED, autoApproveTools: false, pickSpecialists: false };
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const picking = [...mounted.host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Pick specialists for delegated work"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    picking.click();
+    await settle();
+
+    const saved = calls.find((c) => c.method === "PATCH");
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ pickSpecialists: true });
+  });
+
+  it("offers the playground only once a model is chosen", async () => {
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).not.toContain("Try a decision");
+  });
+
   it("clears the model on picking None", async () => {
     config = { model: SAVED, autoApproveTools: true };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
@@ -163,6 +186,6 @@ describe("DecisionModelSection", () => {
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
-    expect(mounted.host.textContent).toContain("auto mode is off until you pick another");
+    expect(mounted.host.textContent).toContain("the features below are off until you pick another");
   });
 });

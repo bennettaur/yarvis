@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
+import complexityRouter from "./definitions/complexity-router.md" with { type: "text" };
 import mergeReviewer from "./definitions/merge-reviewer.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
+import specialistPicker from "./definitions/specialist-picker.md" with { type: "text" };
 import workScout from "./definitions/work-scout.md" with { type: "text" };
 import workspaceRecap from "./definitions/workspace-recap.md" with { type: "text" };
 import yarvisGuide from "./definitions/yarvis-guide.md" with { type: "text" };
@@ -46,11 +48,21 @@ import {
 /** Where a definition came from, which is also its precedence. */
 export type SpecialistSource = "builtin" | "user";
 
+/**
+ * `task`: a delegated run with tools that answers in text.
+ * `decision`: one call to the decision model that picks one of a set of
+ * options (`agents/decide.ts`). It has no tools and no model of its own.
+ */
+export type SpecialistKind = "task" | "decision";
+
 export interface SpecialistDefinition {
   name: string;
   description: string;
+  kind: SpecialistKind;
   /** The file body: this specialist's system prompt. */
   prompt: string;
+  /** A decision specialist's fixed options, for one whose caller doesn't supply them. */
+  choices: string[];
   /** Bare built-in tool names, as written in the file. */
   tools: string[];
   /** Tools it may use without the user approving the call; a subset of `tools`. */
@@ -94,6 +106,8 @@ const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "definitions/planner.md", content: planner },
   { path: "definitions/yarvis-guide.md", content: yarvisGuide },
   { path: "definitions/merge-reviewer.md", content: mergeReviewer },
+  { path: "definitions/complexity-router.md", content: complexityRouter },
+  { path: "definitions/specialist-picker.md", content: specialistPicker },
 ];
 
 /** `~/.yarvis/agents`, overridable so tests and a second instance can point elsewhere. */
@@ -111,6 +125,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KNOWN_KEYS = [
   "name",
   "description",
+  "kind",
+  "choices",
   "tools",
   "unattended",
   "model",
@@ -118,6 +134,19 @@ const KNOWN_KEYS = [
   "maxSteps",
   "enabled",
 ] as const;
+
+/**
+ * Keys that configure a delegated run. A decision specialist rejects them
+ * rather than ignoring them, so a file that sets one isn't read as having tools
+ * or a model it will never get.
+ */
+const TASK_ONLY_KEYS = ["tools", "unattended", "model", "complexity", "maxSteps"] as const;
+
+/**
+ * A decision option is also a System One question name, so it keeps to the
+ * characters that API accepts.
+ */
+export const CHOICE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /**
  * Turns one file into a definition. Tool names and keys are checked here rather
@@ -144,6 +173,33 @@ export function parseSpecialist(
   const description = asRequiredString(path, data, "description");
   if (!body.trim()) {
     throw new FrontmatterError(path, "the body is the system prompt and cannot be empty", 1);
+  }
+
+  const kind = asString(path, data, "kind") ?? "task";
+  if (kind !== "task" && kind !== "decision") {
+    throw new FrontmatterError(path, "'kind' must be task or decision", 1);
+  }
+  if (kind === "decision") {
+    const taskKeys = TASK_ONLY_KEYS.filter((key) => data[key] !== undefined);
+    if (taskKeys.length) {
+      throw new FrontmatterError(
+        path,
+        `a decision specialist runs on the decision model with no tools, so it cannot set: ${taskKeys.join(", ")}`,
+        1,
+      );
+    }
+  }
+  const choices = asList(path, data, "choices") ?? [];
+  if (choices.length && kind !== "decision") {
+    throw new FrontmatterError(path, "'choices' is only for a decision specialist", 1);
+  }
+  const badChoices = choices.filter((choice) => !CHOICE_PATTERN.test(choice));
+  if (badChoices.length) {
+    throw new FrontmatterError(
+      path,
+      `choice(s) must be letters, digits, '_', '.' or '-': ${badChoices.join(", ")}`,
+      1,
+    );
   }
 
   const tools = asList(path, data, "tools") ?? [];
@@ -204,7 +260,9 @@ export function parseSpecialist(
   return {
     name,
     description,
+    kind,
     prompt: body,
+    choices,
     tools,
     unattended,
     provider,
@@ -293,10 +351,12 @@ export function reloadCatalog(): Promise<SpecialistCatalog> {
 }
 
 export async function listSpecialists(
-  options: { enabledOnly?: boolean } = {},
+  options: { enabledOnly?: boolean; kind?: SpecialistKind } = {},
 ): Promise<SpecialistDefinition[]> {
   const { specialists } = await catalog();
-  return options.enabledOnly ? specialists.filter((s) => s.enabled) : specialists;
+  return specialists.filter(
+    (s) => (!options.enabledOnly || s.enabled) && (!options.kind || s.kind === options.kind),
+  );
 }
 
 /** Resolves a name the way the user would write it, case-insensitively. */
@@ -325,7 +385,7 @@ export async function searchSpecialists(query: string, limit = 5): Promise<Speci
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((term) => term.length > 2);
-  const candidates = await listSpecialists({ enabledOnly: true });
+  const candidates = await listSpecialists({ enabledOnly: true, kind: "task" });
   if (terms.length === 0) return candidates.map((specialist) => ({ specialist, score: 0 }));
 
   return candidates

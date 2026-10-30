@@ -6,11 +6,12 @@ import {
   getDecisionModelConfig,
   saveDecisionModelConfig,
 } from "../lib/decisionModel";
+import DecisionPlayground from "./DecisionPlayground";
 
 /**
- * Which model answers yes/no judgements, and auto mode for tool approvals,
- * which is the first thing that asks it. Only models tagged `decision` in the
- * model catalogue are offered.
+ * Which model answers quick judgements, the features that ask it, and a
+ * playground for trying it. Only models tagged `decision` in the model
+ * catalogue are offered.
  */
 
 const FIELD =
@@ -20,6 +21,7 @@ export default function DecisionModelSection() {
   const [config, setConfig] = useState<DecisionModelConfig>(DEFAULT_DECISION_MODEL_CONFIG);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [playgroundOpen, setPlaygroundOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -71,7 +73,8 @@ export default function DecisionModelSection() {
         Decision model
       </h2>
       <p className="mb-3 text-sm text-zinc-500">
-        A model that answers yes/no judgements. Tag a model with{" "}
+        A model that makes quick judgements for the rest of the app. Whenever it fails or is unsure,
+        the app does what it would without it. Tag a model with{" "}
         <code className="text-zinc-400">decision</code> in the model catalogue to offer it here.
       </p>
 
@@ -118,8 +121,8 @@ export default function DecisionModelSection() {
         </div>
         {stale && (
           <p className="text-xs text-amber-400">
-            This model is no longer tagged decision or its provider has no key, so auto mode is off
-            until you pick another.
+            This model is no longer tagged decision or its provider has no key, so the features
+            below are off until you pick another.
           </p>
         )}
 
@@ -163,6 +166,53 @@ export default function DecisionModelSection() {
             </span>
           </span>
         </label>
+
+        <label className="flex items-start gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={config.routeComplexity}
+            disabled={!selection}
+            onChange={(e) => void save({ routeComplexity: e.target.checked })}
+          />
+          <span>
+            Pick a model tier for specialists
+            <span className="block text-xs text-zinc-600">
+              When a specialist names no model or complexity tier of its own, the decision model
+              reads the task it was given and picks the low, medium or max tier. Otherwise it runs
+              on the default chat model. The task text is sent to the decision model.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={config.pickSpecialists}
+            disabled={!selection}
+            onChange={(e) => void save({ pickSpecialists: e.target.checked })}
+          />
+          <span>
+            Pick specialists for delegated work
+            <span className="block text-xs text-zinc-600">
+              The assistant can hand off a task without naming a specialist, and the decision model
+              picks one from their descriptions. If none clearly fits, the assistant picks for
+              itself. The task text is sent to the decision model.
+            </span>
+          </span>
+        </label>
+
+        {selection && (
+          <button
+            type="button"
+            onClick={() => setPlaygroundOpen((open) => !open)}
+            className="text-xs text-zinc-500 underline hover:text-zinc-300"
+          >
+            {playgroundOpen ? "Hide the playground" : "Try a decision"}
+          </button>
+        )}
+        {selection && playgroundOpen && <DecisionPlayground />}
       </div>
 
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
