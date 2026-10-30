@@ -293,6 +293,8 @@ export interface PrDetail {
   conversationTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
+  /** The viewer's own latest submitted verdict; unset when they haven't reviewed. */
+  myReviewState?: ReviewerState;
 }
 
 /** A changed file with its unified-diff patch (`patch` is null until loaded). */

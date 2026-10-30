@@ -14,6 +14,7 @@ import type {
   PrDetail,
   PrRef,
   PrSummary,
+  ReviewerState,
   SeenCommits,
 } from "../../lib/pr/types";
 import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
@@ -317,6 +318,10 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   };
   const [open, setOpen] = useState<ReviewAction | null>(null);
   const [pending, setPending] = useState<ReviewAction | null>(null);
+  // The verdict just submitted from this page, keyed by PR so a stack layer
+  // switch doesn't carry it over. It covers the gap until the refetched detail
+  // reports the review.
+  const [submitted, setSubmitted] = useState<{ key: string; verdict: ReviewerState } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Merge controls run on their own pending flag so a merge in flight and a
   // review in flight don't clobber each other's spinner.
@@ -328,6 +333,12 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     setError(null);
     try {
       await applyReviewAction(prRef, action, body, seen);
+      if (action !== "publish") {
+        setSubmitted({
+          key: refKey(prRef),
+          verdict: action === "approve" ? "approved" : "changes_requested",
+        });
+      }
       invalidatePr(prRef);
       if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
@@ -370,6 +381,7 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     open,
     setOpen,
     pending,
+    submittedVerdict: submitted?.key === refKey(prRef) ? submitted.verdict : null,
     error,
     setError,
     mergeMenu,
@@ -408,12 +420,14 @@ export function PrActionButtons({
   const actions = actionsForStatus(status);
   const mergeControls = mergeControlsFor(detail, status);
   const { open, setOpen, pending, busy, mergeMenu, setMergeMenu, mergePending } = state;
+  const approved = (state.submittedVerdict ?? detail?.myReviewState) === "approved";
 
   return (
     <div className="flex shrink-0 items-center gap-2">
       {leading}
       <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
       {actions.map((cfg) => {
+        if (cfg.key === "approve" && approved) return <ApprovedBadge key={cfg.key} />;
         const isPending = pending === cfg.key;
         const isOpen = open === cfg.key;
         const onClick = cfg.confirmInline
@@ -514,6 +528,18 @@ export function PrActionButtons({
         title={`Copy the ${refProviderName(prRef)} link to this PR`}
       />
     </div>
+  );
+}
+
+/** Stands in for the Approve button once the viewer has approved, so it can't be pressed twice. */
+function ApprovedBadge() {
+  return (
+    <span
+      className="rounded-md border border-emerald-700 bg-emerald-900/40 px-3 py-1.5 text-xs font-medium text-emerald-200"
+      title="You approved this PR"
+    >
+      ✓ Approved
+    </span>
   );
 }
 

@@ -279,6 +279,17 @@ describe("github client", () => {
     expect(toPrDetail(base).conversation).toEqual([]);
   });
 
+  it("reads the viewer's latest submitted verdict, ignoring an unsubmitted draft", () => {
+    const base = { number: 5, title: "t", state: "OPEN", reviewThreads: { nodes: [] } };
+    expect(toPrDetail({ ...base, viewerLatestReview: { state: "APPROVED" } }).myReviewState).toBe(
+      "approved",
+    );
+    expect(
+      toPrDetail({ ...base, viewerLatestReview: { state: "PENDING" } }).myReviewState,
+    ).toBeUndefined();
+    expect(toPrDetail(base).myReviewState).toBeUndefined();
+  });
+
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
     const detail = toPrDetail({
       number: 5,

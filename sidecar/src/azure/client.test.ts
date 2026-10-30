@@ -506,6 +506,33 @@ describe("azure client", () => {
     expect(detail.fromFork).toBe(true);
   });
 
+  it("reports the viewer's own vote as their review state", async () => {
+    const az = new AzureDevOpsClient(
+      "pat-vote",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "me-id" } },
+        },
+        {
+          match: (u) => /\/pullRequests\/9$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 9,
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            reviewers: [
+              { id: "other-id", displayName: "Other", vote: -10 },
+              { id: "me-id", displayName: "Me", vote: 10 },
+            ],
+          },
+        },
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 9 });
+    expect(detail.myReviewState).toBe("approved");
+  });
+
   it("lists changed files without patches", async () => {
     const az = new AzureDevOpsClient(
       "pat",

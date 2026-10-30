@@ -419,7 +419,8 @@ across restarts.
 
 The bar above the tabs is for the PR whose tab is in front, in its colour. It
 has the same actions as the PRs tab's header: **Ready for review** on a draft,
-**Approve** and **Request changes**, **Merge** or auto-merge when the repo
+**Approve** and **Request changes** (once you have approved, **Approve** turns
+into a **✓ Approved** badge, here and in the PRs tab), **Merge** or auto-merge when the repo
 allows them, the link to a coding [workspace](workspaces.md) on the PR's
 branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
 

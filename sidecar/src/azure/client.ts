@@ -581,10 +581,13 @@ export class AzureDevOpsClient {
   async prDetail(ref: AzureRef): Promise<PrDetail> {
     const pr = await this.prRaw(ref);
     const projectId = pr.repository?.project?.id ?? "";
-    const [checks, reviewThreads] = await Promise.all([
+    const [checks, reviewThreads, viewerId] = await Promise.all([
       this.checks(ref.project, projectId, ref.prId),
       this.threads(ref, this.prWebUrl(pr)),
+      // The viewer's own vote is a nicety; failing to look them up shouldn't hide the PR.
+      this.resolveViewerId().catch(() => null),
     ]);
+    const myVote = (pr.reviewers ?? []).find((r) => r.id === viewerId)?.vote ?? 0;
     return {
       number: pr.pullRequestId,
       title: pr.title ?? "",
@@ -613,6 +616,8 @@ export class AzureDevOpsClient {
       checks,
       reviewThreads,
       reviewers: (pr.reviewers ?? []).map(mapReviewer).filter((r) => r.login),
+      // A zero vote is "no vote", which isn't a verdict.
+      ...(myVote !== 0 ? { myReviewState: mapReviewerVote(myVote) } : {}),
     };
   }
 

@@ -352,6 +352,10 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
+    // A PENDING review is the viewer's unsubmitted draft, not a verdict.
+    ...(pr.viewerLatestReview?.state && pr.viewerLatestReview.state !== "PENDING"
+      ? { myReviewState: mapReviewState(pr.viewerLatestReview.state) }
+      : {}),
     reviewThreads: threadNodes.map(toReviewThread),
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
@@ -803,6 +807,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       latestReviews(first:50){
         nodes{ author{login} state }
       }
+      viewerLatestReview{ state }
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }
         nodes{ ${REVIEW_THREAD_FIELDS} }

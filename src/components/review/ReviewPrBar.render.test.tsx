@@ -72,6 +72,13 @@ describe("ReviewPrBar", () => {
     expect(button(draft, "Approve")).toBeUndefined();
   });
 
+  it("shows the viewer's approval in place of the Approve button", async () => {
+    const host = await mount(false, { myReviewState: "approved" });
+    expect(button(host, "Approve")).toBeUndefined();
+    expect(host.textContent).toContain("Approved");
+    expect(button(host, "Request changes")).toBeDefined();
+  });
+
   it("opens the guided review and verification tabs", async () => {
     const host = await mount();
     button(host, "Guided review")?.click();

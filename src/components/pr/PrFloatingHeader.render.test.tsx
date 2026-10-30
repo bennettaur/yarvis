@@ -145,6 +145,21 @@ describe("PrFloatingHeader merge controls", () => {
   });
 });
 
+describe("PrFloatingHeader review actions", () => {
+  it("offers Approve until the viewer has approved", async () => {
+    const html = await render(detail({ myReviewState: "changes_requested" }));
+    expect(html).toContain(">Approve<");
+    expect(html).not.toContain("Approved");
+  });
+
+  it("shows the viewer's approval instead of a second Approve button", async () => {
+    const html = await render(detail({ myReviewState: "approved" }));
+    expect(html).toContain("Approved");
+    expect(html).not.toContain(">Approve<");
+    expect(html).toContain("Request changes");
+  });
+});
+
 describe("PrFloatingHeader conflicts", () => {
   it("leads with the conflict and the button to resolve it", async () => {
     const html = await render(detail({ mergeable: "CONFLICTING", hasConflicts: true }));
