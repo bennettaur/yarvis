@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import PrModelSection from "./PrModelSection";
 
 const PROVIDERS = [
@@ -21,15 +22,7 @@ const calls: { url: string; method: string; body?: string }[] = [];
 /** When set, the next PATCH answers with this status instead of succeeding. */
 let nextPatchStatus: number | null = null;
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that redefines `ensureOk` silently
- * replaces what `api.test.ts` is asserting about (see `SpecialistSection.test.tsx`).
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });
@@ -67,7 +60,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -205,3 +198,5 @@ describe("PrModelSection", () => {
     );
   });
 });
+
+afterAll(resetSidecarApi);
