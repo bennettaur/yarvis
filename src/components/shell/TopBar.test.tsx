@@ -1,7 +1,7 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
-import * as realApi from "../../lib/api";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import type { AttentionItem } from "../../lib/attention";
 import { mountForInteraction, renderToHtml } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 let pending: AttentionItem[] = [];
 // Sends a frame down the open attention stream, as the sidecar would.
@@ -10,8 +10,7 @@ let pushFrame: (data: string) => void = () => {};
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
 
-mock.module("../../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -41,10 +40,10 @@ mock.module("../../lib/api", () => ({
       });
     }
   },
-}));
+});
 
 afterAll(() => {
-  mock.module("../../lib/api", () => realApi);
+  resetSidecarApi();
 });
 
 const TopBar = (await import("./TopBar")).default;
