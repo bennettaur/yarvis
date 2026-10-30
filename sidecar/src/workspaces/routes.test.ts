@@ -1743,6 +1743,25 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos[0]?.status).toBe("removed");
   });
 
+  it("ends every registered agent session in the workspace it archives", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-sessions", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid)
+              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
+                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
+
+    await archiveWorkspace(db, ws.id, {}, fakeGit);
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", "archived"],
+      ["tab", "stopped"],
+    ]);
+  });
+
   it("auto-includes a linked PR on archive even when it hasn't merged", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

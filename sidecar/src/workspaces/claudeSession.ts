@@ -19,14 +19,22 @@
  * inside the session itself.
  */
 
+import { inArray } from "drizzle-orm";
 import {
   killClaudeSession,
   sendClaudeInstruction,
   spawnClaudeSession,
 } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
+import { workspaces } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
-import { reapAndListAgentSessions } from "./agentSessions.ts";
+import {
+  endWorkspaceAgentSessions,
+  findResumableAgentSessions,
+  markAgentSessionResumed,
+  reapAndListAgentSessions,
+  STOPPED_END_REASON,
+} from "./agentSessions.ts";
 import { type WorkspaceForSettings, writeClaudeSettings } from "./claudeSettings.ts";
 
 export interface StartClaudeSessionInput {
@@ -45,6 +53,11 @@ export interface StartClaudeSessionInput {
    * user drives themselves.
    */
   instruction?: string;
+  /**
+   * A Claude Code session id to continue with `--resume`. Set when a
+   * workspace's agent is relaunched after the app restarted.
+   */
+  resumeSessionId?: string;
 }
 
 export interface ClaudeSessionResult {
@@ -82,9 +95,73 @@ export async function startClaudeSession(
   return { sessionKey: `ws-claude:${input.workspaceId}` };
 }
 
-/** Best-effort stop of a workspace's Claude session via the core. */
-export async function stopClaudeSession(workspaceId: string): Promise<void> {
+/**
+ * Best-effort stop of a workspace's Claude session via the core. Its
+ * registration is closed first, so a stopped session is never resumed on the
+ * next start even when the kill doesn't reach the core.
+ */
+export async function stopClaudeSession(db: Db, workspaceId: string): Promise<void> {
+  await endWorkspaceAgentSessions(db, workspaceId, STOPPED_END_REASON, `ws-claude:${workspaceId}`);
   await killClaudeSession(workspaceId);
+}
+
+/**
+ * Relaunches, with `--resume`, the agent-tab session each active workspace had
+ * running when the app last went away (see `findResumableAgentSessions`).
+ * Called once at startup. A workspace still owed a kick-off is skipped, since
+ * `resumeKickOffs` starts its session. The core discards a spawn for a tab that
+ * already has a session, so a workspace the user opened first keeps theirs.
+ */
+export async function resumeAgentSessions(
+  db: Db,
+  {
+    startSession = startClaudeSession,
+    isAlive,
+  }: { startSession?: ClaudeSessionStarter; isAlive?: (pid: number) => boolean } = {},
+): Promise<void> {
+  const resumable = await findResumableAgentSessions(db, isAlive);
+  if (resumable.length === 0) return;
+  const details = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      rootPath: workspaces.rootPath,
+      pendingBrief: workspaces.pendingBrief,
+    })
+    .from(workspaces)
+    .where(
+      inArray(
+        workspaces.id,
+        resumable.map((s) => s.workspaceId),
+      ),
+    );
+  const byId = new Map(details.map((d) => [d.id, d]));
+
+  console.log(`[workspaces] resuming ${resumable.length} agent session(s) cut off by a restart`);
+  for (const session of resumable) {
+    const detail = byId.get(session.workspaceId);
+    if (!detail || detail.pendingBrief) continue;
+    try {
+      // Not remotely controllable: the restart happened at the machine, and the
+      // session can turn Remote Control on from inside if it was using it.
+      await startSession({
+        workspaceId: detail.id,
+        cwd: detail.rootPath,
+        name: detail.name,
+        remoteControl: false,
+        resumeSessionId: session.claudeSessionId,
+      });
+    } catch (e) {
+      console.error(`[workspaces] could not resume the agent session for ${detail.id}:`, e);
+      continue;
+    }
+    await markAgentSessionResumed(db, session);
+    void emitEvent(db, {
+      type: "workspace.session_started",
+      source: "workspaces",
+      payload: { workspaceId: detail.id, name: detail.name, resumed: true, remoteControl: false },
+    });
+  }
 }
 
 export interface SendSessionInstructionInput {

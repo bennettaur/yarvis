@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { workspaceAgentSessions } from "../db/schema.ts";
+import { workspaceAgentSessions, workspaces } from "../db/schema.ts";
 
 /**
  * The registry of Claude Code sessions running in each workspace, fed by the
@@ -19,6 +19,12 @@ export const SESSION_TOKEN_HEADER = "X-Yarvis-Session-Token";
 
 /** End reason recorded for a session whose process exited without a SessionEnd. */
 export const PROCESS_GONE_END_REASON = "process-gone";
+
+/** End reason recorded when Yarvis stops a workspace's agent tab itself. */
+export const STOPPED_END_REASON = "stopped";
+
+/** End reason recorded for every session of a workspace being archived. */
+export const ARCHIVED_END_REASON = "archived";
 
 export interface AgentSessionStart {
   workspaceId: string;
@@ -99,6 +105,97 @@ export async function recordAgentSessionEnd(db: Db, end: AgentSessionEnd): Promi
       and(
         eq(workspaceAgentSessions.sessionKey, end.sessionKey),
         eq(workspaceAgentSessions.claudeSessionId, end.claudeSessionId),
+        isNull(workspaceAgentSessions.endedAt),
+      ),
+    );
+}
+
+/**
+ * Marks a workspace's open sessions ended, so nothing resumes them on the next
+ * start. Covers every PTY in the workspace, or only `sessionKey` when given.
+ */
+export async function endWorkspaceAgentSessions(
+  db: Db,
+  workspaceId: string,
+  reason: string,
+  sessionKey?: string,
+): Promise<void> {
+  await db
+    .update(workspaceAgentSessions)
+    .set({ endedAt: sql`now()`, endReason: reason })
+    .where(
+      and(
+        eq(workspaceAgentSessions.workspaceId, workspaceId),
+        isNull(workspaceAgentSessions.endedAt),
+        sessionKey ? eq(workspaceAgentSessions.sessionKey, sessionKey) : undefined,
+      ),
+    );
+}
+
+export interface ResumableAgentSession {
+  workspaceId: string;
+  claudeSessionId: string;
+  pid: number;
+}
+
+/**
+ * The agent-tab sessions to resume after a restart: for each active
+ * workspace, the most recently started session in its `ws-claude:` tab that
+ * never recorded an end and whose process is gone. A session that ended
+ * through SessionEnd, was stopped, or belongs to an archived workspace has an
+ * end on file, so only one cut off by the app going away qualifies. A live pid
+ * means the sidecar alone restarted and the session is still running.
+ */
+export async function findResumableAgentSessions(
+  db: Db,
+  isAlive: (pid: number) => boolean = pidIsAlive,
+): Promise<ResumableAgentSession[]> {
+  const rows = await db
+    .select({
+      workspaceId: workspaceAgentSessions.workspaceId,
+      sessionKey: workspaceAgentSessions.sessionKey,
+      claudeSessionId: workspaceAgentSessions.claudeSessionId,
+      pid: workspaceAgentSessions.pid,
+    })
+    .from(workspaceAgentSessions)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceAgentSessions.workspaceId))
+    .where(and(eq(workspaces.status, "active"), isNull(workspaceAgentSessions.endedAt)))
+    .orderBy(desc(workspaceAgentSessions.startedAt));
+
+  const latest = new Map<string, ResumableAgentSession>();
+  for (const r of rows) {
+    if (r.sessionKey !== `ws-claude:${r.workspaceId}` || latest.has(r.workspaceId)) continue;
+    latest.set(r.workspaceId, {
+      workspaceId: r.workspaceId,
+      claudeSessionId: r.claudeSessionId,
+      pid: r.pid,
+    });
+  }
+  return [...latest.values()].filter((s) => !isAlive(s.pid));
+}
+
+/** End reason for a session Yarvis has relaunched with `--resume`. */
+export const RESUMED_END_REASON = "resumed";
+
+/**
+ * Closes a session once Yarvis has relaunched it, so a resume that fails to
+ * start isn't retried on every restart. A resumed Claude registers again under
+ * the same session id, which reopens the row with its new pid; the pid match
+ * keeps this from closing it if that registration lands first.
+ */
+export async function markAgentSessionResumed(
+  db: Db,
+  session: ResumableAgentSession,
+): Promise<void> {
+  await db
+    .update(workspaceAgentSessions)
+    .set({ endedAt: sql`now()`, endReason: RESUMED_END_REASON })
+    .where(
+      and(
+        eq(workspaceAgentSessions.workspaceId, session.workspaceId),
+        eq(workspaceAgentSessions.sessionKey, `ws-claude:${session.workspaceId}`),
+        eq(workspaceAgentSessions.claudeSessionId, session.claudeSessionId),
+        eq(workspaceAgentSessions.pid, session.pid),
         isNull(workspaceAgentSessions.endedAt),
       ),
     );

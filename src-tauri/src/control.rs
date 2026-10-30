@@ -83,6 +83,10 @@ mod unix_impl {
         /// sidecar drives end to end; absent means a session the user drives.
         #[serde(default)]
         instruction: Option<String>,
+        /// A Claude Code session id to continue with `--resume`, set when the
+        /// sidecar restarts a workspace's agent after an app restart.
+        #[serde(default)]
+        resume: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -263,6 +267,7 @@ mod unix_impl {
                     p.cwd,
                     &p.name,
                     p.remote_control,
+                    p.resume.as_deref(),
                     p.instruction.as_deref(),
                 )
             }

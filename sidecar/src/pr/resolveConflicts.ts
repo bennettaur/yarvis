@@ -260,7 +260,7 @@ async function deliverToWorkspace(
     confirm = false,
     send,
     startSession = startClaudeSession,
-    stopSession = stopClaudeSession,
+    stopSession = (wsId) => stopClaudeSession(db, wsId),
     busyReason = workspaceAgentBusyReason,
   }: ResolveConflictsOptions,
 ): Promise<ResolveConflictsResult> {

@@ -33,6 +33,7 @@ import {
 } from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
+import { resumeAgentSessions } from "./workspaces/claudeSession.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { registerSymlinkAlerts, resumeKickOffs } from "./workspaces/service.ts";
 
@@ -210,6 +211,11 @@ if (config.databaseUrl) {
       // those back up, provisioning included.
       resumeKickOffs(getDb(config.databaseUrl as string).db).catch((e) =>
         console.error("[sidecar] could not resume interrupted kick-offs:", e),
+      );
+      // The agent tabs live in the core's PTYs, so restarting the app ends every
+      // session in them. Relaunch the ones it cut off where they left off.
+      resumeAgentSessions(getDb(config.databaseUrl as string).db).catch((e) =>
+        console.error("[sidecar] could not resume workspace agent sessions:", e),
       );
       // Backstop for review guides whose pull requests were closed on the
       // provider's own site, which the app never observes. Once at startup is

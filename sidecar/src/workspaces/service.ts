@@ -33,6 +33,7 @@ import {
 } from "../issues/service.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { ARCHIVED_END_REASON, endWorkspaceAgentSessions } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import { syncClaudeAssets } from "./claudeAssets.ts";
 import {
@@ -2134,10 +2135,13 @@ async function removeWorktreesAndFinish(
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
   try {
-    await stopClaudeSession(id);
+    await stopClaudeSession(db, id);
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
+  // Every session in the workspace, terminal panes included, so none is
+  // listed as running or resumed once the worktrees are gone.
+  await endWorkspaceAgentSessions(db, id, ARCHIVED_END_REASON);
 
   // Checked while the worktrees still exist: removing them clears what was
   // planted in them, but not what was planted in the shared clone.
