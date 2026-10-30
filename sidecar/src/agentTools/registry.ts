@@ -41,6 +41,7 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   events: "always",
   digest: "always",
   delegation: "always",
+  claudeTasks: "search",
   // Heads-down mode's working state. A chat reaches for it while planning; the
   // heads-down loop picks its own tools.
   workStreams: "search",

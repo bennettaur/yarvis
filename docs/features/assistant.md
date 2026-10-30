@@ -396,7 +396,7 @@ you asked.
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
   syncing branches, sending an instruction to a session, launching a
-  session, forgetting a memory, or delegating. A transcript can be misheard,
+  session, handing a task to Claude Code, forgetting a memory, or delegating. A transcript can be misheard,
   or picked up from the room.
 - **Scheduled tasks** can't ask, because nobody is watching them. They only
   get tools that read. See [Scheduled tasks](#scheduled-tasks).
@@ -470,6 +470,9 @@ Loaded on demand:
   and cancel one. In heads-down mode it can only set meeting alarms, and can't
   cancel any.
 - **Web.** Read a public web page you link to.
+- **Claude Code tasks.** Hand a self-contained task to Claude Code without
+  starting a workspace, and check on it. See
+  [Handing a task to Claude Code](#handing-a-task-to-claude-code).
 - **Help.** Search and read Yarvis's own user docs, and check which parts of
   the app are configured (yes or no only, never a secret's value).
 
@@ -511,6 +514,29 @@ can't read web pages unless you grant it to them.
 Requests go straight to the site's address after it is checked, which keeps a
 site from passing the check and then pointing its name at your local network.
 That also means they don't go through an HTTP proxy set in your environment.
+
+### Handing a task to Claude Code
+
+Ask for something that is easier to build than to write in chat, such as a
+small website, a formatted brief or a script, and the assistant can hand it to
+Claude Code in the background. No workspace or repo is involved: Claude Code
+starts in a new empty folder under your workspaces root
+(`<workspaces root>/.claude-tasks/<id>`) and leaves its files there. When it
+finishes, the attention bell tells you, and the assistant can show you its
+summary and the files it made.
+
+Each run is locked down the same way as the review agents' runs:
+
+- It has no network access, so it can't install packages or fetch anything.
+  Put all the content it needs in your request.
+- It can read files on your machine, apart from credentials such as SSH keys
+  and `~/.yarvis`, but it can only write inside its own folder.
+- It reads none of your Claude Code settings, hooks, plugins or MCP servers,
+  and it can't publish or push anything.
+- It stops after 30 minutes or US$5 of usage, whichever comes first.
+
+It runs on the Claude Code build set in Settings, and its usage counts against
+that Claude Code account.
 
 ## Specialists
 
