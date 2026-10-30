@@ -25,12 +25,18 @@ export interface DecisionModelConfig {
    * before. Separate from `autoApproveTools`: nobody is watching a pass.
    */
   autoApproveHeadsDown: boolean;
+  /**
+   * Let it pick the complexity tier for a specialist run whose definition
+   * names neither a model nor a tier (`complexityRouting.ts`).
+   */
+  routeComplexity: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
   autoApproveHeadsDown: false,
+  routeComplexity: false,
 };
 
 const SETTINGS_KEY = "decisionModel";

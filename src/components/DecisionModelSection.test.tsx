@@ -132,6 +132,22 @@ describe("DecisionModelSection", () => {
     expect(JSON.parse(saved?.body ?? "{}")).toEqual({ autoApproveHeadsDown: true });
   });
 
+  it("turns on complexity routing on its own", async () => {
+    config = { model: SAVED, autoApproveTools: false, routeComplexity: false };
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const routing = [...mounted.host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Route specialist work by complexity"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    routing.click();
+    await settle();
+
+    const saved = calls.find((c) => c.method === "PATCH");
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ routeComplexity: true });
+  });
+
   it("clears the model on picking None", async () => {
     config = { model: SAVED, autoApproveTools: true };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
@@ -163,6 +179,6 @@ describe("DecisionModelSection", () => {
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
-    expect(mounted.host.textContent).toContain("auto mode is off until you pick another");
+    expect(mounted.host.textContent).toContain("the features below are off until you pick another");
   });
 });

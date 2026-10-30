@@ -11,6 +11,7 @@ import {
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { resolveComplexityModel } from "../llm/complexity.ts";
+import { routeComplexityTier } from "../llm/complexityRouting.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
@@ -185,12 +186,14 @@ export function materialBlock(material: string, nonce: string): string {
 /**
  * Resolves a specialist's own choice of model, from whichever of `provider`/
  * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
- * sets both, so this never has to choose between them. Falls back to the
- * default chat model when the specialist named neither.
+ * sets both, so this never has to choose between them. When the specialist
+ * named neither, the decision model may pick a tier from the task; without one,
+ * it falls back to the default chat model.
  */
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
+  task?: { text: string; signal?: AbortSignal },
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -198,6 +201,10 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
+  const routed = task
+    ? await routeComplexityTier(config, task.text, { signal: task.signal })
+    : null;
+  if (routed) return resolveComplexityModel(config, routed);
   return defaultProviderModel(config);
 }
 
@@ -227,7 +234,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, specialist);
+      : await specialistModel(config, specialist, { text: task, signal });
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 

@@ -118,8 +118,8 @@ export default function DecisionModelSection() {
         </div>
         {stale && (
           <p className="text-xs text-amber-400">
-            This model is no longer tagged decision or its provider has no key, so auto mode is off
-            until you pick another.
+            This model is no longer tagged decision or its provider has no key, so the features
+            below are off until you pick another.
           </p>
         )}
 
@@ -160,6 +160,25 @@ export default function DecisionModelSection() {
               fits what you asked for and isn't risky or destructive. Built-in actions always ask.
               Calls approved this way are listed on the Heads down page and never count as your
               approval next time.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={config.routeComplexity}
+            disabled={!selection}
+            onChange={(e) => void save({ routeComplexity: e.target.checked })}
+          />
+          <span>
+            Route specialist work by complexity
+            <span className="block text-xs text-zinc-600">
+              When a specialist doesn't name its own model or complexity tier, the decision model
+              reads the task and picks the low, medium or max tier set under Settings → Assistant.
+              If it fails or no tier is set, the specialist uses your default chat model. Each
+              routing call sends the task to the decision model.
             </span>
           </span>
         </label>

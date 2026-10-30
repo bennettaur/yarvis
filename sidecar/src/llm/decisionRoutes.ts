@@ -12,6 +12,7 @@ const saveSchema = z.object({
   model: selectionSchema.optional(),
   autoApproveTools: z.boolean().optional(),
   autoApproveHeadsDown: z.boolean().optional(),
+  routeComplexity: z.boolean().optional(),
 });
 
 export function createDecisionModelRoutes(): Hono {

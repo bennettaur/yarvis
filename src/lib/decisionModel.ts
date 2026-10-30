@@ -12,12 +12,15 @@ export interface DecisionModelConfig {
   autoApproveTools: boolean;
   /** Let it approve a heads-down call to an MCP tool the user has approved in similar situations. */
   autoApproveHeadsDown: boolean;
+  /** Let it pick the complexity tier for a specialist that names no model or tier. */
+  routeComplexity: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
   autoApproveHeadsDown: false,
+  routeComplexity: false,
 };
 
 export async function getDecisionModelConfig(): Promise<DecisionModelConfig> {

@@ -578,7 +578,10 @@ The fields:
 - `model` picks a provider and model. `complexity: low | medium | max` picks
   whatever you set for that tier under **Settings → Assistant → Complexity
   tiers** instead. You can't set both. With neither, it uses the default chat
-  model.
+  model, unless **Route specialist work by complexity** is on under **Settings →
+  Tools & MCP → Decision model**. Then the decision model reads the task and
+  picks a tier. If that fails, or no tier is set, the default chat model runs
+  it.
 - `maxSteps` is optional: default 8, hard cap 30.
 - `enabled: false` turns a specialist off, including a shipped one.
 - `unattended:` lists write tools the specialist may use without approval.
