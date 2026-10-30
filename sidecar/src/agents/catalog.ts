@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
+import { CHOICE_PATTERN, MAX_INSTRUCTIONS_CHARS } from "./decisionLimits.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
 import complexityRouter from "./definitions/complexity-router.md" with { type: "text" };
 import mergeReviewer from "./definitions/merge-reviewer.md" with { type: "text" };
@@ -143,12 +144,6 @@ const KNOWN_KEYS = [
 const TASK_ONLY_KEYS = ["tools", "unattended", "model", "complexity", "maxSteps"] as const;
 
 /**
- * A decision option is also a System One question name, so it keeps to the
- * characters that API accepts.
- */
-export const CHOICE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
-
-/**
  * Turns one file into a definition. Tool names and keys are checked here rather
  * than at call time: a typo in a file should be a problem the user is shown, not
  * a specialist that quietly runs with nine of its ten tools.
@@ -180,6 +175,13 @@ export function parseSpecialist(
     throw new FrontmatterError(path, "'kind' must be task or decision", 1);
   }
   if (kind === "decision") {
+    if (body.length > MAX_INSTRUCTIONS_CHARS) {
+      throw new FrontmatterError(
+        path,
+        `a decision specialist's prompt cannot exceed ${MAX_INSTRUCTIONS_CHARS} characters, so it fits a small decision model's context`,
+        1,
+      );
+    }
     const taskKeys = TASK_ONLY_KEYS.filter((key) => data[key] !== undefined);
     if (taskKeys.length) {
       throw new FrontmatterError(

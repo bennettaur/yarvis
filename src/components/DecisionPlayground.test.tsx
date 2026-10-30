@@ -26,7 +26,12 @@ mock.module("../lib/api", () => ({
         ],
       });
     }
-    return Response.json({ choice: "max", reason: "it is long", elapsedMs: 42 });
+    return Response.json({
+      choice: "max",
+      reason: "it is long",
+      model: { provider: "custom:ollama", model: "jev" },
+      elapsedMs: 42,
+    });
   },
 }));
 
@@ -88,11 +93,39 @@ describe("DecisionPlayground", () => {
     (mounted.host.querySelector("button") as HTMLButtonElement).click();
     await settle();
 
-    const asked = calls.find((c) => c.url === "/api/decision-model/try");
+    const asked = calls.find((c) => c.url === "/api/decision-playground");
     expect(JSON.parse(asked?.body ?? "{}")).toEqual({
       specialist: "complexity-router",
       input: "Plan the quarter",
     });
     expect(mounted.host.textContent).toContain("it is long");
+  });
+
+  it("asks with instructions and options written here", async () => {
+    const mounted = await mountForInteraction(createElement(DecisionPlayground));
+    unmount = mounted.unmount;
+    await settle();
+
+    const field = (label: string) =>
+      mounted.host.querySelector(`textarea[aria-label=${label}]`) as HTMLTextAreaElement;
+    const ask = mounted.host.querySelector("button") as HTMLButtonElement;
+    type(field("Instructions"), "Judge the tone.");
+    type(field("Input"), "Where is it?");
+    type(field("Options"), "calm");
+    await settle();
+    // One option is not a choice.
+    expect(ask.disabled).toBe(true);
+
+    type(field("Options"), "calm\nurgent: someone is waiting");
+    await settle();
+    ask.click();
+    await settle();
+
+    const asked = calls.find((c) => c.url === "/api/decision-playground");
+    expect(JSON.parse(asked?.body ?? "{}")).toEqual({
+      instructions: "Judge the tone.",
+      input: "Where is it?",
+      options: [{ value: "calm" }, { value: "urgent", description: "someone is waiting" }],
+    });
   });
 });

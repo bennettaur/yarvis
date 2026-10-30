@@ -194,13 +194,15 @@ export function materialBlock(material: string, nonce: string): string {
  * the decision model may pick a tier for the task; otherwise, or when it can't,
  * this falls back to the default chat model.
  *
- * @param fetchImpl Injected by tests in place of the network.
+ * A specialist with `unattended` grants is never routed. It reads text others
+ * wrote while holding tools nobody approves per call, so the task text must
+ * not be able to talk it down onto a smaller, easier-to-steer model.
  */
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
   task: string,
-  fetchImpl?: typeof fetch,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -208,19 +210,21 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
-  const routed = await routedTier(config, task, fetchImpl);
-  if (routed) return resolveComplexityModel(config, routed);
+  if (specialist.unattended.length === 0) {
+    const routed = await routedTier(config, task, options);
+    if (routed) return resolveComplexityModel(config, routed);
+  }
   return defaultProviderModel(config);
 }
 
 async function routedTier(
   config: Config,
   task: string,
-  fetchImpl?: typeof fetch,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch },
 ): Promise<ComplexityTier | null> {
   const answer = await consultDecisionSpecialist(config, "routeComplexity", "complexity-router", {
     input: task,
-    fetchImpl,
+    ...options,
   });
   // The router's `choices` can be overridden by a user file, so its answer is
   // checked rather than trusted to be a tier.
@@ -256,7 +260,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, specialist, task);
+      : await specialistModel(config, specialist, task, { signal });
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 

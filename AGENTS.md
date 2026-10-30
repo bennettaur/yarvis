@@ -662,7 +662,10 @@ back to ad-hoc.
     is off or the call fails, and the caller then does what it did before. Same
     rule as auto mode: a failed or unsure decision model means the old
     behavior, never a guessed answer. `runSpecialistDefinition` refuses one, so
-    it can't be delegated to or scheduled.
+    it can't be delegated to or scheduled. A task specialist with `unattended`
+    grants is kept out of both shipped uses: the picker never offers it and
+    complexity routing never changes its model, because the task text it is
+    judged on can be shaped by what other people wrote.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to

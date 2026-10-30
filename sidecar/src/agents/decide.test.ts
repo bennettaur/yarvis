@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -8,25 +8,44 @@ import { saveProviderModel } from "../llm/catalog.ts";
 import { saveComplexityModelConfig } from "../llm/complexity.ts";
 import { saveDecisionModelConfig } from "../llm/decision.ts";
 import { defaultProviderModel } from "../llm/providers.ts";
-import { findSpecialist } from "./catalog.ts";
+import { findSpecialist, reloadCatalog } from "./catalog.ts";
 import { askDecision, consultDecisionSpecialist } from "./decide.ts";
 import { runSpecialist, specialistModel } from "./run.ts";
-import { pickSpecialist } from "./tools.ts";
+import { buildDelegationTools, pickSpecialist } from "./tools.ts";
 
 let dir: string;
+let agentsDir: string;
 let originalPath: string | undefined;
+let originalAgentsDir: string | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "yarvis-decide-"));
+  agentsDir = join(dir, "agents");
+  await mkdir(agentsDir);
   originalPath = process.env.YARVIS_SETTINGS_PATH;
+  originalAgentsDir = process.env.YARVIS_AGENTS_DIR;
   process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
+  process.env.YARVIS_AGENTS_DIR = agentsDir;
+  await reloadCatalog();
 });
 
 afterEach(async () => {
   if (originalPath === undefined) delete process.env.YARVIS_SETTINGS_PATH;
   else process.env.YARVIS_SETTINGS_PATH = originalPath;
+  if (originalAgentsDir === undefined) delete process.env.YARVIS_AGENTS_DIR;
+  else process.env.YARVIS_AGENTS_DIR = originalAgentsDir;
   await rm(dir, { recursive: true, force: true });
+  await reloadCatalog();
 });
+
+/** Writes a user definition that replaces or sits beside the shipped ones. */
+async function writeAgent(name: string, frontmatter: string[], body = "Decide."): Promise<void> {
+  await writeFile(
+    join(agentsDir, `${name}.md`),
+    ["---", `name: ${name}`, "description: d", ...frontmatter, "---", body].join("\n"),
+  );
+  await reloadCatalog();
+}
 
 const config: Config = {
   port: 0,
@@ -166,6 +185,28 @@ describe("consultDecisionSpecialist", () => {
     expect(calls).toEqual([]);
   });
 
+  it("asks nothing with no decision model saved", async () => {
+    await saveDecisionModelConfig({ routeComplexity: true });
+    const { calls, fetchImpl } = answering({ reason: "r", choice: "low" });
+    expect(await ask(fetchImpl)).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("asks nothing when the user disabled the specialist or replaced it with a task one", async () => {
+    await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
+    const { calls, fetchImpl } = answering({ reason: "r", choice: "low" });
+
+    await writeAgent("complexity-router", [
+      "kind: decision",
+      "choices: [low, max]",
+      "enabled: false",
+    ]);
+    expect(await ask(fetchImpl)).toBeNull();
+    await writeAgent("complexity-router", ["tools: [recall]"]);
+    expect(await ask(fetchImpl)).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
   it("asks with the specialist's prompt and choices", async () => {
     await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
     const { calls, fetchImpl } = answering({ reason: "short", choice: "low" });
@@ -188,36 +229,60 @@ describe("complexity routing", () => {
   // `planner` names neither a model nor a tier.
   const planner = async () => (await findSpecialist("planner"))!;
 
-  it("runs a specialist with no model on the tier the decision model picks", async () => {
-    await saveComplexityModelConfig({ max: { provider: "anthropic", model: "big" } });
-    await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
-    const { fetchImpl } = answering({ reason: "hard", choice: "max" });
-    expect(await specialistModel(config, await planner(), "Plan the quarter", fetchImpl)).toEqual({
-      provider: "anthropic",
-      model: "big",
-    });
-  });
-
-  it("falls back to the default model when the decision model fails", async () => {
-    await saveComplexityModelConfig({ max: { provider: "anthropic", model: "big" } });
-    await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
-    expect(
-      await specialistModel(config, await planner(), "Plan", answering(null).fetchImpl),
-    ).toEqual(await defaultProviderModel(config));
-  });
-
-  it("never overrides a tier the specialist set itself", async () => {
+  async function routingOn() {
     await saveComplexityModelConfig({
       low: { provider: "anthropic", model: "small" },
       max: { provider: "anthropic", model: "big" },
     });
     await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
+  }
+
+  it("runs a specialist with no model on the tier the decision model picks", async () => {
+    await routingOn();
+    const { fetchImpl } = answering({ reason: "hard", choice: "max" });
+    expect(
+      await specialistModel(config, await planner(), "Plan the quarter", { fetchImpl }),
+    ).toEqual({ provider: "anthropic", model: "big" });
+  });
+
+  it("falls back to the default model when the decision model fails", async () => {
+    await routingOn();
+    expect(
+      await specialistModel(config, await planner(), "Plan", {
+        fetchImpl: answering(null).fetchImpl,
+      }),
+    ).toEqual(await defaultProviderModel(config));
+  });
+
+  // A user file can replace the router with one whose choices aren't tiers.
+  it("falls back to the default model when the answer isn't a tier", async () => {
+    await routingOn();
+    await writeAgent("complexity-router", ["kind: decision", "choices: [fast, slow]"]);
+    const { fetchImpl } = answering({ reason: "r", choice: "fast" });
+    expect(await specialistModel(config, await planner(), "Plan", { fetchImpl })).toEqual(
+      await defaultProviderModel(config),
+    );
+  });
+
+  it("never overrides a tier the specialist set itself", async () => {
+    await routingOn();
     const { calls, fetchImpl } = answering({ reason: "r", choice: "max" });
     const summarizer = (await findSpecialist("session-summarizer"))!;
-    expect(await specialistModel(config, summarizer, "Summarize", fetchImpl)).toEqual({
+    expect(await specialistModel(config, summarizer, "Summarize", { fetchImpl })).toEqual({
       provider: "anthropic",
       model: "small",
     });
+    expect(calls).toEqual([]);
+  });
+
+  // The task text must not be able to move it onto a weaker model.
+  it("never routes a specialist that acts unattended", async () => {
+    await routingOn();
+    const { calls, fetchImpl } = answering({ reason: "trivial", choice: "low" });
+    const projectManager = (await findSpecialist("project-manager"))!;
+    expect(
+      await specialistModel(config, projectManager, "a trivial lookup", { fetchImpl }),
+    ).toEqual(await defaultProviderModel(config));
     expect(calls).toEqual([]);
   });
 });
@@ -236,24 +301,76 @@ describe("running a decision specialist as a task", () => {
 });
 
 describe("specialist picking", () => {
+  function offered(calls: { format: unknown }[]): string[] {
+    return (calls[0]!.format as { properties: { choice: { enum: string[] } } }).properties.choice
+      .enum;
+  }
+
   it("offers the task specialists and a way to pick none", async () => {
     await saveDecisionModelConfig({ model: await decisionModel(), pickSpecialists: true });
     const { calls, fetchImpl } = answering({ reason: "it plans", choice: "planner" });
 
-    expect(await pickSpecialist(config, "Plan my day", fetchImpl)).toEqual({
-      name: "planner",
-      reason: "it plans",
-    });
-    const enumValues = (calls[0]!.format as { properties: { choice: { enum: string[] } } })
-      .properties.choice.enum;
-    expect(enumValues).toContain("planner");
-    expect(enumValues).toContain("_none");
-    expect(enumValues).not.toContain("complexity-router");
+    expect(await pickSpecialist(config, "Plan my day", { fetchImpl })).toBe("planner");
+    expect(offered(calls)).toContain("planner");
+    expect(offered(calls)).toContain("_none");
+    expect(offered(calls)).not.toContain("complexity-router");
+  });
+
+  // One acts where others can see it with nobody approving each call.
+  it("never offers a specialist that acts unattended", async () => {
+    await saveDecisionModelConfig({ model: await decisionModel(), pickSpecialists: true });
+    const { calls, fetchImpl } = answering({ reason: "r", choice: "planner" });
+    await pickSpecialist(config, "File tickets for these items", { fetchImpl });
+    expect(offered(calls)).not.toContain("project-manager");
+    expect(offered(calls)).not.toContain("merge-reviewer");
   });
 
   it("answers null when none fits, so the assistant picks", async () => {
     await saveDecisionModelConfig({ model: await decisionModel(), pickSpecialists: true });
     const { fetchImpl } = answering({ reason: "unclear", choice: "_none" });
-    expect(await pickSpecialist(config, "Do something", fetchImpl)).toBeNull();
+    expect(await pickSpecialist(config, "Do something", { fetchImpl })).toBeNull();
+  });
+
+  it("answers null while switched off, or when the decision model fails", async () => {
+    await saveDecisionModelConfig({ model: await decisionModel() });
+    const off = answering({ reason: "r", choice: "planner" });
+    expect(await pickSpecialist(config, "Plan", { fetchImpl: off.fetchImpl })).toBeNull();
+    expect(off.calls).toEqual([]);
+
+    await saveDecisionModelConfig({ pickSpecialists: true });
+    expect(
+      await pickSpecialist(config, "Plan", { fetchImpl: answering(null).fetchImpl }),
+    ).toBeNull();
+  });
+});
+
+describe("the delegate tool", () => {
+  const options = { toolCallId: "t", messages: [] } as never;
+
+  // Picking is off by default, so these never reach a model or the database.
+  it("asks for a name when none was given and none was picked", async () => {
+    const tools = buildDelegationTools(undefined as never, config);
+    expect(await tools.delegate.execute!({ task: "Plan my day" }, options)).toEqual({
+      error: expect.stringContaining("No specialist was picked"),
+    });
+  });
+
+  it("counts a call with no name toward the turn's limit", async () => {
+    const tools = buildDelegationTools(undefined as never, config);
+    for (let i = 0; i < 3; i++) await tools.delegate.execute!({ task: "x" }, options);
+    expect(await tools.delegate.execute!({ task: "x" }, options)).toEqual({
+      error: expect.stringContaining("already delegated 3 times"),
+    });
+  });
+
+  it("lists no decision specialists", async () => {
+    const tools = buildDelegationTools(undefined as never, config);
+    const listed = (await tools.list_specialists.execute!({}, options)) as {
+      specialists: { name: string }[];
+    };
+    const names = listed.specialists.map((s) => s.name);
+    expect(names).toContain("planner");
+    expect(names).not.toContain("complexity-router");
+    expect(names).not.toContain("specialist-picker");
   });
 });

@@ -180,6 +180,8 @@ describe("parsing a decision specialist", () => {
     expect(() => parse(decision("tools: [recall]"))).toThrow("cannot set: tools");
     expect(() => parse(decision("complexity: low"))).toThrow("cannot set: complexity");
     expect(() => parse(decision("model: anthropic/x"))).toThrow("cannot set: model");
+    expect(() => parse(decision("maxSteps: 3"))).toThrow("cannot set: maxSteps");
+    expect(() => parse(decision("unattended: [recall]"))).toThrow("cannot set: unattended");
   });
 
   it("rejects choices on a task specialist, and an unknown kind", () => {
@@ -189,6 +191,11 @@ describe("parsing a decision specialist", () => {
     expect(() => parse("---\nname: a\ndescription: d\nkind: oracle\n---\np")).toThrow(
       "'kind' must be task or decision",
     );
+  });
+
+  it("rejects a prompt too long for a small decision model's context", () => {
+    const long = ["---", "name: a", "description: d", "kind: decision", "---", "x".repeat(4_001)];
+    expect(() => parse(long.join("\n"))).toThrow("cannot exceed 4000 characters");
   });
 
   it("rejects a choice that can't be a System One question name", () => {

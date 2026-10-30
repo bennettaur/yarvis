@@ -180,7 +180,8 @@ export default function DecisionModelSection() {
             <span className="block text-xs text-zinc-600">
               When a specialist names no model or complexity tier of its own, the decision model
               reads the task it was given and picks the low, medium or max tier. Otherwise it runs
-              on the default chat model. The task text is sent to the decision model.
+              on the default chat model, and so does a specialist that acts unattended. The task
+              text is sent to the decision model.
             </span>
           </span>
         </label>
@@ -198,21 +199,24 @@ export default function DecisionModelSection() {
             <span className="block text-xs text-zinc-600">
               The assistant can hand off a task without naming a specialist, and the decision model
               picks one from their descriptions. If none clearly fits, the assistant picks for
-              itself. The task text is sent to the decision model.
+              itself. A specialist that acts unattended is never picked; it runs only when named.
+              The task text is sent to the decision model.
             </span>
           </span>
         </label>
 
         {selection && (
-          <button
-            type="button"
-            onClick={() => setPlaygroundOpen((open) => !open)}
-            className="text-xs text-zinc-500 underline hover:text-zinc-300"
-          >
-            {playgroundOpen ? "Hide the playground" : "Try a decision"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => setPlaygroundOpen((open) => !open)}
+              className="text-xs text-zinc-500 underline hover:text-zinc-300"
+            >
+              {playgroundOpen ? "Hide the playground" : "Try a decision"}
+            </button>
+            {playgroundOpen && <DecisionPlayground />}
+          </>
         )}
-        {selection && playgroundOpen && <DecisionPlayground />}
       </div>
 
       {error && <p className="mt-2 text-sm text-red-400">{error}</p>}

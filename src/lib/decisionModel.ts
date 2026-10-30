@@ -59,20 +59,18 @@ export type DecisionTrial = { input: string; options?: DecisionOption[] } & (
 export interface DecisionTrialResult {
   choice: string;
   reason: string;
+  /** The decision model that answered. */
+  model: ModelSelection;
   elapsedMs: number;
 }
 
 /** Asks the saved decision model once. A failed call throws with the sidecar's reason. */
 export async function tryDecision(trial: DecisionTrial): Promise<DecisionTrialResult> {
-  const res = await sidecarFetch("/api/decision-model/try", {
+  const res = await sidecarFetch("/api/decision-playground", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(trial),
   });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
-    const error = body?.error;
-    throw new Error(typeof error === "string" ? error : `the decision failed (${res.status})`);
-  }
+  await ensureOk(res, "try a decision");
   return res.json();
 }

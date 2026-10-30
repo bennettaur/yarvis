@@ -3,8 +3,9 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { fence, untrustedWarning } from "../lib/fencing.ts";
-import { listSpecialists, searchSpecialists } from "./catalog.ts";
-import { consultDecisionSpecialist, MAX_OPTIONS } from "./decide.ts";
+import { listSpecialists, type SpecialistDefinition, searchSpecialists } from "./catalog.ts";
+import { consultDecisionSpecialist } from "./decide.ts";
+import { MAX_OPTIONS } from "./decisionLimits.ts";
 import { runSpecialist } from "./run.ts";
 
 /**
@@ -28,31 +29,46 @@ const DELEGATE_TIMEOUT_MS = 120_000;
  */
 const MAX_DELEGATIONS_PER_TURN = 3;
 
-/** The picker's answer when no specialist fits; not a valid specialist name. */
+/**
+ * The picker's answer when no specialist fits. `NAME_PATTERN` in `catalog.ts`
+ * forbids a leading `_`, so it can't collide with a specialist's name.
+ */
 const NO_SPECIALIST = "_none";
 
 /**
  * Asks `specialist-picker` which specialist fits the task, or answers null so
- * the orchestrator picks for itself.
+ * the orchestrator picks for itself. Never throws.
+ *
+ * Specialists with `unattended` grants are never offered: one acts where others
+ * can see it with nobody approving each call, so it runs only when named.
  */
 export async function pickSpecialist(
   config: Config,
   task: string,
-  fetchImpl?: typeof fetch,
-): Promise<{ name: string; reason: string } | null> {
-  const specialists = await listSpecialists({ enabledOnly: true, kind: "task" });
-  // One option is kept for "none".
-  if (specialists.length === 0 || specialists.length > MAX_OPTIONS - 1) return null;
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
+): Promise<string | null> {
+  let candidates: SpecialistDefinition[];
+  try {
+    candidates = (await listSpecialists({ enabledOnly: true, kind: "task" })).filter(
+      (s) => s.unattended.length === 0,
+    );
+  } catch (e) {
+    console.warn("[decision] specialist-picker: catalogue unavailable, falling back:", e);
+    return null;
+  }
+  // Each specialist is an option and one more is "none", so past MAX_OPTIONS - 1
+  // specialists picking is skipped and the orchestrator names one itself.
+  if (candidates.length === 0 || candidates.length > MAX_OPTIONS - 1) return null;
   const answer = await consultDecisionSpecialist(config, "pickSpecialists", "specialist-picker", {
     input: task,
     options: [
-      ...specialists.map((s) => ({ value: s.name, description: s.description })),
+      ...candidates.map((s) => ({ value: s.name, description: s.description })),
       { value: NO_SPECIALIST, description: "No specialist clearly fits this task." },
     ],
-    fetchImpl,
+    ...options,
   });
   if (!answer || answer.choice === NO_SPECIALIST) return null;
-  return { name: answer.choice, reason: answer.reason };
+  return answer.choice;
 }
 
 export function buildDelegationTools(db: Db, config: Config) {
@@ -97,7 +113,7 @@ export function buildDelegationTools(db: Db, config: Config) {
           .max(64)
           .optional()
           .describe(
-            "Name of the specialist (from list_specialists). Leave it out to have one picked for the task; if none can be, you are asked to name one.",
+            "Name of the specialist (from list_specialists). Leave it out to have one picked for the task; one that acts unattended is only run when named. If none is picked, you are asked to name one.",
           ),
         task: z
           .string()
@@ -110,21 +126,22 @@ export function buildDelegationTools(db: Db, config: Config) {
           .optional()
           .describe("Reference text it should work from, if any"),
       }),
-      execute: async ({ specialist, task, material }) => {
+      execute: async ({ specialist, task, material }, { abortSignal }) => {
         if (delegations >= MAX_DELEGATIONS_PER_TURN) {
           return {
             error: `already delegated ${delegations} times this turn; work with what you have or ask the user`,
           };
         }
-        const picked = specialist ? null : await pickSpecialist(config, task);
-        const name = specialist ?? picked?.name;
+        // Counted before picking, so a model that keeps leaving the name out
+        // can't make unlimited decision-model calls in one turn.
+        delegations += 1;
+        const name = specialist ?? (await pickSpecialist(config, task, { signal: abortSignal }));
         if (!name) {
           return {
             error:
               "No specialist was picked for this task. Call list_specialists and delegate again with a specialist name.",
           };
         }
-        delegations += 1;
         try {
           const run = await runSpecialist({
             config,
@@ -136,7 +153,6 @@ export function buildDelegationTools(db: Db, config: Config) {
           });
           return {
             specialist: run.specialist,
-            ...(picked ? { pickedBecause: picked.reason } : {}),
             toolCalls: run.toolCalls,
             // Fenced with the run's own nonce: the specialist composed this from
             // ticket bodies, PR titles and recalled memories, so it is exactly as

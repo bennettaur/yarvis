@@ -33,43 +33,48 @@ export function parseOptions(text: string): DecisionOption[] {
     });
 }
 
+function message(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export default function DecisionPlayground() {
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   /** A decision specialist's name, or "" for instructions written here. */
-  const [specialist, setSpecialist] = useState("");
+  const [specialistName, setSpecialistName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [input, setInput] = useState("");
   const [optionsText, setOptionsText] = useState("");
   const [result, setResult] = useState<DecisionTrialResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
     listSpecialists()
       .then((catalog) => setSpecialists(catalog.specialists.filter((s) => s.kind === "decision")))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setLoadError(message(e)));
   }, []);
 
-  const chosen = specialists.find((s) => s.name === specialist);
+  const specialist = specialists.find((s) => s.name === specialistName);
   const options = parseOptions(optionsText);
   // A specialist with its own choices uses them when no options are given.
-  const needsOptions = !chosen?.choices.length;
+  const hasOwnChoices = (specialist?.choices.length ?? 0) > 0;
   const ready =
     input.trim().length > 0 &&
-    (chosen ? true : instructions.trim().length > 0) &&
-    (!needsOptions || options.length >= 2);
+    (specialist !== undefined || instructions.trim().length > 0) &&
+    (hasOwnChoices || options.length >= 2);
 
   async function run() {
-    const trial: DecisionTrial = chosen
-      ? { specialist: chosen.name, input, ...(options.length ? { options } : {}) }
+    const trial: DecisionTrial = specialist
+      ? { specialist: specialist.name, input, ...(options.length ? { options } : {}) }
       : { instructions, input, options };
     setRunning(true);
     setResult(null);
-    setError(null);
+    setRunError(null);
     try {
       setResult(await tryDecision(trial));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setRunError(message(e));
     } finally {
       setRunning(false);
     }
@@ -80,8 +85,8 @@ export default function DecisionPlayground() {
       <select
         aria-label="Decision to try"
         className={FIELD}
-        value={specialist}
-        onChange={(e) => setSpecialist(e.target.value)}
+        value={specialistName}
+        onChange={(e) => setSpecialistName(e.target.value)}
       >
         <option value="">Instructions written here</option>
         {specialists.map((s) => (
@@ -90,8 +95,8 @@ export default function DecisionPlayground() {
           </option>
         ))}
       </select>
-      {chosen ? (
-        <p className="text-xs text-zinc-500">{chosen.description}</p>
+      {specialist ? (
+        <p className="text-xs text-zinc-500">{specialist.description}</p>
       ) : (
         <textarea
           aria-label="Instructions"
@@ -115,8 +120,8 @@ export default function DecisionPlayground() {
         className={`${FIELD} font-mono`}
         rows={3}
         placeholder={
-          chosen?.choices.length
-            ? `Leave empty to use ${chosen.choices.join(", ")}`
+          hasOwnChoices
+            ? `Leave empty to use ${specialist?.choices.join(", ")}`
             : "One per line: value, or value: what it means"
         }
         value={optionsText}
@@ -134,11 +139,12 @@ export default function DecisionPlayground() {
         <p className="text-sm text-zinc-300">
           <span className="font-mono text-zinc-100">{result.choice}</span>{" "}
           <span className="text-zinc-500">
-            {result.reason} ({result.elapsedMs} ms)
+            {result.reason} ({result.model.model}, {result.elapsedMs} ms)
           </span>
         </p>
       )}
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {loadError && <p className="text-sm text-red-400">{loadError}</p>}
+      {runError && <p className="text-sm text-red-400">{runError}</p>}
     </div>
   );
 }

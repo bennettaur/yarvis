@@ -4,9 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
-import { createCustomProvider } from "../customProviders/service.ts";
-import { saveProviderModel } from "./catalog.ts";
-import { saveDecisionModelConfig } from "./decision.ts";
 
 function app(): ReturnType<typeof createApp> {
   return createApp({
@@ -84,62 +81,5 @@ describe("GET/PATCH /api/decision-model", () => {
     expect((await patch(JSON.stringify({ model: { provider: "p", model: "../x" } }))).status).toBe(
       400,
     );
-  });
-});
-
-describe("POST /api/decision-model/try", () => {
-  function tryDecision(body: unknown) {
-    return app().request("/api/decision-model/try", {
-      method: "POST",
-      headers: jsonAuth,
-      body: JSON.stringify(body),
-    });
-  }
-
-  // The route uses the real network path, so the saved model points at a port
-  // nothing listens on: what is tested here is everything before the call.
-  async function saveUnreachableDecisionModel() {
-    const row = await createCustomProvider({
-      name: "local ollama",
-      baseUrl: "http://127.0.0.1:9",
-      apiKind: "ollama",
-      models: ["jev"],
-      headerNames: [],
-    });
-    const provider = `custom:${row.id}`;
-    await saveProviderModel({ providerId: provider, modelId: "jev", capabilities: ["decision"] });
-    await saveDecisionModelConfig({ model: { provider, model: "jev" } });
-  }
-
-  const custom = {
-    instructions: "Judge the tone.",
-    input: "Where is it?",
-    options: [{ value: "calm" }, { value: "urgent" }],
-  };
-
-  it("needs either a specialist or instructions with options", async () => {
-    expect((await tryDecision({ input: "x" })).status).toBe(400);
-    expect((await tryDecision({ ...custom, specialist: "complexity-router" })).status).toBe(400);
-    expect((await tryDecision({ instructions: "i", input: "x" })).status).toBe(400);
-    expect(
-      (await tryDecision({ ...custom, options: [{ value: "a b" }, { value: "c" }] })).status,
-    ).toBe(400);
-  });
-
-  it("refuses to run with no decision model selected", async () => {
-    expect((await tryDecision(custom)).status).toBe(409);
-  });
-
-  it("refuses a specialist that isn't a decision specialist", async () => {
-    await saveUnreachableDecisionModel();
-    const res = await tryDecision({ specialist: "planner", input: "x" });
-    expect(res.status).toBe(404);
-  });
-
-  it("reports a failed call rather than an answer", async () => {
-    await saveUnreachableDecisionModel();
-    const res = await tryDecision({ specialist: "complexity-router", input: "Plan my week" });
-    expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ error: expect.any(String) });
   });
 });
