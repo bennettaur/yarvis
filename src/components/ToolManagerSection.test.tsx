@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { RegistryTool, ToolSource } from "../lib/mcp";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ToolManagerSection from "./ToolManagerSection";
 
 function tool(id: string, source: ToolSource, serverId: string | null = null): RegistryTool {
@@ -28,11 +29,7 @@ const TOOLS = [
 ];
 const SERVERS = [{ id: "s1", name: "Docs server" }];
 
-// Real exports spread back in: `mock.module` replaces the module for the whole process.
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string) => {
     const body = url.startsWith("/api/mcp/servers") ? SERVERS : TOOLS;
     return new Response(JSON.stringify(body), {
@@ -40,7 +37,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -66,3 +63,5 @@ describe("ToolManagerSection", () => {
     expect(summaries[1]).toMatch(/1 auto-approved$/);
   });
 });
+
+afterAll(resetSidecarApi);
