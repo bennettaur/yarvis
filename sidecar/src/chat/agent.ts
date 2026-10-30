@@ -37,6 +37,7 @@ import {
   SCHEDULED_TASK_TOOLS,
 } from "./destructiveTools.ts";
 import { addMessage, getMessages } from "./service.ts";
+import { toolActivityModelMessage } from "./toolReplay.ts";
 import { createToolCallReviewer, recentUserRequest } from "./toolReview.ts";
 
 /**
@@ -387,10 +388,13 @@ export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<Age
   const replay = selectReplay(rows);
   const messages: ModelMessage[] = [
     ...(replay.summary ? [summaryMessage(replay.summary)] : []),
-    ...replay.live.map((m): ModelMessage => {
+    ...replay.live.flatMap((m): ModelMessage[] => {
       const scheduledTaskId = m.metadata?.scheduledTask?.id;
-      if (scheduledTaskId) return scheduledTaskModelMessage(scheduledTaskId, m.content);
-      return { role: m.role as "user" | "assistant", content: m.content };
+      if (scheduledTaskId) return [scheduledTaskModelMessage(scheduledTaskId, m.content)];
+      const reply: ModelMessage = { role: m.role as "user" | "assistant", content: m.content };
+      const calls =
+        m.role === "assistant" ? toolActivityModelMessage(m.id, m.toolCalls ?? []) : null;
+      return calls ? [calls, reply] : [reply];
     }),
   ];
   // Attach the summoning screen as an ephemeral user message (not persisted)

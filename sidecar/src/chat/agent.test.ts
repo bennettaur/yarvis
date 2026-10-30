@@ -433,6 +433,42 @@ describe("runAgentTurn", () => {
   // Retrying a failed turn re-sends the same text. The failed turn already
   // persisted it, so recording it twice would leave the thread asking twice —
   // and every later replay of that thread with it.
+  it("replays an earlier turn's tool calls so the next turn can reuse them", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("call-1", "list_tasks", {}), finish("tool-calls")],
+        [...text("You have no tasks."), finish("stop")],
+      ),
+      session.id,
+    );
+    const [, earlier] = await getMessages(db, session.id);
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const prompt = model.doStreamCalls[0]?.prompt ?? [];
+    const nonce = earlier!.id.replaceAll("-", "").slice(0, 12);
+    const recordAt = prompt.findIndex((m) =>
+      JSON.stringify(m.content).includes(`<earlier-tool-calls-${nonce}>`),
+    );
+    expect(recordAt).toBeGreaterThan(-1);
+    expect(prompt[recordAt]!.role).toBe("user");
+    expect(JSON.stringify(prompt[recordAt]!.content)).toContain("- list_tasks {} -> ok");
+    // The record sits before the reply it led to.
+    expect(JSON.stringify(prompt[recordAt + 1])).toContain("You have no tasks.");
+  });
+
+  it("leaves a reply that made no tool calls as it was", async () => {
+    const session = await createSession(db, null);
+    await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
+    await addMessage(db, { sessionId: session.id, role: "assistant", content: "hi there" });
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain("earlier-tool-calls");
+  });
+
   it("treats a resend of the last user message as the same turn", async () => {
     const session = await createSession(db, null);
     await collect(streamingModel([finish("tool-calls")]), session.id);

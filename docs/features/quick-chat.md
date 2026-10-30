@@ -73,6 +73,12 @@ row to see the arguments and the result. When the reply starts, the list folds
 into one line, for example "Used 4 tool calls". Reasoning, when the provider
 returns it, shows as a "Thinking…" block you can expand.
 
+On later turns the assistant still sees those calls and their results, so a
+follow-up like "same message, but shorter" reuses the channel or user it
+already looked up instead of searching again. It sees the shortened result
+shown in the list, not the whole one, and calls the tool again when it needs
+the current state.
+
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
 labeled with the Telegram user. Messages sent from the Chrome extension's side
 panel are labeled `Chrome`.
