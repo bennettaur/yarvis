@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createActivityIngestRoutes, createActivityRoutes } from "./activity/routes.ts";
 import { createAgentRunRoutes } from "./agentRuns/routes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAlarmRoutes } from "./alarms/routes.ts";
@@ -116,6 +117,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // its workspace. The attention router's `/ingest/*` middleware also runs for
   // it; this router checks the token itself rather than relying on that.
   app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
+  // The hooks that feed the Agent Field page, on the same token and session check.
+  app.route("/ingest/activity", createActivityIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
@@ -182,6 +185,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/agent-runs", createAgentRunRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
+  app.route("/api/activity", createActivityRoutes());
   app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
