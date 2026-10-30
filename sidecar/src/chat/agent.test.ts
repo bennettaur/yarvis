@@ -86,6 +86,9 @@ const text = (value: string): StreamPart[] =>
     { type: "text-end", id: "t1" },
   ] as unknown as StreamPart[];
 
+/** The replayed record line for a `list_tasks` call that worked, as it sits in a JSON-encoded prompt. */
+const LIST_TASKS_OK = JSON.stringify('{"tool":"list_tasks","args":{},"status":"ok"').slice(1, -1);
+
 const serverNames = new Map([["server-uuid", "Notion"]]);
 
 /** Denies every approval request, as a user pressing Deny would. */
@@ -451,7 +454,7 @@ describe("runAgentTurn", () => {
     );
     expect(recordAt).toBeGreaterThan(-1);
     expect(prompt[recordAt]!.role).toBe("user");
-    expect(JSON.stringify(prompt[recordAt]!.content)).toContain("- list_tasks {} -> ok");
+    expect(JSON.stringify(prompt[recordAt]!.content)).toContain(LIST_TASKS_OK);
     // The record sits before the reply it led to.
     expect(JSON.stringify(prompt[recordAt + 1])).toContain("You have no tasks.");
   });
@@ -482,8 +485,10 @@ describe("runAgentTurn", () => {
     await collect(model, session.id);
 
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
-    expect(prompt).toContain("- list_tasks {} -> ok");
-    expect(prompt).toMatch(/- create_calendar_event \{[^\n]*\} -> denied/);
+    expect(prompt).toContain(LIST_TASKS_OK);
+    expect(prompt).toMatch(
+      /\{\\"tool\\":\\"create_calendar_event\\"[^\n]*\\"status\\":\\"denied\\"/,
+    );
   });
 
   it("replays the calls of a turn that ran tools but wrote no reply", async () => {
@@ -499,7 +504,7 @@ describe("runAgentTurn", () => {
     const model = streamingModel([...text("ok"), finish("stop")]);
     await collect(model, session.id);
 
-    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("- list_tasks {} -> ok");
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(LIST_TASKS_OK);
   });
 
   it("leaves a reply that made no tool calls as it was", async () => {

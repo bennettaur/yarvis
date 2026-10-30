@@ -2,6 +2,7 @@ import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { Db } from "../db/client.ts";
 import type { ChatMessage } from "../db/schema.ts";
 import { addMessage } from "./service.ts";
+import { toolActivityLines } from "./toolReplay.ts";
 
 /**
  * Keeps a long chat inside the model's context window. The oldest messages are
@@ -20,9 +21,20 @@ const SUMMARY_MESSAGE_CHARS = 8_000;
 /** Longest the whole summarizer input may be; the oldest messages give way first. */
 const SUMMARY_INPUT_CHARS = 400_000;
 
-/** English text runs about four characters a token; close enough for a threshold. */
-export function estimateTokens(messages: ReadonlyArray<{ content: string }>): number {
-  return Math.ceil(messages.reduce((sum, m) => sum + m.content.length, 0) / 4);
+/**
+ * English text runs about four characters a token; close enough for a threshold.
+ * A reply's tool calls count too, since they are replayed beside it.
+ */
+export function estimateTokens(
+  messages: ReadonlyArray<{ content: string; toolCalls?: ChatMessage["toolCalls"] }>,
+): number {
+  return Math.ceil(messages.reduce((sum, m) => sum + replayedText(m).length, 0) / 4);
+}
+
+/** A message as the model and the summarizer see it: its text, then its tool calls. */
+function replayedText(m: { content: string; toolCalls?: ChatMessage["toolCalls"] }): string {
+  const calls = m.toolCalls?.length ? toolActivityLines(m.toolCalls) : [];
+  return calls.length ? [m.content, "Tool calls:", ...calls].join("\n") : m.content;
 }
 
 export interface Replay {
@@ -84,10 +96,11 @@ const SUMMARIZER_SYSTEM = [
 
 function buildTranscript(previous: string | null, messages: ChatMessage[], nonce: string): string {
   const lines = messages.map((m) => {
+    const full = replayedText(m);
     const text =
-      m.content.length > SUMMARY_MESSAGE_CHARS
-        ? `${m.content.slice(0, SUMMARY_MESSAGE_CHARS)}… [truncated]`
-        : m.content;
+      full.length > SUMMARY_MESSAGE_CHARS
+        ? `${full.slice(0, SUMMARY_MESSAGE_CHARS)}… [truncated]`
+        : full;
     return `${m.role}: ${text}`;
   });
   // Drop from the front: the recent end of the span is what the next turn is most

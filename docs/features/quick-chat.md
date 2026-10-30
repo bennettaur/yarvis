@@ -77,7 +77,11 @@ On later turns the assistant still sees those calls and their results, so a
 follow-up like "same message, but shorter" reuses the channel or user it
 already looked up instead of searching again. It sees the shortened result
 shown in the list, not the whole one, and calls the tool again when it needs
-the current state.
+the current state. Those shortened results are sent to the model again with
+every later message in the chat. When a long chat is summarized, the calls go
+into the summary. A web page it read is the exception: later turns see which
+page it was, but not the page's text, because text from a stranger's site
+shouldn't sit in the chat after the turn that read it.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
 labeled with the Telegram user. Messages sent from the Chrome extension's side

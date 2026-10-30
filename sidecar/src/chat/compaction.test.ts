@@ -82,6 +82,13 @@ describe("helpers", () => {
     expect(estimateTokens([{ content: "a".repeat(400) }])).toBe(100);
   });
 
+  it("counts a reply's tool calls, since they are replayed with it", () => {
+    const toolCalls = [{ id: "c1", name: "find_channel", status: "ok" as const, result: "C1" }];
+    expect(estimateTokens([{ content: "a", toolCalls }])).toBeGreaterThan(
+      estimateTokens([{ content: "a" }]),
+    );
+  });
+
   it("fences the summary as data", () => {
     const msg = summaryMessage({ id: "abcdef12-3456-7890", content: "done X" });
     expect(msg.role).toBe("user");
@@ -160,6 +167,27 @@ describe("compactSession", () => {
       "message 8",
       "message 9",
     ]);
+  });
+
+  it("shows the summarizer the tool calls a reply made", async () => {
+    const sessionId = await seed(10);
+    const [first] = await getMessages(db, sessionId);
+    await sql`
+      UPDATE chat_messages
+      SET tool_calls = ${sql.json([{ id: "c1", name: "find_channel", status: "ok", result: "C042" }])}
+      WHERE id = ${first!.id}
+    `;
+    const model = summarizer("They discussed X.");
+    await compactSession({
+      db,
+      model,
+      sessionId,
+      history: await getMessages(db, sessionId),
+      thresholdTokens: 1,
+    });
+
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain("find_channel");
+    expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain("C042");
   });
 
   it("leaves the history alone when the summarizer fails", async () => {
