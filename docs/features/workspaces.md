@@ -257,9 +257,9 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
   session in its terminals. On the next start, Yarvis relaunches each active
   workspace's agent tab with `claude --resume`, continuing the Claude Code
   session that was running there. A session that ended on its own, one Yarvis
-  stopped, and any in an archived workspace stay ended. This needs the
-  workspace's registration hooks (see
-  [Sending an instruction to a running session](#sending-an-instruction-to-a-running-session)).
+  stopped, and any in an archived workspace stay ended. The relaunched session
+  doesn't have Remote Control on. This needs the workspace's registration
+  hooks (see [Sending an instruction to a running session](#sending-an-instruction-to-a-running-session)).
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file

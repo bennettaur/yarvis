@@ -26,6 +26,16 @@ export const STOPPED_END_REASON = "stopped";
 /** End reason recorded for every session of a workspace being archived. */
 export const ARCHIVED_END_REASON = "archived";
 
+/** End reason recorded for a session Yarvis has relaunched with `--resume`. */
+const RESUMED_END_REASON = "resumed";
+
+/**
+ * Claude Code session ids are UUIDs. Only that shape is ever resumed: the id
+ * is put on Claude's command line, and one starting with `-` would be read as
+ * a flag.
+ */
+const CLAUDE_SESSION_UUID = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
+
 export interface AgentSessionStart {
   workspaceId: string;
   sessionKey: string;
@@ -134,17 +144,24 @@ export async function endWorkspaceAgentSessions(
 
 export interface ResumableAgentSession {
   workspaceId: string;
+  workspaceName: string;
+  rootPath: string;
   claudeSessionId: string;
   pid: number;
 }
 
 /**
- * The agent-tab sessions to resume after a restart: for each active
- * workspace, the most recently started session in its `ws-claude:` tab that
- * never recorded an end and whose process is gone. A session that ended
- * through SessionEnd, was stopped, or belongs to an archived workspace has an
- * end on file, so only one cut off by the app going away qualifies. A live pid
- * means the sidecar alone restarted and the session is still running.
+ * The agent-tab sessions to resume after a restart. For each active
+ * workspace, that is the most recently started session in its `ws-claude:`
+ * tab, when it never recorded an end and its process is gone. A session that
+ * ended through SessionEnd, was stopped, or belongs to an archived workspace
+ * has an end on file, so only one cut off by the app going away qualifies. A
+ * live pid means only the sidecar restarted and the session is still running.
+ * A workspace still owed a kick-off is left out, since `resumeKickOffs` starts
+ * its session.
+ *
+ * Must run before anything calls `reapAndListAgentSessions`, which closes
+ * these same rows as `process-gone`.
  */
 export async function findResumableAgentSessions(
   db: Db,
@@ -153,29 +170,43 @@ export async function findResumableAgentSessions(
   const rows = await db
     .select({
       workspaceId: workspaceAgentSessions.workspaceId,
+      workspaceName: workspaces.name,
+      rootPath: workspaces.rootPath,
+      pendingBrief: workspaces.pendingBrief,
       sessionKey: workspaceAgentSessions.sessionKey,
       claudeSessionId: workspaceAgentSessions.claudeSessionId,
       pid: workspaceAgentSessions.pid,
+      endedAt: workspaceAgentSessions.endedAt,
     })
     .from(workspaceAgentSessions)
     .innerJoin(workspaces, eq(workspaces.id, workspaceAgentSessions.workspaceId))
-    .where(and(eq(workspaces.status, "active"), isNull(workspaceAgentSessions.endedAt)))
+    .where(
+      and(
+        eq(workspaces.status, "active"),
+        sql`${workspaceAgentSessions.sessionKey} = 'ws-claude:' || ${workspaceAgentSessions.workspaceId}::text`,
+      ),
+    )
     .orderBy(desc(workspaceAgentSessions.startedAt));
 
-  const latest = new Map<string, ResumableAgentSession>();
+  const resumable: ResumableAgentSession[] = [];
+  const seen = new Set<string>();
   for (const r of rows) {
-    if (r.sessionKey !== `ws-claude:${r.workspaceId}` || latest.has(r.workspaceId)) continue;
-    latest.set(r.workspaceId, {
+    // Only the newest session counts: an older one left open doesn't come
+    // back after the user moved on to a later session that ended.
+    if (seen.has(r.workspaceId)) continue;
+    seen.add(r.workspaceId);
+    if (r.endedAt || r.pendingBrief || isAlive(r.pid)) continue;
+    if (!CLAUDE_SESSION_UUID.test(r.claudeSessionId)) continue;
+    resumable.push({
       workspaceId: r.workspaceId,
+      workspaceName: r.workspaceName,
+      rootPath: r.rootPath,
       claudeSessionId: r.claudeSessionId,
       pid: r.pid,
     });
   }
-  return [...latest.values()].filter((s) => !isAlive(s.pid));
+  return resumable;
 }
-
-/** End reason for a session Yarvis has relaunched with `--resume`. */
-export const RESUMED_END_REASON = "resumed";
 
 /**
  * Closes a session once Yarvis has relaunched it, so a resume that fails to

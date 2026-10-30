@@ -1752,6 +1752,8 @@ describe("provision + archive (injected git runner)", () => {
               VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
                      (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
 
+    // The core is unreachable here, so this also shows the agent tab's
+    // registration closes when the kill can't be delivered.
     await archiveWorkspace(db, ws.id, {}, fakeGit);
 
     const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions

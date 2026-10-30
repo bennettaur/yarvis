@@ -19,14 +19,12 @@
  * inside the session itself.
  */
 
-import { inArray } from "drizzle-orm";
 import {
   killClaudeSession,
   sendClaudeInstruction,
   spawnClaudeSession,
 } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
-import { workspaces } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import {
   endWorkspaceAgentSessions,
@@ -108,9 +106,9 @@ export async function stopClaudeSession(db: Db, workspaceId: string): Promise<vo
 /**
  * Relaunches, with `--resume`, the agent-tab session each active workspace had
  * running when the app last went away (see `findResumableAgentSessions`).
- * Called once at startup. A workspace still owed a kick-off is skipped, since
- * `resumeKickOffs` starts its session. The core discards a spawn for a tab that
- * already has a session, so a workspace the user opened first keeps theirs.
+ * Called once at startup, before the sidecar reports ready: the frontend
+ * starts a fresh session when it opens a workspace with none, and the core
+ * keeps whichever spawn takes the tab first.
  */
 export async function resumeAgentSessions(
   db: Db,
@@ -121,45 +119,36 @@ export async function resumeAgentSessions(
 ): Promise<void> {
   const resumable = await findResumableAgentSessions(db, isAlive);
   if (resumable.length === 0) return;
-  const details = await db
-    .select({
-      id: workspaces.id,
-      name: workspaces.name,
-      rootPath: workspaces.rootPath,
-      pendingBrief: workspaces.pendingBrief,
-    })
-    .from(workspaces)
-    .where(
-      inArray(
-        workspaces.id,
-        resumable.map((s) => s.workspaceId),
-      ),
-    );
-  const byId = new Map(details.map((d) => [d.id, d]));
 
-  console.log(`[workspaces] resuming ${resumable.length} agent session(s) cut off by a restart`);
+  console.log(`[workspaces] found ${resumable.length} agent session(s) cut off by a restart`);
   for (const session of resumable) {
-    const detail = byId.get(session.workspaceId);
-    if (!detail || detail.pendingBrief) continue;
     try {
       // Not remotely controllable: the restart happened at the machine, and the
       // session can turn Remote Control on from inside if it was using it.
       await startSession({
-        workspaceId: detail.id,
-        cwd: detail.rootPath,
-        name: detail.name,
+        workspaceId: session.workspaceId,
+        cwd: session.rootPath,
+        name: session.workspaceName,
         remoteControl: false,
         resumeSessionId: session.claudeSessionId,
       });
     } catch (e) {
-      console.error(`[workspaces] could not resume the agent session for ${detail.id}:`, e);
+      console.error(
+        `[workspaces] could not resume the agent session for ${session.workspaceId}:`,
+        e,
+      );
       continue;
     }
     await markAgentSessionResumed(db, session);
     void emitEvent(db, {
       type: "workspace.session_started",
       source: "workspaces",
-      payload: { workspaceId: detail.id, name: detail.name, resumed: true, remoteControl: false },
+      payload: {
+        workspaceId: session.workspaceId,
+        name: session.workspaceName,
+        resumed: true,
+        remoteControl: false,
+      },
     });
   }
 }

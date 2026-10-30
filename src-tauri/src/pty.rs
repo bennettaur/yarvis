@@ -914,23 +914,22 @@ fn remote_control_command(base: &str, name: &str) -> String {
     )
 }
 
-/// Longest Claude Code session id accepted for a resume. Ids are UUIDs; the
-/// bound matches what the sidecar's registration route stores.
-const MAX_RESUME_ID_CHARS: usize = 128;
-
-/// True when `id` looks like a Claude Code session id. It is typed into a
-/// shell, so it is held to the same plain charset the sidecar stores it in,
-/// on top of being quoted.
+/// True when `id` is shaped like a Claude Code session id, a UUID. It is typed
+/// into a shell, and Claude would read one starting with `-` as a flag, so
+/// nothing else is accepted, on top of being quoted.
 fn is_valid_resume_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_RESUME_ID_CHARS
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// The launch line for an agent session: the base command, with Remote Control
 /// added only when asked for, `--resume` when it continues an earlier Claude
-/// Code session, and an `instruction` the session should start on appended as a
-/// single argument. Extracted from `spawn_claude_session` alongside
+/// Code session, and an `instruction` the session should start on appended as
+/// a single argument. Extracted from `spawn_claude_session` alongside
 /// `remote_control_command` so the choice is unit-testable without app state.
 ///
 /// The instruction carries issue text, which an outside party writes, so it is
@@ -990,7 +989,7 @@ fn shell_single_quote(s: &str) -> String {
 /// can be made remotely controllable later from inside the session itself.
 ///
 /// `resume` is the id of a Claude Code session to continue, which the sidecar
-/// passes when it restarts a workspace's agent after the app was restarted.
+/// passes when it relaunches a workspace's agent after the app restarted.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_session(
     app: &AppHandle,
@@ -1508,18 +1507,29 @@ mod tests {
             "claude --permission-mode auto --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'"
         );
         assert_eq!(
-            agent_launch_command("claude", "Fix bug", true, Some("abc-123"), Some("Go on")),
-            "claude --remote-control 'Fix bug' --resume 'abc-123' 'Go on'"
+            agent_launch_command(
+                "claude",
+                "Fix bug",
+                true,
+                Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"),
+                Some("Go on")
+            ),
+            "claude --remote-control 'Fix bug' --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70' 'Go on'"
         );
     }
 
     #[test]
-    fn is_valid_resume_id_accepts_only_plain_ids() {
+    fn is_valid_resume_id_accepts_only_a_uuid() {
         assert!(is_valid_resume_id("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"));
+        assert!(is_valid_resume_id("0B6A3F1E-9C1D-4E55-8A5B-2F3C4D5E6F70"));
         assert!(!is_valid_resume_id(""));
-        assert!(!is_valid_resume_id("abc'; rm -rf ~"));
-        assert!(!is_valid_resume_id("abc def"));
-        assert!(!is_valid_resume_id(&"a".repeat(129)));
+        assert!(!is_valid_resume_id("abc-123"));
+        // Claude would read this as a flag rather than the option's value.
+        assert!(!is_valid_resume_id("--dangerously-skip-permissions"));
+        assert!(!is_valid_resume_id("-b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"));
+        assert!(!is_valid_resume_id(
+            "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'; id"
+        ));
     }
 
     #[test]

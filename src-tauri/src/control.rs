@@ -84,7 +84,7 @@ mod unix_impl {
         #[serde(default)]
         instruction: Option<String>,
         /// A Claude Code session id to continue with `--resume`, set when the
-        /// sidecar restarts a workspace's agent after an app restart.
+        /// sidecar relaunches a workspace's agent after the app restarted.
         #[serde(default)]
         resume: Option<String>,
     }

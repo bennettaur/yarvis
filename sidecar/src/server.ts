@@ -158,6 +158,15 @@ if (config.databaseUrl) {
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
       }
+      // The agent tabs live in the core's PTYs, so restarting the app ends every
+      // session in them; relaunch the ones it cut off. Before readiness, so it
+      // reads the cut-off rows before anything reaps them and takes each tab
+      // before the frontend can start a fresh session there.
+      try {
+        await resumeAgentSessions(getDb(config.databaseUrl as string).db);
+      } catch (e) {
+        console.error("[sidecar] could not resume workspace agent sessions:", e);
+      }
       // One-time copy of the small structural config tables (custom providers,
       // MCP servers, voice/embeddings/wip/github-pr/job config) into the shared
       // ~/.yarvis/settings.json. Gated behind `structuralSettingsMigrated` in
@@ -211,11 +220,6 @@ if (config.databaseUrl) {
       // those back up, provisioning included.
       resumeKickOffs(getDb(config.databaseUrl as string).db).catch((e) =>
         console.error("[sidecar] could not resume interrupted kick-offs:", e),
-      );
-      // The agent tabs live in the core's PTYs, so restarting the app ends every
-      // session in them. Relaunch the ones it cut off where they left off.
-      resumeAgentSessions(getDb(config.databaseUrl as string).db).catch((e) =>
-        console.error("[sidecar] could not resume workspace agent sessions:", e),
       );
       // Backstop for review guides whose pull requests were closed on the
       // provider's own site, which the app never observes. Once at startup is
