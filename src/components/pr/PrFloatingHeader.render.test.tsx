@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
-import { createElement } from "react";
+import { act, createElement, useState } from "react";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 import PrFloatingHeader from "./PrFloatingHeader";
 
 // The header renders PrWorkspaceAction, which calls sidecarFetch to look up a
@@ -309,30 +309,35 @@ describe("PrFloatingHeader viewer's review", () => {
     expect(html).toContain(">Approve<");
   });
 
-  it("shows the approval as soon as the submit succeeds, before the detail reloads", async () => {
-    const { host, unmount } = await mountForInteraction(
-      createElement(PrFloatingHeader, {
+  it("shows the approval as soon as the submit succeeds, then defers to the reloaded detail", async () => {
+    // Stands in for the PR cache: the test hands the header a reloaded detail.
+    let setDetail: (d: PrDetail) => void = () => {};
+    function Host() {
+      const [d, set] = useState(detail({ viewerReview: "pending" }));
+      setDetail = set;
+      return createElement(PrFloatingHeader, {
         pr: summary(),
-        detail: detail({ viewerReview: "pending" }),
+        detail: d,
         onBack: () => {},
         starred: false,
         onToggleStar: async () => {},
-      }),
-    );
-    const button = (label: string) =>
-      [...host.querySelectorAll("button")].find((b) => b.textContent === label) as
-        | HTMLButtonElement
-        | undefined;
+      });
+    }
+    const { host, unmount } = await mountForInteraction(createElement(Host));
+    const buttons = (label: string) =>
+      [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
 
-    button("Approve")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    // The composer's confirm button is labelled Approve too; it's the last one.
-    const confirm = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Approve");
-    confirm[confirm.length - 1]?.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    buttons("Approve")[0]?.click();
+    await waitFor(() => buttons("Approve").length === 2, "the approval composer");
+    // The header's Approve comes first, the composer's confirm after it.
+    buttons("Approve")[1]?.click();
+    await waitFor(() => host.textContent?.includes("✓ Approved") ?? false, "the approved label");
+    expect(buttons("Approve")).toHaveLength(0);
 
-    expect(host.textContent).toContain("✓ Approved");
-    expect(button("Approve")).toBeUndefined();
+    // The author asks for another look: the reloaded detail wins.
+    act(() => setDetail(detail({ viewerReview: "pending" })));
+    await waitFor(() => buttons("Approve").length === 1, "Approve to come back");
+    expect(host.textContent).not.toContain("✓ Approved");
     unmount();
   });
 });

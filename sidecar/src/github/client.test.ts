@@ -376,14 +376,18 @@ describe("github client", () => {
                 headRefName: "f",
                 reviewThreads: { nodes: [] },
                 commits: { nodes: [] },
+                latestOpinionatedReviews: {
+                  nodes: [{ author: { login: "me" }, state: "APPROVED" }],
+                },
               },
             },
+            viewer: { login: "me" },
           },
         },
       }),
     );
     const detail = await gh.prDetail("o", "r", 9);
-    expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
+    expect(detail).toMatchObject({ number: 9, draft: true, checks: [], viewerReview: "approved" });
     expect(detail.checksUnavailable).toBeUndefined();
   });
 
@@ -523,7 +527,7 @@ describe("github client", () => {
     ]);
   });
 
-  it("reads the viewer's own review out of the reviewer list", () => {
+  it("reads the viewer's own standing verdict", () => {
     const pr = {
       number: 1,
       state: "OPEN",
@@ -531,14 +535,18 @@ describe("github client", () => {
       reviewThreads: { nodes: [] },
       commits: { nodes: [] },
       reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "alice" } }] },
-      latestReviews: {
+      // Bob approved, then replied to a thread: his latest review is a comment.
+      latestReviews: { nodes: [{ author: { login: "bob" }, state: "COMMENTED" }] },
+      latestOpinionatedReviews: {
         nodes: [
           { author: { login: "bob" }, state: "APPROVED" },
           { author: { login: "alice" }, state: "APPROVED" },
+          { author: { login: "carol" }, state: "CHANGES_REQUESTED" },
         ],
       },
     };
     expect(toPrDetail(pr, undefined, "bob").viewerReview).toBe("approved");
+    expect(toPrDetail(pr, undefined, "carol").viewerReview).toBe("changes_requested");
     // Re-requested after approving: a fresh look is expected, so Approve is offered again.
     expect(toPrDetail(pr, undefined, "alice").viewerReview).toBe("pending");
     expect(toPrDetail(pr, undefined, "zed").viewerReview).toBe("pending");

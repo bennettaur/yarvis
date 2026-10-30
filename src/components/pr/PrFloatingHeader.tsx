@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   applyReviewAction,
   disableAutoMerge,
@@ -301,7 +301,7 @@ function MergeMenu({
   );
 }
 
-function actionReview(action: "approve" | "request_changes"): ReviewerState {
+function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState {
   return action === "approve" ? "approved" : "changes_requested";
 }
 
@@ -331,17 +331,24 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
   const [mergePending, setMergePending] = useState(false);
   // The verdict just submitted, keyed by PR, so the buttons reflect it while
-  // the refetched detail is still on its way.
-  const [submitted, setSubmitted] = useState<{ key: string; review: ReviewerState } | null>(null);
+  // the refetched detail is on its way. `PrActionButtons` drops it once that
+  // detail lands, so a later re-request or dismissal still shows.
+  const [submittedReview, setSubmittedReview] = useState<{
+    prKey: string;
+    state: ReviewerState;
+  } | null>(null);
+  const clearSubmittedReview = useCallback(() => setSubmittedReview(null), []);
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
     setError(null);
     try {
       await applyReviewAction(prRef, action, body, seen);
-      if (action !== "publish") setSubmitted({ key: refKey(prRef), review: actionReview(action) });
+      if (action !== "publish") {
+        setSubmittedReview({ prKey: refKey(prRef), state: reviewStateFor(action) });
+        invalidateLastReview(prRef);
+      }
       invalidatePr(prRef);
-      if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -387,7 +394,8 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     mergeMenu,
     setMergeMenu,
     mergePending,
-    submittedReview: submitted?.key === refKey(prRef) ? submitted.review : undefined,
+    submittedReview: submittedReview?.prKey === refKey(prRef) ? submittedReview.state : undefined,
+    clearSubmittedReview,
     busy: pending !== null || mergePending,
     run,
     runMerge,
@@ -422,6 +430,12 @@ export function PrActionButtons({
   const mergeControls = mergeControlsFor(detail, status);
   const { open, setOpen, pending, busy, mergeMenu, setMergeMenu, mergePending } = state;
   const viewerReview = state.submittedReview ?? detail?.viewerReview;
+  // A newly loaded detail is the provider's answer, which outranks the verdict
+  // kept from the submit. A null detail is a reload in flight, not an answer.
+  const { clearSubmittedReview } = state;
+  useEffect(() => {
+    if (detail) clearSubmittedReview();
+  }, [detail, clearSubmittedReview]);
 
   return (
     <div className="flex shrink-0 items-center gap-2">

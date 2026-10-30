@@ -512,6 +512,21 @@ describe("azure client", () => {
     expect((await resolved.prDetail(ref)).viewerReview).toBe("approved");
 
     resetViewerIds();
+    const notReviewer = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-3", providerDisplayName: "Me" } },
+        },
+        pr,
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    expect((await notReviewer.prDetail(ref)).viewerReview).toBe("pending");
+
+    resetViewerIds();
     const unresolved = new AzureDevOpsClient(
       "pat",
       ORG,
