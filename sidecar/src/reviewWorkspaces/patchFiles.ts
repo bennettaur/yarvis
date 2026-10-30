@@ -171,9 +171,16 @@ export function headHunksOf(patch: string): HeadHunk[] {
 }
 
 /**
+ * A path an agent could misread in a group's one-per-line list: a Unicode line
+ * break splits it into two entries, and ` lines 3-9` passes for a range.
+ */
+const MISREADABLE_PATH = /[\u0080-\u009f\u2028\u2029]| lines \d+-\d+/;
+
+/**
  * `patches/<path>.diff` for a plain repo path, or null for one that isn't
- * (absolute, `.`/`..` segments, control characters): such a path never
- * becomes part of a filesystem path.
+ * (absolute, `.`/`..` segments, control characters, {@link MISREADABLE_PATH}):
+ * such a path never becomes part of a filesystem path, and its patch gets a
+ * numbered name instead.
  */
 export function mirroredPatchPath(path: string): string | null {
   try {
@@ -181,6 +188,7 @@ export function mirroredPatchPath(path: string): string | null {
   } catch {
     return null;
   }
+  if (MISREADABLE_PATH.test(path)) return null;
   return `${PATCHES_DIR}/${path}.diff`;
 }
 

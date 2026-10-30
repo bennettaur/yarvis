@@ -55,7 +55,17 @@ function written(): string[] {
 describe("mirrored patch paths", () => {
   it("mirrors a plain repo path and refuses one that could leave the folder", () => {
     expect(mirroredPatchPath("src/a.ts")).toBe("patches/src/a.ts.diff");
-    for (const bad of ["../x", "a/../../x", "/etc/passwd", "a//b", "./a", "a\nb", ""]) {
+    const misreadable = ["a\u2028b", "a\u2029b", "a\u0085b", "a.ts lines 1-5"];
+    for (const bad of [
+      "../x",
+      "a/../../x",
+      "/etc/passwd",
+      "a//b",
+      "./a",
+      "a\nb",
+      "",
+      ...misreadable,
+    ]) {
       expect(mirroredPatchPath(bad)).toBeNull();
     }
   });
