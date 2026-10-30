@@ -74,13 +74,13 @@ risk (it is the only proof a tricky behaviour works).
 - `lines`: the head line range of the part to read, when it is a part.
 - `flags`: what already looks off or unclear in that file, so the reviewer
   reads it with the question in mind. At most 3, usually none. Each is a
-  `note` of at most 20 words and the head `line` it is about. Flag only what
-  you saw in the patch: a branch that looks inverted, a value that seems to
-  be ignored, a name that says one thing while the code does another, logic
-  you couldn't follow. Phrase it as what to check ("`retries` is read but
-  never decremented; check the loop ends"), not as a verdict. No style
-  nitpicks, and nothing you'd need another file to back up. Leave `flags` empty
-  when nothing stands out.
+  `note` of at most 15 words and, when it is about one line, the head `line`
+  (inside or outside `lines`). Flag only what you saw in the patch: a branch
+  that looks inverted, a value that seems to be ignored, a name that says one
+  thing while the code does another, logic you couldn't follow. Phrase it as
+  what to check ("`retries` is read but never decremented; check the loop
+  ends"), not as a verdict. No style nitpicks, and nothing you'd need another
+  file to back up. `[]` when nothing stands out.
 
 ## Output
 

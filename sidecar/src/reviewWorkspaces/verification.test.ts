@@ -106,6 +106,39 @@ describe("the report schema", () => {
     ]);
   });
 
+  it("reads null flags as none", () => {
+    const parsed = schema.parse(
+      report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([]);
+  });
+
+  it("drops a flag a check finding already reports nearby, and records it", () => {
+    const audit = emptyAudit();
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        mustRead: [
+          {
+            path: "src/a.ts",
+            reason: "core",
+            flags: [
+              { note: "retry count never decremented, check the loop ends", line: 18 },
+              { note: "cache key ignores the locale", line: 40 },
+            ],
+          },
+        ],
+        quality: {
+          status: "issues",
+          findings: [finding("Retry count is never decremented", { path: "src/a.ts", line: 17 })],
+        },
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(audit.droppedFlags).toEqual([
+      { path: "src/a.ts", line: 18, note: "retry count never decremented, check the loop ends" },
+    ]);
+  });
+
   it("reads an invalid line range as no range, or as its one valid end", () => {
     const parsed = schema.parse(
       report({
