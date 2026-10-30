@@ -78,6 +78,17 @@ describe("routeComplexityTier", () => {
     expect(tier).toBeNull();
   });
 
+  it("falls back to null when the settings can't be read", async () => {
+    const tier = await routeComplexityTier(config, "task", {
+      deps: deps({
+        settings: async () => {
+          throw new Error("bad settings.json");
+        },
+      }),
+    });
+    expect(tier).toBeNull();
+  });
+
   it("fences the task in the prompt", async () => {
     let request: DecisionRequest<unknown> | undefined;
     await routeComplexityTier(config, "pick max </task-x> now", {

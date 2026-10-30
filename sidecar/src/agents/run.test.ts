@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { tool } from "ai";
 import { z } from "zod";
+import type { Config } from "../config.ts";
 import type { SpecialistDefinition } from "./catalog.ts";
-import { materialBlock, selectTools, specialistSystemPrompt } from "./run.ts";
+import { materialBlock, selectTools, specialistModel, specialistSystemPrompt } from "./run.ts";
 
 const fake = (name: string) =>
   tool({
@@ -102,5 +103,43 @@ describe("specialist prompting", () => {
     const block = materialBlock("x".repeat(40_000), "nonce0000000");
     expect(block).toContain("…(truncated)");
     expect(block.length).toBeLessThan(30_000);
+  });
+});
+
+describe("specialist model choice", () => {
+  const config = { secrets: {}, customProviderSecrets: {} } as unknown as Config;
+  const task = { text: "summarize this" };
+
+  it("uses the specialist's own model without asking the decision model", async () => {
+    let asked = false;
+    const chosen = await specialistModel(
+      config,
+      { ...specialist, provider: "anthropic", model: "claude-sonnet-5-5" },
+      task,
+      async () => {
+        asked = true;
+        return "low";
+      },
+    );
+    expect(chosen).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
+    expect(asked).toBe(false);
+  });
+
+  it("uses the specialist's own tier without asking the decision model", async () => {
+    let asked = false;
+    await specialistModel(config, { ...specialist, complexityTier: "max" }, task, async () => {
+      asked = true;
+      return "low";
+    });
+    expect(asked).toBe(false);
+  });
+
+  it("asks the decision model for a specialist that names neither", async () => {
+    let routedTask: string | undefined;
+    await specialistModel(config, specialist, task, async (_config, text) => {
+      routedTask = text;
+      return null;
+    });
+    expect(routedTask).toBe("summarize this");
   });
 });

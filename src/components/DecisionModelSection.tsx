@@ -175,10 +175,11 @@ export default function DecisionModelSection() {
           <span>
             Route specialist work by complexity
             <span className="block text-xs text-zinc-600">
-              When a specialist doesn't name its own model or complexity tier, the decision model
-              reads the task and picks the low, medium or max tier set under Settings → Assistant.
-              If it fails or no tier is set, the specialist uses your default chat model. Each
-              routing call sends the task to the decision model.
+              When a specialist, or a scheduled job with no specialist, doesn't name its own model
+              or complexity tier, the decision model reads the task and picks the low, medium or max
+              tier set under Settings → Assistant. If it fails or that tier isn't set, your default
+              chat model runs it. Each routing call sends the task to the decision model and can add
+              a few seconds before the work starts.
             </span>
           </span>
         </label>

@@ -97,8 +97,9 @@ describe("DecisionModelSection", () => {
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
-    const checkbox = mounted.host.querySelector("input[type=checkbox]") as HTMLInputElement;
-    expect(checkbox.disabled).toBe(true);
+    const checkboxes = [...mounted.host.querySelectorAll("input[type=checkbox]")];
+    expect(checkboxes.length).toBe(3);
+    for (const checkbox of checkboxes) expect((checkbox as HTMLInputElement).disabled).toBe(true);
   });
 
   it("turns auto mode on once a model is chosen", async () => {

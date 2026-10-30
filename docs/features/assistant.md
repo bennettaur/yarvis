@@ -580,8 +580,8 @@ The fields:
   tiers** instead. You can't set both. With neither, it uses the default chat
   model, unless **Route specialist work by complexity** is on under **Settings →
   Tools & MCP → Decision model**. Then the decision model reads the task and
-  picks a tier. If that fails, or no tier is set, the default chat model runs
-  it.
+  picks a tier. If that fails, or the tier it picks isn't set, the default chat
+  model runs it. A scheduled job with no specialist is routed the same way.
 - `maxSteps` is optional: default 8, hard cap 30.
 - `enabled: false` turns a specialist off, including a shipped one.
 - `unattended:` lists write tools the specialist may use without approval.

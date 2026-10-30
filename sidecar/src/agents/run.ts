@@ -193,7 +193,8 @@ export function materialBlock(material: string, nonce: string): string {
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
-  task?: { text: string; signal?: AbortSignal },
+  task: { text: string; signal?: AbortSignal },
+  route: typeof routeComplexityTier = routeComplexityTier,
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -201,9 +202,7 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
-  const routed = task
-    ? await routeComplexityTier(config, task.text, { signal: task.signal })
-    : null;
+  const routed = await route(config, task.text, { signal: task.signal });
   if (routed) return resolveComplexityModel(config, routed);
   return defaultProviderModel(config);
 }
@@ -229,7 +228,9 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
  * and going through the catalogue would mean inventing a file for it.
  */
 export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
-  const { config, db, specialist, task, material, signal } = input;
+  const { config, db, specialist, task, material } = input;
+  // One deadline for routing and the run together, so routing can't push a job past its lease.
+  const signal = input.signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS);
 
   const chosen =
     input.provider && input.model
@@ -273,7 +274,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
       messages: [{ role: "user", content: prompt }],
       tools,
       stopWhen: stepCountIs(specialist.maxSteps),
-      abortSignal: signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS),
+      abortSignal: signal,
     });
     return {
       specialist: specialist.name,

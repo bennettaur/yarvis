@@ -73,6 +73,18 @@ describe("GET/PATCH /api/decision-model", () => {
     });
   });
 
+  it("saves complexity routing without touching the other fields", async () => {
+    await patch(JSON.stringify({ autoApproveTools: true }));
+    const res = await patch(JSON.stringify({ routeComplexity: true }));
+    expect(await res.json()).toEqual({
+      model: null,
+      autoApproveTools: true,
+      autoApproveHeadsDown: false,
+      routeComplexity: true,
+    });
+    expect((await patch(JSON.stringify({ routeComplexity: "yes" }))).status).toBe(400);
+  });
+
   it("rejects a malformed body", async () => {
     expect((await patch(JSON.stringify({ autoApproveTools: "yes" }))).status).toBe(400);
     expect((await patch("not json")).status).toBe(400);

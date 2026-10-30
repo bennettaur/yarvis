@@ -1,12 +1,7 @@
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { fence, newNonce } from "../lib/fencing.ts";
-import {
-  COMPLEXITY_TIERS,
-  type ComplexityTier,
-  getComplexityModelConfig,
-  type ModelSelection,
-} from "./complexity.ts";
+import { COMPLEXITY_TIERS, type ComplexityTier, getComplexityModelConfig } from "./complexity.ts";
 import { decide, getDecisionModelConfig, resolveDecisionModel } from "./decision.ts";
 import { describeError, redactSecrets } from "./errors.ts";
 import type { SystemOneDecision } from "./systemOne.ts";
@@ -14,7 +9,8 @@ import type { SystemOneDecision } from "./systemOne.ts";
 /**
  * Complexity routing: the decision model reads a task and picks the complexity
  * tier whose model should do it. Used for a specialist run whose definition
- * names neither a model nor a tier. When routing is off, no tier is
+ * names neither a model nor a tier, which includes a scheduled job with no
+ * specialist. When routing is off, no tier is
  * configured, or the decision model fails or times out, the answer is null and
  * the run uses the default chat model, as it would with no routing at all.
  */
@@ -26,7 +22,7 @@ const routingAnswerSchema = z.object({
 
 type RoutingAnswer = z.infer<typeof routingAnswerSchema>;
 
-/** A delegated task is capped at 4000 characters, so this keeps the whole of one. */
+/** Matches the `delegate` tool's cap on a task (`agents/tools.ts`); a job's task may run longer. */
 const MAX_TASK_CHARS = 4_000;
 
 const TIER_GUIDE = [
@@ -63,7 +59,7 @@ function systemOneQuestion(question: string, criteria: { true: string; false: st
     instructions: [
       ...ROUTING_RULES,
       "The tiers:",
-      ...TIER_GUIDE,
+      ...TIER_GUIDE.map((line) => `- ${line}`),
       "The state holds the task, tagged with a per-request suffix.",
       `Question about the task: ${question}`,
     ].join("\n"),
@@ -74,7 +70,7 @@ function systemOneQuestion(question: string, criteria: { true: string; false: st
 const SYSTEM_ONE_ROUTING: SystemOneDecision<RoutingAnswer, RoutingQuestion> = {
   questions: {
     needsMax: systemOneQuestion("does it need the max tier?", {
-      true: "It clearly needs hard reasoning or a mistake would be costly.",
+      true: "It needs hard reasoning, a mistake would be costly, or you are unsure.",
       false: "A medium or low tier model could do it well.",
     }),
     beyondLow: systemOneQuestion("is it more than low-tier work?", {
@@ -83,12 +79,9 @@ const SYSTEM_ONE_ROUTING: SystemOneDecision<RoutingAnswer, RoutingQuestion> = {
     }),
   },
   toAnswer({ needsMax, beyondLow }) {
-    const tier: ComplexityTier =
-      needsMax >= SYSTEM_ONE_CONFIDENCE
-        ? "max"
-        : 1 - beyondLow >= SYSTEM_ONE_CONFIDENCE
-          ? "low"
-          : "medium";
+    let tier: ComplexityTier = "medium";
+    if (needsMax >= SYSTEM_ONE_CONFIDENCE) tier = "max";
+    else if (1 - beyondLow >= SYSTEM_ONE_CONFIDENCE) tier = "low";
     return {
       reason: `System One: needs max ${needsMax.toFixed(2)}, beyond low ${beyondLow.toFixed(2)}`,
       tier,
@@ -139,14 +132,14 @@ export async function routeComplexityTier(
   options: RouteOptions = {},
 ): Promise<ComplexityTier | null> {
   const deps = { ...DEFAULT_DEPS, ...options.deps };
-  const settings = await deps.settings();
-  if (!settings.routeComplexity) return null;
-  // With no tier configured every answer resolves to the default model, so the call is wasted.
-  const tiers = await deps.tiers();
-  if (!COMPLEXITY_TIERS.some((t) => tiers[t])) return null;
-  const selection: ModelSelection | null = await deps.resolveModel(config, settings.model);
-  if (!selection) return null;
   try {
+    const settings = await deps.settings();
+    if (!settings.routeComplexity) return null;
+    // With no tier configured every answer resolves to the default model, so the call is wasted.
+    const tiers = await deps.tiers();
+    if (!COMPLEXITY_TIERS.some((tier) => tiers[tier])) return null;
+    const selection = await deps.resolveModel(config, settings.model);
+    if (!selection) return null;
     const answer = await deps.decide(config, selection, {
       system: ROUTER_SYSTEM,
       prompt: buildRoutingPrompt(task, newNonce()),
@@ -156,7 +149,7 @@ export async function routeComplexityTier(
       fetchImpl: options.fetchImpl,
     });
     console.info(
-      `[complexity-routing] ${answer.tier}: ${answer.reason.replace(/\s+/g, " ").slice(0, 200)}`,
+      `[complexity-routing] ${answer.tier}: ${answer.reason.replace(/\s+/g, " ").trim().slice(0, 200)}`,
     );
     return answer.tier;
   } catch (e) {
