@@ -14,12 +14,14 @@ const RUN = {
   stopAt: null as string | null,
 };
 
+const WORKSPACE_ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
+
 const QUESTION = {
   id: "q1",
   kind: "question",
   streamId: "s1",
   question: "Where should I ask for review?",
-  situation: "The billing PR is ready",
+  situation: `The billing PR in ${WORKSPACE_ID} is ready`,
   options: ["#billing-reviews", "Ask Sam"],
   action: null,
   toolArgs: null,
@@ -46,7 +48,7 @@ const STREAM = {
   summary: null,
   status: "waiting-on-user",
   priority: "high",
-  nextAction: "Ask for review",
+  nextAction: `Ask for review of ${WORKSPACE_ID.toUpperCase()}`,
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
   pausedAt: null,
@@ -60,6 +62,14 @@ const STREAM = {
       state: "CI passing",
       observedAt: "2026-10-19T10:00:00.000Z",
     },
+    {
+      id: "l2",
+      kind: "workspace",
+      ref: { kind: "workspace", workspaceId: WORKSPACE_ID },
+      title: null,
+      state: "session idle",
+      observedAt: "2026-10-19T10:00:00.000Z",
+    },
   ],
 };
 
@@ -69,7 +79,7 @@ const PASS = {
   chatSessionId: "c1",
   startedAt: "2026-10-19T10:00:00.000Z",
   finishedAt: "2026-10-19T10:02:00.000Z",
-  notes: "Asked where to request review.",
+  notes: `Asked where to request review. Workspace \`${WORKSPACE_ID}\` is idle.`,
   sleepMinutes: 60,
   sleepReason: "every stream is waiting",
   error: null,
@@ -181,6 +191,7 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM]);
+    if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
     if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(savedConfig);
@@ -212,6 +223,7 @@ const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
+const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
 const mounted: (() => void)[] = [];
@@ -258,6 +270,38 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("names the workspaces it mentions by id and opens them on click", async () => {
+    const opened: string[] = [];
+    const stop = onOpenWorkspace((request) => opened.push(request.id));
+    try {
+      const host = await mount();
+      await waitForText(host, "workspace: Billing invoices");
+
+      expect(host.textContent).toContain("workspace: Billing invoices · session idle");
+      expect(host.textContent).toContain("Workspace Billing invoices is idle.");
+      expect(host.textContent).not.toContain(WORKSPACE_ID);
+
+      expect(host.textContent).toContain("The billing PR in Billing invoices is ready");
+      expect(host.textContent).toContain("Next: Ask for review of Billing invoices");
+
+      buttonNamed(host, "workspace: Billing invoices · session idle").click();
+      const noteLink = [...host.querySelectorAll("a")].find(
+        (a) => a.textContent === "Billing invoices",
+      );
+      expect(noteLink).toBeDefined();
+      noteLink?.click();
+      // The question's situation and the stream's next step.
+      const mentions = [...host.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Billing invoices",
+      );
+      expect(mentions).toHaveLength(2);
+      for (const mention of mentions) mention.click();
+      expect(opened).toEqual([WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID]);
+    } finally {
+      stop();
+    }
   });
 
   it("shows it is sleeping between passes", async () => {
@@ -609,21 +653,39 @@ describe("applyPassEvent", () => {
 });
 
 describe("linkLabel", () => {
-  it("says when a review request was sent", () => {
-    const label = linkLabel({
+  it("names a workspace by its current name, and says only what it is when unknown", () => {
+    const link = {
       id: "l",
-      kind: "review-request",
-      ref: {
-        kind: "review-request",
-        channel: "slack",
-        conversation: "#billing-reviews",
-        messageRef: "1712345678.0001",
-        sentAt: "2026-10-19T14:00:00.000Z",
-      },
+      kind: "workspace" as const,
+      ref: { kind: "workspace" as const, workspaceId: WORKSPACE_ID },
       title: null,
-      state: "no reply yet",
+      state: null,
       observedAt: null,
-    });
+    };
+    expect(linkLabel(link, new Map([[WORKSPACE_ID, "Billing invoices"]]))).toBe(
+      "workspace: Billing invoices",
+    );
+    expect(linkLabel(link, new Map())).toBe("workspace");
+  });
+
+  it("says when a review request was sent", () => {
+    const label = linkLabel(
+      {
+        id: "l",
+        kind: "review-request",
+        ref: {
+          kind: "review-request",
+          channel: "slack",
+          conversation: "#billing-reviews",
+          messageRef: "1712345678.0001",
+          sentAt: "2026-10-19T14:00:00.000Z",
+        },
+        title: null,
+        state: "no reply yet",
+        observedAt: null,
+      },
+      new Map(),
+    );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
   });
