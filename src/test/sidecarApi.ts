@@ -9,6 +9,10 @@ import { mock } from "bun:test";
  * file order. Registering one stub here keeps every export, passes each call
  * through to the real client unless a test has set an override, and
  * `resetSidecarApi` clears them.
+ *
+ * An override changes what code outside `lib/api` sees. Inside it, the real
+ * `getHealth` and `streamSSE` still call the real `sidecarInfo` and
+ * `sidecarFetch`, so a suite that needs them answered stubs them directly.
  */
 
 type SidecarApi = typeof import("../lib/api");
@@ -23,6 +27,7 @@ const actual = { ...(await import("../lib/api")) };
 export const realSidecarApi: Readonly<SidecarApi> = actual;
 let overrides: Overrides = {};
 
+/** Adds to the overrides already set; they last until `resetSidecarApi`. */
 export function stubSidecarApi(next: Overrides): void {
   overrides = { ...overrides, ...next };
 }
@@ -38,14 +43,13 @@ const through =
     // biome-ignore lint/suspicious/noExplicitAny: same
     ((overrides[name] ?? actual[name]) as any)(...args);
 
+// Every function is wrapped, so one added to `lib/api` can be stubbed without
+// touching this file. `SidecarError` stays the real class for `instanceof`.
+const overridable = (Object.keys(actual) as (keyof SidecarApi)[]).filter(
+  (name): name is keyof Overrides => name !== "SidecarError" && typeof actual[name] === "function",
+);
+
 mock.module("../lib/api", () => ({
   ...actual,
-  sidecarInfo: through("sidecarInfo"),
-  sidecarFetch: through("sidecarFetch"),
-  ensureOk: through("ensureOk"),
-  getHealth: through("getHealth"),
-  waitForSidecarReady: through("waitForSidecarReady"),
-  getStatus: through("getStatus"),
-  getDbHealth: through("getDbHealth"),
-  streamSSE: through("streamSSE"),
+  ...Object.fromEntries(overridable.map((name) => [name, through(name)])),
 }));

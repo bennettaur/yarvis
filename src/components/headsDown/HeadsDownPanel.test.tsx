@@ -208,8 +208,8 @@ stubSidecarApi({
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
-    // The live stream, and anything a later file asks for: fail rather than
-    // hand a caller the wrong shape. The page reconnects later, which the test
+    // The live stream, and anything else: fail rather than hand a caller the
+    // wrong shape. The page reconnects later, which the test
     // ends before.
     return json({ error: `unexpected path: ${path}` }, 404);
   },

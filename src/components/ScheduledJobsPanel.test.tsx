@@ -90,10 +90,8 @@ stubSidecarApi({
         ],
       });
     }
-    // `mock.module` stays installed for the rest of the `bun test` process, so
-    // this stub also answers files that run after this one. Anything it does
-    // not recognise has to fail rather than be handed the job list, which a
-    // caller expecting its own shape would then read as valid data.
+    // Anything it does not recognise fails rather than being handed the job
+    // list, which a caller expecting its own shape would read as valid data.
     return json({ error: `unexpected path: ${path}` }, 404);
   },
 });

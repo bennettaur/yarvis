@@ -64,7 +64,7 @@ mock.module("@tauri-apps/plugin-opener", () => ({
 
 let unmount: (() => void) | null = null;
 
-// Hand the real module back, so nothing after this file runs against the stub.
+// Clear the overrides, so nothing after this file runs against them.
 afterAll(() => {
   resetSidecarApi();
 });

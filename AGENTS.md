@@ -140,9 +140,10 @@ back to ad-hoc.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
   `src/test/setup.ts` registers the DOM, pins the timezone, and stubs Tauri
   runtime APIs. Component tests stub the sidecar API client
-  (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, never
-  their own `mock.module` of it: that replaces the module for the whole run,
-  so a partial stub breaks whichever file loads next. They render with
+  (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
+  clear it with `resetSidecarApi` in `afterAll`, never with their own
+  `mock.module` of it: that replaces the module for the whole run, so a
+  partial stub breaks whichever file loads next. They render with
   `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between

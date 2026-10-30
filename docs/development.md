@@ -95,8 +95,8 @@ upgrading Claude Code or changing how those runs are started.
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
 APIs. Component tests stub the sidecar client (`src/lib/api`) through
-`stubSidecarApi` in `src/test/sidecarApi.ts`, never their own `mock.module`
-of it, and render with `renderToHtml` from `src/test/render.tsx`.
+`stubSidecarApi` in `src/test/sidecarApi.ts` (cleared with `resetSidecarApi`
+in `afterAll`), never their own `mock.module` of it, and render with `renderToHtml` from `src/test/render.tsx`.
 
 ## Git hooks and CI
 
