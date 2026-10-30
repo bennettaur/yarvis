@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import MutationTestingSection from "./MutationTestingSection";
 
 const DEFAULTS = {
@@ -15,11 +16,7 @@ let config: Record<string, unknown> = { ...DEFAULTS };
 const calls: { method: string; body?: string }[] = [];
 let nextPatchStatus: number | null = null;
 
-// The real exports are spread back in; see `PrModelSection.test.tsx`.
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (_url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ method, body: init.body as string | undefined });
@@ -34,7 +31,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -110,3 +107,5 @@ describe("MutationTestingSection", () => {
     expect(select.value).toBe("sonnet");
   });
 });
+
+afterAll(resetSidecarApi);
