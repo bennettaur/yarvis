@@ -332,6 +332,9 @@ export interface AgentTurnParams {
  * thrown), mirroring how the AI SDK surfaces them, so callers handle success
  * and failure through the same channel. On error the assistant message is not
  * persisted.
+ *
+ * Each step is also reported to the Agent Field page, under the surface the
+ * turn came from.
  */
 export function runAgentTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
   return reportTurnActivity(params.userMetadata?.source ?? "chat", runTurn(params), params.signal);

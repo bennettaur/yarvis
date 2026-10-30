@@ -73,18 +73,47 @@ describe("createAgentField", () => {
     await waitFor(() => (els.stats.textContent ?? "").startsWith("LIVE"), "the LIVE status");
   });
 
-  it("starts on a plain key but ignores one with a modifier or typed into a field", () => {
+  const press = (target: EventTarget, key: string, init: KeyboardEventInit = {}) =>
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
+
+  it("shows DEMO when the feed fails before it ever connected", async () => {
+    const els = mount();
+    field?.setLive(false);
+    await waitFor(() => (els.stats.textContent ?? "").startsWith("DEMO"), "the DEMO status");
+  });
+
+  it("shows WAITING, not DEMO, when a live feed drops", async () => {
+    const els = mount();
+    field?.setLive(true);
+    field?.setLive(false);
+    await waitFor(() => (els.stats.textContent ?? "").startsWith("WAITING"), "the WAITING status");
+  });
+
+  it("starts on a plain key aimed at the page or the field", () => {
+    const els = mount();
+    press(document.body, "x");
+    expect(els.startOverlay.hidden).toBe(true);
+    press(els.canvas, "h");
+    expect(els.hud.hidden).toBe(true);
+  });
+
+  it("ignores keys with a modifier, repeats, Escape, and typing", () => {
     const els = mount();
     const input = document.body.appendChild(document.createElement("input"));
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "h", bubbles: true }));
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true }));
-    expect(els.startOverlay.hidden).toBe(false);
+    press(input, "h");
     input.remove();
+    press(document.body, "1", { metaKey: true });
+    press(document.body, "x", { repeat: true });
+    press(document.body, "Escape");
+    expect(els.startOverlay.hidden).toBe(false);
+  });
 
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
-    expect(els.startOverlay.hidden).toBe(true);
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "h" }));
-    expect(els.hud.hidden).toBe(true);
+  it("ignores keys aimed at something outside the field", () => {
+    const els = mount();
+    const overlay = document.body.appendChild(document.createElement("div"));
+    press(overlay, "x");
+    overlay.remove();
+    expect(els.startOverlay.hidden).toBe(false);
   });
 
   it("stops listening for keys once destroyed", () => {
@@ -92,7 +121,7 @@ describe("createAgentField", () => {
     field?.start();
     field?.destroy();
     field = null;
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+    press(document.body, "a");
     expect(els.manual.hidden).toBe(true);
   });
 });

@@ -70,7 +70,18 @@ const CLIMAX_OUT = 0.4; // re-arms once intensity falls below this
 const LOGICAL_H = 180; // internal pixel height (upscaled, pixelated)
 const MAX_SHAPES = 450;
 const MAX_PARTICLES = 1000;
-const TEST: FieldEventType[] = [
+// Effects are pushed by events but expire only in the render pass, which stops
+// while the window is hidden. Past a cap the oldest go first.
+const MAX_STREAMS = 250;
+const MAX_PACKETS = 200;
+const MAX_RINGS = 100;
+const MAX_ROCKETS = 20;
+const MAX_BEATS = 200;
+const EVENT_RATE_WINDOW_MS = 60_000; // the HUD's EVT/MIN
+// A node with no events for this long spirals away, unless it was only just made.
+const NODE_IDLE_EXPIRY_MS = 90_000;
+const NODE_MIN_AGE_MS = 5_000;
+const TEST_EVENT_TYPES: FieldEventType[] = [
   "read",
   "edit",
   "bash",
@@ -99,8 +110,24 @@ export function nodeKey(origin: FieldOrigin, source: string): string {
   return `${origin}:${source}`;
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
 const rnd = (a = 1, b?: number) =>
   b === undefined ? Math.random() * a : a + Math.random() * (b - a);
+/** Appends and drops the oldest entries past `max`. */
+function pushCapped<T>(list: T[], item: T, max: number) {
+  list.push(item);
+  if (list.length > max) list.splice(0, list.length - max);
+}
+
 const pick = <T>(a: readonly T[]): T => a[(Math.random() * a.length) | 0];
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const mtof = (m: number) => 440 * 2 ** ((m - 69) / 12);
@@ -267,7 +294,7 @@ interface Star {
   z: number;
 }
 interface FieldNode {
-  id: string;
+  source: string;
   origin: FieldOrigin;
   a: number;
   x: number;
@@ -349,20 +376,11 @@ function pulseWave(ctx: AudioContext, d: number) {
   return ctx.createPeriodicWave(re, im);
 }
 
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return (
-    target.isContentEditable ||
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.tagName === "SELECT"
-  );
-}
-
 export function createAgentField(els: FieldElements): AgentField {
   /* =========================================================
      STATE
      ========================================================= */
+  // S is the live state; S.I is intensity (0 to 1), eased each frame toward S.target.
   const S = {
     I: 0,
     target: 0,
@@ -541,6 +559,8 @@ export function createAgentField(els: FieldElements): AgentField {
         onBar();
       }
     }
+    // The scheduler keeps running while frames don't (a hidden window), so it trims too.
+    if (beatQ.length > MAX_BEATS) beatQ.splice(0, beatQ.length - MAX_BEATS);
   }
   const curProg = () => (S.I > 0.5 && Math.floor(bar / 8) % 2 ? PROG_B : PROG_A);
   function onBar() {
@@ -1013,14 +1033,18 @@ export function createAgentField(els: FieldElements): AgentField {
   /* --- secondary fx --- */
   function spawnStream(color: string, y?: number, w = 1) {
     const dir = Math.random() < 0.85 ? -1 : 1;
-    streams.push({
-      x: dir < 0 ? W + rnd(0, 20) : -rnd(0, 20),
-      y: y ?? rnd(6, H - 6),
-      vx: dir * rnd(120, 240) * (1 + S.I),
-      len: rnd(10, 30) * (1 + S.I * 0.6),
-      color,
-      w,
-    });
+    pushCapped(
+      streams,
+      {
+        x: dir < 0 ? W + rnd(0, 20) : -rnd(0, 20),
+        y: y ?? rnd(6, H - 6),
+        vx: dir * rnd(120, 240) * (1 + S.I),
+        len: rnd(10, 30) * (1 + S.I * 0.6),
+        color,
+        w,
+      },
+      MAX_STREAMS,
+    );
   }
   function burst(x: number, y: number, n: number, colors: string[]) {
     for (let i = 0; i < n; i++) {
@@ -1040,19 +1064,27 @@ export function createAgentField(els: FieldElements): AgentField {
     if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
   }
   function firework() {
-    rockets.push({
-      x: rnd(W * 0.15, W * 0.85),
-      y: H + 2,
-      vy: -rnd(110, 150),
-      ty: rnd(20, H * 0.45),
-      color: pick([PAL.white, PAL.red, PAL.pink]),
-    });
+    pushCapped(
+      rockets,
+      {
+        x: rnd(W * 0.15, W * 0.85),
+        y: H + 2,
+        vy: -rnd(110, 150),
+        ty: rnd(20, H * 0.45),
+        color: pick([PAL.white, PAL.red, PAL.pink]),
+      },
+      MAX_ROCKETS,
+    );
   }
   function ring(x: number, y: number, color: string, vr = 90) {
-    rings.push({ x, y, r: 1, vr, life: 1, color });
+    pushCapped(rings, { x, y, r: 1, vr, life: 1, color }, MAX_RINGS);
   }
   function packet(x0: number, y0: number, x1: number, y1: number, color: string) {
-    packets.push({ x0, y0, x1, y1, p: 0, sp: rnd(1.2, 2.2) * (1 + S.I), color });
+    pushCapped(
+      packets,
+      { x0, y0, x1, y1, p: 0, sp: rnd(1.2, 2.2) * (1 + S.I), color },
+      MAX_PACKETS,
+    );
   }
   function initStars() {
     stars = [];
@@ -1060,13 +1092,13 @@ export function createAgentField(els: FieldElements): AgentField {
   }
 
   /* --- agent nodes (one per origin and event source) --- */
-  function getNode(origin: FieldOrigin, src: string) {
+  function ensureNode(origin: FieldOrigin, src: string) {
     const key = nodeKey(origin, src);
     let n = nodes.get(key);
     if (!n) {
       const c = core();
       n = {
-        id: src,
+        source: src,
         origin,
         a: rnd(6.28),
         x: c.x,
@@ -1106,7 +1138,7 @@ export function createAgentField(els: FieldElements): AgentField {
     });
     const now = performance.now();
     for (const [k, n] of nodes)
-      if (now - n.last > 90000 && now - n.born > 5000) {
+      if (now - n.last > NODE_IDLE_EXPIRY_MS && now - n.born > NODE_MIN_AGE_MS) {
         spiralOut(n.x, n.y, 6, { color: PAL.gray });
         nodes.delete(k);
       }
@@ -1120,12 +1152,14 @@ export function createAgentField(els: FieldElements): AgentField {
     const type = eventType(ev.type);
     const src = ev.source || "agent";
     S.activity += WEIGHTS[type];
-    S.events.push(performance.now());
+    const now = performance.now();
+    S.events.push(now);
+    while (S.events.length && now - S.events[0] >= EVENT_RATE_WINDOW_MS) S.events.shift();
     pendingSfx.push(type);
-    const n = getNode(ev.origin, src);
+    const n = ensureNode(ev.origin, src);
     n.heat = Math.min(1, n.heat + 0.25);
     n.count++;
-    n.last = performance.now();
+    n.last = now;
     const c = core();
     switch (type) {
       case "read":
@@ -1237,7 +1271,9 @@ export function createAgentField(els: FieldElements): AgentField {
   /* =========================================================
      GRAPHICS
      ========================================================= */
-  const ctx = els.canvas.getContext("2d");
+  // The glitch pass reads pixels back every frame; the canvas is small enough for the CPU path.
+  const ctx = els.canvas.getContext("2d", { willReadFrequently: true });
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
   function resize(w: number, h: number) {
     if (w <= 0 || h <= 0) return;
     W = Math.round((LOGICAL_H * w) / h);
@@ -1496,7 +1532,6 @@ export function createAgentField(els: FieldElements): AgentField {
         g.globalAlpha = 1;
         return s.x > -80 && s.x < W + 80;
       });
-      if (streams.length > 250) streams.splice(0, streams.length - 250);
 
       // shapes
       shapes = shapes.filter((m) => {
@@ -1542,9 +1577,10 @@ export function createAgentField(els: FieldElements): AgentField {
         return true;
       });
 
-      // Photosensitivity: above ~90% intensity this flashes rapidly and the
-      // glitch below occasionally inverts whole frames.
-      if (S.flash > 0.01) {
+      // Photosensitivity: a full-screen flash on every kick (kicks start above 0.2
+      // intensity, alpha 0.03 + 0.1 * I), on every error (0.5, red, at any intensity)
+      // and on the climax drop (0.45, when intensity crosses 0.55). Off for reduced motion.
+      if (S.flash > 0.01 && !reducedMotion) {
         g.globalAlpha = S.flash;
         g.fillStyle = S.flashColor;
         g.fillRect(-10, -10, W + 20, H + 20);
@@ -1553,12 +1589,14 @@ export function createAgentField(els: FieldElements): AgentField {
       S.flash *= Math.exp(-dt * 10);
       g.restore();
 
-      // glitch post-process
+      // glitch post-process: random above 0.65 intensity, and 8 frames on every error.
+      // Above 0.92, each glitch frame has a 3% chance to invert the whole frame.
+      // Reduced motion keeps only the red scanline.
       if (I > 0.65 && Math.random() < (I - 0.65) * 1.1) glitchFrames = Math.max(glitchFrames, 2);
       if (glitchFrames > 0) {
         glitchFrames--;
         const slices = 2 + ((I * 6) | 0);
-        for (let i = 0; i < slices; i++) {
+        for (let i = 0; i < slices && !reducedMotion; i++) {
           const y = rnd(H) | 0;
           const h = rnd(2, 14) | 0;
           const dx = rnd(-20, 20) | 0;
@@ -1572,7 +1610,7 @@ export function createAgentField(els: FieldElements): AgentField {
         g.fillStyle = PAL.red;
         g.fillRect(0, rnd(H) | 0, W, 1);
         g.globalAlpha = 1;
-        if (I > 0.92 && Math.random() < 0.03) {
+        if (I > 0.92 && Math.random() < 0.03 && !reducedMotion) {
           g.globalCompositeOperation = "difference";
           g.fillStyle = "#fff";
           g.fillRect(0, 0, W, H);
@@ -1603,7 +1641,7 @@ export function createAgentField(els: FieldElements): AgentField {
       el.className = i < lit ? (i >= 16 ? METER_HOT : METER_ON) : METER_OFF;
     });
     const now = performance.now();
-    S.events = S.events.filter((t) => now - t < 60000);
+    S.events = S.events.filter((t) => now - t < EVENT_RATE_WINDOW_MS);
     const mode = S.manual ? "MANUAL" : S.live ? "LIVE" : S.demo ? "DEMO" : "WAITING";
     const sect = S.I < 0.2 ? "IDLE" : S.I < 0.55 ? "BUILD" : S.I < 0.85 ? "RUSH" : "OVERDRIVE";
     els.stats.textContent = `${mode}  ${sect}  ${Math.round(bpm)} BPM  ${String(Math.round(S.I * 100)).padStart(3, " ")}%\n${S.events.length} EVT/MIN  ${nodes.size} AGENTS${S.muted ? "  [MUTED]" : ""}`;
@@ -1620,7 +1658,7 @@ export function createAgentField(els: FieldElements): AgentField {
         bar.className =
           "ml-1.5 inline-block h-1.5 bg-[#ff2a3a] align-middle shadow-[0_0_4px_#ff2a3a]";
         bar.style.width = `${Math.round(4 + n.heat * 40)}px`;
-        row.append(origin, n.id, bar);
+        row.append(origin, n.source, bar);
         return row;
       }),
     );
@@ -1652,7 +1690,6 @@ export function createAgentField(els: FieldElements): AgentField {
     bpm += (bt - bpm) * Math.min(1, dt * 0.8);
 
     if (draw) draw(now, dt);
-    if (beatQ.length > 200) beatQ.splice(0, beatQ.length - 200);
 
     hudT += dt;
     if (hudT > 0.1) {
@@ -1677,9 +1714,14 @@ export function createAgentField(els: FieldElements): AgentField {
   }
   function onKeyDown(e: KeyboardEvent) {
     // Cmd/Ctrl+digit switches app tabs, and typing elsewhere must not drive the field.
-    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-    if (e.target !== els.slider && isTypingTarget(e.target)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat) return;
+    // Overlays above the field (Omni Chat's approval bar, dialogs) have keys of their own.
+    const target = e.target;
+    if (target !== document.body && !(target instanceof Node && els.host.contains(target))) return;
+    if (target !== els.slider && isTypingTarget(target)) return;
     if (!S.started) {
+      // Escape is how a dialog closes, not a request for sound.
+      if (e.key === "Escape") return;
       start();
       return;
     }
@@ -1698,7 +1740,12 @@ export function createAgentField(els: FieldElements): AgentField {
       if (document.fullscreenElement) void document.exitFullscreen();
       else els.host.requestFullscreen().catch(() => {});
     } else if (k >= "1" && k <= "8") {
-      onEvent({ type: TEST[Number(k) - 1], origin: "claude", source: "manual", label: "test" });
+      onEvent({
+        type: TEST_EVENT_TYPES[Number(k) - 1],
+        origin: "claude",
+        source: "manual",
+        label: "test",
+      });
     }
   }
   function onSlider() {

@@ -35,6 +35,9 @@ const MAX_STREAM_QUEUE = 512;
 /** Heartbeat interval so an idle stream isn't dropped. */
 const HEARTBEAT_MS = 15_000;
 
+/** How long a workspace's name is reused before it is looked up again, so a rename shows up. */
+const NAME_TTL_MS = 60_000;
+
 const querySchema = z.object({ workspaceId: UUID });
 
 /**
@@ -48,6 +51,22 @@ export function createActivityIngestRoutes(config: Config): Hono {
 
   router.use("*", bearerAuth({ token: config.attentionToken }));
   router.use("*", bodyLimit({ maxSize: MAX_BODY_BYTES, onError: (c) => c.body(null, 413) }));
+
+  // A busy session posts several events a second, and the name only labels a node.
+  const names = new Map<string, { name: string; at: number }>();
+  const workspaceName = async (workspaceId: string): Promise<string | undefined> => {
+    const cached = names.get(workspaceId);
+    if (cached && Date.now() - cached.at < NAME_TTL_MS) return cached.name;
+    if (!config.databaseUrl) return undefined;
+    // A failed lookup isn't cached, and must not drop the event: it falls back to a generic name.
+    const [ws] = await getDb(config.databaseUrl)
+      .db.select({ name: workspaces.name })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .catch(() => []);
+    if (ws) names.set(workspaceId, { name: ws.name, at: Date.now() });
+    return ws?.name;
+  };
 
   router.post("/", async (c) => {
     const query = querySchema.safeParse(c.req.query());
@@ -69,14 +88,7 @@ export function createActivityIngestRoutes(config: Config): Hono {
     const hook = claudeHookSchema.safeParse(await c.req.json().catch(() => null));
     if (!hook.success) return c.json({ error: hook.error.flatten() }, 400);
 
-    const [ws] = config.databaseUrl
-      ? await getDb(config.databaseUrl)
-          .db.select({ name: workspaces.name })
-          .from(workspaces)
-          .where(eq(workspaces.id, workspaceId))
-          .catch(() => [])
-      : [];
-    const event = fromClaudeHook(hook.data, ws?.name ?? "claude");
+    const event = fromClaudeHook(hook.data, (await workspaceName(workspaceId)) ?? "claude");
     if (event) publishActivity(event);
     return c.body(null, 204);
   });
@@ -89,8 +101,8 @@ export function createActivityRoutes(): Hono {
   const router = new Hono();
 
   // Purely forward: the page draws only what is happening now.
-  router.get("/stream", async (c) => {
-    return streamSSE(c, async (stream) => {
+  router.get("/stream", (c) =>
+    streamSSE(c, async (stream) => {
       const queue: ActivityEvent[] = [];
       let wake: (() => void) | null = null;
       const unsubscribe = subscribeActivity((event) => {
@@ -116,24 +128,25 @@ export function createActivityRoutes(): Hono {
           wake = finish;
         });
 
+      const ping = () => stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
+
       try {
+        // The client counts the stream as live from its first frame, so send one now.
+        await ping();
         while (!signal.aborted) {
-          if (queue.length === 0) {
-            await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
-          }
           while (queue.length > 0) {
             await stream.writeSSE({
               data: JSON.stringify({ type: "event", event: queue.shift() }),
             });
           }
-          if (signal.aborted) break;
           await waitForEvent();
+          if (queue.length === 0 && !signal.aborted) await ping();
         }
       } finally {
         unsubscribe();
       }
-    });
-  });
+    }),
+  );
 
   return router;
 }

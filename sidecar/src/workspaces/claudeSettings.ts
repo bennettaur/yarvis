@@ -278,14 +278,16 @@ function sandboxWithClonePaths(
 }
 
 /**
- * Merges our hooks into any existing settings: the three attention hooks, which
- * include the permission hook, the hooks that settle held permission prompts,
- * the SessionStart/SessionEnd pair that registers the session, and the
- * activity hooks that feed the Agent Field page. Unrelated
- * top-level keys and the user's own hooks for these events are preserved — our
- * entry is *appended* alongside them, not substituted for the array. Idempotent:
- * a prior Yarvis entry for an event is dropped before ours is re-added, so
- * re-provisioning never stacks duplicates.
+ * Merges our hooks into any existing settings:
+ * - the three attention hooks, which include the permission hook;
+ * - the hooks that settle held permission prompts;
+ * - the SessionStart/SessionEnd pair that registers the session;
+ * - the activity hooks that feed the Agent Field page.
+ *
+ * Unrelated top-level keys and the user's own hooks for these events are
+ * preserved — our entries are *appended* alongside them, not substituted for
+ * the array. Idempotent: prior Yarvis entries for an event are dropped before
+ * ours are re-added, so re-provisioning never stacks duplicates.
  *
  * Also lets the sandbox commit to each repo's clone, while keeping its git
  * config, hooks and shared refs out of reach (`sandboxPaths.ts`), and strips the `skills.paths`/`agents.paths` an earlier version wrote to

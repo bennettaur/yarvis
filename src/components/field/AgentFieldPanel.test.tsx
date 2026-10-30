@@ -12,10 +12,18 @@ describe("AgentFieldPanel", () => {
   });
 
   it("renders the HUD and the start prompt", async () => {
-    const html = await renderToHtml(createElement(AgentFieldPanel));
+    const html = await renderToHtml(createElement(AgentFieldPanel, { subscribe: () => () => {} }));
     expect(html).toContain("AGENT//FIELD");
     expect(html).toContain("jack in_");
     expect(html).toContain("<canvas");
+  });
+
+  it("takes focus on mount so its keys work at once", async () => {
+    const mounted = await mountForInteraction(
+      createElement(AgentFieldPanel, { subscribe: () => () => {} }),
+    );
+    unmount = mounted.unmount;
+    expect(mounted.host.contains(document.activeElement)).toBe(true);
   });
 
   it("feeds subscribed events to the field and unsubscribes on unmount", async () => {

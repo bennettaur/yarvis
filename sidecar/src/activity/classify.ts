@@ -48,17 +48,23 @@ export const claudeHookSchema = z.object({
 
 export type ClaudeHook = z.infer<typeof claudeHookSchema>;
 
-/** What a tool call was aimed at: a file's name, a command, a pattern or a URL. */
+/**
+ * What a tool call was aimed at: a file's name, a command's program, a URL's
+ * host, or a pattern. The field is often on screen while sharing, so a
+ * command's arguments and a URL's path and credentials are left out.
+ */
 function toolTarget(input: Record<string, unknown> = {}): string {
-  for (const key of ["file_path", "notebook_path"]) {
+  const text = (key: string) => {
     const value = input[key];
-    if (typeof value === "string" && value) return basename(value);
-  }
-  for (const key of ["command", "pattern", "query", "url", "subagent_type", "description"]) {
-    const value = input[key];
-    if (typeof value === "string" && value) return value;
-  }
-  return "";
+    return typeof value === "string" ? value.trim() : "";
+  };
+  const file = text("file_path") || text("notebook_path");
+  if (file) return basename(file);
+  const command = text("command");
+  if (command) return basename(command.split(/\s+/)[0] ?? "");
+  const url = text("url");
+  if (url) return URL.parse(url)?.host ?? "";
+  return text("pattern") || text("query") || text("subagent_type") || text("description");
 }
 
 /**

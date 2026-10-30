@@ -63,6 +63,7 @@ export default function AgentFieldPanel({ subscribe = subscribeActivity }: Props
       startOverlay,
     });
     fieldRef.current = field;
+    host.focus({ preventScroll: true });
     const unsubscribe = subscribe(field.push, field.setLive);
     return () => {
       unsubscribe();
@@ -74,7 +75,9 @@ export default function AgentFieldPanel({ subscribe = subscribeActivity }: Props
   return (
     <div
       ref={hostRef}
-      className="relative h-full w-full overflow-hidden bg-black font-mono text-white"
+      // Focusable so the page's keys work right after its tab is picked.
+      tabIndex={-1}
+      className="relative h-full w-full overflow-hidden bg-black font-mono text-white outline-none"
     >
       <canvas
         ref={canvasRef}

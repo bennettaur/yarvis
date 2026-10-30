@@ -49,6 +49,18 @@ describe("reportTurnActivity", () => {
     expect(seen.every((e) => e.origin === "yarvis" && e.source === "voice")).toBe(true);
   });
 
+  it("reports a turn that failed on its own as an error", async () => {
+    const seen = watch();
+    const running = new AbortController();
+    await drain(
+      reportTurnActivity("chat", turnOf([{ type: "error", message: "boom" }]), running.signal),
+    );
+    expect(seen.map((e) => [e.type, e.label])).toEqual([
+      ["prompt", "chat turn"],
+      ["error", "turn failed"],
+    ]);
+  });
+
   it("doesn't report a turn the user stopped as a failure", async () => {
     const seen = watch();
     const stopped = new AbortController();

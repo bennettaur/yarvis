@@ -71,12 +71,28 @@ describe("fromClaudeHook", () => {
     expect(event).toMatchObject({ type: "edit", label: "Write plan.md" });
   });
 
-  it("labels a command with the command itself", () => {
+  it("labels a command with its program only, leaving out arguments that may hold a secret", () => {
     const event = fromClaudeHook(
-      { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "bun test" } },
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "/usr/bin/curl -H 'X-Auth: abc123' https://api.example.com" },
+      },
       "ws",
     );
-    expect(event).toMatchObject({ type: "bash", label: "Bash bun test" });
+    expect(event).toMatchObject({ type: "bash", label: "Bash curl" });
+  });
+
+  it("labels a fetch with the URL's host, not its path or credentials", () => {
+    const event = fromClaudeHook(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "WebFetch",
+        tool_input: { url: "https://user:pass@docs.example.com/private?token=x" },
+      },
+      "ws",
+    );
+    expect(event).toMatchObject({ type: "search", label: "WebFetch docs.example.com" });
   });
 
   it("maps the rest of the hooks the page draws", () => {

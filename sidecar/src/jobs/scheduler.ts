@@ -76,8 +76,8 @@ export async function runJob(
   try {
     const result = await job.run({ db, config, cursor: claimed.cursor, now, trigger });
     const status = result.skipped ? "skipped" : "ok";
-    reportYarvisActivity(source, "done", status);
     await finishJob(db, job.name, { status, cursor: result.cursor });
+    reportYarvisActivity(source, "done", status);
     if (result.detail) console.log(`[jobs] ${job.name}: ${result.detail}`);
     return { ran: true, status, detail: result.detail };
   } catch (e) {
