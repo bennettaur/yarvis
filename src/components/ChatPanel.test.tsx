@@ -1,12 +1,13 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
-import * as realApi from "../lib/api";
+import type { HealthResponse } from "../lib/api";
 import * as realChat from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { mountForInteraction, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
 /**
@@ -34,7 +35,7 @@ let scripted: unknown[] = [];
 /** Bodies of every chat request, so a test can see what was re-sent. */
 let sent: Array<Record<string, unknown>> = [];
 /** What `/health` answers after a dropped stream, and how long it takes. */
-let health: realApi.HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
+let health: HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
 let healthDelayMs = 0;
 
 const json = (body: unknown) =>
@@ -43,8 +44,7 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
-mock.module("../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   getHealth: async () => {
     await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
     if (health instanceof Error) throw health;
@@ -65,19 +65,16 @@ mock.module("../lib/api", () => ({
     }
     if (path === "/api/chat/sessions") return json(sessions);
     if (path.endsWith("/messages")) return json([]);
-    // Never fall back to `realApi.sidecarFetch`: after `mock.module` that name
-    // resolves to this function, and an unhandled path recurses until the stack
-    // gives out.
+    // An unknown path fails loudly rather than reaching the real client.
     return new Response("unexpected request", { status: 404 });
   },
-}));
+});
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, token: "t" }) }));
 
 /**
- * The turn itself is faked at `streamChat` rather than at the socket: several
- * other suites replace `lib/api` process-wide, so which stub answers an SSE
- * request depends on file order. Nothing else stubs `lib/chat`.
+ * The turn itself is faked at `streamChat` rather than at the socket, so the
+ * test scripts chat events instead of SSE frames. Nothing else stubs `lib/chat`.
  */
 mock.module("../lib/chat", () => ({
   ...realChat,
@@ -154,7 +151,7 @@ async function say(host: HTMLElement, text: string) {
 let unmount: (() => void) | null = null;
 
 afterAll(() => {
-  mock.module("../lib/api", () => realApi);
+  resetSidecarApi();
   mock.module("../lib/chat", () => realChat);
 });
 
