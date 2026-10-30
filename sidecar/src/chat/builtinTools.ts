@@ -59,6 +59,8 @@ export interface BuiltinToolDeps {
   atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
+  /** A specialist run, from a Jobs-tab job or a delegation: also unwatched. */
+  specialistRun?: boolean;
   /** What a task scheduled from this turn inherits. Absent off a chat turn. */
   scheduledTask?: ScheduledTaskTurnContext;
 }
@@ -82,6 +84,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     untrustedReads,
     atTheApp,
     unattended,
+    specialistRun,
   } = deps;
   // Only a chat turn can schedule a task; the others get a context that is never used.
   const scheduledTask = deps.scheduledTask ?? {
@@ -99,7 +102,10 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
-    artifacts: buildArtifactTools(db),
+    artifacts: buildArtifactTools(db, {
+      writer: unattended ? "heads-down" : specialistRun ? "specialist" : "chat",
+      reads: untrustedReads,
+    }),
     workStreams: buildWorkStreamTools(db, { unattended }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),

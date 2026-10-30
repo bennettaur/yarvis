@@ -249,6 +249,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // The question tools wait on the user for longer than a run may last, holding
     // up the chat or job that started it, and a run has no chat to show them in.
     atTheApp: false,
+    specialistRun: true,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {

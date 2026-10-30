@@ -85,7 +85,7 @@ describe("read_web_page", () => {
   });
 
   it("records that the turn read a web page, but not when the read failed", async () => {
-    const reads = { hasReadWebPage: false };
+    const reads = { hasReadWebPage: false, hasReadUnattendedArtifact: false };
     const failing = buildWebTools({ fetchImpl: serving({}).fetchImpl, reads });
     await (
       failing.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }

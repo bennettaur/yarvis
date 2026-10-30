@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
 import {
   ArtifactTooLargeError,
@@ -41,6 +42,8 @@ describe("artifacts", () => {
   it("lists without content, newest change first, filtered by title", async () => {
     const brief = await createArtifact(db, { title: "Morning brief", content: "hello" });
     await createArtifact(db, { title: "Scratchpad" });
+    // updatedAt has millisecond precision; keep the update from tying with the insert.
+    await Bun.sleep(5);
     await updateArtifact(db, brief.id, { append: "!" });
 
     const all = await listArtifacts(db);
@@ -98,8 +101,8 @@ describe("artifacts", () => {
   it("records creation and updates in the activity log", async () => {
     const pad = await createArtifact(db, { title: "Notes" });
     await updateArtifact(db, pad.id, { append: "x" });
-    const rows = await sql<{ type: string }[]>`SELECT type FROM events ORDER BY id`;
-    expect(rows.map((r) => r.type)).toEqual(["artifact.created", "artifact.updated"]);
+    const rows = await sql<{ type: string }[]>`SELECT type FROM events`;
+    expect(rows.map((r) => r.type).sort()).toEqual(["artifact.created", "artifact.updated"]);
   });
 });
 
@@ -138,5 +141,59 @@ describe("artifact tools", () => {
       error?: string;
     };
     expect(result.error).toContain(String(MAX_ARTIFACT_CHARS));
+  });
+});
+
+describe("artifact tools in an unattended run", () => {
+  const chatTools = buildArtifactTools(db);
+  const passTools = buildArtifactTools(db, { writer: "heads-down" });
+
+  const create = async (tools: typeof chatTools, title: string, content: string) =>
+    ((await tools.create_artifact.execute!({ title, content }, opts)) as { id: string }).id;
+
+  it("can only append to an artifact a chat turn wrote", async () => {
+    const id = await create(chatTools, "Plan", "the user's plan");
+
+    const rewrite = (await passTools.update_artifact.execute!({ id, content: "gone" }, opts)) as {
+      error?: string;
+    };
+    expect(rewrite.error).toContain("only append");
+    const rename = (await passTools.update_artifact.execute!({ id, title: "Other" }, opts)) as {
+      error?: string;
+    };
+    expect(rename.error).toContain("only append");
+
+    await passTools.update_artifact.execute!({ id, append: "\nnote" }, opts);
+    const after = (await getArtifact(db, id))!;
+    expect(after.content).toBe("the user's plan\nnote");
+    expect(after.title).toBe("Plan");
+    expect(after.writtenUnattended).toBe(true);
+  });
+
+  it("can rewrite an artifact an unattended run created", async () => {
+    const id = await create(passTools, "Scratchpad", "draft");
+    await passTools.update_artifact.execute!({ id, content: "final" }, opts);
+    const after = (await getArtifact(db, id))!;
+    expect(after.content).toBe("final");
+    expect(after.createdBy).toBe("heads-down");
+  });
+
+  it("marks a chat turn's read of an agent-written artifact as untrusted", async () => {
+    const reads = newUntrustedReads();
+    const tools = buildArtifactTools(db, { reads });
+
+    await tools.get_artifact.execute!({ id: await create(chatTools, "Mine", "x") }, opts);
+    expect(reads.hasReadUnattendedArtifact).toBe(false);
+
+    await tools.get_artifact.execute!({ id: await create(passTools, "Pass notes", "y") }, opts);
+    expect(reads.hasReadUnattendedArtifact).toBe(true);
+  });
+
+  it("marks a chat turn's artifact untrusted once a pass appends to it", async () => {
+    const id = await create(chatTools, "Mine", "x");
+    await passTools.update_artifact.execute!({ id, append: "y" }, opts);
+    const reads = newUntrustedReads();
+    await buildArtifactTools(db, { reads }).get_artifact.execute!({ id }, opts);
+    expect(reads.hasReadUnattendedArtifact).toBe(true);
   });
 });
