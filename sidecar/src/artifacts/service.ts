@@ -18,6 +18,9 @@ import { emitEvent } from "../events/service.ts";
  */
 export const MAX_ARTIFACT_CHARS = 100_000;
 
+/** How many artifacts a listing returns, newest change first. */
+export const ARTIFACT_LIST_LIMIT = 100;
+
 export class ArtifactTooLargeError extends Error {
   constructor() {
     super(`artifact would exceed ${MAX_ARTIFACT_CHARS} characters`);
@@ -64,7 +67,7 @@ export async function getArtifact(db: Db, id: string): Promise<Artifact | null> 
 /** Most recently changed first, so the one being worked on is at the top. */
 export async function listArtifacts(
   db: Db,
-  options: { titleContains?: string; limit?: number } = {},
+  options: { titleContains?: string } = {},
 ): Promise<ArtifactSummary[]> {
   const query = options.titleContains?.trim();
   return db
@@ -79,7 +82,7 @@ export async function listArtifacts(
     .from(artifacts)
     .where(query ? ilike(artifacts.title, `%${escapeLike(query)}%`) : undefined)
     .orderBy(desc(artifacts.updatedAt))
-    .limit(options.limit ?? 100);
+    .limit(ARTIFACT_LIST_LIMIT);
 }
 
 function escapeLike(value: string): string {
@@ -95,6 +98,10 @@ export async function updateArtifact(
   id: string,
   patch: UpdateArtifactInput,
 ): Promise<Artifact | null> {
+  // Nothing to change: don't bump it to the top of the list or log an edit.
+  if (patch.title === undefined && patch.content === undefined && !patch.append) {
+    return getArtifact(db, id);
+  }
   const base = patch.content !== undefined ? sql`${patch.content}` : sql`${artifacts.content}`;
   const next = patch.append ? sql`${base} || ${patch.append}` : base;
 

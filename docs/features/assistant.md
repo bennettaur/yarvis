@@ -213,8 +213,9 @@ Ask the assistant to write something up, like "put together my morning brief",
 and it saves the result as an artifact rather than only replying in the chat.
 It can read an artifact back later and add to it, so it also uses them as
 scratchpads: notes it builds up over a heads-down run, or a list it keeps
-across conversations. A scheduled job can write one too, so a weekday-morning
-job can leave a fresh brief waiting for you.
+across conversations. A job on the Jobs tab can write one too, so a
+weekday-morning job can leave a fresh brief waiting for you. A task the
+assistant schedules for itself in a chat can only read them.
 
 Open **Memory → Artifacts** to read them. You can delete one there; only the
 assistant edits them. Artifacts are markdown for now, and each one is capped

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
+  ARTIFACT_LIST_LIMIT,
   ArtifactTooLargeError,
   createArtifact,
   deleteArtifact,
@@ -18,7 +19,7 @@ import {
  */
 
 const uuid = z.string().uuid();
-const title = z.string().min(1).max(200);
+const title = z.string().trim().min(1).max(200);
 const content = z.string().max(MAX_ARTIFACT_CHARS);
 
 const TOO_LARGE = `That would make the artifact longer than ${MAX_ARTIFACT_CHARS} characters. Summarize or trim it, or start a new artifact.`;
@@ -44,8 +45,7 @@ export function buildArtifactTools(db: Db) {
     }),
 
     list_artifacts: tool({
-      description:
-        "Your artifacts, most recently changed first, without their content. Check here before creating one, so you add to an existing scratchpad rather than starting a second.",
+      description: `Your artifacts, most recently changed first, without their content (the latest ${ARTIFACT_LIST_LIMIT}; use titleContains to find an older one). Check here before creating one, so you add to an existing scratchpad rather than starting a second.`,
       inputSchema: z.object({
         titleContains: z.string().max(200).optional(),
       }),
@@ -100,7 +100,7 @@ export function buildArtifactTools(db: Db) {
         try {
           const artifact = await updateArtifact(db, id, patch);
           return artifact
-            ? { id: artifact.id, title: artifact.title, length: artifact.content.length }
+            ? { id: artifact.id, length: artifact.content.length }
             : { error: "no artifact with that id" };
         } catch (err) {
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
