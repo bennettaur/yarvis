@@ -104,7 +104,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),
-    claudeTasks: buildClaudeTaskTools(db, config, sessionId),
+    claudeTasks: buildClaudeTaskTools(db, config, sessionId, { unattended }),
     workspaces: buildWorkspaceTools(db, config, { remoteControl }),
     jira: buildJiraTools(db, config, { remoteControl }),
     githubIssues: buildIssueTools(db, config),
