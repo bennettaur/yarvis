@@ -523,6 +523,28 @@ describe("github client", () => {
     ]);
   });
 
+  it("reads the viewer's own review out of the reviewer list", () => {
+    const pr = {
+      number: 1,
+      state: "OPEN",
+      author: { login: "author" },
+      reviewThreads: { nodes: [] },
+      commits: { nodes: [] },
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "alice" } }] },
+      latestReviews: {
+        nodes: [
+          { author: { login: "bob" }, state: "APPROVED" },
+          { author: { login: "alice" }, state: "APPROVED" },
+        ],
+      },
+    };
+    expect(toPrDetail(pr, undefined, "bob").viewerReview).toBe("approved");
+    // Re-requested after approving: a fresh look is expected, so Approve is offered again.
+    expect(toPrDetail(pr, undefined, "alice").viewerReview).toBe("pending");
+    expect(toPrDetail(pr, undefined, "zed").viewerReview).toBe("pending");
+    expect(toPrDetail(pr).viewerReview).toBeUndefined();
+  });
+
   it("defaults merge fields off when no repository node is supplied", () => {
     const detail = toPrDetail({
       number: 5,

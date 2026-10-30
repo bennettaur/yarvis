@@ -289,3 +289,50 @@ describe("PrFloatingHeader star toggle", () => {
     unmount();
   });
 });
+
+describe("PrFloatingHeader viewer's review", () => {
+  it("shows the approval in place of the Approve button once the viewer approved", async () => {
+    const html = await render(detail({ viewerReview: "approved" }));
+    expect(html).toContain("✓ Approved");
+    expect(html).not.toContain(">Approve<");
+    expect(html).toContain("Request changes");
+  });
+
+  it("offers Approve when the viewer hasn't approved", async () => {
+    const html = await render(detail({ viewerReview: "changes_requested" }));
+    expect(html).toContain(">Approve<");
+    expect(html).not.toContain("✓ Approved");
+  });
+
+  it("offers Approve when the provider couldn't say who the viewer is", async () => {
+    const html = await render(detail());
+    expect(html).toContain(">Approve<");
+  });
+
+  it("shows the approval as soon as the submit succeeds, before the detail reloads", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail({ viewerReview: "pending" }),
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+    const button = (label: string) =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent === label) as
+        | HTMLButtonElement
+        | undefined;
+
+    button("Approve")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The composer's confirm button is labelled Approve too; it's the last one.
+    const confirm = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Approve");
+    confirm[confirm.length - 1]?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(host.textContent).toContain("✓ Approved");
+    expect(button("Approve")).toBeUndefined();
+    unmount();
+  });
+});

@@ -4,6 +4,7 @@ import {
   isAllowedAzureOrgUrl,
   mapPolicyEvaluation,
   mapReviewer,
+  resetViewerIds,
   summarizeReviewDecision,
 } from "./client.ts";
 
@@ -480,6 +481,49 @@ describe("azure client", () => {
       line: 12,
       isResolved: false,
     });
+  });
+
+  it("reports the viewer's own vote, and leaves it out when the viewer can't be resolved", async () => {
+    const pr = {
+      match: (u: string) => /\/pullRequests\/9$/.test(u.split("?")[0]!),
+      body: {
+        pullRequestId: 9,
+        repository: { name: "web", project: { name: "Shop", id: "p1" } },
+        reviewers: [
+          { id: "user-1", displayName: "Me", vote: 10 },
+          { id: "user-2", displayName: "Other", vote: -10 },
+        ],
+      },
+    };
+    const ref = { project: "Shop", repo: "web", prId: 9 };
+    resetViewerIds();
+    const resolved = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        {
+          match: (u) => u.includes("connectionData"),
+          body: { authenticatedUser: { id: "user-1", providerDisplayName: "Me" } },
+        },
+        pr,
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    expect((await resolved.prDetail(ref)).viewerReview).toBe("approved");
+
+    resetViewerIds();
+    const unresolved = new AzureDevOpsClient(
+      "pat",
+      ORG,
+      fakeFetch([
+        { match: (u) => u.includes("connectionData"), body: {}, status: 500 },
+        pr,
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await unresolved.prDetail(ref);
+    expect(detail.viewerReview).toBeUndefined();
+    expect(detail.reviewers).toHaveLength(2);
   });
 
   // `forkSource` is present only when the source branch lives in a fork, which

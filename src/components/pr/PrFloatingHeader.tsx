@@ -14,6 +14,7 @@ import type {
   PrDetail,
   PrRef,
   PrSummary,
+  ReviewerState,
   SeenCommits,
 } from "../../lib/pr/types";
 import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
@@ -155,6 +156,8 @@ interface ActionConfig {
   requireBody: boolean;
   placeholder: string;
   confirmLabel: string;
+  /** The viewer's standing review that makes this action already done, and what to show instead. */
+  done?: { when: ReviewerState; label: string; title: string };
 }
 
 const APPROVE: ActionConfig = {
@@ -165,6 +168,7 @@ const APPROVE: ActionConfig = {
   requireBody: false,
   placeholder: "Optional comment for the approval…",
   confirmLabel: "Approve",
+  done: { when: "approved", label: "✓ Approved", title: "You approved this PR" },
 };
 
 const REQUEST_CHANGES: ActionConfig = {
@@ -297,6 +301,10 @@ function MergeMenu({
   );
 }
 
+function actionReview(action: "approve" | "request_changes"): ReviewerState {
+  return action === "approve" ? "approved" : "changes_requested";
+}
+
 /**
  * The review and merge actions a PR offers — publish, approve, request changes,
  * merge, auto-merge — with the in-flight and error state they share. A hook so
@@ -322,12 +330,16 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   // review in flight don't clobber each other's spinner.
   const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
   const [mergePending, setMergePending] = useState(false);
+  // The verdict just submitted, keyed by PR, so the buttons reflect it while
+  // the refetched detail is still on its way.
+  const [submitted, setSubmitted] = useState<{ key: string; review: ReviewerState } | null>(null);
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
     setError(null);
     try {
       await applyReviewAction(prRef, action, body, seen);
+      if (action !== "publish") setSubmitted({ key: refKey(prRef), review: actionReview(action) });
       invalidatePr(prRef);
       if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
@@ -375,6 +387,7 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     mergeMenu,
     setMergeMenu,
     mergePending,
+    submittedReview: submitted?.key === refKey(prRef) ? submitted.review : undefined,
     busy: pending !== null || mergePending,
     run,
     runMerge,
@@ -408,12 +421,24 @@ export function PrActionButtons({
   const actions = actionsForStatus(status);
   const mergeControls = mergeControlsFor(detail, status);
   const { open, setOpen, pending, busy, mergeMenu, setMergeMenu, mergePending } = state;
+  const viewerReview = state.submittedReview ?? detail?.viewerReview;
 
   return (
     <div className="flex shrink-0 items-center gap-2">
       {leading}
       <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
       {actions.map((cfg) => {
+        if (cfg.done && viewerReview === cfg.done.when) {
+          return (
+            <span
+              key={cfg.key}
+              title={cfg.done.title}
+              className="rounded-md border border-emerald-700 bg-emerald-950/60 px-3 py-1.5 text-xs font-medium text-emerald-200"
+            >
+              {cfg.done.label}
+            </span>
+          );
+        }
         const isPending = pending === cfg.key;
         const isOpen = open === cfg.key;
         const onClick = cfg.confirmInline

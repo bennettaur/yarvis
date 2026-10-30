@@ -322,8 +322,10 @@ function toReviewers(pr: any): Reviewer[] {
  * Shapes the GraphQL `pullRequest` payload into a flat PrDetail. `repo` carries
  * the sibling `repository` node whose merge-method flags the UI needs; it's
  * optional so unit tests can shape a PR without it (merge buttons stay hidden).
+ * `viewerLogin` picks the viewer's own review out of the reviewer list.
  */
-export function toPrDetail(pr: any, repo?: any): PrDetail {
+export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail {
+  const reviewers = toReviewers(pr);
   const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const threadNodes = pr.reviewThreads?.nodes ?? [];
   return {
@@ -351,7 +353,10 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     canDisableAutoMerge: Boolean(pr.viewerCanDisableAutoMerge),
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
-    reviewers: toReviewers(pr),
+    reviewers,
+    ...(viewerLogin
+      ? { viewerReview: reviewers.find((r) => r.login === viewerLogin)?.state ?? "pending" }
+      : {}),
     reviewThreads: threadNodes.map(toReviewThread),
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
@@ -781,6 +786,7 @@ const CONVERSATION_PAGE_SIZE = 100;
 
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
+  viewer{ login }
   repository(owner:$owner,name:$repo){
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
@@ -1417,6 +1423,7 @@ export class GitHubClient {
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
     const { data, errors } = await this.graphqlPayload<{
       repository?: { pullRequest?: any };
+      viewer?: { login?: string };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
     // A fine-grained token can't be granted the Checks permission, so GitHub
     // refuses every CheckRun in the rollup. That costs the checks, not the PR:
@@ -1424,7 +1431,7 @@ export class GitHubClient {
     if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
     const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    const detail = toPrDetail(pr, data?.repository);
+    const detail = toPrDetail(pr, data?.repository, data?.viewer?.login);
     const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
     detail.reviewThreads.push(...more.threads);
     if (more.truncated) detail.reviewThreadsTruncated = true;
