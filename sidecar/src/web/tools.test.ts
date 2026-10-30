@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import { buildWebTools } from "./tools.ts";
 
 const opts = { toolCallId: "t", messages: [] };
@@ -85,7 +86,7 @@ describe("read_web_page", () => {
   });
 
   it("records that the turn read a web page, but not when the read failed", async () => {
-    const reads = { hasReadWebPage: false, hasReadUnattendedArtifact: false };
+    const reads = newUntrustedReads();
     const failing = buildWebTools({ fetchImpl: serving({}).fetchImpl, reads });
     await (
       failing.read_web_page as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }

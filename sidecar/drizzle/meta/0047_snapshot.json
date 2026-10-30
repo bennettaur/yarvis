@@ -1,5 +1,5 @@
 {
-  "id": "97a7bcde-972f-44fa-bcd0-07898bff2f61",
+  "id": "a04c9122-4c8f-4d7a-b755-378250ca5740",
   "prevId": "de31d028-12b6-43ab-a902-263c25c09944",
   "version": "7",
   "dialect": "postgresql",
@@ -606,8 +606,8 @@
           "notNull": true,
           "default": "'chat'"
         },
-        "written_unattended": {
-          "name": "written_unattended",
+        "untrusted": {
+          "name": "untrusted",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

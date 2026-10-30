@@ -217,12 +217,17 @@ across conversations. A job on the Jobs tab can write one too, so a
 weekday-morning job can leave a fresh brief waiting for you. A task the
 assistant schedules for itself in a chat can only read them.
 
-A heads-down pass or a specialist (including a job) can add to the end of an
-artifact you asked for in a chat, but can't rewrite or rename it, so it can't
-wipe out your document. It can rewrite the ones it created itself. Those runs
-may be working from a ticket or a message someone else wrote, so once a chat
-turn reads an artifact one of them wrote, the destructive tools ask first for
-the rest of that turn, just as they do after reading a web page.
+A heads-down pass or a specialist (which is what a Jobs-tab job runs) can add
+to the end of an artifact you asked for in a chat, but can't rewrite or rename
+it. They can rewrite artifacts they created themselves, and you can still have
+any artifact rewritten from a chat.
+
+Those runs may be working from a ticket or message someone else wrote, so their
+artifacts are marked untrusted. So is anything written in a chat turn after it
+read a web page or an untrusted artifact. Once a chat turn reads an untrusted
+artifact, actions that can't be undone, rewriting an artifact among them, ask
+for your approval for the rest of that turn, as they do after reading a web
+page. Spoken turns always ask before rewriting one.
 
 Open **Memory → Artifacts** to read them. You can delete one there; only the
 assistant edits them. Artifacts are markdown for now, and each one is capped

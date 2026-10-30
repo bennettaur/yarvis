@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
 import {
+  ArtifactAppendOnlyError,
   ArtifactTooLargeError,
   createArtifact,
   deleteArtifact,
@@ -144,7 +145,7 @@ describe("artifact tools", () => {
   });
 });
 
-describe("artifact tools in an unattended run", () => {
+describe("who wrote an artifact", () => {
   const chatTools = buildArtifactTools(db);
   const passTools = buildArtifactTools(db, { writer: "heads-down" });
 
@@ -167,7 +168,7 @@ describe("artifact tools in an unattended run", () => {
     const after = (await getArtifact(db, id))!;
     expect(after.content).toBe("the user's plan\nnote");
     expect(after.title).toBe("Plan");
-    expect(after.writtenUnattended).toBe(true);
+    expect(after.untrusted).toBe(true);
   });
 
   it("can rewrite an artifact an unattended run created", async () => {
@@ -183,10 +184,41 @@ describe("artifact tools in an unattended run", () => {
     const tools = buildArtifactTools(db, { reads });
 
     await tools.get_artifact.execute!({ id: await create(chatTools, "Mine", "x") }, opts);
-    expect(reads.hasReadUnattendedArtifact).toBe(false);
+    expect(reads.hasReadUntrustedArtifact).toBe(false);
 
     await tools.get_artifact.execute!({ id: await create(passTools, "Pass notes", "y") }, opts);
-    expect(reads.hasReadUnattendedArtifact).toBe(true);
+    expect(reads.hasReadUntrustedArtifact).toBe(true);
+  });
+
+  it("refuses a pass's rewrite in the service too, not only in the tool", async () => {
+    const pad = await createArtifact(db, { title: "Plan", content: "mine" });
+    await expect(
+      updateArtifact(db, pad.id, { content: "gone", writer: "specialist" }),
+    ).rejects.toBeInstanceOf(ArtifactAppendOnlyError);
+    expect((await getArtifact(db, pad.id))!.content).toBe("mine");
+  });
+
+  it("marks what a chat turn writes after an untrusted read as untrusted", async () => {
+    const reads = newUntrustedReads();
+    const tools = buildArtifactTools(db, { reads });
+    const clean = await create(tools, "Before", "x");
+    reads.hasReadWebPage = true;
+    const after = await create(tools, "After", "y");
+    await tools.update_artifact.execute!({ id: clean, append: "z" }, opts);
+
+    expect((await getArtifact(db, after))!.untrusted).toBe(true);
+    expect((await getArtifact(db, clean))!.untrusted).toBe(true);
+  });
+
+  it("counts listing an untrusted artifact's title as an untrusted read", async () => {
+    await create(chatTools, "Mine", "x");
+    const reads = newUntrustedReads();
+    await buildArtifactTools(db, { reads }).list_artifacts.execute!({}, opts);
+    expect(reads.hasReadUntrustedArtifact).toBe(false);
+
+    await create(passTools, "Pass notes", "y");
+    await buildArtifactTools(db, { reads }).list_artifacts.execute!({}, opts);
+    expect(reads.hasReadUntrustedArtifact).toBe(true);
   });
 
   it("marks a chat turn's artifact untrusted once a pass appends to it", async () => {
@@ -194,6 +226,6 @@ describe("artifact tools in an unattended run", () => {
     await passTools.update_artifact.execute!({ id, append: "y" }, opts);
     const reads = newUntrustedReads();
     await buildArtifactTools(db, { reads }).get_artifact.execute!({ id }, opts);
-    expect(reads.hasReadUnattendedArtifact).toBe(true);
+    expect(reads.hasReadUntrustedArtifact).toBe(true);
   });
 });

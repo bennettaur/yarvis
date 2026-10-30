@@ -6,7 +6,7 @@ CREATE TABLE "artifacts" (
 	"format" "artifact_format" DEFAULT 'markdown' NOT NULL,
 	"content" text DEFAULT '' NOT NULL,
 	"created_by" "artifact_writer" DEFAULT 'chat' NOT NULL,
-	"written_unattended" boolean DEFAULT false NOT NULL,
+	"untrusted" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
