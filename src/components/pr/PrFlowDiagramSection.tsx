@@ -1,7 +1,31 @@
-import { lazy, Suspense, useState } from "react";
+import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import type { PrGuide } from "../../lib/pr/guide";
+import LoadingIndicator from "../LoadingIndicator";
 
 const PrFlowDiagram = lazy(() => import("./PrFlowDiagram"));
+
+/**
+ * Keeps a diagram that fails, a chunk that won't load or Excalidraw throwing
+ * on odd model-written data, from taking the rest of the review down with it.
+ */
+class DiagramBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[pr] flow diagram failed:", error);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <p className="text-xs text-red-400">The diagram could not be drawn.</p>;
+    }
+    return this.props.children;
+  }
+}
 
 /**
  * A folded section holding the flow diagram of a pull request's guide.
@@ -32,9 +56,21 @@ export default function PrFlowDiagramSection({ guide }: { guide: PrGuide | null 
         </span>
       </button>
       {open && (
-        <Suspense fallback={<p className="text-xs text-zinc-500">Loading the diagram…</p>}>
-          <PrFlowDiagram graph={graph} />
-        </Suspense>
+        <p className="mb-2 text-xs text-zinc-500">
+          Drawn by the review agent from what it read in this pull request. It can be incomplete or
+          wrong, and its labels come from code the author wrote.
+        </p>
+      )}
+      {open && (
+        <DiagramBoundary>
+          <Suspense
+            fallback={
+              <LoadingIndicator label="Loading the diagram…" className="text-xs text-zinc-500" />
+            }
+          >
+            <PrFlowDiagram graph={graph} />
+          </Suspense>
+        </DiagramBoundary>
       )}
     </section>
   );

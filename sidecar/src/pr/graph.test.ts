@@ -95,13 +95,13 @@ describe("newCodeGraph", () => {
       const graph = newCodeGraph();
       graph.addNode({ id: "handler", kind: "endpoint", file: "src/api.ts", changed: false });
       graph.addNode({ id: "store", kind: "function", file: "src/store.ts", changed: true });
+      // No file to check the claim against, so it is not taken.
       graph.addNode({ id: "orders", kind: "table", changed: true });
       const { nodes } = graph.snapshot(new Set(["src/api.ts"]));
       expect(Object.fromEntries(nodes.map((n) => [n.id, n.changed]))).toEqual({
         handler: true,
         store: false,
-        // No file to check it against, so the model's word is all there is.
-        orders: true,
+        orders: false,
       });
     });
 

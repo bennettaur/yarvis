@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { layerNodes, type PrGuideGraph, toExcalidrawSkeleton } from "./flowDiagram";
+import { nodeColumns, type PrGuideGraph, toExcalidrawSkeleton } from "./flowDiagram";
 
 const graph = (edges: [string, string][], extra: string[] = []): PrGuideGraph => {
   const ids = [...new Set([...edges.flat(), ...extra])];
@@ -9,11 +9,11 @@ const graph = (edges: [string, string][], extra: string[] = []): PrGuideGraph =>
   };
 };
 
-describe("layerNodes", () => {
+describe("nodeColumns", () => {
   it("puts each node right of everything that reaches it, by the longest route", () => {
     // route → service → store, and route → store directly: the store still
     // belongs after the service, not beside it.
-    const layers = layerNodes(
+    const layers = nodeColumns(
       graph([
         ["route", "service"],
         ["service", "store"],
@@ -24,7 +24,7 @@ describe("layerNodes", () => {
   });
 
   it("finishes on a cycle", () => {
-    const layers = layerNodes(
+    const layers = nodeColumns(
       graph([
         ["a", "b"],
         ["b", "a"],
@@ -36,7 +36,7 @@ describe("layerNodes", () => {
   it("ignores an edge to a node that is not in the graph", () => {
     const g = graph([], ["a"]);
     g.edges.push({ from: "a", to: "missing", kind: "calls" });
-    expect(Object.fromEntries(layerNodes(g))).toEqual({ a: 0 });
+    expect(Object.fromEntries(nodeColumns(g))).toEqual({ a: 0 });
   });
 });
 

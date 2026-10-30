@@ -744,7 +744,7 @@ export interface GenerateTourOptions {
 export interface GenerateTourResult {
   steps: PrGuideStep[];
   headSha: string;
-  /** What the agent recorded while exploring; null when it recorded no edges, which draws nothing worth showing. */
+  /** What the agent recorded while exploring; null when no edges survive, which draws nothing worth showing. */
   graph: PrGuideGraph | null;
 }
 
@@ -799,13 +799,13 @@ export async function generateTour(
     return null;
   });
 
-  const finish = (steps: PrGuideStep[]): GenerateTourResult => ({
-    steps,
-    headSha: detail.headSha,
-    graph: graph.edges().length ? graph.snapshot(changed) : null,
-  });
+  const toResult = (steps: PrGuideStep[]): GenerateTourResult => {
+    // Checked after the snapshot: cutting it to size can drop every edge.
+    const snapshot = graph.snapshot(changed);
+    return { steps, headSha: detail.headSha, graph: snapshot.edges.length ? snapshot : null };
+  };
 
-  if (sink.steps) return finish(sink.steps);
+  if (sink.steps) return toResult(sink.steps);
   // A failed run without a tour rethrew above, so this one returned normally.
   const explored = result as NonNullable<typeof result>;
   let miss = classifyMiss(explored);
@@ -840,7 +840,7 @@ export async function generateTour(
       console.error("[pr] tour submission model error:", describeError(e));
       throw new Error(clientError(e));
     });
-    if ("steps" in next) return finish(next.steps);
+    if ("steps" in next) return toResult(next.steps);
     miss = next.miss;
     conversation = [...conversation, ...next.messages];
     console.error("[pr] tour submission attempt failed:", JSON.stringify({ ask, miss }));

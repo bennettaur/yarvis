@@ -194,7 +194,7 @@ describe("generateTour", () => {
     expect(graph).toEqual({
       nodes: [
         { id: "route", kind: "endpoint", file: "src/api.ts", changed: true },
-        { id: "store", kind: "unknown" },
+        { id: "store", kind: "unknown", changed: false },
       ],
       edges: [{ from: "route", to: "store", kind: "calls" }],
     });

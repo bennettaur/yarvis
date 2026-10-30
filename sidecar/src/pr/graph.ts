@@ -17,6 +17,7 @@
 
 /** Most nodes kept for a diagram; past this it is a wall of boxes, not a picture. */
 export const MAX_DIAGRAM_NODES = 60;
+/** A loose bound on the stored payload, about two and a half edges per node. */
 const MAX_DIAGRAM_EDGES = 150;
 
 export interface GraphNode {
@@ -53,9 +54,9 @@ export interface CodeGraph {
   entryPoints(): GraphNode[];
   /**
    * The graph as stored for a diagram, cut to {@link MAX_DIAGRAM_NODES}.
-   * `changedFiles` decides each node's `changed` flag wherever the node names
-   * a file, so a diagram never marks code as part of the change on the model's
-   * word alone.
+   * A node counts as changed only when it names a file in `changedFiles`: the
+   * model's own `changed` flag is written from text the pull request's author
+   * controls, so a diagram never marks code as part of the change on its word.
    */
   snapshot(changedFiles: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] };
 }
@@ -109,9 +110,10 @@ export function newCodeGraph(): CodeGraph {
     },
 
     snapshot(changedFiles) {
-      const marked = [...nodes.values()].map((n) =>
-        n.file === undefined ? n : { ...n, changed: changedFiles.has(n.file) },
-      );
+      const marked = [...nodes.values()].map((n) => ({
+        ...n,
+        changed: n.file !== undefined && changedFiles.has(n.file),
+      }));
       // The change's own code is what the diagram is about, so it is kept first
       // and the surrounding flow fills what room is left.
       const kept = [...marked.filter((n) => n.changed), ...marked.filter((n) => !n.changed)].slice(
@@ -120,6 +122,7 @@ export function newCodeGraph(): CodeGraph {
       );
       const keptIds = new Set(kept.map((n) => n.id));
       return {
+        // Back in recording order, so the diagram's rows follow the exploration.
         nodes: marked.filter((n) => keptIds.has(n.id)),
         edges: edges
           .filter((e) => keptIds.has(e.from) && keptIds.has(e.to))

@@ -1,7 +1,11 @@
 import "@excalidraw/excalidraw/index.css";
 import { convertToExcalidrawElements, Excalidraw } from "@excalidraw/excalidraw";
 import { useMemo } from "react";
-import { type PrGuideGraph, toExcalidrawSkeleton } from "../../lib/pr/flowDiagram";
+import {
+  LABEL_FONT_FAMILY,
+  type PrGuideGraph,
+  toExcalidrawSkeleton,
+} from "../../lib/pr/flowDiagram";
 
 /**
  * The guide's code graph drawn in Excalidraw. Loaded lazily by
@@ -15,10 +19,9 @@ import { type PrGuideGraph, toExcalidrawSkeleton } from "../../lib/pr/flowDiagra
 export default function PrFlowDiagram({ graph }: { graph: PrGuideGraph }) {
   const initialData = useMemo(
     () => ({
-      elements: convertToExcalidrawElements(
-        toExcalidrawSkeleton(graph) as Parameters<typeof convertToExcalidrawElements>[0],
-      ),
-      appState: { viewBackgroundColor: "transparent" },
+      elements: convertToExcalidrawElements(toExcalidrawSkeleton(graph)),
+      // Text the reader adds uses the same system font, so nothing is fetched.
+      appState: { viewBackgroundColor: "transparent", currentItemFontFamily: LABEL_FONT_FAMILY },
       scrollToContent: true,
     }),
     [graph],

@@ -192,8 +192,10 @@ flow, not only the files it touches.
 Some limits:
 
 - The diagram shows at most 60 pieces of code, the changed ones first.
-- A box counts as changed only when the file it names is in the PR. Where the
-  agent named no file, the box shows what the agent said.
+- A box counts as changed only when the file it names is in the PR. A box with
+  no file is always shown as surrounding code.
+- The agent draws the diagram from the PR's own code, which its author wrote.
+  Treat the box names and labels as the agent's reading, not as fact.
 - If the agent recorded no connections, there is no diagram. Regenerating the
   guide may give one.
 - The diagram goes out of date with its guide when new commits are pushed.
