@@ -171,14 +171,15 @@ export function headHunksOf(patch: string): HeadHunk[] {
 }
 
 /**
- * A path an agent could misread in a group's one-per-line list: a Unicode line
- * break splits it into two entries, and ` lines 3-9` passes for a range.
+ * A path an agent could misread in a group's one-per-line list: a C1 control
+ * character (NEL among them) or a Unicode line or paragraph separator splits
+ * it into two entries, and ` lines 3-9` passes for a range.
  */
-const MISREADABLE_PATH = /[\u0080-\u009f\u2028\u2029]| lines \d+-\d+/;
+const MISREADABLE_PATH = /[\u0080-\u009f\u2028\u2029]| lines\s+\d+\s*[-\u2013]/;
 
 /**
  * `patches/<path>.diff` for a plain repo path, or null for one that isn't
- * (absolute, `.`/`..` segments, control characters, {@link MISREADABLE_PATH}):
+ * (absolute, `.`/`..` segments, C0 control characters, {@link MISREADABLE_PATH}):
  * such a path never becomes part of a filesystem path, and its patch gets a
  * numbered name instead.
  */

@@ -55,19 +55,16 @@ function written(): string[] {
 describe("mirrored patch paths", () => {
   it("mirrors a plain repo path and refuses one that could leave the folder", () => {
     expect(mirroredPatchPath("src/a.ts")).toBe("patches/src/a.ts.diff");
-    const misreadable = ["a\u2028b", "a\u2029b", "a\u0085b", "a.ts lines 1-5"];
-    for (const bad of [
-      "../x",
-      "a/../../x",
-      "/etc/passwd",
-      "a//b",
-      "./a",
-      "a\nb",
-      "",
-      ...misreadable,
-    ]) {
+    for (const bad of ["../x", "a/../../x", "/etc/passwd", "a//b", "./a", "a\nb", ""]) {
       expect(mirroredPatchPath(bad)).toBeNull();
     }
+  });
+
+  it("gives no mirrored name to a path that could be misread in a reading group", () => {
+    for (const bad of ["a\u2028b", "a\u2029b", "a\u0085b", "a.ts lines 1-5", "a lines  3\u20139"]) {
+      expect(mirroredPatchPath(bad)).toBeNull();
+    }
+    expect(mirroredPatchPath("docs/lines.md")).toBe("patches/docs/lines.md.diff");
   });
 });
 
@@ -103,6 +100,7 @@ describe("writing patch files", () => {
         // `patches/a.diff` is a file now, so this can't be `patches/a.diff/b.diff`.
         source("a.diff/b", patchFor("a.diff/b", 1)),
         source("A", patchFor("A", 1)),
+        source("b lines 1-5", patchFor("b", 1)),
       ],
       { tag: "diff" },
     );
@@ -114,6 +112,7 @@ describe("writing patch files", () => {
       existsSync(join(dir, "patches/A.diff")) && !existsSync(join(dir, "patches-other/4.diff"))
         ? "patches/A.diff"
         : "patches-other/4.diff",
+      "patches-other/5.diff",
     ]);
     expect(existsSync(join(dir, "..", "escape.ts.diff"))).toBe(false);
     for (const file of written()) expect(file.startsWith("patches")).toBe(true);
