@@ -2,26 +2,23 @@ import { MessageSquareIcon, PencilIcon, RotateCcwIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { messageLabel, type ThreadMessage, type ToolActivity } from "../lib/chat";
 import { ConversationEmptyState } from "./ai-elements/conversation";
-import { Loader } from "./ai-elements/loader";
 import {
   Message,
   MessageAction,
   MessageActions,
   MessageContent,
+  MessageLabel,
   MessageResponse,
 } from "./ai-elements/message";
+import ThinkingIndicator from "./ThinkingIndicator";
 import TurnActivity from "./TurnActivity";
 import { Button } from "./ui/button";
-
-function SpeakerLabel({ children }: { children: string }) {
-  return <div className="text-xs tracking-wide text-muted-foreground uppercase">{children}</div>;
-}
 
 /** An assistant turn: what it did to get there, then the reply. */
 function AssistantTurn({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Message from="assistant">
-      <SpeakerLabel>{label}</SpeakerLabel>
+      <MessageLabel>{label}</MessageLabel>
       <MessageContent>{children}</MessageContent>
     </Message>
   );
@@ -48,7 +45,7 @@ function UserMessage({
   if (draft !== null && canRewind) {
     return (
       <Message from="user">
-        <SpeakerLabel>{label}</SpeakerLabel>
+        <MessageLabel>{label}</MessageLabel>
         <div className="w-full max-w-[85%] space-y-2">
           <textarea
             value={draft}
@@ -82,7 +79,7 @@ function UserMessage({
 
   return (
     <Message from="user">
-      <SpeakerLabel>{label}</SpeakerLabel>
+      <MessageLabel>{label}</MessageLabel>
       <MessageContent className="max-w-[85%] whitespace-pre-wrap">{message.content}</MessageContent>
       {canRewind && (
         // Revealed on hover or keyboard focus, so a long thread isn't a column of buttons.
@@ -180,13 +177,7 @@ export default function ChatMessages({
         </AssistantTurn>
       )}
       {busy && !streaming && !thinking && activity.length === 0 && (
-        // Matches the reply's layout so the wait reads as the reply taking shape.
-        <AssistantTurn label={messageLabel("assistant")}>
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Loader size={14} />
-            Thinking…
-          </div>
-        </AssistantTurn>
+        <ThinkingIndicator label={messageLabel("assistant")} />
       )}
     </>
   );

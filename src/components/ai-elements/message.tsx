@@ -27,6 +27,14 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
   />
 );
 
+/** Who wrote the turn, shown above it. Not an upstream part; every thread here labels its turns. */
+export const MessageLabel = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
+  <div
+    className={cn("text-xs tracking-wide text-muted-foreground uppercase", className)}
+    {...props}
+  />
+);
+
 export type MessageContentProps = HTMLAttributes<HTMLDivElement>;
 
 export const MessageContent = ({ children, className, ...props }: MessageContentProps) => (
