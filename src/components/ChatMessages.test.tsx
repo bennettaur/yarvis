@@ -126,8 +126,8 @@ describe("ChatMessages", () => {
       ],
       onRewind: () => {},
     });
-    expect(html).toContain(">Resend</button>");
-    expect(html).toContain(">Edit</button>");
+    expect(html).toContain(">Resend</span>");
+    expect(html).toContain(">Edit</span>");
     // Only the one user message gets them.
     expect(html.match(/>Resend</g)).toHaveLength(1);
   });
@@ -163,7 +163,7 @@ describe("ChatMessages", () => {
       ],
     });
     expect(textOf(html)).toContain("Used 1 tool call");
-    expect(html).toContain("border-violet-500");
-    expect(html).toContain("bg-sky-950");
+    expect(html).toContain("is-assistant");
+    expect(html).toContain("is-user");
   });
 });

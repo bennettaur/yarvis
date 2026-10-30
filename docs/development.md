@@ -392,6 +392,12 @@ src/            React frontend (Vite + TS + Tailwind)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal,
                 Workspaces, …)
     voice/      the mic button and voice controls shared by the chat surfaces
+    ai-elements/ chat building blocks adapted from Vercel's AI Elements
+                (conversation, message, reasoning, tool, prompt input), on the
+                app's own types and `Markdown`
+    ui/         the shadcn/ui primitives those need (button, badge,
+                collapsible); their colour names map onto the zinc/indigo
+                scale in `index.css`, so themes reach them
     pr/         PR dashboard and embedded review: lists, diffs, context expansion,
                 change minimap, guide panel, insight cards, stack list
     issue/      Issues tab views

@@ -49,7 +49,8 @@ describe("TurnActivity", () => {
     const html = await renderToHtml(
       <TurnActivity activity={[entry({ status: "denied", result: undefined })]} />,
     );
-    expect(textOf(html)).toContain("denied");
+    expect(textOf(html)).toContain("Denied");
+    expect(textOf(html)).not.toContain("Completed");
   });
 
   it("shows a call that hasn't come back as pending", async () => {
@@ -61,18 +62,19 @@ describe("TurnActivity", () => {
     );
     const text = textOf(html);
     expect(text).toContain("search_pages");
-    expect(text).toContain("…");
+    expect(text).toContain("Running");
   });
 
-  it("keeps reasoning behind a disclosure, labelled by whether it is still arriving", async () => {
+  it("shows reasoning while it streams and keeps a finished turn's behind a disclosure", async () => {
     const live = await renderToHtml(
       <TurnActivity activity={[]} thinking="weighing it up" running />,
     );
     expect(textOf(live)).toContain("Thinking…");
-    expect(textOf(live)).not.toContain("weighing it up");
+    expect(textOf(live)).toContain("weighing it up");
 
     const done = await renderToHtml(<TurnActivity activity={[]} thinking="weighing it up" />);
     expect(textOf(done)).toContain("Thought about it");
+    expect(textOf(done)).not.toContain("weighing it up");
   });
 
   it("folds the rows under a summary when collapsed, and reopens on click", async () => {
@@ -99,9 +101,11 @@ describe("TurnActivity", () => {
   });
 
   it("words the summary for reasoning, a single call and a denial", async () => {
-    const single = await renderToHtml(<TurnActivity activity={[entry()]} collapsed />);
-    expect(textOf(single)).toContain("Used 1 tool call");
-    expect(textOf(single)).not.toContain("1 tool calls");
+    const single = await mountForInteraction(<TurnActivity activity={[entry()]} collapsed />);
+    cleanup = single.unmount;
+    expect(single.host.querySelector("button[aria-expanded]")?.textContent).toBe(
+      "Used 1 tool call",
+    );
 
     const mixed = await renderToHtml(
       <TurnActivity

@@ -1,5 +1,8 @@
+import { ChevronRightIcon } from "lucide-react";
 import { useId, useState } from "react";
 import type { ToolActivity } from "../lib/chat";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "./ai-elements/reasoning";
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "./ai-elements/tool";
 
 /**
  * What the assistant did during a turn: the tools it called, how each ended,
@@ -33,10 +36,16 @@ export default function TurnActivity({
   const panelId = useId();
   if (activity.length === 0 && !thinking) return null;
 
+  // Reasoning stops reading as live once the reply text has started.
+  const reasoningLive = Boolean(running) && !collapsed;
   const rows = (
-    <div className={`space-y-1 ${collapsed ? "pt-1" : ""}`}>
-      {/* Reasoning stops reading as live once the reply text has started. */}
-      {thinking && <ThinkingBlock text={thinking} streaming={running && !collapsed} />}
+    <div className={`space-y-1.5 ${collapsed ? "pt-1.5" : ""}`}>
+      {thinking && (
+        <Reasoning isStreaming={reasoningLive} defaultOpen={reasoningLive}>
+          <ReasoningTrigger />
+          <ReasoningContent>{thinking}</ReasoningContent>
+        </Reasoning>
+      )}
       {activity.map((entry) => (
         <ToolRow key={entry.id} entry={entry} />
       ))}
@@ -54,7 +63,10 @@ export default function TurnActivity({
           aria-controls={panelId}
           className="flex items-center gap-2 py-0.5 text-xs text-zinc-500 hover:text-zinc-300"
         >
-          <Chevron open={expanded} />
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={`size-3.5 transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
           <span>{summarize(activity, Boolean(thinking))}</span>
         </button>
       )}
@@ -80,98 +92,25 @@ function summarize(activity: ToolActivity[], hasThinking: boolean): string {
   return `${hasThinking ? "Thought, " : "Used "}${count}${failed > 0 ? ` · ${failed} failed` : ""}`;
 }
 
-function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-900/60 text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-zinc-400 hover:text-zinc-200"
-      >
-        <Chevron open={open} />
-        <span className={streaming ? "animate-pulse" : ""}>
-          {streaming ? "Thinking…" : "Thought about it"}
-        </span>
-      </button>
-      {open && (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap px-2 pb-2 text-zinc-400">
-          {text}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-/** Each outcome's mark, so a row reads without relying on colour alone. */
-const STATUS_MARK: Record<ToolActivity["status"], string> = {
-  pending: "…",
-  ok: "✓",
-  error: "✕",
-  denied: "⃠",
-};
-
-const STATUS_COLOR: Record<ToolActivity["status"], string> = {
-  pending: "text-zinc-500",
-  ok: "text-emerald-400",
-  error: "text-red-400",
-  denied: "text-amber-400",
-};
-
 function ToolRow({ entry }: { entry: ToolActivity }) {
-  const [open, setOpen] = useState(false);
   const hasDetail = entry.args !== undefined || entry.result !== undefined;
-
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-900/60 text-xs">
-      <button
-        type="button"
-        onClick={() => hasDetail && setOpen((v) => !v)}
-        aria-expanded={hasDetail ? open : undefined}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
-      >
-        {hasDetail ? <Chevron open={open} /> : <span className="w-3" />}
-        <span className={STATUS_COLOR[entry.status]}>{STATUS_MARK[entry.status]}</span>
-        <span className="font-mono text-zinc-300">{entry.name}</span>
-        {entry.server && <span className="text-zinc-500">on {entry.server}</span>}
-        {entry.status === "denied" && <span className="text-amber-400">denied</span>}
-        {entry.durationMs !== undefined && (
-          <span className="ml-auto text-zinc-600">{formatDuration(entry.durationMs)}</span>
-        )}
-      </button>
-      {open && (
-        <div className="space-y-2 px-2 pb-2">
-          {entry.args !== undefined && (
-            <Detail label="Arguments" body={JSON.stringify(entry.args, null, 2)} />
+    <Tool>
+      <ToolHeader
+        title={entry.name}
+        status={entry.status}
+        server={entry.server}
+        durationMs={entry.durationMs}
+        expandable={hasDetail}
+      />
+      {hasDetail && (
+        <ToolContent>
+          {entry.args !== undefined && <ToolInput input={entry.args} />}
+          {entry.result !== undefined && (
+            <ToolOutput output={entry.result} isError={entry.status === "error"} />
           )}
-          {entry.result !== undefined && <Detail label="Result" body={entry.result} />}
-        </div>
+        </ToolContent>
       )}
-    </div>
+    </Tool>
   );
-}
-
-function Detail({ label, body }: { label: string; body: string }) {
-  return (
-    <div>
-      <div className="mb-0.5 uppercase tracking-wide text-zinc-600">{label}</div>
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 text-zinc-400">
-        {body}
-      </pre>
-    </div>
-  );
-}
-
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <span aria-hidden="true" className="w-3 text-zinc-600">
-      {open ? "▾" : "▸"}
-    </span>
-  );
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }

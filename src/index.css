@@ -18,6 +18,33 @@
 }
 
 /*
+ * The colour names shadcn and AI Elements components use (`components/ui/`,
+ * `components/ai-elements/`), mapped onto the app's own scale. `inline` makes
+ * each utility read the zinc/indigo variable where it is used, so Palenight's
+ * overrides below reach these names too.
+ */
+@theme inline {
+  --color-background: var(--color-zinc-950);
+  --color-foreground: var(--color-zinc-100);
+  --color-card: var(--color-zinc-900);
+  --color-card-foreground: var(--color-zinc-100);
+  --color-popover: var(--color-zinc-900);
+  --color-popover-foreground: var(--color-zinc-200);
+  --color-primary: var(--color-indigo-600);
+  --color-primary-foreground: var(--color-white);
+  --color-secondary: var(--color-zinc-800);
+  --color-secondary-foreground: var(--color-zinc-100);
+  --color-muted: var(--color-zinc-800);
+  --color-muted-foreground: var(--color-zinc-400);
+  --color-accent: var(--color-zinc-800);
+  --color-accent-foreground: var(--color-zinc-100);
+  --color-destructive: var(--color-red-500);
+  --color-border: var(--color-zinc-800);
+  --color-input: var(--color-zinc-700);
+  --color-ring: var(--color-zinc-500);
+}
+
+/*
  * Material Palenight, picked in Settings → Appearance: `lib/theme.ts` sets
  * `data-theme` on the root element. The default theme is Tailwind's own
  * palette, so this block is the whole of Palenight's colour scheme. It
