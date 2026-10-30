@@ -1,11 +1,12 @@
-import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 import { cn } from "../../lib/cn";
 
 /**
- * shadcn/ui's button (new-york-v4), with its `dark:` variants folded into the
- * base classes because the app is always dark.
+ * shadcn/ui's button (new-york-v4). Its `dark:` variants are folded into the
+ * base classes because the app is always dark, and the `asChild` slot is left
+ * out because nothing uses it. It defaults to `type="button"` so one placed
+ * inside a form never submits it by accident.
  */
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -42,15 +43,15 @@ function Button({
   className,
   variant = "default",
   size = "default",
-  asChild = false,
+  type = "button",
   ...props
-}: ComponentProps<"button"> & VariantProps<typeof buttonVariants> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot : "button";
+}: ComponentProps<"button"> & VariantProps<typeof buttonVariants>) {
   return (
-    <Comp
+    <button
       data-slot="button"
       data-variant={variant}
       data-size={size}
+      type={type}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />

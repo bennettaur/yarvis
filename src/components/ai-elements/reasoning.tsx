@@ -13,6 +13,7 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { cn } from "../../lib/cn";
@@ -60,36 +61,34 @@ export const Reasoning = memo(
       prop: durationProp,
       defaultProp: undefined,
     });
+    // Read once: a caller that derives `defaultOpen` from the live state flips
+    // it to false the moment streaming stops, which would cancel the fold.
+    const [opensWhileStreaming] = useState(defaultOpen);
     const [hasAutoClosed, setHasAutoClosed] = useState(false);
-    const [startTime, setStartTime] = useState<number | null>(null);
+    const startTime = useRef<number | null>(null);
 
     useEffect(() => {
       if (isStreaming) {
-        if (startTime === null) setStartTime(Date.now());
-      } else if (startTime !== null) {
-        setDuration(Math.ceil((Date.now() - startTime) / 1000));
-        setStartTime(null);
+        startTime.current ??= Date.now();
+      } else if (startTime.current !== null) {
+        setDuration(Math.ceil((Date.now() - startTime.current) / 1000));
+        startTime.current = null;
       }
-    }, [isStreaming, startTime, setDuration]);
+    }, [isStreaming, setDuration]);
 
     useEffect(() => {
-      if (defaultOpen && !isStreaming && isOpen && !hasAutoClosed) {
+      if (opensWhileStreaming && !isStreaming && isOpen && !hasAutoClosed) {
         const timer = setTimeout(() => {
           setIsOpen(false);
           setHasAutoClosed(true);
         }, AUTO_CLOSE_DELAY_MS);
         return () => clearTimeout(timer);
       }
-    }, [isStreaming, isOpen, defaultOpen, setIsOpen, hasAutoClosed]);
+    }, [isStreaming, isOpen, opensWhileStreaming, setIsOpen, hasAutoClosed]);
 
     return (
       <ReasoningContext.Provider value={{ isStreaming, isOpen, duration }}>
-        <Collapsible
-          className={cn("not-prose", className)}
-          onOpenChange={setIsOpen}
-          open={isOpen}
-          {...props}
-        >
+        <Collapsible className={className} onOpenChange={setIsOpen} open={isOpen} {...props}>
           {children}
         </Collapsible>
       </ReasoningContext.Provider>
@@ -103,7 +102,7 @@ export type ReasoningTriggerProps = ComponentProps<typeof CollapsibleTrigger> & 
 
 /** A reloaded turn has no timing, so it gets a label that doesn't claim one. */
 const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number): ReactNode => {
-  if (isStreaming || duration === 0) return <span className="animate-pulse">Thinking…</span>;
+  if (isStreaming) return <span className="animate-pulse">Thinking…</span>;
   if (duration === undefined) return <span>Thought about it</span>;
   return <span>Thought for {duration === 1 ? "1 second" : `${duration} seconds`}</span>;
 };

@@ -69,7 +69,7 @@ export const MessageAction = ({
 }: MessageActionProps) => (
   <Button size={size} type="button" variant={variant} title={tooltip} {...props}>
     {children}
-    <span className="sr-only">{label || tooltip}</span>
+    <span className="sr-only">{label ?? tooltip}</span>
   </Button>
 );
 
@@ -82,16 +82,10 @@ export type MessageResponseProps = {
  * Memoized on the text because the thread re-renders on every streamed token:
  * without it, each finished reply would be re-parsed per token.
  */
-export const MessageResponse = memo(
-  ({ className, children }: MessageResponseProps) => (
-    <Markdown
-      className={cn("[&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
-      allowAppLinks
-    >
-      {children}
-    </Markdown>
-  ),
-  (prev, next) => prev.children === next.children && prev.className === next.className,
-);
+export const MessageResponse = memo(({ className, children }: MessageResponseProps) => (
+  <Markdown className={cn("[&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)} allowAppLinks>
+    {children}
+  </Markdown>
+));
 
 MessageResponse.displayName = "MessageResponse";

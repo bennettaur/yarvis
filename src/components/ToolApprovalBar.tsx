@@ -60,6 +60,8 @@ export default function ToolApprovalBar({
       const typing =
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
+        // Selects jump to an option by its first letter.
+        target?.tagName === "SELECT" ||
         target?.isContentEditable === true;
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();

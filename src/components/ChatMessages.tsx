@@ -151,7 +151,6 @@ export default function ChatMessages({
       {messages.length === 0 && !streaming && (
         <ConversationEmptyState
           icon={<MessageSquareIcon className="size-6" />}
-          title="No messages yet"
           description={emptyHint}
         />
       )}

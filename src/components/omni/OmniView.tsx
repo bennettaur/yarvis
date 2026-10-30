@@ -488,7 +488,7 @@ export default function OmniView() {
         busy={busy}
         placeholder="Describe a layout..."
         submitLabel="Build"
-        className="flex gap-2 border-t border-zinc-800 p-3"
+        className="border-t border-zinc-800 p-3"
       />
     </aside>
   );

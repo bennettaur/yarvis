@@ -23,7 +23,7 @@ export default function TurnActivity({
   activity: ToolActivity[];
   /** Reasoning streamed for this turn, if any. */
   thinking?: string;
-  /** True while the turn is still in flight, so an unsettled row reads as busy. */
+  /** True while the turn is still in flight, so its reasoning shows as it streams in. */
   running?: boolean;
   /**
    * Fold the rows under a one-line summary. The in-flight turn stays open so
@@ -97,7 +97,7 @@ function ToolRow({ entry }: { entry: ToolActivity }) {
   return (
     <Tool>
       <ToolHeader
-        title={entry.name}
+        name={entry.name}
         status={entry.status}
         server={entry.server}
         durationMs={entry.durationMs}

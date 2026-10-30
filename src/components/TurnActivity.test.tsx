@@ -53,6 +53,26 @@ describe("TurnActivity", () => {
     expect(textOf(html)).not.toContain("Completed");
   });
 
+  it.each([
+    ["ok", "Completed"],
+    ["error", "Error"],
+    ["denied", "Denied"],
+    ["pending", "Running"],
+  ] as const)("labels a %s call %s", async (status, label) => {
+    const html = await renderToHtml(<TurnActivity activity={[entry({ status })]} />);
+    expect(textOf(html)).toContain(label);
+  });
+
+  it("heads a failed call's output as an error", async () => {
+    const mounted = await mountForInteraction(
+      <TurnActivity activity={[entry({ status: "error", result: "boom" })]} />,
+    );
+    cleanup = mounted.unmount;
+    mounted.host.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mounted.host.textContent).toContain("Errorboom");
+  });
+
   it("shows a call that hasn't come back as pending", async () => {
     const html = await renderToHtml(
       <TurnActivity

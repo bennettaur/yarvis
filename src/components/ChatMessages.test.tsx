@@ -1,9 +1,36 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { type ComponentProps, createElement } from "react";
-import { renderToHtml, textOf } from "../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../test/render";
 import ChatMessages from "./ChatMessages";
 
 const EMPTY_HINT = "Start a conversation.";
+
+let cleanup: (() => void) | null = null;
+afterEach(() => {
+  cleanup?.();
+  cleanup = null;
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+/** Finds a button by its visible text or its screen-reader label. */
+function button(host: HTMLElement, name: string): HTMLButtonElement | undefined {
+  return Array.from(host.querySelectorAll("button")).find((b) => b.textContent === name);
+}
+
+async function mount(props: Partial<ComponentProps<typeof ChatMessages>>) {
+  const mounted = await mountForInteraction(
+    createElement(ChatMessages, {
+      messages: [],
+      streaming: "",
+      busy: false,
+      emptyHint: EMPTY_HINT,
+      ...props,
+    }),
+  );
+  cleanup = mounted.unmount;
+  return mounted.host;
+}
 
 function render(props: Partial<ComponentProps<typeof ChatMessages>>) {
   return renderToHtml(
@@ -130,6 +157,41 @@ describe("ChatMessages", () => {
     expect(html).toContain(">Edit</span>");
     // Only the one user message gets them.
     expect(html.match(/>Resend</g)).toHaveLength(1);
+  });
+
+  it("resends a user message as it was", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Resend")?.click();
+    expect(rewound).toEqual([["m1", "hello"]]);
+  });
+
+  it("resends a user message as edited, and not while the edit is blank", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Edit")?.click();
+    await settle();
+    const box = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]');
+    expect(box?.value).toBe("hello");
+
+    const type = async (text: string) => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setValue?.call(box, text);
+      box?.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+    };
+    await type("  ");
+    expect(button(host, "Save & resend")?.disabled).toBe(true);
+
+    await type("hello there");
+    button(host, "Save & resend")?.click();
+    expect(rewound).toEqual([["m1", "hello there"]]);
   });
 
   it("hides the rewind controls without a handler, without an id, or while busy", async () => {
