@@ -83,6 +83,8 @@ export const VERIFICATION_RUN_KIND = "verification-report";
 /** Most findings a check reports, and most must-read files a report lists. */
 export const MAX_FINDINGS = 5;
 export const MAX_MUST_READ = 8;
+/** Most things a must-read flags as already looking off or unclear. */
+export const MAX_MUST_READ_FLAGS = 3;
 
 const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
@@ -136,10 +138,17 @@ const riskSchema = z.object({
   concerns: boundedList(concernSchema, MAX_FINDINGS),
 });
 
+const mustReadFlagSchema = z.object({
+  note: boundedText(160),
+  line: optionalLine,
+});
+
 const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
   reason: boundedText(160),
   lines: lineRangeSchema,
+  // Optional: most must-reads have nothing to flag, and an agent may leave it out.
+  flags: boundedList(mustReadFlagSchema, MAX_MUST_READ_FLAGS).default([]),
 });
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */

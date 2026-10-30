@@ -296,7 +296,7 @@ function ReportNotes({
               >
                 :{note.line}
               </button>
-              <span className="min-w-0 text-zinc-300" title={note.detail}>
+              <span className="min-w-0 text-zinc-300" title={note.detail || undefined}>
                 <span className="text-zinc-500">{note.source}</span>
                 {note.severity && <span className="text-zinc-500"> · {note.severity}</span>}{" "}
                 {note.title}

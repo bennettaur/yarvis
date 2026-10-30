@@ -76,10 +76,34 @@ describe("the report schema", () => {
       }),
     );
     expect(parsed.mustRead).toEqual([
-      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 } },
-      { path: "src/b.ts", reason: "second", lines: undefined },
+      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 }, flags: [] },
+      { path: "src/b.ts", reason: "second", lines: undefined, flags: [] },
     ]);
     expect(audit.droppedMustReads).toEqual(["../../etc/passwd"]);
+  });
+
+  it("keeps a must-read's flags, capped, with any invalid line dropped", () => {
+    const parsed = schema.parse(
+      report({
+        mustRead: [
+          {
+            path: "src/a.ts",
+            reason: "core",
+            flags: [
+              { note: "retries never decremented", line: 17 },
+              { note: "no line", line: -1 },
+              { note: "third" },
+              { note: "over the cap", line: 4 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([
+      { note: "retries never decremented", line: 17 },
+      { note: "no line", line: undefined },
+      { note: "third", line: undefined },
+    ]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {

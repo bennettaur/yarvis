@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { postPrComment } from "../../../lib/pr/api";
+import { prDetailKey } from "../../../lib/pr/cache";
 import { invalidate } from "../../../lib/resourceCache";
+import { invalidateLastReview, seenAt } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
   startVerification,
   type VerificationSize,
@@ -17,7 +20,10 @@ import {
 } from "./reviewData";
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
-import VerificationReportView, { type OpenLocation } from "./VerificationReportView";
+import VerificationReportView, {
+  type OpenLocation,
+  type PostFinding,
+} from "./VerificationReportView";
 import {
   type CheckProgress,
   initialProgress,
@@ -169,6 +175,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     open: (path, line) =>
       ctx.openTab({ kind: "diff", prId: pr.id, path, ...(line ? { revealLine: line } : {}) }),
     canOpen: (path) => known.has(path),
+  };
+  const postFinding: PostFinding = async ({ path, line }, body) => {
+    await postPrComment(ctx.prRef, { path, line, body }, seenAt(pr));
+    invalidateLastReview(ctx.prRef);
+    // The new thread arrives with the PR's detail, in the Comments tab and the diff.
+    invalidate(prDetailKey(ctx.prRef));
   };
 
   const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
@@ -333,7 +345,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         )}
 
         {report && !running && (
-          <VerificationReportView report={report} onOpen={open} viewed={viewed.viewed} />
+          <VerificationReportView
+            report={report}
+            onOpen={open}
+            viewed={viewed.viewed}
+            onPostFinding={postFinding}
+          />
         )}
       </div>
     </div>

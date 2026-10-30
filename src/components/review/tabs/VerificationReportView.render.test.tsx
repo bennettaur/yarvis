@@ -159,6 +159,98 @@ describe("VerificationReportView", () => {
     expect(old).not.toContain("read all");
   });
 
+  it("lists what already looks off in a must-read, each linking its line", async () => {
+    const opened: [string, number | undefined][] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          mustRead: [
+            {
+              ...report.mustRead[0],
+              flags: [{ note: "TTL is read but never applied", line: 31 }, { note: "No line" }],
+            },
+          ],
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const flags = host.querySelector('ul[aria-label="Looks off"]');
+      expect(flags?.textContent).toContain("TTL is read but never applied");
+      expect(flags?.textContent).toContain("No line");
+      const link = [...(flags?.querySelectorAll("button") ?? [])];
+      expect(link.map((b) => b.textContent)).toEqual(["src/cache.ts:31"]);
+      link[0]?.click();
+      expect(opened).toEqual([["src/cache.ts", 31]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("posts a finding on its line from an editable draft", async () => {
+    const posted: { path: string; line: number; body: string }[] = [];
+    const withLine: VerificationReport = {
+      ...report,
+      tests: {
+        status: "issues",
+        findings: [
+          { ...report.tests.findings[0], line: 12 },
+          { title: "No line", detail: "Whole PR.", severity: "low" },
+        ],
+      },
+    };
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: withLine,
+        onOpen: { open: () => {}, canOpen: () => true },
+        onPostFinding: async ({ path, line }, body) => {
+          posted.push({ path, line, body });
+        },
+      }),
+    );
+    const buttons = (label: string) =>
+      [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+    try {
+      // Only the finding that cites a line can be posted.
+      expect(buttons("Comment")).toHaveLength(1);
+      buttons("Comment")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(host.querySelector("textarea")?.value).toBe(
+        "**Eviction is untested**\n\nNothing covers a full cache.",
+      );
+      buttons("Post comment")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(posted).toEqual([
+        {
+          path: "src/cache.test.ts",
+          line: 12,
+          body: "**Eviction is untested**\n\nNothing covers a full cache.",
+        },
+      ]);
+      expect(host.querySelector("textarea")).toBeNull();
+      expect(host.textContent).toContain("Commented");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("offers no comment action without a way to post", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          tests: { ...report.tests, findings: [{ ...report.tests.findings[0], line: 12 }] },
+        },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    const labels = [...host.querySelectorAll("button")].map((b) => b.textContent);
+    expect(labels).not.toContain("Comment");
+  });
+
   it("gives a passing check one line and a failing one its findings", async () => {
     const text = textOf(
       await renderToHtml(

@@ -92,8 +92,8 @@ head in a tab of its own.
   matters and jumps to the lines it points at.
 - When the [verification report](#verification-report) has something to say
   about the file, a strip above the diff gives the must-read reason and lists
-  each risk concern and check finding that cites a line, with the check's
-  name. Click a line number to jump there. The must-read lines are marked in
+  each must-read flag, risk concern and check finding that cites a line, with
+  where it came from. Click a line number to jump there. The must-read lines are marked in
   amber on the new side of the diff, and each cited line in red; hover one to
   read why.
 
@@ -172,6 +172,17 @@ there.
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
 - A report made before these two checks existed shows only the checks it had.
+
+Under each must-read file, the report lists anything in it that already looks
+off or unclear, such as a branch that looks inverted or a value that seems to
+be ignored, each linking to its line. These are questions to check while you
+read, not findings. They are also marked on the file's diff.
+
+A check finding that cites a line has **Comment**, which opens a comment on
+that line prefilled with the finding's title and detail. Edit it as you like
+and **Post comment** posts it on the PR under your name, like a comment written
+in the diff. A finding with no line can't be posted, since the providers only
+take line comments on a file the PR changes.
 
 The report doubles as a to-do list. Once you mark a file viewed (in its diff,
 the Changed files tree or the PRs tab), every must-read, risk concern and
