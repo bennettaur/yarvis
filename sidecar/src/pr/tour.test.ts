@@ -169,6 +169,44 @@ describe("generateTour", () => {
     expect((await generateTour(model, fakeSource())).headSha).toBe("a".repeat(40));
   });
 
+  it("returns the graph the agent recorded, for the guide's diagram", async () => {
+    const { model } = scriptedModel(
+      {
+        finishReason: finished("tool-calls"),
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "n",
+            toolName: "record_node",
+            input: JSON.stringify({ id: "route", kind: "endpoint", file: "src/api.ts" }),
+          },
+          {
+            type: "tool-call",
+            toolCallId: "e",
+            toolName: "record_edge",
+            input: JSON.stringify({ from: "route", to: "store", kind: "calls" }),
+          },
+        ],
+      },
+      submits({ steps: [step("src/api.ts")] }),
+    );
+    const { graph } = await generateTour(model, fakeSource());
+    expect(graph).toEqual({
+      nodes: [
+        { id: "route", kind: "endpoint", file: "src/api.ts", changed: true },
+        { id: "store", kind: "unknown" },
+      ],
+      edges: [{ from: "route", to: "store", kind: "calls" }],
+    });
+  });
+
+  // Loose nodes with nothing joining them draw as a scatter of boxes, which
+  // says nothing about the flow.
+  it("returns no graph when the agent recorded no edges", async () => {
+    const { model } = submittingModel(() => [step("a.ts")]);
+    expect((await generateTour(model, fakeSource())).graph).toBeNull();
+  });
+
   it("reports a run that never submitted rather than storing nothing", async () => {
     const { model, seen } = scriptedModel(saysNothing);
     await expect(generateTour(model, fakeSource())).rejects.toThrow(

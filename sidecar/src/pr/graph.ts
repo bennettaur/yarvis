@@ -9,10 +9,15 @@
  * it something to query back, and gives the caller a structure to order steps
  * from once the exploring is done.
  *
- * The graph lives for one agent run and is never persisted: it describes the
- * code at one commit, and re-deriving it is cheaper than deciding whether a
- * stored copy is still true.
+ * The graph is built fresh for each agent run rather than updated: it
+ * describes the code at one commit, and re-deriving it is cheaper than deciding
+ * whether a stored copy is still true. A guide keeps the finished graph beside
+ * its steps, stamped with the same commit, to draw the change's flow diagram.
  */
+
+/** Most nodes kept for a diagram; past this it is a wall of boxes, not a picture. */
+export const MAX_DIAGRAM_NODES = 60;
+const MAX_DIAGRAM_EDGES = 150;
 
 export interface GraphNode {
   id: string;
@@ -46,6 +51,13 @@ export interface CodeGraph {
    * else is reached.
    */
   entryPoints(): GraphNode[];
+  /**
+   * The graph as stored for a diagram, cut to {@link MAX_DIAGRAM_NODES}.
+   * `changedFiles` decides each node's `changed` flag wherever the node names
+   * a file, so a diagram never marks code as part of the change on the model's
+   * word alone.
+   */
+  snapshot(changedFiles: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
 export function newCodeGraph(): CodeGraph {
@@ -94,6 +106,25 @@ export function newCodeGraph(): CodeGraph {
       if (edges.length === 0) return [];
       const pointedAt = new Set(edges.map((e) => e.to));
       return [...nodes.values()].filter((n) => !pointedAt.has(n.id));
+    },
+
+    snapshot(changedFiles) {
+      const marked = [...nodes.values()].map((n) =>
+        n.file === undefined ? n : { ...n, changed: changedFiles.has(n.file) },
+      );
+      // The change's own code is what the diagram is about, so it is kept first
+      // and the surrounding flow fills what room is left.
+      const kept = [...marked.filter((n) => n.changed), ...marked.filter((n) => !n.changed)].slice(
+        0,
+        MAX_DIAGRAM_NODES,
+      );
+      const keptIds = new Set(kept.map((n) => n.id));
+      return {
+        nodes: marked.filter((n) => keptIds.has(n.id)),
+        edges: edges
+          .filter((e) => keptIds.has(e.from) && keptIds.has(e.to))
+          .slice(0, MAX_DIAGRAM_EDGES),
+      };
     },
   };
 }

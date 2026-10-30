@@ -9,7 +9,7 @@ import {
   tool,
 } from "ai";
 import { z } from "zod";
-import type { PrGuideFindingKind, PrGuideStep } from "../db/schema.ts";
+import type { PrGuideFindingKind, PrGuideGraph, PrGuideStep } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { type OllamaMessage, ollamaChat } from "../llm/ollamaChat.ts";
 import type { OllamaChatTarget } from "../llm/providers.ts";
@@ -255,6 +255,9 @@ function systemPrompt(): string {
     "Work from the outside in: begin at the outermost entry point the change touches — an HTTP route, a CLI command, a UI event, a scheduled job — and follow the flow inward through the code it calls, ending at whatever it finally persists or returns.",
     "Explore before you order. Use list_changed_files to see the whole surface, read_diff for what actually changed in a file, read_file to see the code around a change or the definition of something it calls, and search_code to find who else calls what moved.",
     "Record what you learn with record_node and record_edge as you go, then use query_graph to find the entry points. That graph is what the ordering comes from — do not try to hold the chain in your head.",
+    // The graph is also drawn for the reviewer as the change's flow diagram,
+    // which is only useful if it shows where the change sits, not just itself.
+    "The graph is also shown to the reviewer as a diagram of the flow. Record the unchanged code the change is called from and calls into as well, with its file, so the diagram shows the path a request takes through the change and not only the changed files.",
     "A step should point at the specific lines that matter, not a whole file, unless the file is new and short.",
     "Explain why a step comes where it does, not merely what the code says. A reviewer can read the code; what they cannot see is how it connects.",
     "Put anything longer — a caller you found elsewhere, a constraint from another file, a reason the change is shaped this way — in the step's context rather than its explanation.",
@@ -741,6 +744,8 @@ export interface GenerateTourOptions {
 export interface GenerateTourResult {
   steps: PrGuideStep[];
   headSha: string;
+  /** What the agent recorded while exploring; null when it recorded no edges, which draws nothing worth showing. */
+  graph: PrGuideGraph | null;
 }
 
 /**
@@ -794,7 +799,13 @@ export async function generateTour(
     return null;
   });
 
-  if (sink.steps) return { steps: sink.steps, headSha: detail.headSha };
+  const finish = (steps: PrGuideStep[]): GenerateTourResult => ({
+    steps,
+    headSha: detail.headSha,
+    graph: graph.edges().length ? graph.snapshot(changed) : null,
+  });
+
+  if (sink.steps) return finish(sink.steps);
   // A failed run without a tour rethrew above, so this one returned normally.
   const explored = result as NonNullable<typeof result>;
   let miss = classifyMiss(explored);
@@ -829,7 +840,7 @@ export async function generateTour(
       console.error("[pr] tour submission model error:", describeError(e));
       throw new Error(clientError(e));
     });
-    if ("steps" in next) return { steps: next.steps, headSha: detail.headSha };
+    if ("steps" in next) return finish(next.steps);
     miss = next.miss;
     conversation = [...conversation, ...next.messages];
     console.error("[pr] tour submission attempt failed:", JSON.stringify({ ask, miss }));

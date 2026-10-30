@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { newCodeGraph } from "./graph.ts";
+import { MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
 
 describe("newCodeGraph", () => {
   it("keeps what an earlier sighting established", () => {
@@ -88,5 +88,38 @@ describe("newCodeGraph", () => {
         .map((n) => n.id)
         .sort(),
     ).toEqual(["cron", "http"]);
+  });
+
+  describe("snapshot", () => {
+    it("marks a node changed from the pull request's files, not the model's claim", () => {
+      const graph = newCodeGraph();
+      graph.addNode({ id: "handler", kind: "endpoint", file: "src/api.ts", changed: false });
+      graph.addNode({ id: "store", kind: "function", file: "src/store.ts", changed: true });
+      graph.addNode({ id: "orders", kind: "table", changed: true });
+      const { nodes } = graph.snapshot(new Set(["src/api.ts"]));
+      expect(Object.fromEntries(nodes.map((n) => [n.id, n.changed]))).toEqual({
+        handler: true,
+        store: false,
+        // No file to check it against, so the model's word is all there is.
+        orders: true,
+      });
+    });
+
+    it("keeps changed code first when the graph is too big to draw", () => {
+      const graph = newCodeGraph();
+      for (let i = 0; i < MAX_DIAGRAM_NODES; i++) {
+        graph.addNode({ id: `context-${i}`, kind: "function", file: `src/context${i}.ts` });
+      }
+      graph.addNode({ id: "changed", kind: "function", file: "src/changed.ts" });
+      graph.addEdge({ from: "changed", to: "context-0", kind: "calls" });
+      graph.addEdge({ from: "context-1", to: `context-${MAX_DIAGRAM_NODES - 1}`, kind: "calls" });
+
+      const { nodes, edges } = graph.snapshot(new Set(["src/changed.ts"]));
+      expect(nodes).toHaveLength(MAX_DIAGRAM_NODES);
+      expect(nodes.map((n) => n.id)).toContain("changed");
+      expect(nodes.map((n) => n.id)).not.toContain(`context-${MAX_DIAGRAM_NODES - 1}`);
+      // An edge to a node that was cut would point at nothing.
+      expect(edges).toEqual([{ from: "changed", to: "context-0", kind: "calls" }]);
+    });
   });
 });
