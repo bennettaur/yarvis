@@ -21,6 +21,7 @@ const NO_ARTIFACTS: ArtifactSummary[] = [];
 
 export default function ArtifactsTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const listRes = useCachedResource<ArtifactSummary[]>("memory:artifacts", listArtifacts);
   const artifacts = listRes.data ?? NO_ARTIFACTS;
@@ -34,7 +35,13 @@ export default function ArtifactsTab() {
   );
 
   const remove = async (id: string) => {
-    await deleteArtifact(id);
+    setDeleteError(null);
+    try {
+      await deleteArtifact(id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+      return;
+    }
     if (selectedId === id) setSelectedId(null);
     await listRes.refresh();
   };
@@ -102,6 +109,7 @@ export default function ArtifactsTab() {
       )}
 
       {listRes.error && <p className="text-sm text-red-400">{listRes.error}</p>}
+      {deleteError && <p className="text-sm text-red-400">{deleteError}</p>}
     </div>
   );
 }
