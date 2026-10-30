@@ -533,6 +533,28 @@ describe("azure client", () => {
     expect(detail.myReviewState).toBe("approved");
   });
 
+  it("still returns the PR detail when the viewer can't be looked up", async () => {
+    const az = new AzureDevOpsClient(
+      "pat-no-viewer",
+      ORG,
+      fakeFetch([
+        { match: (u) => u.includes("connectionData"), body: {}, status: 500 },
+        {
+          match: (u) => /\/pullRequests\/9$/.test(u.split("?")[0]!),
+          body: {
+            pullRequestId: 9,
+            repository: { name: "web", project: { name: "Shop", id: "p1" } },
+            reviewers: [{ id: "me-id", displayName: "Me", vote: 10 }],
+          },
+        },
+        { match: () => true, body: { value: [] } },
+      ]),
+    );
+    const detail = await az.prDetail({ project: "Shop", repo: "web", prId: 9 });
+    expect(detail.number).toBe(9);
+    expect(detail.myReviewState).toBeUndefined();
+  });
+
   it("lists changed files without patches", async () => {
     const az = new AzureDevOpsClient(
       "pat",

@@ -167,7 +167,7 @@ export default function ReviewPrBar({
 }) {
   const { data: detail, loading, refreshing } = usePrDetail(pr.ref);
   const { data: prStatus, refresh: refreshStatus } = usePrStatus(pr.ref);
-  const actions = usePrActions(pr.ref, seenAt(pr));
+  const actions = usePrActions(pr.ref, seenAt(pr), detail);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [marked, setMarked] = useState<string | null>(null);

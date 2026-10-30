@@ -149,12 +149,12 @@ describe("PrFloatingHeader review actions", () => {
   it("offers Approve until the viewer has approved", async () => {
     const html = await render(detail({ myReviewState: "changes_requested" }));
     expect(html).toContain(">Approve<");
-    expect(html).not.toContain("Approved");
+    expect(html).not.toContain("You approved this PR");
   });
 
   it("shows the viewer's approval instead of a second Approve button", async () => {
     const html = await render(detail({ myReviewState: "approved" }));
-    expect(html).toContain("Approved");
+    expect(html).toContain("You approved this PR");
     expect(html).not.toContain(">Approve<");
     expect(html).toContain("Request changes");
   });

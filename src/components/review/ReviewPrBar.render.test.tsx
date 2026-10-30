@@ -79,6 +79,28 @@ describe("ReviewPrBar", () => {
     expect(button(host, "Request changes")).toBeDefined();
   });
 
+  it("shows the approval as soon as it is submitted, then defers to the refetched detail", async () => {
+    let refetched: (d: PrDetail) => void = () => {};
+    stubReviewApi({
+      applyReviewAction: async () => {},
+      fetchPrDetail: () => new Promise<PrDetail>((resolve) => (refetched = resolve)),
+    });
+    const host = await mount();
+    button(host, "Approve")?.click();
+    await waitFor(() => host.querySelector("textarea") !== null);
+    // The comment prompt's own confirm button, which shares the label.
+    const approves = [...host.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Approve",
+    );
+    approves[approves.length - 1]?.click();
+    await waitFor(() => host.textContent?.includes("Approved") ?? false);
+    expect(button(host, "Approve")).toBeUndefined();
+
+    // A vote reset on the provider since then is what the refetch reports.
+    refetched(detail());
+    await waitFor(() => button(host, "Approve") !== undefined);
+  });
+
   it("opens the guided review and verification tabs", async () => {
     const host = await mount();
     button(host, "Guided review")?.click();

@@ -319,11 +319,24 @@ function toReviewers(pr: any): Reviewer[] {
 }
 
 /**
+ * The viewer's standing verdict, from the opinionated reviews only: a comment
+ * or thread reply after an approval doesn't withdraw it, so it mustn't read as
+ * the viewer's latest word.
+ */
+function viewerVerdict(pr: any, viewerLogin?: string): { myReviewState?: ReviewerState } {
+  if (!viewerLogin) return {};
+  const mine = (pr.latestOpinionatedReviews?.nodes ?? []).find(
+    (node: any) => node?.author?.login === viewerLogin,
+  );
+  return mine?.state ? { myReviewState: mapReviewState(mine.state) } : {};
+}
+
+/**
  * Shapes the GraphQL `pullRequest` payload into a flat PrDetail. `repo` carries
  * the sibling `repository` node whose merge-method flags the UI needs; it's
  * optional so unit tests can shape a PR without it (merge buttons stay hidden).
  */
-export function toPrDetail(pr: any, repo?: any): PrDetail {
+export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail {
   const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const threadNodes = pr.reviewThreads?.nodes ?? [];
   return {
@@ -352,10 +365,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
-    // A PENDING review is the viewer's unsubmitted draft, not a verdict.
-    ...(pr.viewerLatestReview?.state && pr.viewerLatestReview.state !== "PENDING"
-      ? { myReviewState: mapReviewState(pr.viewerLatestReview.state) }
-      : {}),
+    ...viewerVerdict(pr, viewerLogin),
     reviewThreads: threadNodes.map(toReviewThread),
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
@@ -785,6 +795,7 @@ const CONVERSATION_PAGE_SIZE = 100;
 
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
+  viewer{ login }
   repository(owner:$owner,name:$repo){
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
@@ -807,7 +818,9 @@ query($owner:String!,$repo:String!,$number:Int!){
       latestReviews(first:50){
         nodes{ author{login} state }
       }
-      viewerLatestReview{ state }
+      latestOpinionatedReviews(first:100){
+        nodes{ author{login} state }
+      }
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }
         nodes{ ${REVIEW_THREAD_FIELDS} }
@@ -1421,6 +1434,7 @@ export class GitHubClient {
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
     const { data, errors } = await this.graphqlPayload<{
+      viewer?: { login?: string };
       repository?: { pullRequest?: any };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
     // A fine-grained token can't be granted the Checks permission, so GitHub
@@ -1429,7 +1443,7 @@ export class GitHubClient {
     if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
     const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    const detail = toPrDetail(pr, data?.repository);
+    const detail = toPrDetail(pr, data?.repository, data?.viewer?.login);
     const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
     detail.reviewThreads.push(...more.threads);
     if (more.truncated) detail.reviewThreadsTruncated = true;

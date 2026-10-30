@@ -298,6 +298,11 @@ function MergeMenu({
   );
 }
 
+const VERDICT_OF: Record<Exclude<ReviewAction, "publish">, ReviewerState> = {
+  approve: "approved",
+  request_changes: "changes_requested",
+};
+
 /**
  * The review and merge actions a PR offers — publish, approve, request changes,
  * merge, auto-merge — with the in-flight and error state they share. A hook so
@@ -307,9 +312,10 @@ function MergeMenu({
  * The handlers invalidate the PR cache so the cached detail (which fed the
  * draft / mergeable state) is refetched after a publish or vote. `seen` is the
  * head the surface is showing, which a review records as where the user
- * reviewed.
+ * reviewed. `detail` is the PR detail on screen, which a verdict submitted
+ * here stands in for until it is refetched.
  */
-export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
+export function usePrActions(prRef: PrRef, seen?: SeenCommits, detail?: PrDetail | null) {
   // Publishing, approving or merging changes both how this pull request reads
   // and how its layer reads in a stack, so the two caches are dropped together.
   const invalidatePr = (ref: PrRef) => {
@@ -318,10 +324,13 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   };
   const [open, setOpen] = useState<ReviewAction | null>(null);
   const [pending, setPending] = useState<ReviewAction | null>(null);
-  // The verdict just submitted from this page, keyed by PR so a stack layer
-  // switch doesn't carry it over. It covers the gap until the refetched detail
-  // reports the review.
-  const [submitted, setSubmitted] = useState<{ key: string; verdict: ReviewerState } | null>(null);
+  // The verdict just submitted, held against the detail on screen when it was
+  // sent. Any other detail, refetched or another PR's, is newer and wins: the
+  // vote may since have been reset or dismissed on the provider.
+  const [submitted, setSubmitted] = useState<{
+    against: PrDetail | null | undefined;
+    verdict: ReviewerState;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Merge controls run on their own pending flag so a merge in flight and a
   // review in flight don't clobber each other's spinner.
@@ -333,14 +342,12 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     setError(null);
     try {
       await applyReviewAction(prRef, action, body, seen);
+      // Publishing lifts a draft; it isn't a review, so it leaves no verdict.
       if (action !== "publish") {
-        setSubmitted({
-          key: refKey(prRef),
-          verdict: action === "approve" ? "approved" : "changes_requested",
-        });
+        setSubmitted({ against: detail, verdict: VERDICT_OF[action] });
+        invalidateLastReview(prRef);
       }
       invalidatePr(prRef);
-      if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -381,7 +388,7 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     open,
     setOpen,
     pending,
-    submittedVerdict: submitted?.key === refKey(prRef) ? submitted.verdict : null,
+    submittedVerdict: submitted && submitted.against === detail ? submitted.verdict : null,
     error,
     setError,
     mergeMenu,
@@ -585,7 +592,7 @@ export default function PrFloatingHeader({
 }) {
   const prRef: PrRef = pr.ref;
   // The classic page shows the provider's diff, which is at the detail's head.
-  const actions = usePrActions(prRef, { headSha: detail?.headSha });
+  const actions = usePrActions(prRef, { headSha: detail?.headSha }, detail);
   const [starPending, setStarPending] = useState(false);
   // The summary's title can be empty when the entry came from the workspace
   // poller cache, which doesn't store PR titles, so prefer the detail's.

@@ -19,6 +19,7 @@ type MutationConfigApi = typeof import("../lib/pr/mutationTestingConfig");
 type SinceReviewApi = typeof import("../lib/reviewWorkspaces/sinceReview");
 type RereviewApi = typeof import("../lib/reviewWorkspaces/rereview");
 type PrModelsApi = typeof import("../lib/pr/models");
+type PrApi = typeof import("../lib/pr/api");
 type Overrides = Partial<
   ReviewApi &
     VerificationApi &
@@ -27,7 +28,8 @@ type Overrides = Partial<
     MutationConfigApi &
     SinceReviewApi &
     RereviewApi &
-    PrModelsApi
+    PrModelsApi &
+    PrApi
 >;
 
 // Copied, not kept as the module namespaces: those are live, so once the mocks
@@ -41,6 +43,7 @@ const mutationConfig = { ...(await import("../lib/pr/mutationTestingConfig")) };
 const sinceReview = { ...(await import("../lib/reviewWorkspaces/sinceReview")) };
 const rereview = { ...(await import("../lib/reviewWorkspaces/rereview")) };
 const prModels = { ...(await import("../lib/pr/models")) };
+const prApi = { ...(await import("../lib/pr/api")) };
 let overrides: Overrides = {};
 
 export function stubReviewApi(next: Overrides): void {
@@ -105,6 +108,12 @@ mock.module("../lib/reviewWorkspaces/rereview", () => ({
 mock.module("../lib/pr/models", () => ({
   ...prModels,
   getRereviewRunConfig: through(prModels, "getRereviewRunConfig"),
+}));
+
+mock.module("../lib/pr/api", () => ({
+  ...prApi,
+  fetchPrDetail: through(prApi, "fetchPrDetail"),
+  applyReviewAction: through(prApi, "applyReviewAction"),
 }));
 
 mock.module("../lib/pr/mutationTestingConfig", () => ({
