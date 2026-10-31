@@ -137,7 +137,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   description carries the verdict. If the PR is a maintainer's, not a draft,
   low risk, and the report has no concerns, the bot also approves it and turns
   on squash auto-merge. A push makes the report stale, so run `/verify-pr`
-  again.
+  again, or `/verify-pr <N> --recheck` to re-verify only what the last report
+  flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
   merges their own PR, since GitHub won't let them approve it. On an outside
@@ -393,9 +394,16 @@ src/            React frontend (Vite + TS + Tailwind)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal,
                 Workspaces, …)
     voice/      the mic button and voice controls shared by the chat surfaces
+    ai-elements/ chat building blocks adapted from Vercel's AI Elements
+                (conversation, message, reasoning, tool, prompt input), on the
+                app's own types and `Markdown`
+    ui/         the shadcn/ui primitives those need (button, badge,
+                collapsible); their colour names map onto the zinc/indigo
+                scale in `index.css`, so themes reach them
     pr/         PR dashboard and embedded review: lists, diffs, context expansion,
                 change minimap, guide panel, insight cards, stack list
     issue/      Issues tab views
+    field/      Agent Field: the canvas and chiptune engine, and its page
     files/      shared file-tree rows
     editor/     CodeMirror 6 wrapper behind the workspace file editor
     review/editor/ read-only Monaco file and diff views for PR review: line
@@ -475,6 +483,8 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
   src/questions/   questions agents ask over MCP, and their answers
+  src/activity/    live agent activity for the Agent Field page: the hub, the
+                   Claude Code hook ingest and the SSE stream
   claude-plugins/  source of the Claude Code plugins headless runs load
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)

@@ -1,4 +1,5 @@
 import { type LanguageModel, type ModelMessage, stepCountIs, streamText, type Tool } from "ai";
+import { reportTurnActivity } from "../activity/agentTurn.ts";
 import { scheduledTaskModelMessage } from "../scheduledTasks/message.ts";
 
 /** The options bag `streamText` accepts, so callers can borrow one field of it. */
@@ -331,8 +332,15 @@ export interface AgentTurnParams {
  * thrown), mirroring how the AI SDK surfaces them, so callers handle success
  * and failure through the same channel. On error the assistant message is not
  * persisted.
+ *
+ * Each step is also reported to the Agent Field page, under the surface the
+ * turn came from.
  */
-export async function* runAgentTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
+export function runAgentTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
+  return reportTurnActivity(params.userMetadata?.source ?? "chat", runTurn(params), params.signal);
+}
+
+async function* runTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
   const {
     config,
     db,

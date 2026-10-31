@@ -1,33 +1,28 @@
-import { memo, type ReactNode, useState } from "react";
+import { MessageSquareIcon, PencilIcon, RotateCcwIcon } from "lucide-react";
+import { type ReactNode, useState } from "react";
 import { messageLabel, type ThreadMessage, type ToolActivity } from "../lib/chat";
-import Markdown from "./Markdown";
+import { ConversationEmptyState } from "./ai-elements/conversation";
+import {
+  Message,
+  MessageAction,
+  MessageActions,
+  MessageContent,
+  MessageLabel,
+  MessageResponse,
+} from "./ai-elements/message";
 import ThinkingIndicator from "./ThinkingIndicator";
 import TurnActivity from "./TurnActivity";
+import { Button } from "./ui/button";
 
-/**
- * Memoized because the thread re-renders on every streamed token: without it,
- * each already-finished reply would be re-parsed by react-markdown per token.
- */
-const AssistantReply = memo(function AssistantReply({ content }: { content: string }) {
-  return (
-    <Markdown className="text-zinc-100" allowAppLinks>
-      {content}
-    </Markdown>
-  );
-});
-
-/** An assistant turn: accent rule and label set it apart from the user's bubbles. */
+/** An assistant turn: what it did to get there, then the reply. */
 function AssistantTurn({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="border-l-2 border-violet-500/50 pl-3 text-sm">
-      <div className="mb-1 text-xs uppercase tracking-wide text-violet-300/70">{label}</div>
-      {children}
-    </div>
+    <Message from="assistant">
+      <MessageLabel>{label}</MessageLabel>
+      <MessageContent>{children}</MessageContent>
+    </Message>
   );
 }
-
-const ACTION_CLASS =
-  "rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800";
 
 /**
  * A user turn's bubble, with — when the thread can rewind — a way to send it
@@ -49,67 +44,63 @@ function UserMessage({
 
   if (draft !== null && canRewind) {
     return (
-      <div className="flex flex-col items-end text-sm">
-        <div className="mb-1 text-xs uppercase tracking-wide text-sky-400/70">{label}</div>
+      <Message from="user">
+        <MessageLabel>{label}</MessageLabel>
         <div className="w-full max-w-[85%] space-y-2">
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={Math.min(8, draft.split("\n").length + 1)}
             aria-label="Edit message"
-            className="w-full resize-y rounded-md border border-sky-800/50 bg-sky-950/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-500"
+            className="w-full resize-y rounded-lg border border-input bg-secondary px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
           />
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
+            <Button
+              size="xs"
               disabled={!draft.trim()}
               onClick={() => {
                 onRewind?.(id as string, draft);
                 setDraft(null);
               }}
-              className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500 disabled:opacity-50"
             >
               Save & resend
-            </button>
-            <button type="button" onClick={() => setDraft(null)} className={ACTION_CLASS}>
+            </Button>
+            <Button size="xs" variant="outline" onClick={() => setDraft(null)}>
               Cancel
-            </button>
+            </Button>
           </div>
-          <p className="text-right text-xs text-zinc-500">
+          <p className="text-right text-xs text-muted-foreground">
             Replies after this message are discarded.
           </p>
         </div>
-      </div>
+      </Message>
     );
   }
 
   return (
-    <div className="flex flex-col items-end text-sm">
-      <div className="mb-1 text-xs uppercase tracking-wide text-sky-400/70">{label}</div>
-      <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-tr-sm border border-sky-800/50 bg-sky-950/40 px-3 py-2 text-zinc-100">
-        {message.content}
-      </div>
+    <Message from="user">
+      <MessageLabel>{label}</MessageLabel>
+      <MessageContent className="max-w-[85%] whitespace-pre-wrap">{message.content}</MessageContent>
       {canRewind && (
-        <div className="mt-1 flex gap-2">
-          <button
-            type="button"
-            title="Send this message again, discarding everything after it"
+        // Revealed on hover or keyboard focus, so a long thread isn't a column of buttons.
+        <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <MessageAction
+            tooltip="Send this message again, discarding everything after it"
+            label="Resend"
             onClick={() => onRewind?.(id as string, message.content)}
-            className={ACTION_CLASS}
           >
-            Resend
-          </button>
-          <button
-            type="button"
-            title="Edit this message, then resend it"
+            <RotateCcwIcon />
+          </MessageAction>
+          <MessageAction
+            tooltip="Edit this message, then resend it"
+            label="Edit"
             onClick={() => setDraft(message.content)}
-            className={ACTION_CLASS}
           >
-            Edit
-          </button>
-        </div>
+            <PencilIcon />
+          </MessageAction>
+        </MessageActions>
       )}
-    </div>
+    </Message>
   );
 }
 
@@ -152,13 +143,18 @@ export default function ChatMessages({
 }) {
   return (
     <>
-      {messages.length === 0 && !streaming && <p className="text-sm text-zinc-600">{emptyHint}</p>}
+      {messages.length === 0 && !streaming && (
+        <ConversationEmptyState
+          icon={<MessageSquareIcon className="size-6" />}
+          description={emptyHint}
+        />
+      )}
       {messages.map((m, i) =>
         // Messages are append-only within a thread, so the index is stable.
         m.role === "assistant" ? (
           <AssistantTurn key={i} label={messageLabel(m.role, m.metadata)}>
             <TurnActivity activity={m.activity ?? []} thinking={m.reasoning} collapsed />
-            <AssistantReply content={m.content} />
+            <MessageResponse>{m.content}</MessageResponse>
           </AssistantTurn>
         ) : (
           <UserMessage key={i} message={m} onRewind={busy ? undefined : onRewind} />
@@ -175,7 +171,7 @@ export default function ChatMessages({
             running={busy}
             collapsed={streaming !== ""}
           />
-          {streaming && <AssistantReply content={streaming} />}
+          {streaming && <MessageResponse>{streaming}</MessageResponse>}
         </AssistantTurn>
       )}
       {busy && !streaming && !thinking && activity.length === 0 && <ThinkingIndicator />}
