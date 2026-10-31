@@ -382,10 +382,10 @@ are set too ($1 by default).
 ### New commits pushed
 
 The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
-while the app is in front of you. When someone has pushed past the commit the checkout
-is at, a **New commits pushed — Refresh** banner appears under the bar.
-**Refresh** fetches the new commits and moves the checkout, showing the fetch's
-progress as it goes. Your tabs stay open and show the new commits once it is
+while the app is in front of you. When someone has pushed past the commit the
+checkout is at, a **New commits pushed — Refresh** banner appears under the
+bar. **Refresh** fetches the new commits and moves the checkout, showing the
+fetch's progress as it goes. Your tabs stay open and show the new commits once it is
 done, and the banner then offers **See what changed since you last reviewed** —
 or, if more commits were pushed while it ran, another **Refresh**.
 

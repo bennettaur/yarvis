@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 import { AzureDevOpsClient } from "../azure/client.ts";
 import { getDb } from "../db/client.ts";
@@ -926,25 +926,34 @@ describe("batched GitHub reads", () => {
 });
 
 describe("refreshWorkspacePrs", () => {
-  it("reads only the named workspaces' branches, however fresh their cache", async () => {
-    const wanted = await seedReadyRepo("a");
-    await db.insert(workspaceRepoPr).values({
-      workspaceRepoId: wanted,
-      prNumber: 5,
-      prState: "open",
-      lastPolledAt: new Date(),
-    });
-    await seedReadyRepo("b");
-    const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, "a"));
+  it("reads the named workspaces' branches unless they were polled since freshSince", async () => {
+    const stale = await seedReadyRepo("a");
+    const recent = await seedReadyRepo("c");
+    const other = await seedReadyRepo("b");
+    const freshSince = new Date(Date.now() - 30_000);
+    await db.insert(workspaceRepoPr).values([
+      { workspaceRepoId: stale, prNumber: 5, lastPolledAt: new Date(Date.now() - 5 * 60_000) },
+      { workspaceRepoId: recent, prNumber: 6, lastPolledAt: new Date() },
+    ]);
+    const named = await db
+      .select()
+      .from(workspaces)
+      .where(inArray(workspaces.slug, ["a", "c"]));
     const { gh, queries } = graphqlClient(() => ({
       data: { p0: { pullRequests: { nodes: [POLLED_PR(5)] } } },
     }));
 
-    await refreshWorkspacePrs(db, { github: gh }, [ws!.id]);
+    await refreshWorkspacePrs(
+      db,
+      { github: gh },
+      named.map((w) => w.id),
+      freshSince,
+    );
 
     expect(queries).toEqual([{ o0: "oa", r0: "ra", b0: "yarvis/a" }]);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wanted));
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(stale));
     expect(row?.checkRollup).toBe("failure");
+    expect(await db.select().from(workspaceRepoPr).where(eqWr(other))).toEqual([]);
   });
 });
 
