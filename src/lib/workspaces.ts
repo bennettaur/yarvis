@@ -552,6 +552,15 @@ export async function unlinkWorkspaceIssue(
   if (!res.ok) return readError(res, "unlink issue");
 }
 
+/**
+ * Tells the sidecar the user closed the workspace's agent tab, so its session
+ * is marked ended and not resumed on the next start.
+ */
+export async function stopWorkspaceAgent(id: string): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${id}/agent/stop`, { method: "POST" });
+  if (!res.ok) return readError(res, "stop agent session");
+}
+
 export async function archiveWorkspace(
   id: string,
   input: ArchiveWorkspaceInput = {},

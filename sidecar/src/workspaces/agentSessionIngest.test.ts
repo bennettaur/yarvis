@@ -334,8 +334,10 @@ describe("findResumableAgentSessions", () => {
   });
 
   it("never resumes an id that isn't a UUID, since it goes on Claude's command line", async () => {
-    await hook(start("--dangerously-skip-permissions"), { pid: "999999" });
-    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    for (const id of ["--dangerously-skip-permissions", `x${S1}`, `${S1}x`]) {
+      await hook(start(id), { pid: "999999" });
+      expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    }
   });
 });
 

@@ -412,6 +412,23 @@ mod unix_impl {
             );
         }
 
+        /// Shaped like `spawnClaudeSession` in `sidecar/src/core/controlClient.ts`.
+        #[test]
+        fn reads_the_resume_id_the_sidecar_sends() {
+            let p: SpawnParams = serde_json::from_value(json!({
+                "workspaceId": "w1",
+                "cwd": "/tmp/ws",
+                "name": "ws",
+                "remoteControl": false,
+                "resume": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+            }))
+            .expect("sidecar payload");
+            assert_eq!(
+                p.resume.as_deref(),
+                Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
+            );
+        }
+
         #[test]
         fn refuses_a_join_link_that_isnt_a_web_link() {
             let mut p: FireAlarmParams =

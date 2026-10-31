@@ -96,11 +96,20 @@ export async function startClaudeSession(
 /**
  * Best-effort stop of a workspace's Claude session via the core. Its
  * registration is closed first, so a stopped session is never resumed on the
- * next start even when the kill doesn't reach the core.
+ * next start even when the kill doesn't reach the core. The kill is still
+ * attempted when that write fails.
  */
 export async function stopClaudeSession(db: Db, workspaceId: string): Promise<void> {
-  await endWorkspaceAgentSessions(db, workspaceId, STOPPED_END_REASON, `ws-claude:${workspaceId}`);
-  await killClaudeSession(workspaceId);
+  try {
+    await endWorkspaceAgentSessions(
+      db,
+      workspaceId,
+      STOPPED_END_REASON,
+      `ws-claude:${workspaceId}`,
+    );
+  } finally {
+    await killClaudeSession(workspaceId);
+  }
 }
 
 /**
