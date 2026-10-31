@@ -59,7 +59,8 @@ type FinishStep<T, R> = [T] extends [R]
  *   run outside it.
  * - The permission mode is always set and never one that approves on its own:
  *   with nobody to answer a prompt, a tool the run wasn't granted is denied.
- * - A spend and turn ceiling is mandatory.
+ * - A timeout is mandatory. A spend cap is optional, and the review runs leave
+ *   it out because their budget only warns.
  * - The prompt goes in on stdin, so it never shows in `ps` and a prompt
  *   starting with `-` can't be read as a flag.
  * - A fixed guardrail tells the model the checkout is material to analyse,

@@ -240,8 +240,8 @@ It runs the PR's code, so it waits for that to be allowed:
   tests without one first.
 
 Before a pass starts, the tab says how many mutants it may try, the budget for
-planning and explaining (set under **Settings → PR review**; it only warns, and
-a pass that goes over it still finishes), and what the test
+planning and explaining (set under **Settings → PR review**; nothing stops a
+pass that goes over it), and what the test
 sandbox does: no network beyond your machine, writes only to the scratch copy
 and a temp folder, and no reading your home folder beyond your toolchains. The
 sandbox is a second line of defence, not a guarantee, and setup itself is not
