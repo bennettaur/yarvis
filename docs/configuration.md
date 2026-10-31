@@ -188,6 +188,7 @@ has written your providers and MCP servers into it.
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
 | `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
 | `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
+| `attentionAnimation` | `true` | `false` stops the amber band sweeping across the top bar and the bell shaking while the bell has something pending. The count badge still shows. |
 
 `null` and a missing key both mean "use the default".
 
@@ -200,15 +201,15 @@ has written your providers and MCP servers into it.
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
-| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
+| `decisionModel` | `model`, the provider and model tagged `decision` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
-| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the most one report may spend (2 by default, from 0.25 to 20) | Settings → PR review |
-| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, from 0.25 to 20), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
-| `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, from 0.1 to 20; a planning run that reaches it ends the pass) and `explanationBudgetUsd` (0.5, from 0.05 to 20), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. | Settings → PR review |
+| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: a report estimated over it asks before starting, and a run that goes over it still finishes | Settings → PR review |
+| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
+| `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
-| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), the `provider` and `model` its passes run on (unset uses the default chat model), and `guidance`, your standing rules for every pass in your own words (`null` for none). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
+| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), `passTimeoutMinutes` (20, at most 240), how long one pass may run before it is stopped, the `provider` and `model` its passes run on (unset uses the default chat model), and `guidance`, your standing rules for every pass in your own words (`null` for none). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
 | `voiceConfig` | Speech providers and models, voice, speak replies, hands-free, the active saved voice (`activeVoiceId`, blank for none), and the Voice Studio's translation model (`translationProvider`, `translationModel`) | Settings → Voice, Voice page |
 | `voiceProfiles` | Saved voices. Their cloning clips are files in `~/.yarvis/voices/`. | Voice page |
 | `speechServer` | The local speech server's `port` (8000) | Voice page |
@@ -301,7 +302,8 @@ The tabs in **Settings**, in order:
    integration fields (Azure org URL, JIRA URL and email, Google client id).
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
-3. **Tools & MCP.** The decision model behind auto mode, MCP servers Yarvis
+3. **Tools & MCP.** The decision model (auto mode, picking specialists and
+   model tiers, and a playground to try it), MCP servers Yarvis
    connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
    groups start collapsed.
 4. **Repositories.** The repos workspaces can use, the workspace agent
@@ -318,5 +320,7 @@ The tabs in **Settings**, in order:
     jobs.
 11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
-    `settings.json`.
+    `settings.json`. Below it, a toggle turns off the amber band that sweeps
+    across the top bar and the bell's shake while the bell has something
+    pending, saved as `attentionAnimation`.
 12. **Diagnostics.** The sidecar log.

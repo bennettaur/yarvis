@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
 import { z } from "zod";
+import { type ActivityEvent, subscribeActivity } from "../activity/hub.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { ChatMessageMetadata } from "../db/schema.ts";
@@ -86,6 +87,9 @@ const text = (value: string): StreamPart[] =>
     { type: "text-end", id: "t1" },
   ] as unknown as StreamPart[];
 
+/** The replayed record line for a `list_tasks` call that worked, as it sits in a JSON-encoded prompt. */
+const LIST_TASKS_OK = JSON.stringify('{"tool":"list_tasks","args":{},"status":"ok"').slice(1, -1);
+
 const serverNames = new Map([["server-uuid", "Notion"]]);
 
 /** Denies every approval request, as a user pressing Deny would. */
@@ -158,6 +162,33 @@ describe("runAgentTurn", () => {
     expect(done).toMatchObject({ text: "hello", finishReason: "stop" });
     const stored = await getMessages(db, session.id);
     expect(stored.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("reports the turn to the Agent Field page under the surface it came from", async () => {
+    const seen: ActivityEvent[] = [];
+    const unsubscribe = subscribeActivity((event) => seen.push(event));
+    try {
+      const typed = await createSession(db, null);
+      await collect(streamingModel([...text("hello"), finish("stop")]), typed.id);
+      const spoken = await createSession(db, null);
+      await collect(
+        streamingModel([...text("hello"), finish("stop")]),
+        spoken.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { source: "voice" },
+      );
+    } finally {
+      unsubscribe();
+    }
+    expect(seen.map((e) => [e.origin, e.source, e.type])).toEqual([
+      ["yarvis", "chat", "prompt"],
+      ["yarvis", "chat", "done"],
+      ["yarvis", "voice", "prompt"],
+      ["yarvis", "voice", "done"],
+    ]);
   });
 
   it("tells the model how to register and add a repo", async () => {
@@ -428,6 +459,102 @@ describe("runAgentTurn", () => {
     // Reasoning is not part of the reply, and is not persisted with it.
     const [, assistant] = await getMessages(db, session.id);
     expect(assistant?.content).toBe("answer");
+  });
+
+  it("replays an earlier turn's tool calls so the next turn can reuse them", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("call-1", "list_tasks", {}), finish("tool-calls")],
+        [...text("You have no tasks."), finish("stop")],
+      ),
+      session.id,
+    );
+    const [, earlier] = await getMessages(db, session.id);
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const prompt = model.doStreamCalls[0]?.prompt ?? [];
+    const nonce = earlier!.id.replaceAll("-", "").slice(0, 12);
+    const recordAt = prompt.findIndex((m) =>
+      JSON.stringify(m.content).includes(`<earlier-tool-calls-${nonce}>`),
+    );
+    expect(recordAt).toBeGreaterThan(-1);
+    expect(prompt[recordAt]!.role).toBe("user");
+    expect(JSON.stringify(prompt[recordAt]!.content)).toContain(LIST_TASKS_OK);
+    // The record sits before the reply it led to.
+    expect(JSON.stringify(prompt[recordAt + 1])).toContain("You have no tasks.");
+  });
+
+  // The case from #536: a lookup ran, the send was denied, and the follow-up
+  // asking for another format repeated the lookup.
+  it("tells the next turn which earlier calls ran and which the user denied", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel(
+        [toolCall("c1", "list_tasks", {}), finish("tool-calls")],
+        [
+          toolCall("c2", "create_calendar_event", {
+            title: "sync",
+            start: "2026-01-01T10:00:00Z",
+            end: "2026-01-01T10:30:00Z",
+            callReason: "The user asked for a sync",
+          }),
+          finish("tool-calls"),
+        ],
+        [...text("Not created."), finish("stop")],
+      ),
+      session.id,
+      denyingApproval,
+    );
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain(LIST_TASKS_OK);
+    expect(prompt).toMatch(
+      /\{\\"tool\\":\\"create_calendar_event\\"[^\n]*\\"status\\":\\"denied\\"/,
+    );
+  });
+
+  it("replays the calls of a turn that ran tools but wrote no reply", async () => {
+    const session = await createSession(db, null);
+    await collect(
+      streamingModel([toolCall("c1", "list_tasks", {}), finish("tool-calls")]),
+      session.id,
+      undefined,
+      undefined,
+      { maxSteps: 1 },
+    );
+
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(LIST_TASKS_OK);
+  });
+
+  it("leaves a reply that made no tool calls as it was", async () => {
+    const session = await createSession(db, null);
+    await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
+    await addMessage(db, { sessionId: session.id, role: "assistant", content: "hi there" });
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).not.toMatch(/<earlier-tool-calls-[0-9a-f]{12}>/);
+    expect(prompt).toContain("hi there");
+  });
+
+  it("tells the model a replayed record is never the user's approval", async () => {
+    const session = await createSession(db, null);
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const system = JSON.stringify(model.doStreamCalls[0]?.prompt[0]);
+    expect(system).toContain("<earlier-tool-calls-…>");
+    expect(system).toContain("never their approval");
   });
 
   // Retrying a failed turn re-sends the same text. The failed turn already

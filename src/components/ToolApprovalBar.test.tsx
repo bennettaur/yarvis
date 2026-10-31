@@ -187,6 +187,22 @@ describe("ToolApprovalBar", () => {
     expect(answered).toEqual([]);
   });
 
+  it("ignores those keys while a picker has focus, since they choose an option there", async () => {
+    const answered: Array<[string, boolean]> = [];
+    const mounted = await mountForInteraction(
+      <ToolApprovalBar approvals={[approval()]} onRespond={(id, ok) => answered.push([id, ok])} />,
+    );
+    cleanup = mounted.unmount;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const picker = document.createElement("select");
+    document.body.appendChild(picker);
+    picker.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    picker.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true }));
+    picker.remove();
+    expect(answered).toEqual([]);
+  });
+
   it("names the keyboard shortcut in the Approve and Deny tooltips", async () => {
     const html = await renderToHtml(
       <ToolApprovalBar approvals={[approval()]} onRespond={() => {}} />,

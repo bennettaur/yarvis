@@ -17,6 +17,7 @@ export type Tab =
   | "sessions"
   | "heads-down"
   | "voice"
+  | "field"
   | "dashboard"
   | "settings";
 
@@ -47,6 +48,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "sessions", label: "Sessions", icon: "sessions" },
   { id: "heads-down", label: "Heads down", icon: "headsdown" },
   { id: "voice", label: "Voice", icon: "voice" },
+  { id: "field", label: "Agent Field", icon: "field" },
   { id: "dashboard", label: "Dashboard", icon: "dashboard", pinBottom: true },
   { id: "settings", label: "Settings", icon: "settings", pinBottom: true },
 ];

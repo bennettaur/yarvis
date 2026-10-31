@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement, useState } from "react";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import PrFloatingHeader from "./PrFloatingHeader";
 
@@ -253,4 +253,55 @@ describe("PrFloatingHeader star toggle", () => {
   });
 });
 
+describe("PrFloatingHeader viewer's review", () => {
+  it("shows the approval in place of the Approve button once the viewer approved", async () => {
+    const html = await render(detail({ viewerReview: "approved" }));
+    expect(html).toContain("✓ Approved");
+    expect(html).not.toContain(">Approve<");
+    expect(html).toContain("Request changes");
+  });
+
+  it("offers Approve when the viewer hasn't approved", async () => {
+    const html = await render(detail({ viewerReview: "changes_requested" }));
+    expect(html).toContain(">Approve<");
+    expect(html).not.toContain("✓ Approved");
+  });
+
+  it("offers Approve when the provider couldn't say who the viewer is", async () => {
+    const html = await render(detail());
+    expect(html).toContain(">Approve<");
+  });
+
+  it("shows the approval as soon as the submit succeeds, then defers to the reloaded detail", async () => {
+    // Stands in for the PR cache: the test hands the header a reloaded detail.
+    let setDetail: (d: PrDetail) => void = () => {};
+    function Host() {
+      const [d, set] = useState(detail({ viewerReview: "pending" }));
+      setDetail = set;
+      return createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: d,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      });
+    }
+    const { host, unmount } = await mountForInteraction(createElement(Host));
+    const buttons = (label: string) =>
+      [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+
+    buttons("Approve")[0]?.click();
+    await waitFor(() => buttons("Approve").length === 2, "the approval composer");
+    // The header's Approve comes first, the composer's confirm after it.
+    buttons("Approve")[1]?.click();
+    await waitFor(() => host.textContent?.includes("✓ Approved") ?? false, "the approved label");
+    expect(buttons("Approve")).toHaveLength(0);
+
+    // The author asks for another look: the reloaded detail wins.
+    act(() => setDetail(detail({ viewerReview: "pending" })));
+    await waitFor(() => buttons("Approve").length === 1, "Approve to come back");
+    expect(host.textContent).not.toContain("✓ Approved");
+    unmount();
+  });
+});
 afterAll(resetSidecarApi);

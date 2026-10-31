@@ -13,6 +13,7 @@ import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
+import AgentFieldPanel from "./components/field/AgentFieldPanel";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
 import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
@@ -477,6 +478,9 @@ export default function App() {
         ) : tab === "review" ? (
           // Review lays out its own nav, tabs and scroll panes, like Workspaces.
           <ReviewPanel requested={requestedReview} onRequestConsumed={clearRequestedReview} />
+        ) : tab === "field" ? (
+          // Full bleed: the field draws edge to edge and has no scroll.
+          <AgentFieldPanel />
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.

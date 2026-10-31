@@ -11,7 +11,7 @@
  * shown once.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -56,6 +56,7 @@ import {
 } from "./coverage.ts";
 import type { ChangedFileWithSizes } from "./git.ts";
 import {
+  groupFile,
   PATCH_LIMITS,
   type PatchIndexEntry,
   patchIndex,
@@ -474,8 +475,10 @@ export interface VerificationMaterial {
   /** `index.md`. */
   indexFile: string;
   limits: ReportLimits;
-  /** How many reading groups the patches were split into: agents per lane. */
+  /** How many reading groups the patches were split into: agents per check. */
   groups: number;
+  /** `groups/<n>.md`, in group order from 1. */
+  groupFiles: string[];
 }
 
 export const CHECK_OUTCOMES = [
@@ -637,9 +640,9 @@ export function buildVerificationMaterial(
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
     "",
     "REVIEW_CONTEXT holds pr.md (the PR's description, CI checks and comments), index.md " +
-      "(every changed file and its patch, and the reading groups) and patches/ (one numbered " +
-      "patch per changed file, from the merge-base to the head). The agents read them there; " +
-      "you don't need to.",
+      "(every changed file and its patch, and the reading groups), groups/ (each reading " +
+      "group's patches, one file per group) and patches/ (one numbered patch per changed " +
+      "file, from the merge-base to the head). The agents read them there; you don't need to.",
   ].join("\n");
 
   return {
@@ -648,6 +651,7 @@ export function buildVerificationMaterial(
     indexFile: patchIndex(index, { title: "Changed files", groups }),
     limits,
     groups: groups.length,
+    groupFiles: groups.map((g, i) => groupFile(g, i + 1)),
   };
 }
 
@@ -807,6 +811,10 @@ export async function startVerification(
       );
       writeFileSync(join(contextDir, "pr.md"), material.contextFile);
       writeFileSync(join(contextDir, "index.md"), material.indexFile);
+      mkdirSync(join(contextDir, "groups"));
+      material.groupFiles.forEach((file, i) => {
+        writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
+      });
       const audit = emptyAudit();
       let volumes: ReadVolume[] = [];
       const handle = await startClaudeRun(
@@ -832,7 +840,6 @@ export async function startVerification(
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
           model: settings.model,
-          maxBudgetUsd: settings.maxBudgetUsd,
           maxTurns: MAX_TURNS,
           timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
           meta: {
@@ -906,7 +913,7 @@ export interface VerificationSize {
   skimmed: string[];
   /** A rough figure from {@link estimateRunCostUsd}, for the configured model. */
   estimatedCostUsd: number;
-  /** The configured budget; past it, Claude Code stops the run before it answers. */
+  /** The configured budget. It only warns: past it the UI asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
 }
