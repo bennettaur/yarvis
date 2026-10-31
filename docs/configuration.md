@@ -213,7 +213,9 @@ has written your providers and MCP servers into it.
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
 | `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), `passTimeoutMinutes` (20, at most 240), how long one pass may run before it is stopped, the `provider` and `model` its passes run on (unset uses the default chat model), and `guidance`, your standing rules for every pass in your own words (`null` for none). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
-| `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
+| `voiceConfig` | Speech providers and models, voice, speak replies, hands-free, the active saved voice (`activeVoiceId`, blank for none), and the Voice Studio's translation model (`translationProvider`, `translationModel`) | Settings → Voice, Voice page |
+| `voiceProfiles` | Saved voices. Their cloning clips are files in `~/.yarvis/voices/`. | Voice page |
+| `speechServer` | The local speech server's `port` (8000) | Voice page |
 | `embeddingsConfig` | The embeddings endpoint | Settings → Embeddings |
 
 Custom providers and MCP servers carry generated ids and timestamps. Add them

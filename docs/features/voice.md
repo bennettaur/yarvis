@@ -9,9 +9,10 @@ the same conversation, and shows up in the transcript labeled `spoken`.
 Voice needs a speech-to-text backend and, if you want spoken replies, a
 text-to-speech backend.
 
-- **Local, no key:** run the mlx-audio speech server on your Mac. Follow
-  [Running the local speech server](../voice-server.md). It takes about five
-  minutes.
+- **Local, no key:** run the mlx-audio speech server on your Mac. The quickest
+  way is the **Voice** page: press **Start**, then **Use for voice**. See
+  [Running the local speech server](../voice-server.md) for what that does and
+  how to run it yourself instead.
 - **Cloud:** a Gemini key covers both speech to text and text to speech. A
   Hugging Face token covers speech to text only.
 
@@ -39,6 +40,55 @@ The controls beside the microphone:
 A recording is capped at 60 seconds. When a recording ends on its own (the
 cap, or Hands-free's silence timer) and no speech was heard, it is thrown away
 rather than sent. A recording you stop yourself is always sent.
+
+## The Voice page
+
+The **Voice** tab in the nav rail has three parts.
+
+### Local speech server
+
+- **Start** and **Stop** run the mlx-audio server on `127.0.0.1` at the port
+  shown (8000 by default). It needs [uv](https://docs.astral.sh/uv/)
+  (`brew install uv`). The first start downloads the server's Python packages,
+  so it takes a while.
+- If something already answers on that port, such as a server you started
+  yourself or another Yarvis window's, the page says **Running (started
+  elsewhere)**. Yarvis uses it but won't stop it.
+- **Use for voice** adds the server under **Settings → LLM Providers** as
+  `Local speech` and tags its models for speech. If speech to text or text to
+  speech isn't set yet, it also picks the starter models.
+- **Models** lists the verified local models. **Download** fetches one into the
+  Hugging Face cache, so its first use doesn't stall. **Server output** shows
+  the server's log.
+
+A server Yarvis started stops when Yarvis quits.
+
+### Voices
+
+A saved voice is a name, a text-to-speech provider and model, an optional voice
+id, and an optional clip to clone from.
+
+- **Record clip** records up to 15 seconds from the microphone. Press it again
+  to stop. **Upload clip** takes any audio file. Either way, Yarvis converts
+  the clip to 16 kHz mono WAV and stores it in `~/.yarvis/voices/`.
+- **Clip sent as** decides how the clip reaches the server. **File path** is for
+  mlx-audio, which reads the file itself. **Inline audio** sends the audio in
+  the request, which is what vLLM-Omni expects.
+- **Activate** makes replies speak in that voice on every surface. With no voice
+  active, replies use the text-to-speech settings in **Settings → Voice**.
+- **Test** plays a short phrase in the voice.
+
+### Studio
+
+Type some text, tick the voices to use, and press **Generate**. You get one take
+per voice, each with a player.
+
+- **Save** copies a take to `~/Downloads/Yarvis Voice/`. **Show in Finder**
+  opens that folder.
+- Each **Generate** deletes the previous takes. Saved copies in Downloads stay.
+- **Translate to** speaks a translation instead. Pick the chat model that
+  translates under **Translation provider** and **Translation model**. The
+  translation is shown above the takes.
 
 ## Safety on spoken turns
 
@@ -70,7 +120,8 @@ Settings → Voice:
   [Cloning a voice](../voice-server.md#cloning-a-voice-with-moss-tts-nano).
 
 These are stored in `voiceConfig` in `~/.yarvis/settings.json`, so every
-surface shares one setup.
+surface shares one setup. Saved voices are under `voiceProfiles` in the same
+file, and the server's port under `speechServer`.
 
 Which models appear in each picker comes from the model catalog. Each model is
 tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`). Edit the

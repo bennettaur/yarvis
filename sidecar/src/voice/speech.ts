@@ -67,9 +67,10 @@ export interface SynthesizeInput {
   /** Provider-specific voice id. Ignored by voice-cloning models and by HF. */
   voice?: string;
   /**
-   * Reference clip for voice cloning, as a `data:audio/…;base64,…` URI. Sent as
-   * `ref_audio`, which is the field vLLM-Omni's OpenAI-compatible TTS route
-   * expects.
+   * Reference clip for voice cloning, sent as `ref_audio`. vLLM-Omni's
+   * OpenAI-compatible TTS route expects a `data:audio/…;base64,…` URI;
+   * mlx-audio expects a path on its own disk, which only a saved voice
+   * (`voice/profiles.ts`) supplies.
    */
   refAudio?: string;
   /** Merged into the request body last, so it can override `voice` etc. */
