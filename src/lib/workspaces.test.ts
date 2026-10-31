@@ -1,13 +1,11 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 let response: Response = new Response("{}", { status: 200 });
 
-// Only the fetch is stubbed; `workspaces.ts` also imports `streamSSE` from here.
-const api = await import("./api");
-mock.module("./api", () => ({
-  ...api,
+stubSidecarApi({
   sidecarFetch: async () => response,
-}));
+});
 
 const { FileConflictError, saveWorkspaceRepoFile } = await import("./workspaces");
 
@@ -50,3 +48,5 @@ describe("saveWorkspaceRepoFile", () => {
     expect(result).toEqual({ hash: "b".repeat(64), size: 6 });
   });
 });
+
+afterAll(resetSidecarApi);
