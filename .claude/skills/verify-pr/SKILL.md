@@ -306,14 +306,14 @@ R11; a bare "step N" means the full run's step.
   posted.
 - **R3. Decide whether a recheck is enough.** The PR's changed files are
   `git diff --name-only origin/<baseRefName>...HEAD`. The fix diff is
-  `git diff <previous head> HEAD -- <those files>`; limiting it to the PR's own
-  files keeps a merge of the base branch out of it. Do a full run instead, and
-  say why, when any of these hold:
-  - R1 or R2 failed: a file is missing, the head isn't a valid commit, or it
-    doesn't match the posted report;
-  - the previous head isn't an ancestor of the PR head
-    (`git merge-base --is-ancestor <previous head> HEAD` fails), because the
-    branch was rebased or force-pushed;
+  `git diff <previous head> HEAD -- <those files>`. It compares the two
+  snapshots, so it works after a rebase or force-push too. Limiting it to the
+  PR's own files keeps out base-branch changes to other files, whether a merge
+  or a rebase brought them in. Do a full run instead, and say why, when any of
+  these hold:
+  - R1 or R2 failed: a file is missing, the head isn't a commit in this clone
+    (a force-push can leave the old one unfetched), or it doesn't match the
+    posted report;
   - the fix diff's added plus deleted lines (`git diff --shortstat`) are more
     than a third of the PR's, or it changes a file the previous facts'
     `files` doesn't list.
