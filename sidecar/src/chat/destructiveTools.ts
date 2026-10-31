@@ -93,6 +93,9 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Runs a whole specialist with its own tools; a misheard task becomes a
   // multi-step run nobody reviewed.
   "delegate",
+  // Starts a Claude Code run that spends money and writes files with nobody
+  // reviewing the task it was given.
+  "start_claude_code_task",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */

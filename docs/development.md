@@ -455,6 +455,8 @@ sidecar/        Bun + TS service (Hono)
                    specialists (decide.ts) and their playground route
   src/agentRuns/   headless Claude Code runs streamed to the UI, and the
                    Claude Code plugins shipped to them
+  src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in
+                   an empty folder, with no workspace
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, GitHub review sync, and your own scheduled jobs

@@ -19,6 +19,16 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
 
+  // A task spends money and writes files; checking on one does neither.
+  it("asks before handing a task to Claude Code, and not before checking on one", () => {
+    const names = Object.keys(builtinToolMetadata());
+    expect(names).toEqual(
+      expect.arrayContaining(["start_claude_code_task", "get_claude_code_task"]),
+    );
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_claude_code_task")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("get_claude_code_task")).toBe(false);
+  });
+
   // Every tool that files or changes a ticket writes where other people see it.
   // Walking the families rather than naming the writes means a new write tool
   // that was never added to the set fails here instead of running unasked.

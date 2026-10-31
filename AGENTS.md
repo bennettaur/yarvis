@@ -653,6 +653,23 @@ back to ad-hoc.
   run the PR's code and its setup runs unsandboxed, so this is defence in
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
+  not pointed at a checkout: it runs in a fresh empty folder under
+  `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its
+  permission mode is `acceptEdits`, the one exception to "never approves on
+  its own", because the run's whole job is writing files. `startClaudeRun`
+  refuses that mode unless the run is also `restricted` (`--restricted
+  --permission-prompts none`), which keeps every file tool inside the working
+  folder and refuses writes to settings and tool-configuration files there.
+  `--tools` leaves the run only the file tools: no Bash, since the sandbox's
+  read deny list was written for PR checkouts and leaves most of the home
+  folder readable. The canary checks the run can't read, list, search or
+  write outside its folder. Its prompt leads with `TASK_RUN_GUARDRAIL` rather
+  than the checkout guardrail, since there is no code to analyse; it still
+  treats quoted material as data and publishes nothing. What the run writes
+  back is fenced
+  before the chat model reads it, and the file list is the model's claim, so
+  `filesInFolder` keeps only files that really are inside the folder.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
