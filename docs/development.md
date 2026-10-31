@@ -19,7 +19,7 @@ Three processes, each with a clear owner:
   over authenticated loopback HTTP for data and AI.
 - **Bun sidecar** (`sidecar/`). A Hono HTTP service that owns Postgres (through
   Drizzle), every LLM call, memory, the background jobs and the Telegram bot.
-  In development it runs `sidecar/src/server.ts` directly with Bun.
+  In development it runs `sidecar/src/main.ts` directly with Bun.
 
 Data lives in PostgreSQL with pgvector. Non-secret settings live in
 `~/.yarvis/settings.json`. See [Configuration](configuration.md).

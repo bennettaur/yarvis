@@ -12,6 +12,7 @@ import { browserBridge } from "./browser/bridge.ts";
 import { createBrowserChatRoutes } from "./browser/chat.ts";
 import { createBrowserRoutes } from "./browser/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
+import { createChannelRoutes } from "./channel/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createClipboardRoutes } from "./clipboard/routes.ts";
 import type { Config } from "./config.ts";
@@ -117,6 +118,9 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // its workspace. The attention router's `/ingest/*` middleware also runs for
   // it; this router checks the token itself rather than relying on that.
   app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
+  // Same token and shape again: a session's channel relay collects the
+  // messages addressed to its terminal and posts the session's replies.
+  app.route("/ingest/channel", createChannelRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.

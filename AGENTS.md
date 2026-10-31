@@ -354,8 +354,8 @@ back to ad-hoc.
     and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
-  permissions. `claude.send` is the only such path and it is guarded on both
-  sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
+  permissions. `claude.send` is one such path (the channel below is the
+  other), and it is guarded on both sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
   submit early into spaces and rejects an instruction opening with a character
   the agent reads as a command (`!` is bash mode, `/` a slash command, `#` a
   memory write), `foreground_is_agent` refuses to type at all unless the
@@ -377,6 +377,29 @@ back to ad-hoc.
   terminal. Signing with the ingest token instead would let any terminal mint
   any other's. This is not a boundary against a determined process running as
   the same user, which can read another process's environment.
+- The channel (`sidecar/src/channel/`) is the other way text reaches a
+  session, and `sendToWorkspaceAgent` tries it first. It meets the same three
+  guards in its own way:
+  - The message reaches Claude Code as a channel event, not keystrokes, so
+    there is no prompt line to submit early and no command prefix to read.
+  - The listener is checked rather than assumed. A relay polls with its
+    terminal's `YARVIS_SESSION_TOKEN`, its parent's pid, and whether that
+    Claude Code was launched with the channel flag (read once, at startup).
+    A send goes over the channel only when that pid is one the workspace's
+    SessionStart hook registered and the flag was there. Otherwise it is
+    typed, since a session without the flag drops channel events. The first
+    live relay owns the channel and a second gets 409, so a nested
+    `claude -p` started from the terminal can't take the session's messages.
+    A process in that terminal can still claim a registered pid. That is the
+    same-user limit registration already accepts.
+  - The chat agent's rule on third-party text still applies.
+
+  What a session answers through the relay's `reply` tool is model-written.
+  A reply must name a message the hub sent to that terminal. It goes back to
+  the chat agent fenced, and reading one makes the destructive tools ask for
+  the rest of the turn, as reading a web page does. The relay is the sidecar binary run
+  with `channel-relay` (`sidecar/src/main.ts`), since a packaged build ships
+  one executable.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
