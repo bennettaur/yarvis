@@ -205,8 +205,9 @@ with a **Not examined** section listing each one and why. Click a path to
 open its diff. Nothing else in the report covers those files. Below it:
 
 - **Generated, skimmed**, folded away: the bulk whose first page was read.
-- **Not examined by** a check: source files in that check's area that it
-  didn't read, though another check did.
+- **Not examined by** a check: changed files that check didn't read, though
+  another check did. Every check is handed the same list of patches to read,
+  whatever kind of file each one is.
 
 When every file was read, the report says that at least one check read each
 one.

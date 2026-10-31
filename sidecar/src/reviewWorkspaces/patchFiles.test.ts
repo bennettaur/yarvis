@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bulkKind,
+  groupFile,
   headHunksOf,
   mirroredPatchPath,
   PATCH_LIMITS,
@@ -58,6 +59,13 @@ describe("mirrored patch paths", () => {
       expect(mirroredPatchPath(bad)).toBeNull();
     }
   });
+
+  it("gives no mirrored name to a path that could be misread in a reading group", () => {
+    for (const bad of ["a\u2028b", "a\u2029b", "a\u0085b", "a.ts lines 1-5", "a lines  3\u20139"]) {
+      expect(mirroredPatchPath(bad)).toBeNull();
+    }
+    expect(mirroredPatchPath("docs/lines.md")).toBe("patches/docs/lines.md.diff");
+  });
 });
 
 describe("writing patch files", () => {
@@ -92,6 +100,7 @@ describe("writing patch files", () => {
         // `patches/a.diff` is a file now, so this can't be `patches/a.diff/b.diff`.
         source("a.diff/b", patchFor("a.diff/b", 1)),
         source("A", patchFor("A", 1)),
+        source("b lines 1-5", patchFor("b", 1)),
       ],
       { tag: "diff" },
     );
@@ -103,6 +112,7 @@ describe("writing patch files", () => {
       existsSync(join(dir, "patches/A.diff")) && !existsSync(join(dir, "patches-other/4.diff"))
         ? "patches/A.diff"
         : "patches-other/4.diff",
+      "patches-other/5.diff",
     ]);
     expect(existsSync(join(dir, "..", "escape.ts.diff"))).toBe(false);
     for (const file of written()) expect(file.startsWith("patches")).toBe(true);
@@ -290,6 +300,18 @@ describe("reading groups", () => {
     expect(groups.flatMap((g) => g.items).some((i) => i.path === "lock.json")).toBe(false);
     expect(patchIndex([sized("a.ts", 300)], { title: "x", groups })).toContain(
       "patches/big.ts.diff lines 401-800",
+    );
+  });
+
+  it("lists a group's patches one per line, fenced, for the agents given that group", () => {
+    const [first] = readingGroups([sized("a.ts", 300), sized("big.ts", 2500, 1000)], 1000);
+    const file = groupFile(first as ReturnType<typeof readingGroups>[number], 1);
+    expect(file).toStartWith("# Reading group 1\n");
+    expect(file).toMatch(/<reading-group-([0-9a-f]+)>\npatches\/a\.ts\.diff\n<\/reading-group-\1>/);
+    expect(file).not.toContain("big.ts");
+    const [, split] = readingGroups([sized("big.ts", 2500, 1000)], 1000);
+    expect(groupFile(split as ReturnType<typeof readingGroups>[number], 2)).toContain(
+      "patches/big.ts.diff lines 401-800\n",
     );
   });
 });

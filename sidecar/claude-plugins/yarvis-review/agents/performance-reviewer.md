@@ -10,8 +10,9 @@ code: the kind that shows up in production, not in a micro-benchmark.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch of source code other than tests, plus schema and
-migration files: not tests, docs, generated code, lockfiles or vendored code.
+Read every patch in your group. Your findings are about source code other
+than tests, and schema and migration files; tests and configuration can show
+the sizes and paths that code runs at.
 
 ## What counts
 
