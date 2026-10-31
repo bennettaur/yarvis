@@ -132,9 +132,10 @@ describe("startClaudeTask", () => {
     expect(cwd?.endsWith(started.outputDir.split("/").pop() ?? "?")).toBe(true);
     expect(after("--permission-mode")).toBe("acceptEdits");
     expect(listAfter("--allowedTools")).toEqual([`Read(/${started.outputDir}/**)`, "TodoWrite"]);
-    expect(listAfter("--disallowedTools")).toEqual(
-      expect.arrayContaining(["Bash", "WebFetch", "WebSearch", "Agent", "Task"]),
-    );
+    // Only the file tools exist: no Bash, WebFetch, WebSearch or Agent at all.
+    expect(after("--tools")).toBe("Read,Write,Edit,Glob,Grep,TodoWrite");
+    expect(args).toContain("--restricted");
+    expect(after("--permission-prompts")).toBe("none");
     expect(after("--max-budget-usd")).toBe("5");
     // The task goes in on stdin, not argv.
     expect(args).not.toContain("SECRET-TASK-TEXT");

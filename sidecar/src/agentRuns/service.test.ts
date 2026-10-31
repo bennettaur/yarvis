@@ -200,6 +200,12 @@ describe("refusing a run", () => {
     }
   });
 
+  it("refuses acceptEdits unless the run is restricted to its folder", async () => {
+    await expect(
+      startClaudeRun(db, runOptions(dir, { permissionMode: "acceptEdits" }), deps("claude")),
+    ).rejects.toThrow("restricted");
+  });
+
   it("refuses a run without a budget", async () => {
     await expect(
       startClaudeRun(db, runOptions(dir, { maxBudgetUsd: 0 }), deps("claude")),
