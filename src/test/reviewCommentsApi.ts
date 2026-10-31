@@ -6,11 +6,8 @@ import { mock } from "bun:test";
  * `useReviewComments` is read by both the comments view and the side panel's
  * tab badge, so every suite rendering either one needs the same stub of
  * `lib/workspaceReview`. Two suites each registering their own would leave
- * the run with whichever loaded last. Many suites also replace `lib/api` with
- * catch-all stubs, so letting the list fall through to the real client would
- * hand the hook whatever object the last of those returns. Registering once
- * here, with an empty list unless a test says otherwise, keeps both out of
- * file order.
+ * the run with whichever loaded last. Registering once here, with an empty
+ * list unless a test says otherwise, keeps it out of file order.
  */
 
 type ReviewCommentsApi = typeof import("../lib/workspaceReview");

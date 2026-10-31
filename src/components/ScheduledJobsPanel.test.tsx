@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../lib/resourceCache";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const JOB = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -54,14 +55,7 @@ const sent: unknown[] = [];
 /** Set by a test that wants the next write to fail. */
 let writeFailure: string | null = null;
 
-// Only the two transport functions are stubbed. `mock.module` replaces the
-// whole module and stays installed for the rest of the `bun test` process, so
-// naming just these two would strip `ensureOk` and friends from every file
-// that runs after this one.
-const actualApi = await import("../lib/api");
-mock.module("../lib/api", () => ({
-  ...actualApi,
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+stubSidecarApi({
   sidecarFetch: async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     requested.push(`${method} ${path}`);
@@ -96,13 +90,11 @@ mock.module("../lib/api", () => ({
         ],
       });
     }
-    // `mock.module` stays installed for the rest of the `bun test` process, so
-    // this stub also answers files that run after this one. Anything it does
-    // not recognise has to fail rather than be handed the job list, which a
-    // caller expecting its own shape would then read as valid data.
+    // Anything it does not recognise fails rather than being handed the job
+    // list, which a caller expecting its own shape would read as valid data.
     return json({ error: `unexpected path: ${path}` }, 404);
   },
-}));
+});
 
 const ScheduledJobsPanel = (await import("./ScheduledJobsPanel")).default;
 
@@ -307,3 +299,5 @@ describe("ScheduledJobsPanel", () => {
     }
   });
 });
+
+afterAll(resetSidecarApi);
