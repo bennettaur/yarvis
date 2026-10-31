@@ -61,6 +61,8 @@ function defaultAgentDefinition(): SpecialistDefinition {
   return {
     name: "default agent",
     description: "The assistant's default agent, running a scheduled job's prompt.",
+    kind: "task",
+    choices: [],
     prompt:
       "You are Yarvis's default agent, running a scheduled job on the user's behalf. Carry out the instructions below and report what you did and what you found.",
     tools: defaultAgentTools(),

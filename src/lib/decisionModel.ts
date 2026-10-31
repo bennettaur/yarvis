@@ -12,12 +12,18 @@ export interface DecisionModelConfig {
   autoApproveTools: boolean;
   /** Let it approve a heads-down call to an MCP tool the user has approved in similar situations. */
   autoApproveHeadsDown: boolean;
+  /** Let it pick the complexity tier for a specialist that names no model of its own. */
+  routeComplexity: boolean;
+  /** Let it pick the specialist for a delegation that names none. */
+  pickSpecialists: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
   autoApproveHeadsDown: false,
+  routeComplexity: false,
+  pickSpecialists: false,
 };
 
 export async function getDecisionModelConfig(): Promise<DecisionModelConfig> {
@@ -36,5 +42,35 @@ export async function saveDecisionModelConfig(
     body: JSON.stringify(patch),
   });
   await ensureOk(res, "save decision model config");
+  return res.json();
+}
+
+export interface DecisionOption {
+  value: string;
+  description?: string;
+}
+
+/** A playground run: a decision specialist by name, or instructions with options. */
+export type DecisionTrial = { input: string; options?: DecisionOption[] } & (
+  | { specialist: string }
+  | { instructions: string; options: DecisionOption[] }
+);
+
+export interface DecisionTrialResult {
+  choice: string;
+  reason: string;
+  /** The decision model that answered. */
+  model: ModelSelection;
+  elapsedMs: number;
+}
+
+/** Asks the saved decision model once. A failed call throws with the sidecar's reason. */
+export async function tryDecision(trial: DecisionTrial): Promise<DecisionTrialResult> {
+  const res = await sidecarFetch("/api/decision-playground", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(trial),
+  });
+  await ensureOk(res, "try a decision");
   return res.json();
 }

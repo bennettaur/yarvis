@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
 import { createAgentRunRoutes } from "./agentRuns/routes.ts";
+import { createDecisionPlaygroundRoutes } from "./agents/decisionPlaygroundRoutes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAlarmRoutes } from "./alarms/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
@@ -166,6 +167,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/complexity-models", createComplexityModelRoutes(config));
   app.route("/api/decision-model", createDecisionModelRoutes());
+  app.route("/api/decision-playground", createDecisionPlaygroundRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
