@@ -222,7 +222,7 @@ describe("VerificationTab", () => {
       "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
     );
     expect(text).toContain("about $3.20, against a budget of $2.00");
-    expect(text).toContain("That's over the budget; the run won't stop at it");
+    expect(text).toContain("That's over the budget, and the run won't stop when it reaches it");
     // A list that folds sits in a block, not inside a paragraph.
     expect(host.querySelector("p details")).toBeNull();
   });

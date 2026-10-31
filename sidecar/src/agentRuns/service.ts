@@ -124,9 +124,10 @@ interface ClaudeRunBaseOptions<T> {
   model?: string;
   /**
    * Claude Code stops the run once it has spent this much. Left out, nothing
-   * caps the spend and `maxTurns` and `timeoutMs` bound a runaway instead: the
-   * review runs leave it out because the user has already seen the cost
-   * estimate and agreed to it.
+   * caps the spend: `timeoutMs` bounds a runaway, and `maxTurns` the main
+   * thread's turns (subagents the run starts have their own loops).
+   * The review runs leave it out: their budget only warns, and a run cut off at
+   * a cap ends with nothing to show for what it spent.
    */
   maxBudgetUsd?: number;
   maxTurns?: number;
@@ -362,9 +363,9 @@ const MAX_ERROR_CHARS = 2_000;
 
 /**
  * Starts a run and returns as soon as it is registered. Throws — before any
- * row exists — for a refused permission mode, a budget that isn't positive, a working
- * directory that isn't there or a plugin that can't be written, so the starting
- * route can answer with the reason.
+ * row exists — for a refused permission mode, a budget that isn't positive, a
+ * working directory that isn't there or a plugin that can't be written, so the
+ * starting route can answer with the reason.
  */
 export async function startClaudeRun<T, R = T>(
   db: Db,

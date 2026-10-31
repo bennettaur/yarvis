@@ -125,6 +125,7 @@ export default function MutationTestingSection() {
       <p className="mb-3 text-sm text-zinc-500">
         Claude Code plans small logic changes to a pull request's code; Yarvis applies each one,
         runs the tests in a sandbox and reports the ones they miss, which Claude Code then explains.
+        The budgets are shown before a pass starts; a pass that goes over them still finishes.
       </p>
 
       <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">

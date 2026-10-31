@@ -155,8 +155,8 @@ function StartPanel({
       <p className="text-zinc-300">
         Claude Code plans up to {config.maxMutants} small changes to the code this PR touches, then
         the PR's own tests run against each one. Planning and explaining what survives are budgeted
-        at ${budget.toFixed(2)}, though nothing stops them going over; the tests run many times, so
-        this can take a while.
+        at ${budget.toFixed(2)} and may cost more; the tests run many times, so this can take a
+        while.
       </p>
       {confirmRunTests && (
         <p className="text-amber-200">

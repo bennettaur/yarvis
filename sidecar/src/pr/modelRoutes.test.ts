@@ -125,6 +125,10 @@ describe("GET/PATCH /api/pr-models/rereview", () => {
     expect(await verification.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
   });
 
+  it("takes a budget of any size", async () => {
+    expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
+  });
+
   it("refuses values it doesn't know", async () => {
     for (const body of [{ autoStart: "yes" }, { maxBudgetUsd: 0.1 }, { model: "gpt" }, { x: 1 }]) {
       expect((await patch(body)).status).toBe(400);

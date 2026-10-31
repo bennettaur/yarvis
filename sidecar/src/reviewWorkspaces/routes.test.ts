@@ -663,7 +663,7 @@ describe("verification report", () => {
     quality: pass,
   };
   let budget: number;
-  // Set to make startClaudeRun throw before it records a run.
+  // Makes startClaudeRun throw before it records a run: it reads `program` first.
   let startFails: boolean;
   const detail = {
     title: "Feature work",
@@ -820,8 +820,8 @@ cat "${fakeDir}/result.jsonl"`,
     expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
-    // context is readable, the settings chose the model, and no budget caps the
-    // run: past the estimate, the user agreed before it started.
+    // context is readable, the settings chose the model, and nothing caps the
+    // run's spend because the budget only warns.
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
@@ -946,6 +946,7 @@ cat "${fakeDir}/result.jsonl"`,
     const before = contextDirs();
     const res = await verify("POST", wsId, prId);
     expect(res.status).toBe(500);
+    expect(await res.text()).toContain("no Claude Code here");
     expect(contextDirs()).toEqual(before);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
@@ -1143,6 +1144,7 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:rereviewer");
+    expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob"]);

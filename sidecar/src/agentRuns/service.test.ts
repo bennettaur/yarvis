@@ -127,7 +127,7 @@ describe("the arguments a run is started with", () => {
     expect(after("--append-system-prompt")).toBe(RUN_GUARDRAIL);
   });
 
-  it("caps no spend when the run has no budget", () => {
+  it("leaves out --max-budget-usd when the run has no budget", () => {
     const uncapped = buildClaudeArgs(runOptions(dir, { maxBudgetUsd: undefined }), []);
     expect(uncapped).not.toContain("--max-budget-usd");
   });

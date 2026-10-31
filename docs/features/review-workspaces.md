@@ -239,8 +239,9 @@ It runs the PR's code, so it waits for that to be allowed:
 - When the repo has no setup script, the tab asks you to confirm running the
   tests without one first.
 
-Before a pass starts, the tab says how many mutants it may try, what planning
-and explaining can cost (set under **Settings → PR review**), and what the test
+Before a pass starts, the tab says how many mutants it may try, the budget for
+planning and explaining (set under **Settings → PR review**; it only warns, and
+a pass that goes over it still finishes), and what the test
 sandbox does: no network beyond your machine, writes only to the scratch copy
 and a temp folder, and no reading your home folder beyond your toolchains. The
 sandbox is a second line of defence, not a guarantee, and setup itself is not

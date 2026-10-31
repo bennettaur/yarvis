@@ -249,7 +249,7 @@ export default function PrModelSection() {
         {rereview && (
           <ClaudeRunRow
             label="What's changed"
-            hint="Re-review summary, on Claude Code. One estimated over the budget asks first."
+            hint="Re-review summary, on Claude Code. A summary estimated over the budget asks before it starts."
             value={rereview}
             onSave={(patch) => void saveRereview(patch)}
             onError={setError}

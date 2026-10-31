@@ -167,7 +167,7 @@ let setupScript: string | null;
 let agentRegistry: RunRegistry<AgentRunEvent>;
 let registry: RunRegistry<MutationProgressEvent>;
 let settings: MutationTestingConfig;
-// Set to make startClaudeRun throw before it records a run.
+/** Makes startClaudeRun throw before it records a run: it reads `program` first. */
 let startFails: boolean;
 /** When set, loading the PR waits on it, holding a refresh open. */
 let loadGate: PromiseWithResolvers<void> | null;
@@ -457,11 +457,11 @@ describe("a pass", () => {
       expect(allowed).toEqual(["Read(./**)", "Grep(./**)", "Glob(./**)"]);
       expect(args).toContain("Bash");
       expect(args).toContain("Edit");
+      // The budget only warns, so nothing caps the run's spend.
+      expect(args).not.toContain("--max-budget-usd");
     }
     const planArgs = readFileSync(join(logDir, "plan.args"), "utf8").split("\n");
     expect(planArgs[planArgs.indexOf("--model") + 1]).toBe("haiku");
-    // The budget only warns, so nothing caps the run's spend.
-    expect(planArgs).not.toContain("--max-budget-usd");
 
     // The planner sees the changed files fenced, and the cap.
     const prompt = readFileSync(join(logDir, "plan.prompt"), "utf8");

@@ -50,7 +50,8 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
  *
  * The budget is a warning threshold, not a cap: a run estimated over it asks
  * the user first, and once they agree it runs to the end whatever it costs.
- * Despite its name, `maxBudgetUsd` is not a maximum; the stored key keeps it.
+ * `maxBudgetUsd` is not a maximum; it keeps that name because it is the
+ * stored settings key.
  */
 export const VERIFICATION_MODELS = ["sonnet", "opus", "haiku"] as const;
 
