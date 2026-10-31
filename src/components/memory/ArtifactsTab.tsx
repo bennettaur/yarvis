@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type Artifact,
   type ArtifactSummary,
@@ -30,15 +30,17 @@ const WRITER_LABELS: Record<ArtifactWriter, string> = {
 export default function ArtifactsTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  // A bulk delete can't be undone, so it takes a second click to confirm.
-  const [confirmingBulk, setConfirmingBulk] = useState(false);
+  // A bulk delete can't be undone, so it takes a second click to confirm. The ids
+  // are fixed when it asks, so a list refresh can't change what was agreed to.
+  const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const listRes = useCachedResource<ArtifactSummary[]>("memory:artifacts", listArtifacts);
   const artifacts = listRes.data ?? NO_ARTIFACTS;
   const selected = artifacts.find((a) => a.id === selectedId) ?? null;
-  // Drop ticks on artifacts that have since gone, so the count matches what's shown.
+  // Only ticks on artifacts still listed count, so the number matches what's shown.
   const checkedIds = artifacts.filter((a) => checked.has(a.id)).map((a) => a.id);
   const allChecked = artifacts.length > 0 && checkedIds.length === artifacts.length;
 
@@ -49,8 +51,13 @@ export default function ArtifactsTab() {
     () => getArtifact(selected!.id),
   );
 
+  // Keyboard focus would otherwise drop to the page when the confirm buttons replace the one clicked.
+  useEffect(() => {
+    if (confirmIds) cancelRef.current?.focus();
+  }, [confirmIds]);
+
   const toggle = (id: string) => {
-    setConfirmingBulk(false);
+    setConfirmIds(null);
     setChecked((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -60,7 +67,7 @@ export default function ArtifactsTab() {
   };
 
   const toggleAll = () => {
-    setConfirmingBulk(false);
+    setConfirmIds(null);
     setChecked(allChecked ? new Set() : new Set(artifacts.map((a) => a.id)));
   };
 
@@ -74,7 +81,7 @@ export default function ArtifactsTab() {
       return;
     } finally {
       setDeleting(false);
-      setConfirmingBulk(false);
+      setConfirmIds(null);
     }
     if (selectedId && ids.includes(selectedId)) setSelectedId(null);
     setChecked((prev) => new Set([...prev].filter((id) => !ids.includes(id))));
@@ -82,7 +89,7 @@ export default function ArtifactsTab() {
   };
 
   const removeOne = (id: string) => removeIds([id], () => deleteArtifact(id));
-  const removeChecked = () => removeIds(checkedIds, () => deleteArtifacts(checkedIds));
+  const removeConfirmed = (ids: string[]) => removeIds(ids, () => deleteArtifacts(ids));
 
   return (
     <div className="space-y-3">
@@ -107,35 +114,40 @@ export default function ArtifactsTab() {
                 onChange={toggleAll}
                 aria-label="Select all artifacts"
               />
-              {checkedIds.length === 0 ? (
-                <span className="text-zinc-500">Select to delete several</span>
-              ) : confirmingBulk ? (
+              {confirmIds ? (
                 <>
-                  <span className="mr-auto text-zinc-300">
-                    Delete {checkedIds.length} for good?
+                  <span role="status" className="mr-auto text-zinc-300">
+                    Delete {confirmIds.length} for good?
                   </span>
                   <button
                     type="button"
                     disabled={deleting}
-                    onClick={() => void removeChecked()}
+                    onClick={() => void removeConfirmed(confirmIds)}
                     className="rounded bg-red-600 px-2 py-0.5 text-white hover:bg-red-500 disabled:opacity-50"
                   >
-                    Delete
+                    Delete {confirmIds.length}
                   </button>
                   <button
+                    ref={cancelRef}
                     type="button"
-                    onClick={() => setConfirmingBulk(false)}
+                    onClick={() => setConfirmIds(null)}
                     className="text-zinc-400 hover:text-zinc-200"
                   >
                     Cancel
                   </button>
                 </>
+              ) : checkedIds.length === 0 ? (
+                <span role="status" className="text-zinc-500">
+                  Select to delete several
+                </span>
               ) : (
                 <>
-                  <span className="mr-auto text-zinc-300">{checkedIds.length} selected</span>
+                  <span role="status" className="mr-auto text-zinc-300">
+                    {checkedIds.length} selected
+                  </span>
                   <button
                     type="button"
-                    onClick={() => setConfirmingBulk(true)}
+                    onClick={() => setConfirmIds(checkedIds)}
                     className="text-red-400 hover:text-red-300"
                   >
                     Delete selected
@@ -211,7 +223,11 @@ export default function ArtifactsTab() {
       )}
 
       {listRes.error && <p className="text-sm text-red-400">{listRes.error}</p>}
-      {deleteError && <p className="text-sm text-red-400">{deleteError}</p>}
+      {deleteError && (
+        <p role="alert" className="text-sm text-red-400">
+          {deleteError}
+        </p>
+      )}
     </div>
   );
 }

@@ -92,6 +92,8 @@ describe("/api/artifacts", () => {
       });
     expect((await post({ ids: ["not-a-uuid"] })).status).toBe(400);
     expect((await post({ ids: [] })).status).toBe(400);
+    const tooMany = Array.from({ length: 101 }, () => crypto.randomUUID());
+    expect((await post({ ids: tooMany })).status).toBe(400);
   });
 
   it("answers 503 when no database is configured", async () => {

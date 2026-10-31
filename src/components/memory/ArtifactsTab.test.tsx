@@ -38,6 +38,8 @@ const ARTIFACTS = [
 let listed: { id: string }[] = ARTIFACTS;
 /** Every delete request the tab made, as method and path plus the body's ids. */
 let deletes: { method: string; path: string; ids?: string[] }[] = [];
+/** Set to make the next delete answer with a server error. */
+let failNextDelete = false;
 
 mock.module("../../lib/api", () => ({
   sidecarInfo: async () => ({ port: 0, token: "test-token" }),
@@ -97,6 +99,10 @@ mock.module("../../lib/api", () => ({
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     let body: unknown = listed;
+    if (method !== "GET" && failNextDelete) {
+      failNextDelete = false;
+      return new Response("boom", { status: 500 });
+    }
     if (method === "DELETE") {
       const id = path.split("/").pop();
       deletes.push({ method, path });
@@ -191,13 +197,28 @@ describe("ArtifactsTab deleting", () => {
     expect(deletes).toEqual([]);
     expect(host.textContent).toContain("Delete 2 for good?");
 
-    buttonNamed(host, "Delete")?.click();
+    buttonNamed(host, "Delete 2")?.click();
     await settle();
     expect(deletes).toEqual([{ method: "POST", path: "/api/artifacts/delete", ids: ["a1", "a3"] }]);
     expect(host.textContent).not.toContain("Morning brief");
     expect(host.textContent).not.toContain("Trip plan");
     expect(host.textContent).toContain("Heads-down scratchpad");
     expect(host.textContent).toContain("Select to delete several");
+  });
+
+  it("keeps the selection and says so when a bulk delete fails", async () => {
+    const host = await mount();
+    checkbox(host, "Select Trip plan").click();
+    await settle();
+    buttonNamed(host, "Delete selected")?.click();
+    await settle();
+    failNextDelete = true;
+    buttonNamed(host, "Delete 1")?.click();
+    await settle();
+
+    expect(host.querySelector("[role='alert']")?.textContent).toContain("500");
+    expect(host.textContent).toContain("Trip plan");
+    expect(host.textContent).toContain("1 selected");
   });
 
   it("selects every artifact with the select-all box, and cancels without deleting", async () => {
