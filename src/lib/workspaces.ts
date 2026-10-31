@@ -162,14 +162,25 @@ async function readError(res: Response, action: string): Promise<never> {
 /** The cache key the workspace list is read under, shared by every view that shows it. */
 export const WORKSPACES_KEY = "workspaces:list";
 
-export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
-  const res = await sidecarFetch("/api/workspaces");
+/**
+ * Whether the user is looking at the window. The sidecar only polls providers
+ * for the PRs a read says are in front of the user, so a read made while the
+ * window is in the background doesn't say so.
+ */
+const userIsLooking = () => document.hasFocus() && document.visibilityState !== "hidden";
+
+/** `showingBadges` is for the Workspaces list, whose rows show each PR's status. */
+export async function listWorkspaces({ showingBadges = false } = {}): Promise<WorkspaceSummary[]> {
+  const badges = showingBadges && userIsLooking() ? "?badges=1" : "";
+  const res = await sidecarFetch(`/api/workspaces${badges}`);
   if (!res.ok) return readError(res, "list workspaces");
   return res.json();
 }
 
-export async function getWorkspace(id: string): Promise<WorkspaceDetail> {
-  const res = await sidecarFetch(`/api/workspaces/${id}`);
+/** `viewing` is for the open workspace, whose header shows its PR's status. */
+export async function getWorkspace(id: string, { viewing = false } = {}): Promise<WorkspaceDetail> {
+  const query = viewing && userIsLooking() ? "?viewing=1" : "";
+  const res = await sidecarFetch(`/api/workspaces/${id}${query}`);
   if (!res.ok) return readError(res, "get workspace");
   return res.json();
 }

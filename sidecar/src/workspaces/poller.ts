@@ -5,6 +5,12 @@
  * reads the cached rows (via `getWorkspace`) and never calls a provider on
  * render. A repo's provider is derived from its clone URL, so GitHub and Azure
  * DevOps repos are both refreshed in one cycle.
+ *
+ * Each refresh costs up to three provider requests per repo, so only repos the
+ * user is looking at are refreshed: the workspace routes record which reads
+ * the UI made, and a workspace nobody has read lately keeps its last cached row.
+ * Views are tracked in memory per sidecar process, so a named instance's UI
+ * doesn't trigger polling in the main instance.
  */
 
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
@@ -36,7 +42,80 @@ export interface PollerClients {
   azure?: AzureDevOpsClient;
 }
 
-const POLL_INTERVAL_MS = 60_000;
+/** How often the poller checks which repos are due a refresh. */
+const TICK_MS = 30_000;
+/** A repo in the workspace the user has open. */
+const FOCUSED_POLL_MS = 60_000;
+/**
+ * A repo seen only as a badge in the workspace list, or a merged or closed PR
+ * in the open workspace, which has little left to change.
+ */
+const BACKGROUND_POLL_MS = 15 * 60_000;
+/**
+ * How long a read keeps a workspace counted as viewed. The UI re-reads every
+ * 20s while the window has focus, so this survives a slow tick but lapses
+ * within a minute of the user switching away or to another workspace.
+ */
+const VIEW_WINDOW_MS = 60_000;
+/**
+ * A repo polled during one tick is a little under an interval old by the tick
+ * an interval later, since its timestamp is taken after the provider answers.
+ * Without this slack the focused cadence would slip to 90s.
+ */
+const DUE_SLACK_MS = TICK_MS / 2;
+
+/** When the UI last read each workspace's detail, by workspace id. */
+const workspaceViewedAt = new Map<string, number>();
+/** When the UI last read the workspace list, whose rows show PR badges. Never, to start. */
+let listViewedAt = Number.NEGATIVE_INFINITY;
+
+/** Records that the UI read one workspace's detail while the user was looking at it. */
+export function markWorkspaceViewed(workspaceId: string, now = Date.now()): void {
+  workspaceViewedAt.set(workspaceId, now);
+}
+
+/** Records that the UI read the workspace list while the user was looking at it. */
+export function markWorkspaceListViewed(now = Date.now()): void {
+  listViewedAt = now;
+}
+
+/** Test hook: forget every recorded view. */
+export function resetWorkspaceViews(): void {
+  workspaceViewedAt.clear();
+  listViewedAt = Number.NEGATIVE_INFINITY;
+}
+
+/** What decides whether a repo is due a refresh: its workspace and its cached row. */
+export interface PollCandidate {
+  workspaceId: string;
+  prState: string | null;
+  lastPolledAt: Date | null;
+}
+
+/**
+ * How often a repo's PR should be refreshed given what the user is looking at,
+ * or null when it shouldn't be: nothing showing it was read lately, or it is a
+ * settled PR seen only as a list badge.
+ */
+function pollIntervalMs(workspaceId: string, prState: string | null, now: number): number | null {
+  const viewedAt = workspaceViewedAt.get(workspaceId);
+  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
+  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
+  const settled = prState === "merged" || prState === "closed";
+  if (focused) return settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS;
+  if (listVisible && !settled) return BACKGROUND_POLL_MS;
+  return null;
+}
+
+/** Whether a repo's cached PR is older than what's being viewed calls for. */
+export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
+  const interval = pollIntervalMs(candidate.workspaceId, candidate.prState, now);
+  if (interval === null) return false;
+  // A repo with no cached row yet has never been polled.
+  if (candidate.lastPolledAt === null) return true;
+  return now - candidate.lastPolledAt.getTime() >= interval - DUE_SLACK_MS;
+}
+
 /** On startup, workspaces stuck in a transient state older than this are an
  *  interrupted run (the sidecar died mid-provision/archive) and get flipped to
  *  `error` so the UI offers a retry. The margin avoids racing a fresh create. */
@@ -208,16 +287,36 @@ export function lookupBranchPr(
   return branchPr(pollerClients(config), repo, branch);
 }
 
-/** Refreshes the PR cache for every ready repo in an active workspace. */
-export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
+/**
+ * Refreshes the PR cache for every ready repo in an active workspace that
+ * `isDue` accepts (all of them by default).
+ */
+export async function pollOnce(
+  db: Db,
+  clients: PollerClients,
+  isDue: (candidate: PollCandidate) => boolean = () => true,
+): Promise<void> {
   const rows = await db
-    .select({ wr: workspaceRepos, repo: repos })
+    .select({
+      wr: workspaceRepos,
+      repo: repos,
+      prState: workspaceRepoPr.prState,
+      lastPolledAt: workspaceRepoPr.lastPolledAt,
+    })
     .from(workspaceRepos)
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(and(eq(workspaces.status, "active"), eq(workspaceRepos.status, "ready")));
 
-  for (const { wr, repo } of rows) {
+  const due = rows.filter((row) =>
+    isDue({
+      workspaceId: row.wr.workspaceId,
+      prState: row.prState,
+      lastPolledAt: row.lastPolledAt,
+    }),
+  );
+  for (const { wr, repo } of due) {
     try {
       const pr = await branchPr(clients, repo, wr.branch);
       if (!pr) continue;
@@ -237,6 +336,11 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
       }
     }
   }
+}
+
+/** Refreshes the repos the user is looking at whose cached PR is due, as of `now`. */
+export function pollDueRepos(db: Db, clients: PollerClients, now = Date.now()): Promise<void> {
+  return pollOnce(db, clients, (candidate) => isDueForRefresh(candidate, now));
 }
 
 /**
@@ -308,7 +412,7 @@ export function startWorkspacePoller(config: Config): () => void {
     if (running) return; // never overlap a slow cycle with the next
     running = true;
     try {
-      await pollOnce(db, clients);
+      await pollDueRepos(db, clients);
     } catch (e) {
       console.error("[workspace poller] cycle failed:", e);
     } finally {
@@ -320,6 +424,6 @@ export function startWorkspacePoller(config: Config): () => void {
     .catch((e) => console.error("[workspace poller] reconcile failed:", e))
     .finally(() => void tick());
 
-  const timer = setInterval(() => void tick(), POLL_INTERVAL_MS);
+  const timer = setInterval(() => void tick(), TICK_MS);
   return () => clearInterval(timer);
 }

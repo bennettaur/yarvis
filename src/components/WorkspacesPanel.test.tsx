@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { clearResourceCache } from "../lib/resourceCache";
 import type { WorkspaceSummary } from "../lib/workspaces";
 import { renderToHtml } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
@@ -91,6 +92,9 @@ const ARCHIVE_STOPPED = {
   error: "one or more worktrees could not be removed",
 };
 
+/** Every path the panel asked the sidecar for, in order. */
+let requested: string[] = [];
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -109,7 +113,11 @@ stubSidecarApi({
     providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
-  sidecarFetch: async (path: string) => {
+  sidecarFetch: async (url: string) => {
+    requested.push(url);
+    // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
+    // which doesn't change what they return.
+    const path = url.split("?")[0]!;
     if (path === "/api/workspaces") return json([EXISTING]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
     if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
@@ -125,7 +133,24 @@ const EMPTY_STATE = "Select a workspace or create a new one";
 
 describe("WorkspacesPanel", () => {
   // The panel persists its selection, so each test starts from a clean slate.
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    requested = [];
+  });
+
+  it("tells the PR poller which list and workspace are on screen", async () => {
+    const realHasFocus = document.hasFocus.bind(document);
+    document.hasFocus = () => true;
+    clearResourceCache();
+    try {
+      await renderToHtml(<WorkspacesPanel requested={{ id: JUST_CREATED.id }} />);
+    } finally {
+      document.hasFocus = realHasFocus;
+    }
+
+    expect(requested).toContain("/api/workspaces?badges=1");
+    expect(requested).toContain(`/api/workspaces/${JUST_CREATED.id}?viewing=1`);
+  });
 
   it("keeps a just-created workspace selected even though the list predates it", async () => {
     const html = await renderToHtml(<WorkspacesPanel requested={{ id: JUST_CREATED.id }} />);
