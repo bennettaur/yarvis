@@ -16,22 +16,29 @@ function NumberField({
   label,
   value,
   onChange,
+  min = 1,
+  max,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  min?: number;
+  max?: number;
 }) {
   return (
     <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">
       {label}
       <input
         type="number"
-        min={1}
+        min={min}
+        max={max}
         value={value}
         onChange={(e) => {
-          // A cleared or partial field isn't a number of minutes; keep the last one.
-          const minutes = Number.parseInt(e.target.value, 10);
-          if (Number.isFinite(minutes) && minutes >= 1) onChange(minutes);
+          // A cleared or partial field isn't a number; keep the last one.
+          const parsed = Number.parseInt(e.target.value, 10);
+          if (Number.isFinite(parsed) && parsed >= min && (max === undefined || parsed <= max)) {
+            onChange(parsed);
+          }
         }}
         className="w-20 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-right"
       />
@@ -227,6 +234,14 @@ export default function HeadsDownSettings({
         label="You count as away after (min)"
         value={draft.userAwayAfterMinutes}
         onChange={(v) => set("userAwayAfterMinutes", v)}
+      />
+      <NumberField
+        label="Routines per pass (0 for none)"
+        value={draft.maxRoutinesPerPass}
+        // 0 is how routines are turned off; past 10 the sidecar refuses the save.
+        min={0}
+        max={10}
+        onChange={(v) => set("maxRoutinesPerPass", v)}
       />
 
       <div className="space-y-2 border-t border-zinc-800 pt-3">

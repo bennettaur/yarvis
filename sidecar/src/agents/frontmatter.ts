@@ -1,3 +1,6 @@
+import { constants } from "node:fs";
+import { open, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { parse as parseYaml, YAMLParseError } from "yaml";
 
 /**
@@ -191,4 +194,46 @@ export function asInteger(
     throw new FrontmatterError(file, `'${key}' must be a positive whole number`, 1);
   }
   return value;
+}
+
+/** One file from a user's definition directory, or the reason it couldn't be read. */
+export type DefinitionFile = { path: string; content: string } | { path: string; error: string };
+
+/**
+ * Reads every `.md` file in a directory the user keeps definitions in, treating
+ * an absent directory as simply empty.
+ */
+export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
+  } catch {
+    return [];
+  }
+  const files: DefinitionFile[] = [];
+  for (const name of names.sort()) {
+    const path = join(dir, name);
+    try {
+      // Opened without blocking and checked through the same descriptor: a FIFO
+      // named `x.md` would otherwise hang every load, and a directory named
+      // `x.md` was never a definition, so it is skipped.
+      const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        const stat = await handle.stat();
+        if (stat.isDirectory()) continue;
+        if (!stat.isFile()) {
+          files.push({ path, error: `${path}: not a regular file` });
+          continue;
+        }
+        files.push({ path, content: await handle.readFile("utf8") });
+      } finally {
+        await handle.close();
+      }
+    } catch (e) {
+      // A file that can't be read is reported, not silently skipped: the user
+      // put it there deliberately and would otherwise wonder where it went.
+      files.push({ path, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return files;
 }

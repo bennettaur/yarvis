@@ -85,6 +85,8 @@ export interface HeadsDownConfig {
   model: string | null;
   /** The user's standing rules for every pass on this machine. Null for none. */
   guidance: string | null;
+  /** The most routines one pass takes on. 0 turns them off. */
+  maxRoutinesPerPass: number;
 }
 
 export type MergeRisk = "low" | "medium" | "high" | "unknown";
@@ -246,6 +248,32 @@ export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-dow
 
 export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
   request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+
+/** A recurring job a pass takes on beside the work streams, read from a markdown file. */
+export interface Routine {
+  name: string;
+  description: string;
+  everyMinutes: number;
+  workingHoursOnly: boolean;
+  enabled: boolean;
+  /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
+  source: "builtin" | "user";
+  /** ISO time of the last pass that reported it done. Null if none has. */
+  lastDoneAt: string | null;
+}
+
+export interface RoutinesResponse {
+  routines: Routine[];
+  /** Files that couldn't be read as a routine, with why. */
+  problems: { path: string; message: string }[];
+  /** Where the user's own routine files go. */
+  userDir: string;
+}
+
+export const listRoutines = () => request<RoutinesResponse>("/api/heads-down/routines");
+
+export const reloadRoutines = () =>
+  request<RoutinesResponse>("/api/heads-down/routines/reload", "POST");
 
 /** An MCP tool heads-down mode may call without asking. */
 export interface AllowedTool {

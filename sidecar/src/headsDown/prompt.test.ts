@@ -94,6 +94,28 @@ describe("buildPassPrompt", () => {
     expect(buildPassPrompt({ ...base, guidance: "  " })).not.toContain("standing guidance");
   });
 
+  it("lists the routines due, with each one's instructions and when it was last done", () => {
+    const routine = (name: string, prompt: string) => ({
+      name,
+      description: name,
+      prompt,
+      everyMinutes: 60,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "user" as const,
+      path: `${name}.md`,
+    });
+    const lastDone = new Date("2026-10-19T08:00:00Z");
+    const prompt = buildPassPrompt({
+      ...base,
+      routines: [routine("standup", "Draft my standup."), routine("inbox", "Triage my inbox.")],
+      routinesLastDone: new Map([["standup", lastDone]]),
+    });
+    expect(prompt).toContain(`### standup (last done ${lastDone.toString()})\nDraft my standup.`);
+    expect(prompt).toContain("### inbox (never done before)\nTriage my inbox.");
+    expect(buildPassPrompt({ ...base, routines: [] })).not.toContain("Routines due this pass");
+  });
+
   it("keeps earlier messages in front of every pass, since standing instructions still hold", () => {
     const prompt = buildPassPrompt({
       ...base,

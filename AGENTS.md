@@ -682,6 +682,20 @@ back to ad-hoc.
     approval a repo's CI can merge on. The second is narrowed again at the
     tool: `post_merge_review` re-reads the PR and its report itself, and posts
     only for a current report whose verdict asked for an agent.
+- Heads-down routines (`sidecar/src/headsDown/routines.ts`) follow the same
+  files-not-rows shape: shipped ones in `headsDown/routines/`, embedded, and
+  `~/.yarvis/routines/*.md` beside them, winning on a name. The body goes into
+  an unattended pass's prompt unfenced, as the user's own words, which is why
+  they are never read from a repo either. Which ones a pass gets is decided in
+  code, not by the model: `dueRoutines` offers those whose cadence has passed
+  since a pass last reported them done (`heads_down_passes.routines_done`), most
+  overdue first, capped by `maxRoutinesPerPass`. One a pass was given
+  (`routines_offered`, written when the pass starts) and didn't finish waits
+  before it is given again, so a routine that keeps failing can't take a slot
+  on every pass. `finish_pass` records only names it was offered, so a pass
+  can't push back a routine it never saw. Both directories are read by
+  `readMarkdownDir` in `agents/frontmatter.ts`, which opens without blocking
+  and reads only regular files, since a FIFO named `x.md` would hang every load.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

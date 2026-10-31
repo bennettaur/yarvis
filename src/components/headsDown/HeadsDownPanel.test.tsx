@@ -115,6 +115,23 @@ const CONFIG = {
   provider: null,
   model: null,
   guidance: null,
+  maxRoutinesPerPass: 2,
+};
+
+const ROUTINES = {
+  routines: [
+    {
+      name: "meeting-alarms",
+      description: "Sets an alarm for each meeting",
+      everyMinutes: 180,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "builtin",
+      lastDoneAt: null,
+    },
+  ],
+  problems: [{ path: "/home/me/.yarvis/routines/x.md", message: "x.md: 'every' is required" }],
+  userDir: "/home/me/.yarvis/routines",
 };
 
 const PROVIDERS = [
@@ -205,6 +222,7 @@ stubSidecarApi({
         },
       ]);
     }
+    if (path === "/api/heads-down/routines") return json(ROUTINES);
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
@@ -266,6 +284,16 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("lists the routines, and a file that failed to load", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+
+    expect(host.textContent).toContain("every 3h");
+    expect(host.textContent).toContain("Not done yet");
+    expect(host.textContent).toContain("x.md: 'every' is required");
+    expect(host.textContent).toContain("/home/me/.yarvis/routines");
   });
 
   it("names the workspaces it mentions by id and opens them on click", async () => {
