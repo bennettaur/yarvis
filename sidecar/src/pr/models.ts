@@ -45,18 +45,23 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
 
 /**
  * The verification report runs on Claude Code rather than on a chat provider,
- * so it takes a Claude Code model alias and a spend ceiling instead of a
+ * so it takes a Claude Code model alias and a budget instead of a
  * provider/model pair. Kept under its own `prVerification` key.
+ *
+ * The budget is a warning threshold, not a cap: a run estimated over it asks
+ * the user first, and once they agree it runs to the end whatever it costs.
+ * Despite its name, `maxBudgetUsd` is not a maximum; the stored key keeps it.
  */
 export const VERIFICATION_MODELS = ["sonnet", "opus", "haiku"] as const;
 
 export type VerificationModel = (typeof VERIFICATION_MODELS)[number];
 
-export const VERIFICATION_BUDGET_LIMITS = { min: 0.25, max: 20 } as const;
+/** `VERIFICATION_BUDGET_MIN_USD` in `src/lib/pr/models.ts` mirrors this. */
+const VERIFICATION_BUDGET_MIN_USD = 0.25;
 
 export const verificationRunConfigSchema = z.object({
   model: z.enum(VERIFICATION_MODELS),
-  maxBudgetUsd: z.number().min(VERIFICATION_BUDGET_LIMITS.min).max(VERIFICATION_BUDGET_LIMITS.max),
+  maxBudgetUsd: z.number().min(VERIFICATION_BUDGET_MIN_USD),
 });
 
 export type VerificationRunConfig = z.infer<typeof verificationRunConfigSchema>;
@@ -105,7 +110,7 @@ export async function saveVerificationRunConfig(
 /**
  * The "What's changed" re-review summary also runs on Claude Code, under its
  * own `prRereview` key: it reads far less than a verification report, so it
- * gets its own, smaller ceiling. `autoStart` runs it when the "Since last
+ * gets its own, smaller budget. `autoStart` runs it when the "Since last
  * review" tab opens on a range it hasn't summarised, instead of waiting for
  * the button.
  */

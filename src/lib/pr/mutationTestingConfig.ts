@@ -28,14 +28,18 @@ export const DEFAULT_MUTATION_TESTING_CONFIG: MutationTestingConfig = {
 /**
  * The limits the sidecar enforces, so the inputs can say so before a save is
  * refused. Keep in sync with `mutationTestingConfigSchema` in
- * `sidecar/src/reviewWorkspaces/mutationConfig.ts`.
+ * `sidecar/src/reviewWorkspaces/mutationConfig.ts`. The budgets have no upper
+ * limit because they only warn; a pass that goes over them still finishes.
  */
-export const MUTATION_LIMITS = {
-  planningBudgetUsd: { min: 0.1, max: 20 },
-  explanationBudgetUsd: { min: 0.05, max: 20 },
+export const MUTATION_LIMITS: Record<
+  "planningBudgetUsd" | "explanationBudgetUsd" | "maxMutants" | "testTimeoutCapSeconds",
+  { min: number; max?: number }
+> = {
+  planningBudgetUsd: { min: 0.1 },
+  explanationBudgetUsd: { min: 0.05 },
   maxMutants: { min: 1, max: 30 },
   testTimeoutCapSeconds: { min: 30, max: 3600 },
-} as const;
+};
 
 export async function getMutationTestingConfig(): Promise<MutationTestingConfig> {
   const res = await sidecarFetch("/api/mutation-testing-config");

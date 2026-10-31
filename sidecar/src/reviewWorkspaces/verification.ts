@@ -832,7 +832,6 @@ export async function startVerification(
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
           model: settings.model,
-          maxBudgetUsd: settings.maxBudgetUsd,
           maxTurns: MAX_TURNS,
           timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
           meta: {
@@ -906,7 +905,7 @@ export interface VerificationSize {
   skimmed: string[];
   /** A rough figure from {@link estimateRunCostUsd}, for the configured model. */
   estimatedCostUsd: number;
-  /** The configured budget; past it, Claude Code stops the run before it answers. */
+  /** The configured budget. It only warns: past it the UI asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
 }

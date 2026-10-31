@@ -167,6 +167,8 @@ let setupScript: string | null;
 let agentRegistry: RunRegistry<AgentRunEvent>;
 let registry: RunRegistry<MutationProgressEvent>;
 let settings: MutationTestingConfig;
+// Set to make startClaudeRun throw before it records a run.
+let startFails: boolean;
 /** When set, loading the PR waits on it, holding a refresh open. */
 let loadGate: PromiseWithResolvers<void> | null;
 let app: Hono;
@@ -281,6 +283,7 @@ beforeEach(async () => {
     maxMutants: 5,
     testTimeoutCapSeconds: 60,
   };
+  startFails = false;
   loadGate = null;
   blockOn = null;
   swapOnMutant = null;
@@ -296,7 +299,14 @@ beforeEach(async () => {
     createReviewWorkspaceRoutes(config, {
       deps,
       mutation: {
-        run: { program, instance: "test", registry: agentRegistry },
+        run: {
+          get program(): string {
+            if (startFails) throw new Error("no Claude Code here");
+            return program;
+          },
+          instance: "test",
+          registry: agentRegistry,
+        },
         exec: { runner: fakeRunner, checkSandbox: async () => {}, killStrays: async () => [] },
         registry,
         config: async () => settings,
@@ -450,7 +460,8 @@ describe("a pass", () => {
     }
     const planArgs = readFileSync(join(logDir, "plan.args"), "utf8").split("\n");
     expect(planArgs[planArgs.indexOf("--model") + 1]).toBe("haiku");
-    expect(planArgs[planArgs.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    // The budget only warns, so nothing caps the run's spend.
+    expect(planArgs).not.toContain("--max-budget-usd");
 
     // The planner sees the changed files fenced, and the cap.
     const prompt = readFileSync(join(logDir, "plan.prompt"), "utf8");
@@ -551,11 +562,10 @@ describe("a pass", () => {
   it("fails, leaving no copy, when the planning run can't start", async () => {
     const { wsId, prId, base, headSha } = await readyPr();
     await consent(wsId, prId);
-    // startClaudeRun refuses a run with no budget.
-    settings = { ...settings, planningBudgetUsd: 0 };
+    startFails = true;
     const row = await finished((await start(base, headSha)).body.runId);
     expect(row.status).toBe("failed");
-    expect(row.error).toContain("maxBudgetUsd");
+    expect(row.error).toContain("no Claude Code here");
     expect(copiesIn(wsId)).toEqual([]);
     expect(mutantCopiesInUse.size).toBe(0);
     expect(await db.select().from(agentRuns)).toEqual([]);

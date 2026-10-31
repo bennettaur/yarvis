@@ -620,12 +620,16 @@ back to ad-hoc.
   so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
   security default managed settings seat. Claude Code's core agents and skills
   aren't plugins and stay.
-  The permission mode is always set and never one that approves on its own, a
-  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  The permission mode is always set and never one that approves on its own,
+  the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
   caller interpolates), and no session is saved, so the transcript never
   reaches the nightly session digest and from there memory.
-  `agentRuns/canary.ts` checks all of that against the real CLI.
+  `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
+  (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
+  setting only warns, the user agrees to the estimated cost before the run
+  starts, and a run cut off at a cap ends with nothing to show for what it
+  spent. `maxTurns` and the timeout still bound a runaway.
   Cancelling kills the process group, since the tools a run starts outlive a
   kill aimed only at Claude Code; so does the sidecar exiting, and the startup
   sweep kills what a crashed sidecar left, matched by pid and start time. The

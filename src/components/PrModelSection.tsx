@@ -13,7 +13,7 @@ import {
   savePrModelConfig,
   saveRereviewRunConfig,
   saveVerificationRunConfig,
-  VERIFICATION_BUDGET_LIMITS,
+  VERIFICATION_BUDGET_MIN_USD,
   VERIFICATION_MODELS,
   type VerificationModel,
   type VerificationRunConfig,
@@ -23,7 +23,7 @@ import {
  * Which model writes guided reviews and answers line questions about a pull request's
  * code. A feature left unset uses the default chat model. The verification report and
  * the "What's changed" summary run on Claude Code instead, so each takes a Claude Code
- * model and a spend ceiling.
+ * model and a budget.
  */
 
 const FIELD =
@@ -41,9 +41,9 @@ const VERIFICATION_MODEL_LABELS: Record<VerificationModel, string> = {
 };
 
 /**
- * A feature that runs on Claude Code: its model and spend ceiling, and
- * whatever else `children` adds. The budget is saved on blur, so a half-typed
- * number isn't sent, and one out of range is refused and put back.
+ * A feature that runs on Claude Code: its model and budget, and whatever else
+ * `children` adds. The budget is saved on blur, so a half-typed number isn't
+ * sent, and one below the minimum is refused and put back.
  */
 function ClaudeRunRow({
   label,
@@ -68,13 +68,10 @@ function ClaudeRunRow({
     if (
       budgetDraft.trim() === "" ||
       !Number.isFinite(budget) ||
-      budget < VERIFICATION_BUDGET_LIMITS.min ||
-      budget > VERIFICATION_BUDGET_LIMITS.max
+      budget < VERIFICATION_BUDGET_MIN_USD
     ) {
       setBudgetDraft(String(value.maxBudgetUsd));
-      onError(
-        `The budget must be between $${VERIFICATION_BUDGET_LIMITS.min} and $${VERIFICATION_BUDGET_LIMITS.max}.`,
-      );
+      onError(`The budget must be at least $${VERIFICATION_BUDGET_MIN_USD}.`);
       return;
     }
     if (budget !== value.maxBudgetUsd) onSave({ maxBudgetUsd: budget });
@@ -105,8 +102,7 @@ function ClaudeRunRow({
           aria-label={`${label} budget in US dollars`}
           type="number"
           inputMode="decimal"
-          min={VERIFICATION_BUDGET_LIMITS.min}
-          max={VERIFICATION_BUDGET_LIMITS.max}
+          min={VERIFICATION_BUDGET_MIN_USD}
           step={0.25}
           value={budgetDraft}
           onChange={(e) => setBudgetDraft(e.target.value)}
@@ -244,7 +240,7 @@ export default function PrModelSection() {
         {verification && (
           <ClaudeRunRow
             label="Verification report"
-            hint="Runs on Claude Code. The budget caps what one report may spend."
+            hint="Runs on Claude Code. A report estimated over the budget asks before it starts."
             value={verification}
             onSave={(patch) => void saveVerification(patch)}
             onError={setError}
@@ -253,7 +249,7 @@ export default function PrModelSection() {
         {rereview && (
           <ClaudeRunRow
             label="What's changed"
-            hint="Re-review summary, on Claude Code. The budget caps one summary."
+            hint="Re-review summary, on Claude Code. One estimated over the budget asks first."
             value={rereview}
             onSave={(patch) => void saveRereview(patch)}
             onError={setError}

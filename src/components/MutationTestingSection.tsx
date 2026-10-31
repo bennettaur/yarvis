@@ -79,11 +79,16 @@ export default function MutationTestingSection() {
       !raw.trim() ||
       Number.isNaN(value) ||
       value < min ||
-      value > max ||
+      (max !== undefined && value > max) ||
       (integer && !Number.isInteger(value))
     ) {
       show(config);
-      setError(`${NUMBER_FIELDS.find((f) => f.key === key)?.label} must be from ${min} to ${max}.`);
+      const label = NUMBER_FIELDS.find((f) => f.key === key)?.label;
+      setError(
+        max === undefined
+          ? `${label} must be at least ${min}.`
+          : `${label} must be from ${min} to ${max}.`,
+      );
       return;
     }
     void save({ [key]: value });

@@ -122,8 +122,13 @@ interface ClaudeRunBaseOptions<T> {
   /** Added after the fixed guardrail. */
   appendSystemPrompt?: string;
   model?: string;
-  /** Claude Code stops the run once it has spent this much. */
-  maxBudgetUsd: number;
+  /**
+   * Claude Code stops the run once it has spent this much. Left out, nothing
+   * caps the spend and `maxTurns` and `timeoutMs` bound a runaway instead: the
+   * review runs leave it out because the user has already seen the cost
+   * estimate and agreed to it.
+   */
+  maxBudgetUsd?: number;
   maxTurns?: number;
   timeoutMs: number;
   /** Feature-specific context kept on the row. */
@@ -321,8 +326,6 @@ export function buildClaudeArgs<T, R>(
     "--no-session-persistence",
     "--permission-mode",
     options.permissionMode ?? "dontAsk",
-    "--max-budget-usd",
-    String(options.maxBudgetUsd),
     "--append-system-prompt",
     options.appendSystemPrompt
       ? `${RUN_GUARDRAIL}\n\n${options.appendSystemPrompt}`
@@ -331,6 +334,9 @@ export function buildClaudeArgs<T, R>(
   for (const dir of pluginDirs) args.push("--plugin-dir", dir);
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
   if (options.agent) args.push("--agent", options.agent);
+  if (options.maxBudgetUsd !== undefined) {
+    args.push("--max-budget-usd", String(options.maxBudgetUsd));
+  }
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));
@@ -356,7 +362,7 @@ const MAX_ERROR_CHARS = 2_000;
 
 /**
  * Starts a run and returns as soon as it is registered. Throws — before any
- * row exists — for a refused permission mode, a missing budget, a working
+ * row exists — for a refused permission mode, a budget that isn't positive, a working
  * directory that isn't there or a plugin that can't be written, so the starting
  * route can answer with the reason.
  */
@@ -369,7 +375,9 @@ export async function startClaudeRun<T, R = T>(
   if (options.permissionMode && REFUSED_PERMISSION_MODES.has(options.permissionMode)) {
     throw new Error(`permission mode "${options.permissionMode}" is not allowed for agent runs`);
   }
-  if (!(options.maxBudgetUsd > 0)) throw new Error("an agent run needs a positive maxBudgetUsd");
+  if (options.maxBudgetUsd !== undefined && !(options.maxBudgetUsd > 0)) {
+    throw new Error("an agent run's maxBudgetUsd must be positive");
+  }
   const cwd = validateWorkingDir(options.cwd);
   for (const dir of options.addDirs ?? []) validateWorkingDir(dir);
   const program = deps.program ?? (await claudeProgram());

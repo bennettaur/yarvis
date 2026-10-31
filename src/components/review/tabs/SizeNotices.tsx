@@ -77,7 +77,7 @@ export function fileNotices(files: {
 
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 
-/** The estimate against the budget, and what happens past it. */
+/** The estimate against the budget. Past it the run still finishes; this is the warning. */
 export function CostLine({
   estimatedCostUsd,
   budgetUsd,
@@ -90,8 +90,7 @@ export function CostLine({
   return (
     <div>
       Estimated cost: about {money(estimatedCostUsd)}, against a budget of {money(budgetUsd)}.
-      {overBudget &&
-        " The run may hit the budget and stop before it answers; raise it in Settings → PR review first."}
+      {overBudget && " That's over the budget; the run won't stop at it, so it may cost more."}
     </div>
   );
 }
