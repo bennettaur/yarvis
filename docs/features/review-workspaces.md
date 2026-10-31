@@ -422,7 +422,9 @@ The bar above the tabs is for the PR whose tab is in front, in its colour. It
 has the same actions as the PRs tab's header: **Ready for review** on a draft,
 **Approve** and **Request changes**, **Merge** or auto-merge when the repo
 allows them, the link to a coding [workspace](workspaces.md) on the PR's
-branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
+branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
+approved the PR, **Approve** is replaced by a **✓ Approved** label in both
+places. It comes back if the author asks you to review again. It also has:
 
 - **Guided review** and **Verification**, which open those tabs (see
   [Guided review](#guided-review) and [Verification report](#verification-report)).

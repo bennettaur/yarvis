@@ -1,16 +1,26 @@
 import { useState } from "react";
+import { setAttentionAnimation, useAttentionAnimation } from "../lib/attentionAnimation";
 import { COLOR_THEMES, type ColorTheme, setColorTheme, useColorTheme } from "../lib/theme";
 
-/** The colour theme, saved to `settings.json` as it is chosen. */
+const SAVE_FAILED = "Applied, but couldn't be saved, so it won't survive a restart:";
+
+/** The colour theme and the top bar's attention animation, each saved to `settings.json` as it is chosen. */
 export default function AppearanceSection() {
+  return (
+    <div className="space-y-5">
+      <ColorThemeSection />
+      <AttentionAnimationSection />
+    </div>
+  );
+}
+
+function ColorThemeSection() {
   const theme = useColorTheme();
   const [error, setError] = useState<string | null>(null);
 
   const choose = (next: ColorTheme) => {
     setError(null);
-    setColorTheme(next).catch((e) =>
-      setError(`Applied, but couldn't be saved, so it won't survive a restart: ${String(e)}`),
-    );
+    setColorTheme(next).catch((e) => setError(`${SAVE_FAILED} ${String(e)}`));
   };
 
   return (
@@ -36,6 +46,33 @@ export default function AppearanceSection() {
             </option>
           ))}
         </select>
+      </label>
+    </section>
+  );
+}
+
+function AttentionAnimationSection() {
+  const enabled = useAttentionAnimation();
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = () => {
+    setError(null);
+    setAttentionAnimation(!enabled).catch((e) => setError(`${SAVE_FAILED} ${String(e)}`));
+  };
+
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+      <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-zinc-500">Attention</h2>
+      {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      <label className="flex items-start gap-2">
+        <input type="checkbox" checked={enabled} onChange={toggle} className="mt-1" />
+        <span className="text-sm text-zinc-300">
+          Animate the top bar while something needs attention
+          <span className="mt-0.5 block text-xs text-zinc-500">
+            An amber band crosses the top bar and the bell shakes every few seconds while the bell
+            has something pending. The bell shows its count either way.
+          </span>
+        </span>
       </label>
     </section>
   );
