@@ -172,6 +172,17 @@ describe("startClaudeTask", () => {
     expect(items[0]?.body).toContain("broken");
   });
 
+  it("tells the user to update a Claude Code build too old for tasks", async () => {
+    const program = fakeClaude(
+      dir,
+      "too-old",
+      "echo \"error: unknown option '--restricted'\" >&2\nexit 1",
+    );
+    const started = await startClaudeTask(db, config, input(), deps(program));
+    expect((await waitForFinish(started.runId)).error).toContain("too old");
+    expect((await waitForAttention())[0]?.body).toContain("Update Claude Code");
+  });
+
   it("keeps the bell body to one short, redacted line", async () => {
     const program = fakeWriting("verbose", [], {
       summary: `Done.\ntoken: abcdef123456\n${"x".repeat(400)}`,
