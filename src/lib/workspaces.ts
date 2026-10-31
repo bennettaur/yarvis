@@ -3,6 +3,7 @@ import type { IssueLink } from "./issues/types";
 import type { MergeMethod, PrRef, PrStack } from "./pr/types";
 import type { Repo } from "./repos";
 import type { Task } from "./tasks";
+import { userIsLooking } from "./userIsLooking";
 
 export type WorkspaceStatus = "creating" | "active" | "archiving" | "archived" | "error";
 export type WorkspaceRepoStatus = "pending" | "provisioning" | "ready" | "removed" | "error";
@@ -163,13 +164,10 @@ async function readError(res: Response, action: string): Promise<never> {
 export const WORKSPACES_KEY = "workspaces:list";
 
 /**
- * Whether the user is looking at the window. The sidecar only polls providers
- * for the PRs a read says are in front of the user, so a read made while the
- * window is in the background doesn't say so.
+ * `showingBadges` is for the Workspaces list, whose rows show each PR's status.
+ * The sidecar polls faster for what a read says is in front of the user, so a
+ * read made while the window is in the background doesn't say so.
  */
-const userIsLooking = () => document.hasFocus() && document.visibilityState !== "hidden";
-
-/** `showingBadges` is for the Workspaces list, whose rows show each PR's status. */
 export async function listWorkspaces({ showingBadges = false } = {}): Promise<WorkspaceSummary[]> {
   const badges = showingBadges && userIsLooking() ? "?badges=1" : "";
   const res = await sidecarFetch(`/api/workspaces${badges}`);

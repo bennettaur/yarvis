@@ -307,13 +307,20 @@ number of reviewers, are not counted as checks. If the token can't read the
 policies, the badge shows no checks. Azure DevOps doesn't report a merge
 verdict here, so its badges never reach `★`.
 
-Badges come from a background PR poll that only runs while the Workspaces tab
-is in front of you, to stay under your GitHub and Azure DevOps rate limits.
-While you're in a workspace, its PR refreshes about once a minute, or every 15
-minutes once it's merged or closed. Other workspaces' badges in the list
-refresh every 15 minutes, and a merged or closed PR seen only in the list isn't
-refreshed. Nothing is polled while Yarvis is in the background or on another
-tab, so a badge shows what the poll last saw until you come back.
+Badges come from a background PR poll, paced to stay under your GitHub and
+Azure DevOps rate limits:
+
+- Every workspace whose PR is known and not yet merged refreshes every 15
+  minutes, even while Yarvis is in the background. For GitHub, all of them
+  are read in one request.
+- While you're in a workspace with Yarvis in front of you, its PR refreshes
+  about once a minute, or every 15 minutes once it's merged or closed. This is
+  also how a PR opened on its branch gets picked up.
+- A workspace with no PR yet is checked for a new one every 15 minutes while
+  the list is in front of you.
+
+So a badge can lag a change by up to 15 minutes, or a minute for the workspace
+you have open.
 
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).

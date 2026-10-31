@@ -911,28 +911,79 @@ query($owner:String!,$repo:String!,$branch:String!){
 }`;
 
 /** Check runs and legacy commit statuses, matching the two REST reads. */
+const PR_STATUS_FIELDS = `
+  state merged mergeable mergeStateStatus headRefOid
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
+    __typename
+    ... on CheckRun { status conclusion }
+    ... on StatusContext { state }
+  }}}}}}
+`;
+
 const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      state merged mergeable mergeStateStatus headRefOid
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
-        __typename
-        ... on CheckRun { status conclusion }
-        ... on StatusContext { state }
-      }}}}}}
-    }
+    pullRequest(number:$number){ ${PR_STATUS_FIELDS} }
   }
 }`;
+
+const PR_REVIEW_FIELDS = "reviews(first:100){ nodes{ state authorAssociation author{ login } } }";
 
 const PR_REVIEWS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      reviews(first:100){ nodes{ state authorAssociation author{ login } } }
-    }
+    pullRequest(number:$number){ ${PR_REVIEW_FIELDS} }
   }
 }`;
+
+/** What the workspace poller reads about each PR, in one query: summary, status and reviews. */
+const PR_POLL_FIELDS = `number url isDraft ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
+
+/**
+ * Same-named branches a batched branch read looks through for the one in the
+ * repo itself. Each one costs its checks and reviews, so this stays far below
+ * the single lookup's 20: a fork's branch has to be among a repo's five newest
+ * PRs on that name to crowd out the real one.
+ */
+const BRANCH_POLL_CANDIDATES = 5;
+
+/**
+ * Refs read per batched poll request. Every PR's checks and reviews count
+ * toward GitHub's per-query cost, so a long list is split rather than sent as
+ * one query GitHub might refuse as too expensive.
+ */
+const MAX_POLL_BATCH = 25;
+
+/**
+ * One aliased query reading the PR on each branch, built like
+ * {@link buildPrLookupQuery} so nothing from a ref reaches the query text.
+ */
+function buildBranchPollQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$b${i}:String!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `p${i}: repository(owner:$o${i},name:$r${i}){ pullRequests(headRefName:$b${i}, first:${BRANCH_POLL_CANDIDATES}, orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ headRepositoryOwner{ login } ${PR_POLL_FIELDS} } } }`,
+  ).join("\n");
+  return `query(${varDecls}){\n${fields}\n}`;
+}
+
+/** One aliased query reading each known PR by number, built like {@link buildBranchPollQuery}. */
+function buildNumberPollQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `p${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_POLL_FIELDS} } }`,
+  ).join("\n");
+  return `query(${varDecls}){\n${fields}\n}`;
+}
 
 /** The fields `restLikeIssue` reads. */
 const ISSUE_FIELDS = `
@@ -1027,6 +1078,75 @@ function restMergeable(value: unknown): boolean | null {
   if (value === "MERGEABLE") return true;
   if (value === "CONFLICTING") return false;
   return null;
+}
+
+/** A GraphQL pull request's status fields ({@link PR_STATUS_FIELDS}) as a {@link PrStatus}. */
+function prStatusFromNode(pr: any): PrStatus {
+  const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const runs = contexts
+    .filter((c: any) => c?.__typename === "CheckRun")
+    .map((c: any) => ({
+      status: String(c.status ?? "").toLowerCase(),
+      conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
+    }));
+  // EXPECTED is a required status that hasn't reported yet, so it waits
+  // like REST's pending rather than counting as a failure.
+  const statuses = contexts
+    .filter((c: any) => c?.__typename === "StatusContext")
+    .map((c: any) => ({
+      state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
+    }));
+  return {
+    state: pr.state === "OPEN" ? "open" : "closed",
+    merged: Boolean(pr.merged),
+    mergeable: restMergeable(pr.mergeable),
+    mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
+    headSha: pr.headRefOid ?? null,
+    checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
+  };
+}
+
+/** A GraphQL pull request's reviews ({@link PR_REVIEW_FIELDS}), in the REST shape `summarizeReviewDecision` reads. */
+function restLikeReviews(pr: any): any[] {
+  // In submission order, like REST, which the summary depends on.
+  return (pr.reviews?.nodes ?? []).map((r: any) => ({
+    state: r?.state,
+    author_association: r?.authorAssociation,
+    user: { login: r?.author?.login },
+  }));
+}
+
+/** One PR as the workspace poller reads it. */
+export interface PolledPr {
+  number: number;
+  url: string;
+  draft: boolean;
+  status: PrStatus;
+  /** Null when nothing waits on review: a draft, or a PR that is no longer open. */
+  reviewDecision: ReviewDecision | null;
+}
+
+/** A PR read with {@link PR_POLL_FIELDS} as a {@link PolledPr}. */
+function toPolledPr(pr: any): PolledPr {
+  const status = prStatusFromNode(pr);
+  const awaitingReview = !status.merged && status.state === "open" && !pr.isDraft;
+  return {
+    number: pr.number,
+    url: pr.url,
+    draft: Boolean(pr.isDraft),
+    status,
+    reviewDecision: awaitingReview ? summarizeReviewDecision(restLikeReviews(pr)) : null,
+  };
+}
+
+/** Each ref's answer from a batched read, or why that one ref couldn't be read. */
+export type BatchResult<T> = { ok: true; value: T } | { ok: false; error: GitHubError };
+
+/** A branch in a GitHub repo. */
+export interface BranchRef {
+  owner: string;
+  repo: string;
+  branch: string;
 }
 
 /** Where a `GitHubClient` sends REST and GraphQL requests. */
@@ -1300,28 +1420,7 @@ export class GitHubClient {
         if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
         const pr = data?.repository?.pullRequest;
         if (!pr) throw notFound(`${owner}/${repo}#${number}`);
-        const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-        const runs = contexts
-          .filter((c: any) => c?.__typename === "CheckRun")
-          .map((c: any) => ({
-            status: String(c.status ?? "").toLowerCase(),
-            conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
-          }));
-        // EXPECTED is a required status that hasn't reported yet, so it waits
-        // like REST's pending rather than counting as a failure.
-        const statuses = contexts
-          .filter((c: any) => c?.__typename === "StatusContext")
-          .map((c: any) => ({
-            state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
-          }));
-        return {
-          state: pr.state === "OPEN" ? "open" : "closed",
-          merged: Boolean(pr.merged),
-          mergeable: restMergeable(pr.mergeable),
-          mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
-          headSha: pr.headRefOid ?? null,
-          checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
-        };
+        return prStatusFromNode(pr);
       },
       () => this.prStatusViaRest(owner, repo, number),
     );
@@ -1369,13 +1468,7 @@ export class GitHubClient {
         });
         const pr = data.repository?.pullRequest;
         if (!pr) throw notFound(`${owner}/${repo}#${number}`);
-        // In submission order, like REST, which the summary depends on.
-        const reviews = (pr.reviews?.nodes ?? []).map((r: any) => ({
-          state: r?.state,
-          author_association: r?.authorAssociation,
-          user: { login: r?.author?.login },
-        }));
-        return summarizeReviewDecision(reviews);
+        return summarizeReviewDecision(restLikeReviews(pr));
       },
       async () => {
         const reviews = await this.api<any[]>(
@@ -1412,6 +1505,97 @@ export class GitHubClient {
         return item ? toPrSummary(item) : null;
       },
     );
+  }
+
+  /**
+   * The PR on each branch with its status and review verdict, for the
+   * workspace poller: one request per {@link MAX_POLL_BATCH} branches, where
+   * the single-PR reads take three per branch. Null where a branch has no PR.
+   * GraphQL only, with no REST fallback: a background read that runs out of
+   * GraphQL budget waits for it rather than spending the REST budget the PR
+   * pages need.
+   */
+  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr | null>[]> {
+    return this.pollInBatches(
+      refs,
+      buildBranchPollQuery,
+      (ref, i) => ({
+        [`o${i}`]: ref.owner,
+        [`r${i}`]: ref.repo,
+        [`b${i}`]: ref.branch,
+      }),
+      (ref, repo) => {
+        const pr = (repo?.pullRequests?.nodes ?? []).find(
+          (node: any) =>
+            node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
+        );
+        return { ok: true, value: pr ? toPolledPr(pr) : null };
+      },
+    );
+  }
+
+  /**
+   * Known PRs' status and review verdicts, read by number in batches like
+   * {@link branchPrStatuses}. Cheaper per PR than a branch read, since there
+   * are no same-named branches to sift, but it can't find a PR it isn't given.
+   */
+  async prStatusesByNumber(refs: PrNumberRef[]): Promise<BatchResult<PolledPr>[]> {
+    return this.pollInBatches(
+      refs,
+      buildNumberPollQuery,
+      (ref, i) => ({
+        [`o${i}`]: ref.owner,
+        [`r${i}`]: ref.repo,
+        [`n${i}`]: ref.number,
+      }),
+      (ref, repo) => {
+        const pr = repo?.pullRequest;
+        if (!pr) return { ok: false, error: notFound(`${ref.owner}/${ref.repo}#${ref.number}`) };
+        return { ok: true, value: toPolledPr(pr) };
+      },
+    );
+  }
+
+  /**
+   * Sends `refs` as aliased queries of up to {@link MAX_POLL_BATCH}. An error
+   * naming one alias fails only that ref, so a deleted repo doesn't cost the
+   * rest of the batch. An error naming none (a spent rate limit, a bad token)
+   * fails them all, and is thrown.
+   */
+  private async pollInBatches<R, T>(
+    refs: R[],
+    build: (count: number) => string,
+    variablesFor: (ref: R, i: number) => Record<string, unknown>,
+    read: (ref: R, repo: any) => BatchResult<T>,
+  ): Promise<BatchResult<T>[]> {
+    const results: BatchResult<T>[] = [];
+    for (let start = 0; start < refs.length; start += MAX_POLL_BATCH) {
+      const batch = refs.slice(start, start + MAX_POLL_BATCH);
+      const variables = Object.assign({}, ...batch.map((ref, i) => variablesFor(ref, i)));
+      const { data, errors } = await this.graphqlPayload<Record<string, any>>(
+        build(batch.length),
+        variables,
+      );
+      const byAlias = new Map<string, GraphqlErrorEntry[]>();
+      const unattributed: GraphqlErrorEntry[] = [];
+      for (const error of errors ?? []) {
+        // A fine-grained token is refused the check runs in place; the rest of the PR stands.
+        if (isRefusedCheck(error)) continue;
+        const alias = error.path?.[0];
+        if (typeof alias === "string") byAlias.set(alias, [...(byAlias.get(alias) ?? []), error]);
+        else unattributed.push(error);
+      }
+      if (unattributed.length || !data) {
+        throw githubErrorFromGraphql(unattributed.length ? unattributed : (errors ?? []));
+      }
+      batch.forEach((ref, i) => {
+        const failed = byAlias.get(`p${i}`);
+        results.push(
+          failed ? { ok: false, error: githubErrorFromGraphql(failed) } : read(ref, data[`p${i}`]),
+        );
+      });
+    }
+    return results;
   }
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
