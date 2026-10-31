@@ -13,6 +13,7 @@ import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { startClaudeRun, TASK_RUN_GUARDRAIL } from "../agentRuns/service.ts";
 import { fakeClaude, makeTempDir, resultLine, runOptions } from "../agentRuns/testSupport.ts";
+import { subscribe } from "../attention/hub.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns } from "../db/schema.ts";
@@ -84,6 +85,8 @@ describe("startClaudeTask", () => {
         { path: "missing.css", description: "Never written" },
       ],
     });
+    const pushed: string[] = [];
+    const unsubscribe = subscribe((item) => pushed.push(item.title));
     const started = await startClaudeTask(db, config, input(), deps(program));
     expect(started.outputDir.startsWith(claudeTasksRoot(config))).toBe(true);
 
@@ -92,6 +95,7 @@ describe("startClaudeTask", () => {
       status: "succeeded",
       summary: "Built a one-page site.",
       files: [{ path: "index.html", description: "The page" }],
+      title: "Launch page",
       outputDir: started.outputDir,
       costUsd: 0.01,
     });
@@ -105,6 +109,8 @@ describe("startClaudeTask", () => {
       payload: { runId: started.runId, outputDir: started.outputDir },
     });
     expect(items[0]?.nav_target).toEqual({ type: "chat" });
+    unsubscribe();
+    expect(pushed).toEqual(["Claude Code finished: Launch page"]);
   });
 
   it("can only read inside its folder, with no shell, network or subagents", async () => {
@@ -136,6 +142,9 @@ describe("startClaudeTask", () => {
     expect(after("--tools")).toBe("Read,Write,Edit,Glob,Grep,TodoWrite");
     expect(args).toContain("--restricted");
     expect(after("--permission-prompts")).toBe("none");
+    expect(listAfter("--disallowedTools")).toEqual(
+      expect.arrayContaining(["Bash", "WebFetch", "WebSearch", "Agent", "Task"]),
+    );
     expect(after("--max-budget-usd")).toBe("5");
     expect(after("--append-system-prompt")?.startsWith(TASK_RUN_GUARDRAIL)).toBe(true);
     // The task goes in on stdin, not argv.
@@ -166,7 +175,9 @@ describe("startClaudeTask", () => {
   it("raises an error item when the run fails", async () => {
     const program = fakeClaude(dir, "fails", "echo broken >&2\nexit 1");
     const started = await startClaudeTask(db, config, input({ title: "Brief" }), deps(program));
-    expect((await waitForFinish(started.runId)).status).toBe("failed");
+    const finished = await waitForFinish(started.runId);
+    expect(finished).toMatchObject({ status: "failed", title: "Brief", summary: null, files: [] });
+    expect(finished.finishedAt).not.toBeNull();
     const items = await waitForAttention();
     expect(items[0]).toMatchObject({ kind: "error", title: "Claude Code task failed: Brief" });
     expect(items[0]?.body).toContain("broken");
