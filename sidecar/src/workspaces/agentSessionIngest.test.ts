@@ -6,12 +6,16 @@ import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import {
+  ARCHIVED_END_REASON,
+  endWorkspaceAgentSessions,
+  findResumableAgentSessions,
   PROCESS_GONE_END_REASON,
   pidIsAlive,
   reapAndListAgentSessions,
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
 } from "./agentSessions.ts";
+import { resumeAgentSessions, type StartClaudeSessionInput } from "./claudeSession.ts";
 import { agentSessionHookCommand } from "./claudeSettings.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -269,5 +273,150 @@ describe("pidIsAlive", () => {
     const child = Bun.spawn(["true"]);
     await child.exited;
     expect(pidIsAlive(child.pid)).toBe(false);
+  });
+});
+
+/** Every pid but this test process's own reads as dead, as after an app restart. */
+const onlyThisProcess = (pid: number) => pid === process.pid;
+
+const OTHER_TAB = `ws-claude:${OTHER_WORKSPACE}`;
+const S1 = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
+const S2 = "1c7b4a2f-0d2e-4f66-9b6c-3a4d5e6f7a81";
+
+const resumableIn = (
+  workspaceId: string,
+  workspaceName: string,
+  claudeSessionId: string,
+  pid: number,
+) => ({
+  workspaceId,
+  workspaceName,
+  rootPath: "/tmp/ws",
+  claudeSessionId,
+  pid,
+});
+
+describe("findResumableAgentSessions", () => {
+  it("picks the agent tab's newest session when its process went away without ending", async () => {
+    await hook(start(S2), { pid: "999998" });
+    await hook(start(S1), { pid: "999999" });
+    await hook(start("1d8c5b3a-1e3f-4a77-8c7d-4b5e6f7a8b92"), { pid: "999997", sessionKey: PANE });
+
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999),
+    ]);
+  });
+
+  it("leaves a session that is still running, as after a sidecar-only restart", async () => {
+    await hook(start(S1));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("doesn't fall back to an older open session when the newest one ended", async () => {
+    await hook(start(S2), { pid: "999998" });
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves a stopped session, and any in an archived workspace", async () => {
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    await endWorkspaceAgentSessions(db, OTHER_WORKSPACE, "stopped", OTHER_TAB);
+    await hook(start(S1), { pid: "999999" });
+    await sql`UPDATE workspaces SET status = 'archived' WHERE id = ${WORKSPACE}`;
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves a workspace still owed a kick-off, which starts its own session", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await sql`UPDATE workspaces SET pending_issue_prompt = 'do the thing' WHERE id = ${WORKSPACE}`;
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("never resumes an id that isn't a UUID, since it goes on Claude's command line", async () => {
+    for (const id of ["--dangerously-skip-permissions", `x${S1}`, `${S1}x`]) {
+      await hook(start(id), { pid: "999999" });
+      expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    }
+  });
+});
+
+describe("endWorkspaceAgentSessions", () => {
+  it("closes every open session in the workspace and no other", async () => {
+    await hook(start("tab"));
+    await hook(start("pane"), { sessionKey: PANE });
+    await hook(start("other"), { workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+
+    await endWorkspaceAgentSessions(db, WORKSPACE, ARCHIVED_END_REASON);
+
+    expect(await live()).toEqual([]);
+    expect(await live(OTHER_WORKSPACE)).toHaveLength(1);
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual([ARCHIVED_END_REASON, ARCHIVED_END_REASON]);
+  });
+});
+
+describe("resumeAgentSessions", () => {
+  const recordingStarter =
+    (launched: StartClaudeSessionInput[]) => async (input: StartClaudeSessionInput) => {
+      launched.push(input);
+      return { sessionKey: `ws-claude:${input.workspaceId}` };
+    };
+
+  it("relaunches the cut-off session with --resume and closes its old registration", async () => {
+    await hook(start(S1), { pid: "999999" });
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched).toEqual([
+      {
+        workspaceId: WORKSPACE,
+        cwd: "/tmp/ws",
+        name: "ws",
+        remoteControl: false,
+        resumeSessionId: S1,
+      },
+    ]);
+    // A resume that never starts isn't retried on every restart.
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    // The resumed Claude registers under the same id, which reopens the row.
+    await hook(start(S1, "resume"));
+    expect((await live()).map((s) => s.claudeSessionId)).toEqual([S1]);
+  });
+
+  it("leaves the row open when the resumed Claude registers before the launch returns", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await resumeAgentSessions(db, {
+      startSession: async (input) => {
+        await hook(start(S1, "resume"));
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+    expect((await live()).map((s) => [s.claudeSessionId, s.pid])).toEqual([[S1, process.pid]]);
+  });
+
+  it("carries on past a failed launch and keeps that one for the next start", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: async (input) => {
+        if (input.workspaceId === WORKSPACE) throw new Error("session cap reached");
+        return recordingStarter(launched)(input);
+      },
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.map((l) => l.resumeSessionId)).toEqual([S2]);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999),
+    ]);
   });
 });

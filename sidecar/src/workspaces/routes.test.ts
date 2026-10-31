@@ -1743,6 +1743,54 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos[0]?.status).toBe("removed");
   });
 
+  it("ends every registered agent session in the workspace it archives", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-sessions", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid)
+              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
+                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
+
+    // The core is unreachable here, so this also shows the agent tab's
+    // registration closes when the kill can't be delivered.
+    await archiveWorkspace(db, ws.id, {}, fakeGit);
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", "archived"],
+      ["tab", "stopped"],
+    ]);
+  });
+
+  it("ends the agent tab's session when the user closes the tab, and no other", async () => {
+    const db = getDb(url).db;
+    const ws = await createWorkspace(db, config, { name: "closed-tab", repoIds: [] });
+    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid)
+              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
+                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
+
+    const res = await app.request(`/api/workspaces/${ws.id}/agent/stop`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", null],
+      ["tab", "stopped"],
+    ]);
+
+    const bad = await app.request("/api/workspaces/not-a-uuid/agent/stop", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it("auto-includes a linked PR on archive even when it hasn't merged", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

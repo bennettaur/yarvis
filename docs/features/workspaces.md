@@ -253,6 +253,14 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
 - **Coming back starts a new session.** Returning from another workspace or
   another nav rail tab counts as opening the workspace again.
 - **To bring it back sooner,** press the start-session button in the header.
+- **Restarting Yarvis picks the session back up.** Quitting the app ends every
+  session in its terminals. On the next start, Yarvis relaunches each active
+  workspace's agent tab with `claude --resume`, continuing the Claude Code
+  session that was running there. A session that ended on its own, one you
+  closed the tab on, one Yarvis stopped, and any in an archived workspace stay
+  ended. The relaunched session
+  doesn't have Remote Control on. This needs the workspace's registration
+  hooks (see [Sending an instruction to a running session](#sending-an-instruction-to-a-running-session)).
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file
@@ -552,7 +560,8 @@ The assistant can also tell you:
 Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
 saw. Archiving stops the session, removes the worktrees, and marks linked
-tasks complete. It runs in the background. While it runs, the right column is
+tasks complete. Every Claude Code session registered in the workspace is
+marked ended, so none is resumed after a restart. It runs in the background. While it runs, the right column is
 replaced by a "Removing worktrees…" note, since the worktrees it reads are being
 deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.

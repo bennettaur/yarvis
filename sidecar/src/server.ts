@@ -33,6 +33,7 @@ import {
 } from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
+import { resumeAgentSessions } from "./workspaces/claudeSession.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
 import { registerSymlinkAlerts, resumeKickOffs } from "./workspaces/service.ts";
 
@@ -156,6 +157,15 @@ if (config.databaseUrl) {
         readiness.set("ready");
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
+      }
+      // The agent tabs live in the core's PTYs, so restarting the app ends every
+      // session in them; relaunch the ones it cut off. Before readiness, so it
+      // reads the cut-off rows before anything reaps them and takes each tab
+      // before the frontend can start a fresh session there.
+      try {
+        await resumeAgentSessions(getDb(config.databaseUrl as string).db);
+      } catch (e) {
+        console.error("[sidecar] could not resume workspace agent sessions:", e);
       }
       // One-time copy of the small structural config tables (custom providers,
       // MCP servers, voice/embeddings/wip/github-pr/job config) into the shared
