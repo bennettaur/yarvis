@@ -174,9 +174,7 @@ export default function ChatMessages({
           {streaming && <MessageResponse>{streaming}</MessageResponse>}
         </AssistantTurn>
       )}
-      {busy && !streaming && !thinking && activity.length === 0 && (
-        <ThinkingIndicator label={messageLabel("assistant")} />
-      )}
+      {busy && !streaming && !thinking && activity.length === 0 && <ThinkingIndicator />}
     </>
   );
 }

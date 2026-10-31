@@ -70,7 +70,6 @@ export const ConversationScrollButton = ({
       className={cn("absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full", className)}
       onClick={() => void scrollToBottom()}
       size="icon"
-      type="button"
       variant="outline"
       {...props}
     >

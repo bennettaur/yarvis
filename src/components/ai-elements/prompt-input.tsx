@@ -74,10 +74,10 @@ export const PromptInputSubmit = ({
   ...props
 }: PromptInputSubmitProps) => {
   let icon = <CornerDownLeftIcon className="size-4" />;
-  if (status === "submitted") icon = <Loader size={14} />;
+  if (status === "submitted") icon = <Loader />;
   else if (status === "streaming") icon = <SquareIcon className="size-3.5" />;
   return (
-    <Button className={cn("gap-1.5", className)} size={size} type="button" {...props}>
+    <Button className={cn("gap-1.5", className)} size={size} {...props}>
       {icon}
       {children}
     </Button>

@@ -15,8 +15,8 @@ const SCROLL_BUTTON = 'button[aria-label="Scroll to the newest message"]';
  * scrollTop that holds whatever is set, standing in for a thread taller than
  * its pane.
  */
-function giveLayout(pane: HTMLElement) {
-  let scrollTop = 900;
+function giveLayout(pane: HTMLElement, startAt = 900) {
+  let scrollTop = startAt;
   Object.defineProperty(pane, "scrollHeight", { value: 1000 });
   Object.defineProperty(pane, "clientHeight", { value: 100 });
   Object.defineProperty(pane, "scrollTop", {
@@ -31,7 +31,55 @@ function giveLayout(pane: HTMLElement) {
   };
 }
 
+/**
+ * Stands in for the browser's ResizeObserver, which happy-dom never fires, so a
+ * test can say when the thread's content first gets its height.
+ */
+function captureResizeObserver() {
+  const real = globalThis.ResizeObserver;
+  let resize: ResizeObserverCallback = () => {};
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      resize = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  return {
+    contentHeight: (height: number) =>
+      resize([{ contentRect: { height } } as ResizeObserverEntry], {} as ResizeObserver),
+    restore: () => {
+      globalThis.ResizeObserver = real;
+    },
+  };
+}
+
 describe("Conversation", () => {
+  it("opens a saved thread at its newest message without easing down to it", async () => {
+    const observer = captureResizeObserver();
+    try {
+      const mounted = await mountForInteraction(
+        <Conversation>
+          <ConversationContent>
+            <p>a long saved thread</p>
+          </ConversationContent>
+        </Conversation>,
+      );
+      cleanup = mounted.unmount;
+      const pane = mounted.host.querySelector<HTMLElement>('[role="log"] > div');
+      if (!pane) throw new Error("no scroll pane");
+      giveLayout(pane, 0);
+
+      observer.contentHeight(1000);
+      // A couple of frames: an eased scroll would still be partway down.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(pane.scrollTop).toBe(899);
+    } finally {
+      observer.restore();
+    }
+  });
+
   it("offers a jump to the newest message only after the user scrolls up", async () => {
     const mounted = await mountForInteraction(
       <Conversation>

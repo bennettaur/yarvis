@@ -21,7 +21,9 @@
  * The colour names shadcn and AI Elements components use (`components/ui/`,
  * `components/ai-elements/`), mapped onto the app's own scale. `inline` makes
  * each utility read the zinc/indigo variable where it is used, so Palenight's
- * overrides below reach these names too.
+ * overrides below reach these names too. `success` and `warning` aren't shadcn
+ * names; they colour a tool call's outcome. Those components use only these
+ * names, never the raw scale.
  */
 @theme inline {
   --color-background: var(--color-zinc-950);
@@ -35,6 +37,8 @@
   --color-accent: var(--color-zinc-800);
   --color-accent-foreground: var(--color-zinc-100);
   --color-destructive: var(--color-red-500);
+  --color-success: var(--color-emerald-400);
+  --color-warning: var(--color-amber-400);
   --color-border: var(--color-zinc-800);
   --color-input: var(--color-zinc-700);
   --color-ring: var(--color-zinc-500);

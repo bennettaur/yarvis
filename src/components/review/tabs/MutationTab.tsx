@@ -13,8 +13,8 @@ import {
   type MutationRun,
   startMutationTesting,
 } from "../../../lib/reviewWorkspaces/mutation";
+import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
-import { Spinner } from "../../ThinkingIndicator";
 import MutationReportView, { MutantDiff, OUTCOME_CLASS } from "./MutationReportView";
 import {
   initialMutationProgress,
@@ -81,7 +81,7 @@ function ProgressView({ progress }: { progress: MutationProgress }) {
                 {state === "done" ? (
                   <span className="text-emerald-400">✓</span>
                 ) : state === "running" ? (
-                  <Spinner />
+                  <Loader />
                 ) : (
                   <span className="text-zinc-600">○</span>
                 )}

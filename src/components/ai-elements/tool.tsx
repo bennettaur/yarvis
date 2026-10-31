@@ -22,10 +22,10 @@ export type ToolStatus = ToolActivity["status"];
 
 /** Each outcome has its own icon and word, so a row reads without relying on colour. */
 const STATUS_DISPLAY: Record<ToolStatus, { label: string; Icon: LucideIcon; iconClass: string }> = {
-  pending: { label: "Running", Icon: ClockIcon, iconClass: "animate-pulse text-zinc-400" },
-  ok: { label: "Completed", Icon: CheckCircleIcon, iconClass: "text-emerald-400" },
-  error: { label: "Error", Icon: XCircleIcon, iconClass: "text-red-400" },
-  denied: { label: "Denied", Icon: BanIcon, iconClass: "text-amber-400" },
+  pending: { label: "Running", Icon: ClockIcon, iconClass: "animate-pulse text-muted-foreground" },
+  ok: { label: "Completed", Icon: CheckCircleIcon, iconClass: "text-success" },
+  error: { label: "Error", Icon: XCircleIcon, iconClass: "text-destructive" },
+  denied: { label: "Denied", Icon: BanIcon, iconClass: "text-warning" },
 };
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
@@ -66,7 +66,7 @@ export const ToolHeader = ({
       )}
     >
       <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="font-mono text-zinc-200">{name}</span>
+      <span className="font-mono text-foreground">{name}</span>
       {server && <span className="text-muted-foreground">on {server}</span>}
       <Badge className="gap-1">
         <Icon className={iconClass} />
@@ -98,7 +98,7 @@ export type ToolInputProps = ComponentProps<"div"> & {
 export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
   <div className={cn("space-y-1", className)} {...props}>
     <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Arguments</h4>
-    <pre className="max-h-40 overflow-auto rounded-md bg-background/70 p-2 break-all whitespace-pre-wrap text-zinc-300">
+    <pre className="max-h-40 overflow-auto rounded-md bg-background/70 p-2 break-all whitespace-pre-wrap text-foreground">
       {JSON.stringify(input, null, 2)}
     </pre>
   </div>
@@ -117,7 +117,7 @@ export const ToolOutput = ({ className, output, isError = false, ...props }: Too
     <pre
       className={cn(
         "max-h-40 overflow-auto rounded-md p-2 break-all whitespace-pre-wrap",
-        isError ? "bg-destructive/10 text-red-300" : "bg-background/70 text-zinc-300",
+        isError ? "bg-destructive/10 text-destructive" : "bg-background/70 text-foreground",
       )}
     >
       {output}

@@ -75,7 +75,7 @@ export const MessageAction = ({
   size = "icon-xs",
   ...props
 }: MessageActionProps) => (
-  <Button size={size} type="button" variant={variant} title={tooltip} {...props}>
+  <Button size={size} variant={variant} title={tooltip} {...props}>
     {children}
     <span className="sr-only">{label ?? tooltip}</span>
   </Button>

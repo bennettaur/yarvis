@@ -335,7 +335,7 @@ export default function OmniView() {
           </div>
         ) : busy ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-400">
-            <Loader size={14} />
+            <Loader />
             Generating your layout…
           </div>
         ) : (
