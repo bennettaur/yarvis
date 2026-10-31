@@ -207,6 +207,23 @@ describe("consultDecisionSpecialist", () => {
     expect(calls).toEqual([]);
   });
 
+  // A caller that brings its own options doesn't need the file's `choices`, so
+  // only the kind check keeps a task specialist's prompt out of the call.
+  it("asks nothing when a task specialist has the name, even with options given", async () => {
+    await saveDecisionModelConfig({ model: await decisionModel(), pickSpecialists: true });
+    const { calls, fetchImpl } = answering({ reason: "r", choice: "calm" });
+    await writeAgent("specialist-picker", ["tools: [recall]"]);
+    expect(
+      await consultDecisionSpecialist(config, "pickSpecialists", "specialist-picker", {
+        input: "Plan my day",
+        options,
+        fetchImpl,
+      }),
+    ).toBeNull();
+    expect(await pickSpecialist(config, "Plan my day", { fetchImpl })).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
   it("asks with the specialist's prompt and choices", async () => {
     await saveDecisionModelConfig({ model: await decisionModel(), routeComplexity: true });
     const { calls, fetchImpl } = answering({ reason: "short", choice: "low" });
@@ -355,12 +372,37 @@ describe("the delegate tool", () => {
     });
   });
 
-  it("counts a call with no name toward the turn's limit", async () => {
+  // Picking is off, so leaving the name out costs no delegation. There is no
+  // database here, so a run that starts fails at once rather than doing work.
+  it("doesn't count a call with no name toward the turn's delegations", async () => {
     const tools = buildDelegationTools(undefined as never, config);
     for (let i = 0; i < 3; i++) await tools.delegate.execute!({ task: "x" }, options);
     expect(await tools.delegate.execute!({ task: "x" }, options)).toEqual({
-      error: expect.stringContaining("already delegated 3 times"),
+      error: expect.stringContaining("already asked for 3 suggestions"),
     });
+    expect(await tools.delegate.execute!({ specialist: "planner", task: "x" }, options)).toEqual({
+      error: expect.not.stringContaining("already delegated"),
+    });
+  });
+
+  // An approval prompt shows the call's arguments, so a run must always come
+  // from a call that names its specialist.
+  it("suggests the picked specialist without running it", async () => {
+    await saveDecisionModelConfig({ model: await decisionModel(), pickSpecialists: true });
+    const { calls, fetchImpl } = answering({ reason: "it plans", choice: "planner" });
+    const tools = buildDelegationTools(undefined as never, config, fetchImpl);
+
+    expect(await tools.delegate.execute!({ task: "Plan my day" }, options)).toEqual({
+      suggested: "planner",
+      note: expect.stringContaining('specialist "planner"'),
+    });
+    expect(calls).toHaveLength(1);
+    // The suggestion used no delegation: all three are still there.
+    for (let i = 0; i < 3; i++) {
+      expect(
+        await tools.delegate.execute!({ specialist: "planner", task: "Plan my day" }, options),
+      ).toEqual({ error: expect.not.stringContaining("already delegated") });
+    }
   });
 
   it("lists no decision specialists", async () => {

@@ -197,10 +197,11 @@ export default function DecisionModelSection() {
           <span>
             Pick specialists for delegated work
             <span className="block text-xs text-zinc-600">
-              The assistant can hand off a task without naming a specialist, and the decision model
-              picks one from their descriptions. If none clearly fits, the assistant picks for
-              itself. A specialist that acts unattended is never picked; it runs only when named.
-              The task text is sent to the decision model.
+              The assistant can ask which specialist fits a task, and the decision model picks one
+              from their descriptions. The assistant then names it to run it, so an approval prompt
+              always shows which one. If none clearly fits, the assistant picks for itself. A
+              specialist that acts unattended is never picked; it runs only when named. The task
+              text is sent to the decision model.
             </span>
           </span>
         </label>

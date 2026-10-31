@@ -669,7 +669,10 @@ back to ad-hoc.
     it can't be delegated to or scheduled. A task specialist with `unattended`
     grants is kept out of both shipped uses: the picker never offers it and
     complexity routing never changes its model, because the task text it is
-    judged on can be shaped by what other people wrote.
+    judged on can be shaped by what other people wrote. The picker only
+    suggests: `delegate` with no name returns the pick and runs nothing, so a
+    run always takes a call that names its specialist, which is what an
+    approval prompt on `delegate` shows.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to

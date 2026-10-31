@@ -622,7 +622,10 @@ MCP → Decision model**, both off by default:
   prompt. Without an answer it runs on the default chat model.
 - **Pick specialists for delegated work.** The assistant may delegate without
   naming a specialist, and `specialist-picker` chooses one from their
-  descriptions. If none clearly fits, the assistant is asked to name one.
+  descriptions. Nothing runs on that call: the assistant delegates again with
+  the name, so when a delegation needs your approval (on a spoken turn, say)
+  the prompt shows which specialist will run. If none clearly fits, the
+  assistant is asked to name one.
 
 A specialist that acts unattended (Settings marks it) is left out of both. It
 is never picked, so it runs only when the assistant names it, and never

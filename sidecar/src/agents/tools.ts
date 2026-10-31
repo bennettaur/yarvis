@@ -29,6 +29,9 @@ const DELEGATE_TIMEOUT_MS = 120_000;
  */
 const MAX_DELEGATIONS_PER_TURN = 3;
 
+/** Picks one turn may ask for, so a model that keeps leaving the name out can't call the decision model without end. */
+const MAX_PICKS_PER_TURN = 3;
+
 /**
  * The picker's answer when no specialist fits. `NAME_PATTERN` in `catalog.ts`
  * forbids a leading `_`, so it can't collide with a specialist's name.
@@ -71,10 +74,12 @@ export async function pickSpecialist(
   return answer.choice;
 }
 
-export function buildDelegationTools(db: Db, config: Config) {
-  // Per-toolset, and a toolset is built once per turn, so this counts
-  // delegations within the turn that owns it.
+/** @param fetchImpl Injected by tests in place of the decision model's network. */
+export function buildDelegationTools(db: Db, config: Config, fetchImpl?: typeof fetch) {
+  // Per-toolset, and a toolset is built once per turn, so these count within
+  // the turn that owns it.
   let delegations = 0;
+  let picks = 0;
 
   return {
     list_specialists: tool({
@@ -113,7 +118,7 @@ export function buildDelegationTools(db: Db, config: Config) {
           .max(64)
           .optional()
           .describe(
-            "Name of the specialist (from list_specialists). Leave it out to have one picked for the task; one that acts unattended is only run when named. If none is picked, you are asked to name one.",
+            "Name of the specialist (from list_specialists). Leave it out to have one suggested for the task instead of running anything; then delegate again with that name. One that acts unattended is never suggested.",
           ),
         task: z
           .string()
@@ -127,26 +132,39 @@ export function buildDelegationTools(db: Db, config: Config) {
           .describe("Reference text it should work from, if any"),
       }),
       execute: async ({ specialist, task, material }, { abortSignal }) => {
+        // A call with no name only suggests one. Running it takes a second call
+        // that names it, so an approval prompt on this tool always shows which
+        // specialist will run.
+        if (!specialist) {
+          if (picks >= MAX_PICKS_PER_TURN) {
+            return {
+              error: `already asked for ${picks} suggestions this turn; call list_specialists and delegate with a specialist name`,
+            };
+          }
+          picks += 1;
+          const picked = await pickSpecialist(config, task, { signal: abortSignal, fetchImpl });
+          if (!picked) {
+            return {
+              error:
+                "No specialist was picked for this task. Call list_specialists and delegate again with a specialist name.",
+            };
+          }
+          return {
+            suggested: picked,
+            note: `Nothing has run yet. To run it, call delegate again with specialist "${picked}" and the same task.`,
+          };
+        }
         if (delegations >= MAX_DELEGATIONS_PER_TURN) {
           return {
             error: `already delegated ${delegations} times this turn; work with what you have or ask the user`,
           };
         }
-        // Counted before picking, so a model that keeps leaving the name out
-        // can't make unlimited decision-model calls in one turn.
         delegations += 1;
-        const name = specialist ?? (await pickSpecialist(config, task, { signal: abortSignal }));
-        if (!name) {
-          return {
-            error:
-              "No specialist was picked for this task. Call list_specialists and delegate again with a specialist name.",
-          };
-        }
         try {
           const run = await runSpecialist({
             config,
             db,
-            name,
+            name: specialist,
             task,
             material,
             signal: AbortSignal.timeout(DELEGATE_TIMEOUT_MS),
