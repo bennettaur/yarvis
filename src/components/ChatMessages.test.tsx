@@ -1,9 +1,36 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { type ComponentProps, createElement } from "react";
-import { renderToHtml, textOf } from "../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../test/render";
 import ChatMessages from "./ChatMessages";
 
 const EMPTY_HINT = "Start a conversation.";
+
+let cleanup: (() => void) | null = null;
+afterEach(() => {
+  cleanup?.();
+  cleanup = null;
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+/** Finds a button by its visible text or its screen-reader label. */
+function button(host: HTMLElement, name: string): HTMLButtonElement | undefined {
+  return Array.from(host.querySelectorAll("button")).find((b) => b.textContent === name);
+}
+
+async function mount(props: Partial<ComponentProps<typeof ChatMessages>>) {
+  const mounted = await mountForInteraction(
+    createElement(ChatMessages, {
+      messages: [],
+      streaming: "",
+      busy: false,
+      emptyHint: EMPTY_HINT,
+      ...props,
+    }),
+  );
+  cleanup = mounted.unmount;
+  return mounted.host;
+}
 
 function render(props: Partial<ComponentProps<typeof ChatMessages>>) {
   return renderToHtml(
@@ -99,6 +126,17 @@ describe("ChatMessages", () => {
     expect(html).toContain("Thinking…");
   });
 
+  it("drops the waiting indicator once reasoning or tool calls arrive", async () => {
+    // The reasoning trigger says "Thinking…" too, so one match means the indicator is gone.
+    const reasoning = await render({ busy: true, thinking: "weighing it up" });
+    expect(textOf(reasoning).match(/Thinking…/g)).toHaveLength(1);
+    const tools = await render({
+      busy: true,
+      activity: [{ id: "c1", name: "search_pages", status: "pending" as const }],
+    });
+    expect(textOf(tools)).not.toContain("Thinking…");
+  });
+
   it("labels Telegram-relayed messages by sender", async () => {
     const html = await render({
       messages: [
@@ -116,6 +154,9 @@ describe("ChatMessages", () => {
   it("shows the empty hint until there is something to render", async () => {
     const html = await render({});
     expect(html).toContain(EMPTY_HINT);
+    expect(await render({ messages: [{ role: "user", content: "hello" }] })).not.toContain(
+      EMPTY_HINT,
+    );
   });
 
   it("offers Resend and Edit on persisted user messages when the thread can rewind", async () => {
@@ -126,10 +167,60 @@ describe("ChatMessages", () => {
       ],
       onRewind: () => {},
     });
-    expect(html).toContain(">Resend</button>");
-    expect(html).toContain(">Edit</button>");
+    expect(html).toContain(">Resend</span>");
+    expect(html).toContain(">Edit</span>");
     // Only the one user message gets them.
     expect(html.match(/>Resend</g)).toHaveLength(1);
+  });
+
+  it("resends a user message as it was", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Resend")?.click();
+    expect(rewound).toEqual([["m1", "hello"]]);
+  });
+
+  it("resends a user message as edited, and not while the edit is blank", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Edit")?.click();
+    await settle();
+    const box = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]');
+    expect(box?.value).toBe("hello");
+
+    const type = async (text: string) => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setValue?.call(box, text);
+      box?.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+    };
+    await type("  ");
+    expect(button(host, "Save & resend")?.disabled).toBe(true);
+
+    await type("hello there");
+    button(host, "Save & resend")?.click();
+    expect(rewound).toEqual([["m1", "hello there"]]);
+  });
+
+  it("puts the message back unchanged when the edit is cancelled", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Edit")?.click();
+    await settle();
+    button(host, "Cancel")?.click();
+    await settle();
+    expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull();
+    expect(host.textContent).toContain("hello");
+    expect(rewound).toEqual([]);
   });
 
   it("hides the rewind controls without a handler, without an id, or while busy", async () => {
@@ -163,7 +254,7 @@ describe("ChatMessages", () => {
       ],
     });
     expect(textOf(html)).toContain("Used 1 tool call");
-    expect(html).toContain("border-violet-500");
-    expect(html).toContain("bg-sky-950");
+    expect(html).toContain("is-assistant");
+    expect(html).toContain("is-user");
   });
 });

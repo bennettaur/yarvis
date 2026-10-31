@@ -1,4 +1,11 @@
-import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
+import { type ReactNode, type Ref, useEffect, useImperativeHandle, useRef } from "react";
+import {
+  PromptInput,
+  PromptInputFooter,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+} from "./ai-elements/prompt-input";
 
 /** Tallest the textarea grows before it starts scrolling internally (px). */
 const DEFAULT_MAX_HEIGHT = 160;
@@ -17,7 +24,8 @@ export default function ChatComposer({
   placeholder,
   submitLabel,
   onStop,
-  className = "flex gap-2",
+  tools,
+  className = "",
   textareaClassName = "",
   maxHeight = DEFAULT_MAX_HEIGHT,
   inputRef,
@@ -34,6 +42,9 @@ export default function ChatComposer({
   onStop?: () => void;
   placeholder?: string;
   submitLabel: string;
+  /** Controls for the toolbar under the textarea, such as the model picker. */
+  tools?: ReactNode;
+  /** Extra classes for the wrapper, e.g. padding or a divider from what sits above. */
   className?: string;
   /**
    * Extra classes for the textarea, e.g. a `min-h-*` to start taller. A
@@ -70,41 +81,45 @@ export default function ChatComposer({
 
   return (
     <div className={className}>
-      <textarea
-        ref={ref}
-        rows={1}
-        value={value}
-        placeholder={placeholder}
-        title="Enter sends, Shift+Enter inserts a newline."
-        disabled={busy}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            onSubmit();
-          }
-        }}
-        className={`flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:opacity-50 ${textareaClassName}`}
-      />
-      {busy && onStop ? (
-        <button
-          type="button"
-          onClick={onStop}
-          title="Cancel the reply in progress."
-          className="h-fit self-end rounded-md border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800"
-        >
-          Stop
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onSubmit}
+      <PromptInput>
+        <PromptInputTextarea
+          ref={ref}
+          rows={1}
+          value={value}
+          placeholder={placeholder}
+          title="Enter sends, Shift+Enter inserts a newline."
           disabled={busy}
-          className="h-fit self-end rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {busy ? "…" : submitLabel}
-        </button>
-      )}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          className={textareaClassName}
+        />
+        <PromptInputFooter>
+          <PromptInputTools>{tools}</PromptInputTools>
+          {busy && onStop ? (
+            <PromptInputSubmit
+              status="streaming"
+              variant="outline"
+              onClick={onStop}
+              title="Cancel the reply in progress."
+            >
+              Stop
+            </PromptInputSubmit>
+          ) : (
+            <PromptInputSubmit
+              status={busy ? "submitted" : "ready"}
+              onClick={onSubmit}
+              disabled={busy}
+            >
+              {submitLabel}
+            </PromptInputSubmit>
+          )}
+        </PromptInputFooter>
+      </PromptInput>
     </div>
   );
 }
