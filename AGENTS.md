@@ -660,7 +660,10 @@ back to ad-hoc.
   `--tools` leaves the run only the file tools: no Bash, since the sandbox's
   read deny list was written for PR checkouts and leaves most of the home
   folder readable. The canary checks the run can't read, list, search or
-  write outside its folder. What the run writes back is fenced
+  write outside its folder. Its prompt leads with `TASK_RUN_GUARDRAIL` rather
+  than the checkout guardrail, since there is no code to analyse; it still
+  treats quoted material as data and publishes nothing. What the run writes
+  back is fenced
   before the chat model reads it, and the file list is the model's claim, so
   `filesInFolder` keeps only files that really are inside the folder.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a

@@ -19,6 +19,7 @@ import {
   type RunActivity,
   spotlight,
   startClaudeRun,
+  TASK_RUN_GUARDRAIL,
 } from "./service.ts";
 import {
   FIXTURES,
@@ -171,6 +172,11 @@ describe("the arguments a run is started with", () => {
     expect(value("--agent")).toBe("yarvis-review:rereviewer");
     expect(value("--append-system-prompt")).toBe(`${RUN_GUARDRAIL}\n\nBe brief.`);
     expect(JSON.parse(value("--json-schema") ?? "").properties.count.type).toBe("number");
+  });
+
+  it("leads a task run's prompt with the task guardrail, not the checkout one", () => {
+    const args = buildClaudeArgs(runOptions(dir, { guardrail: "task" }), []);
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe(TASK_RUN_GUARDRAIL);
   });
 
   it("sends a schema Claude Code accepts: zod's input shape, without the draft it names", () => {

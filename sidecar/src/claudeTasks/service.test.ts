@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { startClaudeRun } from "../agentRuns/service.ts";
+import { startClaudeRun, TASK_RUN_GUARDRAIL } from "../agentRuns/service.ts";
 import { fakeClaude, makeTempDir, resultLine, runOptions } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
@@ -137,6 +137,7 @@ describe("startClaudeTask", () => {
     expect(args).toContain("--restricted");
     expect(after("--permission-prompts")).toBe("none");
     expect(after("--max-budget-usd")).toBe("5");
+    expect(after("--append-system-prompt")?.startsWith(TASK_RUN_GUARDRAIL)).toBe(true);
     // The task goes in on stdin, not argv.
     expect(args).not.toContain("SECRET-TASK-TEXT");
   });
