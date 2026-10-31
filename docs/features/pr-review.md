@@ -302,6 +302,8 @@ it.
 - It is worked out from base and head branch names through the API, not from
   `gh stack`. That means it works for anyone's PR, and finds stacks built by
   hand as well as by the CLI.
+- Only PRs from branches in the same repo count as layers. A fork's PR whose
+  branch happens to share a layer's name is left out.
 - A layer whose branch no longer contains the tip of the one below it is
   flagged **needs restack**.
 - The walk stops after ten layers in each direction. A `+` on the count says

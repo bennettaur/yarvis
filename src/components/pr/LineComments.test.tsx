@@ -1,9 +1,10 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import * as sidecar from "../../lib/api";
 import type { DiffSide, NewComment, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
+import { resetPrComments, stubPrComments } from "../../test/prCommentsApi";
 import { mountForInteraction } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import { LineCommentBlock, type LineComments, useLineComments } from "./LineComments";
@@ -22,14 +23,6 @@ const record = async (comment: NewComment) => {
 let post: (comment: NewComment) => Promise<{ ok: boolean }> = record;
 /** The status the sidecar answers thread writes with. */
 let threadWriteStatus = 200;
-
-// mock.module is process-global in bun, so keep the module's other exports
-// intact — anything else loading this module in the same run gets this object.
-const actual = await import("../../lib/pr/api");
-mock.module("../../lib/pr/api", () => ({
-  ...actual,
-  postPrComment: (_ref: PrRef, comment: NewComment) => post(comment),
-}));
 
 // Thread writes are stubbed one layer down, with a spy that ends with this
 // file, so the real reply/resolve dispatch stays in place for other tests.
@@ -104,11 +97,13 @@ beforeEach(() => {
   threadWrites.length = 0;
   post = record;
   threadWriteStatus = 200;
+  stubPrComments({ postPrComment: (_ref, comment) => post(comment) });
   view = mount(4);
 });
 
 afterEach(() => {
   view.dispose();
+  resetPrComments();
 });
 
 /** Mounts against no threads and posts one comment on line 4. */

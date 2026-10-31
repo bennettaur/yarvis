@@ -10,6 +10,12 @@ describe("reduceProgress", () => {
   it("starts with every check waiting", () => {
     expect(initialProgress().checks.every((c) => c.state === "waiting")).toBe(true);
     expect(initialProgress().checks).toHaveLength(9);
+    // Only the summary and the picked sections' agents run.
+    expect(initialProgress(["tests", "flow"]).checks.map((c) => c.agent)).toEqual([
+      "change-summary",
+      "test-reviewer",
+      "flow-diagram",
+    ]);
   });
 
   it("follows each check from its subagent's start and stop", () => {

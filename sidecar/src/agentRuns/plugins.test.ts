@@ -40,7 +40,7 @@ describe("writing out a shipped plugin", () => {
         .sort();
       expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
-      expect(agents).toHaveLength(10);
+      expect(agents).toHaveLength(11);
       for (const path of sourceFiles) {
         const shipped = readFileSync(join(copy.dir, path), "utf8");
         const original = readFileSync(join(source, path), "utf8");
