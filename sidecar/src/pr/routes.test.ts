@@ -67,6 +67,17 @@ describe("GET /api/pr/guide", () => {
     const body = (await res.json()) as any;
     expect(body.guide).toMatchObject({ headSha: "a".repeat(40), currentStep: 0 });
     expect(body.guide.steps).toHaveLength(2);
+    expect(body.guide.graph).toBeNull();
+  });
+
+  it("returns the guide's graph for the flow diagram", async () => {
+    const graph = {
+      nodes: [{ id: "route", kind: "endpoint", file: "a.ts", changed: true }],
+      edges: [],
+    };
+    await saveGuide(db, { ref, headSha: "a".repeat(40), steps, graph });
+    const res = await app.request(`/api/pr/guide?${refQuery}`, { headers: auth });
+    expect(((await res.json()) as any).guide.graph).toEqual(graph);
   });
 
   // Without a configured provider the head can't be checked, and a guide that

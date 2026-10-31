@@ -9,13 +9,14 @@ import {
   tool,
 } from "ai";
 import { z } from "zod";
-import type { PrGuideFindingKind, PrGuideStep } from "../db/schema.ts";
+import type { PrGuideFindingKind, PrGuideGraph, PrGuideStep } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { type OllamaMessage, ollamaChat } from "../llm/ollamaChat.ts";
 import type { OllamaChatTarget } from "../llm/providers.ts";
 import { buildPrCodeTools, noTraversal } from "./codeTools.ts";
-import { newCodeGraph } from "./graph.ts";
+import { type CodeGraph, changedLineRanges, type LineRange, newCodeGraph } from "./graph.ts";
 import type { PrCodeSource } from "./source.ts";
+import type { PrFile } from "./types.ts";
 
 /**
  * Generates a reading order for a pull request.
@@ -255,6 +256,9 @@ function systemPrompt(): string {
     "Work from the outside in: begin at the outermost entry point the change touches — an HTTP route, a CLI command, a UI event, a scheduled job — and follow the flow inward through the code it calls, ending at whatever it finally persists or returns.",
     "Explore before you order. Use list_changed_files to see the whole surface, read_diff for what actually changed in a file, read_file to see the code around a change or the definition of something it calls, and search_code to find who else calls what moved.",
     "Record what you learn with record_node and record_edge as you go, then use query_graph to find the entry points. That graph is what the ordering comes from — do not try to hold the chain in your head.",
+    // The graph is also drawn for the reviewer as the change's flow diagram,
+    // which is only useful if it shows where the change sits, not just itself.
+    "The graph is also shown to the reviewer as a diagram of the flow. Record the unchanged code the change is called from and calls into as well, with its file and lines, so the diagram shows the path a request takes through the change and not only the changed files.",
     "A step should point at the specific lines that matter, not a whole file, unless the file is new and short.",
     "Explain why a step comes where it does, not merely what the code says. A reviewer can read the code; what they cannot see is how it connects.",
     "Put anything longer — a caller you found elsewhere, a constraint from another file, a reason the change is shaped this way — in the step's context rather than its explanation.",
@@ -741,6 +745,45 @@ export interface GenerateTourOptions {
 export interface GenerateTourResult {
   steps: PrGuideStep[];
   headSha: string;
+  /** What the agent recorded while exploring; null when no edges survive, which draws nothing worth showing. */
+  graph: PrGuideGraph | null;
+}
+
+const DIFF_READS_AT_ONCE = 5;
+
+/**
+ * The lines each changed file's diff touches, for the files the graph's nodes
+ * name. Only those patches are read, since Azure fetches each one on demand.
+ * A patch that can't be read leaves its file out, so nothing in it is marked
+ * changed rather than everything.
+ */
+async function diffLinesForGraph(
+  graph: CodeGraph,
+  files: PrFile[],
+  source: PrCodeSource,
+): Promise<Map<string, LineRange[]>> {
+  const named = new Set(graph.nodes().flatMap((n) => (n.file ? [n.file] : [])));
+  const wanted = files.filter((f) => named.has(f.filename));
+  const lines = new Map<string, LineRange[]>();
+  // A few at a time: on Azure each read is two file fetches, and the model
+  // decides how many files its nodes name.
+  for (let i = 0; i < wanted.length; i += DIFF_READS_AT_ONCE) {
+    await Promise.all(
+      wanted.slice(i, i + DIFF_READS_AT_ONCE).map(async (f) => {
+        const patch =
+          f.patch ??
+          (await source.fileDiff(f.filename).then(
+            (d) => d.patch,
+            (e) => {
+              console.error("[pr] diagram diff read failed:", describeError(e));
+              return null;
+            },
+          ));
+        if (patch) lines.set(f.filename, changedLineRanges(patch));
+      }),
+    );
+  }
+  return lines;
 }
 
 /**
@@ -756,7 +799,8 @@ export async function generateTour(
   const detail = await source.detail();
   const graph = newCodeGraph();
   const sink: TourSink = { steps: null };
-  const changed = new Set((await source.files()).map((f) => f.filename));
+  const files = await source.files();
+  const changed = new Set(files.map((f) => f.filename));
 
   // The PR's own title and description are the author's framing of the change,
   // and knowing where they were headed makes for a far better ordering than
@@ -794,7 +838,13 @@ export async function generateTour(
     return null;
   });
 
-  if (sink.steps) return { steps: sink.steps, headSha: detail.headSha };
+  const toResult = async (steps: PrGuideStep[]): Promise<GenerateTourResult> => {
+    // Checked after the snapshot: cutting it to size can drop every edge.
+    const snapshot = graph.snapshot(await diffLinesForGraph(graph, files, source));
+    return { steps, headSha: detail.headSha, graph: snapshot.edges.length ? snapshot : null };
+  };
+
+  if (sink.steps) return toResult(sink.steps);
   // A failed run without a tour rethrew above, so this one returned normally.
   const explored = result as NonNullable<typeof result>;
   let miss = classifyMiss(explored);
@@ -829,7 +879,7 @@ export async function generateTour(
       console.error("[pr] tour submission model error:", describeError(e));
       throw new Error(clientError(e));
     });
-    if ("steps" in next) return { steps: next.steps, headSha: detail.headSha };
+    if ("steps" in next) return toResult(next.steps);
     miss = next.miss;
     conversation = [...conversation, ...next.messages];
     console.error("[pr] tour submission attempt failed:", JSON.stringify({ ask, miss }));

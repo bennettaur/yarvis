@@ -1,0 +1,41 @@
+import "@excalidraw/excalidraw/index.css";
+import { convertToExcalidrawElements, Excalidraw } from "@excalidraw/excalidraw";
+import { useMemo } from "react";
+import {
+  LABEL_FONT_FAMILY,
+  type PrGuideGraph,
+  toExcalidrawSkeleton,
+} from "../../lib/pr/flowDiagram";
+
+/**
+ * The guide's code graph drawn in Excalidraw. Loaded lazily by
+ * `PrFlowDiagramSection`: Excalidraw is a large bundle, and most reviews never
+ * open the diagram.
+ *
+ * Edits stay in this view. The diagram is drawn fresh from the stored graph
+ * each time it opens, so rearranging boxes is a way to read it, not a change to
+ * save.
+ */
+export default function PrFlowDiagram({ graph }: { graph: PrGuideGraph }) {
+  const initialData = useMemo(
+    () => ({
+      elements: convertToExcalidrawElements(toExcalidrawSkeleton(graph)),
+      // Text the reader adds uses the same system font, so nothing is fetched.
+      appState: { viewBackgroundColor: "transparent", currentItemFontFamily: LABEL_FONT_FAMILY },
+    }),
+    [graph],
+  );
+  return (
+    <div className="h-[480px] overflow-hidden rounded border border-zinc-800">
+      <Excalidraw
+        initialData={initialData}
+        theme="dark"
+        // Zoomed to fit, so a wide graph opens whole rather than cut off at 100%.
+        excalidrawAPI={(api) =>
+          requestAnimationFrame(() => api.scrollToContent(undefined, { fitToContent: true }))
+        }
+        UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false } }}
+      />
+    </div>
+  );
+}

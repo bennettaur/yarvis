@@ -169,6 +169,115 @@ describe("generateTour", () => {
     expect((await generateTour(model, fakeSource())).headSha).toBe("a".repeat(40));
   });
 
+  // Only src/api.ts's lines 10-11 change; the rest of the file is untouched.
+  const diffSource = () =>
+    fakeSource({
+      files: async () =>
+        changedFiles.map((filename) => ({ filename, patch: null }) as unknown as PrFile),
+      fileDiff: async (path) =>
+        ({
+          filename: path,
+          patch: path === "src/api.ts" ? "@@ -10,1 +10,2 @@\n-old\n+new\n+more" : null,
+        }) as PrFile,
+    });
+
+  const recordingModel = (...nodes: object[]) =>
+    scriptedModel(
+      {
+        finishReason: finished("tool-calls"),
+        content: [
+          ...nodes.map((node, i) => ({
+            type: "tool-call" as const,
+            toolCallId: `n${i}`,
+            toolName: "record_node",
+            input: JSON.stringify(node),
+          })),
+          {
+            type: "tool-call",
+            toolCallId: "e",
+            toolName: "record_edge",
+            input: JSON.stringify({ from: "route", to: "store", kind: "calls" }),
+          },
+        ],
+      },
+      submits({ steps: [step("src/api.ts")] }),
+    );
+
+  it("returns the graph the agent recorded, for the guide's diagram", async () => {
+    const { model } = recordingModel({
+      id: "route",
+      kind: "endpoint",
+      file: "src/api.ts",
+      line: 10,
+    });
+    const { graph } = await generateTour(model, diffSource());
+    expect(graph).toEqual({
+      nodes: [
+        { id: "route", kind: "endpoint", file: "src/api.ts", line: 10, changed: true },
+        { id: "store", kind: "unknown", changed: false },
+      ],
+      edges: [{ from: "route", to: "store", kind: "calls" }],
+    });
+  });
+
+  // The model's output is shaped by the pull request's text, so naming a
+  // changed file, or claiming a change, must not be enough to be highlighted.
+  it("does not mark a node changed when it names a changed file but misses the diff", async () => {
+    const { model } = recordingModel(
+      { id: "route", kind: "endpoint", file: "src/api.ts", line: 40, changed: true },
+      { id: "store", kind: "function", file: "src/made-up.ts", line: 10, changed: true },
+    );
+    const { graph } = await generateTour(model, diffSource());
+    expect(graph?.nodes.map((n) => [n.id, n.changed])).toEqual([
+      ["route", false],
+      ["store", false],
+    ]);
+  });
+
+  // A missing patch must not read as "the whole file changed", and a failed
+  // read must not throw away a tour the model already submitted.
+  it("marks nothing in a file whose patch can't be read, and still returns the tour", async () => {
+    for (const fileDiff of [
+      async () => {
+        throw new Error("azure fell over");
+      },
+      async (path: string) => ({ filename: path, patch: null }) as PrFile,
+    ]) {
+      const { model } = recordingModel({
+        id: "route",
+        kind: "endpoint",
+        file: "src/api.ts",
+        line: 10,
+      });
+      const result = await generateTour(model, { ...diffSource(), fileDiff });
+      expect(result.steps).toHaveLength(1);
+      expect(result.graph?.nodes[0]).toMatchObject({ id: "route", changed: false });
+    }
+  });
+
+  it("uses the patch the file listing already carries", async () => {
+    const { model } = recordingModel({
+      id: "route",
+      kind: "endpoint",
+      file: "src/api.ts",
+      line: 10,
+    });
+    const source = fakeSource({
+      files: async () => [{ filename: "src/api.ts", patch: "@@ -10,1 +10,1 @@\n-a\n+b" } as PrFile],
+      fileDiff: async () => {
+        throw new Error("the listing's patch should have been used");
+      },
+    });
+    expect((await generateTour(model, source)).graph?.nodes[0]?.changed).toBe(true);
+  });
+
+  // Loose nodes with nothing joining them draw as a scatter of boxes, which
+  // says nothing about the flow.
+  it("returns no graph when the agent recorded no edges", async () => {
+    const { model } = submittingModel(() => [step("a.ts")]);
+    expect((await generateTour(model, fakeSource())).graph).toBeNull();
+  });
+
   it("reports a run that never submitted rather than storing nothing", async () => {
     const { model, seen } = scriptedModel(saysNothing);
     await expect(generateTour(model, fakeSource())).rejects.toThrow(

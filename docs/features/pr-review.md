@@ -170,6 +170,39 @@ A guide is made once per PR. It is kept until you approve, request changes, or
 merge. Pushing new commits marks it out of date rather than deleting it. A
 guide nobody has touched for 30 days is deleted.
 
+### See the flow diagram
+
+While it builds a guide, the agent writes down how the code fits together:
+which handler calls which function, which function writes which table. That
+record is kept with the guide and drawn as a **Flow diagram** section above
+**Files**.
+
+1. Generate a guided review, as above. The section appears once the guide is
+   ready. It costs nothing extra: the diagram comes from the same agent run.
+2. Open the section. The diagram loads in [Excalidraw](https://excalidraw.com),
+   reading left to right from the outermost entry point inward.
+3. Pan, zoom and drag boxes to read it. Changes you make aren't saved; the
+   diagram is drawn fresh each time you open it.
+
+Solid blue boxes are code this PR changes. Dashed grey boxes are the code
+around it that the agent followed, such as the caller of a changed function or
+the table it writes to. So the diagram shows where the change sits in the
+flow, not only the files it touches.
+
+Some limits:
+
+- The diagram shows at most 60 pieces of code, the changed ones first.
+- A box counts as changed only when the file and lines it names overlap lines
+  the PR adds or removes. Naming a changed file is not enough, so a box with no
+  file or no line is always shown as surrounding code. The lines are still the
+  agent's reading, so a highlighted box sits on a real change but its name may
+  not describe it.
+- The agent draws the diagram from the PR's own code, which its author wrote.
+  Treat the box names and labels as the agent's reading, not as fact.
+- If the agent recorded no connections, there is no diagram. Regenerating the
+  guide may give one.
+- The diagram goes out of date with its guide when new commits are pushed.
+
 ### Ask about a line
 
 1. Hover a line in the diff and press the **?** beside it.

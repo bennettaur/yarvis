@@ -1,6 +1,12 @@
 import { desc, eq, lt } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { type NewPrGuideRow, type PrGuideRow, type PrGuideStep, prGuides } from "../db/schema.ts";
+import {
+  type NewPrGuideRow,
+  type PrGuideGraph,
+  type PrGuideRow,
+  type PrGuideStep,
+  prGuides,
+} from "../db/schema.ts";
 import { type PrRef, refKey } from "./types.ts";
 
 /**
@@ -21,6 +27,7 @@ export interface SaveGuideInput {
   ref: PrRef;
   headSha: string;
   steps: PrGuideStep[];
+  graph?: PrGuideGraph | null;
   title?: string | null;
   url?: string | null;
 }
@@ -46,6 +53,7 @@ export async function saveGuide(db: Db, input: SaveGuideInput): Promise<PrGuideR
     url: input.url ?? null,
     headSha: input.headSha,
     steps: input.steps,
+    graph: input.graph ?? null,
     currentStep: 0,
   };
   const [row] = await db
@@ -59,6 +67,7 @@ export async function saveGuide(db: Db, input: SaveGuideInput): Promise<PrGuideR
         url: values.url,
         headSha: values.headSha,
         steps: values.steps,
+        graph: values.graph,
         // A new guide is a new reading order, so progress through the old one
         // no longer points anywhere meaningful.
         currentStep: 0,
