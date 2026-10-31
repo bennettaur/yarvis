@@ -83,6 +83,16 @@ describe("finalVerdict", () => {
     expect(finalVerdict(finding("blocker"), makeFacts()).verdict).toBe("human");
   });
 
+  it("keeps a PR with an open minor finding off auto", () => {
+    const review = makeReview({
+      findings: [{ severity: "minor", title: "Stale comment", detail: "…" }],
+    });
+    expect(finalVerdict(review, makeFacts())).toEqual({
+      verdict: "agent",
+      why: ["minor finding"],
+    });
+  });
+
   it("needs an agent for a concern and a human for a failed check", () => {
     const withSecurity = (status: "concern" | "fail") =>
       makeReview({ dimensions: { ...makeReview().dimensions, security: { status, note: "XSS" } } });
@@ -198,7 +208,17 @@ describe("renderReport", () => {
     const details = body.split("<details>")[1];
     // Numeric order, so line 9 comes before line 10.
     expect(details.indexOf("src/a.ts:9 ")).toBeLessThan(details.indexOf("src/a.ts:10 "));
+    expect(details).toContain("Add or tighten a test");
     expect(data.flagged).toContain("mutation");
+  });
+
+  it("says what to do with new tests that pass without the change", () => {
+    const facts = makeFacts({
+      baseline: { detecting: 1, notDetecting: ["src/a.test.ts > renders"], failingOnHead: [] },
+    });
+    const details = renderReport(makeReview(), facts, TARGET).body.split("<details>")[1];
+    expect(details).toContain("**New or changed tests that pass without the change**");
+    expect(details).toContain("make each one check the new behavior");
   });
 
   it("says nothing about mutation when no mutant ran", () => {
