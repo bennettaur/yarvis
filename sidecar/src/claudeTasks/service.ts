@@ -50,18 +50,26 @@ const MAX_LISTED_FILES = 20;
 const MAX_DESCRIPTION_CHARS = 300;
 
 /**
- * Bash is left out: the sandbox limits where it writes but lets it read almost
- * anything, and a task that is offline and self-contained has no need of it.
- * Reads are allowed inside the folder only, and Glob and Grep follow the same
- * rule. Write and Edit come from `acceptEdits`, which approves them inside the
- * folder; anywhere else would need a prompt nobody can answer, so it is denied.
- * Subagents are denied so the run's limits hold for everything it does.
+ * The run gets the file tools and nothing else: no shell, since the sandbox
+ * limits where Bash writes but lets it read almost anything, no network, and
+ * no subagents, so the run's limits hold for everything it does. `restricted`
+ * keeps every file tool inside the folder and refuses writes to settings and
+ * tool-configuration files, which a later session opened there would load.
+ * Writes come from `acceptEdits`, which approves them inside the folder.
  */
-function allowedTools(outputDir: string): string[] {
-  // `//` marks an absolute path in a permission rule.
-  return [`Read(/${outputDir}/**)`, "TodoWrite"];
+const TASK_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"];
+
+/** How a task's run is launched, shared with `agentRuns/canary.ts` so it checks what ships. */
+export function taskRunPolicy(outputDir: string) {
+  return {
+    cwd: outputDir,
+    tools: TASK_TOOLS,
+    restricted: true,
+    permissionMode: "acceptEdits" as const,
+    // `//` marks an absolute path in a permission rule.
+    allowedTools: [`Read(/${outputDir}/**)`, "TodoWrite"],
+  };
 }
-const DISALLOWED_TOOLS = ["Bash", "WebFetch", "WebSearch", "NotebookEdit", "Agent", "Task"];
 
 const SYSTEM_PROMPT = [
   "You were handed a self-contained task by Yarvis, the user's personal assistant.",
@@ -151,14 +159,11 @@ export async function startClaudeTask(
       db,
       {
         kind: CLAUDE_TASK_RUN_KIND,
+        ...taskRunPolicy(outputDir),
         targetKey: outputDir,
-        cwd: outputDir,
         prompt,
         outputSchema: answerSchema,
         finishOutput: (answer) => ({ ...answer, files: filesInFolder(outputDir, answer.files) }),
-        allowedTools: allowedTools(outputDir),
-        disallowedTools: DISALLOWED_TOOLS,
-        permissionMode: "acceptEdits",
         appendSystemPrompt: SYSTEM_PROMPT,
         maxBudgetUsd: MAX_BUDGET_USD,
         maxTurns: MAX_TURNS,

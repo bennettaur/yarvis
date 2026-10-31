@@ -59,6 +59,8 @@ type FinishStep<T, R> = [T] extends [R]
  *   run outside it.
  * - The permission mode is always set and never one that approves on its own:
  *   with nobody to answer a prompt, a tool the run wasn't granted is denied.
+ *   The exception is `acceptEdits`, which a caller may use only with
+ *   `restricted`, so the edits it approves stay inside the working folder.
  * - A spend and turn ceiling is mandatory.
  * - The prompt goes in on stdin, so it never shows in `ps` and a prompt
  *   starting with `-` can't be read as a flag.
@@ -117,6 +119,15 @@ interface ClaudeRunBaseOptions<T> {
   /** Tools the run may use; anything else is denied, since nobody can answer a prompt. */
   allowedTools: string[];
   disallowedTools?: string[];
+  /** The only built-in tools the run has at all (`--tools`); omit for Claude Code's default set. */
+  tools?: string[];
+  /**
+   * `--restricted` with `--permission-prompts none`: the file tools work only
+   * inside the working directories, writes to settings, git and
+   * tool-configuration files are refused, and anything that would prompt is
+   * denied. For a run whose permission mode approves edits on its own.
+   */
+  restricted?: boolean;
   /** Defaults to `dontAsk`. */
   permissionMode?: AgentRunPermissionMode;
   /** Added after the fixed guardrail. */
@@ -334,6 +345,8 @@ export function buildClaudeArgs<T, R>(
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));
+  if (options.tools) args.push("--tools", options.tools.join(","));
+  if (options.restricted) args.push("--restricted", "--permission-prompts", "none");
   if (options.allowedTools.length > 0) args.push("--allowedTools", ...options.allowedTools);
   if (options.disallowedTools && options.disallowedTools.length > 0) {
     args.push("--disallowedTools", ...options.disallowedTools);
@@ -368,6 +381,9 @@ export async function startClaudeRun<T, R = T>(
   const registry = deps.registry ?? agentRunRegistry;
   if (options.permissionMode && REFUSED_PERMISSION_MODES.has(options.permissionMode)) {
     throw new Error(`permission mode "${options.permissionMode}" is not allowed for agent runs`);
+  }
+  if (options.permissionMode === "acceptEdits" && !options.restricted) {
+    throw new Error("an acceptEdits run must be restricted to its working folder");
   }
   if (!(options.maxBudgetUsd > 0)) throw new Error("an agent run needs a positive maxBudgetUsd");
   const cwd = validateWorkingDir(options.cwd);
