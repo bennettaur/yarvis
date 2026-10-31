@@ -11,8 +11,8 @@ comment the change made wrong.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch of source and test code: not docs, generated code,
-lockfiles or vendored code.
+Read every patch in your group. Your findings are about the comments in
+source and test code.
 
 ## What counts
 
