@@ -161,6 +161,8 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  poll lands per refresh while still being cheap (one local SQL read). */
 const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
+const listWithBadges = () => listWorkspaces({ showingBadges: true });
+
 const REPOS_KEY = "workspaces:repos";
 
 /** Stable identities so an unloaded resource doesn't re-render the list. */
@@ -209,7 +211,7 @@ export default function WorkspacesPanel({
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
   );
 
-  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWorkspaces);
+  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWithBadges);
   const reposRes = useCachedResource<Repo[]>(REPOS_KEY, listRepos);
   const items = listRes.data ?? NO_WORKSPACES;
   const repos = reposRes.data ?? NO_REPOS;
@@ -290,7 +292,7 @@ export default function WorkspacesPanel({
     const tick = async () => {
       timer = null;
       try {
-        const ws = await listWorkspaces();
+        const ws = await listWithBadges();
         // Written into the cache rather than into local state so the badges the
         // poller earned survive the next tab switch along with the list itself.
         if (live) primeCache(WORKSPACES_KEY, ws);
@@ -906,7 +908,7 @@ function WorkspaceDetailView({
   const load = useCallback(async () => {
     const gen = generationRef.current;
     try {
-      const next = await getWorkspace(id);
+      const next = await getWorkspace(id, { viewing: true });
       if (gen !== generationRef.current) return;
       setDetail(next);
       setError(null);

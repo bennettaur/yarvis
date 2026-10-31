@@ -9,8 +9,8 @@
  * Each refresh costs up to three provider requests per repo, so only repos the
  * user is looking at are refreshed: the workspace routes record which reads
  * the UI made, and a workspace nobody has read lately keeps its last cached row.
- * Views are held in this process, so a named instance's UI, whose reads reach
- * its own sidecar, doesn't drive the main instance's poller.
+ * Views are tracked in memory per sidecar process, so a named instance's UI
+ * doesn't trigger polling in the main instance.
  */
 
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
@@ -47,28 +47,34 @@ const TICK_MS = 30_000;
 /** A repo in the workspace the user has open. */
 const FOCUSED_POLL_MS = 60_000;
 /**
- * A repo seen only as a badge in the workspace list, or whose PR is merged or
- * closed and so has little left to change.
+ * A repo seen only as a badge in the workspace list, or a merged or closed PR
+ * in the open workspace, which has little left to change.
  */
-const BACKGROUND_POLL_MS = 10 * 60_000;
+const BACKGROUND_POLL_MS = 15 * 60_000;
 /**
  * How long a read keeps a workspace counted as viewed. The UI re-reads every
- * 20s while visible, so this survives a slow tick but lapses within a minute
- * of the window hiding or the user moving to another workspace.
+ * 20s while the window has focus, so this survives a slow tick but lapses
+ * within a minute of the user switching away or to another workspace.
  */
 const VIEW_WINDOW_MS = 60_000;
+/**
+ * A repo polled during one tick is a little under an interval old by the tick
+ * an interval later, since its timestamp is taken after the provider answers.
+ * Without this slack the focused cadence would slip to 90s.
+ */
+const DUE_SLACK_MS = TICK_MS / 2;
 
 /** When the UI last read each workspace's detail, by workspace id. */
 const workspaceViewedAt = new Map<string, number>();
-/** When the UI last read the workspace list, whose rows show PR badges. */
+/** When the UI last read the workspace list, whose rows show PR badges. Never, to start. */
 let listViewedAt = Number.NEGATIVE_INFINITY;
 
-/** Records that the UI read one workspace's detail. */
+/** Records that the UI read one workspace's detail while the user was looking at it. */
 export function markWorkspaceViewed(workspaceId: string, now = Date.now()): void {
   workspaceViewedAt.set(workspaceId, now);
 }
 
-/** Records that the UI read the workspace list. */
+/** Records that the UI read the workspace list while the user was looking at it. */
 export function markWorkspaceListViewed(now = Date.now()): void {
   listViewedAt = now;
 }
@@ -79,25 +85,37 @@ export function resetWorkspaceViews(): void {
   listViewedAt = Number.NEGATIVE_INFINITY;
 }
 
+/** What decides whether a repo is due a refresh: its workspace and its cached row. */
+export interface PollCandidate {
+  workspaceId: string;
+  prState: string | null;
+  lastPolledAt: Date | null;
+}
+
 /**
  * How often a repo's PR should be refreshed given what the user is looking at,
- * or null when nothing showing it has been read lately and it shouldn't be.
+ * or null when it shouldn't be: nothing showing it was read lately, or it is a
+ * settled PR seen only as a list badge.
  */
-export function pollIntervalMs(
-  workspaceId: string,
-  prState: string | null,
-  now = Date.now(),
-): number | null {
+function pollIntervalMs(workspaceId: string, prState: string | null, now: number): number | null {
   const viewedAt = workspaceViewedAt.get(workspaceId);
-  if (viewedAt !== undefined && now - viewedAt >= VIEW_WINDOW_MS) {
-    workspaceViewedAt.delete(workspaceId);
-  }
-  const focused = workspaceViewedAt.has(workspaceId);
-  const listed = now - listViewedAt < VIEW_WINDOW_MS;
-  if (!focused && !listed) return null;
+  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
+  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
   const settled = prState === "merged" || prState === "closed";
-  return focused && !settled ? FOCUSED_POLL_MS : BACKGROUND_POLL_MS;
+  if (focused) return settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS;
+  if (listVisible && !settled) return BACKGROUND_POLL_MS;
+  return null;
 }
+
+/** Whether a repo's cached PR is older than what's being viewed calls for. */
+export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
+  const interval = pollIntervalMs(candidate.workspaceId, candidate.prState, now);
+  if (interval === null) return false;
+  // A repo with no cached row yet has never been polled.
+  if (candidate.lastPolledAt === null) return true;
+  return now - candidate.lastPolledAt.getTime() >= interval - DUE_SLACK_MS;
+}
+
 /** On startup, workspaces stuck in a transient state older than this are an
  *  interrupted run (the sidecar died mid-provision/archive) and get flipped to
  *  `error` so the UI offers a retry. The margin avoids racing a fresh create. */
@@ -269,13 +287,6 @@ export function lookupBranchPr(
   return branchPr(pollerClients(config), repo, branch);
 }
 
-/** What decides whether a repo is due a refresh: its workspace and its cached row. */
-export interface PollCandidate {
-  workspaceId: string;
-  prState: string | null;
-  lastPolledAt: Date | null;
-}
-
 /**
  * Refreshes the PR cache for every ready repo in an active workspace that
  * `isDue` accepts (all of them by default).
@@ -298,8 +309,12 @@ export async function pollOnce(
     .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(and(eq(workspaces.status, "active"), eq(workspaceRepos.status, "ready")));
 
-  const due = rows.filter((r) =>
-    isDue({ workspaceId: r.wr.workspaceId, prState: r.prState, lastPolledAt: r.lastPolledAt }),
+  const due = rows.filter((row) =>
+    isDue({
+      workspaceId: row.wr.workspaceId,
+      prState: row.prState,
+      lastPolledAt: row.lastPolledAt,
+    }),
   );
   for (const { wr, repo } of due) {
     try {
@@ -321,13 +336,6 @@ export async function pollOnce(
       }
     }
   }
-}
-
-/** Whether a repo's cached PR is older than what's being viewed calls for. */
-export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
-  const interval = pollIntervalMs(candidate.workspaceId, candidate.prState, now);
-  if (interval === null) return false;
-  return candidate.lastPolledAt === null || now - candidate.lastPolledAt.getTime() >= interval;
 }
 
 /**

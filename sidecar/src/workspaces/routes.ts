@@ -260,10 +260,10 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  // Both reads tell the poller what's on screen, since it only spends provider
-  // requests on the PRs the user can see.
+  // `badges=1` says the list's PR badges are in front of the user, which is
+  // what lets the poller spend provider requests on them.
   router.get("/", async (c) => {
-    markWorkspaceListViewed();
+    if (c.req.query("badges") === "1") markWorkspaceListViewed();
     return c.json(await listWorkspaces(db()));
   });
 
@@ -314,7 +314,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
-    markWorkspaceViewed(workspace.id);
+    // `viewing=1` says the user has this workspace open, so the poller keeps its PR current.
+    if (c.req.query("viewing") === "1") markWorkspaceViewed(workspace.id);
     // `pendingBrief` stays server-side: it is how provisioning remembers a
     // kick-off it still owes a session, and nothing outside the sidecar acts on
     // it. Clients open the workspace and attach to whatever session is there.

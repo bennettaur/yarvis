@@ -29,6 +29,7 @@ import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { RunResult } from "./exec.ts";
 import { defaultGitRunner, type GitRunner } from "./git.ts";
+import { isDueForRefresh, resetWorkspaceViews } from "./poller.ts";
 import {
   addRepoToWorkspace,
   archiveWorkspace,
@@ -1145,6 +1146,48 @@ describe("workspace routes", () => {
       body: JSON.stringify({ name: "anything" }),
     });
     expect(malformed.status).toBe(400);
+  });
+});
+
+describe("workspace reads and the PR poller", () => {
+  beforeEach(() => resetWorkspaceViews());
+
+  async function seedWorkspace(): Promise<string> {
+    const [ws] = await db
+      .insert(workspaces)
+      .values({ name: "seen", slug: "seen", rootPath: "/tmp/seen", status: "active" })
+      .returning();
+    return ws!.id;
+  }
+  const unpolled = (workspaceId: string) => ({
+    workspaceId,
+    prState: "open",
+    lastPolledAt: null,
+  });
+
+  it("makes an open workspace's PR due only when the read says the user is viewing it", async () => {
+    const id = await seedWorkspace();
+
+    await app.request(`/api/workspaces/${id}`, { headers: auth });
+    expect(isDueForRefresh(unpolled(id))).toBe(false);
+
+    await app.request(`/api/workspaces/${id}?viewing=1`, { headers: auth });
+    expect(isDueForRefresh(unpolled(id))).toBe(true);
+  });
+
+  it("makes list badges due only when the read says they're on screen", async () => {
+    await app.request("/api/workspaces", { headers: auth });
+    expect(isDueForRefresh(unpolled("any"))).toBe(false);
+
+    await app.request("/api/workspaces?badges=1", { headers: auth });
+    expect(isDueForRefresh(unpolled("any"))).toBe(true);
+  });
+
+  it("records nothing for a workspace that doesn't exist", async () => {
+    const missing = "00000000-0000-4000-8000-000000000000";
+    const res = await app.request(`/api/workspaces/${missing}?viewing=1`, { headers: auth });
+    expect(res.status).toBe(404);
+    expect(isDueForRefresh(unpolled(missing))).toBe(false);
   });
 });
 

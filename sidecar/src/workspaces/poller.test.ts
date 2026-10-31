@@ -84,6 +84,7 @@ async function seedReadyRepo(
 
 beforeEach(async () => {
   await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks RESTART IDENTITY CASCADE`;
+  resetWorkspaceViews();
 });
 
 afterAll(async () => {
@@ -577,43 +578,64 @@ describe("pollOnce", () => {
 describe("isDueForRefresh", () => {
   const now = Date.parse("2026-10-30T12:00:00Z");
   const polledAgo = (ms: number) => new Date(now - ms);
-
-  beforeEach(() => resetWorkspaceViews());
+  const due = (workspaceId: string, prState: string | null, lastPolledAt: Date | null) =>
+    isDueForRefresh({ workspaceId, prState, lastPolledAt }, now);
 
   it("skips every repo while nothing is on screen", () => {
-    expect(isDueForRefresh({ workspaceId: "w", prState: "open", lastPolledAt: null }, now)).toBe(
-      false,
-    );
+    expect(due("w", "open", null)).toBe(false);
   });
 
-  it("refreshes the open workspace's PR every minute", () => {
+  it("refreshes the open workspace's PR about once a minute", () => {
     markWorkspaceViewed("w", now - 10_000);
-    const candidate = { workspaceId: "w", prState: "open" };
-    expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(30_000) }, now)).toBe(false);
-    expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(60_000) }, now)).toBe(true);
-    expect(isDueForRefresh({ ...candidate, lastPolledAt: null }, now)).toBe(true);
+    expect(due("w", "open", polledAgo(30_000))).toBe(false);
+    // A poll stamped as its provider call finished is due on the tick a minute later.
+    expect(due("w", "open", polledAgo(55_000))).toBe(true);
+  });
+
+  it("polls a viewed repo with nothing cached yet straight away", () => {
+    markWorkspaceViewed("w", now);
+    expect(due("w", null, null)).toBe(true);
+  });
+
+  it("refreshes a branch with no PR yet at the open workspace's pace", () => {
+    markWorkspaceViewed("w", now);
+    expect(due("w", null, polledAgo(60_000))).toBe(true);
   });
 
   it("stops refreshing a workspace a minute after its last read", () => {
     markWorkspaceViewed("w", now - 60_000);
-    expect(isDueForRefresh({ workspaceId: "w", prState: "open", lastPolledAt: null }, now)).toBe(
-      false,
-    );
+    expect(due("w", "open", null)).toBe(false);
   });
 
-  it("refreshes list badges and settled PRs only every ten minutes", () => {
+  it("refreshes list badges every fifteen minutes", () => {
     markWorkspaceListViewed(now);
-    markWorkspaceViewed("open-merged", now);
-    for (const candidate of [
-      { workspaceId: "listed", prState: "open" },
-      { workspaceId: "open-merged", prState: "merged" },
-    ]) {
-      expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(5 * 60_000) }, now)).toBe(
-        false,
-      );
-      expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(10 * 60_000) }, now)).toBe(
-        true,
-      );
+    expect(due("listed", "open", polledAgo(10 * 60_000))).toBe(false);
+    expect(due("listed", "open", polledAgo(15 * 60_000))).toBe(true);
+  });
+
+  it("stops refreshing list badges a minute after the list was last read", () => {
+    markWorkspaceListViewed(now - 60_000);
+    expect(due("listed", "open", null)).toBe(false);
+  });
+
+  it("keeps the open workspace at its own pace while the list is also on screen", () => {
+    markWorkspaceListViewed(now);
+    markWorkspaceViewed("w", now);
+    expect(due("w", "open", polledAgo(90_000))).toBe(true);
+  });
+
+  it("refreshes a settled PR in the open workspace every fifteen minutes", () => {
+    markWorkspaceViewed("w", now);
+    for (const prState of ["merged", "closed"]) {
+      expect(due("w", prState, polledAgo(10 * 60_000))).toBe(false);
+      expect(due("w", prState, polledAgo(15 * 60_000))).toBe(true);
+    }
+  });
+
+  it("never refreshes a settled PR seen only as a list badge", () => {
+    markWorkspaceListViewed(now);
+    for (const prState of ["merged", "closed"]) {
+      expect(due("listed", prState, null)).toBe(false);
     }
   });
 });
@@ -634,6 +656,33 @@ describe("pollOnce with a due filter", () => {
     expect(asked.some((p) => p.includes("/oa/ra/"))).toBe(true);
     expect(asked.some((p) => p.includes("/ob/rb/"))).toBe(false);
     expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
+  });
+
+  it("reads each repo's cached poll time to decide whether it's due", async () => {
+    const wrId = await seedReadyRepo();
+    const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, "x"));
+    const now = Date.now();
+    markWorkspaceViewed(ws!.id, now);
+    let asked = 0;
+    const gh = clientWith((path) => {
+      asked++;
+      return path.includes("head=") ? [] : {};
+    });
+    const pollAt = (lastPolledAt: Date) =>
+      db
+        .insert(workspaceRepoPr)
+        .values({ workspaceRepoId: wrId, prState: "open", lastPolledAt })
+        .onConflictDoUpdate({ target: workspaceRepoPr.workspaceRepoId, set: { lastPolledAt } });
+
+    await pollAt(new Date(now - 20_000));
+    await pollOnce(db, { github: gh }, (c) => isDueForRefresh(c, now));
+    expect(asked).toBe(0);
+
+    await pollAt(new Date(now - 2 * 60_000));
+    await pollOnce(db, { github: gh }, (c) => isDueForRefresh(c, now));
+    expect(asked).toBeGreaterThan(0);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row!.lastPolledAt!.getTime()).toBeGreaterThanOrEqual(now);
   });
 });
 
