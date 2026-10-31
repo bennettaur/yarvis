@@ -3,7 +3,19 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { UrlSafetyError } from "../lib/urlSafety.ts";
 import { getVoiceConfig, saveVoiceConfig } from "./config.ts";
+import {
+  createVoiceProfile,
+  deleteVoiceClip,
+  deleteVoiceProfile,
+  getVoiceProfile,
+  listVoiceProfiles,
+  MAX_CLIP_BYTES,
+  saveVoiceClip,
+  speakWithProfile,
+  updateVoiceProfile,
+} from "./profiles.ts";
 import { availableVoiceProviders, resolveSpeechClient } from "./providers.ts";
+import { LocalSpeechServer, saveSpeechServerSettings } from "./server.ts";
 import {
   MAX_AUDIO_BYTES,
   MAX_SPEECH_CHARS,
@@ -12,6 +24,14 @@ import {
   SpeechRequestRejected,
   SpeechValidationError,
 } from "./speech.ts";
+import {
+  generateTakes,
+  LANGUAGE,
+  listTakes,
+  readTake,
+  type StudioDeps,
+  saveTake,
+} from "./studio.ts";
 
 /**
  * Voice routes, mounted under /api/voice.
@@ -82,7 +102,38 @@ const voiceConfigSchema = z.object({
   ttsExtras: extrasSchema.optional(),
   speakReplies: z.boolean().optional(),
   handsFree: z.boolean().optional(),
+  activeVoiceId: z.string().max(64).optional(),
+  translationProvider: z.string().max(128).optional(),
+  translationModel: z.string().max(128).optional(),
 });
+
+const voiceProfileSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  provider: z.string().min(1).max(128),
+  model: z.string().min(1).max(128),
+  voice: z.string().max(128).default(""),
+  refAudioMode: z.enum(["path", "inline"]).default("path"),
+  extras: extrasSchema.default({}),
+});
+
+const voiceSpeakSchema = z.object({ text: z.string().min(1).max(MAX_SPEECH_CHARS) });
+
+const studioSchema = z.object({
+  text: z.string().trim().min(1).max(MAX_SPEECH_CHARS),
+  voiceIds: z.array(z.string().min(1).max(64)).min(1).max(12),
+  language: z
+    .union([
+      z.string().regex(LANGUAGE, "language must be a name like French or pt-BR"),
+      z.literal(""),
+    ])
+    .optional(),
+});
+
+const serverSettingsSchema = z.object({
+  port: z.number().int().min(1024).max(65535).optional(),
+});
+
+const downloadSchema = z.object({ model: z.string().min(1).max(128) });
 
 const transcribeQuerySchema = z.object({
   provider: z.string().min(1),
@@ -124,8 +175,17 @@ function safeAudioType(contentType: string): string {
   return AUDIO_RESPONSE_TYPE.test(contentType) ? contentType : "audio/mpeg";
 }
 
-export function createVoiceRoutes(config: Config): Hono {
+/** The machine's one speech server, shared by every request this sidecar serves. */
+const sharedSpeechServer = new LocalSpeechServer();
+
+export interface VoiceRouteOptions {
+  server?: LocalSpeechServer;
+  studio?: StudioDeps;
+}
+
+export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {}): Hono {
   const router = new Hono();
+  const server = options.server ?? sharedSpeechServer;
 
   router.get("/providers", async (c) => c.json(await availableVoiceProviders(config)));
 
@@ -224,6 +284,146 @@ export function createVoiceRoutes(config: Config): Hono {
       return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
     }
   });
+
+  router.get("/voices", async (c) => c.json(await listVoiceProfiles()));
+
+  router.post("/voices", async (c) => {
+    const parsed = voiceProfileSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await createVoiceProfile(parsed.data), 201);
+  });
+
+  router.patch("/voices/:id", async (c) => {
+    const parsed = voiceProfileSchema.partial().safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const row = await updateVoiceProfile(c.req.param("id"), parsed.data);
+    return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
+  });
+
+  router.delete("/voices/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!(await deleteVoiceProfile(id))) return c.json({ error: "voice not found" }, 404);
+    // Replies would otherwise go silent pointing at a voice that no longer exists.
+    if ((await getVoiceConfig()).activeVoiceId === id) await saveVoiceConfig({ activeVoiceId: "" });
+    return c.body(null, 204);
+  });
+
+  /**
+   * Stores a cloning clip. The body is the WAV itself: the app converts both a
+   * recording and an upload to 16 kHz mono WAV first, which is the rate
+   * cloning models handle best.
+   */
+  router.put("/voices/:id/clip", async (c) => {
+    const contentType = c.req.header("content-type") ?? "";
+    if (!/^audio\/(wav|x-wav|wave)$/i.test(contentType)) {
+      return c.json({ error: "the clip must be sent as audio/wav" }, 415);
+    }
+    const declaredLength = Number(c.req.header("content-length") ?? Number.NaN);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_CLIP_BYTES) {
+      return c.json({ error: `the clip exceeds ${MAX_CLIP_BYTES} bytes` }, 413);
+    }
+    try {
+      const row = await saveVoiceClip(c.req.param("id"), new Uint8Array(await c.req.arrayBuffer()));
+      return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
+    } catch (e) {
+      return c.json({ error: errorMessage(e) }, 400);
+    }
+  });
+
+  router.delete("/voices/:id/clip", async (c) => {
+    const row = await deleteVoiceClip(c.req.param("id"));
+    return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
+  });
+
+  /** Speaks in a saved voice. The clip is read here, so it never travels through the webview. */
+  router.post("/voices/:id/speak", async (c) => {
+    const parsed = voiceSpeakSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const profile = await getVoiceProfile(c.req.param("id"));
+    if (!profile) return c.json({ error: "voice not found" }, 404);
+    try {
+      const { audio, contentType } = await speakWithProfile(config, profile, parsed.data.text);
+      return new Response(audio, {
+        status: 200,
+        headers: {
+          "Content-Type": safeAudioType(contentType),
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (e) {
+      console.error("[voice] synthesis failed:", e);
+      return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
+    }
+  });
+
+  router.get("/studio/takes", async (c) => c.json(await listTakes()));
+
+  router.post("/studio/generate", async (c) => {
+    const parsed = studioSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(
+        await generateTakes(
+          config,
+          {
+            text: parsed.data.text,
+            voiceIds: parsed.data.voiceIds,
+            language: parsed.data.language || undefined,
+          },
+          options.studio,
+        ),
+      );
+    } catch (e) {
+      return c.json({ error: errorMessage(e) }, 400);
+    }
+  });
+
+  router.get("/studio/takes/:file", async (c) => {
+    const found = await readTake(c.req.param("file"));
+    if (!found) return c.json({ error: "take not found" }, 404);
+    return new Response(found.audio, {
+      status: 200,
+      headers: {
+        "Content-Type": safeAudioType(found.take.contentType),
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  });
+
+  router.post("/studio/takes/:file/save", async (c) => {
+    const take = await saveTake(c.req.param("file"));
+    return take ? c.json(take) : c.json({ error: "take not found" }, 404);
+  });
+
+  router.get("/server", async (c) => c.json(await server.status()));
+
+  router.patch("/server", async (c) => {
+    const parsed = serverSettingsSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    await saveSpeechServerSettings(parsed.data);
+    return c.json(await server.status());
+  });
+
+  router.post("/server/start", async (c) => c.json(await server.start()));
+
+  router.post("/server/stop", async (c) => c.json(await server.stop()));
+
+  router.get("/server/models", (c) => c.json(server.models()));
+
+  router.post("/server/models/download", async (c) => {
+    const parsed = downloadSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(server.download(parsed.data.model), 202);
+    } catch (e) {
+      return c.json({ error: errorMessage(e) }, 400);
+    }
+  });
+
+  /** Registers the server as a speech provider, so the pickers can offer its models. */
+  router.post("/server/provider", async (c) =>
+    c.json({ providerId: await server.ensureProvider() }),
+  );
 
   return router;
 }

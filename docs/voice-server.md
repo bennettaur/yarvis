@@ -24,6 +24,16 @@ voice once it works, see [Voice](features/voice.md).
 The repo pins the server's Python dependencies in `pyproject.toml` and
 `uv.lock`, so you don't install anything by hand.
 
+## The quick way: the Voice page
+
+Open the **Voice** tab, press **Start**, wait for **Running**, then press **Use
+for voice**. Yarvis runs the server with `uvx` from the same package versions
+this repo pins, adds it as a provider, and picks the starter models. Press
+**Test voice** under **Settings → Voice** to check it.
+
+The steps below do the same by hand. Follow them if you'd rather run the
+server yourself, or keep it running when Yarvis is closed.
+
 ## 1. Install and start the server
 
 From the repo root:
@@ -64,8 +74,8 @@ These settings are saved to the `voiceConfig` section of
 
 ## 3. Keep it running (optional)
 
-Yarvis does not start the speech server for you yet
-([#228](https://github.com/bennettaur/yarvis/issues/228)). You have two options:
+The Voice page starts the server for you, but a server it started stops when
+Yarvis quits. To keep one running on its own, you have two options:
 
 - **Start it by hand** when you want voice. A Yarvis Terminal tab works well for
   this.
@@ -162,6 +172,12 @@ can answer a message, and only a `decision` model can be the decision model.
 ## Cloning a voice with MOSS-TTS-Nano
 
 MOSS-TTS-Nano speaks in the voice of a short reference recording.
+
+The easy way is a saved voice on the **Voice** page: add a voice with this
+model and **Clip sent as: File path**, then record or upload a clip. Yarvis
+converts it to 16 kHz for you. See [Voices](features/voice.md#voices).
+
+To set it up by hand instead:
 
 1. Record five to ten seconds of normal speech. It needs no script.
 2. Save it as a mono WAV at **16, 24 or 48 kHz**. Do not use 44.1 kHz (see

@@ -31,7 +31,16 @@ export interface TranscribeRequest {
   language?: string;
 }
 
-export interface SpeakRequest {
+/** Speech in a saved voice; the sidecar holds its provider, model and clip. */
+export interface SavedVoiceSpeakRequest {
+  voiceId: string;
+  text: string;
+}
+
+export type SpeakRequest = SavedVoiceSpeakRequest | DirectSpeakRequest;
+
+export interface DirectSpeakRequest {
+  voiceId?: undefined;
   provider: VoiceProviderId;
   model: string;
   text: string;
@@ -72,19 +81,26 @@ export async function transcribe({
 }
 
 /** Synthesizes one chunk of speech, returning audio ready to hand to an `Audio`. */
-export async function speak({
-  provider,
-  model,
-  text,
-  voice,
-  refAudio,
-  extras,
-}: SpeakRequest): Promise<Blob> {
-  const res = await sidecarFetch("/api/voice/speak", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, model, text, voice, refAudio, extras }),
-  });
+export async function speak(request: SpeakRequest): Promise<Blob> {
+  const res =
+    request.voiceId !== undefined
+      ? await sidecarFetch(`/api/voice/voices/${encodeURIComponent(request.voiceId)}/speak`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: request.text }),
+        })
+      : await sidecarFetch("/api/voice/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider: request.provider,
+            model: request.model,
+            text: request.text,
+            voice: request.voice,
+            refAudio: request.refAudio,
+            extras: request.extras,
+          }),
+        });
   await ensureOk(res, "speak");
   return res.blob();
 }

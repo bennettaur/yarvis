@@ -17,6 +17,14 @@ export interface VoiceConfigInput {
   ttsExtras: SynthesisExtras;
   speakReplies: boolean;
   handsFree: boolean;
+  /**
+   * A saved voice (`voice/profiles.ts`) that replies are spoken in. Blank uses
+   * the `tts*` fields above, so a setup from before saved voices keeps working.
+   */
+  activeVoiceId: string;
+  /** Chat model the Voice Studio translates with. Blank until the user picks one. */
+  translationProvider: string;
+  translationModel: string;
 }
 
 /**
@@ -34,6 +42,9 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfigInput = {
   ttsExtras: {},
   speakReplies: true,
   handsFree: false,
+  activeVoiceId: "",
+  translationProvider: "",
+  translationModel: "",
 };
 
 const SETTINGS_KEY = "voiceConfig";

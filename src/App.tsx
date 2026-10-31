@@ -35,6 +35,7 @@ import {
 import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
+import VoicePanel from "./components/voice/VoicePanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
@@ -492,6 +493,7 @@ export default function App() {
             {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "heads-down" && <HeadsDownPanel />}
+            {tab === "voice" && <VoicePanel />}
             {tab === "dashboard" && <Dashboard />}
             {tab === "settings" && (
               <SettingsPanel

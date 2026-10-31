@@ -173,6 +173,12 @@ export default function VoiceSection() {
           whichever one the chat you spoke into is set to. Which models each backend offers here is
           set under LLM Providers — only models tagged for speech appear.
         </p>
+        {config.activeVoiceId && (
+          <p className="text-xs text-amber-300">
+            A saved voice is active on the Voice page, so replies are spoken in it rather than with
+            the text-to-speech fields below.
+          </p>
+        )}
       </header>
 
       <div className="grid gap-4 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 sm:grid-cols-3">

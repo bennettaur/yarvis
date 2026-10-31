@@ -106,6 +106,27 @@ describe("speak", () => {
       voice: "af_bella",
     });
   });
+
+  it("sends only the text for a saved voice, whose clip stays in the sidecar", async () => {
+    nextResponse = () =>
+      new Response(new Uint8Array([1]), { headers: { "content-type": "audio/wav" } });
+
+    await speak({ voiceId: "abc", text: "hello" });
+
+    expect(requests[0]!.path).toBe("/api/voice/voices/abc/speak");
+    expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ text: "hello" });
+  });
+});
+
+describe("speechRequestFor", () => {
+  it("speaks in the active saved voice when one is set", async () => {
+    const { DEFAULT_VOICE_CONFIG, speechRequestFor, voiceReadiness } = await import(
+      "./voiceConfig"
+    );
+    const config = { ...DEFAULT_VOICE_CONFIG, activeVoiceId: "abc", ttsProvider: "gemini" };
+    expect(speechRequestFor(config, "hi")).toEqual({ voiceId: "abc", text: "hi" });
+    expect(voiceReadiness(config).tts).toBe(true);
+  });
 });
 
 describe("listVoiceProviders", () => {
