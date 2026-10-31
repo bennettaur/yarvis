@@ -66,18 +66,21 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
 
 const SETTINGS_KEY = "headsDown";
 
+function validPassTimeout(minutes: unknown): number {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 1) {
+    return DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes;
+  }
+  return Math.min(minutes, MAX_PASS_TIMEOUT_MINUTES);
+}
+
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   const stored = await readSection<Partial<HeadsDownConfig>>(SETTINGS_KEY);
   const config = { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
-  // Hand-edited settings can hold anything; every pass reads the guidance and the timeout.
-  const timeout = config.passTimeoutMinutes;
+  // Hand-edited settings can hold anything, and skip the route's checks.
   return {
     ...config,
     guidance: typeof config.guidance === "string" ? config.guidance : null,
-    passTimeoutMinutes:
-      typeof timeout === "number" && Number.isFinite(timeout) && timeout >= 1
-        ? Math.min(timeout, MAX_PASS_TIMEOUT_MINUTES)
-        : DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes,
+    passTimeoutMinutes: validPassTimeout(config.passTimeoutMinutes),
   };
 }
 

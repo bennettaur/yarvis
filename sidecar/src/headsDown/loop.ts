@@ -99,23 +99,21 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
     let untilStop = Infinity;
     try {
       const run = await getActiveRun(db);
-      // Read once, so the lease and the pass agree even if the setting changes mid-pass.
-      const timeoutMs = await deps.passTimeoutMs();
       if (run && msUntilStop(run) === 0) {
         await stopHeadsDown(db);
-      } else if (
-        run &&
-        !run.pausedAt &&
-        (await claimJob(db, PASS_LEASE_NAME, timeoutMs + LEASE_MARGIN_MS))
-      ) {
-        let status: "ok" | "error" = "ok";
-        try {
-          nextMs = (await deps.runPass(run, timeoutMs)).sleepMinutes * 60_000;
-        } catch (e) {
-          status = "error";
-          console.error("[heads-down] pass failed:", e);
-        } finally {
-          await finishJob(db, PASS_LEASE_NAME, { status });
+      } else if (run && !run.pausedAt) {
+        // Read once, so the lease and the pass agree even if the setting changes mid-pass.
+        const timeoutMs = await deps.passTimeoutMs();
+        if (await claimJob(db, PASS_LEASE_NAME, timeoutMs + LEASE_MARGIN_MS)) {
+          let status: "ok" | "error" = "ok";
+          try {
+            nextMs = (await deps.runPass(run, timeoutMs)).sleepMinutes * 60_000;
+          } catch (e) {
+            status = "error";
+            console.error("[heads-down] pass failed:", e);
+          } finally {
+            await finishJob(db, PASS_LEASE_NAME, { status });
+          }
         }
       }
       // Woken during the pass: something changed that the pass may not have seen.

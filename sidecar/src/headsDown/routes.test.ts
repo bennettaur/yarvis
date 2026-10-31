@@ -231,6 +231,11 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, passTimeoutMinutes: 5 * 60 })).status).toBe(400);
     expect((await put({ ...valid, passTimeoutMinutes: 90 })).status).toBe(200);
     expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
+    // A client that doesn't send it keeps the saved one.
+    const { passTimeoutMinutes: _, ...withoutTimeout } = valid;
+    expect((await put({ ...withoutTimeout, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect((await put(withoutTimeout)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);
