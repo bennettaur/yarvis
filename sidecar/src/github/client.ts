@@ -948,11 +948,14 @@ const PR_POLL_FIELDS = `number url isDraft ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELD
 const BRANCH_POLL_CANDIDATES = 5;
 
 /**
- * Refs read per batched poll request. Every PR's checks and reviews count
- * toward GitHub's per-query cost, so a long list is split rather than sent as
- * one query GitHub might refuse as too expensive.
+ * The most refs one batched poll read takes. Every PR's checks and reviews
+ * count toward GitHub's per-query cost and time limit, so a caller splits a
+ * longer list rather than sending one query GitHub might refuse.
  */
-const MAX_POLL_BATCH = 25;
+export const POLL_BATCH_SIZE = 25;
+
+/** The alias each ref's answer comes back under in a batched poll query. */
+const pollAlias = (i: number) => `p${i}`;
 
 /**
  * One aliased query reading the PR on each branch, built like
@@ -966,7 +969,7 @@ function buildBranchPollQuery(count: number): string {
   const fields = Array.from(
     { length: count },
     (_, i) =>
-      `p${i}: repository(owner:$o${i},name:$r${i}){ pullRequests(headRefName:$b${i}, first:${BRANCH_POLL_CANDIDATES}, orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ headRepositoryOwner{ login } ${PR_POLL_FIELDS} } } }`,
+      `${pollAlias(i)}: repository(owner:$o${i},name:$r${i}){ pullRequests(headRefName:$b${i}, first:${BRANCH_POLL_CANDIDATES}, orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ headRepositoryOwner{ login } ${PR_POLL_FIELDS} } } }`,
   ).join("\n");
   return `query(${varDecls}){\n${fields}\n}`;
 }
@@ -980,7 +983,7 @@ function buildNumberPollQuery(count: number): string {
   const fields = Array.from(
     { length: count },
     (_, i) =>
-      `p${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_POLL_FIELDS} } }`,
+      `${pollAlias(i)}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_POLL_FIELDS} } }`,
   ).join("\n");
   return `query(${varDecls}){\n${fields}\n}`;
 }
@@ -1509,14 +1512,15 @@ export class GitHubClient {
 
   /**
    * The PR on each branch with its status and review verdict, for the
-   * workspace poller: one request per {@link MAX_POLL_BATCH} branches, where
-   * the single-PR reads take three per branch. Null where a branch has no PR.
+   * workspace poller: one request for up to {@link POLL_BATCH_SIZE} branches,
+   * where the single-PR reads take three per branch. Null where a branch has
+   * no PR.
    * GraphQL only, with no REST fallback: a background read that runs out of
    * GraphQL budget waits for it rather than spending the REST budget the PR
    * pages need.
    */
   async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr | null>[]> {
-    return this.pollInBatches(
+    return this.pollBatch(
       refs,
       buildBranchPollQuery,
       (ref, i) => ({
@@ -1535,12 +1539,12 @@ export class GitHubClient {
   }
 
   /**
-   * Known PRs' status and review verdicts, read by number in batches like
+   * Known PRs' status and review verdicts, read by number in one request like
    * {@link branchPrStatuses}. Cheaper per PR than a branch read, since there
    * are no same-named branches to sift, but it can't find a PR it isn't given.
    */
   async prStatusesByNumber(refs: PrNumberRef[]): Promise<BatchResult<PolledPr>[]> {
-    return this.pollInBatches(
+    return this.pollBatch(
       refs,
       buildNumberPollQuery,
       (ref, i) => ({
@@ -1557,45 +1561,45 @@ export class GitHubClient {
   }
 
   /**
-   * Sends `refs` as aliased queries of up to {@link MAX_POLL_BATCH}. An error
-   * naming one alias fails only that ref, so a deleted repo doesn't cost the
-   * rest of the batch. An error naming none (a spent rate limit, a bad token)
-   * fails them all, and is thrown.
+   * Sends `refs` as one aliased query. An error naming one alias fails only
+   * that ref, so a deleted repo doesn't cost the rest of the batch. An error
+   * naming none (a spent rate limit, a bad token) fails them all, and is thrown.
    */
-  private async pollInBatches<R, T>(
+  private async pollBatch<R, T>(
     refs: R[],
     build: (count: number) => string,
     variablesFor: (ref: R, i: number) => Record<string, unknown>,
     read: (ref: R, repo: any) => BatchResult<T>,
   ): Promise<BatchResult<T>[]> {
-    const results: BatchResult<T>[] = [];
-    for (let start = 0; start < refs.length; start += MAX_POLL_BATCH) {
-      const batch = refs.slice(start, start + MAX_POLL_BATCH);
-      const variables = Object.assign({}, ...batch.map((ref, i) => variablesFor(ref, i)));
-      const { data, errors } = await this.graphqlPayload<Record<string, any>>(
-        build(batch.length),
-        variables,
+    if (refs.length === 0) return [];
+    if (refs.length > POLL_BATCH_SIZE) {
+      throw new RangeError(
+        `a poll batch takes at most ${POLL_BATCH_SIZE} refs, not ${refs.length}`,
       );
-      const byAlias = new Map<string, GraphqlErrorEntry[]>();
-      const unattributed: GraphqlErrorEntry[] = [];
-      for (const error of errors ?? []) {
-        // A fine-grained token is refused the check runs in place; the rest of the PR stands.
-        if (isRefusedCheck(error)) continue;
-        const alias = error.path?.[0];
-        if (typeof alias === "string") byAlias.set(alias, [...(byAlias.get(alias) ?? []), error]);
-        else unattributed.push(error);
-      }
-      if (unattributed.length || !data) {
-        throw githubErrorFromGraphql(unattributed.length ? unattributed : (errors ?? []));
-      }
-      batch.forEach((ref, i) => {
-        const failed = byAlias.get(`p${i}`);
-        results.push(
-          failed ? { ok: false, error: githubErrorFromGraphql(failed) } : read(ref, data[`p${i}`]),
-        );
-      });
     }
-    return results;
+    const variables = Object.assign({}, ...refs.map((ref, i) => variablesFor(ref, i)));
+    const { data, errors } = await this.graphqlPayload<Record<string, any>>(
+      build(refs.length),
+      variables,
+    );
+    const byAlias = new Map<string, GraphqlErrorEntry[]>();
+    const unattributed: GraphqlErrorEntry[] = [];
+    for (const error of errors ?? []) {
+      // A fine-grained token is refused the check runs in place; the rest of the PR stands.
+      if (isRefusedCheck(error)) continue;
+      const alias = error.path?.[0];
+      if (typeof alias === "string") byAlias.set(alias, [...(byAlias.get(alias) ?? []), error]);
+      else unattributed.push(error);
+    }
+    if (unattributed.length || !data) {
+      throw githubErrorFromGraphql(unattributed.length ? unattributed : (errors ?? []));
+    }
+    return refs.map((ref, i) => {
+      const failed = byAlias.get(pollAlias(i));
+      return failed
+        ? { ok: false, error: githubErrorFromGraphql(failed) }
+        : read(ref, data[pollAlias(i)]);
+    });
   }
 
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {

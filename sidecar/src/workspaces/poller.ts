@@ -32,6 +32,7 @@ import {
   type ChecksSummary,
   createGitHubClient,
   type GitHubClient,
+  POLL_BATCH_SIZE,
   type PolledPr,
   summarizeCheckItems,
 } from "../github/client.ts";
@@ -104,37 +105,46 @@ export interface PollCandidate {
  */
 export type RefreshMode = "branch" | "number";
 
+/** A repo whose cached PR is older than this, measured from its last poll, is due. */
+function dueAfter(candidate: PollCandidate, intervalMs: number, now: number): boolean {
+  // A repo with no cached row yet has never been polled.
+  if (candidate.lastPolledAt === null) return true;
+  return now - candidate.lastPolledAt.getTime() >= intervalMs - DUE_SLACK_MS;
+}
+
 /**
- * How often and how a repo's PR should be refreshed, or null when it shouldn't
- * be: a merged PR nobody is looking at, or a branch with no PR that isn't on
- * screen.
+ * Whether a known PR's 15-minute window has turned since its last read. Known
+ * PRs are read on wall-clock windows rather than each on its own timer, so
+ * they all come due on the same tick and share one request; timers that
+ * drifted apart would split them into many small ones.
  */
-function pollPlan(
-  candidate: PollCandidate,
-  now: number,
-): { intervalMs: number; mode: RefreshMode } | null {
-  const viewedAt = workspaceViewedAt.get(candidate.workspaceId);
-  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
-  const settled = candidate.prState === "merged" || candidate.prState === "closed";
-  if (focused)
-    return { intervalMs: settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, mode: "branch" };
-  if (candidate.prNumber !== null) {
-    return candidate.prState === "merged"
-      ? null
-      : { intervalMs: BACKGROUND_POLL_MS, mode: "number" };
-  }
-  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
-  return listVisible ? { intervalMs: BACKGROUND_POLL_MS, mode: "branch" } : null;
+function windowTurned(candidate: PollCandidate, now: number): boolean {
+  if (candidate.lastPolledAt === null) return true;
+  const window = (t: number) => Math.floor(t / BACKGROUND_POLL_MS);
+  return window(candidate.lastPolledAt.getTime()) < window(now);
 }
 
 /** How a repo should be refreshed this tick, or null when it isn't due. */
 export function dueRefresh(candidate: PollCandidate, now = Date.now()): RefreshMode | null {
-  const plan = pollPlan(candidate, now);
-  if (plan === null) return null;
-  // A repo with no cached row yet has never been polled.
-  if (candidate.lastPolledAt === null) return plan.mode;
-  const due = now - candidate.lastPolledAt.getTime() >= plan.intervalMs - DUE_SLACK_MS;
-  return due ? plan.mode : null;
+  const viewedAt = workspaceViewedAt.get(candidate.workspaceId);
+  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
+  const settled = candidate.prState === "merged" || candidate.prState === "closed";
+  // The workspace the user has open is read by branch, so a PR opened on it
+  // shows up within a minute. A settled PR there has little left to change.
+  if (focused) {
+    return dueAfter(candidate, settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, now)
+      ? "branch"
+      : null;
+  }
+  // Every other known PR is re-read by number, whether or not anyone is
+  // looking, so every badge stays current. A merged PR won't change again.
+  if (candidate.prNumber !== null) {
+    if (candidate.prState === "merged") return null;
+    return windowTurned(candidate, now) ? "number" : null;
+  }
+  // A branch with no PR yet is only looked at while its badge is on screen.
+  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
+  return listVisible && dueAfter(candidate, BACKGROUND_POLL_MS, now) ? "branch" : null;
 }
 
 /** Whether a repo's cached PR is older than its refresh interval. */
@@ -202,8 +212,8 @@ export type BranchPr = Pick<
 
 /** What the PR cache holds for a GitHub PR the poller read, or for a branch with none. */
 function toBranchPr(pr: PolledPr | null): BranchPr {
-  // No PR yet is the common early state — represent it explicitly so the UI
-  // can show "no PR" rather than "not polled".
+  // No PR yet is the common early state. Cache it explicitly so the UI can
+  // show "no PR" rather than "not polled".
   if (!pr) return NO_PR;
   return {
     prNumber: pr.number,
@@ -218,9 +228,9 @@ function toBranchPr(pr: PolledPr | null): BranchPr {
 }
 
 /**
- * The PR on one GitHub branch and where its checks stand, read one PR at a
- * time. The poller reads in batches and comes here only when GraphQL can't
- * answer at all; this path can fall back to REST.
+ * The PR on one GitHub branch and where its checks stand, in three reads that
+ * can each fall back to REST. Backs the worktree PR lookup, and the poller's
+ * open workspace when GraphQL can't run its batched read.
  */
 async function githubBranchPr(
   gh: GitHubClient,
@@ -276,6 +286,17 @@ async function azureBranchPr(
 }
 
 /**
+ * A GitHub repo's owner and name, from its clone URL or, when that doesn't
+ * parse, the ones stored on the row at registration.
+ */
+function githubRepoOf(repo: Repo): { owner: string; repo: string } {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  return remote?.provider === "github"
+    ? { owner: remote.owner, repo: remote.repo }
+    : { owner: repo.owner, repo: repo.repo };
+}
+
+/**
  * The PR on one of a repo's branches, from whichever provider its clone URL
  * names. Null when no client can reach that provider: no token, or an Azure
  * org other than the configured one, where a lookup would only 404.
@@ -291,10 +312,7 @@ async function branchPr(
     return azureBranchPr(clients.azure, remote.project, remote.repo, branch);
   }
   if (!clients.github) return null;
-  // GitHub owner/repo are stored on the row at registration; fall back to
-  // them when the clone URL doesn't parse.
-  const owner = remote?.provider === "github" ? remote.owner : repo.owner;
-  const repoName = remote?.provider === "github" ? remote.repo : repo.repo;
+  const { owner, repo: repoName } = githubRepoOf(repo);
   return githubBranchPr(clients.github, owner, repoName, branch);
 }
 
@@ -323,20 +341,15 @@ export function lookupBranchPr(
   return branchPr(pollerClients(config), repo, branch);
 }
 
-/** A repo the cycle refreshes, with how it is read. */
+/** A repo the cycle refreshes. */
 interface DueRepo {
   wr: typeof workspaceRepos.$inferSelect;
   repo: Repo;
-  prNumber: number | null;
-  mode: RefreshMode;
 }
 
-/** A GitHub repo's owner and name, from its clone URL or, failing that, the row. */
-function githubRepoOf(repo: Repo): { owner: string; repo: string } {
-  const remote = parseRepoRemote(repo.cloneUrl);
-  return remote?.provider === "github"
-    ? { owner: remote.owner, repo: remote.repo }
-    : { owner: repo.owner, repo: repo.repo };
+/** A known PR the cycle re-reads by number. */
+interface DueKnownPr extends DueRepo {
+  prNumber: number;
 }
 
 /** Whether a failure means the provider's rate limit is spent, so the rest of the cycle should wait. */
@@ -347,6 +360,7 @@ function isRateLimited(e: unknown): boolean {
   return /-> (403|429)$/.test(e instanceof Error ? e.message : String(e));
 }
 
+/** Caches why a repo's refresh failed, and when, so it waits its interval before the next try. */
 async function recordError(db: Db, workspaceRepoId: string, e: unknown): Promise<void> {
   const message = e instanceof Error ? e.message : String(e);
   await upsertPr(db, workspaceRepoId, { lastPolledAt: new Date(), lastError: message });
@@ -378,32 +392,49 @@ async function refreshEach(
   return true;
 }
 
+/** `items` in runs of at most {@link POLL_BATCH_SIZE}. */
+function inBatches<T>(items: T[]): T[][] {
+  const batches: T[][] = [];
+  for (let start = 0; start < items.length; start += POLL_BATCH_SIZE) {
+    batches.push(items.slice(start, start + POLL_BATCH_SIZE));
+  }
+  return batches;
+}
+
 /**
- * Refreshes GitHub repos in batches: one request for the branches, one for the
- * known PRs (each split further past the client's batch size). Returns false
- * when the rate limit stopped it.
+ * Refreshes GitHub repos with batched reads: the branches first, since one of
+ * them is what the user is looking at, then the known PRs. Each batch is
+ * cached as soon as it's read, so a later batch failing doesn't cost the ones
+ * before it. A batch that fails as a whole either ends the cycle (a spent
+ * rate limit), falls back to per-repo reads (an outage, for branches only), or
+ * records its error on every repo in it.
  */
-async function refreshGithub(db: Db, gh: GitHubClient, due: DueRepo[]): Promise<boolean> {
-  const byBranch = due.filter((d) => d.mode === "branch");
-  const byNumber = due.filter((d) => d.mode === "number");
-  const reads: [DueRepo[], () => Promise<BatchResult<PolledPr | null>[]>][] = [
-    [
-      byBranch,
-      () =>
-        gh.branchPrStatuses(
-          byBranch.map((d) => ({ ...githubRepoOf(d.repo), branch: d.wr.branch })),
-        ),
-    ],
-    [
-      byNumber,
-      () =>
-        gh.prStatusesByNumber(
-          byNumber.map((d) => ({ ...githubRepoOf(d.repo), number: d.prNumber as number })),
-        ),
-    ],
+async function refreshGithub(
+  db: Db,
+  gh: GitHubClient,
+  byBranch: DueRepo[],
+  byNumber: DueKnownPr[],
+): Promise<void> {
+  const batches: {
+    items: DueRepo[];
+    read: () => Promise<BatchResult<PolledPr | null>[]>;
+    /** Whether an outage is worth reading these one at a time instead. */
+    fallBackOnOutage: boolean;
+  }[] = [
+    ...inBatches(byBranch).map((items) => ({
+      items,
+      fallBackOnOutage: true,
+      read: () =>
+        gh.branchPrStatuses(items.map((d) => ({ ...githubRepoOf(d.repo), branch: d.wr.branch }))),
+    })),
+    ...inBatches(byNumber).map((items) => ({
+      items,
+      fallBackOnOutage: false,
+      read: () =>
+        gh.prStatusesByNumber(items.map((d) => ({ ...githubRepoOf(d.repo), number: d.prNumber }))),
+    })),
   ];
-  for (const [items, read] of reads) {
-    if (items.length === 0) continue;
+  for (const { items, read, fallBackOnOutage } of batches) {
     let results: BatchResult<PolledPr | null>[];
     try {
       results = await read();
@@ -412,49 +443,49 @@ async function refreshGithub(db: Db, gh: GitHubClient, due: DueRepo[]): Promise<
         // No REST fallback here: a background read waits out GraphQL's limit
         // rather than spending the REST budget the PR pages need.
         console.warn("[workspace poller] GitHub rate limited, backing off this cycle");
-        return false;
+        return;
       }
-      if (e instanceof GitHubError && e.reason === "upstream_error") {
+      if (fallBackOnOutage && e instanceof GitHubError && e.reason === "upstream_error") {
         // GraphQL can't answer at all (an outage, or a GitHub Enterprise server
-        // that can't run the batch), so read each repo the slow way, which can
-        // use REST.
-        const ok = await refreshEach(db, items, (d) => {
+        // that can't run the batch). The open workspace is worth the slower
+        // per-repo reads, which can use REST; known PRs nobody is looking at
+        // wait for the next window instead.
+        const finished = await refreshEach(db, items, (d) => {
           const { owner, repo } = githubRepoOf(d.repo);
           return githubBranchPr(gh, owner, repo, d.wr.branch);
         });
-        if (!ok) return false;
+        if (!finished) return;
         continue;
       }
-      // Anything else (a revoked token, SSO) is every repo's answer.
+      // Anything else (an outage for known PRs, a revoked token, SSO) is every repo's answer.
       for (const item of items) await recordError(db, item.wr.id, e);
       continue;
     }
     for (const [i, result] of results.entries()) {
-      const item = items[i] as DueRepo;
+      const { wr } = items[i] as DueRepo;
       if (result.ok) {
-        await upsertPr(db, item.wr.id, {
+        await upsertPr(db, wr.id, {
           ...toBranchPr(result.value),
           lastPolledAt: new Date(),
           lastError: null,
         });
       } else {
-        await recordError(db, item.wr.id, result.error);
+        await recordError(db, wr.id, result.error);
       }
     }
   }
-  return true;
 }
 
 /**
  * Refreshes the PR cache for every ready repo in an active workspace that
- * `plan` names a refresh for (all of them, by branch, by default). GitHub
- * repos are read in batches; Azure DevOps has no batched read, so its repos go
- * one at a time.
+ * `refreshModeFor` names a refresh for (all of them, by branch, by default).
+ * GitHub repos are read in batches; Azure DevOps has no batched read, so its
+ * repos go one at a time, by branch.
  */
 export async function pollOnce(
   db: Db,
   clients: PollerClients,
-  plan: (candidate: PollCandidate) => RefreshMode | null = () => "branch",
+  refreshModeFor: (candidate: PollCandidate) => RefreshMode | null = () => "branch",
 ): Promise<void> {
   const rows = await db
     .select({
@@ -470,23 +501,26 @@ export async function pollOnce(
     .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(and(eq(workspaces.status, "active"), eq(workspaceRepos.status, "ready")));
 
-  const github: DueRepo[] = [];
+  const byBranch: DueRepo[] = [];
+  const byNumber: DueKnownPr[] = [];
   const azure: DueRepo[] = [];
   for (const row of rows) {
-    const mode = plan({
+    const mode = refreshModeFor({
       workspaceId: row.wr.workspaceId,
       prNumber: row.prNumber,
       prState: row.prState,
       lastPolledAt: row.lastPolledAt,
     });
     if (mode === null) continue;
-    const due = { wr: row.wr, repo: row.repo, prNumber: row.prNumber, mode };
+    const due = { wr: row.wr, repo: row.repo };
     if (parseRepoRemote(row.repo.cloneUrl)?.provider === "azure") azure.push(due);
-    else github.push(due);
+    else if (mode === "number" && row.prNumber !== null)
+      byNumber.push({ ...due, prNumber: row.prNumber });
+    else byBranch.push(due);
   }
 
   // Each provider has its own rate limit, so one running out doesn't hold up the other.
-  if (clients.github && github.length) await refreshGithub(db, clients.github, github);
+  if (clients.github) await refreshGithub(db, clients.github, byBranch, byNumber);
   if (azure.length) await refreshEach(db, azure, (d) => branchPr(clients, d.repo, d.wr.branch));
 }
 

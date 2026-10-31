@@ -107,6 +107,30 @@ describe("branchPrStatuses", () => {
     expect(result?.ok && result.value?.number).toBe(7);
   });
 
+  it("finds no PR on a branch that only forks have opened", async () => {
+    const { gh } = fakeGitHub(() => ({
+      data: {
+        p0: {
+          pullRequests: { nodes: [polledPr(9, { headRepositoryOwner: { login: "forker" } })] },
+        },
+      },
+    }));
+
+    const [result] = await gh.branchPrStatuses([{ owner: "o", repo: "r", branch: "main" }]);
+
+    expect(result).toEqual({ ok: true, value: null });
+  });
+
+  it("sends refs only as variables, never in the query text", async () => {
+    const { gh, requests } = fakeGitHub(() => ({ data: { p0: { pullRequests: { nodes: [] } } } }));
+    const branch = 'x"){ viewer { login } } #';
+
+    await gh.branchPrStatuses([{ owner: "o", repo: "r", branch }]);
+
+    expect(requests[0]?.query).not.toContain(branch);
+    expect(requests[0]?.variables.b0).toBe(branch);
+  });
+
   it("leaves the verdict unknown on a draft, which isn't waiting on review", async () => {
     const { gh } = fakeGitHub(() => ({
       data: { p0: { pullRequests: { nodes: [polledPr(7, { isDraft: true })] } } },
@@ -163,19 +187,29 @@ describe("prStatusesByNumber", () => {
     expect(rest).toEqual([]);
   });
 
-  it("splits a long list into requests of at most 25", async () => {
-    const { gh, requests } = fakeGitHub((body) => ({
-      data: Object.fromEntries(
-        Object.keys(body.variables)
-          .filter((k) => k.startsWith("n"))
-          .map((k) => [`p${k.slice(1)}`, { pullRequest: polledPr(Number(body.variables[k])) }]),
-      ),
+  it("matches each answer to its ref by alias, past the first", async () => {
+    const { gh } = fakeGitHub(() => ({
+      data: {
+        p0: { pullRequest: polledPr(1) },
+        p1: { pullRequest: null },
+        p2: { pullRequest: polledPr(3) },
+      },
     }));
-    const refs = Array.from({ length: 30 }, (_, i) => ({ owner: "o", repo: "r", number: i + 1 }));
 
-    const results = await gh.prStatusesByNumber(refs);
+    const results = await gh.prStatusesByNumber(
+      [1, 2, 3].map((number) => ({ owner: "o", repo: "r", number })),
+    );
 
-    expect(requests.map((r) => Object.keys(r.variables).length / 3)).toEqual([25, 5]);
-    expect(results.map((r) => r.ok && r.value.number)).toEqual(refs.map((r) => r.number));
+    expect(results.map((r) => r.ok && r.value.number)).toEqual([1, false, 3]);
+    // A PR gone from a repo that still resolves is not found, not a crash.
+    expect(results[1]).toMatchObject({ ok: false, error: { reason: "not_found" } });
+  });
+
+  it("refuses more refs than one request takes, rather than sending a query GitHub may reject", async () => {
+    const { gh, requests } = fakeGitHub(() => ({ data: {} }));
+    const refs = Array.from({ length: 26 }, (_, i) => ({ owner: "o", repo: "r", number: i + 1 }));
+
+    await expect(gh.prStatusesByNumber(refs)).rejects.toBeInstanceOf(RangeError);
+    expect(requests).toEqual([]);
   });
 });
