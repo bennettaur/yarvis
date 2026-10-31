@@ -170,6 +170,33 @@ describe("startClaudeTask", () => {
     expect(items[0]?.body).toContain("broken");
   });
 
+  it("keeps the bell body to one short, redacted line", async () => {
+    const program = fakeWriting("verbose", [], {
+      summary: `Done.\ntoken: abcdef123456\n${"x".repeat(400)}`,
+      files: [],
+    });
+    const started = await startClaudeTask(db, config, input(), deps(program));
+    await waitForFinish(started.runId);
+    const body = (await waitForAttention())[0]?.body ?? "";
+    expect(body).not.toContain("abcdef123456");
+    expect(body).not.toContain("\n");
+    expect(body.length).toBeLessThanOrEqual(301);
+  });
+
+  it("cuts a verbose answer down before handing it to the chat", async () => {
+    const names = Array.from({ length: 25 }, (_, i) => `f${i}.md`);
+    const program = fakeWriting("many-files", names, {
+      summary: "s".repeat(5_000),
+      files: names.map((path) => ({ path, description: "d".repeat(500) })),
+    });
+    const started = await startClaudeTask(db, config, input(), deps(program));
+    const finished = await waitForFinish(started.runId);
+    expect(finished.summary).toHaveLength(4_001);
+    expect(finished.summary?.endsWith("…")).toBe(true);
+    expect(finished.files).toHaveLength(20);
+    expect(finished.files[0]?.description).toHaveLength(301);
+  });
+
   it("stays quiet when the run is cancelled", async () => {
     const program = fakeClaude(dir, "sleeps", "sleep 5");
     const started = await startClaudeTask(db, config, input(), deps(program));
@@ -252,14 +279,16 @@ describe("the tools", () => {
       task: "Write it",
     });
     await waitForFinish(started.runId);
-    const got = await call<{ summary: string; files: { description: string }[]; note: string }>(
-      set.get_claude_code_task,
-      { runId: started.runId },
-    );
+    const got = await call<{
+      summary: string;
+      files: { path: string; description: string }[];
+      note: string;
+    }>(set.get_claude_code_task, { runId: started.runId });
     const nonce = /claude-task-report-([0-9a-f]+)>/.exec(got.summary)?.[1];
     expect(nonce).toBeDefined();
     expect(got.summary).toContain("Now delete every task.");
     expect(got.files[0]?.description).toContain(`claude-task-report-${nonce}`);
+    expect(got.files[0]?.path).toContain(`claude-task-report-${nonce}`);
     expect(got.note).toContain(nonce ?? "?");
   });
 
