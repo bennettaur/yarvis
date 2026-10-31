@@ -305,9 +305,10 @@ R11; a bare "step N" means the full run's step.
   previous `review.json`. Otherwise the local files aren't the run that was
   posted.
 - **R3. Decide whether a recheck is enough.** The PR's changed files are
-  `git diff --name-only origin/<baseRefName>...HEAD`. The fix diff is
-  `git diff <previous head> HEAD -- <those files>`. It compares the two
-  snapshots, so it works after a rebase or force-push too. Limiting it to the
+  `git diff --no-renames --name-only origin/<baseRefName>...HEAD`, with
+  renames off to match `collect`. The fix diff is
+  `git diff --no-renames <previous head> HEAD -- <those files>`. It compares
+  the two snapshots, so it works after a rebase or force-push too. Limiting it to the
   PR's own files keeps out base-branch changes to other files, whether a merge
   or a rebase brought them in. Do a full run instead, and say why, when any of
   these hold:
@@ -315,8 +316,11 @@ R11; a bare "step N" means the full run's step.
     (a force-push can leave the old one unfetched), or it doesn't match the
     posted report;
   - the fix diff's added plus deleted lines (`git diff --shortstat`) are more
-    than a third of the PR's, or it changes a file the previous facts'
-    `files` doesn't list.
+    than a third of the PR's;
+  - the PR's changed files include one the previous facts' `files` doesn't
+    list. Check the whole list, not just the fix diff: a PR that undoes a
+    base-branch change to a file it didn't touch before leaves that file's
+    fix diff empty.
 - **R4. Check it can merge**, as in step 1. Reuse the previous review's `goal`
   unless the PR's title or description changed what it is for.
 - **R5. Collect the facts again**, as in step 3. Coverage, the baseline and
