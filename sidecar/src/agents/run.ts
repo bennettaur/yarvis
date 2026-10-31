@@ -1,4 +1,6 @@
 import { generateText, stepCountIs, type Tool } from "ai";
+import { yarvisToolType } from "../activity/classify.ts";
+import { type ActivityType, reportYarvisActivity } from "../activity/hub.ts";
 import { builtinIdForName, nameForBuiltinId } from "../agentTools/registry.ts";
 import { listDisabledToolIds } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
@@ -10,13 +12,18 @@ import {
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { resolveComplexityModel } from "../llm/complexity.ts";
+import {
+  type ComplexityTier,
+  isComplexityTier,
+  resolveComplexityModel,
+} from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import type { SpecialistDefinition } from "./catalog.ts";
 import { findSpecialist } from "./catalog.ts";
+import { consultDecisionSpecialist } from "./decide.ts";
 
 /**
  * Running a specialist: one bounded, tool-limited turn that returns text.
@@ -185,12 +192,19 @@ export function materialBlock(material: string, nonce: string): string {
 /**
  * Resolves a specialist's own choice of model, from whichever of `provider`/
  * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
- * sets both, so this never has to choose between them. Falls back to the
- * default chat model when the specialist named neither.
+ * sets both, so this never has to choose between them. When it named neither,
+ * the decision model may pick a tier for the task; otherwise, or when it can't,
+ * this falls back to the default chat model.
+ *
+ * A specialist with `unattended` grants is never routed. It reads text others
+ * wrote while holding tools nobody approves per call, so the task text must
+ * not be able to talk it down onto a smaller, easier-to-steer model.
  */
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
+  task: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -198,7 +212,25 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
+  if (specialist.unattended.length === 0) {
+    const routed = await routedTier(config, task, options);
+    if (routed) return resolveComplexityModel(config, routed);
+  }
   return defaultProviderModel(config);
+}
+
+async function routedTier(
+  config: Config,
+  task: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch },
+): Promise<ComplexityTier | null> {
+  const answer = await consultDecisionSpecialist(config, "routeComplexity", "complexity-router", {
+    input: task,
+    ...options,
+  });
+  // The router's `choices` can be overridden by a user file, so its answer is
+  // checked rather than trusted to be a tier.
+  return answer && isComplexityTier(answer.choice) ? answer.choice : null;
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
@@ -223,11 +255,14 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
  */
 export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
   const { config, db, specialist, task, material, signal } = input;
+  if (specialist.kind === "decision") {
+    throw new Error(`"${specialist.name}" is a decision specialist and can't run a task`);
+  }
 
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, specialist);
+      : await specialistModel(config, specialist, task, { signal });
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 
@@ -259,6 +294,10 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const prompt = material ? `${task}\n\n${materialBlock(material, nonce)}` : task;
 
+  const report = (type: ActivityType, label: string) =>
+    reportYarvisActivity(specialist.name, type, label);
+
+  report("spawn", "delegated");
   try {
     const result = await generateText({
       model,
@@ -267,7 +306,14 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
       tools,
       stopWhen: stepCountIs(specialist.maxSteps),
       abortSignal: signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS),
+      onStepFinish: (step) => {
+        for (const part of step.content) {
+          if (part.type === "tool-call") report(yarvisToolType(part.toolName), part.toolName);
+          else if (part.type === "tool-error") report("error", `${part.toolName} failed`);
+        }
+      },
     });
+    report("subagent_done", "run complete");
     return {
       specialist: specialist.name,
       text: result.text,
@@ -278,6 +324,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // The provider error carries the request and often the key; log the
     // redacted form and re-throw something the caller can show.
     console.error(`[agents] specialist ${specialist.name} failed:`, describeError(e));
+    report("error", "run failed");
     throw new Error(`specialist "${specialist.name}" failed`);
   }
 }

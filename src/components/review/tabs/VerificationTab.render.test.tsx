@@ -254,7 +254,7 @@ describe("VerificationTab", () => {
     expect(text).toContain("Estimated cost: about $1.40, against a budget of $2.00.");
     // Nothing is left out any more, so the warning never says so.
     expect(text).not.toContain("leave some files out");
-    expect(text).not.toContain("may hit the budget");
+    expect(text).not.toContain("over the budget");
 
     const cancel = [...host.querySelectorAll('[role="alert"] button')].find(
       (b) => b.textContent === "Cancel",
@@ -295,7 +295,7 @@ describe("VerificationTab", () => {
       "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
     );
     expect(text).toContain("about $3.20, against a budget of $2.00");
-    expect(text).toContain("may hit the budget and stop before it answers");
+    expect(text).toContain("That's over the budget, and the run won't stop when it reaches it");
     // A list that folds sits in a block, not inside a paragraph.
     expect(host.querySelector("p details")).toBeNull();
   });

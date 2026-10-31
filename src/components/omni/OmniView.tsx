@@ -5,7 +5,8 @@ import {
   type Spec,
 } from "@json-render/core";
 import { JSONUIProvider, Renderer } from "@json-render/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LayoutDashboardIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listProviders, type ProviderId, type ProviderInfo } from "../../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import {
@@ -18,9 +19,17 @@ import {
 } from "../../lib/omni";
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "../ai-elements/conversation";
+import { Loader } from "../ai-elements/loader";
+import { Message, MessageContent, MessageLabel } from "../ai-elements/message";
 import ChatComposer from "../ChatComposer";
 import SplitPane, { usePersistedRatio } from "../SplitPane";
-import ThinkingIndicator, { Spinner } from "../ThinkingIndicator";
+import ThinkingIndicator from "../ThinkingIndicator";
 
 interface Display {
   role: "user" | "assistant";
@@ -66,6 +75,20 @@ function loadMessages(): Display[] {
   }
 }
 
+/**
+ * One turn of the builder's conversation, in the chat's message layout. Kept as
+ * plain text rather than markdown: the replies are short notes on what changed
+ * in the layout, and the layout itself is the real answer.
+ */
+function BuilderTurn({ from, content }: { from: Display["role"]; content: string }) {
+  return (
+    <Message from={from}>
+      <MessageLabel>{from}</MessageLabel>
+      <MessageContent className="whitespace-pre-wrap">{content}</MessageContent>
+    </Message>
+  );
+}
+
 export default function OmniView() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -84,7 +107,6 @@ export default function OmniView() {
   );
   // Fraction of the width given to the canvas when the builder is expanded.
   const [canvasRatio, setCanvasRatio] = usePersistedRatio("yarvis.omni.canvasRatio", 0.72);
-  const threadRef = useRef<HTMLDivElement>(null);
 
   // The catalog defines what the agent may compose; turn it into a system
   // prompt once. `inline` mode = converse first, then emit JSONL spec patches.
@@ -132,10 +154,6 @@ export default function OmniView() {
     if (messages.length) localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages));
     else localStorage.removeItem(MESSAGES_KEY);
   }, [messages]);
-
-  useEffect(() => {
-    threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, []);
 
   const refreshLayouts = useCallback(async () => {
     try {
@@ -317,7 +335,7 @@ export default function OmniView() {
           </div>
         ) : busy ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-400">
-            <Spinner />
+            <Loader />
             Generating your layout…
           </div>
         ) : (
@@ -458,26 +476,23 @@ export default function OmniView() {
         </div>
       </div>
 
-      <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {messages.length === 0 && !streaming && (
-          <p className="text-sm text-zinc-600">
-            Describe the layout you want. Follow-ups refine the current view.
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{m.role}</div>
-            <div className="whitespace-pre-wrap text-zinc-100">{m.content}</div>
-          </div>
-        ))}
-        {streaming && (
-          <div className="text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">assistant</div>
-            <div className="whitespace-pre-wrap text-zinc-100">{streaming}</div>
-          </div>
-        )}
-        {busy && !streaming && <ThinkingIndicator />}
-      </div>
+      <Conversation className="min-h-0">
+        <ConversationContent className="gap-4">
+          {messages.length === 0 && !streaming && (
+            <ConversationEmptyState
+              icon={<LayoutDashboardIcon className="size-6" />}
+              title="No layout yet"
+              description="Describe the layout you want. Follow-ups refine the current view."
+            />
+          )}
+          {messages.map((m, i) => (
+            <BuilderTurn key={i} from={m.role} content={m.content} />
+          ))}
+          {streaming && <BuilderTurn from="assistant" content={streaming} />}
+          {busy && !streaming && <ThinkingIndicator />}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
 
       {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
 
@@ -488,7 +503,7 @@ export default function OmniView() {
         busy={busy}
         placeholder="Describe a layout..."
         submitLabel="Build"
-        className="flex gap-2 border-t border-zinc-800 p-3"
+        className="border-t border-zinc-800 p-3"
       />
     </aside>
   );

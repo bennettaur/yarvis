@@ -1,3 +1,4 @@
+import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
@@ -6,11 +7,18 @@ import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT, useReasoningPreference } from "../lib/useReasoningPreference";
 import { useVoice } from "../lib/useVoice";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+} from "./ai-elements/conversation";
+import { PromptInputSelect } from "./ai-elements/prompt-input";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
 import ToolApprovalBar from "./ToolApprovalBar";
+import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
 
 const EMPTY_HINT =
@@ -48,7 +56,6 @@ export default function ChatPanel({
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
   const [reasoning, setReasoning] = useReasoningPreference();
-  const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const addSession = useCallback((session: ChatSession) => {
@@ -126,16 +133,6 @@ export default function ChatPanel({
     })();
   }, [active]);
 
-  // Keep the thread pinned to the newest message as it grows; skipped while
-  // hidden (a layout read+write per streamed token) and re-pinned on return.
-  // The body doesn't read messages/streaming, but the effect must re-run as the
-  // thread does.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
-  useEffect(() => {
-    if (!active) return;
-    threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [active, messages, streaming, activity]);
-
   // Clear only once the turn is under way: `send` declines while the provider
   // list is still loading, and a message that vanished without being sent is
   // worse than a button that briefly does nothing.
@@ -148,18 +145,19 @@ export default function ChatPanel({
   return (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => void newChat().then(() => composerRef.current?.focus())}
-          className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800"
         >
+          <PlusIcon />
           New chat
-        </button>
+        </Button>
         <select
           title={SESSION_HINT}
           value={sessionId ?? ""}
           onChange={(e) => e.target.value && void loadSession(e.target.value)}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
+          className="h-8 min-w-0 max-w-80 truncate rounded-md border border-input bg-input/30 px-2 text-sm text-foreground outline-none hover:bg-input/50 focus-visible:border-ring"
         >
           <option value="">— session —</option>
           {sessions.map((s) => (
@@ -168,61 +166,22 @@ export default function ChatPanel({
             </option>
           ))}
         </select>
-        <div className="ml-auto flex items-center gap-2">
-          <label title={REASONING_HINT} className="flex items-center gap-1 text-xs text-zinc-400">
-            <input
-              type="checkbox"
-              checked={reasoning}
-              onChange={(e) => setReasoning(e.target.checked)}
-            />
-            Thinking
-          </label>
-          <select
-            title={PROVIDER_HINT}
-            value={provider}
-            onChange={(e) => {
-              const id = e.target.value as ProviderId;
-              setProvider(id);
-              setModel(modelsFor(id)[0] ?? "");
-            }}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-          >
-            {providers.map((p) => (
-              <option key={p.id} value={p.id} disabled={!p.available}>
-                {p.label}
-                {p.available ? "" : " (no key)"}
-              </option>
-            ))}
-          </select>
-          <select
-            title={MODEL_HINT}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
-          >
-            {(provider ? modelsFor(provider) : []).map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
 
-      <div
-        ref={threadRef}
-        className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/50 p-5"
-      >
-        <ChatMessages
-          messages={messages}
-          streaming={streaming}
-          busy={busy}
-          emptyHint={EMPTY_HINT}
-          thinking={thinking}
-          activity={activity}
-          onRewind={rewind}
-        />
-      </div>
+      <Conversation className="rounded-xl border border-border bg-zinc-900/50">
+        <ConversationContent>
+          <ChatMessages
+            messages={messages}
+            streaming={streaming}
+            busy={busy}
+            emptyHint={EMPTY_HINT}
+            thinking={thinking}
+            activity={activity}
+            onRewind={rewind}
+          />
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
 
       {/* Off screen, an `A` would answer a call nobody can see. */}
       <ToolApprovalBar
@@ -239,14 +198,9 @@ export default function ChatPanel({
         <ErrorNotice
           error={error}
           actions={
-            <button
-              type="button"
-              onClick={retry}
-              disabled={busy}
-              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-            >
+            <Button variant="outline" size="xs" onClick={retry} disabled={busy}>
               Retry
-            </button>
+            </Button>
           }
         />
       )}
@@ -263,6 +217,49 @@ export default function ChatPanel({
         maxHeight={360}
         onStop={stop}
         inputRef={composerRef}
+        tools={
+          <>
+            <label
+              title={REASONING_HINT}
+              className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <input
+                type="checkbox"
+                checked={reasoning}
+                onChange={(e) => setReasoning(e.target.checked)}
+                className="accent-indigo-500"
+              />
+              Thinking
+            </label>
+            <PromptInputSelect
+              title={PROVIDER_HINT}
+              value={provider}
+              onChange={(e) => {
+                const id = e.target.value as ProviderId;
+                setProvider(id);
+                setModel(modelsFor(id)[0] ?? "");
+              }}
+            >
+              {providers.map((p) => (
+                <option key={p.id} value={p.id} disabled={!p.available}>
+                  {p.label}
+                  {p.available ? "" : " (no key)"}
+                </option>
+              ))}
+            </PromptInputSelect>
+            <PromptInputSelect
+              title={MODEL_HINT}
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            >
+              {(provider ? modelsFor(provider) : []).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </PromptInputSelect>
+          </>
+        }
       />
 
       <VoiceControls voice={voice} />

@@ -724,6 +724,8 @@ describe("verification report", () => {
     quality: pass,
   };
   let budget: number;
+  // Makes startClaudeRun throw before it records a run: it reads `program` first.
+  let startFails: boolean;
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -783,7 +785,14 @@ cat "${fakeDir}/result.jsonl"`,
         verification: {
           loadDetail: async () => detail,
           settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
-          run: { program, registry, instance: "test" },
+          run: {
+            get program(): string {
+              if (startFails) throw new Error("no Claude Code here");
+              return program;
+            },
+            registry,
+            instance: "test",
+          },
         },
       }),
     );
@@ -838,6 +847,7 @@ cat "${fakeDir}/result.jsonl"`,
   beforeEach(async () => {
     await sql`TRUNCATE agent_runs`;
     budget = 0.5;
+    startFails = false;
     setUpFake();
   });
 
@@ -904,7 +914,8 @@ cat "${fakeDir}/result.jsonl"`,
     expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
-    // context is readable, and the settings chose the model and budget.
+    // context is readable, the settings chose the model, and nothing caps the
+    // run's spend because the budget only warns.
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
@@ -921,8 +932,15 @@ cat "${fakeDir}/result.jsonl"`,
     );
     // Too big for one agent, so split by lines across reading groups.
     expect(indexFile).toContain("patches/huge.txt.diff lines 1-");
+    // Each group's exact patches, for the agents handed that GROUP.
+    expect(readFileSync(join(contextDir, "groups/1.md"), "utf8")).toContain(
+      "\npatches/big.txt.diff\n",
+    );
+    expect(readFileSync(join(contextDir, "groups/2.md"), "utf8")).toContain(
+      "\npatches/huge.txt.diff lines 1-",
+    );
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
-    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
@@ -1025,10 +1043,11 @@ cat "${fakeDir}/result.jsonl"`,
 
   it("removes the context folder and records nothing when the run can't start", async () => {
     const { wsId, prId } = await readyWorkspace();
-    budget = 0;
+    startFails = true;
     const before = contextDirs();
     const res = await verify("POST", wsId, prId);
     expect(res.status).toBe(500);
+    expect(await res.text()).toContain("no Claude Code here");
     expect(contextDirs()).toEqual(before);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
@@ -1226,6 +1245,7 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:rereviewer");
+    expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob"]);
