@@ -76,6 +76,7 @@ let settings: Settings = {
   onePasswordItem: null,
   colorTheme: null,
   terminalFontSize: null,
+  attentionAnimation: null,
 };
 
 const presentSecrets = new Set(config.presentSecrets);
@@ -110,6 +111,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
       return updateSettings({ colorTheme: (args.value as string | null) || null });
     case "set_terminal_font_size":
       return updateSettings({ terminalFontSize: args.value as number | null });
+    case "set_attention_animation":
+      return updateSettings({ attentionAnimation: args.value as boolean | null });
     case "set_agent":
       // The core stores a blank field as unset.
       return updateSettings({

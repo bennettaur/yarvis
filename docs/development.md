@@ -431,7 +431,8 @@ sidecar/        Bun + TS service (Hono)
                    OAuth credentials and a signed-in GitHub token, ringing alarms)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
-  src/llm/         provider resolution and the model catalog (catalog.ts)
+  src/llm/         provider resolution, the model catalog (catalog.ts) and
+                   the decision model (decision.ts)
   src/voice/       speech to text and text to speech
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
@@ -443,7 +444,8 @@ sidecar/        Bun + TS service (Hono)
   src/todos/       the assistant's own todo list
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/headsDown/   the heads-down loop: passes, its tool policy, questions and messages
-  src/agents/      specialists and bounded delegated runs
+  src/agents/      specialists and bounded delegated runs; decision
+                   specialists (decide.ts) and their playground route
   src/agentRuns/   headless Claude Code runs streamed to the UI, and the
                    Claude Code plugins shipped to them
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with

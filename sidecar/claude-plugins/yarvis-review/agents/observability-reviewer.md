@@ -11,8 +11,8 @@ right volume and level, without leaking anything?
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch of source code other than tests: not tests, docs,
-generated code, lockfiles or vendored code.
+Read every patch in your group. Your findings are about source code other
+than tests; configuration can show where its logs and metrics go.
 
 Before judging, grep for how the codebase already logs and reports errors (its
 logger, its prefixes, its metrics client, if any) and hold the PR to that.
