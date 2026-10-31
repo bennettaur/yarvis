@@ -94,8 +94,9 @@ upgrading Claude Code or changing how those runs are started.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
-APIs. Component tests stub the sidecar client (`src/lib/api`) and render with
-`renderToHtml` from `src/test/render.tsx`.
+APIs. Component tests stub the sidecar client (`src/lib/api`) through
+`stubSidecarApi` in `src/test/sidecarApi.ts` (cleared with `resetSidecarApi`
+in `afterAll`), never their own `mock.module` of it, and render with `renderToHtml` from `src/test/render.tsx`.
 
 ## Git hooks and CI
 
@@ -136,7 +137,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   description carries the verdict. If the PR is a maintainer's, not a draft,
   low risk, and the report has no concerns, the bot also approves it and turns
   on squash auto-merge. A push makes the report stale, so run `/verify-pr`
-  again.
+  again, or `/verify-pr <N> --recheck` to re-verify only what the last report
+  flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
   merges their own PR, since GitHub won't let them approve it. On an outside
@@ -392,9 +394,16 @@ src/            React frontend (Vite + TS + Tailwind)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal,
                 Workspaces, …)
     voice/      the mic button and voice controls shared by the chat surfaces
+    ai-elements/ chat building blocks adapted from Vercel's AI Elements
+                (conversation, message, reasoning, tool, prompt input), on the
+                app's own types and `Markdown`
+    ui/         the shadcn/ui primitives those need (button, badge,
+                collapsible); their colour names map onto the zinc/indigo
+                scale in `index.css`, so themes reach them
     pr/         PR dashboard and embedded review: lists, diffs, context expansion,
                 change minimap, guide panel, insight cards, stack list
     issue/      Issues tab views
+    field/      Agent Field: the canvas and chiptune engine, and its page
     files/      shared file-tree rows
     editor/     CodeMirror 6 wrapper behind the workspace file editor
     review/editor/ read-only Monaco file and diff views for PR review: line
@@ -429,7 +438,8 @@ sidecar/        Bun + TS service (Hono)
                    OAuth credentials and a signed-in GitHub token, ringing alarms)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
-  src/llm/         provider resolution and the model catalog (catalog.ts)
+  src/llm/         provider resolution, the model catalog (catalog.ts) and
+                   the decision model (decision.ts)
   src/voice/       speech to text and text to speech
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
@@ -441,7 +451,8 @@ sidecar/        Bun + TS service (Hono)
   src/todos/       the assistant's own todo list
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/headsDown/   the heads-down loop: passes, its tool policy, questions and messages
-  src/agents/      specialists and bounded delegated runs
+  src/agents/      specialists and bounded delegated runs; decision
+                   specialists (decide.ts) and their playground route
   src/agentRuns/   headless Claude Code runs streamed to the UI, and the
                    Claude Code plugins shipped to them
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
@@ -472,6 +483,8 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
   src/questions/   questions agents ask over MCP, and their answers
+  src/activity/    live agent activity for the Agent Field page: the hub, the
+                   Claude Code hook ingest and the SSE stream
   claude-plugins/  source of the Claude Code plugins headless runs load
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)

@@ -16,6 +16,7 @@ import {
   renameWorkspace,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
+  WORKSPACES_KEY,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
   type WorkspaceRepoStatus,
@@ -160,7 +161,6 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  poll lands per refresh while still being cheap (one local SQL read). */
 const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
-const WORKSPACES_KEY = "workspaces:list";
 const REPOS_KEY = "workspaces:repos";
 
 /** Stable identities so an unloaded resource doesn't re-render the list. */

@@ -47,7 +47,7 @@ export interface VerificationCoverage {
   /** Lockfiles and generated, vendored or minified files whose first page was read. */
   skimmed: { path: string; kind: string }[];
   notExamined: { path: string; reason: string }[];
-  /** Per check: source files in its lane it didn't read itself. */
+  /** Per check: patches it didn't read itself. */
   laneGaps: { check: string; paths: string[] }[];
 }
 
@@ -97,7 +97,7 @@ export interface VerificationSize {
   /** A rough estimate for the configured model. */
   estimatedCostUsd: number;
   budgetUsd: number;
-  /** The estimate is over the budget: the run may stop before it answers. */
+  /** The estimate is over the budget: the UI asks before starting. */
   overBudget: boolean;
 }
 

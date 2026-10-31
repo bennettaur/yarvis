@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail, PrRef } from "../../lib/pr/types";
 import { cachedFetch, primeCache } from "../../lib/resourceCache";
 import { mountForInteraction, renderToHtml, waitFor } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import PrConflictBanner from "./PrConflictBanner";
 
 interface SentRequest {
@@ -20,8 +21,7 @@ let holdReply: Promise<void> | null = null;
 
 // The transport is stubbed rather than lib/pr/conflicts, so the path and body
 // that client builds stay under test.
-mock.module("../../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -42,43 +42,8 @@ mock.module("../../lib/api", () => ({
     const reply = replies.shift() ?? { status: 200, body: null };
     return new Response(JSON.stringify(reply.body), { status: reply.status });
   },
-  // Faithful copy of the real implementation: `mock.module` is process-global,
-  // so a naive stub would leak into other test files' assertions.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
-  streamSSE: () => () => {},
-}));
+  streamSSE: async function* () {},
+});
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 3 };
 const azureRef: PrRef = { provider: "azure", org: "acme", project: "Shop", repo: "web", prId: 9 };
@@ -322,3 +287,5 @@ describe("PrConflictBanner", () => {
     await waitFor(() => sent.length === 2, "the second send");
   });
 });
+
+afterAll(resetSidecarApi);

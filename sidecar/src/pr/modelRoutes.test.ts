@@ -95,13 +95,12 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     expect(await read.json()).toEqual({ model: "opus", maxBudgetUsd: 0.75 });
   });
 
-  it("refuses a model that isn't a Claude Code alias, and a budget out of range", async () => {
-    for (const body of [
-      { model: "--model=x" },
-      { maxBudgetUsd: 0 },
-      { maxBudgetUsd: 500 },
-      { other: 1 },
-    ]) {
+  it("takes a budget of any size, since it only warns", async () => {
+    expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
+  });
+
+  it("refuses a model that isn't a Claude Code alias, and a budget below the minimum", async () => {
+    for (const body of [{ model: "--model=x" }, { maxBudgetUsd: 0 }, { other: 1 }]) {
       expect((await patch(body)).status).toBe(400);
     }
   });
@@ -126,8 +125,12 @@ describe("GET/PATCH /api/pr-models/rereview", () => {
     expect(await verification.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
   });
 
+  it("takes a budget of any size", async () => {
+    expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
+  });
+
   it("refuses values it doesn't know", async () => {
-    for (const body of [{ autoStart: "yes" }, { maxBudgetUsd: 50 }, { model: "gpt" }, { x: 1 }]) {
+    for (const body of [{ autoStart: "yes" }, { maxBudgetUsd: 0.1 }, { model: "gpt" }, { x: 1 }]) {
       expect((await patch(body)).status).toBe(400);
     }
   });

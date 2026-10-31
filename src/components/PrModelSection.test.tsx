@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import PrModelSection from "./PrModelSection";
 
 const PROVIDERS = [
@@ -21,15 +22,7 @@ const calls: { url: string; method: string; body?: string }[] = [];
 /** When set, the next PATCH answers with this status instead of succeeding. */
 let nextPatchStatus: number | null = null;
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that redefines `ensureOk` silently
- * replaces what `api.test.ts` is asserting about (see `SpecialistSection.test.tsx`).
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });
@@ -67,7 +60,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -150,14 +143,15 @@ describe("PrModelSection", () => {
     const budget = mounted.host.querySelector(
       '[aria-label="Verification report budget in US dollars"]',
     ) as HTMLInputElement;
-    enter(budget, "0.75", "input");
+    // No upper limit: the budget only warns.
+    enter(budget, "50", "input");
     budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     await settle();
 
     const saves = calls
       .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
       .map((c) => JSON.parse(c.body ?? "{}"));
-    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 0.75 }]);
+    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 50 }]);
   });
 
   it("saves the What's changed summary's own budget and auto-start", async () => {
@@ -186,7 +180,7 @@ describe("PrModelSection", () => {
     );
   });
 
-  it("refuses a budget out of range without saving it", async () => {
+  it("refuses a budget below the minimum without saving it", async () => {
     const mounted = await mountForInteraction(createElement(PrModelSection));
     unmount = mounted.unmount;
     await settle();
@@ -194,14 +188,16 @@ describe("PrModelSection", () => {
     const budget = mounted.host.querySelector(
       '[aria-label="Verification report budget in US dollars"]',
     ) as HTMLInputElement;
-    enter(budget, "500", "input");
+    enter(budget, "0.1", "input");
     budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     await settle();
 
-    expect(mounted.host.textContent).toContain("The budget must be between");
+    expect(mounted.host.textContent).toContain("The budget must be at least $0.25.");
     expect(budget.value).toBe("2");
     expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
       false,
     );
   });
 });
+
+afterAll(resetSidecarApi);

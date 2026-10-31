@@ -176,8 +176,13 @@ describe("coverage from a run's reads", () => {
     ]);
   });
 
-  it("says which source files a check didn't read in its own lane", () => {
-    const index = [entry("src/core.ts"), entry("src/core.test.ts"), entry("docs/x.md")];
+  it("says which patches a check didn't read itself, tests and docs included", () => {
+    const index = [
+      entry("src/core.ts"),
+      entry("src/core.test.ts"),
+      entry("docs/x.md"),
+      entry("package-lock.json", { skim: "lockfile" }),
+    ];
     const tests = delegate("test-reviewer");
     const perf = delegate("performance-reviewer");
     const whole = (path: string, parent: string) =>
@@ -188,24 +193,21 @@ describe("coverage from a run's reads", () => {
       whole("src/core.test.ts", tests.id),
       whole("docs/x.md", tests.id),
       whole("src/core.ts", perf.id),
+      readCall({ file_path: `${contextDir}/patches/package-lock.json.diff`, limit: 200 }).line,
     ]);
     const { coverage, volumes } = coverageOf(index, activity, { ...where, lanes: true });
     expect(coverage.notExamined).toEqual([]);
-    // Each lane-bound check that didn't read src/core.ts itself, the test reviewer among them.
-    expect(coverage.laneGaps.map((g) => g.check)).toEqual([
-      "Risk",
-      "Completeness",
-      "Test quality",
-      "Complexity",
-      "Comment quality",
-      "Observability",
-      "Code quality",
-    ]);
-    expect(coverage.laneGaps.every((g) => g.paths.join() === "src/core.ts")).toBe(true);
-    // Each agent's reading: a whole 40 KB patch per Read.
+    const gaps = Object.fromEntries(coverage.laneGaps.map((g) => [g.check, g.paths]));
+    expect(gaps["Test quality"]).toEqual(["src/core.ts"]);
+    expect(gaps.Performance).toEqual(["src/core.test.ts", "docs/x.md"]);
+    // A check that read nothing missed every patch; skimmed bulk is never owed a whole read.
+    expect(gaps.Risk).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
+    expect(Object.keys(gaps)).toHaveLength(8);
+    // Each agent's reading: a whole 40 KB patch per Read, and the lockfile's first page.
     expect(volumes.map((v) => [v.name, v.bytes])).toEqual([
       ["yarvis-review:test-reviewer", 80_000],
       ["yarvis-review:performance-reviewer", 40_000],
+      ["main", 6667],
     ]);
   });
 

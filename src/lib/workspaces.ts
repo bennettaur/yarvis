@@ -159,6 +159,9 @@ async function readError(res: Response, action: string): Promise<never> {
   );
 }
 
+/** The cache key the workspace list is read under, shared by every view that shows it. */
+export const WORKSPACES_KEY = "workspaces:list";
+
 export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   const res = await sidecarFetch("/api/workspaces");
   if (!res.ok) return readError(res, "list workspaces");

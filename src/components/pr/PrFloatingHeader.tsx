@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   applyReviewAction,
   disableAutoMerge,
@@ -14,6 +14,7 @@ import type {
   PrDetail,
   PrRef,
   PrSummary,
+  ReviewerState,
   SeenCommits,
 } from "../../lib/pr/types";
 import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
@@ -155,6 +156,8 @@ interface ActionConfig {
   requireBody: boolean;
   placeholder: string;
   confirmLabel: string;
+  /** The viewer's standing review that makes this action already done, and what to show instead. */
+  done?: { when: ReviewerState; label: string; title: string };
 }
 
 const APPROVE: ActionConfig = {
@@ -165,6 +168,7 @@ const APPROVE: ActionConfig = {
   requireBody: false,
   placeholder: "Optional comment for the approval…",
   confirmLabel: "Approve",
+  done: { when: "approved", label: "✓ Approved", title: "You approved this PR" },
 };
 
 const REQUEST_CHANGES: ActionConfig = {
@@ -297,6 +301,10 @@ function MergeMenu({
   );
 }
 
+function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState {
+  return action === "approve" ? "approved" : "changes_requested";
+}
+
 /**
  * The review and merge actions a PR offers — publish, approve, request changes,
  * merge, auto-merge — with the in-flight and error state they share. A hook so
@@ -322,14 +330,25 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   // review in flight don't clobber each other's spinner.
   const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
   const [mergePending, setMergePending] = useState(false);
+  // The verdict just submitted, keyed by PR, so the buttons reflect it while
+  // the refetched detail is on its way. `PrActionButtons` drops it once that
+  // detail lands, so a later re-request or dismissal still shows.
+  const [submittedReview, setSubmittedReview] = useState<{
+    prKey: string;
+    state: ReviewerState;
+  } | null>(null);
+  const clearSubmittedReview = useCallback(() => setSubmittedReview(null), []);
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
     setError(null);
     try {
       await applyReviewAction(prRef, action, body, seen);
+      if (action !== "publish") {
+        setSubmittedReview({ prKey: refKey(prRef), state: reviewStateFor(action) });
+        invalidateLastReview(prRef);
+      }
       invalidatePr(prRef);
-      if (action !== "publish") invalidateLastReview(prRef);
       setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -375,6 +394,8 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     mergeMenu,
     setMergeMenu,
     mergePending,
+    submittedReview: submittedReview?.prKey === refKey(prRef) ? submittedReview.state : undefined,
+    clearSubmittedReview,
     busy: pending !== null || mergePending,
     run,
     runMerge,
@@ -408,12 +429,30 @@ export function PrActionButtons({
   const actions = actionsForStatus(status);
   const mergeControls = mergeControlsFor(detail, status);
   const { open, setOpen, pending, busy, mergeMenu, setMergeMenu, mergePending } = state;
+  const viewerReview = state.submittedReview ?? detail?.viewerReview;
+  // A newly loaded detail is the provider's answer, which outranks the verdict
+  // kept from the submit. A null detail is a reload in flight, not an answer.
+  const { clearSubmittedReview } = state;
+  useEffect(() => {
+    if (detail) clearSubmittedReview();
+  }, [detail, clearSubmittedReview]);
 
   return (
     <div className="flex shrink-0 items-center gap-2">
       {leading}
       <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
       {actions.map((cfg) => {
+        if (cfg.done && viewerReview === cfg.done.when) {
+          return (
+            <span
+              key={cfg.key}
+              title={cfg.done.title}
+              className="rounded-md border border-emerald-700 bg-emerald-950/60 px-3 py-1.5 text-xs font-medium text-emerald-200"
+            >
+              {cfg.done.label}
+            </span>
+          );
+        }
         const isPending = pending === cfg.key;
         const isOpen = open === cfg.key;
         const onClick = cfg.confirmInline

@@ -4,11 +4,10 @@ import { mock } from "bun:test";
  * Per-test answers for the review workspace's clients, for components that
  * call them directly rather than through a primed resource cache.
  *
- * Many suites replace `lib/api` for the whole run with partial stubs, so a
- * test that spies on `sidecarFetch` sees whichever stub loaded last, and its
- * answers depend on file order. Stubbing one level up avoids that: these
- * modules are registered once, pass every call through to the real client
- * unless a test has set an override, and `resetReviewApi` clears them.
+ * Stubbing one level up lets a test answer the one call it cares about
+ * without routing `sidecarFetch` paths. These modules are registered once,
+ * pass every call through to the real client unless a test has set an
+ * override, and `resetReviewApi` clears them.
  */
 
 type ReviewApi = typeof import("../lib/reviewWorkspaces/api");

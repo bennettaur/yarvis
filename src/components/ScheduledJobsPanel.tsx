@@ -44,7 +44,8 @@ function describeNext(status: ScheduledJobStatus): string {
 export default function ScheduledJobsPanel() {
   const jobsRes = useCachedResource<ScheduledJobStatus[]>(JOBS_KEY, listScheduledJobs);
   const specialistsRes = useCachedResource<Specialist[]>("jobs:specialists", async () =>
-    (await listSpecialists()).specialists.filter((s) => s.enabled),
+    // A decision specialist picks an option; it can't run a job's prompt.
+    (await listSpecialists()).specialists.filter((s) => s.enabled && s.kind !== "decision"),
   );
   const jobs = jobsRes.data ?? NO_JOBS;
 

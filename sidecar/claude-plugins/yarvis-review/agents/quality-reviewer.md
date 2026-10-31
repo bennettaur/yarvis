@@ -11,8 +11,8 @@ errors properly, and does it read clearly?
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch of source code other than tests: not tests, docs,
-generated code, lockfiles or vendored code.
+Read every patch in your group. Your findings are about source code other
+than tests; tests and configuration show the codebase's own conventions.
 
 The codebase's own conventions come first. Before flagging a practice, grep
 for how the surrounding code does the same thing; a PR that matches its

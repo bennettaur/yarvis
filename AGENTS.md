@@ -140,7 +140,11 @@ back to ad-hoc.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
   `src/test/setup.ts` registers the DOM, pins the timezone, and stubs Tauri
   runtime APIs. Component tests stub the sidecar API client
-  (`src/lib/api`) and render with `src/test/render.tsx`'s `renderToHtml`.
+  (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
+  clear it with `resetSidecarApi` in `afterAll`, never with their own
+  `mock.module` of it: that replaces the module for the whole run, so a
+  partial stub breaks whichever file loads next. They render with
+  `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
@@ -616,12 +620,16 @@ back to ad-hoc.
   so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
   security default managed settings seat. Claude Code's core agents and skills
   aren't plugins and stay.
-  The permission mode is always set and never one that approves on its own, a
-  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  The permission mode is always set and never one that approves on its own,
+  the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
   caller interpolates), and no session is saved, so the transcript never
   reaches the nightly session digest and from there memory.
-  `agentRuns/canary.ts` checks all of that against the real CLI.
+  `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
+  (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
+  setting only warns, and a run cut off at a cap ends with nothing to show
+  for what it spent. The timeout still bounds a runaway; `maxTurns` limits
+  only the main thread.
   Cancelling kills the process group, since the tools a run starts outlive a
   kill aimed only at Claude Code; so does the sidecar exiting, and the startup
   sweep kills what a crashed sidecar left, matched by pid and start time. The
@@ -655,6 +663,20 @@ back to ad-hoc.
   improves with the app while a user's definition stays theirs, with no
   seed-once rule and nothing to reset. Adding a specialist is writing a file,
   which is what "let the agent reach for one it needs" requires.
+  - A file with `kind: decision` is a decision specialist: no tools, no model
+    of its own, and one call to the decision model that picks one of a set of
+    options (`agents/decide.ts`). Callers go through
+    `consultDecisionSpecialist`, which answers null when the feature's toggle
+    is off or the call fails, and the caller then does what it did before. Same
+    rule as auto mode: a failed or unsure decision model means the old
+    behavior, never a guessed answer. `runSpecialistDefinition` refuses one, so
+    it can't be delegated to or scheduled. A task specialist with `unattended`
+    grants is kept out of both shipped uses: the picker never offers it and
+    complexity routing never changes its model, because the task text it is
+    judged on can be shaped by what other people wrote. The picker only
+    suggests: `delegate` with no name returns the pick and runs nothing, so a
+    run always takes a call that names its specialist, which is what an
+    approval prompt on `delegate` shows.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to
