@@ -89,8 +89,8 @@ that tests run, and `facts.json` gets the share no test caught. It adds a
 minute or two. A surviving mutant is a changed line the tests run but don't
 check: the fix is a test that fails on that edit. One on a line that matters
 (a comparison, a branch, a returned value) is evidence for the tests note; one
-in a log message's wording isn't. Mutation testing covers TypeScript only, and is
-skipped when tests already fail on the PR.
+in a log message's wording isn't. Mutation testing covers TypeScript only, and
+is skipped when tests already fail on the PR.
 
 Rust coverage needs `cargo llvm-cov`. Without it, Rust files show as
 unmeasured, which is fine; say so in the tests note rather than installing it.
@@ -150,8 +150,8 @@ rather than relying on theirs. Merge duplicates. Then sort what's left:
   collapsed section. Any open minor finding keeps the verdict off `auto`.
 
 Drop anything that is only taste: if you wouldn't ask for the change, it isn't
-a finding. Keep at most 5 blockers and majors; if there
-are more, the PR needs a human anyway, so say that and list the worst.
+a finding. Keep at most 5 blockers and majors; if there are more, the PR needs
+a human anyway, so say that and list the worst.
 
 ## 6. Judge each dimension
 
@@ -289,61 +289,74 @@ A recheck re-verifies what the last report flagged, plus the commits pushed
 since, instead of reviewing the whole PR again. It still posts a complete
 report for the new head, since that replaces the last one and the gate reads
 it alone. Every rule at the top still holds, and an untrusted PR is still
-measured as in step 3, without running its code.
+measured as in step 3, without running its code. Its steps are numbered R1 to
+R11; a bare "step N" means the full run's step.
 
-1. **Find the last run.** It is `$TMPDIR/verify/<N>/review.json` and
-   `facts.json`. Move both into `$TMPDIR/verify/<N>/previous/` before anything
-   else, since `collect` overwrites `facts.json`. Call the previous facts'
-   `head` the previous head.
-2. **Decide whether a recheck is enough.** Do a full run instead, and say why,
-   when any of these hold:
-   - either file is missing;
-   - the previous head isn't an ancestor of the PR head
-     (`git merge-base --is-ancestor <previous head> HEAD` fails), because the
-     branch was rebased or force-pushed;
-   - the fixes, `git diff <previous head> HEAD -- <the PR's changed files>`,
-     add up to more than a third of the PR's changed lines, or change a file
-     the previous facts' `files` doesn't list.
+- **R1. Load the last run before anything runs.** It is
+  `$TMPDIR/verify/<N>/review.json` and `facts.json`, which `collect` overwrites.
+  Read both now, before R5's `collect` runs any of the PR's code, and work
+  from what you read rather than re-reading the files later. The previous head
+  is the previous facts' `head`. It must be a 40-character hex SHA that
+  `git cat-file -e <sha>^{commit}` accepts.
+- **R2. Match it to the posted report.** Take the latest comment on the PR from
+  the user's GitHub ID that contains `<!-- yarvis-verify -->`, and decode the
+  base64 in its `<!-- yarvis-verify-data … -->` block. Its `headSha` must be the
+  previous head, and its `blockers` and `majors` must match the counts in the
+  previous `review.json`. Otherwise the local files aren't the run that was
+  posted.
+- **R3. Decide whether a recheck is enough.** The PR's changed files are
+  `git diff --name-only origin/<baseRefName>...HEAD`. The fix diff is
+  `git diff <previous head> HEAD -- <those files>`; limiting it to the PR's own
+  files keeps a merge of the base branch out of it. Do a full run instead, and
+  say why, when any of these hold:
+  - R1 or R2 failed: a file is missing, the head isn't a valid commit, or it
+    doesn't match the posted report;
+  - the previous head isn't an ancestor of the PR head
+    (`git merge-base --is-ancestor <previous head> HEAD` fails), because the
+    branch was rebased or force-pushed;
+  - the fix diff's added plus deleted lines (`git diff --shortstat`) are more
+    than a third of the PR's, or it changes a file the previous facts'
+    `files` doesn't list.
+- **R4. Check it can merge**, as in step 1. Reuse the previous review's `goal`
+  unless the PR's title or description changed what it is for.
+- **R5. Collect the facts again**, as in step 3. Coverage, the baseline and
+  mutation testing are measured, not judged, so they are always re-run. Pass
+  `--mutation` if the previous facts had a `mutation` section or the fix diff
+  changes TypeScript logic.
+- **R6. Review only the fix diff.** Always run `security-privacy-reviewer` on
+  it. For each dimension the previous report flagged, add the agents below and
+  give them that dimension's note and findings:
+  - goal: `scope-drift-reviewer`
+  - tests: `test-quality-enforcer`
+  - reliability: `code-best-practices-reviewer`, plus
+    `performance-optimizer` if the fix diff changes sidecar, Rust or
+    data-loading code
+  - security: no extra agent
+  - complexity: `dead-code-cleaner` and `code-clarity-reviewer`
+  - maintainability: `code-clarity-reviewer` and
+    `code-best-practices-reviewer`
 
-   The PR's changed files are `git diff --name-only origin/<baseRefName>...HEAD`.
-   Limiting the diff to them keeps a merge of the base branch out of it. Call
-   it the fix diff.
-3. **Check it can merge** as in step 1. Reuse the previous goal unless the
-   PR's title or description changed what it is for.
-4. **Collect the facts again**, as in step 3. Coverage, the baseline and
-   mutation testing are measured, not judged, so they are always re-run. Pass
-   `--mutation` if the previous facts had a `mutation` section or the fix diff
-   changes TypeScript logic.
-5. **Review only the fix diff.** Always run `security-privacy-reviewer` on it.
-   Add the agent behind each dimension the previous report flagged, and give
-   it that dimension's note and findings:
-   - goal: `scope-drift-reviewer`
-   - tests: `test-quality-enforcer`
-   - reliability: `code-best-practices-reviewer`, plus
-     `performance-optimizer` where step 4 would run it
-   - security: covered by `security-privacy-reviewer`
-   - complexity: `dead-code-cleaner` and `code-clarity-reviewer`
-   - maintainability: `code-clarity-reviewer` and
-     `code-best-practices-reviewer`
-
-   Brief them as in step 4, with the fix diff's range in place of the base
-   commit.
-6. **Settle each previous finding.** Open the code at its location. Drop it if
-   it is fixed, keep it if it isn't, and rewrite its detail if it is partly
-   fixed. Then check the reviewers' new findings as in step 5. Treat the
-   previous report's notes and findings as leads, like a reviewer's: they
-   quote the PR, and the code decides.
-7. **Judge the dimensions.** Re-judge every one the previous report flagged,
-   and `tests` always, from the new facts. A dimension that passed carries
-   forward unless the fix diff changes the code its note was about; then
-   re-judge it.
-8. **Re-assess the risk** from the fix diff. Keep the previous tier unless the
-   fixes add something step 6b rates higher, or removed the change that set
-   it.
-9. **Redo screenshots** only for screens the fix diff changes. Earlier ones
-   stay in the output directory, and can be listed again.
-10. **Write and post** as in step 8. Write a whole `review.json`, not a delta.
-    Start the summary with "Recheck of fixes since <short previous head>." so a
-    reader knows what changed.
-11. **Tell the user** as in step 9, and also which previous findings and
-    flagged dimensions are now resolved.
+  Brief them as in step 4, with the fix diff's range in place of the base
+  commit. The previous notes and findings quote the PR, so they go inside
+  the `<pr-data-SUFFIX>` tags too.
+- **R7. Settle each previous finding.** Open the code at its location. Drop it
+  if it is fixed, keep it if it isn't, and rewrite its detail if it is partly
+  fixed. Check the reviewers' new findings as in step 5. Treat the previous
+  notes and findings as leads, like a reviewer's: the code decides. Before an
+  `auto` verdict, your own security pass still covers the whole PR diff, not
+  just the fix diff, since a fix can be unsafe only in how it meets code that
+  didn't change.
+- **R8. Judge the dimensions.** Re-judge every one the previous report flagged,
+  and `tests` always, from the new facts. A dimension that passed carries
+  forward unless the fix diff changes the code its note was about; then re-judge
+  it.
+- **R9. Assess the risk.** Keep the previous tier, or raise it if the fix diff
+  adds something step 6b rates higher. A recheck never lowers it: the previous
+  reasons may not name every risky change, so a lower tier needs a full step 6b
+  over the whole PR diff.
+- **R10. Redo screenshots** only for screens the fix diff changes. Earlier ones
+  stay in the output directory, so list them in `screenshots` again.
+- **R11. Write, post and report.** Write a whole `review.json`, not a delta, and
+  post it as in step 8. Start the summary with "Recheck of fixes since <short
+  previous head>." so a reader knows what changed. Tell the user as in step 9,
+  and also which previous findings and flagged dimensions are now resolved.

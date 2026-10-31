@@ -208,6 +208,7 @@ describe("renderReport", () => {
     const details = body.split("<details>")[1];
     // Numeric order, so line 9 comes before line 10.
     expect(details.indexOf("src/a.ts:9 ")).toBeLessThan(details.indexOf("src/a.ts:10 "));
+    expect(details).toContain("**Changed lines the tests run but don't check**");
     expect(details).toContain("Add or tighten a test");
     expect(data.flagged).toContain("mutation");
   });
@@ -243,6 +244,7 @@ describe("renderReport", () => {
     expect(headline).toContain("Races on unmount");
     expect(headline).not.toContain("Rename a variable");
     expect(details).toContain("Rename a variable");
+    expect(details).toContain("fix these in this PR");
   });
 });
 
