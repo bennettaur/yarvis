@@ -97,7 +97,7 @@ export interface VerificationSize {
   /** A rough estimate for the configured model. */
   estimatedCostUsd: number;
   budgetUsd: number;
-  /** The estimate is over the budget: the run may stop before it answers. */
+  /** The estimate is over the budget: the UI asks before starting. */
   overBudget: boolean;
 }
 

@@ -219,8 +219,8 @@ one.
   off, and the bulk the agents will only skim.
 - On a large PR, or when the estimated cost is over the report's budget
   (**Settings → PR review**), you are asked first, with a rough cost estimate
-  against the budget. A run that reaches its budget stops without a report,
-  so raise the budget there before running a PR the estimate says is over it.
+  against the budget. The budget only warns: once you choose **Run anyway**,
+  the run finishes whatever it ends up costing.
 
 ### Mutation testing
 
@@ -240,8 +240,9 @@ It runs the PR's code, so it waits for that to be allowed:
 - When the repo has no setup script, the tab asks you to confirm running the
   tests without one first.
 
-Before a pass starts, the tab says how many mutants it may try, what planning
-and explaining can cost (set under **Settings → PR review**), and what the test
+Before a pass starts, the tab says how many mutants it may try, the budget for
+planning and explaining (set under **Settings → PR review**; nothing stops a
+pass that goes over it), and what the test
 sandbox does: no network beyond your machine, writes only to the scratch copy
 and a temp folder, and no reading your home folder beyond your toolchains. The
 sandbox is a second line of defence, not a guarantee, and setup itself is not
@@ -377,8 +378,9 @@ A summary is for one range, from your last review to the checkout's head. When
 the PR has moved on since, the last summary stays in view with a note and
 **Re-run**. By default the agent waits for the button. To have it start when the
 tab opens on changes it hasn't summarised, turn on auto-start under
-**Settings → PR review → What's changed**, where its model and spend ceiling
-are set too ($1 by default).
+**Settings → PR review → What's changed**, where its model and budget
+are set too ($1 by default). Like the verification report's, the budget only
+warns; a run you start finishes even if it goes over.
 
 ### New commits pushed
 
