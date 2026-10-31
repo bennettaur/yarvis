@@ -322,6 +322,11 @@ Azure DevOps rate limits:
 So a badge can lag a change by up to 15 minutes, or a minute for the workspace
 you have open.
 
+The assistant answers questions about a workspace's PR from the same cache.
+When the answer has to be current, for example right after a push or before
+it tells you checks passed, it reads GitHub or Azure DevOps directly instead,
+and that read updates the badges too.
+
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).
 

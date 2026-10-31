@@ -33,6 +33,7 @@ import {
 } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
+import { pollerClients, refreshWorkspacePrs } from "./poller.ts";
 import {
   addRepoToWorkspace,
   archiveWorkspace,
@@ -101,26 +102,41 @@ async function mapLimited<T, R>(
  * Shapes a workspace's cached PR + checks state (populated by the background
  * poller, so it needs no live GitHub call) into a compact per-repo summary the
  * chat model can answer "is there a PR / are checks passing / is it mergeable"
- * from. A repo with no cached row has not been polled yet.
+ * from. A repo with no cached row has not been polled yet. `refreshedFrom` is
+ * when a refresh asked for by the caller started: a repo it didn't reach is
+ * flagged, so a stale answer isn't passed off as a fresh one.
  */
-function summarizeWorkspaceStatus(detail: WorkspaceDetail) {
+function summarizeWorkspaceStatus(detail: WorkspaceDetail, refreshedFrom: Date | null = null) {
   return {
     id: detail.id,
     name: detail.name,
     status: detail.status,
     repos: detail.repos.map((wr) => {
       const pr = wr.pr;
+      const refreshFailed =
+        refreshedFrom !== null &&
+        !(pr?.lastPolledAt && pr.lastPolledAt >= refreshedFrom && !pr.lastError);
+      const refresh = refreshFailed
+        ? {
+            refreshFailed: true,
+            refreshNote: "couldn't read the provider now; this is the cached state",
+          }
+        : {};
       if (!pr || pr.prNumber === null) {
         return {
           repo: wr.repo.name,
           branch: wr.branch,
           pr: null,
           note: pr ? "no PR opened yet" : "not polled yet",
+          lastPolledAt: pr?.lastPolledAt ?? null,
+          lastError: pr?.lastError ?? null,
+          ...refresh,
         };
       }
       return {
         repo: wr.repo.name,
         branch: wr.branch,
+        ...refresh,
         pr: {
           number: pr.prNumber,
           url: pr.prUrl,
@@ -256,6 +272,9 @@ export interface WorkspaceToolDeps {
   /** Overrides how a workspace PR's provider is reached; defaults to the
    *  configured GitHub / Azure DevOps credentials. */
   prSource?: (ref: PrRef) => PrCodeSource | { error: string };
+  /** Overrides how get_workspace_status re-reads workspaces' PRs from their
+   *  providers into the cache; defaults to the poller's batched read. */
+  refreshPrs?: (workspaceIds: string[]) => Promise<void>;
 }
 
 /**
@@ -274,6 +293,9 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
   const recapper = deps.recapActivity ?? recapActivity;
   const sourceFor = deps.prSource ?? ((ref: PrRef) => prSourceFor(config, ref));
+  const refreshPrs =
+    deps.refreshPrs ??
+    ((workspaceIds: string[]) => refreshWorkspacePrs(db, pollerClients(config), workspaceIds));
   // `undefined` means "not overridden" → fall back to a token-backed client;
   // an explicit `null` (or a missing token) means "no GitHub access".
   const github: WorkspaceGitHubClient | null =
@@ -851,26 +873,39 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     get_workspace_status: tool({
       description:
-        "Report the pull-request and CI-check state of workspaces so you can answer whether a PR exists, whether its checks are passing, whether it is mergeable, and where review stands (reviewDecision: approved, changes_requested or review_required; null for a draft or closed PR, or when unknown). Pass a workspaceId (from list_workspaces) for one workspace, or omit it to report every non-archived workspace. Reads cached state refreshed by the background poller, not a live provider call, so a just-created workspace may not be polled yet. For who is reviewing and which checks failed, use get_workspace_pr_detail.",
+        "Report the pull-request and CI-check state of workspaces so you can answer whether a PR exists, whether its checks are passing, whether it is mergeable, and where review stands (reviewDecision: approved, changes_requested or review_required; null for a draft or closed PR, or when unknown). Pass a workspaceId (from list_workspaces) for one workspace, or omit it to report every non-archived workspace. By default this reads the background poller's cache, which costs nothing: the workspace the user has open is about a minute old, any other known PR up to 15 minutes, and a branch with no PR yet can be much older, so a PR opened on it since may not show. Each repo's lastPolledAt says how old its answer is. Pass refresh: true to read the provider now and update the cache first. It spends the user's GitHub or Azure DevOps rate limit, so use it only when the answer must be current: right after a push, before saying checks passed or a PR is ready, or when lastPolledAt is too old for the question. A repo the refresh couldn't reach comes back with refreshFailed and its cached state. For who is reviewing and which checks failed, use get_workspace_pr_detail.",
       inputSchema: z.object({
         workspaceId: z
           .string()
           .uuid()
           .optional()
           .describe("Id of a specific workspace; omit to report all non-archived workspaces"),
+        refresh: z
+          .boolean()
+          .optional()
+          .describe(
+            "Read the provider now instead of answering from the cache. Costs API calls; leave unset unless the answer must be current.",
+          ),
       }),
-      execute: async ({ workspaceId }) => {
+      execute: async ({ workspaceId, refresh }) => {
+        let ids: string[];
+        if (workspaceId) {
+          ids = [workspaceId];
+        } else {
+          const rows = await listWorkspaces(db);
+          ids = rows.filter((w) => w.status !== "archived").map((w) => w.id);
+        }
+        const refreshedFrom = refresh ? new Date() : null;
+        if (refresh) await refreshPrs(ids);
         if (workspaceId) {
           const detail = await getWorkspace(db, workspaceId);
           if (!detail) return { error: "workspace not found" };
-          return summarizeWorkspaceStatus(detail);
+          return summarizeWorkspaceStatus(detail, refreshedFrom);
         }
-        const rows = await listWorkspaces(db);
-        const active = rows.filter((w) => w.status !== "archived");
-        const details = await Promise.all(active.map((w) => getWorkspace(db, w.id)));
+        const details = await Promise.all(ids.map((id) => getWorkspace(db, id)));
         return details
           .filter((d): d is WorkspaceDetail => d !== null)
-          .map(summarizeWorkspaceStatus);
+          .map((d) => summarizeWorkspaceStatus(d, refreshedFrom));
       },
     }),
 

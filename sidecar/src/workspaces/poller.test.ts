@@ -13,6 +13,7 @@ import {
   pollDueRepos,
   pollOnce,
   reconcileOrphans,
+  refreshWorkspacePrs,
   resetWorkspaceViews,
 } from "./poller.ts";
 
@@ -921,6 +922,29 @@ describe("batched GitHub reads", () => {
     const read = rows.filter((r) => r.lastPolledAt !== null);
     expect(read).toHaveLength(25);
     expect(read.every((r) => r.checkRollup === "failure")).toBe(true);
+  });
+});
+
+describe("refreshWorkspacePrs", () => {
+  it("reads only the named workspaces' branches, however fresh their cache", async () => {
+    const wanted = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wanted,
+      prNumber: 5,
+      prState: "open",
+      lastPolledAt: new Date(),
+    });
+    await seedReadyRepo("b");
+    const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, "a"));
+    const { gh, queries } = graphqlClient(() => ({
+      data: { p0: { pullRequests: { nodes: [POLLED_PR(5)] } } },
+    }));
+
+    await refreshWorkspacePrs(db, { github: gh }, [ws!.id]);
+
+    expect(queries).toEqual([{ o0: "oa", r0: "ra", b0: "yarvis/a" }]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wanted));
+    expect(row?.checkRollup).toBe("failure");
   });
 });
 
