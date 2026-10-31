@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const CATALOG = {
   userDir: "/Users/me/.yarvis/agents",
@@ -78,22 +79,13 @@ const CATALOG = {
   ],
 };
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that only defines `sidecarFetch` breaks
- * every other file importing this one, and one that redefines `ensureOk`
- * silently replaces what `api.test.ts` is asserting about.
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async () =>
     new Response(JSON.stringify(CATALOG), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
-}));
+});
 
 const SpecialistSection = (await import("./SpecialistSection")).default;
 
@@ -147,3 +139,5 @@ describe("SpecialistSection", () => {
     expect(text).not.toContain("You advise on what to do next.");
   });
 });
+
+afterAll(resetSidecarApi);

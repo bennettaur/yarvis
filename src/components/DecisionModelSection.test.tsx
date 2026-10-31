@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { DEFAULT_DECISION_MODEL_CONFIG } from "../lib/decisionModel";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import DecisionModelSection from "./DecisionModelSection";
 
 const PROVIDERS = [
@@ -19,11 +20,7 @@ let config: Record<string, unknown> = { ...DEFAULT_DECISION_MODEL_CONFIG };
 let nextPatchStatus: number | null = null;
 const calls: { url: string; method: string; body?: string }[] = [];
 
-// Real exports spread back in: `mock.module` replaces the module for the whole process.
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });
@@ -44,7 +41,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -213,3 +210,5 @@ describe("DecisionModelSection", () => {
     expect(mounted.host.textContent).toContain("the features below are off until you pick another");
   });
 });
+
+afterAll(resetSidecarApi);
