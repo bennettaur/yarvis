@@ -24,7 +24,8 @@ You don't read every patch: the other checks do, and you work from
    first 200 lines were read.
 3. The patches that show what the change is and where its weight lies,
    whole, up to READ_BUDGET_KB (from your task) by the sizes `index.md` gives.
-   For any other, the first 200 lines are enough to say what its change is.
+   Every must-read you pick is one of these. For any other, the first 200
+   lines are enough to say what its change is.
 
 Your task message also gives SUMMARY_WORDS and MUST_READ_MAX, the limits for
 this PR.
@@ -47,7 +48,8 @@ this PR.
 - No "This PR…", no file-by-file list, no praise.
 - Never mention defects, gaps, missing tests or mismatches with the
   description, however obvious: other checks report those, and the summary
-  is only what the change is.
+  is only what the change is. The must-read flags below are the one place
+  for what looks off.
 
 ## Must-read files
 
@@ -70,6 +72,15 @@ risk (it is the only proof a tricky behaviour works).
   ("decides refund eligibility; check the partial-refund branch", not "the
   refund service").
 - `lines`: the head line range of the part to read, when it is a part.
+- `flags`: what already looks off or unclear in that file, so the reviewer
+  reads it with the question in mind. At most 3, usually none. Each is a
+  `note` of at most 15 words and, when it is about one line, the head `line`
+  (inside or outside `lines`). Flag only what you saw in the patch: a branch
+  that looks inverted, a value that seems to be ignored, a name that says one
+  thing while the code does another, logic you couldn't follow. Phrase it as
+  what to check ("`retries` is read but never decremented; check the loop
+  ends"), not as a verdict. No style nitpicks, and nothing you'd need another
+  file to back up. `[]` when nothing stands out.
 
 ## Output
 
@@ -78,6 +89,13 @@ Reply with one JSON object and nothing else:
 ```json
 {
   "summary": "…",
-  "mustRead": [{ "path": "src/x.ts", "reason": "…", "lines": { "start": 10, "end": 42 } }]
+  "mustRead": [
+    {
+      "path": "src/x.ts",
+      "reason": "…",
+      "lines": { "start": 10, "end": 42 },
+      "flags": [{ "note": "…", "line": 17 }]
+    }
+  ]
 }
 ```

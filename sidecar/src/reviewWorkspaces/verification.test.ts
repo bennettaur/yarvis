@@ -76,10 +76,67 @@ describe("the report schema", () => {
       }),
     );
     expect(parsed.mustRead).toEqual([
-      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 } },
-      { path: "src/b.ts", reason: "second", lines: undefined },
+      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 }, flags: [] },
+      { path: "src/b.ts", reason: "second", lines: undefined, flags: [] },
     ]);
     expect(audit.droppedMustReads).toEqual(["../../etc/passwd"]);
+  });
+
+  it("keeps a must-read's flags, capped, with any invalid line dropped", () => {
+    const parsed = schema.parse(
+      report({
+        mustRead: [
+          {
+            path: "src/a.ts",
+            reason: "core",
+            flags: [
+              { note: "retries never decremented", line: 17 },
+              { note: "no line", line: -1 },
+              { note: "third" },
+              { note: "over the cap", line: 4 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([
+      { note: "retries never decremented", line: 17 },
+      { note: "no line", line: undefined },
+      { note: "third", line: undefined },
+    ]);
+  });
+
+  it("reads null flags as none", () => {
+    const parsed = schema.parse(
+      report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([]);
+  });
+
+  it("drops a flag a check finding already reports nearby, and records it", () => {
+    const audit = emptyAudit();
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        mustRead: [
+          {
+            path: "src/a.ts",
+            reason: "core",
+            flags: [
+              { note: "retry count never decremented, check the loop ends", line: 18 },
+              { note: "cache key ignores the locale", line: 40 },
+            ],
+          },
+        ],
+        quality: {
+          status: "issues",
+          findings: [finding("Retry count is never decremented", { path: "src/a.ts", line: 17 })],
+        },
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(audit.droppedFlags).toEqual([
+      { path: "src/a.ts", line: 18, note: "retry count never decremented, check the loop ends" },
+    ]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {

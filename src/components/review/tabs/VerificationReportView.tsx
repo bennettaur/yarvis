@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   coverageKnown,
   type Severity,
@@ -5,8 +6,11 @@ import {
   type VerificationCheck,
   type VerificationCheckKey,
   type VerificationCoverage,
+  type VerificationFinding,
+  type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { CommentComposer } from "../../pr/ThreadView";
 
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   completeness: "Completeness",
@@ -39,6 +43,18 @@ export interface OpenLocation {
   open: (path: string, line?: number) => void;
   canOpen: (path: string) => boolean;
 }
+
+/** Posting a finding as a line comment on the PR. */
+export interface FindingComments {
+  /** Posts `body` as a line comment at a finding's location. */
+  post: (location: { path: string; line: number }, body: string) => Promise<void>;
+  /** Whether `path` is a file the PR changes, the only kind the providers take comments on. */
+  canComment: (path: string) => boolean;
+}
+
+/** The draft a finding's comment starts from. */
+const findingCommentDraft = (f: Pick<VerificationFinding, "title" | "detail">) =>
+  `**${f.title}**\n\n${f.detail}`;
 
 function Location({
   path,
@@ -90,6 +106,66 @@ const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
 const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
 /**
+ * One finding, with a way to post it as a comment when it cites a line of one
+ * of the PR's files: the providers only take a comment anchored to one. The
+ * draft is the report's model-written text, so the user edits and sends it;
+ * nothing is posted without that.
+ */
+function FindingItem({
+  finding,
+  onOpen,
+  viewed,
+  comments,
+}: {
+  finding: VerificationFinding;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  comments?: FindingComments;
+}) {
+  const [composing, setComposing] = useState(false);
+  const [posted, setPosted] = useState(false);
+  const { title, detail, severity, path, line } = finding;
+  const target = comments && path && line && comments.canComment(path) ? { path, line } : null;
+  return (
+    <li className={`space-y-0.5 ${viewedClass(isViewed(viewed, path))}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[severity]}`}
+        >
+          {severity}
+        </span>
+        <span className="font-medium text-zinc-200">{title}</span>
+        <Location path={path} line={line} onOpen={onOpen} />
+        {target && posted && <span className="text-[11px] text-emerald-400">Commented</span>}
+        {target && !posted && !composing && (
+          <button
+            type="button"
+            onClick={() => setComposing(true)}
+            className="text-[11px] text-zinc-500 hover:text-zinc-300"
+          >
+            Comment
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-zinc-400">{detail}</p>
+      {target && composing && (
+        <CommentComposer
+          label={`Comment on ${target.path}:${target.line}`}
+          initialBody={findingCommentDraft(finding)}
+          submitLabel="Post comment"
+          onSubmit={async (body) => {
+            await comments?.post(target, body);
+            setComposing(false);
+            setPosted(true);
+          }}
+          onCancel={() => setComposing(false)}
+        />
+      )}
+    </li>
+  );
+}
+
+/**
  * A check passing is one line and nothing more: the reader's time goes to the
  * checks that found something, which open with their findings showing.
  */
@@ -98,11 +174,13 @@ function CheckRow({
   check,
   onOpen,
   viewed,
+  comments,
 }: {
   label: string;
   check: VerificationCheck;
   onOpen: OpenLocation;
   viewed: Viewed;
+  comments?: FindingComments;
 }) {
   if (check.status === "pass" || check.findings.length === 0) {
     return (
@@ -128,21 +206,13 @@ function CheckRow({
       </summary>
       <ul className="mt-1 space-y-2 pl-5">
         {check.findings.map((f) => (
-          <li
+          <FindingItem
             key={`${f.title}:${f.path}:${f.line}`}
-            className={`space-y-0.5 ${viewedClass(isViewed(viewed, f.path))}`}
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[f.severity]}`}
-              >
-                {f.severity}
-              </span>
-              <span className="font-medium text-zinc-200">{f.title}</span>
-              <Location path={f.path} line={f.line} onOpen={onOpen} />
-            </div>
-            <p className="text-xs text-zinc-400">{f.detail}</p>
-          </li>
+            finding={f}
+            onOpen={onOpen}
+            viewed={viewed}
+            comments={comments}
+          />
         ))}
       </ul>
     </details>
@@ -252,6 +322,54 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
+/** A must-read and what already looks off or unclear in it. */
+function MustReadItem({
+  entry,
+  onOpen,
+  viewed,
+}: {
+  entry: VerificationMustRead;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+}) {
+  const flags = entry.flags ?? [];
+  return (
+    <li className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}>
+      <Location
+        path={entry.path}
+        line={entry.lines?.start}
+        label={entry.lines ? `:${entry.lines.start}–${entry.lines.end}` : ""}
+        className="text-xs"
+        onOpen={onOpen}
+      />
+      <p className="text-xs text-zinc-400">{entry.reason}</p>
+      {flags.length > 0 && (
+        <ul aria-label="Looks off" className="mt-0.5 space-y-0.5">
+          {flags.map((flag) => (
+            <li key={`${flag.line}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
+              <span aria-hidden="true">?</span>
+              <span className="min-w-0">
+                {flag.note}
+                {flag.line && (
+                  <>
+                    {" "}
+                    <Location
+                      path={entry.path}
+                      line={flag.line}
+                      label={`:${flag.line}`}
+                      onOpen={onOpen}
+                    />
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 /**
  * The report in the order a reviewer uses it: which files it didn't cover,
  * what the change is, which files to read first, how risky it is, then the
@@ -261,10 +379,13 @@ export default function VerificationReportView({
   report,
   onOpen,
   viewed = NONE_VIEWED,
+  comments,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
+  /** Lets a finding be posted as a PR comment; without it, findings are read-only. */
+  comments?: FindingComments;
 }) {
   const { risk } = report;
   const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
@@ -280,19 +401,7 @@ export default function VerificationReportView({
         <Section title={`Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`}>
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
-              <li
-                key={entry.path}
-                className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}
-              >
-                <Location
-                  path={entry.path}
-                  line={entry.lines?.start}
-                  label={entry.lines ? `:${entry.lines.start}–${entry.lines.end}` : ""}
-                  className="text-xs"
-                  onOpen={onOpen}
-                />
-                <p className="text-xs text-zinc-400">{entry.reason}</p>
-              </li>
+              <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
             ))}
           </ul>
         </Section>
@@ -346,6 +455,7 @@ export default function VerificationReportView({
                 check={check}
                 onOpen={onOpen}
                 viewed={viewed}
+                comments={comments}
               />
             );
           })}

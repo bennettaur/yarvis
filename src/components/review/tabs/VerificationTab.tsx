@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { postPrComment } from "../../../lib/pr/api";
+import { prDetailKey } from "../../../lib/pr/cache";
 import { invalidate } from "../../../lib/resourceCache";
+import { invalidateLastReview, seenAt } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
   startVerification,
   type VerificationSize,
@@ -17,7 +20,10 @@ import {
 } from "./reviewData";
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
-import VerificationReportView, { type OpenLocation } from "./VerificationReportView";
+import VerificationReportView, {
+  type FindingComments,
+  type OpenLocation,
+} from "./VerificationReportView";
 import {
   type CheckProgress,
   initialProgress,
@@ -161,15 +167,32 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   // The report is model-written, so only a path the PR actually has is a link.
   const changed = useReviewChangedFiles(workspaceId, pr);
   const tree = useReviewTree(workspaceId, pr);
+  const changedPaths = useMemo(
+    () => new Set(changed.data?.files.map((f) => f.path) ?? []),
+    [changed.data],
+  );
   const known = useMemo(
-    () => new Set([...(changed.data?.files.map((f) => f.path) ?? []), ...(tree.data?.paths ?? [])]),
-    [changed.data, tree.data],
+    () => new Set([...changedPaths, ...(tree.data?.paths ?? [])]),
+    [changedPaths, tree.data],
   );
   const open: OpenLocation = {
     open: (path, line) =>
       ctx.openTab({ kind: "diff", prId: pr.id, path, ...(line ? { revealLine: line } : {}) }),
     canOpen: (path) => known.has(path),
   };
+  // Only a report of the current head: an older one's line numbers would land
+  // the comment on whatever is at that line now.
+  const findingComments: FindingComments | undefined = good?.current
+    ? {
+        post: async ({ path, line }, body) => {
+          await postPrComment(ctx.prRef, { path, line, body }, seenAt(pr));
+          invalidateLastReview(ctx.prRef);
+          // The new thread arrives with the PR's detail, in the Comments tab and the diff.
+          invalidate(prDetailKey(ctx.prRef));
+        },
+        canComment: (path) => changedPaths.has(path),
+      }
+    : undefined;
 
   const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
   const finishedRun = running ? null : run;
@@ -333,7 +356,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         )}
 
         {report && !running && (
-          <VerificationReportView report={report} onOpen={open} viewed={viewed.viewed} />
+          <VerificationReportView
+            report={report}
+            onOpen={open}
+            viewed={viewed.viewed}
+            comments={findingComments}
+          />
         )}
       </div>
     </div>

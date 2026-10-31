@@ -9,23 +9,29 @@ import { CHECK_LABEL } from "./VerificationReportView";
 
 /** One thing the verification report says about a line of a file. */
 export interface FileNote {
-  /** The check that raised it, or "Risk" for a risk concern. */
+  /** The check that raised it, "Risk" for a risk concern, or "Must read" for a must-read's flag. */
   source: string;
   title: string;
-  detail: string;
-  /** Absent for a risk concern, which has none. */
+  /** Absent for a must-read flag, which is only a note. */
+  detail?: string;
+  /** Absent for a risk concern or a must-read flag, which have none. */
   severity?: Severity;
   line: number;
 }
 
 /**
- * The report's findings and risk concerns that cite a line of `path`, in line
- * order. One with no line has nowhere to go in the diff, so it stays in the
- * report alone.
+ * The report's findings, risk concerns and must-read flags that cite a line of
+ * `path`, in line order. One with no line has nowhere to go in the diff, so it
+ * stays in the report alone.
  */
 export function fileNotes(report: VerificationReport | null, path: string): FileNote[] {
   if (!report) return [];
   const notes: FileNote[] = [];
+  for (const flag of report.mustRead.find((m) => m.path === path)?.flags ?? []) {
+    if (flag.line) {
+      notes.push({ source: "Must read", title: flag.note, line: flag.line });
+    }
+  }
   for (const c of report.risk.concerns) {
     if (c.path === path && c.line) {
       notes.push({ source: "Risk", title: c.title, detail: c.detail, line: c.line });
@@ -73,7 +79,9 @@ export function reportDecorations(
       endLine: note.line,
       className: "review-finding-line",
       marginClassName: "review-finding-margin",
-      hoverMessage: plainHoverText(`${note.source}${severity}: ${note.title}. ${note.detail}`),
+      hoverMessage: plainHoverText(
+        `${note.source}${severity}: ${note.title}${note.detail ? `. ${note.detail}` : ""}`,
+      ),
     });
   }
   return decorations;

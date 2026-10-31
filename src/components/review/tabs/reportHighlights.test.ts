@@ -62,6 +62,30 @@ describe("fileNotes", () => {
   });
 });
 
+describe("fileNotes with must-read flags", () => {
+  it("adds each flag that cites a line, as a must-read note", () => {
+    const flagged: VerificationReport = {
+      ...report,
+      mustRead: [
+        {
+          path: "src/cache.ts",
+          reason: "Eviction",
+          flags: [{ note: "TTL is read but never applied", line: 30 }, { note: "No line" }],
+        },
+      ],
+    };
+    const notes = fileNotes(flagged, "src/cache.ts");
+    expect(notes.find((n) => n.source === "Must read")).toEqual({
+      source: "Must read",
+      title: "TTL is read but never applied",
+      line: 30,
+    });
+    expect(notes.map((n) => n.line)).toEqual([9, 22, 30]);
+    const [, , flag] = reportDecorations(null, notes);
+    expect(flag?.hoverMessage).toBe("Must read\\: TTL is read but never applied");
+  });
+});
+
 describe("reportDecorations", () => {
   it("highlights the must-read range and each cited line, with the reason as plain text", () => {
     const decorations = reportDecorations(
