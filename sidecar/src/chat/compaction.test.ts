@@ -190,6 +190,29 @@ describe("compactSession", () => {
     expect(JSON.stringify(model.doGenerateCalls[0]?.prompt)).toContain("C042");
   });
 
+  it("keeps a reply's tool calls in the summarizer's input when the reply itself is cut", async () => {
+    const sessionId = await seed(10);
+    const [first] = await getMessages(db, sessionId);
+    await sql`
+      UPDATE chat_messages
+      SET content = ${"x".repeat(20_000)},
+          tool_calls = ${sql.json([{ id: "c1", name: "find_channel", status: "ok", result: "C042" }])}
+      WHERE id = ${first!.id}
+    `;
+    const model = summarizer("They discussed X.");
+    await compactSession({
+      db,
+      model,
+      sessionId,
+      history: await getMessages(db, sessionId),
+      thresholdTokens: 1,
+    });
+
+    const prompt = JSON.stringify(model.doGenerateCalls[0]?.prompt);
+    expect(prompt).toContain("[truncated]");
+    expect(prompt).toContain("C042");
+  });
+
   it("leaves the history alone when the summarizer fails", async () => {
     const sessionId = await seed(10);
     const history = await getMessages(db, sessionId);

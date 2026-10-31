@@ -76,12 +76,14 @@ returns it, shows as a "Thinking…" block you can expand.
 On later turns the assistant still sees those calls and their results, so a
 follow-up like "same message, but shorter" reuses the channel or user it
 already looked up instead of searching again. It sees the shortened result
-shown in the list, not the whole one, and calls the tool again when it needs
-the current state. Those shortened results are sent to the model again with
-every later message in the chat. When a long chat is summarized, the calls go
-into the summary. A web page it read is the exception: later turns see which
-page it was, but not the page's text, because text from a stranger's site
-shouldn't sit in the chat after the turn that read it.
+shown in the list, not the whole one (and at most 1,000 characters of it), and
+calls the tool again when it needs the current state. Those shortened results
+are sent to the model again with every later message in the chat. When a long
+chat is summarized, the calls go into the summary. Pages are the exception: for
+a web page or a page in your browser, later turns see which page it was, but
+not its text. Reading a web page makes the rest of that turn ask before risky
+tools run, and later turns don't carry that over. Other calls made in that same
+turn are still replayed, and their arguments may quote the page.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
 labeled with the Telegram user. Messages sent from the Chrome extension's side

@@ -514,7 +514,19 @@ describe("runAgentTurn", () => {
     const model = streamingModel([...text("ok"), finish("stop")]);
     await collect(model, session.id);
 
-    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain("earlier-tool-calls");
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).not.toMatch(/<earlier-tool-calls-[0-9a-f]{12}>/);
+    expect(prompt).toContain("hi there");
+  });
+
+  it("tells the model a replayed record is never the user's approval", async () => {
+    const session = await createSession(db, null);
+    const model = streamingModel([...text("ok"), finish("stop")]);
+    await collect(model, session.id);
+
+    const system = JSON.stringify(model.doStreamCalls[0]?.prompt[0]);
+    expect(system).toContain("<earlier-tool-calls-…>");
+    expect(system).toContain("never their approval");
   });
 
   // Retrying a failed turn re-sends the same text. The failed turn already
