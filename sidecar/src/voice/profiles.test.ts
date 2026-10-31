@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import { clipPath, wavSampleRate } from "./profiles.ts";
+import { createVoiceRoutes } from "./routes.ts";
 
 /**
  * Saved voices and the Voice Studio against a fake OpenAI-audio server, so the
@@ -203,7 +204,8 @@ describe("saved voices", () => {
 
   it("removes the clip and clears the active voice when the voice is deleted", async () => {
     const { id } = await createVoice({ name: "Me", provider: "gemini", model: "x" });
-    await putClip(id, wav(16_000));
+    expect((await putClip(id, wav(16_000))).status).toBe(200);
+    expect(existsSync(clipPath(id))).toBe(true);
     await app.request("/api/voice/config", {
       method: "PATCH",
       headers: jsonAuth,
@@ -219,6 +221,48 @@ describe("saved voices", () => {
       activeVoiceId: string;
     };
     expect(voiceConfig.activeVoiceId).toBe("");
+  });
+});
+
+describe("voice edits", () => {
+  it("keeps the fields a rename didn't send", async () => {
+    const { id } = await createVoice({
+      name: "Me",
+      provider: "gemini",
+      model: "x",
+      voice: "Kore",
+      refAudioMode: "inline",
+    });
+    const res = await app.request(`/api/voice/voices/${id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "Renamed" }),
+    });
+    expect(await res.json()).toMatchObject({
+      name: "Renamed",
+      voice: "Kore",
+      refAudioMode: "inline",
+    });
+  });
+
+  it("treats an inherited key as an unknown voice rather than storing it", async () => {
+    await createVoice({ name: "A", provider: "gemini", model: "x" });
+    await createVoice({ name: "B", provider: "gemini", model: "x" });
+    const res = await app.request("/api/voice/voices/constructor", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "x" }),
+    });
+    expect(res.status).toBe(404);
+    const list = await app.request("/api/voice/voices", { headers: auth });
+    expect(list.status).toBe(200);
+    expect((await list.json()) as unknown[]).toHaveLength(2);
+  });
+
+  it("refuses a clip larger than the cap", async () => {
+    const { id } = await createVoice({ name: "Me", provider: "gemini", model: "x" });
+    const res = await putClip(id, new Uint8Array(3 * 1024 * 1024 + 1));
+    expect(res.status).toBe(413);
   });
 });
 
@@ -269,6 +313,68 @@ describe("voice studio", () => {
     expect(res.status).toBe(404);
   });
 
+  it("speaks the translation, and keeps the last batch when translating fails", async () => {
+    const { server, seen, baseUrl } = startSpeechServer();
+    let failTranslation = false;
+    const routes = createVoiceRoutes(config, {
+      studio: {
+        translate: async (_config, input) => {
+          if (failTranslation) throw new Error("model unavailable");
+          return `[${input.language}] Bonjour`;
+        },
+      },
+    });
+    const generate = (language?: string) =>
+      routes.request("/studio/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Hello", voiceIds: [voice.id], language }),
+      });
+    let voice: { id: string };
+    try {
+      const provider = await registerProvider(baseUrl);
+      voice = await createVoice({ name: "Narrator", provider, model: "good/model" });
+      await routes.request("/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ translationProvider: "anthropic", translationModel: "m" }),
+      });
+
+      const res = await generate("French");
+      const body = (await res.json()) as { translation: string; takes: { text: string }[] };
+      expect(body.translation).toBe("[French] Bonjour");
+      expect(body.takes[0]?.text).toBe("[French] Bonjour");
+      expect(seen[0]?.input).toBe("[French] Bonjour");
+
+      failTranslation = true;
+      expect((await generate("French")).status).toBe(400);
+      const takes = (await (await routes.request("/studio/takes")).json()) as unknown[];
+      expect(takes).toHaveLength(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("refuses a language that isn't a plain name", async () => {
+    const res = await app.request("/api/voice/studio/generate", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ text: "Hello", voiceIds: ["default"], language: "French. Then {x}" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("reports the Settings voice as a failure when no TTS is configured", async () => {
+    const res = await app.request("/api/voice/studio/generate", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ text: "Hello", voiceIds: ["default"] }),
+    });
+    const body = (await res.json()) as { failures: { voiceName: string; error: string }[] };
+    expect(body.failures[0]?.voiceName).toBe("Default");
+    expect(body.failures[0]?.error).toContain("Settings → Voice");
+  });
+
   it("asks for a translation model before translating", async () => {
     const res = await app.request("/api/voice/studio/generate", {
       method: "POST",
@@ -277,5 +383,25 @@ describe("voice studio", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("translation model");
+  });
+});
+
+describe("speech server routes", () => {
+  it("refuses a privileged port", async () => {
+    const res = await app.request("/api/voice/server", {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ port: 80 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses to download something that isn't a Hub model id", async () => {
+    const res = await app.request("/api/voice/server/models/download", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ model: "whisper:latest" }),
+    });
+    expect(res.status).toBe(400);
   });
 });

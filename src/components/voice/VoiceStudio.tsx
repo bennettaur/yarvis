@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { ProviderInfo } from "../../lib/chat";
 import { primeCache } from "../../lib/resourceCache";
 import type { VoiceConfig } from "../../lib/voiceConfig";
+import type { VoiceProfile } from "../../lib/voiceProfiles";
 import {
   DEFAULT_STUDIO_VOICE,
   fetchTakeAudio,
@@ -10,7 +11,6 @@ import {
   type StudioResult,
   type StudioTake,
   saveTake,
-  type VoiceProfile,
 } from "../../lib/voiceStudio";
 import { BUTTON, CARD, errorText, FIELD, Field } from "./voiceUi";
 
@@ -59,7 +59,8 @@ export default function VoiceStudio({
     try {
       const out = await generateTakes({
         text,
-        voiceIds: selected,
+        // A voice deleted since it was ticked would only come back as a failure.
+        voiceIds: selected.filter((id) => options.some((voice) => voice.id === id)),
         language: language.trim() || undefined,
       });
       primeCache<StudioTake[]>(STUDIO_TAKES_KEY, out.takes);
@@ -175,7 +176,8 @@ export default function VoiceStudio({
 
 function TakeRow({ take }: { take: StudioTake }) {
   const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // The audio route needs the bearer token, so the take is fetched and played
   // from an object URL rather than pointed at directly.
@@ -188,7 +190,7 @@ function TakeRow({ take }: { take: StudioTake }) {
         objectUrl = URL.createObjectURL(blob);
         setUrl(objectUrl);
       })
-      .catch((e) => active && setError(errorText(e)));
+      .catch((e) => active && setLoadError(errorText(e)));
     return () => {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -196,13 +198,14 @@ function TakeRow({ take }: { take: StudioTake }) {
   }, [take.file]);
 
   async function save(): Promise<void> {
+    setSaveError(null);
     try {
       const saved = await saveTake(take.file);
       primeCache<StudioTake[]>(STUDIO_TAKES_KEY, (current) =>
         (current ?? []).map((t) => (t.file === saved.file ? saved : t)),
       );
     } catch (e) {
-      setError(errorText(e));
+      setSaveError(errorText(e));
     }
   }
 
@@ -213,8 +216,9 @@ function TakeRow({ take }: { take: StudioTake }) {
         // biome-ignore lint/a11y/useMediaCaption: generated speech has no caption track.
         <audio controls src={url} className="h-8" />
       ) : (
-        <span className="text-xs text-zinc-500">{error ?? "Loading…"}</span>
+        <span className="text-xs text-zinc-500">{loadError ?? "Loading…"}</span>
       )}
+      {saveError && <span className="text-xs text-red-400">{saveError}</span>}
       <span className="ml-auto flex items-center gap-2">
         {take.savedPath ? (
           <button

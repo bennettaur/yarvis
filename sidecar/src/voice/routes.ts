@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { UrlSafetyError } from "../lib/urlSafety.ts";
@@ -107,14 +108,23 @@ const voiceConfigSchema = z.object({
   translationModel: z.string().max(128).optional(),
 });
 
-const voiceProfileSchema = z.object({
+const voiceProfileFields = z.object({
   name: z.string().trim().min(1).max(64),
   provider: z.string().min(1).max(128),
   model: z.string().min(1).max(128),
-  voice: z.string().max(128).default(""),
-  refAudioMode: z.enum(["path", "inline"]).default("path"),
+  voice: z.string().max(128),
+  refAudioMode: z.enum(["path", "inline"]),
+  extras: extrasSchema,
+});
+
+const voiceProfileSchema = voiceProfileFields.extend({
+  voice: voiceProfileFields.shape.voice.default(""),
+  refAudioMode: voiceProfileFields.shape.refAudioMode.default("path"),
   extras: extrasSchema.default({}),
 });
+
+// No defaults here: a rename must not reset the fields it didn't send.
+const voiceProfilePatchSchema = voiceProfileFields.partial();
 
 const voiceSpeakSchema = z.object({ text: z.string().min(1).max(MAX_SPEECH_CHARS) });
 
@@ -173,6 +183,16 @@ const AUDIO_RESPONSE_TYPE = /^audio\/[A-Za-z0-9.+-]+(;.*)?$/;
 
 function safeAudioType(contentType: string): string {
   return AUDIO_RESPONSE_TYPE.test(contentType) ? contentType : "audio/mpeg";
+}
+
+function audioResponse(audio: Uint8Array, contentType: string): Response {
+  return new Response(audio, {
+    status: 200,
+    headers: {
+      "Content-Type": safeAudioType(contentType),
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 /** The machine's one speech server, shared by every request this sidecar serves. */
@@ -272,13 +292,7 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
         refAudio: parsed.data.refAudio,
         extras: parsed.data.extras,
       });
-      return new Response(audio, {
-        status: 200,
-        headers: {
-          "Content-Type": safeAudioType(contentType),
-          "X-Content-Type-Options": "nosniff",
-        },
-      });
+      return audioResponse(audio, contentType);
     } catch (e) {
       console.error("[voice] synthesis failed:", e);
       return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
@@ -294,7 +308,7 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
   });
 
   router.patch("/voices/:id", async (c) => {
-    const parsed = voiceProfileSchema.partial().safeParse(await c.req.json().catch(() => null));
+    const parsed = voiceProfilePatchSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     const row = await updateVoiceProfile(c.req.param("id"), parsed.data);
     return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
@@ -313,22 +327,28 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
    * recording and an upload to 16 kHz mono WAV first, which is the rate
    * cloning models handle best.
    */
-  router.put("/voices/:id/clip", async (c) => {
-    const contentType = c.req.header("content-type") ?? "";
-    if (!/^audio\/(wav|x-wav|wave)$/i.test(contentType)) {
-      return c.json({ error: "the clip must be sent as audio/wav" }, 415);
-    }
-    const declaredLength = Number(c.req.header("content-length") ?? Number.NaN);
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_CLIP_BYTES) {
-      return c.json({ error: `the clip exceeds ${MAX_CLIP_BYTES} bytes` }, 413);
-    }
-    try {
-      const row = await saveVoiceClip(c.req.param("id"), new Uint8Array(await c.req.arrayBuffer()));
-      return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
-    } catch (e) {
-      return c.json({ error: errorMessage(e) }, 400);
-    }
-  });
+  router.put(
+    "/voices/:id/clip",
+    bodyLimit({
+      maxSize: MAX_CLIP_BYTES,
+      onError: (c) => c.json({ error: `the clip exceeds ${MAX_CLIP_BYTES} bytes` }, 413),
+    }),
+    async (c) => {
+      const contentType = c.req.header("content-type") ?? "";
+      if (!/^audio\/(wav|x-wav|wave)$/i.test(contentType)) {
+        return c.json({ error: "the clip must be sent as audio/wav" }, 415);
+      }
+      try {
+        const row = await saveVoiceClip(
+          c.req.param("id"),
+          new Uint8Array(await c.req.arrayBuffer()),
+        );
+        return row ? c.json(row) : c.json({ error: "voice not found" }, 404);
+      } catch (e) {
+        return c.json({ error: errorMessage(e) }, 400);
+      }
+    },
+  );
 
   router.delete("/voices/:id/clip", async (c) => {
     const row = await deleteVoiceClip(c.req.param("id"));
@@ -343,13 +363,7 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
     if (!profile) return c.json({ error: "voice not found" }, 404);
     try {
       const { audio, contentType } = await speakWithProfile(config, profile, parsed.data.text);
-      return new Response(audio, {
-        status: 200,
-        headers: {
-          "Content-Type": safeAudioType(contentType),
-          "X-Content-Type-Options": "nosniff",
-        },
-      });
+      return audioResponse(audio, contentType);
     } catch (e) {
       console.error("[voice] synthesis failed:", e);
       return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
@@ -381,13 +395,7 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
   router.get("/studio/takes/:file", async (c) => {
     const found = await readTake(c.req.param("file"));
     if (!found) return c.json({ error: "take not found" }, 404);
-    return new Response(found.audio, {
-      status: 200,
-      headers: {
-        "Content-Type": safeAudioType(found.take.contentType),
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+    return audioResponse(found.audio, found.take.contentType);
   });
 
   router.post("/studio/takes/:file/save", async (c) => {

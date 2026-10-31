@@ -71,9 +71,17 @@ export async function listVoiceProfiles(): Promise<VoiceProfile[]> {
   return Object.values(section ?? {}).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/**
+ * Ids arrive from requests, so a lookup must not land on an inherited key:
+ * `constructor` would read as a profile and an update would store one.
+ */
+function ownProfile(section: ProfilesSection | undefined, id: string): VoiceProfile | null {
+  if (!PROFILE_ID.test(id) || !section || !Object.hasOwn(section, id)) return null;
+  return section[id] ?? null;
+}
+
 export async function getVoiceProfile(id: string): Promise<VoiceProfile | null> {
-  const section = await readSection<ProfilesSection>(SETTINGS_KEY);
-  return section?.[id] ?? null;
+  return ownProfile(await readSection<ProfilesSection>(SETTINGS_KEY), id);
 }
 
 export async function createVoiceProfile(input: VoiceProfileInput): Promise<VoiceProfile> {
@@ -95,7 +103,7 @@ export async function updateVoiceProfile(
   patch: Partial<VoiceProfileInput> & { hasClip?: boolean },
 ): Promise<VoiceProfile | null> {
   return withSection<ProfilesSection, VoiceProfile | null>(SETTINGS_KEY, (current) => {
-    const existing = current?.[id];
+    const existing = ownProfile(current, id);
     if (!existing) return { next: current ?? {}, result: null };
     const row = { ...existing, ...patch, updatedAt: new Date().toISOString() };
     return { next: { ...current, [id]: row }, result: row };
@@ -105,7 +113,7 @@ export async function updateVoiceProfile(
 /** Removes the profile and its clip. */
 export async function deleteVoiceProfile(id: string): Promise<boolean> {
   const removed = await withSection<ProfilesSection, boolean>(SETTINGS_KEY, (current) => {
-    if (!current?.[id]) return { next: current ?? {}, result: false };
+    if (!current || !ownProfile(current, id)) return { next: current ?? {}, result: false };
     const { [id]: _, ...rest } = current;
     return { next: rest, result: true };
   });

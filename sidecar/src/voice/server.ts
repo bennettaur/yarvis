@@ -1,13 +1,13 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createCustomProvider, listCustomProviders } from "../customProviders/service.ts";
 import { claudeChildEnv } from "../lib/claudeCli.ts";
 import { guardedFetch } from "../lib/guardedFetch.ts";
 import { saveProviderModel } from "../llm/catalog.ts";
 import { CUSTOM_PROVIDER_PREFIX } from "../llm/providers.ts";
-import { readSection, withSection } from "../settings/store.ts";
+import { readSection, settingsPath, withSection } from "../settings/store.ts";
 import { assertModelId } from "./speech.ts";
 
 /**
@@ -18,10 +18,11 @@ import { assertModelId } from "./speech.ts";
  * repo's `pyproject.toml`, because a packaged app has no repo checkout to run
  * `uv sync` in. The specs mirror that file.
  *
- * Only the instance that started the server owns it. Another instance, or a
- * server the user started by hand or with launchd, shows up as `external`: it
- * is used, but never stopped from here, and a second one is not started on the
- * same port.
+ * Only a server Yarvis started is stopped from here. One the user started by
+ * hand or with launchd shows up as `external`: it is used, but a second one is
+ * not started on the same port. The pid of the server Yarvis started is kept
+ * on disk, because the core SIGKILLs the sidecar on a restart and no exit hook
+ * runs then: the next sidecar adopts the server instead of stranding it.
  */
 
 const SERVER_PACKAGES = ["mlx-audio[server]>=0.4.8", "misaki[en]>=0.9.4", "setuptools<81"];
@@ -33,6 +34,9 @@ const LOG_TAIL_LINES = 200;
 
 /** How long one readiness probe waits; the server answers instantly once it is up. */
 const PROBE_TIMEOUT_MS = 1500;
+
+/** How long Stop waits for the port to go quiet before reporting. */
+const STOP_WAIT_MS = 5000;
 
 export type LocalModelKind = "stt" | "tts";
 
@@ -120,6 +124,11 @@ export interface SpeechServerDeps {
   probe: (port: number) => Promise<boolean>;
   /** Hugging Face hub cache folder that downloads land in. */
   hubCacheDir: () => string;
+  /**
+   * True when `pid` is still a speech server Yarvis started, rather than an
+   * unrelated process that reused the pid.
+   */
+  isSpeechServer: (pid: number) => boolean;
 }
 
 /**
@@ -165,7 +174,44 @@ export const defaultSpeechServerDeps: SpeechServerDeps = {
       join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "huggingface");
     return join(home, "hub");
   },
+  isSpeechServer: (pid) => {
+    const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    return ps.status === 0 && ps.stdout.includes("mlx_audio.server");
+  },
 };
+
+/** Where the pid of the server Yarvis started is kept between sidecars. */
+function pidFile(): string {
+  return join(dirname(settingsPath()), "speech-server.json");
+}
+
+interface ServerRecord {
+  pid: number;
+  port: number;
+}
+
+function readRecord(): ServerRecord | null {
+  try {
+    const parsed = JSON.parse(readFileSync(pidFile(), "utf8")) as Partial<ServerRecord>;
+    return typeof parsed.pid === "number" && typeof parsed.port === "number"
+      ? { pid: parsed.pid, port: parsed.port }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRecord(record: ServerRecord): void {
+  try {
+    writeFileSync(pidFile(), JSON.stringify(record), { mode: 0o600 });
+  } catch (e) {
+    console.warn("[voice] could not record the speech server's pid:", e);
+  }
+}
+
+function clearRecord(): void {
+  rmSync(pidFile(), { force: true });
+}
 
 /** A downloadable model is a plain Hub `namespace/name`: no Ollama tag, nothing else. */
 export function assertHubModelId(model: string): string {
@@ -191,6 +237,8 @@ export class LocalSpeechServer {
   private port = DEFAULT_SPEECH_SERVER_PORT;
   private readonly downloads = new Map<string, { state: DownloadState; error: string | null }>();
   private exitHookInstalled = false;
+  /** Set for the whole of a start, so two overlapping requests spawn one server. */
+  private starting: Promise<SpeechServerStatus> | null = null;
 
   constructor(private readonly deps: SpeechServerDeps = defaultSpeechServerDeps) {}
 
@@ -208,9 +256,20 @@ export class LocalSpeechServer {
     });
   }
 
+  /** A server an earlier sidecar started that is still running. */
+  private adopted(): ServerRecord | null {
+    if (this.child) return null;
+    const record = readRecord();
+    if (!record) return null;
+    if (this.deps.isSpeechServer(record.pid)) return record;
+    clearRecord();
+    return null;
+  }
+
   async status(): Promise<SpeechServerStatus> {
-    const owned = this.child !== null;
-    const port = owned ? this.port : (await getSpeechServerSettings()).port;
+    const adopted = this.adopted();
+    const owned = this.child !== null || adopted !== null;
+    const port = this.child ? this.port : (adopted?.port ?? (await getSpeechServerSettings()).port);
     const answering = await this.deps.probe(port);
     let state: SpeechServerState;
     if (owned) state = answering ? "running" : "starting";
@@ -225,8 +284,15 @@ export class LocalSpeechServer {
     };
   }
 
-  async start(): Promise<SpeechServerStatus> {
-    if (this.child) return this.status();
+  start(): Promise<SpeechServerStatus> {
+    this.starting ??= this.spawnServer().finally(() => {
+      this.starting = null;
+    });
+    return this.starting;
+  }
+
+  private async spawnServer(): Promise<SpeechServerStatus> {
+    if (this.child || this.adopted()) return this.status();
     const { port } = await getSpeechServerSettings();
     // Something already serves the port: another instance's server, or one the
     // user runs themselves. Starting a second would only fail to bind.
@@ -246,9 +312,14 @@ export class LocalSpeechServer {
       "127.0.0.1",
       "--port",
       String(port),
+      // mlx-audio allows every origin by default, which would let any web page
+      // the user opens drive the server. The sidecar sends no Origin at all.
+      "--allowed-origins",
+      `http://127.0.0.1:${port}`,
     ];
     const child = this.deps.spawn("uvx", args);
     this.child = child;
+    if (child.pid !== undefined) writeRecord({ pid: child.pid, port });
     child.stdout?.on("data", (chunk) => this.append(chunk));
     child.stderr?.on("data", (chunk) => this.append(chunk));
     child.on("error", (e) => {
@@ -261,6 +332,7 @@ export class LocalSpeechServer {
     child.on("exit", (code, signal) => {
       if (this.child !== child) return;
       this.child = null;
+      clearRecord();
       if (code !== 0 && signal !== "SIGTERM") {
         this.error = `the speech server exited (${signal ?? `code ${code}`}); see its log`;
       }
@@ -269,15 +341,34 @@ export class LocalSpeechServer {
   }
 
   async stop(): Promise<SpeechServerStatus> {
-    const child = this.child;
+    const adopted = this.adopted();
+    const pid = this.child?.pid ?? adopted?.pid;
+    const port = adopted?.port ?? this.port;
     this.child = null;
     this.error = null;
-    if (child?.pid !== undefined) killGroup(child.pid);
+    if (pid !== undefined) killGroup(pid);
+    clearRecord();
+    // Uvicorn keeps answering for a moment after SIGTERM, and with no child
+    // left that reads as a server started elsewhere.
+    const deadline = Date.now() + STOP_WAIT_MS;
+    while (pid !== undefined && Date.now() < deadline && (await this.deps.probe(port))) {
+      await Bun.sleep(200);
+    }
     return this.status();
   }
 
+  /** A snapshot, not just the model's folder: a cancelled download leaves the folder behind. */
   private isDownloaded(model: string): boolean {
-    return existsSync(join(this.deps.hubCacheDir(), `models--${model.replace("/", "--")}`));
+    const snapshots = join(
+      this.deps.hubCacheDir(),
+      `models--${model.replace("/", "--")}`,
+      "snapshots",
+    );
+    try {
+      return readdirSync(snapshots).length > 0;
+    } catch {
+      return false;
+    }
   }
 
   private modelState(model: string): { state: DownloadState; error: string | null } {

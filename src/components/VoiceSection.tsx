@@ -155,7 +155,10 @@ export default function VoiceSection() {
     setTesting(true);
     setStatus(null);
     try {
-      await playAudioBlob(await speak(speechRequestFor(config, TEST_PHRASE)));
+      // The fields on this screen, even while a saved voice is active.
+      await playAudioBlob(
+        await speak(speechRequestFor({ ...config, activeVoiceId: "" }, TEST_PHRASE)),
+      );
       setStatus({ ok: true, message: "Played the test phrase." });
     } catch (e) {
       setStatus({ ok: false, message: e instanceof Error ? e.message : String(e) });

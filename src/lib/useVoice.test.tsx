@@ -147,6 +147,16 @@ const configured: VoiceConfig = {
 };
 
 describe("useVoice", () => {
+  it("picks up a voice activated elsewhere when the next turn starts", async () => {
+    storedConfig = { ...configured };
+    active = await mountVoice();
+    // The Chat tab stays mounted while the Voice page changes the stored config.
+    storedConfig = { ...configured, activeVoiceId: "saved-voice" };
+
+    await active.rerender({ streaming: "", busy: true });
+    expect(active.voice.config.activeVoiceId).toBe("saved-voice");
+  });
+
   it("reports which halves are configured", async () => {
     storedConfig = { ...configured, ttsProvider: "", ttsModel: "" };
     active = await mountVoice();

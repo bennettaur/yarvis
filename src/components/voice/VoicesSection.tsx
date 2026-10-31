@@ -12,7 +12,7 @@ import {
   type RefAudioMode,
   uploadVoiceClip,
   type VoiceProfile,
-} from "../../lib/voiceStudio";
+} from "../../lib/voiceProfiles";
 import { BUTTON, CARD, errorText, FIELD, Field } from "./voiceUi";
 
 export const VOICE_PROFILES_KEY = "voice:profiles";
@@ -52,6 +52,8 @@ export default function VoicesSection({
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [recordingFor, setRecordingFor] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The recorder keeps the `onUtterance` it started with, so it reads which
+  // voice the clip is for from a ref rather than from stale state.
   const recordingForRef = useRef<string | null>(null);
 
   const ttsProviders = providers.filter((p) => p.capabilities.includes("tts"));

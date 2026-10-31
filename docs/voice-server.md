@@ -40,7 +40,7 @@ From the repo root:
 
 ```bash
 uv sync
-uv run mlx_audio.server --host 127.0.0.1 --port 8000
+uv run mlx_audio.server --host 127.0.0.1 --port 8000 --allowed-origins http://127.0.0.1:8000
 ```
 
 `uv sync` creates `.venv/` in the repo (it is gitignored). The second command
@@ -49,7 +49,8 @@ starts the server in the foreground. Leave it running in its own terminal.
 Keep `--host 127.0.0.1`. That binds the server to your machine only, so
 nothing else on your network can reach it. The server has no authentication,
 so any program on your Mac can still use it. Only leave it running if you're
-fine with that.
+fine with that. `--allowed-origins` matters too: without it the server accepts
+requests from any web page you have open. The Voice page always passes it.
 
 ## 2. Point Yarvis at it
 
@@ -102,6 +103,8 @@ and `/Users/you` in the log paths to your home folder.
     <string>127.0.0.1</string>
     <string>--port</string>
     <string>8000</string>
+    <string>--allowed-origins</string>
+    <string>http://127.0.0.1:8000</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/you/dev/yarvis</string>

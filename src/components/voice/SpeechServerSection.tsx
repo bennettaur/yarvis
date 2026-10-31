@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useCachedResource } from "../../lib/resourceCache";
-import { getVoiceConfig, saveVoiceConfig } from "../../lib/voiceConfig";
 import {
   downloadLocalModel,
   getSpeechServer,
@@ -11,7 +10,8 @@ import {
   setSpeechServerPort,
   startSpeechServer,
   stopSpeechServer,
-} from "../../lib/voiceStudio";
+} from "../../lib/speechServer";
+import { getVoiceConfig, saveVoiceConfig } from "../../lib/voiceConfig";
 import { CARD, errorText } from "./voiceUi";
 
 export const SPEECH_SERVER_KEY = "voice:server";
@@ -111,7 +111,8 @@ export default function SpeechServerSection({ onProviderReady }: { onProviderRea
             onChange={(e) => setPortText(e.target.value.replace(/\D/g, ""))}
             onBlur={() => {
               const port = Number(portText);
-              if (status && port !== status.port) {
+              if (!portText) setPortText(String(status?.port ?? ""));
+              else if (status && port !== status.port) {
                 void run(() => setSpeechServerPort(port));
               }
             }}
