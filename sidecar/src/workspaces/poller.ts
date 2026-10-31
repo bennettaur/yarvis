@@ -525,19 +525,32 @@ export async function pollOnce(
 }
 
 /**
+ * How recent a poll a caller asking for fresh PR state accepts instead of
+ * reading the provider again, so an agent asking twice in a row spends one
+ * read, not two.
+ */
+export const FRESH_ENOUGH_MS = 30_000;
+
+/**
  * Reads the named workspaces' branches from their providers now and caches
  * what they say, for a caller that needs the current state rather than the
- * last poll. A repo that couldn't be read keeps its cached row, with the
- * failure in `lastError` unless the rate limit stopped the read before it.
+ * last poll. A repo polled since `freshSince` is left as it is. Like every
+ * poll, this reads only active workspaces' ready repos. A repo it couldn't
+ * read keeps its cached row: with the failure in `lastError`, or untouched
+ * when a rate limit stopped the read first.
  */
 export function refreshWorkspacePrs(
   db: Db,
   clients: PollerClients,
   workspaceIds: string[],
+  freshSince: Date,
 ): Promise<void> {
   const wanted = new Set(workspaceIds);
   return pollOnce(db, clients, (candidate) =>
-    wanted.has(candidate.workspaceId) ? "branch" : null,
+    wanted.has(candidate.workspaceId) &&
+    (candidate.lastPolledAt === null || candidate.lastPolledAt < freshSince)
+      ? "branch"
+      : null,
   );
 }
 
