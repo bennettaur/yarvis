@@ -544,7 +544,7 @@ Task folders are kept until you delete them.
 It runs on the Claude Code build set in Settings, and its usage counts against
 that Claude Code account. That build needs restricted mode (`--restricted`),
 which keeps the run inside its folder. On a build without it, the task fails
-instead of running unconfined.
+instead of running unconfined, and its notification says to update Claude Code.
 
 ## Specialists
 

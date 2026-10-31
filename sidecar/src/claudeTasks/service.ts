@@ -218,6 +218,15 @@ function notificationBody(text: string | null | undefined): string | null {
   return oneLine ? truncate(oneLine, MAX_BODY_CHARS) : null;
 }
 
+/** A build from before restricted mode refuses its flags; the user needs to know to update. */
+const TOO_OLD_BUILD = /unknown option '--(restricted|permission-prompts)'/;
+
+function explainError(error: string | null): string | null {
+  return error && TOO_OLD_BUILD.test(error)
+    ? "This Claude Code build is too old for tasks, which need its restricted mode. Update Claude Code and try again."
+    : error;
+}
+
 function navTargetFor(meta: ClaudeTaskMeta): AttentionNavTarget {
   if (meta.headsDown) return { type: "heads-down" };
   return meta.chatSessionId ? { type: "chat", sessionId: meta.chatSessionId } : { type: "chat" };
@@ -239,7 +248,7 @@ async function notifyFinished(
     title: succeeded
       ? `Claude Code finished: ${meta.title}`
       : `Claude Code task failed: ${meta.title}`,
-    body: notificationBody(succeeded ? outcome.output?.summary : outcome.error),
+    body: notificationBody(succeeded ? outcome.output?.summary : explainError(outcome.error)),
     navTarget: navTargetFor(meta),
     payload: { runId, outputDir },
   });
@@ -284,7 +293,7 @@ export async function getClaudeTask(db: Db, runId: string): Promise<ClaudeTaskSt
           description: truncate(file.description, MAX_DESCRIPTION_CHARS),
         }))
       : [],
-    error: row.error === null ? null : truncate(row.error, MAX_SUMMARY_CHARS),
+    error: row.error === null ? null : truncate(explainError(row.error) ?? "", MAX_SUMMARY_CHARS),
     costUsd: row.costUsd,
     startedAt: row.startedAt.toISOString(),
     finishedAt: row.finishedAt?.toISOString() ?? null,
