@@ -397,6 +397,7 @@ src/            React frontend (Vite + TS + Tailwind)
     pr/         PR dashboard and embedded review: lists, diffs, context expansion,
                 change minimap, guide panel, insight cards, stack list
     issue/      Issues tab views
+    field/      Agent Field: the canvas and chiptune engine, and its page
     files/      shared file-tree rows
     editor/     CodeMirror 6 wrapper behind the workspace file editor
     review/editor/ read-only Monaco file and diff views for PR review: line
@@ -476,6 +477,8 @@ sidecar/        Bun + TS service (Hono)
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
   src/questions/   questions agents ask over MCP, and their answers
+  src/activity/    live agent activity for the Agent Field page: the hub, the
+                   Claude Code hook ingest and the SSE stream
   claude-plugins/  source of the Claude Code plugins headless runs load
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)

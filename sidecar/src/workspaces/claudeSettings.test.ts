@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { ingestSchema, PERMISSION_HOLD_MS } from "../attention/routes.ts";
 import {
+  activityHookCommand,
   agentSessionHookCommand,
   attentionHookCommand,
   buildClaudeSettings,
@@ -253,6 +254,68 @@ describe("agentSessionHookCommand", () => {
   });
 });
 
+describe("activityHookCommand", () => {
+  const hookInput = {
+    session_id: "d8cb83ea-8ef9-42b0-95b2-bf4602c282bc",
+    hook_event_name: "PreToolUse",
+    tool_name: "Bash",
+    tool_input: { command: "ls" },
+  };
+
+  async function runActivityHook(env: Record<string, string>): Promise<CapturedRequest[]> {
+    const requests: CapturedRequest[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (req) => {
+        requests.push({ url: new URL(req.url), headers: req.headers, body: await req.json() });
+        return new Response(null, { status: 204 });
+      },
+    });
+    try {
+      const run = Bun.spawn(["sh", "-c", activityHookCommand(WORKSPACE_ID)], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          YARVIS_SIDECAR_PORT: String(server.port),
+          YARVIS_ATTENTION_TOKEN: "tok",
+          ...env,
+        },
+        stdin: new Blob([JSON.stringify(hookInput)]),
+        stdout: "pipe",
+      });
+      expect(await run.exited).toBe(0);
+      // Async hook output is ignored by Claude Code, but it must stay empty anyway.
+      expect(await new Response(run.stdout).text()).toBe("");
+      return requests;
+    } finally {
+      server.stop(true);
+    }
+  }
+
+  it("forwards Claude's hook input with the workspace and the PTY's session headers", async () => {
+    const requests = await runActivityHook({
+      YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}`,
+      YARVIS_SESSION_TOKEN: "session-tok",
+    });
+    expect(requests).toHaveLength(1);
+    const [req] = requests;
+    expect(req!.url.pathname).toBe("/ingest/activity");
+    expect(req!.url.searchParams.get("workspaceId")).toBe(WORKSPACE_ID);
+    expect(req!.headers.get("authorization")).toBe("Bearer tok");
+    expect(req!.headers.get("x-yarvis-session-key")).toBe(`ws-claude:${WORKSPACE_ID}`);
+    expect(req!.headers.get("x-yarvis-session-token")).toBe("session-tok");
+    expect(req!.body).toEqual(hookInput);
+  });
+
+  it("sends nothing outside a Yarvis PTY", async () => {
+    expect(await runActivityHook({})).toEqual([]);
+  });
+
+  it("refuses to embed a workspace id the shell would scan", () => {
+    expect(() => activityHookCommand("w$(id)")).toThrow(/unsafe value/);
+  });
+});
+
 describe("buildClaudeSettings", () => {
   it("writes the attention, settle and registration hooks, with idle_prompt on Notification", () => {
     const settings = buildClaudeSettings(WORKSPACE_ID) as {
@@ -262,9 +325,13 @@ describe("buildClaudeSettings", () => {
       "Notification",
       "PermissionRequest",
       "PostToolUse",
+      "PostToolUseFailure",
+      "PreCompact",
+      "PreToolUse",
       "SessionEnd",
       "SessionStart",
       "Stop",
+      "SubagentStop",
       "UserPromptSubmit",
     ]);
     expect(settings.hooks.Notification![0]!.matcher).toBe("idle_prompt");
@@ -326,12 +393,42 @@ describe("buildClaudeSettings", () => {
       hooks: Record<string, unknown[]>;
     };
     expect(twice.hooks.PermissionRequest).toHaveLength(1);
-    expect(twice.hooks.Notification).toHaveLength(1);
+    // The idle_prompt entry and the activity entry.
+    expect(twice.hooks.Notification).toHaveLength(2);
     expect(twice.hooks.Stop).toHaveLength(1);
     expect(twice.hooks.PostToolUse).toHaveLength(1);
     expect(twice.hooks.UserPromptSubmit).toHaveLength(1);
     expect(twice.hooks.SessionStart).toHaveLength(1);
     expect(twice.hooks.SessionEnd).toHaveLength(1);
+    expect(twice.hooks.PreToolUse).toHaveLength(1);
+    expect(twice.hooks.PostToolUseFailure).toHaveLength(1);
+    expect(twice.hooks.SubagentStop).toHaveLength(1);
+    expect(twice.hooks.PreCompact).toHaveLength(1);
+  });
+
+  it("reports activity on every event the Agent Field page draws, without waiting", () => {
+    const settings = buildClaudeSettings(WORKSPACE_ID) as {
+      hooks: Record<string, { matcher?: string; hooks: { command: string; async?: boolean }[] }[]>;
+    };
+    for (const event of [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUseFailure",
+      "SubagentStop",
+      "Stop",
+      "Notification",
+      "PreCompact",
+    ]) {
+      const entries = settings.hooks[event]!.filter((e) =>
+        e.hooks.some((h) => h.command.includes("/ingest/activity")),
+      );
+      expect(entries).toHaveLength(1);
+      // Every notification, not just the idle one the attention hook matches.
+      expect(entries[0]!.matcher).toBeUndefined();
+      const hook = entries[0]!.hooks.find((h) => h.command.includes("/ingest/activity"));
+      expect(hook?.async).toBe(true);
+    }
   });
 
   it("settles held prompts after every tool call and at the end of a turn, without waiting", () => {
