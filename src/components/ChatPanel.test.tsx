@@ -229,7 +229,11 @@ describe("ChatPanel", () => {
     provider.value = "openai";
     provider.dispatchEvent(new Event("change", { bubbles: true }));
     await settle();
-    expect(picker(MODEL_HINT)?.value).toBe("gpt-6");
+    // Checked on the request: a select whose value matches no option shows its
+    // first one anyway, so the picker would read "gpt-6" even with a stale model.
+    scripted = [{ type: "done", finishReason: "stop" }];
+    await say(mounted.host, "hello");
+    expect(sent[sent.length - 1]).toMatchObject({ provider: "openai", model: "gpt-6" });
   });
 
   it("adds a session the thread created to the picker and selects it", async () => {

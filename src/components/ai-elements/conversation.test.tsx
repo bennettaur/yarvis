@@ -47,6 +47,8 @@ describe("Conversation", () => {
     expect(mounted.host.querySelector(SCROLL_BUTTON)).toBeNull();
 
     const scrollTo = giveLayout(pane);
+    // use-stick-to-bottom only lets go on a scroll upward from the last position
+    // it saw, so it first has to see the pane at the bottom.
     scrollTo(899);
     scrollTo(300);
     await waitFor(() => mounted.host.querySelector(SCROLL_BUTTON) !== null, "the scroll button");

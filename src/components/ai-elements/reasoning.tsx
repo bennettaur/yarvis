@@ -36,7 +36,7 @@ export type ReasoningProps = Omit<ComponentProps<typeof Collapsible>, "open" | "
   isStreaming?: boolean;
 };
 
-const AUTO_CLOSE_DELAY_MS = 1000;
+export const AUTO_CLOSE_DELAY_MS = 1000;
 
 export const Reasoning = memo(
   ({ className, isStreaming = false, defaultOpen = true, children, ...props }: ReasoningProps) => {

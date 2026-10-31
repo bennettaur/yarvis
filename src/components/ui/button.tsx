@@ -4,9 +4,9 @@ import { cn } from "../../lib/cn";
 
 /**
  * shadcn/ui's button (new-york-v4). Its `dark:` variants are folded into the
- * base classes because the app is always dark, and the `asChild` slot and the
- * variants and sizes nothing uses are left out. It defaults to `type="button"` so one placed
- * inside a form never submits it by accident.
+ * base classes because the app is always dark. The `asChild` slot, and the
+ * variants and sizes nothing here uses, are left out. It defaults to
+ * `type="button"` so one placed inside a form never submits it by accident.
  */
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { waitFor } from "../../test/render";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "./reasoning";
+import { AUTO_CLOSE_DELAY_MS, Reasoning, ReasoningContent, ReasoningTrigger } from "./reasoning";
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
@@ -42,7 +42,7 @@ describe("Reasoning", () => {
     // Reopened by hand, it stays open: the fold happens once.
     act(() => host?.querySelector("button")?.click());
     expect(host.textContent).toContain("weighing it up");
-    await act(() => new Promise((resolve) => setTimeout(resolve, 1100)));
+    await act(() => new Promise((resolve) => setTimeout(resolve, AUTO_CLOSE_DELAY_MS + 100)));
     expect(host.textContent).toContain("weighing it up");
   });
 });
