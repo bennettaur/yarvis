@@ -524,6 +524,23 @@ export async function pollOnce(
   if (azure.length) await refreshEach(db, azure, (d) => branchPr(clients, d.repo, d.wr.branch));
 }
 
+/**
+ * Reads the named workspaces' branches from their providers now and caches
+ * what they say, for a caller that needs the current state rather than the
+ * last poll. A repo that couldn't be read keeps its cached row, with the
+ * failure in `lastError` unless the rate limit stopped the read before it.
+ */
+export function refreshWorkspacePrs(
+  db: Db,
+  clients: PollerClients,
+  workspaceIds: string[],
+): Promise<void> {
+  const wanted = new Set(workspaceIds);
+  return pollOnce(db, clients, (candidate) =>
+    wanted.has(candidate.workspaceId) ? "branch" : null,
+  );
+}
+
 /** Refreshes every repo whose cached PR is due, as of `now`. */
 export function pollDueRepos(db: Db, clients: PollerClients, now = Date.now()): Promise<void> {
   return pollOnce(db, clients, (candidate) => dueRefresh(candidate, now));
