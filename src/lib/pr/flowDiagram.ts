@@ -20,6 +20,7 @@ export interface PrGraphNode {
   kind: string;
   file?: string;
   line?: number;
+  endLine?: number;
   summary?: string;
   /** True when the pull request changes this code. */
   changed?: boolean;

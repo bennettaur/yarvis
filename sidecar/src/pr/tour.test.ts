@@ -169,17 +169,29 @@ describe("generateTour", () => {
     expect((await generateTour(model, fakeSource())).headSha).toBe("a".repeat(40));
   });
 
-  it("returns the graph the agent recorded, for the guide's diagram", async () => {
-    const { model } = scriptedModel(
+  // Only src/api.ts's lines 10-11 change; the rest of the file is untouched.
+  const diffSource = () =>
+    fakeSource({
+      files: async () =>
+        changedFiles.map((filename) => ({ filename, patch: null }) as unknown as PrFile),
+      fileDiff: async (path) =>
+        ({
+          filename: path,
+          patch: path === "src/api.ts" ? "@@ -10,1 +10,2 @@\n-old\n+new\n+more" : null,
+        }) as PrFile,
+    });
+
+  const recordingModel = (...nodes: object[]) =>
+    scriptedModel(
       {
         finishReason: finished("tool-calls"),
         content: [
-          {
-            type: "tool-call",
-            toolCallId: "n",
+          ...nodes.map((node, i) => ({
+            type: "tool-call" as const,
+            toolCallId: `n${i}`,
             toolName: "record_node",
-            input: JSON.stringify({ id: "route", kind: "endpoint", file: "src/api.ts" }),
-          },
+            input: JSON.stringify(node),
+          })),
           {
             type: "tool-call",
             toolCallId: "e",
@@ -190,14 +202,36 @@ describe("generateTour", () => {
       },
       submits({ steps: [step("src/api.ts")] }),
     );
-    const { graph } = await generateTour(model, fakeSource());
+
+  it("returns the graph the agent recorded, for the guide's diagram", async () => {
+    const { model } = recordingModel({
+      id: "route",
+      kind: "endpoint",
+      file: "src/api.ts",
+      line: 10,
+    });
+    const { graph } = await generateTour(model, diffSource());
     expect(graph).toEqual({
       nodes: [
-        { id: "route", kind: "endpoint", file: "src/api.ts", changed: true },
+        { id: "route", kind: "endpoint", file: "src/api.ts", line: 10, changed: true },
         { id: "store", kind: "unknown", changed: false },
       ],
       edges: [{ from: "route", to: "store", kind: "calls" }],
     });
+  });
+
+  // The model's output is shaped by the pull request's text, so naming a
+  // changed file, or claiming a change, must not be enough to be highlighted.
+  it("does not mark a node changed when it names a changed file but misses the diff", async () => {
+    const { model } = recordingModel(
+      { id: "route", kind: "endpoint", file: "src/api.ts", line: 40, changed: true },
+      { id: "store", kind: "function", file: "src/made-up.ts", line: 10, changed: true },
+    );
+    const { graph } = await generateTour(model, diffSource());
+    expect(graph?.nodes.map((n) => [n.id, n.changed])).toEqual([
+      ["route", false],
+      ["store", false],
+    ]);
   });
 
   // Loose nodes with nothing joining them draw as a scatter of boxes, which

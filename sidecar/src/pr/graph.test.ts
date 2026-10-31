@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { MAX_DIAGRAM_EDGES, MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
+import { changedLineRanges, MAX_DIAGRAM_EDGES, MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
 
 describe("newCodeGraph", () => {
   it("keeps what an earlier sighting established", () => {
@@ -91,13 +91,25 @@ describe("newCodeGraph", () => {
   });
 
   describe("snapshot", () => {
-    it("marks a node changed from the pull request's files, not the model's claim", () => {
+    it("marks a node changed from the diff, not the model's claim", () => {
       const graph = newCodeGraph();
-      graph.addNode({ id: "handler", kind: "endpoint", file: "src/api.ts", changed: false });
-      graph.addNode({ id: "store", kind: "function", file: "src/store.ts", changed: true });
+      graph.addNode({
+        id: "handler",
+        kind: "endpoint",
+        file: "src/api.ts",
+        line: 12,
+        changed: false,
+      });
+      graph.addNode({
+        id: "store",
+        kind: "function",
+        file: "src/store.ts",
+        line: 3,
+        changed: true,
+      });
       // No file to check the claim against, so it is not taken.
       graph.addNode({ id: "orders", kind: "table", changed: true });
-      const { nodes } = graph.snapshot(new Set(["src/api.ts"]));
+      const { nodes } = graph.snapshot(new Map([["src/api.ts", [[10, 14]]]]));
       expect(Object.fromEntries(nodes.map((n) => [n.id, n.changed]))).toEqual({
         handler: true,
         store: false,
@@ -105,16 +117,41 @@ describe("newCodeGraph", () => {
       });
     });
 
+    // A file name alone is the model's word too: an injected node can point at
+    // a changed file to borrow its highlight.
+    it("does not mark a node in a changed file whose lines the diff doesn't touch", () => {
+      const graph = newCodeGraph();
+      graph.addNode({
+        id: "helper",
+        kind: "function",
+        file: "src/api.ts",
+        line: 80,
+        changed: true,
+      });
+      graph.addNode({ id: "unplaced", kind: "function", file: "src/api.ts", changed: true });
+      const { nodes } = graph.snapshot(new Map([["src/api.ts", [[10, 14]]]]));
+      expect(nodes.map((n) => n.changed)).toEqual([false, false]);
+    });
+
+    it("marks a node whose span takes in a change below its first line", () => {
+      const graph = newCodeGraph();
+      graph.addNode({ id: "fn", kind: "function", file: "src/api.ts", line: 5, endLine: 20 });
+      // An end before the start is read as a single line, not a span.
+      graph.addNode({ id: "odd", kind: "function", file: "src/api.ts", line: 6, endLine: 1 });
+      const { nodes } = graph.snapshot(new Map([["src/api.ts", [[18, 18]]]]));
+      expect(nodes.map((n) => n.changed)).toEqual([true, false]);
+    });
+
     it("keeps changed code first when the graph is too big to draw", () => {
       const graph = newCodeGraph();
       for (let i = 0; i < MAX_DIAGRAM_NODES; i++) {
         graph.addNode({ id: `context-${i}`, kind: "function", file: `src/context${i}.ts` });
       }
-      graph.addNode({ id: "changed", kind: "function", file: "src/changed.ts" });
+      graph.addNode({ id: "changed", kind: "function", file: "src/changed.ts", line: 1 });
       graph.addEdge({ from: "changed", to: "context-0", kind: "calls" });
       graph.addEdge({ from: "context-1", to: `context-${MAX_DIAGRAM_NODES - 1}`, kind: "calls" });
 
-      const { nodes, edges } = graph.snapshot(new Set(["src/changed.ts"]));
+      const { nodes, edges } = graph.snapshot(new Map([["src/changed.ts", [[1, 1]]]]));
       expect(nodes).toHaveLength(MAX_DIAGRAM_NODES);
       expect(nodes.map((n) => n.id)).toContain("changed");
       expect(nodes.map((n) => n.id)).not.toContain(`context-${MAX_DIAGRAM_NODES - 1}`);
@@ -129,7 +166,34 @@ describe("newCodeGraph", () => {
           if (from !== to) graph.addEdge({ from: `n${from}`, to: `n${to}`, kind: "calls" });
         }
       }
-      expect(graph.snapshot(new Set()).edges).toHaveLength(MAX_DIAGRAM_EDGES);
+      expect(graph.snapshot(new Map()).edges).toHaveLength(MAX_DIAGRAM_EDGES);
     });
+  });
+});
+
+describe("changedLineRanges", () => {
+  it("takes the added lines and where a deletion sits, not the context", () => {
+    const patch = [
+      "@@ -1,5 +1,6 @@",
+      " import a",
+      "-import b",
+      "+import c",
+      "+import d",
+      " ",
+      " export {}",
+      "@@ -20,4 +21,3 @@ function f() {",
+      " one",
+      "-two",
+      " three",
+      "\\ No newline at end of file",
+    ].join("\n");
+    expect(changedLineRanges(patch)).toEqual([
+      [2, 3],
+      [22, 22],
+    ]);
+  });
+
+  it("reads a new file as all added", () => {
+    expect(changedLineRanges("@@ -0,0 +1,2 @@\n+a\n+b")).toEqual([[1, 2]]);
   });
 });

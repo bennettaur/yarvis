@@ -26,6 +26,8 @@ export interface GraphNode {
   kind: string;
   file?: string;
   line?: number;
+  /** Last line of the code, when it spans more than `line`. */
+  endLine?: number;
   summary?: string;
   /** True when this node is part of the pull request's own changes. */
   changed?: boolean;
@@ -36,6 +38,39 @@ export interface GraphEdge {
   to: string;
   /** How they relate: "calls", "imports", "reads", "writes", "renders", … */
   kind: string;
+}
+
+/** Inclusive line ranges, at the PR head, that a pull request adds or removes lines at. */
+export type LineRange = [start: number, end: number];
+
+/**
+ * The head-side lines a unified diff touches: each added line, plus the line a
+ * deletion sits before. Context lines are left out, since the hunk only shows
+ * them for reading.
+ */
+export function changedLineRanges(patch: string): LineRange[] {
+  const ranges: LineRange[] = [];
+  const mark = (line: number) => {
+    const last = ranges.at(-1);
+    if (last && line <= last[1] + 1) last[1] = Math.max(last[1], line);
+    else ranges.push([line, line]);
+  };
+  let line: number | null = null;
+  for (const row of patch.split("\n")) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (header) {
+      line = Number(header[1]);
+    } else if (line === null || row.startsWith("\\")) {
+      // Before the first hunk, or "\ No newline at end of file".
+    } else if (row.startsWith("+")) {
+      mark(line++);
+    } else if (row.startsWith("-")) {
+      mark(Math.max(line, 1));
+    } else {
+      line++;
+    }
+  }
+  return ranges;
 }
 
 export interface CodeGraph {
@@ -54,11 +89,12 @@ export interface CodeGraph {
   entryPoints(): GraphNode[];
   /**
    * The graph as stored for a diagram, cut to {@link MAX_DIAGRAM_NODES}.
-   * A node counts as changed only when it names a file in `changedFiles`: the
-   * model's own `changed` flag is written from text the pull request's author
-   * controls, so a diagram never marks code as part of the change on its word.
+   * A node counts as changed only when its file and lines overlap what the
+   * diff changes, keyed by path in `changedLines`. The model's own `changed`
+   * flag, and a file name alone, are written from text the pull request's
+   * author controls, so neither marks code as part of the change.
    */
-  snapshot(changedFiles: Set<string>): { nodes: GraphNode[]; edges: GraphEdge[] };
+  snapshot(changedLines: Map<string, LineRange[]>): { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
 export function newCodeGraph(): CodeGraph {
@@ -109,11 +145,14 @@ export function newCodeGraph(): CodeGraph {
       return [...nodes.values()].filter((n) => !pointedAt.has(n.id));
     },
 
-    snapshot(changedFiles) {
-      const marked = [...nodes.values()].map((n) => ({
-        ...n,
-        changed: n.file !== undefined && changedFiles.has(n.file),
-      }));
+    snapshot(changedLines) {
+      const touchesDiff = (n: GraphNode) => {
+        if (n.file === undefined || n.line === undefined) return false;
+        const start = n.line;
+        const end = Math.max(n.endLine ?? start, start);
+        return (changedLines.get(n.file) ?? []).some(([from, to]) => from <= end && to >= start);
+      };
+      const marked = [...nodes.values()].map((n) => ({ ...n, changed: touchesDiff(n) }));
       // The change's own code is what the diagram is about, so it is kept first
       // and the surrounding flow fills what room is left.
       const kept = [...marked.filter((n) => n.changed), ...marked.filter((n) => !n.changed)].slice(
