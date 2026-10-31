@@ -79,7 +79,7 @@ describe("subscribeActivity", () => {
     await waitFor(() => events.length === 1, "the event from the third connection");
     expect(server.calls()).toBe(3);
     expect(statuses.filter((s) => !s)).toHaveLength(2);
-    expect(statuses.at(-1)).toBe(true);
+    expect(statuses[statuses.length - 1]).toBe(true);
   });
 
   it("stops connecting once unsubscribed", async () => {
