@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { changedLineRanges, MAX_DIAGRAM_EDGES, MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
+import {
+  changedLineRanges,
+  MAX_DIAGRAM_EDGES,
+  MAX_DIAGRAM_NODES,
+  MAX_NODE_SPAN,
+  newCodeGraph,
+} from "./graph.ts";
 
 describe("newCodeGraph", () => {
   it("keeps what an earlier sighting established", () => {
@@ -90,6 +96,12 @@ describe("newCodeGraph", () => {
     ).toEqual(["cron", "http"]);
   });
 
+  it("drops a node's last line when a later sighting moves its first", () => {
+    const graph = newCodeGraph();
+    graph.addNode({ id: "fn", kind: "function", line: 5, endLine: 20 });
+    expect(graph.addNode({ id: "fn", kind: "function", line: 40 }).endLine).toBeUndefined();
+  });
+
   describe("snapshot", () => {
     it("marks a node changed from the diff, not the model's claim", () => {
       const graph = newCodeGraph();
@@ -138,8 +150,26 @@ describe("newCodeGraph", () => {
       graph.addNode({ id: "fn", kind: "function", file: "src/api.ts", line: 5, endLine: 20 });
       // An end before the start is read as a single line, not a span.
       graph.addNode({ id: "odd", kind: "function", file: "src/api.ts", line: 6, endLine: 1 });
-      const { nodes } = graph.snapshot(new Map([["src/api.ts", [[18, 18]]]]));
-      expect(nodes.map((n) => n.changed)).toEqual([true, false]);
+      // A span covering most of a file could take the highlight from any change in it.
+      graph.addNode({
+        id: "whole-file",
+        kind: "function",
+        file: "src/api.ts",
+        line: 1,
+        endLine: 2 + MAX_NODE_SPAN,
+      });
+      const { nodes } = graph.snapshot(
+        new Map([
+          [
+            "src/api.ts",
+            [
+              [6, 6],
+              [18, 18],
+            ],
+          ],
+        ]),
+      );
+      expect(nodes.map((n) => n.changed)).toEqual([true, true, false]);
     });
 
     it("keeps changed code first when the graph is too big to draw", () => {

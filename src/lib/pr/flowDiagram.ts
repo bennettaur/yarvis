@@ -93,7 +93,11 @@ export function nodeColumns(graph: PrGuideGraph): Map<string, number> {
 /** The box text: the node's name, then what it is and where it lives. */
 function boxLabel(node: PrGraphNode): string {
   const fileName = node.file?.split("/").pop();
-  const location = fileName && node.line ? `${fileName}:${node.line}` : fileName;
+  const lines =
+    node.line && node.endLine && node.endLine > node.line
+      ? `${node.line}-${node.endLine}`
+      : node.line;
+  const location = fileName && lines ? `${fileName}:${lines}` : fileName;
   return [node.id, [node.kind, location].filter(Boolean).join(" · ")].join("\n");
 }
 

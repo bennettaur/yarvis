@@ -749,11 +749,8 @@ export interface GenerateTourResult {
   graph: PrGuideGraph | null;
 }
 
-/**
- * Runs the exploration and returns the tour. Throws with a client-safe message
- * when the model fails or declines to submit one, so the route can report
- * something the user can act on rather than a provider stack trace.
- */
+const DIFF_READS_AT_ONCE = 5;
+
 /**
  * The lines each changed file's diff touches, for the files the graph's nodes
  * name. Only those patches are read, since Azure fetches each one on demand.
@@ -766,11 +763,13 @@ async function diffLinesForGraph(
   source: PrCodeSource,
 ): Promise<Map<string, LineRange[]>> {
   const named = new Set(graph.nodes().flatMap((n) => (n.file ? [n.file] : [])));
+  const wanted = files.filter((f) => named.has(f.filename));
   const lines = new Map<string, LineRange[]>();
-  await Promise.all(
-    files
-      .filter((f) => named.has(f.filename))
-      .map(async (f) => {
+  // A few at a time: on Azure each read is two file fetches, and the model
+  // decides how many files its nodes name.
+  for (let i = 0; i < wanted.length; i += DIFF_READS_AT_ONCE) {
+    await Promise.all(
+      wanted.slice(i, i + DIFF_READS_AT_ONCE).map(async (f) => {
         const patch =
           f.patch ??
           (await source.fileDiff(f.filename).then(
@@ -782,10 +781,16 @@ async function diffLinesForGraph(
           ));
         if (patch) lines.set(f.filename, changedLineRanges(patch));
       }),
-  );
+    );
+  }
   return lines;
 }
 
+/**
+ * Runs the exploration and returns the tour. Throws with a client-safe message
+ * when the model fails or declines to submit one, so the route can report
+ * something the user can act on rather than a provider stack trace.
+ */
 export async function generateTour(
   model: LanguageModel,
   source: PrCodeSource,

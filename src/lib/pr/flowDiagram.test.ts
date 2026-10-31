@@ -84,6 +84,7 @@ describe("toExcalidrawSkeleton", () => {
       nodes: [
         { id: "handler", kind: "endpoint", file: "src/api/orders.ts", line: 12, changed: true },
         { id: "db", kind: "table" },
+        { id: "load", kind: "function", file: "src/load.ts", line: 3, endLine: 9 },
       ],
       edges: [],
     });
@@ -92,5 +93,6 @@ describe("toExcalidrawSkeleton", () => {
       label: { text: "handler\nendpoint · orders.ts:12" },
     });
     expect(elements[1]).toMatchObject({ strokeStyle: "dashed", label: { text: "db\ntable" } });
+    expect(elements[2]).toMatchObject({ label: { text: "load\nfunction · load.ts:3-9" } });
   });
 });

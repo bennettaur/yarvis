@@ -194,7 +194,9 @@ Some limits:
 - The diagram shows at most 60 pieces of code, the changed ones first.
 - A box counts as changed only when the file and lines it names overlap lines
   the PR adds or removes. Naming a changed file is not enough, so a box with no
-  file or no line is always shown as surrounding code.
+  file or no line is always shown as surrounding code. The lines are still the
+  agent's reading, so a highlighted box sits on a real change but its name may
+  not describe it.
 - The agent draws the diagram from the PR's own code, which its author wrote.
   Treat the box names and labels as the agent's reading, not as fact.
 - If the agent recorded no connections, there is no diagram. Regenerating the

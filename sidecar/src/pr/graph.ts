@@ -19,6 +19,12 @@
 export const MAX_DIAGRAM_NODES = 60;
 /** A loose bound on the stored payload, about two and a half edges per node. */
 export const MAX_DIAGRAM_EDGES = 150;
+/**
+ * Longest span a node may claim when matched against the diff. The span is the
+ * model's word, so without a bound one node could cover a whole file and take
+ * the highlight from any change in it. A longer span counts as its first line.
+ */
+export const MAX_NODE_SPAN = 200;
 
 export interface GraphNode {
   id: string;
@@ -91,8 +97,10 @@ export interface CodeGraph {
    * The graph as stored for a diagram, cut to {@link MAX_DIAGRAM_NODES}.
    * A node counts as changed only when its file and lines overlap what the
    * diff changes, keyed by path in `changedLines`. The model's own `changed`
-   * flag, and a file name alone, are written from text the pull request's
-   * author controls, so neither marks code as part of the change.
+   * flag is ignored, and so is a file name without lines on a real change.
+   * The lines are still the model's, so a misled agent can place a box on a
+   * real change under a misleading name, but not highlight code nothing
+   * touched.
    */
   snapshot(changedLines: Map<string, LineRange[]>): { nodes: GraphNode[]; edges: GraphEdge[] };
 }
@@ -107,6 +115,8 @@ export function newCodeGraph(): CodeGraph {
       // a bare name in a caller and later with a file and a summary, and the
       // second sighting should not erase what the first one established.
       const merged = { ...nodes.get(node.id), ...node };
+      // A new first line makes the old last line meaningless.
+      if (node.line !== undefined && node.endLine === undefined) delete merged.endLine;
       nodes.set(node.id, merged);
       return merged;
     },
@@ -149,7 +159,8 @@ export function newCodeGraph(): CodeGraph {
       const touchesDiff = (n: GraphNode) => {
         if (n.file === undefined || n.line === undefined) return false;
         const start = n.line;
-        const end = Math.max(n.endLine ?? start, start);
+        const end =
+          n.endLine && n.endLine > start && n.endLine - start <= MAX_NODE_SPAN ? n.endLine : start;
         return (changedLines.get(n.file) ?? []).some(([from, to]) => from <= end && to >= start);
       };
       const marked = [...nodes.values()].map((n) => ({ ...n, changed: touchesDiff(n) }));

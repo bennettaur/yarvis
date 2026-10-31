@@ -234,6 +234,43 @@ describe("generateTour", () => {
     ]);
   });
 
+  // A missing patch must not read as "the whole file changed", and a failed
+  // read must not throw away a tour the model already submitted.
+  it("marks nothing in a file whose patch can't be read, and still returns the tour", async () => {
+    for (const fileDiff of [
+      async () => {
+        throw new Error("azure fell over");
+      },
+      async (path: string) => ({ filename: path, patch: null }) as PrFile,
+    ]) {
+      const { model } = recordingModel({
+        id: "route",
+        kind: "endpoint",
+        file: "src/api.ts",
+        line: 10,
+      });
+      const result = await generateTour(model, { ...diffSource(), fileDiff });
+      expect(result.steps).toHaveLength(1);
+      expect(result.graph?.nodes[0]).toMatchObject({ id: "route", changed: false });
+    }
+  });
+
+  it("uses the patch the file listing already carries", async () => {
+    const { model } = recordingModel({
+      id: "route",
+      kind: "endpoint",
+      file: "src/api.ts",
+      line: 10,
+    });
+    const source = fakeSource({
+      files: async () => [{ filename: "src/api.ts", patch: "@@ -10,1 +10,1 @@\n-a\n+b" } as PrFile],
+      fileDiff: async () => {
+        throw new Error("the listing's patch should have been used");
+      },
+    });
+    expect((await generateTour(model, source)).graph?.nodes[0]?.changed).toBe(true);
+  });
+
   // Loose nodes with nothing joining them draw as a scatter of boxes, which
   // says nothing about the flow.
   it("returns no graph when the agent recorded no edges", async () => {
