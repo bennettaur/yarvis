@@ -42,6 +42,19 @@ describe("telling the sidecar's PR poller what's on screen", () => {
     expect(requested).toEqual(["/api/workspaces", "/api/workspaces/ws-1"]);
   });
 
+  it("flags nothing while the window has focus but is hidden", async () => {
+    document.hasFocus = () => true;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      response = new Response("[]", { status: 200 });
+      await listWorkspaces({ showingBadges: true });
+      await getWorkspace("ws-1", { viewing: true });
+      expect(requested).toEqual(["/api/workspaces", "/api/workspaces/ws-1"]);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+    }
+  });
+
   it("flags nothing for a read that isn't the Workspaces view", async () => {
     document.hasFocus = () => true;
     response = new Response("[]", { status: 200 });

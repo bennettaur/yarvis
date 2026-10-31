@@ -9,6 +9,7 @@ import {
   isDueForRefresh,
   markWorkspaceListViewed,
   markWorkspaceViewed,
+  pollDueRepos,
   pollOnce,
   reconcileOrphans,
   resetWorkspaceViews,
@@ -602,6 +603,11 @@ describe("isDueForRefresh", () => {
     expect(due("w", null, polledAgo(60_000))).toBe(true);
   });
 
+  it("leaves other workspaces alone while one is open", () => {
+    markWorkspaceViewed("w", now);
+    expect(due("other", "open", null)).toBe(false);
+  });
+
   it("stops refreshing a workspace a minute after its last read", () => {
     markWorkspaceViewed("w", now - 60_000);
     expect(due("w", "open", null)).toBe(false);
@@ -683,6 +689,25 @@ describe("pollOnce with a due filter", () => {
     expect(asked).toBeGreaterThan(0);
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row!.lastPolledAt!.getTime()).toBeGreaterThanOrEqual(now);
+  });
+});
+
+describe("pollDueRepos", () => {
+  it("asks the provider only about the repos in the workspace the user has open", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const [open] = await db.select().from(workspaces).where(eq(workspaces.slug, "a"));
+    markWorkspaceViewed(open!.id);
+    const asked: string[] = [];
+    const gh = clientWith((path) => {
+      asked.push(path);
+      return path.includes("head=") ? [] : {};
+    });
+
+    await pollDueRepos(db, { github: gh });
+
+    expect(asked.some((p) => p.includes("/oa/ra/"))).toBe(true);
+    expect(asked.some((p) => p.includes("/ob/rb/"))).toBe(false);
   });
 });
 

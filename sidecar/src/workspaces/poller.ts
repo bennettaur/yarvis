@@ -338,6 +338,11 @@ export async function pollOnce(
   }
 }
 
+/** Refreshes the repos the user is looking at whose cached PR is due, as of `now`. */
+export function pollDueRepos(db: Db, clients: PollerClients, now = Date.now()): Promise<void> {
+  return pollOnce(db, clients, (candidate) => isDueForRefresh(candidate, now));
+}
+
 /**
  * Unsticks workspaces left in a transient state by an interrupted run: a
  * provision becomes `error`, along with its repos still mid-provision, and an
@@ -407,8 +412,7 @@ export function startWorkspacePoller(config: Config): () => void {
     if (running) return; // never overlap a slow cycle with the next
     running = true;
     try {
-      const now = Date.now();
-      await pollOnce(db, clients, (candidate) => isDueForRefresh(candidate, now));
+      await pollDueRepos(db, clients);
     } catch (e) {
       console.error("[workspace poller] cycle failed:", e);
     } finally {
