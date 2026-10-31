@@ -92,8 +92,21 @@ describe("fromClaudeHook", () => {
     expect(label("PGPASSWORD=hunter2 psql -h db")).toBe("Bash psql");
     expect(label("AWS_SECRET_ACCESS_KEY=wJalr/K7MDENG/bPxRfiCY aws s3 ls")).toBe("Bash aws");
     expect(label(`TOKEN="two words" KEY='a b' /usr/bin/node run.js`)).toBe("Bash node");
-    // An unclosed quote can't be parsed, so nothing of the command is shown.
-    expect(label(`PGPASSWORD="hunter2 psql`)).toBe("Bash");
+    // Shapes the pattern can't follow show no part of the command at all.
+    for (const command of [
+      `PGPASSWORD="hunter2 psql`,
+      `PGPASSWORD='hun ter2" psql`,
+      String.raw`PGPASSWORD="abc\" hunter2" psql`,
+      String.raw`PGPASSWORD=abc\ hunter2 psql`,
+      String.raw`PGPASSWORD=$'abc\' hunter2' psql`,
+      "PGPASSWORD=$(echo hunter2 x) psql",
+      "PGPASSWORD=`echo hunter2` psql",
+      "PGPASSWORD=${X:-hunter2 two} psql",
+      "A=[a b] psql",
+      "A=b;psql",
+    ]) {
+      expect(label(command)).toBe("Bash");
+    }
   });
 
   it("labels a fetch with the URL's host, not its path or credentials", () => {

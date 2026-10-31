@@ -50,17 +50,19 @@ export type ClaudeHook = z.infer<typeof claudeHookSchema>;
 
 /**
  * Leading `NAME=value` assignments, as in `PGPASSWORD=… psql`. The value is
- * often a secret. Quoted values may hold spaces; the alternatives don't
- * overlap, so a long command can't backtrack.
+ * often a secret. Only plain values are matched: a quote, escape, expansion
+ * or operator the pattern can't follow ends the match, so the rest stays in
+ * the program token, which is then dropped. The alternatives don't overlap,
+ * so a long command can't backtrack.
  */
-const ENV_ASSIGNMENTS = /^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"'])*\s+)*/;
+const ENV_ASSIGNMENTS = /^(?:[A-Za-z_]\w*=(?:'[^']*'|"[^"\\$`]*"|[^\s"'\\$`(){}[\];&|<>])*\s+)*/;
 
 /** A command's program, without the env assignments before it. */
 function commandProgram(command: string): string {
   const program = command.replace(ENV_ASSIGNMENTS, "").match(/^\S+/)?.[0] ?? "";
-  // A token still holding `=` is an assignment the pattern couldn't parse,
-  // such as one with an unclosed quote, so none of it is shown.
-  return program.includes("=") ? "" : basename(program);
+  // Anything left of an assignment the pattern couldn't follow still holds
+  // its `=`, so none of the command is shown.
+  return /[="'\\$`(){}[\]]/.test(program) ? "" : basename(program);
 }
 
 /**
