@@ -6,6 +6,7 @@ import { createAgentRunRoutes } from "./agentRuns/routes.ts";
 import { createDecisionPlaygroundRoutes } from "./agents/decisionPlaygroundRoutes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
 import { createAlarmRoutes } from "./alarms/routes.ts";
+import { createArtifactRoutes } from "./artifacts/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
@@ -180,6 +181,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/artifacts", createArtifactRoutes(config));
   app.route("/api/work-streams", createWorkStreamRoutes(config));
   app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));

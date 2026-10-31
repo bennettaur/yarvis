@@ -38,6 +38,9 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   questions: "always",
   projects: "always",
   todos: "always",
+  // Always on so a Jobs-tab job can write its morning brief without searching.
+  // Scheduled tasks stay read-only: SCHEDULED_TASK_TOOLS offers only list and get.
+  artifacts: "always",
   events: "always",
   digest: "always",
   delegation: "always",

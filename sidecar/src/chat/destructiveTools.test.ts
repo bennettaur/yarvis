@@ -73,6 +73,32 @@ describe("conditionalConfirmations", () => {
     expect(deleteTask?.({})).toBe(true);
   });
 
+  it("asks before destructive tools once a typed turn has read an agent-written artifact", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    reads.hasReadUntrustedArtifact = true;
+    expect(conditions.get("delete_task")?.({})).toBe(true);
+  });
+
+  it("asks before an artifact rewrite, not an append, where a delete would ask", () => {
+    const reads = newUntrustedReads();
+    const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const update = typed.get("update_artifact");
+    expect(update?.({ id: "a", content: "new" })).toBe(false);
+    reads.hasReadWebPage = true;
+    expect(update?.({ id: "a", content: "new" })).toBe(true);
+    expect(update?.({ id: "a", title: "new" })).toBe(true);
+    expect(update?.({ id: "a", append: "more" })).toBe(false);
+
+    const spoken = conditionalConfirmations({
+      spoken: true,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    expect(spoken.get("update_artifact")?.({ id: "a", content: "new" })).toBe(true);
+    expect(spoken.get("update_artifact")?.({ id: "a", append: "more" })).toBe(false);
+  });
+
   it("leaves destructive tools to the always-ask set on a spoken turn", () => {
     const conditions = conditionalConfirmations({
       spoken: true,
