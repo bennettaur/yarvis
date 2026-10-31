@@ -232,8 +232,8 @@ page. Spoken turns always ask before rewriting one.
 Open **Memory → Artifacts** to read them. Each one shows where it came from
 (a chat, heads-down mode, or a specialist or job) and whether it's untrusted.
 Delete one with its ✕, or tick several (or all) and delete them together;
-deleting can't be undone. Only the assistant edits them. Artifacts are markdown for now, and each one is capped
-at 100,000 characters.
+deleting can't be undone. Only the assistant edits them. Artifacts are
+markdown for now, and each one is capped at 100,000 characters.
 
 ### Memory kinds
 
