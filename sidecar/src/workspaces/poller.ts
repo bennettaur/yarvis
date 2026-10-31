@@ -6,9 +6,11 @@
  * render. A repo's provider is derived from its clone URL, so GitHub and Azure
  * DevOps repos are both refreshed in one cycle.
  *
- * Each refresh costs up to three provider requests per repo, so only repos the
- * user is looking at are refreshed: the workspace routes record which reads
- * the UI made, and a workspace nobody has read lately keeps its last cached row.
+ * GitHub repos are read in batched GraphQL queries, two kinds per cycle. Every
+ * known, unmerged PR is re-read by number on a slow timer whether or not
+ * anyone is looking, so every workspace's badge stays current. Branches are
+ * read on a fast timer only while their workspace is on screen, which is also
+ * how a new PR is found. The workspace routes record which reads the UI made.
  * Views are tracked in memory per sidecar process, so a named instance's UI
  * doesn't trigger polling in the main instance.
  */
@@ -26,9 +28,12 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import {
+  type BatchResult,
   type ChecksSummary,
   createGitHubClient,
   type GitHubClient,
+  POLL_BATCH_SIZE,
+  type PolledPr,
   summarizeCheckItems,
 } from "../github/client.ts";
 import { GitHubError } from "../github/errors.ts";
@@ -47,8 +52,9 @@ const TICK_MS = 30_000;
 /** A repo in the workspace the user has open. */
 const FOCUSED_POLL_MS = 60_000;
 /**
- * A repo seen only as a badge in the workspace list, or a merged or closed PR
- * in the open workspace, which has little left to change.
+ * Every known PR that isn't merged, and a branch with no PR yet seen in the
+ * workspace list. Also a merged or closed PR in the open workspace, which has
+ * little left to change.
  */
 const BACKGROUND_POLL_MS = 15 * 60_000;
 /**
@@ -88,32 +94,62 @@ export function resetWorkspaceViews(): void {
 /** What decides whether a repo is due a refresh: its workspace and its cached row. */
 export interface PollCandidate {
   workspaceId: string;
+  prNumber: number | null;
   prState: string | null;
   lastPolledAt: Date | null;
 }
 
 /**
- * How often a repo's PR should be refreshed given what the user is looking at,
- * or null when it shouldn't be: nothing showing it was read lately, or it is a
- * settled PR seen only as a list badge.
+ * How a due repo is read. `branch` finds whatever PR is on the branch now, so
+ * it notices a new one; `number` re-reads a PR already known, which is cheaper.
  */
-function pollIntervalMs(workspaceId: string, prState: string | null, now: number): number | null {
-  const viewedAt = workspaceViewedAt.get(workspaceId);
-  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
-  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
-  const settled = prState === "merged" || prState === "closed";
-  if (focused) return settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS;
-  if (listVisible && !settled) return BACKGROUND_POLL_MS;
-  return null;
-}
+export type RefreshMode = "branch" | "number";
 
-/** Whether a repo's cached PR is older than what's being viewed calls for. */
-export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
-  const interval = pollIntervalMs(candidate.workspaceId, candidate.prState, now);
-  if (interval === null) return false;
+/** A repo whose cached PR is older than this, measured from its last poll, is due. */
+function dueAfter(candidate: PollCandidate, intervalMs: number, now: number): boolean {
   // A repo with no cached row yet has never been polled.
   if (candidate.lastPolledAt === null) return true;
-  return now - candidate.lastPolledAt.getTime() >= interval - DUE_SLACK_MS;
+  return now - candidate.lastPolledAt.getTime() >= intervalMs - DUE_SLACK_MS;
+}
+
+/**
+ * Whether a known PR's 15-minute window has turned since its last read. Known
+ * PRs are read on wall-clock windows rather than each on its own timer, so
+ * they all come due on the same tick and share one request; timers that
+ * drifted apart would split them into many small ones.
+ */
+function windowTurned(candidate: PollCandidate, now: number): boolean {
+  if (candidate.lastPolledAt === null) return true;
+  const window = (t: number) => Math.floor(t / BACKGROUND_POLL_MS);
+  return window(candidate.lastPolledAt.getTime()) < window(now);
+}
+
+/** How a repo should be refreshed this tick, or null when it isn't due. */
+export function dueRefresh(candidate: PollCandidate, now = Date.now()): RefreshMode | null {
+  const viewedAt = workspaceViewedAt.get(candidate.workspaceId);
+  const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
+  const settled = candidate.prState === "merged" || candidate.prState === "closed";
+  // The workspace the user has open is read by branch, so a PR opened on it
+  // shows up within a minute. A settled PR there has little left to change.
+  if (focused) {
+    return dueAfter(candidate, settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, now)
+      ? "branch"
+      : null;
+  }
+  // Every other known PR is re-read by number, whether or not anyone is
+  // looking, so every badge stays current. A merged PR won't change again.
+  if (candidate.prNumber !== null) {
+    if (candidate.prState === "merged") return null;
+    return windowTurned(candidate, now) ? "number" : null;
+  }
+  // A branch with no PR yet is only looked at while its badge is on screen.
+  const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
+  return listVisible && dueAfter(candidate, BACKGROUND_POLL_MS, now) ? "branch" : null;
+}
+
+/** Whether a repo's cached PR is older than its refresh interval. */
+export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
+  return dueRefresh(candidate, now) !== null;
 }
 
 /** On startup, workspaces stuck in a transient state older than this are an
@@ -174,7 +210,28 @@ export type BranchPr = Pick<
   | "reviewDecision"
 >;
 
-/** The PR on one GitHub branch and where its checks stand. */
+/** What the PR cache holds for a GitHub PR the poller read, or for a branch with none. */
+function toBranchPr(pr: PolledPr | null): BranchPr {
+  // No PR yet is the common early state. Cache it explicitly so the UI can
+  // show "no PR" rather than "not polled".
+  if (!pr) return NO_PR;
+  return {
+    prNumber: pr.number,
+    prUrl: pr.url,
+    prState: pr.status.merged ? "merged" : pr.status.state,
+    isDraft: pr.draft,
+    mergeable: pr.status.mergeableState,
+    checkRollup: deriveRollup(pr.status.checks),
+    checks: pr.status.checks,
+    reviewDecision: pr.reviewDecision,
+  };
+}
+
+/**
+ * The PR on one GitHub branch and where its checks stand, in three reads that
+ * can each fall back to REST. Backs the worktree PR lookup, and the poller's
+ * open workspace when GraphQL can't run its batched read.
+ */
 async function githubBranchPr(
   gh: GitHubClient,
   owner: string,
@@ -182,8 +239,6 @@ async function githubBranchPr(
   branch: string,
 ): Promise<BranchPr> {
   const pr = await gh.findPrByBranch(owner, repo, branch);
-  // No PR yet is the common early state — represent it explicitly so the UI
-  // can show "no PR" rather than "not polled".
   if (!pr) return NO_PR;
   const status = await gh.prStatus(owner, repo, pr.number);
   // The verdict costs an extra request, so only ask where it can change what
@@ -196,16 +251,7 @@ async function githubBranchPr(
   const reviewDecision = awaitingReview
     ? await gh.prReviewDecision(owner, repo, pr.number).catch(() => null)
     : null;
-  return {
-    prNumber: pr.number,
-    prUrl: pr.url,
-    prState: status.merged ? "merged" : status.state,
-    isDraft: pr.draft,
-    mergeable: status.mergeableState,
-    checkRollup: deriveRollup(status.checks),
-    checks: status.checks,
-    reviewDecision,
-  };
+  return toBranchPr({ number: pr.number, url: pr.url, draft: pr.draft, status, reviewDecision });
 }
 
 /** The PR on one Azure DevOps branch and where its CI policies stand. */
@@ -240,6 +286,17 @@ async function azureBranchPr(
 }
 
 /**
+ * A GitHub repo's owner and name, from its clone URL or, when that doesn't
+ * parse, the ones stored on the row at registration.
+ */
+function githubRepoOf(repo: Repo): { owner: string; repo: string } {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  return remote?.provider === "github"
+    ? { owner: remote.owner, repo: remote.repo }
+    : { owner: repo.owner, repo: repo.repo };
+}
+
+/**
  * The PR on one of a repo's branches, from whichever provider its clone URL
  * names. Null when no client can reach that provider: no token, or an Azure
  * org other than the configured one, where a lookup would only 404.
@@ -255,10 +312,7 @@ async function branchPr(
     return azureBranchPr(clients.azure, remote.project, remote.repo, branch);
   }
   if (!clients.github) return null;
-  // GitHub owner/repo are stored on the row at registration; fall back to
-  // them when the clone URL doesn't parse.
-  const owner = remote?.provider === "github" ? remote.owner : repo.owner;
-  const repoName = remote?.provider === "github" ? remote.repo : repo.repo;
+  const { owner, repo: repoName } = githubRepoOf(repo);
   return githubBranchPr(clients.github, owner, repoName, branch);
 }
 
@@ -287,19 +341,157 @@ export function lookupBranchPr(
   return branchPr(pollerClients(config), repo, branch);
 }
 
+/** A repo the cycle refreshes. */
+interface DueRepo {
+  wr: typeof workspaceRepos.$inferSelect;
+  repo: Repo;
+}
+
+/** A known PR the cycle re-reads by number. */
+interface DueKnownPr extends DueRepo {
+  prNumber: number;
+}
+
+/** Whether a failure means the provider's rate limit is spent, so the rest of the cycle should wait. */
+function isRateLimited(e: unknown): boolean {
+  // GitHub's errors name the reason; Azure's only carry the status, where 403
+  // (secondary) and 429 mean a limit and 409 (Conflict) is unrelated.
+  if (e instanceof GitHubError) return e.reason === "rate_limited";
+  return /-> (403|429)$/.test(e instanceof Error ? e.message : String(e));
+}
+
+/** Caches why a repo's refresh failed, and when, so it waits its interval before the next try. */
+async function recordError(db: Db, workspaceRepoId: string, e: unknown): Promise<void> {
+  const message = e instanceof Error ? e.message : String(e);
+  await upsertPr(db, workspaceRepoId, { lastPolledAt: new Date(), lastError: message });
+}
+
+/**
+ * Refreshes repos one at a time, stopping at the first rate limit. Returns
+ * false when it stopped early.
+ */
+async function refreshEach(
+  db: Db,
+  due: DueRepo[],
+  read: (repo: DueRepo) => Promise<BranchPr | null>,
+): Promise<boolean> {
+  for (const item of due) {
+    try {
+      const pr = await read(item);
+      if (!pr) continue;
+      await upsertPr(db, item.wr.id, { ...pr, lastPolledAt: new Date(), lastError: null });
+    } catch (e) {
+      // One repo's failure (a 5xx, a deleted repo) must not abort the cycle.
+      await recordError(db, item.wr.id, e);
+      if (isRateLimited(e)) {
+        console.warn("[workspace poller] rate limited, backing off this cycle");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** `items` in runs of at most {@link POLL_BATCH_SIZE}. */
+function inBatches<T>(items: T[]): T[][] {
+  const batches: T[][] = [];
+  for (let start = 0; start < items.length; start += POLL_BATCH_SIZE) {
+    batches.push(items.slice(start, start + POLL_BATCH_SIZE));
+  }
+  return batches;
+}
+
+/**
+ * Refreshes GitHub repos with batched reads: the branches first, since one of
+ * them is what the user is looking at, then the known PRs. Each batch is
+ * cached as soon as it's read, so a later batch failing doesn't cost the ones
+ * before it. A batch that fails as a whole either ends the cycle (a spent
+ * rate limit), falls back to per-repo reads (an outage, for branches only), or
+ * records its error on every repo in it.
+ */
+async function refreshGithub(
+  db: Db,
+  gh: GitHubClient,
+  byBranch: DueRepo[],
+  byNumber: DueKnownPr[],
+): Promise<void> {
+  const batches: {
+    items: DueRepo[];
+    read: () => Promise<BatchResult<PolledPr | null>[]>;
+    /** Whether an outage is worth reading these one at a time instead. */
+    fallBackOnOutage: boolean;
+  }[] = [
+    ...inBatches(byBranch).map((items) => ({
+      items,
+      fallBackOnOutage: true,
+      read: () =>
+        gh.branchPrStatuses(items.map((d) => ({ ...githubRepoOf(d.repo), branch: d.wr.branch }))),
+    })),
+    ...inBatches(byNumber).map((items) => ({
+      items,
+      fallBackOnOutage: false,
+      read: () =>
+        gh.prStatusesByNumber(items.map((d) => ({ ...githubRepoOf(d.repo), number: d.prNumber }))),
+    })),
+  ];
+  for (const { items, read, fallBackOnOutage } of batches) {
+    let results: BatchResult<PolledPr | null>[];
+    try {
+      results = await read();
+    } catch (e) {
+      if (isRateLimited(e)) {
+        // No REST fallback here: a background read waits out GraphQL's limit
+        // rather than spending the REST budget the PR pages need.
+        console.warn("[workspace poller] GitHub rate limited, backing off this cycle");
+        return;
+      }
+      if (fallBackOnOutage && e instanceof GitHubError && e.reason === "upstream_error") {
+        // GraphQL can't answer at all (an outage, or a GitHub Enterprise server
+        // that can't run the batch). The open workspace is worth the slower
+        // per-repo reads, which can use REST; known PRs nobody is looking at
+        // wait for the next window instead.
+        const finished = await refreshEach(db, items, (d) => {
+          const { owner, repo } = githubRepoOf(d.repo);
+          return githubBranchPr(gh, owner, repo, d.wr.branch);
+        });
+        if (!finished) return;
+        continue;
+      }
+      // Anything else (an outage for known PRs, a revoked token, SSO) is every repo's answer.
+      for (const item of items) await recordError(db, item.wr.id, e);
+      continue;
+    }
+    for (const [i, result] of results.entries()) {
+      const { wr } = items[i] as DueRepo;
+      if (result.ok) {
+        await upsertPr(db, wr.id, {
+          ...toBranchPr(result.value),
+          lastPolledAt: new Date(),
+          lastError: null,
+        });
+      } else {
+        await recordError(db, wr.id, result.error);
+      }
+    }
+  }
+}
+
 /**
  * Refreshes the PR cache for every ready repo in an active workspace that
- * `isDue` accepts (all of them by default).
+ * `refreshModeFor` names a refresh for (all of them, by branch, by default).
+ * GitHub repos are read in batches; Azure DevOps has no batched read, so its
+ * repos go one at a time, by branch.
  */
 export async function pollOnce(
   db: Db,
   clients: PollerClients,
-  isDue: (candidate: PollCandidate) => boolean = () => true,
+  refreshModeFor: (candidate: PollCandidate) => RefreshMode | null = () => "branch",
 ): Promise<void> {
   const rows = await db
     .select({
       wr: workspaceRepos,
       repo: repos,
+      prNumber: workspaceRepoPr.prNumber,
       prState: workspaceRepoPr.prState,
       lastPolledAt: workspaceRepoPr.lastPolledAt,
     })
@@ -309,38 +501,32 @@ export async function pollOnce(
     .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(and(eq(workspaces.status, "active"), eq(workspaceRepos.status, "ready")));
 
-  const due = rows.filter((row) =>
-    isDue({
+  const byBranch: DueRepo[] = [];
+  const byNumber: DueKnownPr[] = [];
+  const azure: DueRepo[] = [];
+  for (const row of rows) {
+    const mode = refreshModeFor({
       workspaceId: row.wr.workspaceId,
+      prNumber: row.prNumber,
       prState: row.prState,
       lastPolledAt: row.lastPolledAt,
-    }),
-  );
-  for (const { wr, repo } of due) {
-    try {
-      const pr = await branchPr(clients, repo, wr.branch);
-      if (!pr) continue;
-      await upsertPr(db, wr.id, { ...pr, lastPolledAt: new Date(), lastError: null });
-    } catch (e) {
-      // One repo's failure (rate limit, 5xx) must not abort the cycle.
-      const message = e instanceof Error ? e.message : String(e);
-      await upsertPr(db, wr.id, { lastPolledAt: new Date(), lastError: message });
-      const rateLimited =
-        e instanceof GitHubError ? e.reason === "rate_limited" : /-> (403|429)$/.test(message);
-      if (rateLimited) {
-        // Hit a rate/abuse limit — stop this cycle and let the next one retry.
-        // GitHub's errors name the reason; Azure's only carry the status, where
-        // 403 (secondary) and 429 mean a limit and 409 (Conflict) is unrelated.
-        console.warn("[workspace poller] rate limited, backing off this cycle");
-        return;
-      }
-    }
+    });
+    if (mode === null) continue;
+    const due = { wr: row.wr, repo: row.repo };
+    if (parseRepoRemote(row.repo.cloneUrl)?.provider === "azure") azure.push(due);
+    else if (mode === "number" && row.prNumber !== null)
+      byNumber.push({ ...due, prNumber: row.prNumber });
+    else byBranch.push(due);
   }
+
+  // Each provider has its own rate limit, so one running out doesn't hold up the other.
+  if (clients.github) await refreshGithub(db, clients.github, byBranch, byNumber);
+  if (azure.length) await refreshEach(db, azure, (d) => branchPr(clients, d.repo, d.wr.branch));
 }
 
-/** Refreshes the repos the user is looking at whose cached PR is due, as of `now`. */
+/** Refreshes every repo whose cached PR is due, as of `now`. */
 export function pollDueRepos(db: Db, clients: PollerClients, now = Date.now()): Promise<void> {
-  return pollOnce(db, clients, (candidate) => isDueForRefresh(candidate, now));
+  return pollOnce(db, clients, (candidate) => dueRefresh(candidate, now));
 }
 
 /**

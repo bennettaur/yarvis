@@ -88,8 +88,11 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
   GitHub gives REST and GraphQL separate budgets. The reads Yarvis repeats
   most (the workspace poller, each PR row's status, issue lists and the
-  signed-in account) go through GraphQL and switch to REST only while GraphQL
-  is rate-limited or failing, so polling doesn't spend the REST budget.
+  signed-in account) go through GraphQL, so polling doesn't spend the REST
+  budget. Most switch to REST while GraphQL is rate-limited or failing. The
+  workspace poller switches only while GraphQL is failing: when GraphQL's
+  limit is spent, it waits for the reset rather than spending the REST budget
+  the PR pages need.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.

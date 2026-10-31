@@ -1161,7 +1161,8 @@ describe("workspace reads and the PR poller", () => {
   }
   const unpolled = (workspaceId: string) => ({
     workspaceId,
-    prState: "open",
+    prNumber: null,
+    prState: null,
     lastPolledAt: null,
   });
 

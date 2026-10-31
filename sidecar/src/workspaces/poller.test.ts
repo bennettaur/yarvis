@@ -6,6 +6,7 @@ import { getDb } from "../db/client.ts";
 import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
 import {
+  dueRefresh,
   isDueForRefresh,
   markWorkspaceListViewed,
   markWorkspaceViewed,
@@ -22,6 +23,9 @@ const db = getDb(url).db;
 /**
  * Builds a GitHubClient whose fetch returns canned payloads keyed by URL. A
  * handler may return `{ __status: <code> }` to simulate an error response.
+ * GraphQL gets the same `{}`, which reads as GraphQL being unable to answer,
+ * so `pollOnce` tests built on this run the per-repo reads the poller falls
+ * back to for branches.
  */
 function clientWith(handlers: (path: string) => unknown): GitHubClient {
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -577,13 +581,53 @@ describe("pollOnce", () => {
 });
 
 describe("isDueForRefresh", () => {
-  const now = Date.parse("2026-10-30T12:00:00Z");
+  // Halfway through a quarter-hour window, which known PRs are read on.
+  const now = Date.parse("2026-10-30T12:07:30Z");
   const polledAgo = (ms: number) => new Date(now - ms);
+  /** A branch with a PR in `prState`, or with none when it is null. */
+  const candidate = (workspaceId: string, prState: string | null, lastPolledAt: Date | null) => ({
+    workspaceId,
+    prNumber: prState ? 7 : null,
+    prState,
+    lastPolledAt,
+  });
   const due = (workspaceId: string, prState: string | null, lastPolledAt: Date | null) =>
-    isDueForRefresh({ workspaceId, prState, lastPolledAt }, now);
+    isDueForRefresh(candidate(workspaceId, prState, lastPolledAt), now);
+  const mode = (workspaceId: string, prState: string | null) =>
+    dueRefresh(candidate(workspaceId, prState, null), now);
 
-  it("skips every repo while nothing is on screen", () => {
-    expect(due("w", "open", null)).toBe(false);
+  it("skips a branch with no PR while nothing is on screen", () => {
+    expect(due("w", null, null)).toBe(false);
+  });
+
+  it("re-reads every known PR once per quarter hour, whether or not it's on screen", () => {
+    for (const prState of ["open", "closed"]) {
+      // 12:02:30 is in this window; 11:57:30 is in the last one.
+      expect(due("w", prState, polledAgo(5 * 60_000))).toBe(false);
+      expect(due("w", prState, polledAgo(10 * 60_000))).toBe(true);
+    }
+  });
+
+  it("brings known PRs read at different times due on the same tick", () => {
+    expect(due("a", "open", polledAgo(21 * 60_000))).toBe(true);
+    expect(due("b", "open", polledAgo(8 * 60_000))).toBe(true);
+  });
+
+  it("reads a known PR by number while only the list is on screen", () => {
+    markWorkspaceListViewed(now);
+    expect(mode("w", "open")).toBe("number");
+  });
+
+  it("never refreshes a merged PR nobody is looking at", () => {
+    markWorkspaceListViewed(now);
+    expect(due("w", "merged", null)).toBe(false);
+  });
+
+  it("re-reads a known PR by number, and a branch on screen by branch", () => {
+    expect(mode("w", "open")).toBe("number");
+    markWorkspaceViewed("w", now);
+    expect(mode("w", "open")).toBe("branch");
+    expect(mode("w", null)).toBe("branch");
   });
 
   it("refreshes the open workspace's PR about once a minute", () => {
@@ -603,25 +647,29 @@ describe("isDueForRefresh", () => {
     expect(due("w", null, polledAgo(60_000))).toBe(true);
   });
 
-  it("leaves other workspaces alone while one is open", () => {
+  it("leaves other workspaces' branches alone while one is open", () => {
     markWorkspaceViewed("w", now);
-    expect(due("other", "open", null)).toBe(false);
+    expect(due("other", null, null)).toBe(false);
+    expect(due("other", "open", polledAgo(60_000))).toBe(false);
   });
 
-  it("stops refreshing a workspace a minute after its last read", () => {
+  it("drops a workspace back to the slow pace a minute after its last read", () => {
     markWorkspaceViewed("w", now - 60_000);
-    expect(due("w", "open", null)).toBe(false);
+    expect(due("w", null, null)).toBe(false);
+    expect(due("w", "open", polledAgo(60_000))).toBe(false);
+    expect(due("w", "open", polledAgo(10 * 60_000))).toBe(true);
   });
 
-  it("refreshes list badges every fifteen minutes", () => {
+  it("looks for new PRs on the list's branches every fifteen minutes", () => {
     markWorkspaceListViewed(now);
-    expect(due("listed", "open", polledAgo(10 * 60_000))).toBe(false);
-    expect(due("listed", "open", polledAgo(15 * 60_000))).toBe(true);
+    expect(due("listed", null, polledAgo(10 * 60_000))).toBe(false);
+    expect(due("listed", null, polledAgo(15 * 60_000))).toBe(true);
+    expect(mode("listed", null)).toBe("branch");
   });
 
-  it("stops refreshing list badges a minute after the list was last read", () => {
+  it("stops looking for new PRs a minute after the list was last read", () => {
     markWorkspaceListViewed(now - 60_000);
-    expect(due("listed", "open", null)).toBe(false);
+    expect(due("listed", null, null)).toBe(false);
   });
 
   it("keeps the open workspace at its own pace while the list is also on screen", () => {
@@ -637,13 +685,6 @@ describe("isDueForRefresh", () => {
       expect(due("w", prState, polledAgo(15 * 60_000))).toBe(true);
     }
   });
-
-  it("never refreshes a settled PR seen only as a list badge", () => {
-    markWorkspaceListViewed(now);
-    for (const prState of ["merged", "closed"]) {
-      expect(due("listed", prState, null)).toBe(false);
-    }
-  });
 });
 
 describe("pollOnce with a due filter", () => {
@@ -657,7 +698,7 @@ describe("pollOnce with a due filter", () => {
       return path.includes("head=") ? [] : {};
     });
 
-    await pollOnce(db, { github: gh }, (c) => c.workspaceId !== skipped!.id);
+    await pollOnce(db, { github: gh }, (c) => (c.workspaceId !== skipped!.id ? "branch" : null));
 
     expect(asked.some((p) => p.includes("/oa/ra/"))).toBe(true);
     expect(asked.some((p) => p.includes("/ob/rb/"))).toBe(false);
@@ -681,18 +722,226 @@ describe("pollOnce with a due filter", () => {
         .onConflictDoUpdate({ target: workspaceRepoPr.workspaceRepoId, set: { lastPolledAt } });
 
     await pollAt(new Date(now - 20_000));
-    await pollOnce(db, { github: gh }, (c) => isDueForRefresh(c, now));
+    await pollOnce(db, { github: gh }, (c) => dueRefresh(c, now));
     expect(asked).toBe(0);
 
     await pollAt(new Date(now - 2 * 60_000));
-    await pollOnce(db, { github: gh }, (c) => isDueForRefresh(c, now));
+    await pollOnce(db, { github: gh }, (c) => dueRefresh(c, now));
     expect(asked).toBeGreaterThan(0);
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row!.lastPolledAt!.getTime()).toBeGreaterThanOrEqual(now);
   });
 });
 
+/**
+ * A GitHubClient whose GraphQL endpoint answers through `graphql`, recording
+ * each query's variables and any REST path asked for.
+ */
+function graphqlClient(graphql: (variables: Record<string, unknown>) => unknown) {
+  const queries: Record<string, unknown>[] = [];
+  const rest: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname !== "/graphql") {
+      rest.push(url.pathname);
+      return new Response("{}", { status: 404 });
+    }
+    const { variables } = JSON.parse(String(init?.body));
+    queries.push(variables);
+    return new Response(JSON.stringify(graphql(variables)));
+  }) as typeof fetch;
+  return { gh: new GitHubClient("batch-token", fetchImpl), queries, rest };
+}
+
+/** An open PR as the batched poll query returns it, with one failing check. */
+const POLLED_PR = (number: number) => ({
+  number,
+  url: `https://github.com/o/r/pull/${number}`,
+  isDraft: false,
+  state: "OPEN",
+  merged: false,
+  mergeable: "MERGEABLE",
+  mergeStateStatus: "CLEAN",
+  headRefOid: "abc",
+  headRepositoryOwner: { login: "oa" },
+  commits: {
+    nodes: [
+      {
+        commit: {
+          statusCheckRollup: {
+            contexts: {
+              nodes: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" }],
+            },
+          },
+        },
+      },
+    ],
+  },
+  reviews: { nodes: [] },
+});
+
+describe("batched GitHub reads", () => {
+  it("reads branches in one request and known PRs in another", async () => {
+    const branchWr = await seedReadyRepo("a");
+    const knownWr = await seedReadyRepo("b");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: knownWr, prNumber: 12, prState: "open" });
+    const { gh, queries, rest } = graphqlClient((variables) =>
+      "b0" in variables
+        ? { data: { p0: { pullRequests: { nodes: [POLLED_PR(5)] } } } }
+        : { data: { p0: { pullRequest: { ...POLLED_PR(12), state: "CLOSED", merged: true } } } },
+    );
+
+    await pollOnce(db, { github: gh }, (c) => (c.prNumber === null ? "branch" : "number"));
+
+    expect(queries).toEqual([
+      { o0: "oa", r0: "ra", b0: "yarvis/a" },
+      { o0: "ob", r0: "rb", n0: 12 },
+    ]);
+    expect(rest).toEqual([]);
+    const [branchRow] = await db.select().from(workspaceRepoPr).where(eqWr(branchWr));
+    expect(branchRow).toMatchObject({ prNumber: 5, prState: "open", checkRollup: "failure" });
+    expect(branchRow?.reviewDecision).toBe("review_required");
+    const [knownRow] = await db.select().from(workspaceRepoPr).where(eqWr(knownWr));
+    expect(knownRow).toMatchObject({ prNumber: 12, prState: "merged", reviewDecision: null });
+  });
+
+  it("records one repo's error without failing the rest of the batch", async () => {
+    const okWr = await seedReadyRepo("a");
+    const goneWr = await seedReadyRepo("b");
+    const { gh } = graphqlClient(() => ({
+      data: { p0: { pullRequests: { nodes: [POLLED_PR(5)] } }, p1: null },
+      errors: [{ type: "NOT_FOUND", path: ["p1"], message: "Could not resolve to a Repository" }],
+    }));
+
+    await pollOnce(db, { github: gh });
+
+    const [okRow] = await db.select().from(workspaceRepoPr).where(eqWr(okWr));
+    expect(okRow).toMatchObject({ prNumber: 5, lastError: null });
+    const [goneRow] = await db.select().from(workspaceRepoPr).where(eqWr(goneWr));
+    expect(goneRow?.lastError).toContain("Not found");
+  });
+
+  it("waits out a spent GraphQL limit, without REST, while Azure carries on", async () => {
+    const branchWr = await seedReadyRepo("a");
+    const knownWr = await seedReadyRepo("b");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: knownWr, prNumber: 12, prState: "open" });
+    const azureWr = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const { gh, queries, rest } = graphqlClient(() => ({
+      data: null,
+      errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+    }));
+    const az = azureClientWith((u) => (u.includes("/pullrequests") ? { value: [] } : {}));
+
+    await pollOnce(db, { github: gh, azure: az }, (c) =>
+      c.prNumber === null ? "branch" : "number",
+    );
+
+    expect(queries).toHaveLength(1); // the known-PR read never goes out
+    expect(rest).toEqual([]);
+    expect(await db.select().from(workspaceRepoPr).where(eqWr(branchWr))).toEqual([]);
+    const [knownRow] = await db.select().from(workspaceRepoPr).where(eqWr(knownWr));
+    expect(knownRow?.lastPolledAt).toBeNull();
+    const [azureRow] = await db.select().from(workspaceRepoPr).where(eqWr(azureWr));
+    expect(azureRow?.lastPolledAt).not.toBeNull();
+  });
+
+  it("records a batch-wide refusal on every repo in it, without REST", async () => {
+    const a = await seedReadyRepo("a");
+    const b = await seedReadyRepo("b");
+    const { gh, rest } = graphqlClient(() => ({
+      data: null,
+      errors: [
+        { type: "FORBIDDEN", message: "Resource protected by organization SAML enforcement" },
+      ],
+    }));
+
+    await pollOnce(db, { github: gh });
+
+    expect(rest).toEqual([]);
+    for (const wrId of [a, b]) {
+      const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+      expect(row?.lastError).toContain("SAML");
+    }
+  });
+
+  it("reads the open workspace one repo at a time when GraphQL can't answer", async () => {
+    const wrId = await seedReadyRepo();
+    const { gh, rest } = graphqlClient(() => ({}));
+
+    await pollOnce(db, { github: gh });
+
+    // The per-repo read reaches REST once GraphQL fails it too.
+    expect(rest.some((p) => p.endsWith("/pulls"))).toBe(true);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.lastError).not.toBeNull();
+  });
+
+  it("leaves known PRs for the next window when GraphQL can't answer", async () => {
+    const wrId = await seedReadyRepo();
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 12, prState: "open" });
+    const { gh, rest } = graphqlClient(() => ({}));
+
+    await pollOnce(db, { github: gh }, () => "number");
+
+    expect(rest).toEqual([]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.lastError).toContain("empty");
+    expect(row?.prNumber).toBe(12);
+  });
+
+  it("caches each batch as it's read, so a later one failing costs only itself", async () => {
+    const wrIds: string[] = [];
+    for (let i = 0; i < 26; i++) {
+      const wrId = await seedReadyRepo(`k${i}`);
+      await db
+        .insert(workspaceRepoPr)
+        .values({ workspaceRepoId: wrId, prNumber: i + 1, prState: "open" });
+      wrIds.push(wrId);
+    }
+    const { gh, queries } = graphqlClient((variables) =>
+      Object.keys(variables).length / 3 === 25
+        ? {
+            data: Object.fromEntries(
+              Array.from({ length: 25 }, (_, i) => [`p${i}`, { pullRequest: POLLED_PR(i + 1) }]),
+            ),
+          }
+        : { data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] },
+    );
+
+    await pollOnce(db, { github: gh }, () => "number");
+
+    expect(queries).toHaveLength(2);
+    const rows = await db.select().from(workspaceRepoPr);
+    const read = rows.filter((r) => r.lastPolledAt !== null);
+    expect(read).toHaveLength(25);
+    expect(read.every((r) => r.checkRollup === "failure")).toBe(true);
+  });
+});
+
 describe("pollDueRepos", () => {
+  it("re-reads a known PR nobody is looking at once its window has turned", async () => {
+    const wrId = await seedReadyRepo();
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wrId,
+      prNumber: 12,
+      prState: "open",
+      lastPolledAt: new Date(Date.now() - 20 * 60_000),
+    });
+    const { gh, queries } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(12) } } }));
+
+    await pollDueRepos(db, { github: gh });
+
+    expect(queries).toEqual([{ o0: "ox", r0: "rx", n0: 12 }]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.checkRollup).toBe("failure");
+  });
+
   it("asks the provider only about the repos in the workspace the user has open", async () => {
     await seedReadyRepo("a");
     await seedReadyRepo("b");
