@@ -50,6 +50,35 @@ describe("toExcalidrawSkeleton", () => {
     expect(arrows[0]).toMatchObject({ start: { id: "node-0" }, end: { id: "node-1" } });
   });
 
+  // Excalidraw keeps an arrow's own points, so arrows drawn anywhere else pile
+  // up in one spot rather than joining their boxes.
+  it("draws each arrow from its source box's right edge to its target's left edge", () => {
+    const elements = toExcalidrawSkeleton(
+      graph([
+        ["route", "store"],
+        ["route", "cache"],
+      ]),
+    );
+    const box = (id: string) =>
+      elements.find((e) => e.id === id) as { x: number; y: number; width: number; height: number };
+    const arrows = elements.filter((e) => e.type === "arrow");
+    for (const arrow of arrows as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      end: { id: string };
+    }[]) {
+      const from = box("node-0");
+      const to = box(arrow.end.id);
+      expect(arrow.x).toBe(from.x + from.width);
+      expect(arrow.y).toBe(from.y + from.height / 2);
+      expect(arrow.x + arrow.width).toBe(to.x);
+      expect(arrow.y + arrow.height).toBe(to.y + to.height / 2);
+    }
+    expect(new Set(arrows.map((a) => (a as { height: number }).height)).size).toBe(2);
+  });
+
   it("styles the change's own code apart from the code around it", () => {
     const elements = toExcalidrawSkeleton({
       nodes: [

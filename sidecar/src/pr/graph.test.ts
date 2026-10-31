@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
+import { MAX_DIAGRAM_EDGES, MAX_DIAGRAM_NODES, newCodeGraph } from "./graph.ts";
 
 describe("newCodeGraph", () => {
   it("keeps what an earlier sighting established", () => {
@@ -120,6 +120,16 @@ describe("newCodeGraph", () => {
       expect(nodes.map((n) => n.id)).not.toContain(`context-${MAX_DIAGRAM_NODES - 1}`);
       // An edge to a node that was cut would point at nothing.
       expect(edges).toEqual([{ from: "changed", to: "context-0", kind: "calls" }]);
+    });
+
+    it("caps the edges it keeps", () => {
+      const graph = newCodeGraph();
+      for (let from = 0; from < 20; from++) {
+        for (let to = 0; to < 20; to++) {
+          if (from !== to) graph.addEdge({ from: `n${from}`, to: `n${to}`, kind: "calls" });
+        }
+      }
+      expect(graph.snapshot(new Set()).edges).toHaveLength(MAX_DIAGRAM_EDGES);
     });
   });
 });

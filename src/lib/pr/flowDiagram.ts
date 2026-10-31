@@ -105,7 +105,7 @@ function boxLabel(node: PrGraphNode): string {
 export function toExcalidrawSkeleton(graph: PrGuideGraph): ExcalidrawElementSkeleton[] {
   const columns = nodeColumns(graph);
   const rowsUsed = new Map<number, number>();
-  const ids = new Map<string, string>();
+  const boxes = new Map<string, { id: string; x: number; y: number }>();
   const elements: ExcalidrawElementSkeleton[] = [];
 
   graph.nodes.forEach((node, index) => {
@@ -113,13 +113,15 @@ export function toExcalidrawSkeleton(graph: PrGuideGraph): ExcalidrawElementSkel
     const row = rowsUsed.get(column) ?? 0;
     rowsUsed.set(column, row + 1);
     // Generated rather than taken from the graph, whose ids are model-written free text.
-    const id = `node-${index}`;
-    ids.set(node.id, id);
-    elements.push({
-      type: "rectangle",
-      id,
+    const box = {
+      id: `node-${index}`,
       x: column * (BOX_WIDTH + COLUMN_GAP),
       y: row * (BOX_HEIGHT + ROW_GAP),
+    };
+    boxes.set(node.id, box);
+    elements.push({
+      type: "rectangle",
+      ...box,
       width: BOX_WIDTH,
       height: BOX_HEIGHT,
       roundness: { type: ADAPTIVE_RADIUS },
@@ -131,18 +133,22 @@ export function toExcalidrawSkeleton(graph: PrGuideGraph): ExcalidrawElementSkel
   });
 
   for (const edge of graph.edges) {
-    const start = ids.get(edge.from);
-    const end = ids.get(edge.to);
+    const start = boxes.get(edge.from);
+    const end = boxes.get(edge.to);
     if (!start || !end) continue;
+    // Excalidraw binds the arrow's ends to the boxes but keeps the points it is
+    // given, so it has to be drawn from one box's right edge to the other's left.
+    const x = start.x + BOX_WIDTH;
+    const y = start.y + BOX_HEIGHT / 2;
     elements.push({
       type: "arrow",
-      // Excalidraw routes a bound arrow between its boxes, so the position only
-      // has to be somewhere sensible before it does.
-      x: 0,
-      y: 0,
+      x,
+      y,
+      width: end.x - x,
+      height: end.y + BOX_HEIGHT / 2 - y,
       strokeColor: ARROW_COLOR,
-      start: { id: start },
-      end: { id: end },
+      start: { id: start.id },
+      end: { id: end.id },
       label: { text: edge.kind, fontSize: 12, fontFamily: LABEL_FONT_FAMILY },
     });
   }

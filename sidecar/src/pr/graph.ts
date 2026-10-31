@@ -18,7 +18,7 @@
 /** Most nodes kept for a diagram; past this it is a wall of boxes, not a picture. */
 export const MAX_DIAGRAM_NODES = 60;
 /** A loose bound on the stored payload, about two and a half edges per node. */
-const MAX_DIAGRAM_EDGES = 150;
+export const MAX_DIAGRAM_EDGES = 150;
 
 export interface GraphNode {
   id: string;

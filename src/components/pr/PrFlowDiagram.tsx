@@ -22,7 +22,6 @@ export default function PrFlowDiagram({ graph }: { graph: PrGuideGraph }) {
       elements: convertToExcalidrawElements(toExcalidrawSkeleton(graph)),
       // Text the reader adds uses the same system font, so nothing is fetched.
       appState: { viewBackgroundColor: "transparent", currentItemFontFamily: LABEL_FONT_FAMILY },
-      scrollToContent: true,
     }),
     [graph],
   );
@@ -31,6 +30,10 @@ export default function PrFlowDiagram({ graph }: { graph: PrGuideGraph }) {
       <Excalidraw
         initialData={initialData}
         theme="dark"
+        // Zoomed to fit, so a wide graph opens whole rather than cut off at 100%.
+        excalidrawAPI={(api) =>
+          requestAnimationFrame(() => api.scrollToContent(undefined, { fitToContent: true }))
+        }
         UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false } }}
       />
     </div>
