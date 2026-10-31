@@ -126,6 +126,17 @@ describe("ChatMessages", () => {
     expect(html).toContain("Thinking…");
   });
 
+  it("drops the waiting indicator once reasoning or tool calls arrive", async () => {
+    // The reasoning trigger says "Thinking…" too, so one match means the indicator is gone.
+    const reasoning = await render({ busy: true, thinking: "weighing it up" });
+    expect(textOf(reasoning).match(/Thinking…/g)).toHaveLength(1);
+    const tools = await render({
+      busy: true,
+      activity: [{ id: "c1", name: "search_pages", status: "pending" as const }],
+    });
+    expect(textOf(tools)).not.toContain("Thinking…");
+  });
+
   it("labels Telegram-relayed messages by sender", async () => {
     const html = await render({
       messages: [
@@ -143,6 +154,9 @@ describe("ChatMessages", () => {
   it("shows the empty hint until there is something to render", async () => {
     const html = await render({});
     expect(html).toContain(EMPTY_HINT);
+    expect(await render({ messages: [{ role: "user", content: "hello" }] })).not.toContain(
+      EMPTY_HINT,
+    );
   });
 
   it("offers Resend and Edit on persisted user messages when the thread can rewind", async () => {
@@ -192,6 +206,21 @@ describe("ChatMessages", () => {
     await type("hello there");
     button(host, "Save & resend")?.click();
     expect(rewound).toEqual([["m1", "hello there"]]);
+  });
+
+  it("puts the message back unchanged when the edit is cancelled", async () => {
+    const rewound: Array<[string, string]> = [];
+    const host = await mount({
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      onRewind: (id, text) => rewound.push([id, text]),
+    });
+    button(host, "Edit")?.click();
+    await settle();
+    button(host, "Cancel")?.click();
+    await settle();
+    expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull();
+    expect(host.textContent).toContain("hello");
+    expect(rewound).toEqual([]);
   });
 
   it("hides the rewind controls without a handler, without an id, or while busy", async () => {

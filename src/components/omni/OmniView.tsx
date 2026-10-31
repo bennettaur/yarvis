@@ -6,7 +6,7 @@ import {
 } from "@json-render/core";
 import { JSONUIProvider, Renderer } from "@json-render/react";
 import { LayoutDashboardIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listProviders, type ProviderId, type ProviderInfo } from "../../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import {
@@ -19,7 +19,12 @@ import {
 } from "../../lib/omni";
 import { catalog } from "../../omni/catalog";
 import { registry } from "../../omni/registry";
-import { ConversationEmptyState } from "../ai-elements/conversation";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "../ai-elements/conversation";
 import { Loader } from "../ai-elements/loader";
 import { Message, MessageContent, MessageLabel } from "../ai-elements/message";
 import ChatComposer from "../ChatComposer";
@@ -102,7 +107,6 @@ export default function OmniView() {
   );
   // Fraction of the width given to the canvas when the builder is expanded.
   const [canvasRatio, setCanvasRatio] = usePersistedRatio("yarvis.omni.canvasRatio", 0.72);
-  const threadRef = useRef<HTMLDivElement>(null);
 
   // The catalog defines what the agent may compose; turn it into a system
   // prompt once. `inline` mode = converse first, then emit JSONL spec patches.
@@ -150,10 +154,6 @@ export default function OmniView() {
     if (messages.length) localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages));
     else localStorage.removeItem(MESSAGES_KEY);
   }, [messages]);
-
-  useEffect(() => {
-    threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, []);
 
   const refreshLayouts = useCallback(async () => {
     try {
@@ -476,20 +476,23 @@ export default function OmniView() {
         </div>
       </div>
 
-      <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {messages.length === 0 && !streaming && (
-          <ConversationEmptyState
-            icon={<LayoutDashboardIcon className="size-6" />}
-            title="No layout yet"
-            description="Describe the layout you want. Follow-ups refine the current view."
-          />
-        )}
-        {messages.map((m, i) => (
-          <BuilderTurn key={i} from={m.role} content={m.content} />
-        ))}
-        {streaming && <BuilderTurn from="assistant" content={streaming} />}
-        {busy && !streaming && <ThinkingIndicator />}
-      </div>
+      <Conversation className="min-h-0">
+        <ConversationContent className="gap-4">
+          {messages.length === 0 && !streaming && (
+            <ConversationEmptyState
+              icon={<LayoutDashboardIcon className="size-6" />}
+              title="No layout yet"
+              description="Describe the layout you want. Follow-ups refine the current view."
+            />
+          )}
+          {messages.map((m, i) => (
+            <BuilderTurn key={i} from={m.role} content={m.content} />
+          ))}
+          {streaming && <BuilderTurn from="assistant" content={streaming} />}
+          {busy && !streaming && <ThinkingIndicator />}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
 
       {error && <p className="px-4 pb-2 text-sm text-red-400">{error}</p>}
 

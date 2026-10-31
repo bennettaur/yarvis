@@ -14,7 +14,8 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn("relative flex-1 overflow-y-hidden", className)}
-    initial="smooth"
+    // A saved session opens at its newest message instead of scrolling down the whole thread.
+    initial="instant"
     resize="smooth"
     role="log"
     {...props}
@@ -27,7 +28,7 @@ export const ConversationContent = ({ className, ...props }: ConversationContent
   <StickToBottom.Content className={cn("flex flex-col gap-6 p-4", className)} {...props} />
 );
 
-export type ConversationEmptyStateProps = ComponentProps<"div"> & {
+export type ConversationEmptyStateProps = Omit<ComponentProps<"div">, "children"> & {
   title?: string;
   description?: string;
   icon?: ReactNode;
@@ -38,7 +39,6 @@ export const ConversationEmptyState = ({
   title = "No messages yet",
   description = "Start a conversation to see messages here",
   icon,
-  children,
   ...props
 }: ConversationEmptyStateProps) => (
   <div
@@ -48,15 +48,11 @@ export const ConversationEmptyState = ({
     )}
     {...props}
   >
-    {children ?? (
-      <>
-        {icon && <div className="text-muted-foreground">{icon}</div>}
-        <div className="space-y-1">
-          <h3 className="text-sm font-medium">{title}</h3>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
-        </div>
-      </>
-    )}
+    {icon && <div className="text-muted-foreground">{icon}</div>}
+    <div className="space-y-1">
+      <h3 className="text-sm font-medium">{title}</h3>
+      {description && <p className="text-sm text-muted-foreground">{description}</p>}
+    </div>
   </div>
 );
 

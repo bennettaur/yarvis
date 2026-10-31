@@ -72,7 +72,7 @@ export const MessageAction = ({
   children,
   label,
   variant = "ghost",
-  size = "icon-sm",
+  size = "icon-xs",
   ...props
 }: MessageActionProps) => (
   <Button size={size} type="button" variant={variant} title={tooltip} {...props}>

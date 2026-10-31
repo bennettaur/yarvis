@@ -85,7 +85,6 @@ function UserMessage({
         // Revealed on hover or keyboard focus, so a long thread isn't a column of buttons.
         <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <MessageAction
-            size="icon-xs"
             tooltip="Send this message again, discarding everything after it"
             label="Resend"
             onClick={() => onRewind?.(id as string, message.content)}
@@ -93,7 +92,6 @@ function UserMessage({
             <RotateCcwIcon />
           </MessageAction>
           <MessageAction
-            size="icon-xs"
             tooltip="Edit this message, then resend it"
             label="Edit"
             onClick={() => setDraft(message.content)}

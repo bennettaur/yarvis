@@ -52,16 +52,20 @@ describe("ChatComposer", () => {
     expect(host.querySelector("textarea")?.disabled).toBe(true);
   });
 
-  it("sends on Enter but not on Shift+Enter", async () => {
+  it("sends on Enter, but not on another key or Shift+Enter", async () => {
     let sent = 0;
     const host = await mount({ onSubmit: () => sent++ });
     const box = host.querySelector("textarea");
+    box?.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
     box?.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }),
     );
     expect(sent).toBe(0);
-    box?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    box?.dispatchEvent(enter);
     expect(sent).toBe(1);
+    // Otherwise the newline lands in the box as the message goes.
+    expect(enter.defaultPrevented).toBe(true);
   });
 
   it("puts the caller's controls in the toolbar", async () => {

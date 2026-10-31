@@ -198,6 +198,7 @@ describe("ToolApprovalBar", () => {
     const picker = document.createElement("select");
     document.body.appendChild(picker);
     picker.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    picker.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true }));
     picker.remove();
     expect(answered).toEqual([]);
   });

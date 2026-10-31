@@ -68,7 +68,7 @@ export const ToolHeader = ({
       <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="font-mono text-zinc-200">{name}</span>
       {server && <span className="text-muted-foreground">on {server}</span>}
-      <Badge className="gap-1" variant="secondary">
+      <Badge className="gap-1">
         <Icon className={iconClass} />
         {label}
       </Badge>

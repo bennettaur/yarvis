@@ -1,38 +1,18 @@
-import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 import { cn } from "../../lib/cn";
 
-/** shadcn/ui's badge (new-york-v4), without the `asChild` slot nothing here uses. */
-const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap [&>svg]:pointer-events-none [&>svg]:size-3",
-  {
-    variants: {
-      variant: {
-        default: "bg-primary text-primary-foreground",
-        secondary: "bg-secondary text-secondary-foreground",
-        destructive: "bg-destructive/60 text-white",
-        outline: "border-border text-foreground",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  },
-);
-
-function Badge({
-  className,
-  variant = "default",
-  ...props
-}: ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
+/** shadcn/ui's badge (new-york-v4) in its secondary style, the only one used here. */
+function Badge({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       data-slot="badge"
-      data-variant={variant}
-      className={cn(badgeVariants({ variant }), className)}
+      className={cn(
+        "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border border-transparent bg-secondary px-2 py-0.5 text-xs font-medium whitespace-nowrap text-secondary-foreground [&>svg]:pointer-events-none [&>svg]:size-3",
+        className,
+      )}
       {...props}
     />
   );
 }
 
-export { Badge, badgeVariants };
+export { Badge };

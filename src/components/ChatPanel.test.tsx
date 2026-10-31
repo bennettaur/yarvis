@@ -25,6 +25,15 @@ const providers = [
     available: true,
   },
   { id: "gemini", label: "Gemini", models: [], available: false },
+  {
+    id: "openai",
+    label: "OpenAI",
+    models: [
+      { id: "gpt-6", capabilities: ["chat"] },
+      { id: "gpt-6-mini", capabilities: ["chat"] },
+    ],
+    available: true,
+  },
 ];
 
 let sessions: Array<{ id: string; title: string | null; createdAt: string; updatedAt: string }> =
@@ -205,6 +214,22 @@ describe("ChatPanel", () => {
       s.getAttribute("title"),
     );
     expect(titles).toEqual([SESSION_HINT, PROVIDER_HINT, MODEL_HINT]);
+  });
+
+  it("switches to the new provider's first model when the provider changes", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const picker = (title: string) =>
+      Array.from(mounted.host.querySelectorAll("select")).find((s) => s.title === title);
+    expect(picker(MODEL_HINT)?.value).toBe("claude-sonnet-5");
+
+    const provider = picker(PROVIDER_HINT);
+    if (!provider) throw new Error("no provider picker");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(picker(MODEL_HINT)?.value).toBe("gpt-6");
   });
 
   it("adds a session the thread created to the picker and selects it", async () => {

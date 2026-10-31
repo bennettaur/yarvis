@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { waitFor } from "../../test/render";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "./reasoning";
 
 let root: Root | null = null;
@@ -35,8 +36,13 @@ describe("Reasoning", () => {
 
     render(false);
     expect(host.textContent).toContain("weighing it up");
-    await act(() => new Promise((resolve) => setTimeout(resolve, 1100)));
-    expect(host.textContent).not.toContain("weighing it up");
+    await waitFor(() => !host?.textContent?.includes("weighing it up"), "the fold");
     expect(host.textContent).toContain("Thought for");
+
+    // Reopened by hand, it stays open: the fold happens once.
+    act(() => host?.querySelector("button")?.click());
+    expect(host.textContent).toContain("weighing it up");
+    await act(() => new Promise((resolve) => setTimeout(resolve, 1100)));
+    expect(host.textContent).toContain("weighing it up");
   });
 });
