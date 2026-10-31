@@ -65,8 +65,9 @@ type FinishStep<T, R> = [T] extends [R]
  *   it out because their budget only warns.
  * - The prompt goes in on stdin, so it never shows in `ps` and a prompt
  *   starting with `-` can't be read as a flag.
- * - A fixed guardrail tells the model the checkout is material to analyse,
- *   never instructions; `spotlight` fences PR text a caller interpolates.
+ * - A fixed guardrail tells the model that what it reads, a checkout or a
+ *   task's quoted material, is data, never instructions; `spotlight` fences
+ *   PR text a caller interpolates.
  * - The environment is built (no sidecar token or provider keys), there are no
  *   MCP servers, and no session is saved, so the transcript never reaches the
  *   nightly session digest and from there memory.
