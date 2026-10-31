@@ -5,7 +5,14 @@ import { AzureDevOpsClient } from "../azure/client.ts";
 import { getDb } from "../db/client.ts";
 import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
-import { pollOnce, reconcileOrphans } from "./poller.ts";
+import {
+  isDueForRefresh,
+  markWorkspaceListViewed,
+  markWorkspaceViewed,
+  pollOnce,
+  reconcileOrphans,
+  resetWorkspaceViews,
+} from "./poller.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -564,6 +571,69 @@ describe("pollOnce", () => {
     const rows = await db.select().from(workspaceRepoPr);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.lastError).toContain("SAML");
+  });
+});
+
+describe("isDueForRefresh", () => {
+  const now = Date.parse("2026-10-30T12:00:00Z");
+  const polledAgo = (ms: number) => new Date(now - ms);
+
+  beforeEach(() => resetWorkspaceViews());
+
+  it("skips every repo while nothing is on screen", () => {
+    expect(isDueForRefresh({ workspaceId: "w", prState: "open", lastPolledAt: null }, now)).toBe(
+      false,
+    );
+  });
+
+  it("refreshes the open workspace's PR every minute", () => {
+    markWorkspaceViewed("w", now - 10_000);
+    const candidate = { workspaceId: "w", prState: "open" };
+    expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(30_000) }, now)).toBe(false);
+    expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(60_000) }, now)).toBe(true);
+    expect(isDueForRefresh({ ...candidate, lastPolledAt: null }, now)).toBe(true);
+  });
+
+  it("stops refreshing a workspace a minute after its last read", () => {
+    markWorkspaceViewed("w", now - 60_000);
+    expect(isDueForRefresh({ workspaceId: "w", prState: "open", lastPolledAt: null }, now)).toBe(
+      false,
+    );
+  });
+
+  it("refreshes list badges and settled PRs only every ten minutes", () => {
+    markWorkspaceListViewed(now);
+    markWorkspaceViewed("open-merged", now);
+    for (const candidate of [
+      { workspaceId: "listed", prState: "open" },
+      { workspaceId: "open-merged", prState: "merged" },
+    ]) {
+      expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(5 * 60_000) }, now)).toBe(
+        false,
+      );
+      expect(isDueForRefresh({ ...candidate, lastPolledAt: polledAgo(10 * 60_000) }, now)).toBe(
+        true,
+      );
+    }
+  });
+});
+
+describe("pollOnce with a due filter", () => {
+  it("calls the provider only for the repos the filter accepts", async () => {
+    await seedReadyRepo("a");
+    await seedReadyRepo("b");
+    const [skipped] = await db.select().from(workspaces).where(eq(workspaces.slug, "b"));
+    const asked: string[] = [];
+    const gh = clientWith((path) => {
+      asked.push(path);
+      return path.includes("head=") ? [] : {};
+    });
+
+    await pollOnce(db, { github: gh }, (c) => c.workspaceId !== skipped!.id);
+
+    expect(asked.some((p) => p.includes("/oa/ra/"))).toBe(true);
+    expect(asked.some((p) => p.includes("/ob/rb/"))).toBe(false);
+    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
   });
 });
 

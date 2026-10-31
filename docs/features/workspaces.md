@@ -307,8 +307,12 @@ number of reviewers, are not counted as checks. If the token can't read the
 policies, the badge shows no checks. Azure DevOps doesn't report a merge
 verdict here, so its badges never reach `★`.
 
-Badges come from a background PR poll that runs every minute, so they can lag
-a change by up to a minute.
+Badges come from a background PR poll that only runs while you're looking, to
+save your GitHub and Azure DevOps rate limit. The workspace you have open
+refreshes about once a minute. Badges in the list, and PRs that are merged or
+closed, refresh every ten minutes. A workspace that isn't on screen isn't
+polled at all, so its badge shows what it last saw until you open it or the
+list again.
 
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).

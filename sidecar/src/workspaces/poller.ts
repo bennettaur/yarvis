@@ -5,6 +5,12 @@
  * reads the cached rows (via `getWorkspace`) and never calls a provider on
  * render. A repo's provider is derived from its clone URL, so GitHub and Azure
  * DevOps repos are both refreshed in one cycle.
+ *
+ * Each refresh costs up to three provider requests per repo, so only repos the
+ * user is looking at are refreshed: the workspace routes record which reads
+ * the UI made, and a workspace nobody has read lately keeps its last cached row.
+ * Views are held in this process, so a named instance's UI, whose reads reach
+ * its own sidecar, doesn't drive the main instance's poller.
  */
 
 import { and, eq, inArray, isNull, lt } from "drizzle-orm";
@@ -36,7 +42,62 @@ export interface PollerClients {
   azure?: AzureDevOpsClient;
 }
 
-const POLL_INTERVAL_MS = 60_000;
+/** How often the poller checks which repos are due a refresh. */
+const TICK_MS = 30_000;
+/** A repo in the workspace the user has open. */
+const FOCUSED_POLL_MS = 60_000;
+/**
+ * A repo seen only as a badge in the workspace list, or whose PR is merged or
+ * closed and so has little left to change.
+ */
+const BACKGROUND_POLL_MS = 10 * 60_000;
+/**
+ * How long a read keeps a workspace counted as viewed. The UI re-reads every
+ * 20s while visible, so this survives a slow tick but lapses within a minute
+ * of the window hiding or the user moving to another workspace.
+ */
+const VIEW_WINDOW_MS = 60_000;
+
+/** When the UI last read each workspace's detail, by workspace id. */
+const workspaceViewedAt = new Map<string, number>();
+/** When the UI last read the workspace list, whose rows show PR badges. */
+let listViewedAt = Number.NEGATIVE_INFINITY;
+
+/** Records that the UI read one workspace's detail. */
+export function markWorkspaceViewed(workspaceId: string, now = Date.now()): void {
+  workspaceViewedAt.set(workspaceId, now);
+}
+
+/** Records that the UI read the workspace list. */
+export function markWorkspaceListViewed(now = Date.now()): void {
+  listViewedAt = now;
+}
+
+/** Test hook: forget every recorded view. */
+export function resetWorkspaceViews(): void {
+  workspaceViewedAt.clear();
+  listViewedAt = Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * How often a repo's PR should be refreshed given what the user is looking at,
+ * or null when nothing showing it has been read lately and it shouldn't be.
+ */
+export function pollIntervalMs(
+  workspaceId: string,
+  prState: string | null,
+  now = Date.now(),
+): number | null {
+  const viewedAt = workspaceViewedAt.get(workspaceId);
+  if (viewedAt !== undefined && now - viewedAt >= VIEW_WINDOW_MS) {
+    workspaceViewedAt.delete(workspaceId);
+  }
+  const focused = workspaceViewedAt.has(workspaceId);
+  const listed = now - listViewedAt < VIEW_WINDOW_MS;
+  if (!focused && !listed) return null;
+  const settled = prState === "merged" || prState === "closed";
+  return focused && !settled ? FOCUSED_POLL_MS : BACKGROUND_POLL_MS;
+}
 /** On startup, workspaces stuck in a transient state older than this are an
  *  interrupted run (the sidecar died mid-provision/archive) and get flipped to
  *  `error` so the UI offers a retry. The margin avoids racing a fresh create. */
@@ -208,16 +269,39 @@ export function lookupBranchPr(
   return branchPr(pollerClients(config), repo, branch);
 }
 
-/** Refreshes the PR cache for every ready repo in an active workspace. */
-export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
+/** What decides whether a repo is due a refresh: its workspace and its cached row. */
+export interface PollCandidate {
+  workspaceId: string;
+  prState: string | null;
+  lastPolledAt: Date | null;
+}
+
+/**
+ * Refreshes the PR cache for every ready repo in an active workspace that
+ * `isDue` accepts (all of them by default).
+ */
+export async function pollOnce(
+  db: Db,
+  clients: PollerClients,
+  isDue: (candidate: PollCandidate) => boolean = () => true,
+): Promise<void> {
   const rows = await db
-    .select({ wr: workspaceRepos, repo: repos })
+    .select({
+      wr: workspaceRepos,
+      repo: repos,
+      prState: workspaceRepoPr.prState,
+      lastPolledAt: workspaceRepoPr.lastPolledAt,
+    })
     .from(workspaceRepos)
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(and(eq(workspaces.status, "active"), eq(workspaceRepos.status, "ready")));
 
-  for (const { wr, repo } of rows) {
+  const due = rows.filter((r) =>
+    isDue({ workspaceId: r.wr.workspaceId, prState: r.prState, lastPolledAt: r.lastPolledAt }),
+  );
+  for (const { wr, repo } of due) {
     try {
       const pr = await branchPr(clients, repo, wr.branch);
       if (!pr) continue;
@@ -237,6 +321,13 @@ export async function pollOnce(db: Db, clients: PollerClients): Promise<void> {
       }
     }
   }
+}
+
+/** Whether a repo's cached PR is older than what's being viewed calls for. */
+export function isDueForRefresh(candidate: PollCandidate, now = Date.now()): boolean {
+  const interval = pollIntervalMs(candidate.workspaceId, candidate.prState, now);
+  if (interval === null) return false;
+  return candidate.lastPolledAt === null || now - candidate.lastPolledAt.getTime() >= interval;
 }
 
 /**
@@ -308,7 +399,8 @@ export function startWorkspacePoller(config: Config): () => void {
     if (running) return; // never overlap a slow cycle with the next
     running = true;
     try {
-      await pollOnce(db, clients);
+      const now = Date.now();
+      await pollOnce(db, clients, (candidate) => isDueForRefresh(candidate, now));
     } catch (e) {
       console.error("[workspace poller] cycle failed:", e);
     } finally {
@@ -320,6 +412,6 @@ export function startWorkspacePoller(config: Config): () => void {
     .catch((e) => console.error("[workspace poller] reconcile failed:", e))
     .finally(() => void tick());
 
-  const timer = setInterval(() => void tick(), POLL_INTERVAL_MS);
+  const timer = setInterval(() => void tick(), TICK_MS);
   return () => clearInterval(timer);
 }

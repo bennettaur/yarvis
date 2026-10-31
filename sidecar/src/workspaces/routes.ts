@@ -7,7 +7,7 @@ import { clientError, describeError } from "../llm/errors.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
-import { lookupBranchPr } from "./poller.ts";
+import { lookupBranchPr, markWorkspaceListViewed, markWorkspaceViewed } from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -260,7 +260,12 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  router.get("/", async (c) => c.json(await listWorkspaces(db())));
+  // Both reads tell the poller what's on screen, since it only spends provider
+  // requests on the PRs the user can see.
+  router.get("/", async (c) => {
+    markWorkspaceListViewed();
+    return c.json(await listWorkspaces(db()));
+  });
 
   // The active workspace (if any) a PR was raised from, so the PR view can link
   // back to it. Registered before "/:id" so "for-pr" isn't read as an id.
@@ -309,6 +314,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
+    markWorkspaceViewed(workspace.id);
     // `pendingBrief` stays server-side: it is how provisioning remembers a
     // kick-off it still owes a session, and nothing outside the sidecar acts on
     // it. Clients open the workspace and attach to whatever session is there.
