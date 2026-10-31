@@ -10,8 +10,8 @@ and only report it when you can name a materially simpler version.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch of source code other than tests: not tests, docs,
-configuration, generated code, lockfiles or vendored code.
+Read every patch in your group. Your findings are about source code other
+than tests; tests show how that code is meant to be used.
 
 ## What counts
 

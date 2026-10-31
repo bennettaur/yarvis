@@ -55,6 +55,8 @@ describe("decision model config", () => {
       model: { provider: "custom:abc", model: "jev" },
       autoApproveTools: true,
       autoApproveHeadsDown: false,
+      routeComplexity: false,
+      pickSpecialists: false,
     });
   });
 });
