@@ -628,7 +628,8 @@ back to ad-hoc.
   `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
   (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
   setting only warns, and a run cut off at a cap ends with nothing to show
-  for what it spent. The timeout still bounds a runaway; `maxTurns` limits only the main thread.
+  for what it spent. The timeout still bounds a runaway; `maxTurns` limits
+  only the main thread.
   Cancelling kills the process group, since the tools a run starts outlive a
   kill aimed only at Claude Code; so does the sidecar exiting, and the startup
   sweep kills what a crashed sidecar left, matched by pid and start time. The
