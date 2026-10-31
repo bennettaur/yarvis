@@ -218,8 +218,9 @@ with a **Not examined** section listing each one and why. Click a path to
 open its diff. Nothing else in the report covers those files. Below it:
 
 - **Generated, skimmed**, folded away: the bulk whose first page was read.
-- **Not examined by** a check: source files in that check's area that it
-  didn't read, though another check did.
+- **Not examined by** a check: changed files that check didn't read, though
+  another check did. Every check is handed the same list of patches to read,
+  whatever kind of file each one is.
 
 When every file was read, the report says that at least one check read each
 one.
@@ -434,7 +435,9 @@ The bar above the tabs is for the PR whose tab is in front, in its colour. It
 has the same actions as the PRs tab's header: **Ready for review** on a draft,
 **Approve** and **Request changes**, **Merge** or auto-merge when the repo
 allows them, the link to a coding [workspace](workspaces.md) on the PR's
-branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
+branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
+approved the PR, **Approve** is replaced by a **✓ Approved** label in both
+places. It comes back if the author asks you to review again. It also has:
 
 - **Guided review** and **Verification**, which open those tabs (see
   [Guided review](#guided-review) and [Verification report](#verification-report)).

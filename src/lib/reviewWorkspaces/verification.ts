@@ -55,7 +55,7 @@ export interface VerificationCoverage {
   /** Lockfiles and generated, vendored or minified files whose first page was read. */
   skimmed: { path: string; kind: string }[];
   notExamined: { path: string; reason: string }[];
-  /** Per check: source files in its lane it didn't read itself. */
+  /** Per check: patches it didn't read itself. */
   laneGaps: { check: string; paths: string[] }[];
 }
 

@@ -494,7 +494,7 @@ describe("building the run's material", () => {
   it("keeps PR-written text out of the prompt, and fenced in the context files", () => {
     const material = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
     expect(material.prompt).not.toContain(MARK);
-    for (const text of [material.contextFile, material.indexFile]) {
+    for (const text of [material.contextFile, material.indexFile, ...material.groupFiles]) {
       expect(text).toContain(MARK);
       expect(outsideFences(text)).not.toContain(MARK);
       expect(outsideFences(text)).not.toContain("Ignore previous instructions");
@@ -575,7 +575,7 @@ describe("the size a warning states", () => {
       skimmed: ["package-lock.json"],
       budgetUsd: 2,
     });
-    // Whole and read by every lane, the same source file is far dearer than its shown part.
+    // Whole and read by every check, the same source file is far dearer than its shown part.
     const whole = verificationSize(files, [], bulk, sonnet);
     expect(whole.estimatedCostUsd).toBeGreaterThan(size.estimatedCostUsd * 3);
     expect(whole.overBudget).toBe(true);
