@@ -83,6 +83,19 @@ describe("fromClaudeHook", () => {
     expect(event).toMatchObject({ type: "bash", label: "Bash curl" });
   });
 
+  it("leaves out env assignments before a command, whose values may be secrets", () => {
+    const label = (command: string) =>
+      fromClaudeHook(
+        { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+        "ws",
+      )?.label;
+    expect(label("PGPASSWORD=hunter2 psql -h db")).toBe("Bash psql");
+    expect(label("AWS_SECRET_ACCESS_KEY=wJalr/K7MDENG/bPxRfiCY aws s3 ls")).toBe("Bash aws");
+    expect(label(`TOKEN="two words" KEY='a b' /usr/bin/node run.js`)).toBe("Bash node");
+    // An unclosed quote can't be parsed, so nothing of the command is shown.
+    expect(label(`PGPASSWORD="hunter2 psql`)).toBe("Bash");
+  });
+
   it("labels a fetch with the URL's host, not its path or credentials", () => {
     const event = fromClaudeHook(
       {

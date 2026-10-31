@@ -34,7 +34,7 @@ A robot marks a Claude Code session. A brain marks Yarvis's own work.
 | Key | Action |
 | --- | --- |
 | S | Mute or unmute |
-| D | Demo traffic on or off |
+| D | Demo traffic on or off. With the live feed on, it mixes in with real events and the HUD shows `LIVE+DEMO`. |
 | A | Set the intensity by hand with a slider |
 | 1–8 | Fire test events (read, edit, bash, search, spawn, subagent done, done, error) |
 | H | Hide the HUD |

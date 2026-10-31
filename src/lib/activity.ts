@@ -24,6 +24,7 @@ const RECONNECT_MS = 2_000;
 export function subscribeActivity(
   onEvent: (event: ActivityEvent) => void,
   onStatus: (connected: boolean) => void,
+  reconnectMs = RECONNECT_MS,
 ): () => void {
   const controller = new AbortController();
   const signal = controller.signal;
@@ -48,7 +49,7 @@ export function subscribeActivity(
       }
       if (signal.aborted) break;
       onStatus(false);
-      await new Promise((resolve) => setTimeout(resolve, RECONNECT_MS));
+      await new Promise((resolve) => setTimeout(resolve, reconnectMs));
     }
   })();
 

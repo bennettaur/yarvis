@@ -49,6 +49,21 @@ export const claudeHookSchema = z.object({
 export type ClaudeHook = z.infer<typeof claudeHookSchema>;
 
 /**
+ * Leading `NAME=value` assignments, as in `PGPASSWORD=… psql`. The value is
+ * often a secret. Quoted values may hold spaces; the alternatives don't
+ * overlap, so a long command can't backtrack.
+ */
+const ENV_ASSIGNMENTS = /^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"'])*\s+)*/;
+
+/** A command's program, without the env assignments before it. */
+function commandProgram(command: string): string {
+  const program = command.replace(ENV_ASSIGNMENTS, "").match(/^\S+/)?.[0] ?? "";
+  // A token still holding `=` is an assignment the pattern couldn't parse,
+  // such as one with an unclosed quote, so none of it is shown.
+  return program.includes("=") ? "" : basename(program);
+}
+
+/**
  * What a tool call was aimed at: a file's name, a command's program, a URL's
  * host, or a pattern. The field is often on screen while sharing, so a
  * command's arguments and a URL's path and credentials are left out.
@@ -61,7 +76,7 @@ function toolTarget(input: Record<string, unknown> = {}): string {
   const file = text("file_path") || text("notebook_path");
   if (file) return basename(file);
   const command = text("command");
-  if (command) return basename(command.split(/\s+/)[0] ?? "");
+  if (command) return commandProgram(command);
   const url = text("url");
   if (url) return URL.parse(url)?.host ?? "";
   return text("pattern") || text("query") || text("subagent_type") || text("description");

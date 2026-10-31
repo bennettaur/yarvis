@@ -1642,7 +1642,8 @@ export function createAgentField(els: FieldElements): AgentField {
     });
     const now = performance.now();
     S.events = S.events.filter((t) => now - t < EVENT_RATE_WINDOW_MS);
-    const mode = S.manual ? "MANUAL" : S.live ? "LIVE" : S.demo ? "DEMO" : "WAITING";
+    const feed = S.live ? (S.demo ? "LIVE+DEMO" : "LIVE") : S.demo ? "DEMO" : "WAITING";
+    const mode = S.manual ? "MANUAL" : feed;
     const sect = S.I < 0.2 ? "IDLE" : S.I < 0.55 ? "BUILD" : S.I < 0.85 ? "RUSH" : "OVERDRIVE";
     els.stats.textContent = `${mode}  ${sect}  ${Math.round(bpm)} BPM  ${String(Math.round(S.I * 100)).padStart(3, " ")}%\n${S.events.length} EVT/MIN  ${nodes.size} AGENTS${S.muted ? "  [MUTED]" : ""}`;
 
@@ -1682,7 +1683,7 @@ export function createAgentField(els: FieldElements): AgentField {
   function frame(now: number) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    if (S.demo && !S.live) demoTick(dt);
+    if (S.demo) demoTick(dt);
     S.activity *= Math.exp((-dt * Math.LN2) / HALF_LIFE);
     S.target = S.manual ? S.manualVal : 1 - Math.exp(-S.activity / SATURATION);
     S.I += (S.target - S.I) * Math.min(1, dt * 1.2);
@@ -1761,8 +1762,11 @@ export function createAgentField(els: FieldElements): AgentField {
   return {
     push: onEvent,
     setLive(connected) {
+      // Called on every stream frame: a ping must not undo the user's D.
+      if (connected && S.live) return;
       S.live = connected;
       if (connected) {
+        // The automatic fallback demo gives way to the real feed.
         S.liveEverOpen = true;
         S.demo = false;
       } else if (!S.liveEverOpen) S.demo = true;

@@ -89,6 +89,15 @@ describe("createAgentField", () => {
     await waitFor(() => (els.stats.textContent ?? "").startsWith("WAITING"), "the WAITING status");
   });
 
+  it("keeps demo traffic the user turned on while live, across pings", async () => {
+    const els = mount();
+    field?.setLive(true);
+    field?.start();
+    press(document.body, "d");
+    field?.setLive(true);
+    await waitFor(() => (els.stats.textContent ?? "").startsWith("LIVE+DEMO"), "LIVE+DEMO");
+  });
+
   it("starts on a plain key aimed at the page or the field", () => {
     const els = mount();
     press(document.body, "x");
