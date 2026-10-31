@@ -228,6 +228,11 @@ export default function HeadsDownSettings({
         value={draft.userAwayAfterMinutes}
         onChange={(v) => set("userAwayAfterMinutes", v)}
       />
+      <NumberField
+        label="Longest a pass may run (min)"
+        value={draft.passTimeoutMinutes}
+        onChange={(v) => set("passTimeoutMinutes", v)}
+      />
 
       <div className="space-y-2 border-t border-zinc-800 pt-3">
         <label className="flex items-center gap-2 text-sm text-zinc-300">

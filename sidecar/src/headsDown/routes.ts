@@ -7,7 +7,12 @@ import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
-import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
+import {
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  MAX_PASS_TIMEOUT_MINUTES,
+  saveHeadsDownConfig,
+} from "./config.ts";
 import {
   clearHeadsDown,
   NOT_RUNNING,
@@ -81,6 +86,13 @@ const configSchema = z
       .int()
       .min(1)
       .max(7 * 24 * 60),
+    // Optional so a client that doesn't know about it can still save the rest.
+    passTimeoutMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PASS_TIMEOUT_MINUTES)
+      .default(DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
     // Optional so a client that doesn't know about it can still save the rest.
