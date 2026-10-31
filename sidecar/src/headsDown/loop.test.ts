@@ -11,6 +11,7 @@ const sql = postgres(url, { max: 1 });
 const db = drizzle(sql, { schema });
 
 const MIN_SLEEP_MS = 5 * 60_000;
+const PASS_TIMEOUT_MS = 90 * 60_000;
 
 /** A loop whose timers are recorded rather than run, and whose pass is a stub. */
 function testLoop(runPass: LoopDeps["runPass"]) {
@@ -19,6 +20,7 @@ function testLoop(runPass: LoopDeps["runPass"]) {
     db,
     runPass,
     minSleepMs: async () => MIN_SLEEP_MS,
+    passTimeoutMs: async () => PASS_TIMEOUT_MS,
     setTimer: (_fn, ms) => {
       scheduled.push(ms);
       return setTimeout(() => {}, 0);
@@ -64,6 +66,23 @@ describe("the heads-down loop", () => {
     const [lease] =
       await sql`SELECT lease_until, last_status FROM job_runs WHERE name = 'heads-down'`;
     expect(lease).toMatchObject({ lease_until: null, last_status: "ok" });
+    loop.stop();
+  });
+
+  it("gives the pass the configured timeout, and holds the lease past it", async () => {
+    await startRun(db, null);
+    let leaseMs = 0;
+    let passTimeoutMs = 0;
+    const { loop } = testLoop(async (_run, timeoutMs) => {
+      passTimeoutMs = timeoutMs;
+      const [lease] = await sql`SELECT lease_until FROM job_runs WHERE name = 'heads-down'`;
+      leaseMs = new Date(lease?.lease_until).getTime() - Date.now();
+      return sleeping(10)();
+    });
+
+    await loop.cycle();
+    expect(passTimeoutMs).toBe(PASS_TIMEOUT_MS);
+    expect(leaseMs).toBeGreaterThan(PASS_TIMEOUT_MS);
     loop.stop();
   });
 

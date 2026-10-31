@@ -39,15 +39,19 @@ Other tabs only say which tab you're on.
 
 ## The Chat tab
 
-Open it with **Cmd+1**. At the top:
+Open it with **Cmd+1**. At the top are **New chat** and a **session**
+dropdown to go back to an earlier chat.
 
-- **New chat**, and a **session** dropdown to go back to an earlier chat.
+The toolbar under the message box holds the rest:
+
 - **Thinking** shows the model's reasoning, for providers that return it.
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
 
 The Chat tab stays loaded when you switch tabs, so a long answer keeps
-streaming while you do something else.
+streaming while you do something else. The thread follows a reply as it
+arrives. Scroll up and it stops following; the arrow button at the bottom of
+the thread jumps back to the newest message.
 
 ### Sending
 
@@ -55,6 +59,8 @@ streaming while you do something else.
 - While a reply is running, **Send** becomes **Stop**. Stopping discards the
   partial reply and saves nothing for that turn.
 - If a turn fails, **Retry** sends the same message again.
+- Hover over one of your messages for **Resend** and **Edit**. Either restarts
+  the chat from that message and discards the replies after it.
 - If the connection to the sidecar drops mid-turn, the error says which of three
   things happened: the sidecar restarted during the turn (saving API keys in
   Settings restarts it), it isn't answering at all, or the connection dropped
@@ -71,7 +77,8 @@ Above each reply is a list of the tools the assistant called: the tool name,
 which MCP server it came from, whether it worked, and how long it took. Click a
 row to see the arguments and the result. When the reply starts, the list folds
 into one line, for example "Used 4 tool calls". Reasoning, when the provider
-returns it, shows as a "Thinking…" block you can expand.
+returns it, stays open while it streams in and folds a second after it ends.
+Click it to read it again.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
 labeled with the Telegram user. Messages sent from the Chrome extension's side

@@ -26,9 +26,9 @@ const modelSchema = z
 const mutationTestingConfigSchema = z.object({
   /** Null runs Claude Code's own default model. */
   planningModel: modelSchema.nullable(),
-  planningBudgetUsd: z.number().min(0.1).max(20),
+  planningBudgetUsd: z.number().min(0.1),
   explanationModel: modelSchema.nullable(),
-  explanationBudgetUsd: z.number().min(0.05).max(20),
+  explanationBudgetUsd: z.number().min(0.05),
   maxMutants: z.number().int().min(1).max(MAX_MUTANTS_LIMIT),
   /** A mutant's tests get three times the baseline's time, up to this. */
   testTimeoutCapSeconds: z.number().int().min(30).max(3_600),
@@ -38,8 +38,9 @@ export type MutationTestingConfig = z.infer<typeof mutationTestingConfigSchema>;
 
 /**
  * Sonnet rather than Claude Code's default, which may be a pricier model than
- * reading a diff and writing up a few survivors needs. A budget is a ceiling: a
- * planning run that reaches it ends without a plan, and the pass with it.
+ * reading a diff and writing up a few survivors needs. The budgets are what the
+ * user agrees to before a pass starts, not a cap: a run that goes over them
+ * still finishes.
  */
 export const DEFAULT_MUTATION_TESTING_CONFIG: MutationTestingConfig = {
   planningModel: "sonnet",

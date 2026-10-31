@@ -13,8 +13,8 @@ import {
   type MutationRun,
   startMutationTesting,
 } from "../../../lib/reviewWorkspaces/mutation";
+import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
-import { Spinner } from "../../ThinkingIndicator";
 import MutationReportView, { MutantDiff, OUTCOME_CLASS } from "./MutationReportView";
 import {
   initialMutationProgress,
@@ -81,7 +81,7 @@ function ProgressView({ progress }: { progress: MutationProgress }) {
                 {state === "done" ? (
                   <span className="text-emerald-400">✓</span>
                 ) : state === "running" ? (
-                  <Spinner />
+                  <Loader />
                 ) : (
                   <span className="text-zinc-600">○</span>
                 )}
@@ -154,8 +154,9 @@ function StartPanel({
     <div className="space-y-2 rounded-lg border border-zinc-700 bg-zinc-900 p-3 text-sm">
       <p className="text-zinc-300">
         Claude Code plans up to {config.maxMutants} small changes to the code this PR touches, then
-        the PR's own tests run against each one. Planning and explaining what survives cost up to $
-        {budget.toFixed(2)}; the tests run many times, so this can take a while.
+        the PR's own tests run against each one. Planning and explaining what survives are budgeted
+        at ${budget.toFixed(2)} and may cost more; the tests run many times, so this can take a
+        while.
       </p>
       {confirmRunTests && (
         <p className="text-amber-200">

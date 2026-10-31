@@ -122,10 +122,15 @@ describe("the arguments a run is started with", () => {
     expect(args).not.toContain("count the files");
   });
 
-  it("always sets a permission mode, a budget and the guardrail", () => {
+  it("always sets a permission mode and the guardrail, and the budget when there is one", () => {
     expect(after("--permission-mode")).toBe("dontAsk");
     expect(after("--max-budget-usd")).toBe("1");
     expect(after("--append-system-prompt")).toBe(RUN_GUARDRAIL);
+  });
+
+  it("leaves out --max-budget-usd when the run has no budget", () => {
+    const uncapped = buildClaudeArgs(runOptions(dir, { maxBudgetUsd: undefined }), []);
+    expect(uncapped).not.toContain("--max-budget-usd");
   });
 
   it("leaves out the optional flags when they aren't set", () => {
@@ -225,7 +230,7 @@ describe("refusing a run", () => {
     }
   });
 
-  it("refuses a run without a budget", async () => {
+  it("refuses a budget that isn't positive", async () => {
     await expect(
       startClaudeRun(db, runOptions(dir, { maxBudgetUsd: 0 }), deps("claude")),
     ).rejects.toThrow("maxBudgetUsd");

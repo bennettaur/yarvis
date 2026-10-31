@@ -37,6 +37,7 @@ function defaultSettings(): Settings {
     onePasswordItem: null,
     colorTheme: null,
     terminalFontSize: null,
+    attentionAnimation: null,
   };
 }
 

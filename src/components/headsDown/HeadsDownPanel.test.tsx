@@ -112,6 +112,7 @@ const CONFIG = {
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
+  passTimeoutMinutes: 20,
   provider: null,
   model: null,
   guidance: null,
@@ -552,6 +553,28 @@ describe("HeadsDownSettings", () => {
       method: "PUT",
       path: "/api/heads-down/config",
       body: { ...CONFIG, guidance: "Don't merge during market hours" },
+    });
+  });
+
+  it("saves how long a pass may run", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Longest a pass may run"))
+      ?.querySelector("input");
+    if (!field) throw new Error("no pass timeout field");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "90");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, passTimeoutMinutes: 90 },
     });
   });
 

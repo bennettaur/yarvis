@@ -15,10 +15,12 @@ const SELECT = "min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-
 function NumberField({
   label,
   value,
+  max,
   onChange,
 }: {
   label: string;
   value: number;
+  max?: number;
   onChange: (value: number) => void;
 }) {
   return (
@@ -27,6 +29,7 @@ function NumberField({
       <input
         type="number"
         min={1}
+        max={max}
         value={value}
         onChange={(e) => {
           // A cleared or partial field isn't a number of minutes; keep the last one.
@@ -227,6 +230,12 @@ export default function HeadsDownSettings({
         label="You count as away after (min)"
         value={draft.userAwayAfterMinutes}
         onChange={(v) => set("userAwayAfterMinutes", v)}
+      />
+      <NumberField
+        label="Longest a pass may run (min, up to 240)"
+        value={draft.passTimeoutMinutes}
+        max={240}
+        onChange={(v) => set("passTimeoutMinutes", v)}
       />
 
       <div className="space-y-2 border-t border-zinc-800 pt-3">
