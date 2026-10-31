@@ -182,6 +182,10 @@ stream, so pausing one doesn't stop that tool: a pass is only told to leave the
 stream's work alone. **Resume** it and the next pass picks it up where it was.
 Only you pause and resume a stream, here or by asking the assistant.
 
+A pass refers to workspaces by their id. Wherever the page shows one of yours,
+in a stream, a question or a pass's notes, it shows the workspace's name
+instead, as a link that opens it on the Workspaces tab.
+
 The Yarvis logo at the top of the page shows what it is doing: a spinning ring
 while a pass runs, dimmed while it sleeps until the next one, and grey when
 heads-down mode is off.
@@ -222,6 +226,9 @@ Under **Pace and working hours** on the page:
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
+- The longest a pass may run before it is stopped, 20 minutes by default and
+  4 hours at most. A model running on your own machine can be slow enough to
+  need more.
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
   people** to drop all three limits, merges included. These are kept per

@@ -81,6 +81,8 @@ export interface HeadsDownConfig {
   idleSleepMinutes: number;
   workingHours: WorkingHours | null;
   userAwayAfterMinutes: number;
+  /** How long one pass may run before it is stopped. */
+  passTimeoutMinutes: number;
   provider: string | null;
   model: string | null;
   /** The user's standing rules for every pass on this machine. Null for none. */

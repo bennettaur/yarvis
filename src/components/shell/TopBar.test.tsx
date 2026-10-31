@@ -1,7 +1,8 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
-import * as realApi from "../../lib/api";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import type { AttentionItem } from "../../lib/attention";
+import { loadAttentionAnimation } from "../../lib/attentionAnimation";
 import { mountForInteraction, renderToHtml } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 let pending: AttentionItem[] = [];
 // Sends a frame down the open attention stream, as the sidecar would.
@@ -10,8 +11,7 @@ let pushFrame: (data: string) => void = () => {};
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
 
-mock.module("../../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -41,10 +41,10 @@ mock.module("../../lib/api", () => ({
       });
     }
   },
-}));
+});
 
 afterAll(() => {
-  mock.module("../../lib/api", () => realApi);
+  resetSidecarApi();
 });
 
 const TopBar = (await import("./TopBar")).default;
@@ -109,6 +109,19 @@ describe("TopBar attention animation", () => {
     pushFrame(JSON.stringify({ type: "item", item: { ...item("c", 5), status: "dismissed" } }));
     await settle();
     expect(sweep()).toBe(afterArrival);
+  });
+
+  it("keeps the count but neither sweeps nor rings when the animation is turned off", async () => {
+    pending = [item("a", 2)];
+    loadAttentionAnimation(false);
+    try {
+      const html = await renderToHtml(<TopBar title="Chat" onOpenAttention={() => {}} />);
+      expect(html).not.toContain('data-testid="attention-sweep"');
+      expect(html).not.toContain("yarvis-bell-ring");
+      expect(html).toContain("Attention: 1 pending");
+    } finally {
+      loadAttentionAnimation(null);
+    }
   });
 
   // Runs last so the shared store is left empty for any later test file.

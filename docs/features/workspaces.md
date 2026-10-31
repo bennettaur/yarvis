@@ -599,7 +599,8 @@ How the bell behaves:
 - **Hard to miss.** While anything is pending, an amber band sweeps across the
   top bar towards the bell and the bell rings, every few seconds. A new item
   starts the sweep straight away. With macOS's Reduce Motion on, the band
-  fades in and out in place and the bell stays still.
+  fades in and out in place and the bell stays still. To keep only the count
+  badge, turn off **Animate the top bar** in Settings → Appearance.
 - **Grouped by origin.** Repeat items from one workspace collapse into one row
   with a count, naming the tabs involved. Dismissing the row clears them all.
 - **Cleared by looking.** Opening the workspace or terminal tab that raised an

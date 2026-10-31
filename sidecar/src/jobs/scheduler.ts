@@ -1,3 +1,4 @@
+import { reportYarvisActivity } from "../activity/hub.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { redactSecrets } from "../llm/errors.ts";
@@ -70,10 +71,13 @@ export async function runJob(
   const claimed = await claimJob(db, job.name, job.leaseMs ?? DEFAULT_LEASE_MS);
   if (!claimed) return { ran: false, status: "busy", detail: "already running" };
 
+  const source = `job ${job.name}`;
+  reportYarvisActivity(source, "spawn", trigger);
   try {
     const result = await job.run({ db, config, cursor: claimed.cursor, now, trigger });
     const status = result.skipped ? "skipped" : "ok";
     await finishJob(db, job.name, { status, cursor: result.cursor });
+    reportYarvisActivity(source, "done", status);
     if (result.detail) console.log(`[jobs] ${job.name}: ${result.detail}`);
     return { ran: true, status, detail: result.detail };
   } catch (e) {
@@ -81,6 +85,7 @@ export async function runJob(
     // connection string or an API key, and it is stored and shown in the UI.
     const message = redactSecrets(e instanceof Error ? e.message : String(e));
     console.error(`[jobs] ${job.name} failed:`, message);
+    reportYarvisActivity(source, "error", "job failed");
     await finishJob(db, job.name, { status: "error", error: message }).catch(() => {});
     return { ran: true, status: "error", detail: message };
   }

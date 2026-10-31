@@ -62,8 +62,8 @@ allows, and the gate checks both again.
 
 | Verdict | For example | What happens |
 | --- | --- | --- |
-| `auto` | Low risk, and every check passed: no major or blocking finding, no check with a concern, enough of the changed lines covered by tests | The report alone is enough. The gate approves as soon as the signed report is posted. |
-| `agent` | Standard risk, a major finding, a check with a concern, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
+| `auto` | Low risk, and every check passed: no finding of any severity, no check with a concern, enough of the changed lines covered by tests | The report alone is enough. The gate approves as soon as the signed report is posted. |
+| `agent` | Standard risk, a major or minor finding, a check with a concern, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
 | `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
 
 On an outside contributor's PR, the comment has to name the commit you read,
@@ -137,7 +137,8 @@ all of these hold:
 4. If the verdict is `human`, or you disagree with a reject, you read the PR
    and comment `/approve`.
 5. If you push again, every earlier comment goes stale. Run `/verify-pr`
-   again.
+   again. After pushing fixes for what a report flagged,
+   `/verify-pr <N> --recheck` re-verifies only that and the new commits.
 
 ## Setting it up
 
