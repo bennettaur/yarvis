@@ -1764,6 +1764,33 @@ describe("provision + archive (injected git runner)", () => {
     ]);
   });
 
+  it("ends the agent tab's session when the user closes the tab, and no other", async () => {
+    const db = getDb(url).db;
+    const ws = await createWorkspace(db, config, { name: "closed-tab", repoIds: [] });
+    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid)
+              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
+                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
+
+    const res = await app.request(`/api/workspaces/${ws.id}/agent/stop`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", null],
+      ["tab", "stopped"],
+    ]);
+
+    const bad = await app.request("/api/workspaces/not-a-uuid/agent/stop", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it("auto-includes a linked PR on archive even when it hasn't merged", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

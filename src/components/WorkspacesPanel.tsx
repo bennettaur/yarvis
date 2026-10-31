@@ -14,6 +14,7 @@ import {
   ignoreWorkspaceError,
   listWorkspaces,
   renameWorkspace,
+  stopWorkspaceAgent,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
   WORKSPACES_KEY,
@@ -1120,7 +1121,10 @@ function WorkspaceDetailView({
   const dismissAgent = useCallback(() => {
     setAgentDismissed(true);
     setAgentActive(false);
-  }, []);
+    // The PTY kill alone doesn't reach the sidecar, which would resume the
+    // session on the next start.
+    void stopWorkspaceAgent(id).catch(() => undefined);
+  }, [id]);
 
   // Bring the agent tab back. When a session is already live — something else
   // started one in this workspace — this only un-hides the tab. Otherwise
