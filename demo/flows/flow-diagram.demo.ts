@@ -50,27 +50,33 @@ const graph = {
   ],
 };
 
+const REF_KEY = `gh:${OWNER}/${REPO}/477`;
+
+function runSql(sql: string, vars: Record<string, string> = {}): void {
+  const args = [process.env.DEMO_DATABASE_URL ?? "", "-v", "ON_ERROR_STOP=1", "-q"];
+  for (const [name, value] of Object.entries(vars)) args.push("-v", `${name}=${value}`);
+  const result = spawnSync("psql", args, { input: sql, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`psql failed: ${result.stderr}`);
+}
+
 // The demo has no guide agent, so the guide and its graph go straight into the table.
-test("flow diagram", async ({ demo, page }) => {
-  const insert = `INSERT INTO pr_guides (ref_key, provider, title, head_sha, steps, graph)
-    VALUES ('gh:${OWNER}/${REPO}/477', 'github', 'Payment step: show saved cards first',
+test.beforeEach(() => {
+  runSql(
+    `INSERT INTO pr_guides (ref_key, provider, title, head_sha, steps, graph)
+    VALUES (:'ref_key', 'github', 'Payment step: show saved cards first',
       '4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39',
       '[{"path":"src/checkout/PaymentStep.tsx","startLine":1,"endLine":40,"explanation":"Start here."}]'::jsonb,
-      :'graph'::jsonb)`;
-  const result = spawnSync(
-    "psql",
-    [
-      process.env.DEMO_DATABASE_URL ?? "",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-v",
-      `graph=${JSON.stringify(graph)}`,
-      "-q",
-    ],
-    { input: insert, encoding: "utf8" },
+      :'graph'::jsonb)`,
+    { ref_key: REF_KEY, graph: JSON.stringify(graph) },
   );
-  if (result.status !== 0) throw new Error(`seeding the guide failed: ${result.stderr}`);
+});
 
+// Other flows open the same pull request, and a guide adds its own panel there.
+test.afterEach(() => {
+  runSql("DELETE FROM pr_guides WHERE ref_key = :'ref_key'", { ref_key: REF_KEY });
+});
+
+test("flow diagram", async ({ demo, page }) => {
   await demo.openTab("PRs");
   await demo.click(page.getByRole("button", { name: /^Needs review/ }));
   await demo.click(page.getByText("Payment step: show saved cards first"));
