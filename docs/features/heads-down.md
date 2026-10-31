@@ -244,6 +244,10 @@ stream, so pausing one doesn't stop that tool: a pass is only told to leave the
 stream's work alone. **Resume** it and the next pass picks it up where it was.
 Only you pause and resume a stream, here or by asking the assistant.
 
+A pass refers to workspaces by their id. Wherever the page shows one of yours,
+in a stream, a question or a pass's notes, it shows the workspace's name
+instead, as a link that opens it on the Workspaces tab.
+
 The Yarvis logo at the top of the page shows what it is doing: a spinning ring
 while a pass runs, dimmed while it sleeps until the next one, and grey when
 heads-down mode is off.
