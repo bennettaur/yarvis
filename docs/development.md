@@ -137,7 +137,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   description carries the verdict. If the PR is a maintainer's, not a draft,
   low risk, and the report has no concerns, the bot also approves it and turns
   on squash auto-merge. A push makes the report stale, so run `/verify-pr`
-  again.
+  again, or `/verify-pr <N> --recheck` to re-verify only what the last report
+  flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
   merges their own PR, since GitHub won't let them approve it. On an outside
