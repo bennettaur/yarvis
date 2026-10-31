@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const calls: { url: string; method: string; body?: string }[] = [];
 
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });
@@ -33,11 +31,13 @@ mock.module("../lib/api", () => ({
       elapsedMs: 42,
     });
   },
-}));
+});
 
 const { default: DecisionPlayground, parseOptions } = await import("./DecisionPlayground");
 
 let unmount: (() => void) | null = null;
+
+afterAll(resetSidecarApi);
 
 afterEach(() => {
   unmount?.();
