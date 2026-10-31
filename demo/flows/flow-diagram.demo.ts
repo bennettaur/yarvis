@@ -80,11 +80,6 @@ test("flow diagram", async ({ demo, page }) => {
   await demo.shot("diagram closed");
 
   await demo.click(toggle);
-  console.log(
-    "expanded later:",
-    await toggle.getAttribute("aria-expanded"),
-    await page.getByText("could not be drawn").count(),
-  );
   await expect(page.locator("canvas").first()).toBeVisible({ timeout: 20_000 });
   // Let Excalidraw finish zooming to fit.
   await page.waitForTimeout(1500);
