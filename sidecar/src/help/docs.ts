@@ -1,4 +1,5 @@
 import configuration from "../../../docs/configuration.md" with { type: "text" };
+import agentField from "../../../docs/features/agent-field.md" with { type: "text" };
 import assistant from "../../../docs/features/assistant.md" with { type: "text" };
 import browser from "../../../docs/features/browser.md" with { type: "text" };
 import calendarAndAlarms from "../../../docs/features/calendar-and-alarms.md" with { type: "text" };
@@ -33,6 +34,7 @@ const DOCS: Record<string, string> = {
   "getting-started": gettingStarted,
   configuration,
   "voice-server": voiceServer,
+  "features/agent-field": agentField,
   "features/assistant": assistant,
   "features/browser": browser,
   "features/calendar-and-alarms": calendarAndAlarms,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getHealth } from "../../lib/api";
+import { useAttentionAnimation } from "../../lib/attentionAnimation";
 import { useAttentionGroups, useAttentionItems } from "../../lib/attentionStore";
 import { Icon } from "./icons";
 
@@ -9,7 +10,8 @@ type Health = "checking" | "ok" | "down";
  * Thin top bar: current view title on the left; a persistent attention indicator
  * and live sidecar status on the right. The indicator shows the pending count and
  * opens the attention panel. While anything is pending, an amber band sweeps
- * across the bar and the bell rings every few seconds (see `index.css`).
+ * across the bar and the bell rings every few seconds (see `index.css`). Both
+ * can be turned off in Settings → Appearance; the count badge shows regardless.
  */
 export default function TopBar({
   title,
@@ -21,6 +23,7 @@ export default function TopBar({
   const [health, setHealth] = useState<Health>("checking");
   // Counts origins, not items, so the badge matches the grouped rows in the panel.
   const count = useAttentionGroups().length;
+  const animate = useAttentionAnimation();
   // The sweep and ring are keyed on the highest seq seen, so a fresh arrival
   // restarts them right away. Clearing the newest item doesn't, because the key
   // never goes back down.
@@ -58,7 +61,7 @@ export default function TopBar({
 
   return (
     <header className="relative isolate flex h-12 shrink-0 items-center justify-between overflow-hidden border-b border-zinc-800 px-5">
-      {count > 0 && (
+      {count > 0 && animate && (
         <span
           key={restartKey}
           aria-hidden="true"
@@ -78,7 +81,7 @@ export default function TopBar({
           <Icon
             key={restartKey}
             name="bell"
-            className={`h-4.5 w-4.5 ${count > 0 ? "yarvis-bell-ring" : ""}`}
+            className={`h-4.5 w-4.5 ${count > 0 && animate ? "yarvis-bell-ring" : ""}`}
           />
           {count > 0 && (
             <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-semibold leading-none text-zinc-950">

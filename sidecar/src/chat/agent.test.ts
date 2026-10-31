@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
 import { z } from "zod";
+import { type ActivityEvent, subscribeActivity } from "../activity/hub.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import type { ChatMessageMetadata } from "../db/schema.ts";
@@ -158,6 +159,33 @@ describe("runAgentTurn", () => {
     expect(done).toMatchObject({ text: "hello", finishReason: "stop" });
     const stored = await getMessages(db, session.id);
     expect(stored.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("reports the turn to the Agent Field page under the surface it came from", async () => {
+    const seen: ActivityEvent[] = [];
+    const unsubscribe = subscribeActivity((event) => seen.push(event));
+    try {
+      const typed = await createSession(db, null);
+      await collect(streamingModel([...text("hello"), finish("stop")]), typed.id);
+      const spoken = await createSession(db, null);
+      await collect(
+        streamingModel([...text("hello"), finish("stop")]),
+        spoken.id,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { source: "voice" },
+      );
+    } finally {
+      unsubscribe();
+    }
+    expect(seen.map((e) => [e.origin, e.source, e.type])).toEqual([
+      ["yarvis", "chat", "prompt"],
+      ["yarvis", "chat", "done"],
+      ["yarvis", "voice", "prompt"],
+      ["yarvis", "voice", "done"],
+    ]);
   });
 
   it("tells the model how to register and add a repo", async () => {

@@ -59,6 +59,11 @@ describe("mutation testing settings", () => {
     expect(file.mutationTesting).toEqual(saved);
   });
 
+  it("takes budgets of any size, since they only warn", async () => {
+    const res = await patch({ planningBudgetUsd: 100, explanationBudgetUsd: 50 });
+    expect(await res.json()).toMatchObject({ planningBudgetUsd: 100, explanationBudgetUsd: 50 });
+  });
+
   it("takes full model ids as well as aliases", async () => {
     for (const model of ["claude-opus-4-1[1m]", "us.anthropic.claude-sonnet-4-5-v1:0", "opus"]) {
       const res = await patch({ planningModel: model, explanationModel: model });
@@ -73,7 +78,7 @@ describe("mutation testing settings", () => {
       { maxMutants: 31 },
       { maxMutants: 2.5 },
       { planningBudgetUsd: 0 },
-      { explanationBudgetUsd: 100 },
+      { explanationBudgetUsd: 0 },
       { testTimeoutCapSeconds: 10 },
       { testTimeoutCapSeconds: 7_200 },
       { planningModel: "--dangerously-skip-permissions" },

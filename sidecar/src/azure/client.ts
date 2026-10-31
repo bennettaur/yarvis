@@ -581,9 +581,11 @@ export class AzureDevOpsClient {
   async prDetail(ref: AzureRef): Promise<PrDetail> {
     const pr = await this.prRaw(ref);
     const projectId = pr.repository?.project?.id ?? "";
-    const [checks, reviewThreads] = await Promise.all([
+    const [checks, reviewThreads, viewerId] = await Promise.all([
       this.checks(ref.project, projectId, ref.prId),
       this.threads(ref, this.prWebUrl(pr)),
+      // Only feeds the review buttons, so a failed lookup shouldn't cost the page.
+      this.resolveViewerId().catch(() => undefined),
     ]);
     return {
       number: pr.pullRequestId,
@@ -613,6 +615,9 @@ export class AzureDevOpsClient {
       checks,
       reviewThreads,
       reviewers: (pr.reviewers ?? []).map(mapReviewer).filter((r) => r.login),
+      ...(viewerId
+        ? { viewerReview: mapReviewerVote(pr.reviewers?.find((r) => r.id === viewerId)?.vote) }
+        : {}),
     };
   }
 

@@ -1,5 +1,7 @@
+import { CheckIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { PendingApproval } from "../lib/chat";
+import { Button } from "./ui/button";
 
 /** How long a newly promoted call is immune to the keyboard shortcuts (ms). */
 const ARMING_MS = 400;
@@ -58,6 +60,8 @@ export default function ToolApprovalBar({
       const typing =
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
+        // Selects jump to an option by its first letter.
+        target?.tagName === "SELECT" ||
         target?.isContentEditable === true;
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       const key = e.key.toLowerCase();
@@ -82,8 +86,9 @@ export default function ToolApprovalBar({
   const url = (current.args as { url?: unknown } | null | undefined)?.url;
 
   return (
-    <div className="rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm">
+    <div className="rounded-xl border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm shadow-sm">
       <div className="flex flex-wrap items-center gap-2">
+        <ShieldAlertIcon aria-hidden="true" className="size-4 text-amber-400" />
         <span className="text-xs uppercase tracking-wide text-amber-400">Approve?</span>
         <span className="min-w-0 truncate text-zinc-100">
           <span className="font-medium">{current.name}</span>
@@ -93,43 +98,44 @@ export default function ToolApprovalBar({
           <span className="text-xs text-zinc-400">+{approvals.length - 1} waiting</span>
         )}
         {current.args !== undefined && current.args !== null && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={() => setShowArgs((v) => !v)}
             aria-expanded={showArgs}
             title="Show or hide the arguments this call will run with."
-            className="rounded border border-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             {showArgs ? "Hide arguments" : "Arguments"}
-          </button>
+          </Button>
         )}
         <div className="ml-auto flex items-center gap-2">
           {canRemember && (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="xs"
               onClick={() => onAlwaysAllow?.(current)}
               title="Approve this call and skip the prompt for this tool on future typed turns (not spoken ones)."
-              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
             >
               Always allow
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
+            size="xs"
             onClick={() => onRespond(current.id, true)}
             title="Approve this call (press A when not typing in a field)."
-            className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium hover:bg-indigo-500"
           >
-            Approve <span className="text-indigo-200">A</span>
-          </button>
-          <button
-            type="button"
+            <CheckIcon />
+            Approve <kbd className="font-sans text-indigo-200">A</kbd>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => onRespond(current.id, false)}
             title="Deny this call (press D when not typing in a field)."
-            className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
           >
-            Deny <span className="text-zinc-500">D</span>
-          </button>
+            <XIcon />
+            Deny <kbd className="font-sans text-zinc-500">D</kbd>
+          </Button>
         </div>
       </div>
       {typeof url === "string" && (
@@ -142,7 +148,7 @@ export default function ToolApprovalBar({
         </p>
       )}
       {showArgs && (
-        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/70 p-2 text-xs text-zinc-400">
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-zinc-950/70 p-2 text-xs text-zinc-400">
           {JSON.stringify(current.args, null, 2)}
         </pre>
       )}

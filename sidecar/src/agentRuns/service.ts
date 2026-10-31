@@ -61,7 +61,8 @@ type FinishStep<T, R> = [T] extends [R]
  *   with nobody to answer a prompt, a tool the run wasn't granted is denied.
  *   The exception is `acceptEdits`, which a caller may use only with
  *   `restricted`, so the edits it approves stay inside the working folder.
- * - A spend and turn ceiling is mandatory.
+ * - A timeout is mandatory. A spend cap is optional, and the review runs leave
+ *   it out because their budget only warns.
  * - The prompt goes in on stdin, so it never shows in `ps` and a prompt
  *   starting with `-` can't be read as a flag.
  * - A fixed guardrail tells the model the checkout is material to analyse,
@@ -139,8 +140,14 @@ interface ClaudeRunBaseOptions<T> {
   /** Added after the fixed guardrail. */
   appendSystemPrompt?: string;
   model?: string;
-  /** Claude Code stops the run once it has spent this much. */
-  maxBudgetUsd: number;
+  /**
+   * Claude Code stops the run once it has spent this much. Left out, nothing
+   * caps the spend: `timeoutMs` bounds a runaway, and `maxTurns` the main
+   * thread's turns (subagents the run starts have their own loops).
+   * The review runs leave it out: their budget only warns, and a run cut off at
+   * a cap ends with nothing to show for what it spent.
+   */
+  maxBudgetUsd?: number;
   maxTurns?: number;
   timeoutMs: number;
   /** Feature-specific context kept on the row. */
@@ -354,14 +361,15 @@ export function buildClaudeArgs<T, R>(
     "--no-session-persistence",
     "--permission-mode",
     options.permissionMode ?? "dontAsk",
-    "--max-budget-usd",
-    String(options.maxBudgetUsd),
     "--append-system-prompt",
     options.appendSystemPrompt ? `${guardrail}\n\n${options.appendSystemPrompt}` : guardrail,
   ];
   for (const dir of pluginDirs) args.push("--plugin-dir", dir);
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
   if (options.agent) args.push("--agent", options.agent);
+  if (options.maxBudgetUsd !== undefined) {
+    args.push("--max-budget-usd", String(options.maxBudgetUsd));
+  }
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));
@@ -389,9 +397,9 @@ const MAX_ERROR_CHARS = 2_000;
 
 /**
  * Starts a run and returns as soon as it is registered. Throws — before any
- * row exists — for a refused permission mode, a missing budget, a working
- * directory that isn't there or a plugin that can't be written, so the starting
- * route can answer with the reason.
+ * row exists — for a refused permission mode, a budget that isn't positive, a
+ * working directory that isn't there or a plugin that can't be written, so the
+ * starting route can answer with the reason.
  */
 export async function startClaudeRun<T, R = T>(
   db: Db,
@@ -415,7 +423,9 @@ export async function startClaudeRun<T, R = T>(
       "an acceptEdits run must be restricted to its working folder, with a tool list and no Bash",
     );
   }
-  if (!(options.maxBudgetUsd > 0)) throw new Error("an agent run needs a positive maxBudgetUsd");
+  if (options.maxBudgetUsd !== undefined && !(options.maxBudgetUsd > 0)) {
+    throw new Error("an agent run's maxBudgetUsd must be positive");
+  }
   const cwd = validateWorkingDir(options.cwd);
   for (const dir of options.addDirs ?? []) validateWorkingDir(dir);
   const program = deps.program ?? (await claudeProgram());

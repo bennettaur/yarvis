@@ -5,8 +5,8 @@ import {
   startVerification,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
+import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
-import { Spinner } from "../../ThinkingIndicator";
 import {
   reportOf,
   useLatestVerification,
@@ -79,7 +79,7 @@ function SizeWarning({ size }: { size: VerificationSize }) {
 function CheckLine({ check }: { check: CheckProgress }) {
   const icon =
     check.state === "running" ? (
-      <Spinner />
+      <Loader />
     ) : check.state === "done" ? (
       <span className="text-emerald-400">✓</span>
     ) : check.state === "failed" ? (

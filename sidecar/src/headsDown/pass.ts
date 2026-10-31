@@ -87,11 +87,6 @@ export const STOPPED_BY_USER = "stopped by you";
 /** The sleep reason recorded for a pass cut short by the run's stop time. */
 export const REACHED_STOP_TIME = "reached the stop time";
 
-/** How long a pass may run before it is stopped. */
-export const PASS_TIMEOUT_MS = 20 * 60_000;
-
-const TIMEOUT_ERROR = `ran out of time after ${PASS_TIMEOUT_MS / 60_000} minutes`;
-
 /** Longest an error is kept on a pass; the full one goes to the log. */
 const MAX_ERROR_CHARS = 500;
 
@@ -180,14 +175,15 @@ function passToolIds(): string[] {
 
 /**
  * Runs one pass of the heads-down loop and decides how long to sleep after it.
- * `model` replaces the configured one and `retryDelaysMs` the waits between
- * retries, for tests.
+ * `timeoutMs` is how long it may run, the configured pass timeout when left
+ * out. `model` replaces the configured one and `retryDelaysMs` the waits
+ * between retries, for tests.
  */
 export async function runPass(
   config: Config,
   db: Db,
   run: HeadsDownRun,
-  options: { model?: LanguageModel; retryDelaysMs?: readonly number[] } = {},
+  options: { model?: LanguageModel; retryDelaysMs?: readonly number[]; timeoutMs?: number } = {},
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
@@ -229,7 +225,8 @@ export async function runPass(
     stoppedBy ??= by;
     abort.abort();
   };
-  const timer = setTimeout(() => abort.abort(), PASS_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? headsDownConfig.passTimeoutMinutes * 60_000;
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
   setPassAbort(() => stopPass("user"));
   // The run's stop time ends the pass, and moves with it while the pass runs.
   let stopTimer: ReturnType<typeof setTimeout> | undefined;
@@ -238,7 +235,7 @@ export async function runPass(
     stopTimer = undefined;
     const untilStop = stopAt ? stopAt.getTime() - Date.now() : null;
     // Past the pass timeout it can't matter, and setTimeout overflows on delays past ~24 days.
-    if (untilStop !== null && untilStop < PASS_TIMEOUT_MS) {
+    if (untilStop !== null && untilStop < timeoutMs) {
       stopTimer = setTimeout(() => stopPass("stop-time"), Math.max(0, untilStop));
     }
   };
@@ -396,8 +393,10 @@ export async function runPass(
   if (outcome.finished || stoppedBy) error = null;
   // The turn reports a timeout as a plain stop, which reads as the user's doing,
   // so the timeout is named here, with the provider error before it if there was one.
-  else if (timedOut()) error = error ? `${TIMEOUT_ERROR} (after: ${error})` : TIMEOUT_ERROR;
-  else error ??= "the pass ended without calling finish_pass";
+  else if (timedOut()) {
+    const ranOut = `ran out of time after ${Math.round(timeoutMs / 60_000)} minutes`;
+    error = error ? `${ranOut} (after: ${error})` : ranOut;
+  } else error ??= "the pass ended without calling finish_pass";
   if (error) error = clip(error, MAX_ERROR_CHARS);
   // The pass is recorded whatever happens here: a failure to read the streams
   // just loses the idle reasons, not the record.

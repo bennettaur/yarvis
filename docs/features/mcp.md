@@ -136,6 +136,12 @@ too long for it to read in full. Each verdict is logged under `[auto-approve]`
 in **Settings → Diagnostics**. Everything it reads is sent to the decision
 model's provider, so a local model keeps your conversation on this machine.
 
+The same decision model can also pick a specialist and a model tier for
+delegated work, with **Pick specialists for delegated work** and **Pick a model
+tier for specialists**. **Try a decision**, under the same setting, asks it one
+question so you can see how it answers. See
+[Decision specialists](assistant.md#decision-specialists).
+
 Your consent is for the tool as it was described. If a resync finds a tool's
 description or schema changed, its approval resets to **Ask**.
 

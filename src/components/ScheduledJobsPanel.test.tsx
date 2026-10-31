@@ -74,7 +74,14 @@ stubSidecarApi({
     if (path.endsWith("/runs")) return json({ runs: RUNS });
     if (path.endsWith("/run")) return json({ ran: true, status: "ok", detail: "done" });
     if (path.startsWith("/api/specialists")) {
-      return json({ specialists: [{ name: "planner", enabled: true }], problems: [], userDir: "" });
+      return json({
+        specialists: [
+          { name: "planner", kind: "task", enabled: true },
+          { name: "complexity-router", kind: "decision", enabled: true },
+        ],
+        problems: [],
+        userDir: "",
+      });
     }
     if (path.startsWith("/api/jobs/agent-jobs")) {
       return json({
@@ -294,6 +301,20 @@ describe("ScheduledJobsPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(host.textContent).toContain("Working directory");
       expect(host.textContent).toContain("headless");
+    } finally {
+      unmount();
+    }
+  });
+
+  // A decision specialist picks an option; it can't run a job's prompt.
+  it("offers task specialists for a new job, never decision ones", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(ScheduledJobsPanel));
+    try {
+      [...host.querySelectorAll("button")].find((b) => b.textContent === "New job")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const offered = [...host.querySelectorAll("option")].map((o) => o.value);
+      expect(offered).toContain("planner");
+      expect(offered).not.toContain("complexity-router");
     } finally {
       unmount();
     }
