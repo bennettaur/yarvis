@@ -382,8 +382,18 @@ export async function startClaudeRun<T, R = T>(
   if (options.permissionMode && REFUSED_PERMISSION_MODES.has(options.permissionMode)) {
     throw new Error(`permission mode "${options.permissionMode}" is not allowed for agent runs`);
   }
-  if (options.permissionMode === "acceptEdits" && !options.restricted) {
-    throw new Error("an acceptEdits run must be restricted to its working folder");
+  // acceptEdits also approves some file-touching Bash commands, and an added
+  // directory widens what restricted mode confines writes to.
+  if (
+    options.permissionMode === "acceptEdits" &&
+    (!options.restricted ||
+      options.addDirs?.length ||
+      !options.tools ||
+      options.tools.includes("Bash"))
+  ) {
+    throw new Error(
+      "an acceptEdits run must be restricted to its working folder, with a tool list and no Bash",
+    );
   }
   if (!(options.maxBudgetUsd > 0)) throw new Error("an agent run needs a positive maxBudgetUsd");
   const cwd = validateWorkingDir(options.cwd);

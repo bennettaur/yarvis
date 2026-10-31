@@ -64,6 +64,9 @@ export function taskRunPolicy(outputDir: string) {
   return {
     cwd: outputDir,
     tools: TASK_TOOLS,
+    // Already absent from the tool list; denied as well in case a Claude Code
+    // build stops honouring it.
+    disallowedTools: ["Bash", "WebFetch", "WebSearch", "NotebookEdit", "Agent", "Task"],
     restricted: true,
     permissionMode: "acceptEdits" as const,
     // `//` marks an absolute path in a permission rule.
