@@ -109,7 +109,10 @@ stubSidecarApi({
     providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
-  sidecarFetch: async (path: string) => {
+  sidecarFetch: async (url: string) => {
+    // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
+    // which doesn't change what they return.
+    const path = url.split("?")[0]!;
     if (path === "/api/workspaces") return json([EXISTING]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
     if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
