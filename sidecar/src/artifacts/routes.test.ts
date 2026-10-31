@@ -67,6 +67,33 @@ describe("/api/artifacts", () => {
     expect(await (await del("not-a-uuid")).json()).toEqual({ deleted: false });
   });
 
+  it("deletes several artifacts at once, skipping ones already gone", async () => {
+    const a = await createArtifact(db, { title: "A" });
+    const b = await createArtifact(db, { title: "B" });
+    const keep = await createArtifact(db, { title: "Keep" });
+    const res = await app.request("/api/artifacts/delete", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ ids: [a.id, b.id, crypto.randomUUID()] }),
+    });
+    expect(await res.json()).toEqual({ deleted: 2 });
+    const left = (await (await app.request("/api/artifacts", { headers: auth })).json()) as {
+      id: string;
+    }[];
+    expect(left.map((x) => x.id)).toEqual([keep.id]);
+  });
+
+  it("refuses a bulk delete with a malformed or empty list", async () => {
+    const post = (body: unknown) =>
+      app.request("/api/artifacts/delete", {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await post({ ids: ["not-a-uuid"] })).status).toBe(400);
+    expect((await post({ ids: [] })).status).toBe(400);
+  });
+
   it("answers 503 when no database is configured", async () => {
     const noDb = createApp({ ...config, databaseUrl: undefined });
     const res = await noDb.request("/api/artifacts", { headers: auth });

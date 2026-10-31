@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, ne, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Artifact, artifacts } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
@@ -169,9 +169,15 @@ export async function updateArtifact(
 }
 
 export async function deleteArtifact(db: Db, id: string): Promise<boolean> {
+  return (await deleteArtifacts(db, [id])) > 0;
+}
+
+/** Deletes every artifact named; returns how many there were. */
+export async function deleteArtifacts(db: Db, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
   const deleted = await db
     .delete(artifacts)
-    .where(eq(artifacts.id, id))
+    .where(inArray(artifacts.id, ids))
     .returning({ id: artifacts.id });
-  return deleted.length > 0;
+  return deleted.length;
 }
