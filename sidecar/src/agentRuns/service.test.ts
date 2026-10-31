@@ -200,10 +200,23 @@ describe("refusing a run", () => {
     }
   });
 
-  it("refuses acceptEdits unless the run is restricted to its folder", async () => {
-    await expect(
-      startClaudeRun(db, runOptions(dir, { permissionMode: "acceptEdits" }), deps("claude")),
-    ).rejects.toThrow("restricted");
+  it("refuses acceptEdits unless the run is restricted to its folder, without Bash", async () => {
+    const restricted = {
+      permissionMode: "acceptEdits" as const,
+      restricted: true,
+      tools: ["Read"],
+    };
+    for (const overrides of [
+      { permissionMode: "acceptEdits" as const },
+      { ...restricted, restricted: false },
+      { ...restricted, tools: undefined },
+      { ...restricted, tools: ["Read", "Bash"] },
+      { ...restricted, addDirs: [dir] },
+    ]) {
+      await expect(startClaudeRun(db, runOptions(dir, overrides), deps("claude"))).rejects.toThrow(
+        "restricted",
+      );
+    }
   });
 
   it("refuses a run without a budget", async () => {
