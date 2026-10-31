@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Copied, Settings } from "../lib/settings";
 import { nativeInvoke } from "../test/nativeInvoke";
 import { mountForInteraction, renderToHtml } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 /**
  * Covers the backend switch end to end through `invoke` rather than stubbing
@@ -68,10 +69,10 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-mock.module("../lib/api", () => ({
-  getHealth: async () => ({ ready: true, uptimeMs: 1000 }),
+stubSidecarApi({
+  getHealth: async () => ({ status: "ok", service: "sidecar", ready: true, uptimeMs: 1000 }),
   waitForSidecarReady: async () => {},
-}));
+});
 
 const SecretBackendSection = (await import("./SecretBackendSection")).default;
 
@@ -224,3 +225,5 @@ describe("SecretBackendSection", () => {
     expect(host.textContent).toContain("In use: macOS Keychain");
   });
 });
+
+afterAll(resetSidecarApi);

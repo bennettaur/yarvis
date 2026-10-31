@@ -827,6 +827,13 @@ cat "${fakeDir}/result.jsonl"`,
     );
     // Too big for one agent, so split by lines across reading groups.
     expect(indexFile).toContain("patches/huge.txt.diff lines 1-");
+    // Each group's exact patches, for the agents handed that GROUP.
+    expect(readFileSync(join(contextDir, "groups/1.md"), "utf8")).toContain(
+      "\npatches/big.txt.diff\n",
+    );
+    expect(readFileSync(join(contextDir, "groups/2.md"), "utf8")).toContain(
+      "\npatches/huge.txt.diff lines 1-",
+    );
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
     expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
     expect(

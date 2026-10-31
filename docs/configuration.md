@@ -201,7 +201,7 @@ has written your providers and MCP servers into it.
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
-| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
+| `decisionModel` | `model`, the provider and model tagged `decision` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the most one report may spend (2 by default, from 0.25 to 20) | Settings → PR review |
@@ -300,7 +300,8 @@ The tabs in **Settings**, in order:
    integration fields (Azure org URL, JIRA URL and email, Google client id).
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
-3. **Tools & MCP.** The decision model behind auto mode, MCP servers Yarvis
+3. **Tools & MCP.** The decision model (auto mode, picking specialists and
+   model tiers, and a playground to try it), MCP servers Yarvis
    connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
    groups start collapsed.
 4. **Repositories.** The repos workspaces can use, the workspace agent
