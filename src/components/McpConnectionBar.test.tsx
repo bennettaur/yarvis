@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
-import * as realApi from "../lib/api";
 import type { McpServer } from "../lib/mcp";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import McpConnectionBar from "./McpConnectionBar";
 
 function server(overrides: Partial<McpServer>): McpServer {
@@ -34,8 +34,7 @@ const refreshed: string[] = [];
 const authorized: string[] = [];
 let refreshResult: Record<string, unknown> = { connected: true, toolCount: 1 };
 
-mock.module("../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path === "/api/mcp/servers") return json(servers);
     const status = path.match(/^\/api\/mcp\/servers\/([^/]+)\/status$/);
@@ -52,12 +51,12 @@ mock.module("../lib/api", () => ({
     }
     return new Response("unexpected request", { status: 404 });
   },
-}));
+});
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, token: "t" }) }));
 
 afterAll(() => {
-  mock.module("../lib/api", () => realApi);
+  resetSidecarApi();
 });
 
 let cleanup: (() => void) | null = null;
