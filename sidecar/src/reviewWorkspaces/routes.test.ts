@@ -741,7 +741,11 @@ cat "${fakeDir}/result.jsonl"`,
         status: string;
         targetKey: string;
         live: boolean;
-        result: typeof report & { coverage?: Coverage };
+        // The fixture as the server parses it, which fills in each must-read's flags.
+        result: Omit<typeof report, "mustRead"> & {
+          mustRead: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
+          coverage?: Coverage;
+        };
       } | null;
       current: boolean;
       headSha: string;
@@ -862,7 +866,9 @@ cat "${fakeDir}/result.jsonl"`,
     // Held to the word cap the diff size gives: the ceiling, since huge.txt's
     // 20,000 lines are all in a patch the run reads.
     expect(done.run?.result.summary).toBe(`${"word ".repeat(80).trim()}…`);
-    expect(done.run?.result.mustRead).toEqual([{ path: "src/a.ts", reason: "the change" }]);
+    expect(done.run?.result.mustRead).toEqual([
+      { path: "src/a.ts", reason: "the change", flags: [] },
+    ]);
     expect(done.run?.result.tests.findings).toHaveLength(1);
     expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
     // The server's count of what the run read: only a.ts's patch, by a subagent.
