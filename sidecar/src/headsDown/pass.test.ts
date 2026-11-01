@@ -488,7 +488,7 @@ describe("a heads-down pass", () => {
     await runPass(config, db, run, { model });
 
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
-    expect(prompt).toContain("### meeting-alarms (never done before)");
+    expect(prompt).toContain("### meeting-alarms (not done in the last 30 days)");
     expect(prompt).not.toContain("### meeting-notes");
     expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
       "Pass recorded. Not recorded as done, since this pass wasn't given them: meeting-notes. Stop here.",
@@ -504,6 +504,10 @@ describe("a heads-down pass", () => {
     const next = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: next });
     expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");
+
+    // History only reaches back as far as the longest cadence.
+    await sql`UPDATE heads_down_passes SET started_at = started_at - interval '30 days 1 minute'`;
+    expect((await routineHistory(db)).lastDone.size).toBe(0);
   });
 
   it("gives a pass only as many routines as the setting allows, and none at 0", async () => {

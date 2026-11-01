@@ -83,7 +83,9 @@ export default function RoutineList({
             <p className="text-zinc-400">{r.description}</p>
             {r.enabled && (
               <p className="text-zinc-500">
-                {r.lastDoneAt ? `Last done ${formatRelativeTime(r.lastDoneAt)}` : "Not done yet"}
+                {r.lastDoneAt
+                  ? `Last done ${formatRelativeTime(r.lastDoneAt)}`
+                  : "Not done in the last 30 days"}
               </p>
             )}
           </li>

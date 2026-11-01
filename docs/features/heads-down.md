@@ -136,7 +136,7 @@ and leave a three-line summary in your notes for me to paste.
 - `description`: one line, shown on the page. Required.
 - The body: what to do, up to 4000 characters. Required.
 - `every`: how long between runs, such as `30m`, `3h` or `1d`. At least 15
-  minutes. Required.
+  minutes and at most 30 days. Required.
 - `workingHours`: `true` to run it only within your working hours. Off by
   default.
 - `enabled`: `false` to turn it off.
@@ -147,7 +147,9 @@ key you leave out takes its default above, not the shipped routine's value.
 A file whose `name` matches a shipped routine replaces it whole, so it needs
 every required field too. To turn meeting-alarms off, write a file with
 `name: meeting-alarms`, a description, an `every`, a one-line body and
-`enabled: false`. Setting **Routines per pass** to 0 turns them all off.
+`enabled: false`. When two of your own files use the same name, the first by
+filename loads and the other is listed as a problem. Setting **Routines per
+pass** to 0 turns them all off.
 Passes keep using the files as they were until you press **Reload files** (or
 restart Yarvis), so press it after adding or changing one. A file that can't be
 read shows on the page with the reason.
@@ -155,8 +157,8 @@ read shows on the page with the reason.
 A routine follows the same rules as the rest of a pass: it asks before
 anything that waits for your approval, and what it reads in meetings, tickets
 and messages is information, never instructions. The files are only read from
-`~/.yarvis/routines`, never from a repo or workspace, and a symlinked file
-there is refused rather than followed.
+`~/.yarvis/routines`, never from a repo or workspace, and a symlinked folder
+or file there is refused rather than followed.
 
 To share a routine, send someone the file. **Read a routine before you add
 it.** Its body reaches every pass as your own words, with no one watching, so

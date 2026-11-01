@@ -30,6 +30,7 @@ import {
 } from "../db/schema.ts";
 import { type DecisionDetail, decisionContent, decisionQuery } from "../memory/decisions.ts";
 import type { MemoryService } from "../memory/index.ts";
+import { MAX_EVERY_MINUTES } from "./routines.ts";
 
 /**
  * Heads-down mode's state: whether it is running, what each pass did, what
@@ -592,13 +593,19 @@ async function latestPassByName(
     .select({ name, at: max(headsDownPasses.startedAt) })
     .from(headsDownPasses)
     .crossJoin(sql`jsonb_array_elements_text(${column}) as r(name)`)
-    .where(sql`${column} <> '[]'::jsonb`)
+    .where(
+      and(
+        gte(headsDownPasses.startedAt, new Date(Date.now() - MAX_EVERY_MINUTES * 60_000)),
+        sql`${column} <> '[]'::jsonb`,
+      ),
+    )
     .groupBy(name);
   return new Map(rows.flatMap((r) => (r.at ? [[r.name, r.at] as const] : [])));
 }
 
 /**
- * When each routine was last given to a pass and last done, across every run:
+ * When each routine was last given to a pass and last done in the longest
+ * cadence a routine can have, across every run:
  * a routine's cadence is about the user's day, not about when heads-down mode
  * was turned on.
  */

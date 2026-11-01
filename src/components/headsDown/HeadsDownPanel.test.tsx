@@ -334,14 +334,16 @@ describe("HeadsDownPanel", () => {
       [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))
         ?.textContent ?? "";
 
-    expect(routine("meeting-alarms")).toContain("every 3h");
-    expect(routine("meeting-alarms")).toContain("Not done yet");
+    expect(
+      [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
+    ).toEqual(["every 3h", "every 1d, working hours", "every 45m", "off"]);
+    expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
     expect(routine("meeting-alarms")).not.toContain("(yours)");
     expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
     expect(routine("standup")).toContain("Last done");
     expect(routine("triage")).toContain("every 45m");
     expect(routine("meeting-notes")).toContain("off");
-    expect(routine("meeting-notes")).not.toContain("Not done yet");
+    expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
     expect(host.textContent).toContain("x.md: 'every' is required");
     expect(host.textContent).toContain("/home/me/.yarvis/routines");
   });
@@ -367,6 +369,12 @@ describe("HeadsDownPanel", () => {
     buttonNamed(host, "Reload files").click();
     await waitForText(host, "disk on fire");
     expect(host.textContent).toContain("disk on fire");
+
+    // A reload that works clears the last one's error.
+    reloadAnswer = ROUTINES;
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(host.textContent).not.toContain("disk on fire");
 
     // One reload at a time: the button waits for the one running.
     reloadAnswer = "hang";
@@ -696,6 +704,16 @@ describe("HeadsDownSettings", () => {
     if (!field) throw new Error("no pass timeout field");
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "90");
     field.dispatchEvent(new Event("input", { bubbles: true }));
+    // A field with no most allowed takes any number at or above its least.
+    const longestSleep = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Longest sleep"))
+      ?.querySelector("input");
+    if (!longestSleep) throw new Error("no longest sleep field");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      longestSleep,
+      "600",
+    );
+    longestSleep.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(20);
     buttonNamed(host, "Save").click();
     await settle();
@@ -703,7 +721,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, passTimeoutMinutes: 90 },
+      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
     });
   });
 
@@ -727,6 +745,7 @@ describe("HeadsDownSettings", () => {
       return writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
     };
     await type("0");
+    await type("-1");
     expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
     await type("10");
     await type("11");

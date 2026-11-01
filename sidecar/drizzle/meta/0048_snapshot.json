@@ -1,5 +1,5 @@
 {
-  "id": "fca4bd2d-1ccb-4bf7-bbe7-5ba61d5ab88d",
+  "id": "5cbc6037-f6b9-4ee3-834e-52d0d8fd78b6",
   "prevId": "c8bfafbd-6626-45cc-b165-e810bd731a18",
   "version": "7",
   "dialect": "postgresql",
@@ -1969,6 +1969,21 @@
               "asc": true,
               "nulls": "last"
             },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heads_down_passes_started_idx": {
+          "name": "heads_down_passes_started_idx",
+          "columns": [
             {
               "expression": "started_at",
               "isExpression": false,

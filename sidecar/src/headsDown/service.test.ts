@@ -639,13 +639,27 @@ describe("finish_pass", () => {
       result: { ok: true, message: "Pass recorded. Stop here." },
       done: ["standup"],
     });
-    expect(await finish(["standup", "inbox"], ["inbox", "other"])).toEqual({
+    expect(await finish(["standup", "triage", "inbox"], ["inbox", "other", "another"])).toEqual({
       result: {
         ok: true,
         message:
-          "Pass recorded. Not recorded as done, since this pass wasn't given them: other. Not reported done, so a later pass gets them again: standup. Stop here.",
+          "Pass recorded. Not recorded as done, since this pass wasn't given them: other, another. Not reported done, so a later pass gets them again: standup, triage. Stop here.",
       },
       done: ["inbox"],
+    });
+    expect(await finish([])).toEqual({
+      result: { ok: true, message: "Pass recorded. Stop here." },
+      done: [],
+    });
+  });
+
+  it("starts a pass with nothing finished and no routines done", () => {
+    expect(newPassOutcome()).toEqual({
+      finished: false,
+      notes: null,
+      sleepMinutes: null,
+      reason: null,
+      routinesDone: [],
     });
   });
 });

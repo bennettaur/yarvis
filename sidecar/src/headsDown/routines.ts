@@ -76,6 +76,12 @@ const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] a
  */
 const MIN_EVERY_MINUTES = 15;
 
+/**
+ * The longest cadence a file may ask for. A pass only looks this far back for
+ * when each routine was last done, so the history it reads stays bounded.
+ */
+export const MAX_EVERY_MINUTES = 30 * 24 * 60;
+
 /** A due routine's whole body goes into the pass prompt, so a routine stays to about a page. */
 const MAX_BODY_CHARS = 4000;
 
@@ -117,6 +123,13 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
   }
   if (everyMinutes < MIN_EVERY_MINUTES) {
     throw new FrontmatterError(path, `'every' cannot be shorter than ${MIN_EVERY_MINUTES}m`, 1);
+  }
+  if (everyMinutes > MAX_EVERY_MINUTES) {
+    throw new FrontmatterError(
+      path,
+      `'every' cannot be longer than ${MAX_EVERY_MINUTES / (24 * 60)}d`,
+      1,
+    );
   }
 
   return {
@@ -184,7 +197,7 @@ const RETRY_AFTER_MINUTES = 60;
 
 export interface DueInput {
   routines: Routine[];
-  /** When the last pass to report each routine done started, by name. Missing means never done. */
+  /** When the last pass to report each routine done started, by name. Missing means not done in the last 30 days. */
   lastDone: ReadonlyMap<string, Date>;
   /** When the last pass given each routine started, done or not, by name. */
   lastOffered: ReadonlyMap<string, Date>;
@@ -200,7 +213,7 @@ export interface DueInput {
  * limit, the most overdue go first, counted in cadences missed rather than
  * minutes: an hourly routine last done 2 hours ago is 2 cadences overdue and
  * goes before a daily one last done 26 hours ago (about 1.08), even though the
- * daily one has waited longer. One never done goes first of all. The rest stay
+ * daily one has waited longer. One not done in that time goes first of all. The rest stay
  * due and get the next pass. One a pass was given and didn't finish waits its
  * cadence or an hour, whichever is shorter, before it is given again.
  */

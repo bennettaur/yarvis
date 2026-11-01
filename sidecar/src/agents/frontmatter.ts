@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, readdir } from "node:fs/promises";
+import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseYaml, YAMLParseError } from "yaml";
 
@@ -205,12 +205,15 @@ const MAX_DEFINITION_BYTES = 256 * 1024;
 /**
  * Reads every `.md` file in a directory the user keeps definitions in (their
  * specialists, their routines), treating an absent directory as simply empty.
- * A symlinked file is refused, since it could point into a repo, and
+ * A symlinked folder or file is refused, since it could point into a repo, and
  * definitions are never read from one.
  */
 export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
   let names: string[];
   try {
+    if ((await lstat(dir)).isSymbolicLink()) {
+      return [{ path: dir, error: `${dir}: a symlink, which isn't followed` }];
+    }
     names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];

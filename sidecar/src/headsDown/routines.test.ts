@@ -63,6 +63,12 @@ describe("parseRoutine", () => {
     expect(() => parseRoutine("a.md", file(`${base}\nevery: 5m`), "user")).toThrow(
       "cannot be shorter than 15m",
     );
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 31d`), "user")).toThrow(
+      "cannot be longer than 30d",
+    );
+    expect(parseRoutine("a.md", file(`${base}\nevery: 30d`), "user").everyMinutes).toBe(
+      30 * 24 * 60,
+    );
     expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h`, ""), "user")).toThrow(
       "cannot be empty",
     );
@@ -147,6 +153,22 @@ describe("loadRoutines", () => {
     expect(problems).toEqual([
       { path: join(dir, "b.md"), message: expect.stringContaining("already defines 'standup'") },
     ]);
+  });
+
+  it("refuses a routines folder that is a symlink", async () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "routines-elsewhere-"));
+    writeFileSync(join(elsewhere, "linked.md"), file("name: linked\ndescription: y\nevery: 1h"));
+    const link = join(dir, "linked-dir");
+    symlinkSync(elsewhere, link);
+    process.env.YARVIS_ROUTINES_DIR = link;
+    try {
+      const { routines, problems } = await loadRoutines();
+      expect(routines.map((r) => r.name)).not.toContain("linked");
+      expect(problems).toEqual([{ path: link, message: expect.stringContaining("a symlink") }]);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = dir;
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   // Root reads a file whatever its mode, so there is nothing unreadable to test.

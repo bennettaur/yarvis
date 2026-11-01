@@ -290,6 +290,10 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
   const add = (path: string, content: string, source: SpecialistSource) => {
     try {
       const definition = parseSpecialist(path, content, source, knownTools);
+      // Two of the user's own files can't both win, so the second is reported, not loaded.
+      if (source === "user" && byName.get(definition.name)?.source === "user") {
+        throw new Error(`${path}: another file already defines '${definition.name}'`);
+      }
       byName.set(definition.name, definition);
     } catch (e) {
       problems.push({ path, message: e instanceof Error ? e.message : String(e) });

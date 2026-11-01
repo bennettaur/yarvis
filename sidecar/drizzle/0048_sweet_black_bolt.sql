@@ -1,2 +1,0 @@
-ALTER TABLE "heads_down_passes" ADD COLUMN "routines_offered" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "heads_down_passes" ADD COLUMN "routines_done" jsonb DEFAULT '[]'::jsonb NOT NULL;
