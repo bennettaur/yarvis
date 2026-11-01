@@ -1141,6 +1141,8 @@ export interface WorkspaceForPr {
   name: string;
   slug: string;
   status: Workspace["status"];
+  /** The workspace's repo the PR is on, for anchoring a review comment there. */
+  workspaceRepoId: string;
 }
 
 /**
@@ -1194,6 +1196,7 @@ export async function findWorkspaceForPr(
       name: workspaces.name,
       slug: workspaces.slug,
       status: workspaces.status,
+      workspaceRepoId: workspaceRepos.id,
       cloneUrl: repos.cloneUrl,
     })
     .from(workspaceRepoPr)
@@ -1229,6 +1232,7 @@ export async function findWorkspaceOnBranch(
       name: workspaces.name,
       slug: workspaces.slug,
       status: workspaces.status,
+      workspaceRepoId: workspaceRepos.id,
     })
     .from(workspaceRepos)
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))

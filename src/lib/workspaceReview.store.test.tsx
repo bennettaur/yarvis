@@ -30,6 +30,7 @@ const comment = (over: Partial<ReviewComment> = {}): ReviewComment => ({
   endLine: 1,
   commitSha: null,
   body: "Note.",
+  source: "user",
   resolvedAt: null,
   createdAt: "2026-06-01T09:00:00.000Z",
   updatedAt: "2026-06-01T09:00:00.000Z",
