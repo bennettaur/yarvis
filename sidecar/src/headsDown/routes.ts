@@ -7,7 +7,12 @@ import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
-import { getHeadsDownConfig, MAX_PASS_TIMEOUT_MINUTES, saveHeadsDownConfig } from "./config.ts";
+import {
+  getHeadsDownConfig,
+  MAX_PASS_TIMEOUT_MINUTES,
+  MAX_ROUTINES_PER_PASS,
+  saveHeadsDownConfig,
+} from "./config.ts";
 import {
   clearHeadsDown,
   NOT_RUNNING,
@@ -19,6 +24,7 @@ import {
   stopHeadsDown,
 } from "./control.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
+import { type RoutineCatalog, reloadRoutines, routineCatalog } from "./routines.ts";
 import {
   addMessage,
   answerQuestion,
@@ -32,6 +38,7 @@ import {
   listQuestions,
   listUnattendedTools,
   passCallSummaries,
+  routineHistory,
   setToolUnattended,
 } from "./service.ts";
 import { wakeHeadsDown } from "./wake.ts";
@@ -94,6 +101,7 @@ const configSchema = z
       .transform((g) => g || null)
       .nullable()
       .default(null),
+    maxRoutinesPerPass: z.number().int().min(0).max(MAX_ROUTINES_PER_PASS).optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -190,10 +198,41 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const passTimeoutMinutes =
-      parsed.data.passTimeoutMinutes ?? (await getHeadsDownConfig()).passTimeoutMinutes;
-    return c.json(await saveHeadsDownConfig({ ...parsed.data, passTimeoutMinutes }));
+    // A client that doesn't send these keeps what is stored rather than resetting it.
+    const stored = await getHeadsDownConfig();
+    return c.json(
+      await saveHeadsDownConfig({
+        ...parsed.data,
+        passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
+        maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
+      }),
+    );
   });
+
+  // Read-only, like the specialists: the files are the source of truth, so the
+  // page lists what loaded, names the directory, and shows files that failed.
+  const routinesResponse = async (load: () => Promise<RoutineCatalog>) => {
+    const [{ routines, problems, userDir }, { lastDone }] = await Promise.all([
+      load(),
+      routineHistory(db()),
+    ]);
+    return {
+      // Not the body: the page doesn't show it, and it is the user's file to read.
+      routines: routines.map((r) => ({
+        name: r.name,
+        description: r.description,
+        everyMinutes: r.everyMinutes,
+        workingHoursOnly: r.workingHoursOnly,
+        enabled: r.enabled,
+        source: r.source,
+        lastDoneAt: lastDone.get(r.name)?.toISOString() ?? null,
+      })),
+      problems,
+      userDir,
+    };
+  };
+  router.get("/routines", async (c) => c.json(await routinesResponse(routineCatalog)));
+  router.post("/routines/reload", async (c) => c.json(await routinesResponse(reloadRoutines)));
 
   // MCP tools heads-down mode may call without asking. Kept with the tool's
   // other consent in Postgres, and reset with it when the tool changes.

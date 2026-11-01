@@ -1691,8 +1691,15 @@ export const headsDownPasses = pgTable(
     sleepMinutes: integer("sleep_minutes"),
     sleepReason: text("sleep_reason"),
     error: text("error"),
+    /** Names of the routines (`headsDown/routines.ts`) this pass was given, and the ones it reported done. */
+    routinesOffered: jsonb("routines_offered").$type<string[]>().notNull().default([]),
+    routinesDone: jsonb("routines_done").$type<string[]>().notNull().default([]),
   },
-  (t) => [index("heads_down_passes_run_idx").on(t.runId, t.startedAt)],
+  (t) => [
+    index("heads_down_passes_run_idx").on(t.runId, t.startedAt),
+    // Routine history reads every run's passes, by start time only.
+    index("heads_down_passes_started_idx").on(t.startedAt),
+  ],
 );
 
 /**

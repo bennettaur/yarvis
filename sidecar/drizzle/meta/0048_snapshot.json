@@ -1,5 +1,5 @@
 {
-  "id": "455275ae-8eba-45a5-96f6-cade9d95649d",
+  "id": "5cbc6037-f6b9-4ee3-834e-52d0d8fd78b6",
   "prevId": "c8bfafbd-6626-45cc-b165-e810bd731a18",
   "version": "7",
   "dialect": "postgresql",
@@ -548,92 +548,6 @@
             },
             {
               "expression": "fire_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.artifacts": {
-      "name": "artifacts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "format": {
-          "name": "format",
-          "type": "artifact_format",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'markdown'"
-        },
-        "content": {
-          "name": "content",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "artifact_writer",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'chat'"
-        },
-        "untrusted": {
-          "name": "untrusted",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "artifacts_updated_at_idx": {
-          "name": "artifacts_updated_at_idx",
-          "columns": [
-            {
-              "expression": "updated_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2029,6 +1943,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "routines_offered": {
+          "name": "routines_offered",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "routines_done": {
+          "name": "routines_done",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -2041,6 +1969,21 @@
               "asc": true,
               "nulls": "last"
             },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heads_down_passes_started_idx": {
+          "name": "heads_down_passes_started_idx",
+          "columns": [
             {
               "expression": "started_at",
               "isExpression": false,
@@ -5687,22 +5630,6 @@
         "fired",
         "acknowledged",
         "cancelled"
-      ]
-    },
-    "public.artifact_format": {
-      "name": "artifact_format",
-      "schema": "public",
-      "values": [
-        "markdown"
-      ]
-    },
-    "public.artifact_writer": {
-      "name": "artifact_writer",
-      "schema": "public",
-      "values": [
-        "chat",
-        "heads-down",
-        "specialist"
       ]
     },
     "public.attention_kind": {

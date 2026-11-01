@@ -1,4 +1,3 @@
-import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
@@ -23,6 +22,7 @@ import {
   assertKnownKeys,
   FrontmatterError,
   parseDocument,
+  readMarkdownDir,
 } from "./frontmatter.ts";
 
 /**
@@ -277,34 +277,6 @@ export function parseSpecialist(
   };
 }
 
-/** One file from the user's directory, or the reason it couldn't be read. */
-type UserFile = { path: string; content: string } | { path: string; error: string };
-
-/** Reads the user's directory, treating an absent one as simply empty. */
-async function readUserFiles(dir: string): Promise<UserFile[]> {
-  let names: string[];
-  try {
-    names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
-  } catch {
-    return [];
-  }
-  const files: UserFile[] = [];
-  for (const name of names.sort()) {
-    const path = join(dir, name);
-    try {
-      files.push({ path, content: await readFile(path, "utf8") });
-    } catch (e) {
-      // Let the read decide what the path is rather than stat-ing first: a
-      // directory named `x.md` is skipped, as it was never a definition.
-      if ((e as NodeJS.ErrnoException).code === "EISDIR") continue;
-      // A file that can't be read is reported, not silently skipped: the user
-      // put it there deliberately and would otherwise wonder where it went.
-      files.push({ path, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  return files;
-}
-
 /**
  * Loads every definition. A user file with the same name as a shipped one
  * replaces it outright rather than merging: a half-overridden prompt would be
@@ -318,6 +290,10 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
   const add = (path: string, content: string, source: SpecialistSource) => {
     try {
       const definition = parseSpecialist(path, content, source, knownTools);
+      // Two of the user's own files can't both win, so the second is reported, not loaded.
+      if (source === "user" && byName.get(definition.name)?.source === "user") {
+        throw new Error(`${path}: another file already defines '${definition.name}'`);
+      }
       byName.set(definition.name, definition);
     } catch (e) {
       problems.push({ path, message: e instanceof Error ? e.message : String(e) });
@@ -326,7 +302,7 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
 
   for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
   const dir = agentsDir();
-  for (const file of await readUserFiles(dir)) {
+  for (const file of await readMarkdownDir(dir)) {
     if ("error" in file) problems.push({ path: file.path, message: file.error });
     else add(file.path, file.content, "user");
   }
