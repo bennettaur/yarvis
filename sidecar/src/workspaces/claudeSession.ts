@@ -132,14 +132,20 @@ export async function resumeAgentSessions(
   console.log(`[workspaces] found ${resumable.length} agent session(s) cut off by a restart`);
   // In parallel, so readiness waits for the slowest launch rather than the sum
   // of them. Each is in its own workspace's tab, so they don't contend.
-  await Promise.all(resumable.map((session) => resumeOne(db, session, startSession)));
+  await Promise.all(resumable.map((session) => resumeAgentSession(db, session, startSession)));
 }
 
-async function resumeOne(
+/**
+ * Relaunches one cut-off session and records the attempt. Never throws, so
+ * one workspace's failure can't end the startup sweep while the others are
+ * still launching.
+ */
+async function resumeAgentSession(
   db: Db,
   session: ResumableAgentSession,
   startSession: ClaudeSessionStarter,
 ): Promise<void> {
+  let launched = false;
   try {
     // Not remotely controllable: the restart happened at the machine, and the
     // session can turn Remote Control on from inside if it was using it.
@@ -150,12 +156,17 @@ async function resumeOne(
       remoteControl: false,
       resumeSessionId: session.claudeSessionId,
     });
+    launched = true;
   } catch (e) {
     console.error(`[workspaces] could not resume the agent session for ${session.workspaceId}:`, e);
-    return;
   }
-  await markAgentSessionResumed(db, session);
-  await emitEvent(db, {
+  try {
+    await markAgentSessionResumed(db, session, launched);
+  } catch (e) {
+    console.error(`[workspaces] recording the resume of ${session.workspaceId}:`, e);
+  }
+  if (!launched) return;
+  void emitEvent(db, {
     type: "workspace.session_started",
     source: "workspaces",
     payload: {

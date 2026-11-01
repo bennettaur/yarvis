@@ -15,6 +15,7 @@
 //! two without a gap or an overlap — see `PtySnapshot`.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -498,6 +499,16 @@ fn spawn_into_state(
         let _ = loser.child.kill();
         return Ok(());
     }
+    // Checked again: spawns for different ids can all pass the check above
+    // while each is still spawning, as the startup resumes do.
+    let cap = max_sessions(app);
+    if sessions.len() >= cap {
+        let mut over = session;
+        let _ = over.child.kill();
+        return Err(format!(
+            "too many PTY sessions (cap: {cap}); close one before opening another"
+        ));
+    }
     sessions.insert(id.to_string(), session);
     Ok(())
 }
@@ -932,7 +943,22 @@ fn is_valid_resume_id(id: &str) -> bool {
 fn runs_claude_code(base: &str) -> bool {
     base.split_whitespace()
         .find(|word| !word.contains('='))
-        .is_some_and(|program| Path::new(program).file_name() == Some("claude".as_ref()))
+        .is_some_and(|program| Path::new(program).file_name() == Some(OsStr::new("claude")))
+}
+
+/// Refuses a `resume` the launch can't honour: an id that isn't a Claude Code
+/// session id, or an agent command that isn't Claude Code. Refused rather than
+/// launched without the flag, since an unattended relaunch should continue the
+/// session that was cut off, not start a different agent.
+fn check_resume(base: &str, resume: Option<&str>) -> Result<(), String> {
+    match resume {
+        None => Ok(()),
+        Some(id) if !is_valid_resume_id(id) => Err("invalid resume session id".into()),
+        Some(_) if !runs_claude_code(base) => {
+            Err("the configured agent is not Claude Code, so it can't resume a session".into())
+        }
+        Some(_) => Ok(()),
+    }
 }
 
 /// The launch line for an agent session: the base command, with Remote Control
@@ -1010,15 +1036,8 @@ pub fn spawn_claude_session(
     resume: Option<&str>,
     instruction: Option<&str>,
 ) -> Result<(), String> {
-    if resume.is_some_and(|id| !is_valid_resume_id(id)) {
-        return Err("invalid resume session id".into());
-    }
     let base = agent_command(app);
-    // Refused rather than launched without the flag: an unattended relaunch
-    // should continue the session that was cut off, not start a different agent.
-    if resume.is_some() && !runs_claude_code(&base) {
-        return Err("the configured agent is not Claude Code, so it can't resume a session".into());
-    }
+    check_resume(&base, resume)?;
     let id = format!("ws-claude:{workspace_id}");
     let command = agent_launch_command(&base, name, remote_control, resume, instruction);
     spawn_into_state(
@@ -1205,11 +1224,12 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
-        is_valid_resume_id, lock_scrollback, prepare_instruction, remote_control_command,
-        resolve_agent_command, resolve_max_sessions, runs_claude_code, session_env, session_token,
-        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, check_resume, hmac_sha256_hex,
+        is_unsafe_name_char, is_valid_resume_id, lock_scrollback, prepare_instruction,
+        remote_control_command, resolve_agent_command, resolve_max_sessions, runs_claude_code,
+        session_env, session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
+        MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1551,6 +1571,17 @@ mod tests {
         assert!(!runs_claude_code("npx claude-code"));
         assert!(!runs_claude_code("echo claude"));
         assert!(!runs_claude_code(""));
+    }
+
+    #[test]
+    fn check_resume_refuses_a_resume_the_agent_cannot_take() {
+        let id = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
+        assert!(check_resume("claude --permission-mode auto", Some(id)).is_ok());
+        assert!(check_resume("claude", Some("--dangerously-skip-permissions")).is_err());
+        // Another agent would read the flag as its own, or fail on it.
+        assert!(check_resume("codex", Some(id)).is_err());
+        // Without a resume, any agent launches as before.
+        assert!(check_resume("codex", None).is_ok());
     }
 
     #[test]

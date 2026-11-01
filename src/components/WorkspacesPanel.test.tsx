@@ -264,4 +264,8 @@ describe("groupWorkspaces", () => {
   });
 });
 
-afterAll(resetSidecarApi);
+// `mock.module` lasts for the whole run, so hand later suites the shared stub back.
+afterAll(() => {
+  resetSidecarApi();
+  mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
+});

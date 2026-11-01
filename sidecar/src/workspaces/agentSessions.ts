@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { workspaceAgentSessions, workspaces } from "../db/schema.ts";
 
@@ -29,21 +29,21 @@ export const ARCHIVED_END_REASON = "archived";
 /** End reason recorded for a session Yarvis has relaunched with `--resume`. */
 const RESUMED_END_REASON = "resumed";
 
+/** End reason recorded for a session whose relaunch the core refused. */
+const RESUME_FAILED_END_REASON = "resume-failed";
+
 /**
  * The SessionEnd reason Claude Code reports when a signal ends it, which is
  * what the app quitting does: closing the PTY sends SIGHUP. Leaving with
- * `/exit` reports `prompt_input_exit` instead. Checked against Claude Code
- * 2.1.316. A session ended this way was cut off rather than finished, so it
- * stays resumable, and Yarvis's own stop, close and archive overwrite it.
+ * `/exit`, Ctrl+C or Ctrl+D reports `prompt_input_exit` instead. Checked
+ * against Claude Code 2.1.316. A session ended this way was cut off rather
+ * than finished, so it stays resumable, and Yarvis's own stop, close and
+ * archive overwrite it.
  */
 const SIGNALLED_END_REASON = "other";
 
-/** A row nothing has finished yet: still open, or only cut off by a signal. */
-const notFinished = () =>
-  or(
-    isNull(workspaceAgentSessions.endedAt),
-    eq(workspaceAgentSessions.endReason, SIGNALLED_END_REASON),
-  );
+/** True for a row nothing has finished: still open, or only cut off by a signal. */
+const UNFINISHED = sql<boolean>`(${workspaceAgentSessions.endedAt} IS NULL OR ${workspaceAgentSessions.endReason} = ${SIGNALLED_END_REASON})`;
 
 /**
  * Claude Code session ids are UUIDs. Only that shape is ever resumed: the id
@@ -137,10 +137,10 @@ export async function recordAgentSessionEnd(db: Db, end: AgentSessionEnd): Promi
 }
 
 /**
- * Marks a workspace's open sessions ended, so nothing resumes them on the next
- * start. Covers every PTY in the workspace, or only `sessionKey` when given.
- * A session already cut off by a signal is overwritten too: killing the PTY
- * is what sent it, and its SessionEnd can land before this does.
+ * Marks a workspace's unfinished sessions ended, so nothing resumes them on
+ * the next start. Covers every PTY in the workspace, or only `sessionKey` when
+ * given. That includes one already cut off by a signal: killing the PTY is
+ * what sent it, and its SessionEnd can land before this does.
  */
 export async function endWorkspaceAgentSessions(
   db: Db,
@@ -154,7 +154,7 @@ export async function endWorkspaceAgentSessions(
     .where(
       and(
         eq(workspaceAgentSessions.workspaceId, workspaceId),
-        notFinished(),
+        UNFINISHED,
         sessionKey ? eq(workspaceAgentSessions.sessionKey, sessionKey) : undefined,
       ),
     );
@@ -171,11 +171,10 @@ export interface ResumableAgentSession {
 /**
  * The agent-tab sessions to resume after a restart. For each active
  * workspace, that is the most recently started session in its `ws-claude:`
- * tab, when it was never finished and its process is gone. Not finished means
- * no end on file, or only the end Claude reports when a signal stops it, which
- * is what the app quitting does. A session the user exited, that was stopped,
- * or that belongs to an archived workspace qualifies for neither. A
- * live pid means only the sidecar restarted and the session is still running.
+ * tab, when it is unfinished (see `UNFINISHED`) and its process is gone. A
+ * session the user exited or Yarvis stopped is finished, and an archived
+ * workspace is skipped. A live pid means only the sidecar restarted and the
+ * session is still running.
  * A workspace still owed a kick-off is left out, since `resumeKickOffs` starts
  * its session.
  *
@@ -195,8 +194,7 @@ export async function findResumableAgentSessions(
       sessionKey: workspaceAgentSessions.sessionKey,
       claudeSessionId: workspaceAgentSessions.claudeSessionId,
       pid: workspaceAgentSessions.pid,
-      endedAt: workspaceAgentSessions.endedAt,
-      endReason: workspaceAgentSessions.endReason,
+      unfinished: UNFINISHED,
     })
     .from(workspaceAgentSessions)
     .innerJoin(workspaces, eq(workspaces.id, workspaceAgentSessions.workspaceId))
@@ -215,8 +213,7 @@ export async function findResumableAgentSessions(
     // back after the user moved on to a later session that ended.
     if (seen.has(r.workspaceId)) continue;
     seen.add(r.workspaceId);
-    const finished = r.endedAt !== null && r.endReason !== SIGNALLED_END_REASON;
-    if (finished || r.pendingBrief || isAlive(r.pid)) continue;
+    if (!r.unfinished || r.pendingBrief || isAlive(r.pid)) continue;
     if (!CLAUDE_SESSION_UUID.test(r.claudeSessionId)) continue;
     resumable.push({
       workspaceId: r.workspaceId,
@@ -230,25 +227,30 @@ export async function findResumableAgentSessions(
 }
 
 /**
- * Closes a session once Yarvis has relaunched it, so a resume that fails to
- * start isn't retried on every restart. A resumed Claude registers again under
- * the same session id, which reopens the row with its new pid; the pid match
- * keeps this from closing it if that registration lands first.
+ * Closes a session once Yarvis has tried to relaunch it, whether or not the
+ * core took the launch, so each cut-off session gets one attempt rather than
+ * one on every restart. A resumed Claude registers again under the same
+ * session id, which reopens the row with its new pid; the pid match keeps
+ * this from closing it if that registration lands first.
  */
 export async function markAgentSessionResumed(
   db: Db,
   session: ResumableAgentSession,
+  launched: boolean,
 ): Promise<void> {
   await db
     .update(workspaceAgentSessions)
-    .set({ endedAt: sql`now()`, endReason: RESUMED_END_REASON })
+    .set({
+      endedAt: sql`now()`,
+      endReason: launched ? RESUMED_END_REASON : RESUME_FAILED_END_REASON,
+    })
     .where(
       and(
         eq(workspaceAgentSessions.workspaceId, session.workspaceId),
         eq(workspaceAgentSessions.sessionKey, `ws-claude:${session.workspaceId}`),
         eq(workspaceAgentSessions.claudeSessionId, session.claudeSessionId),
         eq(workspaceAgentSessions.pid, session.pid),
-        notFinished(),
+        UNFINISHED,
       ),
     );
 }

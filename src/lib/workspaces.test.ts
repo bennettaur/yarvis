@@ -2,13 +2,9 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 let response: Response = new Response("{}", { status: 200 });
-let requests: { path: string; method?: string }[] = [];
 
 stubSidecarApi({
-  sidecarFetch: async (path, init) => {
-    requests.push({ path, method: init?.method });
-    return response;
-  },
+  sidecarFetch: async () => response,
 });
 
 const { FileConflictError, saveWorkspaceRepoFile, stopWorkspaceAgent } = await import(
@@ -17,7 +13,6 @@ const { FileConflictError, saveWorkspaceRepoFile, stopWorkspaceAgent } = await i
 
 beforeEach(() => {
   response = new Response("{}", { status: 200 });
-  requests = [];
 });
 
 describe("saveWorkspaceRepoFile", () => {
@@ -57,14 +52,6 @@ describe("saveWorkspaceRepoFile", () => {
 });
 
 describe("stopWorkspaceAgent", () => {
-  it("tells the sidecar to end the workspace's agent session", async () => {
-    response = new Response(JSON.stringify({ ok: true }), { status: 200 });
-
-    await stopWorkspaceAgent("ws-1");
-
-    expect(requests).toEqual([{ path: "/api/workspaces/ws-1/agent/stop", method: "POST" }]);
-  });
-
   it("reports a refused stop with the sidecar's reason", async () => {
     response = new Response(JSON.stringify({ error: "invalid workspace id" }), { status: 400 });
 

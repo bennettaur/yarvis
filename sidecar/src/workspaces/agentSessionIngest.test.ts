@@ -103,6 +103,7 @@ const end = (sessionId: string, reason = "exit") => ({
 
 beforeEach(async () => {
   await sql`TRUNCATE workspaces RESTART IDENTITY CASCADE`;
+  await sql`DELETE FROM events WHERE type = 'workspace.session_started'`;
   await seedWorkspace(WORKSPACE, "ws");
   await seedWorkspace(OTHER_WORKSPACE, "other");
 });
@@ -316,10 +317,15 @@ describe("findResumableAgentSessions", () => {
     ]);
   });
 
-  it("leaves a session the user closed even when its signalled SessionEnd landed first", async () => {
+  it("leaves a session the user closed, whichever of the stop and its SessionEnd lands first", async () => {
     await hook(start(S1), { pid: "999999" });
     await hook(end(S1, "other"));
     await endWorkspaceAgentSessions(db, WORKSPACE, "stopped", AGENT_TAB);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    await endWorkspaceAgentSessions(db, OTHER_WORKSPACE, "stopped", OTHER_TAB);
+    await hook(end(S2, "other"), { workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
   });
 
@@ -381,7 +387,6 @@ describe("resumeAgentSessions", () => {
     };
 
   it("relaunches the cut-off session with --resume and closes its old registration", async () => {
-    await sql`DELETE FROM events WHERE type = 'workspace.session_started'`;
     await hook(start(S1), { pid: "999999" });
     const launched: StartClaudeSessionInput[] = [];
 
@@ -442,9 +447,10 @@ describe("resumeAgentSessions", () => {
 
     expect(outcome).toBe("finished");
     expect(started.sort()).toEqual([WORKSPACE, OTHER_WORKSPACE].sort());
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
   });
 
-  it("doesn't resume a signalled session twice", async () => {
+  it("closes a signalled session once it has been resumed", async () => {
     await hook(start(S1), { pid: "999999" });
     await hook(end(S1, "other"));
     const launched: StartClaudeSessionInput[] = [];
@@ -470,7 +476,7 @@ describe("resumeAgentSessions", () => {
     expect((await live()).map((s) => [s.claudeSessionId, s.pid])).toEqual([[S1, process.pid]]);
   });
 
-  it("carries on past a failed launch and keeps that one for the next start", async () => {
+  it("carries on past a failed launch, and gives that session no second attempt", async () => {
     await hook(start(S1), { pid: "999999" });
     await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
     const launched: StartClaudeSessionInput[] = [];
@@ -484,8 +490,37 @@ describe("resumeAgentSessions", () => {
     });
 
     expect(launched.map((l) => l.resumeSessionId)).toEqual([S2]);
-    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
-      resumableIn(WORKSPACE, "ws", S1, 999_999),
-    ]);
+    // A refusal like a non-Claude agent command would fail the same way on every start.
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual(["resume-failed"]);
+  });
+
+  it("waits for every launch even when recording a resume fails", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    // Reads work and every write fails, as with a database that drops mid-sweep.
+    const failingWrites = new Proxy(db, {
+      get: (target, prop, receiver) =>
+        prop === "update"
+          ? () => {
+              throw new Error("database went away");
+            }
+          : Reflect.get(target, prop, receiver),
+    });
+    const launched: string[] = [];
+
+    await resumeAgentSessions(failingWrites, {
+      // The other workspace's launch is still running when this one's write fails.
+      startSession: async (input) => {
+        await Bun.sleep(input.workspaceId === WORKSPACE ? 0 : 50);
+        launched.push(input.workspaceId);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.sort()).toEqual([WORKSPACE, OTHER_WORKSPACE].sort());
   });
 });

@@ -1748,9 +1748,10 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "with-sessions", repoIds: [repo.id] });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
-    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid)
-              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1),
-                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1)`;
+    // The tab's session was already cut off by the SIGHUP of its PTY closing.
+    await sql`INSERT INTO workspace_agent_sessions (workspace_id, session_key, claude_session_id, pid, ended_at, end_reason)
+              VALUES (${ws.id}, ${`ws-claude:${ws.id}`}, 'tab', 1, now(), 'other'),
+                     (${ws.id}, ${`ws:${ws.id}/t1/p1`}, 'pane', 1, NULL, NULL)`;
 
     // The core is unreachable here, so this also shows the agent tab's
     // registration closes when the kill can't be delivered.
