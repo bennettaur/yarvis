@@ -197,22 +197,25 @@ export function asInteger(
 }
 
 /** One file from a user's definition directory, or the reason it couldn't be read. */
-export type DefinitionFile = { path: string; content: string } | { path: string; error: string };
+type DefinitionFile = { path: string; content: string } | { path: string; error: string };
 
 /** Far past any real definition, so a stray large file is reported rather than read into memory. */
 const MAX_DEFINITION_BYTES = 256 * 1024;
 
 /**
- * Reads every `.md` file in a directory the user keeps definitions in, treating
- * an absent directory as simply empty. A symlinked file is refused, since it
- * could point into a repo, and definitions are never read from one.
+ * Reads every `.md` file in a directory the user keeps definitions in (their
+ * specialists, their routines), treating an absent directory as simply empty.
+ * A symlinked file is refused, since it could point into a repo, and
+ * definitions are never read from one.
  */
 export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
-  } catch {
-    return [];
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    // A folder that exists but can't be listed is the user's to fix, so it is reported.
+    return [{ path: dir, error: `${dir}: ${e instanceof Error ? e.message : String(e)}` }];
   }
   const files: DefinitionFile[] = [];
   for (const name of names.sort()) {
@@ -235,9 +238,14 @@ export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
           files.push({ path, error: `${path}: not a regular file` });
           continue;
         }
-        // One byte past the cap is enough to know it's too big, however the file changes meanwhile.
-        const buffer = Buffer.alloc(MAX_DEFINITION_BYTES + 1);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        // Reads to the end or one byte past the cap, however the file changes meanwhile.
+        const buffer = Buffer.alloc(Math.min(stat.size, MAX_DEFINITION_BYTES) + 1);
+        let bytesRead = 0;
+        while (bytesRead < buffer.length) {
+          const { bytesRead: n } = await handle.read(buffer, bytesRead, buffer.length - bytesRead);
+          if (n === 0) break;
+          bytesRead += n;
+        }
         if (bytesRead > MAX_DEFINITION_BYTES) {
           files.push({ path, error: `${path}: larger than ${MAX_DEFINITION_BYTES / 1024} KB` });
           continue;

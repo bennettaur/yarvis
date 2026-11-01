@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
@@ -504,6 +504,52 @@ describe("a heads-down pass", () => {
     const next = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: next });
     expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");
+  });
+
+  it("gives a pass only as many routines as the setting allows, and none at 0", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "a-check.md"),
+      "---\nname: a-check\ndescription: x\nevery: 1h\n---\n\nCheck.\n",
+    );
+    try {
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const passWith = async (maxRoutinesPerPass: number) => {
+        await saveHeadsDownConfig({
+          minSleepMinutes: 5,
+          maxSleepMinutes: 120,
+          idleSleepMinutes: 60,
+          workingHours: null,
+          userAwayAfterMinutes: 120,
+          passTimeoutMinutes: 20,
+          provider: null,
+          model: null,
+          guidance: null,
+          maxRoutinesPerPass,
+        });
+        const model = streamingModel([finish("stop")]);
+        await runPass(config, db, run, { model });
+        const [latest] = await listPasses(db);
+        return { prompt: JSON.stringify(model.doStreamCalls[0]?.prompt), latest };
+      };
+
+      const none = await passWith(0);
+      expect(none.prompt).not.toContain("Routines due this pass");
+      expect(none.latest?.routinesOffered).toEqual([]);
+
+      // Both are due and never done, so the name decides which one gets the only slot.
+      const one = await passWith(1);
+      expect(one.latest?.routinesOffered).toEqual(["a-check"]);
+      expect(one.prompt).toContain("### a-check");
+      expect(one.prompt).not.toContain("### meeting-alarms");
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
   });
 
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {

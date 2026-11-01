@@ -84,8 +84,8 @@ aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
 `YARVIS_AGENTS_DIR` and `YARVIS_ROUTINES_DIR` at empty temp folders for the
 whole suite when it runs from `sidecar/`, so your own `~/.yarvis/agents`
-definitions and `~/.yarvis/routines` never change what the tests load. A test that writes settings should still set its own path per
-test.
+definitions and `~/.yarvis/routines` never change what the tests load. A
+test that writes settings should still set its own path per test.
 
 The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
 against the real Claude Code by `bun run sidecar/src/agentRuns/canary.ts`, which

@@ -107,7 +107,9 @@ Yarvis ships with two:
   you by name into tickets or stream updates. It finds them through the
   calendar, which lists each meeting's attached files, and needs a tool that
   can open a Google Doc, such as a Google Drive MCP server. A pass asks before
-  using an MCP tool until you [allow it](#what-it-does-without-asking).
+  using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
+  record what every attendee said, and filing a ticket doesn't wait for your
+  approval, so turn it on only if you're happy for tickets to come from them.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files.

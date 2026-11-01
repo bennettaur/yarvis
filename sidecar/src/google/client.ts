@@ -130,7 +130,7 @@ export function toCalendarEvent(item: any): CalendarEvent {
     optional: self?.optional === true,
     attachments: Array.isArray(item.attachments)
       ? item.attachments
-          .filter((a: any) => typeof a?.fileUrl === "string")
+          .filter((a: any) => typeof a?.fileUrl === "string" && /^https?:\/\//i.test(a.fileUrl))
           .map((a: any) => ({
             title: typeof a.title === "string" ? a.title : "(untitled)",
             url: a.fileUrl,

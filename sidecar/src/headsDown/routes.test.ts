@@ -11,7 +11,7 @@ import * as schema from "../db/schema.ts";
 import { CUT_SHORT_RESULT } from "../db/schema.ts";
 import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
-import { startPass, startRun } from "./service.ts";
+import { startPass, startRun, stopRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -304,15 +304,15 @@ describe("/api/heads-down", () => {
     process.env.YARVIS_ROUTINES_DIR = routinesDir;
     try {
       await post("/routines/reload");
-      await startRun(db, null);
-      // Two runs' worth of passes: the latest one that did it counts, and an
-      // empty list counts for nothing.
+      // Two runs' worth of passes: the latest one that did it counts, even from a
+      // run that has since stopped, and an empty list counts for nothing.
+      const earlier = await startRun(db, null);
+      await stopRun(db);
+      const current = await startRun(db, null);
       await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
-                SELECT id, t.at::timestamptz, t.done::jsonb FROM heads_down_runs,
-                  (VALUES ('2026-10-27T09:00:00Z', '["meeting-alarms"]'),
-                          ('2026-10-27T12:00:00Z', '["meeting-alarms"]'),
-                          ('2026-10-27T13:00:00Z', '[]')) AS t(at, done)
-                WHERE status = 'active'`;
+                VALUES (${current.id}, '2026-10-27T09:00:00Z', '["meeting-alarms"]'),
+                       (${earlier.id}, '2026-10-27T12:00:00Z', '["meeting-alarms"]'),
+                       (${current.id}, '2026-10-27T13:00:00Z', '[]')`;
 
       const body = await get("/routines");
       expect(body.problems).toEqual([]);

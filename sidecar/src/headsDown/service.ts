@@ -576,9 +576,9 @@ export async function finishPass(db: Db, id: string, input: FinishPassInput): Pr
 }
 
 export interface RoutineHistory {
-  /** When a pass last reported each routine done, by name. */
+  /** When the last pass to report each routine done started, by name. */
   lastDone: Map<string, Date>;
-  /** When each routine was last given to a pass, by name. */
+  /** When the last pass given each routine started, by name. */
   lastOffered: Map<string, Date>;
 }
 

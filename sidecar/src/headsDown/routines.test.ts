@@ -139,6 +139,16 @@ describe("loadRoutines", () => {
     ]);
   });
 
+  it("loads one of two files with the same name, and reports the other", async () => {
+    writeFileSync(join(dir, "a.md"), file("name: standup\ndescription: first\nevery: 1d"));
+    writeFileSync(join(dir, "b.md"), file("name: standup\ndescription: second\nevery: 1d"));
+    const { routines, problems } = await loadRoutines();
+    expect(routines.find((r) => r.name === "standup")?.description).toBe("first");
+    expect(problems).toEqual([
+      { path: join(dir, "b.md"), message: expect.stringContaining("already defines 'standup'") },
+    ]);
+  });
+
   // Root reads a file whatever its mode, so there is nothing unreadable to test.
   it.skipIf(process.getuid?.() === 0)(
     "reports a file it can't read with the reason, not as a symlink",
@@ -149,6 +159,16 @@ describe("loadRoutines", () => {
       expect(problems).toEqual([
         { path: join(dir, "locked.md"), message: expect.stringContaining("EACCES") },
       ]);
+
+      // A folder that can't be listed is reported too, not taken as empty.
+      chmodSync(dir, 0o000);
+      try {
+        expect((await loadRoutines()).problems).toEqual([
+          { path: dir, message: expect.stringContaining("EACCES") },
+        ]);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
     },
   );
 });
@@ -167,6 +187,19 @@ describe("dueRoutines", () => {
     expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual([
       "fresh",
       "hourly",
+    ]);
+  });
+
+  it("counts a routine due at exactly its cadence, and breaks a tie between never-done ones by name", () => {
+    const routines = [routine("zeta", 60), routine("alpha", 60), routine("hourly", 60)];
+    const lastDone = new Map([["hourly", hoursAgo(1)]]);
+    expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual([
+      "alpha",
+      "zeta",
+      "hourly",
+    ]);
+    expect(dueRoutines({ ...base, routines, lastDone, limit: 1 }).map((r) => r.name)).toEqual([
+      "alpha",
     ]);
   });
 

@@ -70,13 +70,13 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] as const;
 
 /**
- * The shortest cadence a file may ask for. Passes are at least minutes apart
- * anyway, and a routine that asked to run every pass would take a slot from
- * every other one.
+ * The shortest cadence a file may ask for. Passes can be as little as 5 minutes
+ * apart, and a routine due on nearly every pass would take a slot from every
+ * other one.
  */
 const MIN_EVERY_MINUTES = 15;
 
-/** Every pass due carries the whole body in its prompt, so a routine stays to about a page. */
+/** A due routine's whole body goes into the pass prompt, so a routine stays to about a page. */
 const MAX_BODY_CHARS = 4000;
 
 const DURATION_UNITS: Record<string, number> = { m: 1, h: 60, d: 24 * 60 };
@@ -138,6 +138,10 @@ export async function loadRoutines(): Promise<RoutineCatalog> {
   const add = (path: string, content: string, source: RoutineSource) => {
     try {
       const routine = parseRoutine(path, content, source);
+      // Two of the user's own files can't both win, so the second is reported, not loaded.
+      if (source === "user" && byName.get(routine.name)?.source === "user") {
+        throw new Error(`${path}: another file already defines '${routine.name}'`);
+      }
       byName.set(routine.name, routine);
     } catch (e) {
       problems.push({ path, message: e instanceof Error ? e.message : String(e) });
@@ -180,9 +184,9 @@ const RETRY_AFTER_MINUTES = 60;
 
 export interface DueInput {
   routines: Routine[];
-  /** When each routine was last done, by name. A routine missing from it never has been. */
+  /** When the last pass to report each routine done started, by name. Missing means never done. */
   lastDone: ReadonlyMap<string, Date>;
-  /** When each routine was last given to a pass, done or not, by name. */
+  /** When the last pass given each routine started, done or not, by name. */
   lastOffered: ReadonlyMap<string, Date>;
   now: Date;
   withinWorkingHours: boolean;
