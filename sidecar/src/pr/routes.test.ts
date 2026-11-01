@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Hono } from "hono";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import { listAttention } from "../attention/service.ts";
@@ -11,6 +12,7 @@ import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
 import { saveGuide } from "./guides.ts";
 import { savePrModelConfig } from "./models.ts";
+import { createPrRoutes } from "./routes.ts";
 import type { PrRef } from "./types.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -232,6 +234,34 @@ describe("POST /api/pr/guide", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain("github token");
+  });
+});
+
+describe("POST /api/pr/guide with a guide agent", () => {
+  const graph = {
+    nodes: [{ id: "route", kind: "endpoint", file: "src/api.ts", line: 3, changed: true }],
+    edges: [{ from: "route", to: "store", kind: "calls" }],
+  };
+  // The agent is replaced, so nothing calls a model or reads the pull request;
+  // the keys only get the request past the provider checks.
+  const agentApp = new Hono().route(
+    "/pr",
+    createPrRoutes(
+      { ...config, secrets: { githubToken: "test-github-token", anthropicApiKey: "test-key" } },
+      { generateTour: async () => ({ steps, headSha: "c".repeat(40), graph }) },
+    ),
+  );
+
+  it("stores the graph the agent recorded and returns it with the guide", async () => {
+    const res = await agentApp.request("/pr/guide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, provider: "anthropic", model: "claude-sonnet-4-5" }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).graph).toEqual(graph);
+    const [row] = await sql`SELECT graph FROM pr_guides`;
+    expect(row?.graph).toEqual(graph);
   });
 });
 

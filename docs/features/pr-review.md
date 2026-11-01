@@ -181,8 +181,8 @@ record is kept with the guide and drawn as a **Flow diagram** section above
    ready. It costs nothing extra: the diagram comes from the same agent run.
 2. Open the section. The diagram loads in [Excalidraw](https://excalidraw.com),
    reading left to right from the outermost entry point inward.
-3. Pan, zoom and drag boxes to read it. Changes you make aren't saved; the
-   diagram is drawn fresh each time you open it.
+3. Pan and zoom to read it, or save it as an image from the menu. The diagram
+   is read-only: you can't move boxes, add text or paste images.
 
 Solid blue boxes are code this PR changes. Dashed grey boxes are the code
 around it that the agent followed, such as the caller of a changed function or
@@ -196,7 +196,8 @@ Some limits:
   the PR adds or removes. Naming a changed file is not enough, so a box with no
   file or no line is always shown as surrounding code. The lines are still the
   agent's reading, so a highlighted box sits on a real change but its name may
-  not describe it.
+  not describe it. Each box shows its file and lines under the name, so you
+  can check one against the other.
 - The agent draws the diagram from the PR's own code, which its author wrote.
   Treat the box names and labels as the agent's reading, not as fact.
 - If the agent recorded no connections, there is no diagram. Regenerating the

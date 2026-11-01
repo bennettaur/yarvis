@@ -137,6 +137,8 @@ function toGuideResponse(guide: PrGuideRow, headSha: string) {
 export interface PrRouteOptions {
   /** Replaces the provider the review marks read back from, for tests. */
   markProvider?: (ref: PrRef) => ReviewMarkProvider | null;
+  /** Replaces the guide agent, for tests. */
+  generateTour?: typeof generateTour;
 }
 
 export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Hono {
@@ -148,6 +150,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+  const runTour = options.generateTour ?? generateTour;
 
   const sourceFor = (ref: PrRef): PrCodeSource | { error: string } => prSourceFor(config, ref);
 
@@ -223,7 +226,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
     try {
       const { provider, model } = resolved.selection;
-      const { steps, headSha, graph } = await generateTour(resolved.model, source, {
+      const { steps, headSha, graph } = await runTour(resolved.model, source, {
         signal: c.req.raw.signal,
         // An Ollama model writes its final answer through Ollama's own API,
         // which holds the output to the tour's schema.

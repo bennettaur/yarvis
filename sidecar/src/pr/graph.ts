@@ -46,6 +46,14 @@ export interface GraphEdge {
   kind: string;
 }
 
+/**
+ * A repo-relative path as the diff names it. The model writes paths in its own
+ * style, and `./src/a.ts` or `/src/a.ts` would otherwise never match the diff.
+ */
+function normalizeGraphPath(path: string): string {
+  return path.replace(/^(?:\.\/|\/)+/, "");
+}
+
 /** Inclusive line ranges, at the PR head, that a pull request adds or removes lines at. */
 export type LineRange = [start: number, end: number];
 
@@ -115,6 +123,7 @@ export function newCodeGraph(): CodeGraph {
       // a bare name in a caller and later with a file and a summary, and the
       // second sighting should not erase what the first one established.
       const merged = { ...nodes.get(node.id), ...node };
+      if (node.file !== undefined) merged.file = normalizeGraphPath(node.file);
       // A new first line makes the old last line meaningless.
       if (node.line !== undefined && node.endLine === undefined) delete merged.endLine;
       nodes.set(node.id, merged);

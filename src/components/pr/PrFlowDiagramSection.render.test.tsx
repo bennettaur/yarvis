@@ -1,14 +1,17 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { createElement } from "react";
 import type { PrGuideGraph } from "../../lib/pr/flowDiagram";
 import type { PrGuide } from "../../lib/pr/guide";
 import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
 
 // Excalidraw needs a real canvas, which happy-dom does not have, so the lazy
-// chunk is replaced with a stand-in that shows what it was handed.
+// chunk is replaced with a stand-in that shows what it was handed, and throws
+// on a node named "throws" the way Excalidraw might on odd data.
 mock.module("./PrFlowDiagram", () => ({
-  default: ({ graph }: { graph: PrGuideGraph }) =>
-    createElement("div", { "data-diagram": graph.nodes.map((n) => n.id).join(",") }),
+  default: ({ graph }: { graph: PrGuideGraph }) => {
+    if (graph.nodes.some((n) => n.id === "throws")) throw new Error("diagram broke");
+    return createElement("div", { "data-diagram": graph.nodes.map((n) => n.id).join(",") });
+  },
 }));
 
 const { default: PrFlowDiagramSection } = await import("./PrFlowDiagramSection");
@@ -58,6 +61,27 @@ describe("PrFlowDiagramSection", () => {
       await renderToHtml(createElement(PrFlowDiagramSection, { guide: guide({ stale: true }) })),
     );
     expect(stale).toContain("out of date");
+  });
+
+  it("keeps the rest of the review up when the diagram throws", async () => {
+    const broken = guide({ graph: { nodes: [{ id: "throws", kind: "function" }], edges: [] } });
+    const quiet = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const mounted = await mountForInteraction(
+        createElement(PrFlowDiagramSection, { guide: broken }),
+      );
+      unmount = mounted.unmount;
+      mounted.host.querySelector("button")!.click();
+      for (let i = 0; i < 40 && !mounted.host.textContent?.includes("could not be drawn"); i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(mounted.host.textContent).toContain("The diagram could not be drawn.");
+      // The section's own toggle is still there to fold it away again.
+      expect(mounted.host.querySelector("button")?.textContent).toContain("Flow diagram");
+      expect(quiet.mock.calls.some((c) => c[0] === "[pr] flow diagram failed:")).toBe(true);
+    } finally {
+      quiet.mockRestore();
+    }
   });
 
   // Mounting the diagram while closed would fetch Excalidraw for every review.

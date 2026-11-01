@@ -57,7 +57,7 @@ const ARROW_COLOR = "#495057";
  * Excalidraw's Helvetica, which is a system font. Its hand-drawn default is
  * fetched from a CDN, which the app's content security policy refuses.
  */
-export const LABEL_FONT_FAMILY = 2;
+const LABEL_FONT_FAMILY = 2;
 
 /** Excalidraw's `ROUNDNESS.ADAPTIVE_RADIUS`, written out so this file loads no Excalidraw code. */
 const ADAPTIVE_RADIUS = 3;
@@ -90,15 +90,18 @@ export function nodeColumns(graph: PrGuideGraph): Map<string, number> {
   return column;
 }
 
-/** The box text: the node's name, then what it is and where it lives. */
+/**
+ * The box text: the node's name and kind, then its full path and lines. The
+ * name is model-written, so the path sits under it where the reader can check
+ * one against the other.
+ */
 function boxLabel(node: PrGraphNode): string {
-  const fileName = node.file?.split("/").pop();
   const lines =
     node.line && node.endLine && node.endLine > node.line
       ? `${node.line}-${node.endLine}`
       : node.line;
-  const location = fileName && lines ? `${fileName}:${lines}` : fileName;
-  return [node.id, [node.kind, location].filter(Boolean).join(" · ")].join("\n");
+  const location = node.file && lines ? `${node.file}:${lines}` : node.file;
+  return [`${node.id} · ${node.kind}`, location].filter(Boolean).join("\n");
 }
 
 /**

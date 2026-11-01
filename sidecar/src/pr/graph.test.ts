@@ -102,6 +102,16 @@ describe("newCodeGraph", () => {
     expect(graph.addNode({ id: "fn", kind: "function", line: 40 }).endLine).toBeUndefined();
   });
 
+  it("strips a leading ./ or / from a node's file", () => {
+    const graph = newCodeGraph();
+    expect(graph.addNode({ id: "a", kind: "function", file: "./src/a.ts" }).file).toBe("src/a.ts");
+    expect(graph.addNode({ id: "b", kind: "function", file: "/src/b.ts" }).file).toBe("src/b.ts");
+    expect(graph.addNode({ id: "c", kind: "function", file: ".//src/c.ts" }).file).toBe("src/c.ts");
+    expect(graph.addNode({ id: "d", kind: "function", file: "src/./d.ts" }).file).toBe(
+      "src/./d.ts",
+    );
+  });
+
   describe("snapshot", () => {
     it("marks a node changed from the diff, not the model's claim", () => {
       const graph = newCodeGraph();
@@ -143,6 +153,13 @@ describe("newCodeGraph", () => {
       graph.addNode({ id: "unplaced", kind: "function", file: "src/api.ts", changed: true });
       const { nodes } = graph.snapshot(new Map([["src/api.ts", [[10, 14]]]]));
       expect(nodes.map((n) => n.changed)).toEqual([false, false]);
+    });
+
+    it("matches a node written as ./path against the diff's path", () => {
+      const graph = newCodeGraph();
+      graph.addNode({ id: "handler", kind: "endpoint", file: "./src/api.ts", line: 12 });
+      const { nodes } = graph.snapshot(new Map([["src/api.ts", [[12, 12]]]]));
+      expect(nodes[0]).toMatchObject({ file: "src/api.ts", changed: true });
     });
 
     it("marks a node whose span takes in a change below its first line", () => {
@@ -225,5 +242,36 @@ describe("changedLineRanges", () => {
 
   it("reads a new file as all added", () => {
     expect(changedLineRanges("@@ -0,0 +1,2 @@\n+a\n+b")).toEqual([[1, 2]]);
+  });
+
+  // A one-line side drops its count: "@@ -3 +3 @@" is the same as "-3,1 +3,1".
+  it("reads hunk headers with or without line counts", () => {
+    for (const header of [
+      "@@ -3 +7 @@",
+      "@@ -3,1 +7 @@",
+      "@@ -3 +7,1 @@",
+      "@@ -3,12 +7,10 @@ f()",
+    ]) {
+      expect(changedLineRanges(`${header}\n-old\n+new`)).toEqual([[7, 7]]);
+    }
+  });
+
+  it("takes only a header at the start of a line, with both sides' counts in digits", () => {
+    // A context line that quotes a header is still a context line.
+    expect(changedLineRanges("@@ -1,3 +1,3 @@\n x @@ -9 +50 @@\n+a")).toEqual([[2, 2]]);
+    // Not a header: ",x" is not a count, so the rows below stay unread.
+    for (const header of ["@@ -3,x +7 @@", "@@ -3 +7,x @@", "@@ -3, +7 @@", "@@ -3 +7, @@"]) {
+      expect(changedLineRanges(`${header}\n+a`)).toEqual([]);
+    }
+  });
+
+  it("skips the no-newline marker, which is neither a line nor a change", () => {
+    const patch =
+      "@@ -1,2 +1,2 @@\n-a\n\\ No newline at end of file\n+a\n\\ No newline at end of file\n+b";
+    expect(changedLineRanges(patch)).toEqual([[1, 2]]);
+  });
+
+  it("ignores rows before the first hunk", () => {
+    expect(changedLineRanges("+++ b/src/a.ts\n--- a/src/a.ts\n@@ -1 +1 @@\n+a")).toEqual([[1, 1]]);
   });
 });
