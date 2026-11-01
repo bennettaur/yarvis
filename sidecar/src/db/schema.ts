@@ -741,6 +741,9 @@ export const workspaceRepoPr = pgTable(
   (t) => [uniqueIndex("workspace_repo_pr_wr_idx").on(t.workspaceRepoId)],
 );
 
+export const REVIEW_COMMENT_SOURCES = ["user", "verification"] as const;
+export type ReviewCommentSource = (typeof REVIEW_COMMENT_SOURCES)[number];
+
 /**
  * Self-review comments left on a workspace's own diffs, before any PR exists.
  * They never leave the machine: the point is to review your own work without
@@ -763,6 +766,9 @@ export const workspaceReviewComments = pgTable(
     // commits yet, so the note is still recorded rather than refused.
     commitSha: text("commit_sha"),
     body: text("body").notNull(),
+    // Who wrote the body. `verification` is a report finding the user chose to
+    // add: model-written from a PR's code, so it reaches an agent fenced.
+    source: text("source").$type<ReviewCommentSource>().notNull().default("user"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }), // null = still open
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

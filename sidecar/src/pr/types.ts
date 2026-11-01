@@ -293,6 +293,13 @@ export interface PrDetail {
   conversationTruncated?: boolean;
   /** Requested reviewers plus anyone who has already submitted a review. */
   reviewers: Reviewer[];
+  /**
+   * The viewer's own standing review, so the review buttons can show a verdict
+   * already given instead of offering it again. `pending` when the viewer has
+   * not reviewed or has been asked to look again. Absent when the provider
+   * could not say who the viewer is.
+   */
+  viewerReview?: ReviewerState;
 }
 
 /** A changed file with its unified-diff patch (`patch` is null until loaded). */

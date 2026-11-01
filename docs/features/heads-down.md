@@ -226,6 +226,9 @@ Under **Pace and working hours** on the page:
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
+- The longest a pass may run before it is stopped, 20 minutes by default and
+  4 hours at most. A model running on your own machine can be slow enough to
+  need more.
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
   people** to drop all three limits, merges included. These are kept per

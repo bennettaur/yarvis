@@ -29,11 +29,12 @@ import {
   reviewWorkspacePrs,
   reviewWorkspaces,
 } from "../db/schema.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { type ReviewMarkProvider, recentMarkShas, reviewMarkProvider } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
-import { type PrRef, refKey } from "../pr/types.ts";
+import { NO_PULL_REQUEST, type PrRef, type PrStack, refKey } from "../pr/types.ts";
 import { runSetupScript } from "../workspaces/exec.ts";
 import { MAX_FILE_BYTES } from "../workspaces/files.ts";
 import { git, removeWorktree, splitNulFields } from "../workspaces/git.ts";
@@ -138,6 +139,11 @@ export interface ReviewDeps {
    * last-review mark; null (or absent) when the provider isn't configured.
    */
   markProvider?(ref: PrRef): ReviewMarkProvider | null;
+  /**
+   * The other open pull requests in `ref`'s stack, bottom first; empty when it
+   * isn't stacked or the provider has no stacks. Absent means the same.
+   */
+  stackOf?(ref: PrRef): Promise<PrRef[]>;
 }
 
 function locatorFor(ref: PrRef): PrLocator {
@@ -218,6 +224,17 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
     },
     git: reviewGit,
     markProvider: (ref) => reviewMarkProvider(config, ref),
+    async stackOf(ref) {
+      if (ref.provider !== "github") return [];
+      const token = config.secrets.githubToken;
+      if (!token) return [];
+      const stack = await createGitHubClient(config, token).prStack(
+        ref.owner,
+        ref.repo,
+        ref.number,
+      );
+      return otherOpenLayers(stack);
+    },
   };
 }
 
@@ -362,6 +379,7 @@ export async function createReviewWorkspace(
     seen.add(refKey(ref));
     await addReviewPr(db, config, ws.id, ref, deps);
   }
+  void startStackLayers(db, config, ws.id, input.refs ?? [], deps);
   return requireWorkspace(db, ws.id);
 }
 
@@ -459,6 +477,59 @@ export async function addReviewPr(
   if (!row) throw new Error("failed to add pull request");
   startSync(db, config, row, "clone", deps);
   return row;
+}
+
+/**
+ * The layers of a stack worth reviewing beside the one it was looked up from:
+ * open pull requests only, bottom first. A merged layer's change is already in
+ * the trunk, and a branch with no PR has nothing to check out.
+ */
+export function otherOpenLayers(stack: PrStack): PrRef[] {
+  return stack.entries
+    .filter((e) => !e.isCurrent && e.number !== NO_PULL_REQUEST && e.state === "open")
+    .map((e) => e.ref);
+}
+
+/**
+ * Adds the other open layers of each ref's stack that the workspace doesn't
+ * hold yet, in the background: the lookup is a GitHub round trip per layer, and
+ * the workspace view already polls while the PR it asked for clones. A layer's
+ * diff is only its own change, so it reads properly only beside the layers
+ * around it. The PRs asked for are reviewable without them, so a failed lookup
+ * or add is logged, not thrown. Answers with the background work, for tests.
+ */
+export function startStackLayers(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  refs: PrRef[],
+  deps: ReviewDeps,
+): Promise<void> {
+  return (async () => {
+    // A ref an earlier lookup already reached is in the same stack.
+    const reached = new Set<string>();
+    for (const ref of refs) {
+      if (reached.has(refKey(ref))) continue;
+      let layers: PrRef[];
+      try {
+        layers = (await deps.stackOf?.(ref)) ?? [];
+      } catch (e) {
+        console.error("[review-workspaces] could not read the stack:", describeError(e));
+        continue;
+      }
+      const held = new Set((await prsFor(db, workspaceId)).map((pr) => pr.refKey));
+      for (const layer of layers) {
+        const key = refKey(layer);
+        reached.add(key);
+        if (held.has(key)) continue;
+        try {
+          await addReviewPr(db, config, workspaceId, layer, deps);
+        } catch (e) {
+          console.error("[review-workspaces] could not add a stack layer:", describeError(e));
+        }
+      }
+    }
+  })().catch((e) => console.error("[review-workspaces] stack layers:", describeError(e)));
 }
 
 export async function getReviewPr(

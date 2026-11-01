@@ -213,6 +213,7 @@ describe("/api/heads-down", () => {
       idleSleepMinutes: 60,
       workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
       userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
       provider: null,
       model: null,
     };
@@ -226,6 +227,15 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, workingHours: null })).status).toBe(200);
     expect(await get("/config")).toMatchObject({ workingHours: null });
     expect((await put({ ...valid, minSleepMinutes: 200 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 0 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 5 * 60 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
+    // A client that doesn't send it keeps the saved one.
+    const { passTimeoutMinutes: _, ...withoutTimeout } = valid;
+    expect((await put({ ...withoutTimeout, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect((await put(withoutTimeout)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);

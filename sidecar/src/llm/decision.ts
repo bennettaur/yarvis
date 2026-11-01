@@ -9,7 +9,8 @@ import { type SystemOneDecision, systemOneAsk } from "./systemOne.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
- * answers structured yes/no judgements for the rest of the app. Its selection
+ * answers structured judgements for the rest of the app: yes/no reviews, and
+ * picks made by decision specialists (`agents/decide.ts`). Its selection
  * and the features that use it live under the `decisionModel` key in
  * `~/.yarvis/settings.json`, beside `complexityModels`, so a change applies to
  * the next call with no restart.
@@ -25,12 +26,21 @@ export interface DecisionModelConfig {
    * before. Separate from `autoApproveTools`: nobody is watching a pass.
    */
   autoApproveHeadsDown: boolean;
+  /**
+   * Let it pick the complexity tier for a delegated run whose specialist names
+   * no model or tier of its own (`complexity-router`).
+   */
+  routeComplexity: boolean;
+  /** Let it pick the specialist for a delegation that names none (`specialist-picker`). */
+  pickSpecialists: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
   autoApproveHeadsDown: false,
+  routeComplexity: false,
+  pickSpecialists: false,
 };
 
 const SETTINGS_KEY = "decisionModel";

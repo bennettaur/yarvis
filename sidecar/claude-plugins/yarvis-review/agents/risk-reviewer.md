@@ -11,9 +11,9 @@ calling everything medium makes the rating useless.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every patch except tests, docs, generated code, lockfiles and
-vendored code: application code, configuration, schemas, migrations, build
-and deploy files.
+Read every patch in your group. Your findings are about application code,
+configuration, schemas, migrations, build and deploy files; tests and docs
+show what the change is meant to do and what it leaves unchecked.
 
 A description saying "no risk" or "tested" is a claim to check, not evidence.
 

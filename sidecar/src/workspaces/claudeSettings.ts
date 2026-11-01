@@ -18,7 +18,12 @@ import {
  */
 
 /** Marks our hook commands so re-provision can replace them without duplicating. */
-const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission", "/ingest/agent-session"];
+const INGEST_MARKERS = [
+  "/ingest/attention",
+  "/ingest/permission",
+  "/ingest/agent-session",
+  "/ingest/activity",
+];
 
 /**
  * Seconds Claude Code lets the permission hook run: a day, so a prompt waits in
@@ -180,6 +185,27 @@ export function agentSessionHookCommand(workspaceId: string): string {
   );
 }
 
+/**
+ * The shell command that reports what the session is doing to the Agent Field
+ * page (`activity/routes.ts`). Claude Code's hook input is forwarded unchanged,
+ * with the same session headers as the permission hooks. It prints nothing and
+ * runs async, so it never holds Claude up or adds to its context; outside a
+ * Yarvis terminal it drains stdin and does nothing.
+ */
+export function activityHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
+  return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/activity?workspaceId=${workspaceId}" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `--data-binary @- >/dev/null 2>&1 || true`
+  );
+}
+
 interface HookEntry {
   matcher?: string;
   hooks: { type: "command"; command: string; timeout?: number; async?: boolean }[];
@@ -252,13 +278,16 @@ function sandboxWithClonePaths(
 }
 
 /**
- * Merges our hooks into any existing settings: the three attention hooks, which
- * include the permission hook, the hooks that settle held permission prompts,
- * and the SessionStart/SessionEnd pair that registers the session. Unrelated
- * top-level keys and the user's own hooks for these events are preserved — our
- * entry is *appended* alongside them, not substituted for the array. Idempotent:
- * a prior Yarvis entry for an event is dropped before ours is re-added, so
- * re-provisioning never stacks duplicates.
+ * Merges our hooks into any existing settings:
+ * - the three attention hooks, which include the permission hook;
+ * - the hooks that settle held permission prompts;
+ * - the SessionStart/SessionEnd pair that registers the session;
+ * - the activity hooks that feed the Agent Field page.
+ *
+ * Unrelated top-level keys and the user's own hooks for these events are
+ * preserved — our entries are *appended* alongside them, not substituted for
+ * the array. Idempotent: prior Yarvis entries for an event are dropped before
+ * ours are re-added, so re-provisioning never stacks duplicates.
  *
  * Also lets the sandbox commit to each repo's clone, while keeping its git
  * config, hooks and shared refs out of reach (`sandboxPaths.ts`), and strips the `skills.paths`/`agents.paths` an earlier version wrote to
@@ -283,22 +312,27 @@ export function buildClaudeSettings(
     command: permissionSettledHookCommand(workspaceId),
     async: true,
   };
+  const activity = {
+    type: "command" as const,
+    command: activityHookCommand(workspaceId),
+    async: true,
+  };
 
   const existingHooks =
     existing.hooks && typeof existing.hooks === "object"
       ? (existing.hooks as Record<string, unknown>)
       : {};
 
-  const withOurEntry = (event: string, entry: HookEntry): HookEntry[] => {
+  const withOurEntries = (event: string, ...entries: HookEntry[]): HookEntry[] => {
     const prior = Array.isArray(existingHooks[event]) ? (existingHooks[event] as HookEntry[]) : [];
-    return [...prior.filter((e) => !isOurEntry(e)), entry];
+    return [...prior.filter((e) => !isOurEntry(e)), ...entries];
   };
 
   const settings: Record<string, unknown> = {
     ...existing,
     hooks: {
       ...existingHooks,
-      PermissionRequest: withOurEntry("PermissionRequest", {
+      PermissionRequest: withOurEntries("PermissionRequest", {
         hooks: [
           {
             type: "command",
@@ -307,15 +341,20 @@ export function buildClaudeSettings(
           },
         ],
       }),
-      Notification: withOurEntry("Notification", {
-        matcher: "idle_prompt",
-        hooks: [command("idle")],
-      }),
-      Stop: withOurEntry("Stop", { hooks: [command("completed"), settled] }),
-      PostToolUse: withOurEntry("PostToolUse", { hooks: [settled] }),
-      UserPromptSubmit: withOurEntry("UserPromptSubmit", { hooks: [settled] }),
-      SessionStart: withOurEntry("SessionStart", { hooks: [registration] }),
-      SessionEnd: withOurEntry("SessionEnd", { hooks: [registration] }),
+      Notification: withOurEntries(
+        "Notification",
+        { matcher: "idle_prompt", hooks: [command("idle")] },
+        { hooks: [activity] },
+      ),
+      Stop: withOurEntries("Stop", { hooks: [command("completed"), settled, activity] }),
+      PostToolUse: withOurEntries("PostToolUse", { hooks: [settled] }),
+      UserPromptSubmit: withOurEntries("UserPromptSubmit", { hooks: [settled, activity] }),
+      SessionStart: withOurEntries("SessionStart", { hooks: [registration, activity] }),
+      SessionEnd: withOurEntries("SessionEnd", { hooks: [registration] }),
+      PreToolUse: withOurEntries("PreToolUse", { hooks: [activity] }),
+      PostToolUseFailure: withOurEntries("PostToolUseFailure", { hooks: [activity] }),
+      SubagentStop: withOurEntries("SubagentStop", { hooks: [activity] }),
+      PreCompact: withOurEntries("PreCompact", { hooks: [activity] }),
     },
   };
 

@@ -10,7 +10,11 @@ import { sidecarFetch } from "./api";
 export interface Specialist {
   name: string;
   description: string;
+  /** "decision" picks one of a set of options on the decision model, with no tools. */
+  kind: "task" | "decision";
   prompt: string;
+  /** A decision specialist's fixed options. */
+  choices: string[];
   /** Bare built-in tool names, as the file lists them. */
   tools: string[];
   /** Tools it may use without the user approving each call. */
