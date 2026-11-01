@@ -2,15 +2,22 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 let response: Response = new Response("{}", { status: 200 });
+let requests: { path: string; method?: string }[] = [];
 
 stubSidecarApi({
-  sidecarFetch: async () => response,
+  sidecarFetch: async (path, init) => {
+    requests.push({ path, method: init?.method });
+    return response;
+  },
 });
 
-const { FileConflictError, saveWorkspaceRepoFile } = await import("./workspaces");
+const { FileConflictError, saveWorkspaceRepoFile, stopWorkspaceAgent } = await import(
+  "./workspaces"
+);
 
 beforeEach(() => {
   response = new Response("{}", { status: 200 });
+  requests = [];
 });
 
 describe("saveWorkspaceRepoFile", () => {
@@ -46,6 +53,24 @@ describe("saveWorkspaceRepoFile", () => {
     );
 
     expect(result).toEqual({ hash: "b".repeat(64), size: 6 });
+  });
+});
+
+describe("stopWorkspaceAgent", () => {
+  it("tells the sidecar to end the workspace's agent session", async () => {
+    response = new Response(JSON.stringify({ ok: true }), { status: 200 });
+
+    await stopWorkspaceAgent("ws-1");
+
+    expect(requests).toEqual([{ path: "/api/workspaces/ws-1/agent/stop", method: "POST" }]);
+  });
+
+  it("reports a refused stop with the sidecar's reason", async () => {
+    response = new Response(JSON.stringify({ error: "invalid workspace id" }), { status: 400 });
+
+    await expect(stopWorkspaceAgent("ws-1")).rejects.toThrow(
+      "stop agent session failed: invalid workspace id",
+    );
   });
 });
 

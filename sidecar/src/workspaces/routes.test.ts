@@ -1760,7 +1760,7 @@ describe("provision + archive (injected git runner)", () => {
                            WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
     expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
       ["pane", "archived"],
-      ["tab", "stopped"],
+      ["tab", "archived"],
     ]);
   });
 
@@ -1775,7 +1775,10 @@ describe("provision + archive (injected git runner)", () => {
       method: "POST",
       headers: auth,
     });
+    // The core is unreachable here, so this also shows a kill that fails
+    // doesn't fail the request: the tab already killed its own PTY.
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
 
     const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
                            WHERE workspace_id = ${ws.id} ORDER BY claude_session_id`;
@@ -1789,6 +1792,7 @@ describe("provision + archive (injected git runner)", () => {
       headers: auth,
     });
     expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "invalid workspace id" });
   });
 
   it("auto-includes a linked PR on archive even when it hasn't merged", async () => {

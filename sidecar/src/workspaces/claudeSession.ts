@@ -30,6 +30,7 @@ import {
   endWorkspaceAgentSessions,
   findResumableAgentSessions,
   markAgentSessionResumed,
+  type ResumableAgentSession,
   reapAndListAgentSessions,
   STOPPED_END_REASON,
 } from "./agentSessions.ts";
@@ -95,18 +96,17 @@ export async function startClaudeSession(
 
 /**
  * Best-effort stop of a workspace's Claude session via the core. Its
- * registration is closed first, so a stopped session is never resumed on the
- * next start even when the kill doesn't reach the core. The kill is still
- * attempted when that write fails.
+ * registration is closed first, with `reason` as its end reason, so a stopped
+ * session is never resumed on the next start even when the kill doesn't reach
+ * the core. The kill is still attempted when that write fails.
  */
-export async function stopClaudeSession(db: Db, workspaceId: string): Promise<void> {
+export async function stopClaudeSession(
+  db: Db,
+  workspaceId: string,
+  reason: string = STOPPED_END_REASON,
+): Promise<void> {
   try {
-    await endWorkspaceAgentSessions(
-      db,
-      workspaceId,
-      STOPPED_END_REASON,
-      `ws-claude:${workspaceId}`,
-    );
+    await endWorkspaceAgentSessions(db, workspaceId, reason, `ws-claude:${workspaceId}`);
   } finally {
     await killClaudeSession(workspaceId);
   }
@@ -130,36 +130,41 @@ export async function resumeAgentSessions(
   if (resumable.length === 0) return;
 
   console.log(`[workspaces] found ${resumable.length} agent session(s) cut off by a restart`);
-  for (const session of resumable) {
-    try {
-      // Not remotely controllable: the restart happened at the machine, and the
-      // session can turn Remote Control on from inside if it was using it.
-      await startSession({
-        workspaceId: session.workspaceId,
-        cwd: session.rootPath,
-        name: session.workspaceName,
-        remoteControl: false,
-        resumeSessionId: session.claudeSessionId,
-      });
-    } catch (e) {
-      console.error(
-        `[workspaces] could not resume the agent session for ${session.workspaceId}:`,
-        e,
-      );
-      continue;
-    }
-    await markAgentSessionResumed(db, session);
-    void emitEvent(db, {
-      type: "workspace.session_started",
-      source: "workspaces",
-      payload: {
-        workspaceId: session.workspaceId,
-        name: session.workspaceName,
-        resumed: true,
-        remoteControl: false,
-      },
+  // In parallel, so readiness waits for the slowest launch rather than the sum
+  // of them. Each is in its own workspace's tab, so they don't contend.
+  await Promise.all(resumable.map((session) => resumeOne(db, session, startSession)));
+}
+
+async function resumeOne(
+  db: Db,
+  session: ResumableAgentSession,
+  startSession: ClaudeSessionStarter,
+): Promise<void> {
+  try {
+    // Not remotely controllable: the restart happened at the machine, and the
+    // session can turn Remote Control on from inside if it was using it.
+    await startSession({
+      workspaceId: session.workspaceId,
+      cwd: session.rootPath,
+      name: session.workspaceName,
+      remoteControl: false,
+      resumeSessionId: session.claudeSessionId,
     });
+  } catch (e) {
+    console.error(`[workspaces] could not resume the agent session for ${session.workspaceId}:`, e);
+    return;
   }
+  await markAgentSessionResumed(db, session);
+  await emitEvent(db, {
+    type: "workspace.session_started",
+    source: "workspaces",
+    payload: {
+      workspaceId: session.workspaceId,
+      name: session.workspaceName,
+      resumed: true,
+      remoteControl: false,
+    },
+  });
 }
 
 export interface SendSessionInstructionInput {

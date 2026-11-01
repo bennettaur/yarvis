@@ -1,8 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { WorkspaceSummary } from "../lib/workspaces";
-import { renderToHtml } from "../test/render";
+import { nativeInvoke } from "../test/nativeInvoke";
+import { mountForInteraction, renderToHtml } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
-import WorkspacesPanel, { groupWorkspaces } from "./WorkspacesPanel";
 
 const EXISTING = {
   id: "ws-old",
@@ -109,7 +109,11 @@ stubSidecarApi({
     providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
-  sidecarFetch: async (path: string) => {
+  sidecarFetch: async (path: string, init?: RequestInit) => {
+    if (init?.method && init.method !== "GET") {
+      writes.push({ path, method: init.method });
+      return json({ ok: true });
+    }
     if (path === "/api/workspaces") return json([EXISTING]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
     if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
@@ -120,6 +124,18 @@ stubSidecarApi({
   // The attention store subscribes to an SSE stream; an empty one keeps it quiet.
   streamSSE: async function* () {},
 });
+
+/** Sidecar calls other than reads, which is what a user action sends. */
+let writes: { path: string; method: string }[] = [];
+
+// The agent tab shows only while the core reports its session alive.
+mock.module("@tauri-apps/api/core", () => ({
+  invoke: async (command: string, args?: { id?: string }) =>
+    command === "pty_exists" ? args?.id === `ws-claude:${JUST_CREATED.id}` : nativeInvoke(command),
+}));
+
+// Imported after the mock so the panel binds to it.
+const { default: WorkspacesPanel, groupWorkspaces } = await import("./WorkspacesPanel");
 
 const EMPTY_STATE = "Select a workspace or create a new one";
 
@@ -159,6 +175,51 @@ describe("WorkspacesPanel", () => {
     const html = await renderToHtml(<WorkspacesPanel requested={{ id: "ws-missing" }} />);
 
     expect(html).toContain(EMPTY_STATE);
+  });
+});
+
+describe("WorkspacesPanel agent tab", () => {
+  let unmount: (() => void) | null = null;
+  const globalWithObserver = globalThis as { IntersectionObserver?: unknown };
+  const hadObserver = "IntersectionObserver" in globalWithObserver;
+
+  beforeEach(() => {
+    localStorage.clear();
+    writes = [];
+    // xterm builds one when the agent tab's terminal opens, and happy-dom has none.
+    globalWithObserver.IntersectionObserver ??= class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    };
+  });
+
+  afterEach(() => {
+    unmount?.();
+    unmount = null;
+    if (!hadObserver) delete globalWithObserver.IntersectionObserver;
+  });
+
+  it("ends the agent's registration in the sidecar when the user closes its tab", async () => {
+    const mounted = await mountForInteraction(
+      <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
+      200,
+    );
+    unmount = mounted.unmount;
+    const close = mounted.host.querySelector<HTMLButtonElement>('[aria-label="End Claude"]');
+    expect(close).not.toBeNull();
+
+    close?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Without this the sidecar resumes the closed session on the next start.
+    expect(writes).toContainEqual({
+      path: `/api/workspaces/${JUST_CREATED.id}/agent/stop`,
+      method: "POST",
+    });
   });
 });
 

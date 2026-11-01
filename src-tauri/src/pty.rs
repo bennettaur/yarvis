@@ -926,6 +926,15 @@ fn is_valid_resume_id(id: &str) -> bool {
             .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+/// True when the agent command launches Claude Code, judged by the file name of
+/// its program, past any leading `VAR=value` assignments. Only Claude Code takes
+/// `--resume` with a Claude Code session id.
+fn runs_claude_code(base: &str) -> bool {
+    base.split_whitespace()
+        .find(|word| !word.contains('='))
+        .is_some_and(|program| Path::new(program).file_name() == Some("claude".as_ref()))
+}
+
 /// The launch line for an agent session: the base command, with Remote Control
 /// added only when asked for, `--resume` when it continues an earlier Claude
 /// Code session, and an `instruction` the session should start on appended as
@@ -1004,14 +1013,14 @@ pub fn spawn_claude_session(
     if resume.is_some_and(|id| !is_valid_resume_id(id)) {
         return Err("invalid resume session id".into());
     }
+    let base = agent_command(app);
+    // Refused rather than launched without the flag: an unattended relaunch
+    // should continue the session that was cut off, not start a different agent.
+    if resume.is_some() && !runs_claude_code(&base) {
+        return Err("the configured agent is not Claude Code, so it can't resume a session".into());
+    }
     let id = format!("ws-claude:{workspace_id}");
-    let command = agent_launch_command(
-        &agent_command(app),
-        name,
-        remote_control,
-        resume,
-        instruction,
-    );
+    let command = agent_launch_command(&base, name, remote_control, resume, instruction);
     spawn_into_state(
         app,
         state,
@@ -1198,9 +1207,9 @@ mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
         is_valid_resume_id, lock_scrollback, prepare_instruction, remote_control_command,
-        resolve_agent_command, resolve_max_sessions, session_env, session_token, snapshot,
-        Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
-        MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        resolve_agent_command, resolve_max_sessions, runs_claude_code, session_env, session_token,
+        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1530,6 +1539,18 @@ mod tests {
         assert!(!is_valid_resume_id(
             "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'; id"
         ));
+    }
+
+    #[test]
+    fn runs_claude_code_matches_only_the_claude_program() {
+        assert!(runs_claude_code("claude --permission-mode auto"));
+        assert!(runs_claude_code("/opt/homebrew/bin/claude"));
+        assert!(runs_claude_code("CLAUDE_CONFIG_DIR=/tmp/c claude"));
+        assert!(!runs_claude_code("codex"));
+        assert!(!runs_claude_code("aider --model sonnet"));
+        assert!(!runs_claude_code("npx claude-code"));
+        assert!(!runs_claude_code("echo claude"));
+        assert!(!runs_claude_code(""));
     }
 
     #[test]

@@ -307,15 +307,31 @@ describe("findResumableAgentSessions", () => {
     ]);
   });
 
+  it("resumes a session whose SessionEnd says a signal stopped it, as the app quitting does", async () => {
+    // Closing the PTY sends SIGHUP, and Claude Code then reports `other`.
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999),
+    ]);
+  });
+
+  it("leaves a session the user closed even when its signalled SessionEnd landed first", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    await endWorkspaceAgentSessions(db, WORKSPACE, "stopped", AGENT_TAB);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
   it("leaves a session that is still running, as after a sidecar-only restart", async () => {
     await hook(start(S1));
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
   });
 
-  it("doesn't fall back to an older open session when the newest one ended", async () => {
+  it("doesn't fall back to an older open session when the user exited the newest one", async () => {
     await hook(start(S2), { pid: "999998" });
     await hook(start(S1), { pid: "999999" });
-    await hook(end(S1));
+    await hook(end(S1, "prompt_input_exit"));
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
   });
 
@@ -365,6 +381,7 @@ describe("resumeAgentSessions", () => {
     };
 
   it("relaunches the cut-off session with --resume and closes its old registration", async () => {
+    await sql`DELETE FROM events WHERE type = 'workspace.session_started'`;
     await hook(start(S1), { pid: "999999" });
     const launched: StartClaudeSessionInput[] = [];
 
@@ -387,6 +404,58 @@ describe("resumeAgentSessions", () => {
     // The resumed Claude registers under the same id, which reopens the row.
     await hook(start(S1, "resume"));
     expect((await live()).map((s) => s.claudeSessionId)).toEqual([S1]);
+    // The activity log says the session came back, rather than that a new one started.
+    const events =
+      await sql`SELECT type, source, payload FROM events WHERE type = 'workspace.session_started'`;
+    expect(events.map((e) => ({ ...e }))).toEqual([
+      {
+        type: "workspace.session_started",
+        source: "workspaces",
+        payload: { workspaceId: WORKSPACE, name: "ws", resumed: true, remoteControl: false },
+      },
+    ]);
+  });
+
+  it("launches every workspace's resume at once rather than one after another", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    const started: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const done = resumeAgentSessions(db, {
+      // Each launch waits until both have begun, so running them in turn never finishes.
+      startSession: async (input) => {
+        started.push(input.workspaceId);
+        if (started.length === 2) release();
+        await gate;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+    const outcome = await Promise.race([
+      done.then(() => "finished"),
+      Bun.sleep(2_000).then(() => "stuck"),
+    ]);
+
+    expect(outcome).toBe("finished");
+    expect(started.sort()).toEqual([WORKSPACE, OTHER_WORKSPACE].sort());
+  });
+
+  it("doesn't resume a signalled session twice", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.map((l) => l.resumeSessionId)).toEqual([S1]);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
   });
 
   it("leaves the row open when the resumed Claude registers before the launch returns", async () => {

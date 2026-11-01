@@ -2135,7 +2135,7 @@ async function removeWorktreesAndFinish(
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
   try {
-    await stopClaudeSession(db, id);
+    await stopClaudeSession(db, id, ARCHIVED_END_REASON);
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
