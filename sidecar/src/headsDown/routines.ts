@@ -213,8 +213,8 @@ export interface DueInput {
  * limit, the most overdue go first, counted in cadences missed rather than
  * minutes: an hourly routine last done 2 hours ago is 2 cadences overdue and
  * goes before a daily one last done 26 hours ago (about 1.08), even though the
- * daily one has waited longer. One not done in that time goes first of all. The rest stay
- * due and get the next pass. One a pass was given and didn't finish waits its
+ * daily one has waited longer. One not done in the last 30 days goes first of
+ * all. The rest stay due and get the next pass. One a pass was given and didn't finish waits its
  * cadence or an hour, whichever is shorter, before it is given again.
  */
 export function dueRoutines(input: DueInput): Routine[] {
