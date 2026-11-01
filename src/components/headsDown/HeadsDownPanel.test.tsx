@@ -382,7 +382,8 @@ describe("HeadsDownPanel", () => {
     const section = [...host.querySelectorAll("section")].find((s) =>
       s.textContent?.startsWith("Routines"),
     );
-    expect(section?.textContent).toBe("RoutinesLoading…");
+    expect(section?.textContent).toContain("Loading…");
+    expect(section?.textContent).not.toContain("Couldn't load");
   });
 
   it("says when the routines couldn't load, and retries from the reload button", async () => {

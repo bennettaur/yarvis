@@ -121,8 +121,6 @@ describe("loadRoutines", () => {
     // Exactly at the cap is read (and fails as a routine); one byte past it isn't read at all.
     writeFileSync(join(dir, "edge.md"), "x".repeat(256 * 1024));
     writeFileSync(join(dir, "huge.md"), "x".repeat(256 * 1024 + 1));
-    writeFileSync(join(dir, "locked.md"), "x");
-    chmodSync(join(dir, "locked.md"), 0o000);
 
     const { routines, problems } = await loadRoutines();
     rmSync(elsewhere, { recursive: true, force: true });
@@ -137,10 +135,22 @@ describe("loadRoutines", () => {
       [join(dir, "edge.md"), expect.not.stringContaining("larger than")],
       [join(dir, "huge.md"), expect.stringContaining("larger than 256 KB")],
       [join(dir, "linked.md"), expect.stringContaining("a symlink")],
-      [join(dir, "locked.md"), expect.stringContaining("EACCES")],
       [join(dir, "pipe.md"), expect.stringContaining("not a regular file")],
     ]);
   });
+
+  // Root reads a file whatever its mode, so there is nothing unreadable to test.
+  it.skipIf(process.getuid?.() === 0)(
+    "reports a file it can't read with the reason, not as a symlink",
+    async () => {
+      writeFileSync(join(dir, "locked.md"), "x");
+      chmodSync(join(dir, "locked.md"), 0o000);
+      const { problems } = await loadRoutines();
+      expect(problems).toEqual([
+        { path: join(dir, "locked.md"), message: expect.stringContaining("EACCES") },
+      ]);
+    },
+  );
 });
 
 describe("dueRoutines", () => {
