@@ -96,12 +96,16 @@ export function nodeColumns(graph: PrGuideGraph): Map<string, number> {
  * one against the other.
  */
 function boxLabel(node: PrGraphNode): string {
+  // Model-written text kept to one line each, so a newline in a name can't
+  // push the real path down and put a made-up one in its place.
+  const oneLine = (text: string) => text.replace(/[\s\p{Cc}]+/gu, " ").trim();
+  const file = node.file && oneLine(node.file);
   const lines =
     node.line && node.endLine && node.endLine > node.line
       ? `${node.line}-${node.endLine}`
       : node.line;
-  const location = node.file && lines ? `${node.file}:${lines}` : node.file;
-  return [`${node.id} · ${node.kind}`, location].filter(Boolean).join("\n");
+  const location = file && lines ? `${file}:${lines}` : file;
+  return [`${oneLine(node.id)} · ${oneLine(node.kind)}`, location].filter(Boolean).join("\n");
 }
 
 /**

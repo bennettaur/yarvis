@@ -163,5 +163,9 @@ describe("toExcalidrawSkeleton", () => {
     // Lines mean nothing without a file, and a last line nothing without a first.
     expect(label({ ...fn, file: "src/load.ts", endLine: 9 })).toBe("load · function\nsrc/load.ts");
     expect(label({ ...fn, line: 12 })).toBe("load · function");
+    // A newline in a name can't stand in for the path line.
+    expect(
+      label({ id: "verify\nsrc/auth/verify.ts:40\n\n", kind: "fn\t", file: "src/a.ts", line: 3 }),
+    ).toBe("verify src/auth/verify.ts:40 · fn\nsrc/a.ts:3");
   });
 });
