@@ -127,6 +127,27 @@ describe("speechRequestFor", () => {
     expect(speechRequestFor(config, "hi")).toEqual({ voiceId: "abc", text: "hi" });
     expect(voiceReadiness(config).tts).toBe(true);
   });
+
+  it("speaks with the Settings fields when no saved voice is active", async () => {
+    const { DEFAULT_VOICE_CONFIG, speechRequestFor, voiceReadiness } = await import(
+      "./voiceConfig"
+    );
+    const config = {
+      ...DEFAULT_VOICE_CONFIG,
+      ttsProvider: "gemini",
+      ttsModel: "tts-model",
+      ttsVoice: "Kore",
+    };
+    expect(speechRequestFor(config, "hi")).toEqual({
+      provider: "gemini",
+      model: "tts-model",
+      text: "hi",
+      voice: "Kore",
+      refAudio: undefined,
+      extras: undefined,
+    });
+    expect(voiceReadiness({ ...config, ttsModel: "" }).tts).toBe(false);
+  });
 });
 
 describe("listVoiceProviders", () => {

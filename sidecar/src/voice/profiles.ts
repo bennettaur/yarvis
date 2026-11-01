@@ -1,6 +1,9 @@
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
+import { getCustomProvider } from "../customProviders/service.ts";
+import { isLoopbackUrl } from "../lib/urlSafety.ts";
+import { CUSTOM_PROVIDER_PREFIX } from "../llm/providers.ts";
 import { readSection, settingsPath, withSection } from "../settings/store.ts";
 import { resolveSpeechClient } from "./providers.ts";
 import type { SpeechAudio, SynthesisExtras } from "./speech.ts";
@@ -17,7 +20,8 @@ import type { SpeechAudio, SynthesisExtras } from "./speech.ts";
 
 /**
  * How a cloning clip reaches the speech server. mlx-audio reads `ref_audio` as
- * a path on its own disk; vLLM-Omni wants the audio itself as a data URI.
+ * a path on its own disk; vLLM-Omni wants the audio itself as a data URI. A
+ * path is only ever sent to a server on this machine (`refAudioFor`).
  */
 export type RefAudioMode = "path" | "inline";
 
@@ -157,11 +161,22 @@ export async function deleteVoiceClip(id: string): Promise<VoiceProfile | null> 
   return updateVoiceProfile(id, { hasClip: false });
 }
 
-/** The `ref_audio` value for a profile's clip, in the form its server reads. */
-async function refAudioFor(profile: VoiceProfile): Promise<string | undefined> {
+/** True when the provider is a custom one whose server runs on this machine. */
+async function isLocalProvider(providerId: string): Promise<boolean> {
+  if (!providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) return false;
+  const row = await getCustomProvider(providerId.slice(CUSTOM_PROVIDER_PREFIX.length));
+  return row !== null && isLoopbackUrl(row.baseUrl);
+}
+
+/**
+ * The `ref_audio` value for a profile's clip, in the form its server reads. A
+ * remote server gets the audio even in path mode: a path is useless to it and
+ * would hand it the user's home folder, account name included.
+ */
+export async function refAudioFor(profile: VoiceProfile): Promise<string | undefined> {
   if (!profile.hasClip) return undefined;
   const path = clipPath(profile.id);
-  if (profile.refAudioMode === "path") return path;
+  if (profile.refAudioMode === "path" && (await isLocalProvider(profile.provider))) return path;
   const bytes = await readFile(path);
   return `data:audio/wav;base64,${bytes.toString("base64")}`;
 }

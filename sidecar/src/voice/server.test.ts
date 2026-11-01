@@ -4,7 +4,9 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Config } from "../config.ts";
 import { listCustomProviders } from "../customProviders/service.ts";
+import { createVoiceRoutes } from "./routes.ts";
 import { assertHubModelId, LocalSpeechServer, type SpeechServerDeps } from "./server.ts";
 
 /** A child process that only exits when the test says so. */
@@ -39,7 +41,9 @@ function manager(overrides: Partial<SpeechServerDeps> = {}) {
     },
     probe: async () => false,
     hubCacheDir: () => join(dir, "hub"),
-    isSpeechServer: () => false,
+    processStartTime: async () => null,
+    listenerCommand: async () => null,
+    instance: "main",
     ...overrides,
   };
   return { server: new LocalSpeechServer(deps), spawned };
@@ -64,21 +68,31 @@ describe("LocalSpeechServer", () => {
     expect(spawned).toHaveLength(1);
   });
 
-  it("adopts a server an earlier sidecar started, so it can still be stopped", async () => {
-    // A pid that is not running: the stop's kill is a no-op either way.
-    const pid = 2_147_483_000;
-    const first = manager();
+  /** Starts a server as `instance` whose process is `pid`, started at `startedAt`. */
+  async function startedBy(instance: string, pid: number, startedAt: string): Promise<void> {
     const child = fakeChild();
     Object.assign(child, { pid });
     await new LocalSpeechServer({
-      ...{ probe: async () => false, hubCacheDir: () => join(dir, "hub") },
+      probe: async () => false,
+      hubCacheDir: () => join(dir, "hub"),
       spawn: () => child,
-      isSpeechServer: () => false,
+      processStartTime: async () => startedAt,
+      listenerCommand: async () => null,
+      instance,
     }).start();
-    expect(first.spawned).toHaveLength(0);
+  }
+
+  // Pids that are not running: a stray kill is a no-op either way.
+  const pid = 2_147_483_000;
+
+  it("adopts a server an earlier sidecar of the same instance started, so it can still be stopped", async () => {
+    await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
 
     let alive = true;
-    const next = manager({ probe: async () => alive, isSpeechServer: (p) => alive && p === pid });
+    const next = manager({
+      probe: async () => alive,
+      processStartTime: async (p) => (alive && p === pid ? "Mon Nov  2 09:00:00 2026" : null),
+    });
     expect((await next.server.status()).state).toBe("running");
     expect((await next.server.start()).state).toBe("running");
     expect(next.spawned).toHaveLength(0);
@@ -88,9 +102,51 @@ describe("LocalSpeechServer", () => {
     expect((await stopping).state).toBe("stopped");
   });
 
-  it("uses a server already on the port rather than starting a second one", async () => {
-    const { server, spawned } = manager({ probe: async () => true });
-    expect((await server.start()).state).toBe("external");
+  it("shows another instance's server as theirs and leaves it running on stop", async () => {
+    await startedBy("work", pid, "Mon Nov  2 09:00:00 2026");
+    const kills: number[] = [];
+    const originalKill = process.kill;
+    process.kill = ((target: number) => {
+      kills.push(target);
+      return true;
+    }) as typeof process.kill;
+    try {
+      const other = manager({
+        probe: async () => true,
+        processStartTime: async () => "Mon Nov  2 09:00:00 2026",
+      });
+      const status = await other.server.status();
+      expect(status).toMatchObject({ state: "external", owner: "work" });
+      expect((await other.server.stop()).state).toBe("external");
+      expect(kills).toHaveLength(0);
+    } finally {
+      process.kill = originalKill;
+    }
+  });
+
+  it("does not adopt a process that reused the recorded pid", async () => {
+    await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+    const next = manager({ processStartTime: async () => "Tue Nov  3 10:00:00 2026" });
+    expect((await next.server.status()).state).toBe("stopped");
+    await next.server.start();
+    expect(next.spawned).toHaveLength(1);
+  });
+
+  it("uses an mlx-audio server already on the port rather than starting a second one", async () => {
+    const { server, spawned } = manager({
+      probe: async () => true,
+      listenerCommand: async () => "/usr/bin/python3 -m mlx_audio.server --port 8000",
+    });
+    expect(await server.start()).toMatchObject({ state: "external", owner: null });
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("refuses a port some other program answers on", async () => {
+    const { server, spawned } = manager({
+      probe: async () => true,
+      listenerCommand: async () => "node vite --port 8000",
+    });
+    expect((await server.start()).state).toBe("occupied");
     expect(spawned).toHaveLength(0);
   });
 
@@ -153,6 +209,19 @@ describe("LocalSpeechServer", () => {
     const second = await server.ensureProvider();
     expect(second).toBe(first);
     expect(await listCustomProviders()).toHaveLength(1);
+  });
+});
+
+describe("speech server routes", () => {
+  it("won't register a port some other program answers on as the speech provider", async () => {
+    const { server } = manager({
+      probe: async () => true,
+      listenerCommand: async () => "node vite --port 8000",
+    });
+    const routes = createVoiceRoutes({} as Config, { server });
+    const res = await routes.request("/server/provider", { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(await listCustomProviders()).toHaveLength(0);
   });
 });
 

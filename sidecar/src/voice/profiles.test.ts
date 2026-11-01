@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
-import { clipPath, wavSampleRate } from "./profiles.ts";
+import { clipPath, getVoiceProfile, refAudioFor, wavSampleRate } from "./profiles.ts";
 import { createVoiceRoutes } from "./routes.ts";
 
 /**
@@ -142,6 +142,30 @@ describe("wavSampleRate", () => {
   it("refuses bytes that are not a WAV file", () => {
     expect(() => wavSampleRate(new Uint8Array(64))).toThrow("must be a WAV file");
   });
+
+  it("refuses a RIFF file of another kind, and a header cut short", () => {
+    const avi = wav(16_000);
+    avi.set(
+      [..."AVI "].map((c) => c.charCodeAt(0)),
+      8,
+    );
+    expect(() => wavSampleRate(avi)).toThrow("must be a WAV file");
+    expect(() => wavSampleRate(wav(16_000).subarray(0, 30))).toThrow("must be a WAV file");
+  });
+});
+
+describe("clipPath", () => {
+  const id = "0b5f3c8e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+
+  it("maps a voice id to a file in the voices folder", () => {
+    expect(clipPath(id)).toBe(join(dir, "voices", `${id}.wav`));
+  });
+
+  it("refuses anything but a bare id, so a request can't name another path", () => {
+    expect(() => clipPath(`../${id}`)).toThrow("invalid voice id");
+    expect(() => clipPath(`${id}/../../settings`)).toThrow("invalid voice id");
+    expect(() => clipPath(`x${id}`)).toThrow("invalid voice id");
+  });
 });
 
 describe("saved voices", () => {
@@ -188,6 +212,37 @@ describe("saved voices", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  it("sends a path-mode clip to a remote provider as audio, never as a path", async () => {
+    const provider = await registerProvider("https://speech.example.com/v1");
+    const { id } = await createVoice({ name: "Me", provider, model: "x" });
+    expect((await putClip(id, wav(16_000))).status).toBe(200);
+    const profile = await getVoiceProfile(id);
+    const refAudio = profile ? await refAudioFor(profile) : undefined;
+    expect(refAudio?.startsWith("data:audio/wav;base64,")).toBe(true);
+    expect(refAudio).not.toContain(dir);
+  });
+
+  it("answers 404 for a well-formed id no voice has", async () => {
+    const unknown = "0b5f3c8e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+    const patch = await app.request(`/api/voice/voices/${unknown}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "x" }),
+    });
+    expect(patch.status).toBe(404);
+    const del = await app.request(`/api/voice/voices/${unknown}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    expect(del.status).toBe(404);
+    const speak = await app.request(`/api/voice/voices/${unknown}/speak`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ text: "hello" }),
+    });
+    expect(speak.status).toBe(404);
   });
 
   it("refuses a 44.1 kHz clip, which cloning models ramble on", async () => {
@@ -347,7 +402,7 @@ describe("voice studio", () => {
       expect(seen[0]?.input).toBe("[French] Bonjour");
 
       failTranslation = true;
-      expect((await generate("French")).status).toBe(400);
+      expect((await generate("French")).status).toBe(502);
       const takes = (await (await routes.request("/studio/takes")).json()) as unknown[];
       expect(takes).toHaveLength(1);
     } finally {

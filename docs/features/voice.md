@@ -51,9 +51,12 @@ The **Voice** tab in the nav rail has three parts.
   shown (8000 by default). It needs [uv](https://docs.astral.sh/uv/)
   (`brew install uv`). The first start downloads the server's Python packages,
   so it takes a while.
-- If something already answers on that port, such as a server you started
-  yourself or another Yarvis window's, the page says **Running (started
-  elsewhere)**. Yarvis uses it but won't stop it.
+- If an mlx-audio server you started yourself already answers on that port,
+  the page says **Running (started elsewhere)**. One another Yarvis instance
+  started says which instance. Yarvis uses either but only the instance that
+  started a server can stop it.
+- If some other program answers on the port, the page says **Port in use**
+  and won't use it. Choose a different port.
 - **Use for voice** adds the server under **Settings → LLM Providers** as
   `Local speech` and tags its models for speech. If speech to text or text to
   speech isn't set yet, it also picks the starter models.
@@ -73,7 +76,9 @@ id, and an optional clip to clone from.
   the clip to 16 kHz mono WAV and stores it in `~/.yarvis/voices/`.
 - **Clip sent as** decides how the clip reaches the server. **File path** is for
   mlx-audio, which reads the file itself. **Inline audio** sends the audio in
-  the request, which is what vLLM-Omni expects.
+  the request, which is what vLLM-Omni expects. A file path is only sent to a
+  server on this machine; a remote provider always gets the audio, since the
+  path would name your home folder.
 - **Activate** makes replies speak in that voice on every surface. With no voice
   active, replies use the text-to-speech settings in **Settings → Voice**.
 - **Test** plays a short phrase in the voice.

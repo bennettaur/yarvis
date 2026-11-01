@@ -277,7 +277,10 @@ export default function VoicesSection({
             className={FIELD}
           />
         </Field>
-        <Field label="Clip sent as" hint="Path for mlx-audio, inline for vLLM.">
+        <Field
+          label="Clip sent as"
+          hint="Path for a local mlx-audio, inline for vLLM. A remote server always gets the audio."
+        >
           <select
             value={form.refAudioMode}
             onChange={(e) => setForm({ ...form, refAudioMode: e.target.value as RefAudioMode })}

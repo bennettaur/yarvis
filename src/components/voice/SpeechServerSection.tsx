@@ -7,6 +7,7 @@ import {
   listLocalModels,
   registerSpeechServerProvider,
   type SpeechServerState,
+  type SpeechServerStatus,
   setSpeechServerPort,
   startSpeechServer,
   stopSpeechServer,
@@ -25,6 +26,7 @@ const STATE_LABEL: Record<SpeechServerState, { text: string; tone: string }> = {
   starting: { text: "Starting…", tone: "bg-amber-900/60 text-amber-200" },
   running: { text: "Running", tone: "bg-emerald-900/60 text-emerald-200" },
   external: { text: "Running (started elsewhere)", tone: "bg-emerald-900/60 text-emerald-200" },
+  occupied: { text: "Port in use", tone: "bg-red-900/60 text-red-200" },
   failed: { text: "Failed", tone: "bg-red-900/60 text-red-200" },
 };
 
@@ -89,7 +91,7 @@ export default function SpeechServerSection({ onProviderReady }: { onProviderRea
   }
 
   const running = status?.state === "running" || status?.state === "external";
-  const label = status ? STATE_LABEL[status.state] : null;
+  const label = status ? stateLabel(status) : null;
 
   return (
     <section className={`${CARD} space-y-4`}>
@@ -133,12 +135,8 @@ export default function SpeechServerSection({ onProviderReady }: { onProviderRea
           <button
             type="button"
             onClick={() => void run(startSpeechServer)}
-            disabled={busy || status?.state === "external"}
-            title={
-              status?.state === "external"
-                ? "A server already answers on this port. Yarvis uses it but did not start it."
-                : "Start the server. The first start downloads its Python packages."
-            }
+            disabled={busy || status?.state === "external" || status?.state === "occupied"}
+            title={startHint(status?.state)}
             className="rounded-md bg-zinc-200 px-3 py-1.5 text-sm text-zinc-900 hover:bg-white disabled:opacity-40"
           >
             Start
@@ -191,6 +189,21 @@ export default function SpeechServerSection({ onProviderReady }: { onProviderRea
       )}
     </section>
   );
+}
+
+function stateLabel(status: SpeechServerStatus): { text: string; tone: string } {
+  const label = STATE_LABEL[status.state];
+  return status.state === "external" && status.owner
+    ? { ...label, text: `Running (started by the ${status.owner} instance)` }
+    : label;
+}
+
+function startHint(state: SpeechServerState | undefined): string {
+  if (state === "external") {
+    return "A speech server already answers on this port. Yarvis uses it but only the one that started it can stop it.";
+  }
+  if (state === "occupied") return "Another program answers on this port. Choose a different port.";
+  return "Start the server. The first start downloads its Python packages.";
 }
 
 function ModelRow({ model, onDownload }: { model: LocalModelStatus; onDownload: () => void }) {

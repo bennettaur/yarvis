@@ -1,7 +1,9 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { processStartTime } from "../agentRuns/process.ts";
+import { loadInstanceConfig } from "../config.ts";
 import { createCustomProvider, listCustomProviders } from "../customProviders/service.ts";
 import { claudeChildEnv } from "../lib/claudeCli.ts";
 import { guardedFetch } from "../lib/guardedFetch.ts";
@@ -18,11 +20,13 @@ import { assertModelId } from "./speech.ts";
  * repo's `pyproject.toml`, because a packaged app has no repo checkout to run
  * `uv sync` in. The specs mirror that file.
  *
- * Only a server Yarvis started is stopped from here. One the user started by
- * hand or with launchd shows up as `external`: it is used, but a second one is
- * not started on the same port. The pid of the server Yarvis started is kept
- * on disk, because the core SIGKILLs the sidecar on a restart and no exit hook
- * runs then: the next sidecar adopts the server instead of stranding it.
+ * Only the instance that started a server stops it. Every other case shows up
+ * as `external`: a server another Yarvis instance started (named in `owner`),
+ * or one the user runs by hand or with launchd. It is used, but a second one is
+ * not started on the same port. Who started which server is kept on disk,
+ * keyed by instance, because the core SIGKILLs the sidecar on a restart and no
+ * exit hook runs then: the next sidecar of the same instance adopts the server
+ * instead of stranding it.
  */
 
 const SERVER_PACKAGES = ["mlx-audio[server]>=0.4.8", "misaki[en]>=0.9.4", "setuptools<81"];
@@ -99,10 +103,22 @@ export async function saveSpeechServerSettings(
   );
 }
 
-export type SpeechServerState = "stopped" | "starting" | "running" | "external" | "failed";
+/**
+ * `occupied` is a port something other than mlx-audio answers on: it is neither
+ * used nor offered as a speech provider.
+ */
+export type SpeechServerState =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "external"
+  | "occupied"
+  | "failed";
 
 export interface SpeechServerStatus {
   state: SpeechServerState;
+  /** The Yarvis instance that started an `external` server, or null when Yarvis didn't. */
+  owner: string | null;
   port: number;
   baseUrl: string;
   /** Output from the server this instance started, newest last. */
@@ -125,10 +141,14 @@ export interface SpeechServerDeps {
   /** Hugging Face hub cache folder that downloads land in. */
   hubCacheDir: () => string;
   /**
-   * True when `pid` is still a speech server Yarvis started, rather than an
-   * unrelated process that reused the pid.
+   * When `pid` started, as `ps` reports it, or null when no such process runs.
+   * Compared with the time recorded at spawn, so a reused pid isn't adopted.
    */
-  isSpeechServer: (pid: number) => boolean;
+  processStartTime: (pid: number) => Promise<string | null>;
+  /** Command line of the process listening on the port, or null when none is found. */
+  listenerCommand: (port: number) => Promise<string | null>;
+  /** This app instance's name, which keys the record of the server it started. */
+  instance: string;
 }
 
 /**
@@ -174,43 +194,76 @@ export const defaultSpeechServerDeps: SpeechServerDeps = {
       join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "huggingface");
     return join(home, "hub");
   },
-  isSpeechServer: (pid) => {
-    const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-    return ps.status === 0 && ps.stdout.includes("mlx_audio.server");
+  processStartTime,
+  listenerCommand: async (port) => {
+    const pids = await commandOutput("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+    const pid = pids?.split("\n")[0];
+    return pid ? commandOutput("ps", ["-o", "command=", "-p", pid]) : null;
   },
+  instance: loadInstanceConfig().name,
 };
 
-/** Where the pid of the server Yarvis started is kept between sidecars. */
-function pidFile(): string {
+/** A command's trimmed stdout, or null when it fails or prints nothing. */
+function commandOutput(program: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(program, args, (error, stdout) => {
+      const out = stdout.trim();
+      resolve(error || !out ? null : out);
+    });
+  });
+}
+
+/** True when a listener's command line is mlx-audio's server. */
+function isMlxAudio(command: string | null): boolean {
+  return command?.includes("mlx_audio.server") ?? false;
+}
+
+/** Where each instance records the server it started, kept between sidecars. */
+function recordFile(): string {
   return join(dirname(settingsPath()), "speech-server.json");
 }
 
 interface ServerRecord {
   pid: number;
   port: number;
+  /** The process's start time, so a pid reused by another process isn't mistaken for it. */
+  startedAt: string | null;
 }
 
-function readRecord(): ServerRecord | null {
+type ServerRecords = Record<string, ServerRecord>;
+
+function isRecord(value: unknown): value is ServerRecord {
+  const row = value as Partial<ServerRecord> | null;
+  return (
+    typeof row?.pid === "number" &&
+    typeof row.port === "number" &&
+    (typeof row.startedAt === "string" || row.startedAt === null)
+  );
+}
+
+function readRecords(): ServerRecords {
   try {
-    const parsed = JSON.parse(readFileSync(pidFile(), "utf8")) as Partial<ServerRecord>;
-    return typeof parsed.pid === "number" && typeof parsed.port === "number"
-      ? { pid: parsed.pid, port: parsed.port }
-      : null;
+    const parsed = JSON.parse(readFileSync(recordFile(), "utf8")) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, row]) => isRecord(row)),
+    ) as ServerRecords;
   } catch {
-    return null;
+    return {};
   }
 }
 
-function writeRecord(record: ServerRecord): void {
+function writeRecords(records: ServerRecords): void {
   try {
-    writeFileSync(pidFile(), JSON.stringify(record), { mode: 0o600 });
+    if (Object.keys(records).length === 0) rmSync(recordFile(), { force: true });
+    else writeFileSync(recordFile(), JSON.stringify(records), { mode: 0o600 });
   } catch (e) {
     console.warn("[voice] could not record the speech server's pid:", e);
   }
 }
 
-function clearRecord(): void {
-  rmSync(pidFile(), { force: true });
+function setRecord(instance: string, record: ServerRecord | null): void {
+  const { [instance]: _, ...others } = readRecords();
+  writeRecords(record ? { ...others, [instance]: record } : others);
 }
 
 /** A downloadable model is a plain Hub `namespace/name`: no Ollama tag, nothing else. */
@@ -256,27 +309,57 @@ export class LocalSpeechServer {
     });
   }
 
-  /** A server an earlier sidecar started that is still running. */
-  private adopted(): ServerRecord | null {
+  /**
+   * Whether a recorded server is still the process that was recorded. A record
+   * whose process is gone is dropped. When `ps` can't be asked the record is
+   * kept but not trusted, so a failed check never kills or forgets a server.
+   */
+  private async live(instance: string, record: ServerRecord): Promise<boolean> {
+    let started: string | null;
+    try {
+      started = await this.deps.processStartTime(record.pid);
+    } catch (e) {
+      console.warn(`[voice] could not check speech server ${record.pid}:`, e);
+      return false;
+    }
+    if (started !== null && started === record.startedAt) return true;
+    setRecord(instance, null);
+    return false;
+  }
+
+  /** A server an earlier sidecar of this instance started that is still running. */
+  private async adopted(): Promise<ServerRecord | null> {
     if (this.child) return null;
-    const record = readRecord();
-    if (!record) return null;
-    if (this.deps.isSpeechServer(record.pid)) return record;
-    clearRecord();
+    const record = readRecords()[this.deps.instance];
+    return record && (await this.live(this.deps.instance, record)) ? record : null;
+  }
+
+  /** The other instance whose live server listens on the port, if there is one. */
+  private async ownerOf(port: number): Promise<string | null> {
+    for (const [instance, record] of Object.entries(readRecords())) {
+      if (instance === this.deps.instance || record.port !== port) continue;
+      if (await this.live(instance, record)) return instance;
+    }
     return null;
   }
 
   async status(): Promise<SpeechServerStatus> {
-    const adopted = this.adopted();
+    const adopted = await this.adopted();
     const owned = this.child !== null || adopted !== null;
     const port = this.child ? this.port : (adopted?.port ?? (await getSpeechServerSettings()).port);
     const answering = await this.deps.probe(port);
     let state: SpeechServerState;
+    let owner: string | null = null;
     if (owned) state = answering ? "running" : "starting";
-    else if (answering) state = "external";
-    else state = this.error ? "failed" : "stopped";
+    else if (answering) {
+      owner = await this.ownerOf(port);
+      // Anything can answer a model list on a common port like 8000, so an
+      // unclaimed listener must be mlx-audio itself before it is used.
+      state = owner || isMlxAudio(await this.deps.listenerCommand(port)) ? "external" : "occupied";
+    } else state = this.error ? "failed" : "stopped";
     return {
       state,
+      owner,
       port,
       baseUrl: `http://127.0.0.1:${port}/v1`,
       log: this.log,
@@ -292,7 +375,7 @@ export class LocalSpeechServer {
   }
 
   private async spawnServer(): Promise<SpeechServerStatus> {
-    if (this.child || this.adopted()) return this.status();
+    if (this.child || (await this.adopted())) return this.status();
     const { port } = await getSpeechServerSettings();
     // Something already serves the port: another instance's server, or one the
     // user runs themselves. Starting a second would only fail to bind.
@@ -319,7 +402,7 @@ export class LocalSpeechServer {
     ];
     const child = this.deps.spawn("uvx", args);
     this.child = child;
-    if (child.pid !== undefined) writeRecord({ pid: child.pid, port });
+    if (child.pid !== undefined) await this.record(child.pid, port);
     child.stdout?.on("data", (chunk) => this.append(chunk));
     child.stderr?.on("data", (chunk) => this.append(chunk));
     child.on("error", (e) => {
@@ -332,7 +415,7 @@ export class LocalSpeechServer {
     child.on("exit", (code, signal) => {
       if (this.child !== child) return;
       this.child = null;
-      clearRecord();
+      setRecord(this.deps.instance, null);
       if (code !== 0 && signal !== "SIGTERM") {
         this.error = `the speech server exited (${signal ?? `code ${code}`}); see its log`;
       }
@@ -340,14 +423,25 @@ export class LocalSpeechServer {
     return this.status();
   }
 
+  private async record(pid: number, port: number): Promise<void> {
+    let startedAt: string | null = null;
+    try {
+      startedAt = await this.deps.processStartTime(pid);
+    } catch (e) {
+      console.warn("[voice] could not read the speech server's start time:", e);
+    }
+    setRecord(this.deps.instance, { pid, port, startedAt });
+  }
+
+  /** Stops the server this instance started. Anyone else's is left running. */
   async stop(): Promise<SpeechServerStatus> {
-    const adopted = this.adopted();
+    const adopted = await this.adopted();
     const pid = this.child?.pid ?? adopted?.pid;
     const port = adopted?.port ?? this.port;
     this.child = null;
     this.error = null;
     if (pid !== undefined) killGroup(pid);
-    clearRecord();
+    setRecord(this.deps.instance, null);
     // Uvicorn keeps answering for a moment after SIGTERM, and with no child
     // left that reads as a server started elsewhere.
     const deadline = Date.now() + STOP_WAIT_MS;
@@ -409,7 +503,7 @@ export class LocalSpeechServer {
   /**
    * Makes sure a custom provider points at the server and that its catalogue
    * tags the verified models, so they appear in the speech pickers. Returns the
-   * provider's voice id. An existing provider on the same URL is reused rather
+   * provider id (`custom:<id>`). An existing provider on the same URL is reused rather
    * than duplicated.
    */
   async ensureProvider(): Promise<string> {

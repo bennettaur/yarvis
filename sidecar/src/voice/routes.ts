@@ -388,7 +388,8 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
         ),
       );
     } catch (e) {
-      return c.json({ error: errorMessage(e) }, 400);
+      console.error("[voice] studio generation failed:", e);
+      return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
     }
   });
 
@@ -429,9 +430,12 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
   });
 
   /** Registers the server as a speech provider, so the pickers can offer its models. */
-  router.post("/server/provider", async (c) =>
-    c.json({ providerId: await server.ensureProvider() }),
-  );
+  router.post("/server/provider", async (c) => {
+    if ((await server.status()).state === "occupied") {
+      return c.json({ error: "another program answers on this port; choose a different one" }, 409);
+    }
+    return c.json({ providerId: await server.ensureProvider() });
+  });
 
   return router;
 }

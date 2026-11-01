@@ -4,10 +4,18 @@ import { ensureOk, sidecarFetch } from "./api";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-export type SpeechServerState = "stopped" | "starting" | "running" | "external" | "failed";
+export type SpeechServerState =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "external"
+  | "occupied"
+  | "failed";
 
 export interface SpeechServerStatus {
   state: SpeechServerState;
+  /** The Yarvis instance that started an `external` server, or null when Yarvis didn't. */
+  owner: string | null;
   port: number;
   baseUrl: string;
   log: string[];

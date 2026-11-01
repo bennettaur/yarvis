@@ -9,7 +9,7 @@ import { settingsPath } from "../settings/store.ts";
 import { getVoiceConfig } from "./config.ts";
 import { getVoiceProfile, speakWithProfile } from "./profiles.ts";
 import { resolveSpeechClient } from "./providers.ts";
-import { MAX_SPEECH_CHARS, type SpeechAudio } from "./speech.ts";
+import { MAX_SPEECH_CHARS, type SpeechAudio, SpeechValidationError } from "./speech.ts";
 
 /**
  * The Voice Studio: speak one piece of text in several voices at once, keep the
@@ -168,6 +168,12 @@ async function copyTakeToDownloads(file: string): Promise<StudioTake | null> {
  */
 export const LANGUAGE = /^[\p{L} ()-]{2,40}$/u;
 
+/**
+ * How long a translation may take. Generations queue behind each other, so a
+ * provider that never answers would otherwise hold up every later one.
+ */
+const TRANSLATE_TIMEOUT_MS = 60_000;
+
 export interface TranslateInput {
   provider: string;
   model: string;
@@ -200,6 +206,7 @@ export async function translateText(config: Config, input: TranslateInput): Prom
       // A model that runs on past a speakable length is cut off rather than
       // paid for in full; one token per character allows for scripts like CJK.
       maxOutputTokens: MAX_SPEECH_CHARS,
+      abortSignal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
     text = result.text.trim();
   } catch (e) {
@@ -208,7 +215,7 @@ export async function translateText(config: Config, input: TranslateInput): Prom
   }
   if (!text) throw new Error("the translation model returned nothing");
   if (text.length > MAX_SPEECH_CHARS) {
-    throw new Error(
+    throw new SpeechValidationError(
       `the translation is longer than ${MAX_SPEECH_CHARS} characters; shorten the text`,
     );
   }
@@ -246,10 +253,11 @@ async function speakAs(
 }
 
 /**
- * Clears the last batch, translates if asked, and speaks the text in each
- * voice. Voices run one after another: a local server generates one at a time
- * anyway, and a hosted one would rate-limit a burst. One voice failing is
- * reported beside the others rather than failing the batch.
+ * Translates if asked, then clears the last batch and speaks the text in each
+ * voice. A failed translation leaves the last batch in place. Voices run one
+ * after another: a local server generates one at a time anyway, and a hosted
+ * one would rate-limit a burst. One voice failing is reported beside the
+ * others rather than failing the batch.
  */
 export function generateTakes(
   config: Config,
@@ -269,7 +277,7 @@ async function generate(
   if (request.language) {
     const settings = await getVoiceConfig();
     if (!settings.translationProvider || !settings.translationModel) {
-      throw new Error("choose a translation model first");
+      throw new SpeechValidationError("choose a translation model first");
     }
     translation = await deps.translate(config, {
       provider: settings.translationProvider,

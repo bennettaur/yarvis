@@ -233,13 +233,22 @@ back to ad-hoc.
   providers keep the `custom:<id>` namespace. Gemini is the odd one: it has no
   audio endpoints, so `GeminiSpeech` drives both halves through
   `generateContent` and wraps the headerless PCM it gets back in a WAV header.
-- Voice is a capability of the chat surfaces, not a surface of its own:
+- Spoken chat is a capability of the chat surfaces, not a surface of its own:
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already
   accumulating. A spoken turn therefore uses whatever provider/model that chat
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
+  The Voice page (`src/components/voice/`) is for setting voice up, not for
+  talking: it runs the local mlx-audio server, keeps saved voices and their
+  cloning clips, and has a studio for hearing text in several voices. The
+  sidecar owns the server process (`voice/server.ts`). The port is singular to
+  the machine, so only the instance that started a server may stop it; who
+  started it is recorded per instance beside `settings.json`, with the
+  process's start time so a reused pid isn't adopted. A saved voice's clip is
+  sent as a file path only to a provider on loopback; anywhere else gets the
+  audio, since the path names the user's home folder.
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
   Ollama decision calls, URL ingest, `read_web_page` — go through
   `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every
