@@ -491,16 +491,23 @@ export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEn
   };
 }
 
-/** The fields {@link toStackEntry} reads. Shared by all three stack queries. */
-const STACK_NODE_FIELDS = `
-  number title url state isDraft isInMergeQueue
+/** The fields {@link toStackEntry} reads, but for the checks. */
+const STACK_LINK_FIELDS = `
+  number title url state isDraft isInMergeQueue isCrossRepository
   baseRefName headRefName mergeStateStatus reviewDecision
+`;
+
+/** A layer's checks, the heavy part of a node: up to 100 contexts each. */
+const STACK_CHECK_FIELDS = `
   commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
     __typename
     ... on CheckRun { name status conclusion detailsUrl }
     ... on StatusContext { context state targetUrl }
   }}}}}}
 `;
+
+/** The fields {@link toStackEntry} reads. */
+const STACK_NODE_FIELDS = STACK_LINK_FIELDS + STACK_CHECK_FIELDS;
 
 const STACK_SEED_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
@@ -519,8 +526,8 @@ query($owner:String!,$repo:String!,$number:Int!){
 const STACK_DOWN_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:1, orderBy:{field:CREATED_AT,direction:DESC}){
-      nodes{ ${STACK_NODE_FIELDS} }
+    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:10, orderBy:{field:CREATED_AT,direction:DESC}){
+      nodes{ ${STACK_LINK_FIELDS} }
     }
   }
 }`;
@@ -529,8 +536,8 @@ query($owner:String!,$repo:String!,$branch:String!){
 const STACK_UP_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(baseRefName:$branch, states:[OPEN], first:1, orderBy:{field:CREATED_AT,direction:ASC}){
-      nodes{ ${STACK_NODE_FIELDS} }
+    pullRequests(baseRefName:$branch, states:[OPEN], first:10, orderBy:{field:CREATED_AT,direction:ASC}){
+      nodes{ ${STACK_LINK_FIELDS} }
     }
   }
 }`;
@@ -550,6 +557,19 @@ const STACK_MAX_DEPTH = 10;
  * same batching {@link buildPrLookupQuery} uses, so settling it for the entire
  * stack costs one round trip rather than one per layer.
  */
+/**
+ * The checks of each numbered layer, in one request. The walk's steps select
+ * up to ten candidates each, to skip fork PRs, so they leave the checks to this.
+ */
+function buildLayerChecksQuery(count: number): string {
+  const varDecls = Array.from({ length: count }, (_, i) => `$n${i}:Int!`).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) => `  k${i}: pullRequest(number:$n${i}){ ${STACK_CHECK_FIELDS} }`,
+  ).join("\n");
+  return `query($owner:String!,$repo:String!,${varDecls}){\n repository(owner:$owner,name:$repo){\n${fields}\n }\n}`;
+}
+
 function buildBehindQuery(count: number): string {
   const varDecls = Array.from({ length: count }, (_, i) => `$b${i}:String!,$h${i}:String!`).join(
     ",",
@@ -1799,7 +1819,9 @@ export class GitHubClient {
         query,
         { owner, repo, branch },
       );
-      const node = data.repository?.pullRequests?.nodes?.[0];
+      // A branch name matches fork PRs too, so anyone could otherwise slot a
+      // PR of theirs into the stack. A real layer's branch is in this repo.
+      const node = data.repository?.pullRequests?.nodes?.find((n) => n && !n.isCrossRepository);
       if (!node?.number || seen.has(node.number)) return null;
       seen.add(node.number);
       return node;
@@ -1814,15 +1836,18 @@ export class GitHubClient {
       cursor = next;
     }
 
+    // A fork PR's head branch lives in the fork, so this repo's PRs based on a
+    // branch of that name (often main) aren't layers above it.
     const above: any[] = [];
     cursor = pr;
-    while (above.length < STACK_MAX_DEPTH) {
+    while (!pr.isCrossRepository && above.length < STACK_MAX_DEPTH) {
       const next = await step(STACK_UP_QUERY, cursor.headRefName);
       if (!next) break;
       above.push(next);
       cursor = next;
     }
 
+    await this.attachLayerChecks(owner, repo, [...below, ...above]);
     const entries = [...below, pr, ...above].map((node) =>
       toStackEntry(
         node,
@@ -1851,6 +1876,22 @@ export class GitHubClient {
    * `mergeStateStatus` said standing, since a stack that can't answer this is
    * still worth showing.
    */
+  /** Fills in the checks the walk's steps left out, on each layer node in place. */
+  private async attachLayerChecks(owner: string, repo: string, layers: any[]): Promise<void> {
+    if (layers.length === 0) return;
+    const variables: Record<string, unknown> = { owner, repo };
+    layers.forEach((layer, i) => {
+      variables[`n${i}`] = layer.number;
+    });
+    const data = await this.graphql<{ repository?: Record<string, any> }>(
+      buildLayerChecksQuery(layers.length),
+      variables,
+    );
+    layers.forEach((layer, i) => {
+      layer.commits = data.repository?.[`k${i}`]?.commits;
+    });
+  }
+
   private async markBehindLayers(
     owner: string,
     repo: string,

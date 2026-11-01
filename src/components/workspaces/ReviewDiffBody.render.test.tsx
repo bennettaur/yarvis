@@ -20,6 +20,7 @@ const COMMENT: ReviewComment = {
   endLine: 3,
   commitSha: "abc1234def",
   body: "Fold these together.",
+  source: "user",
   resolvedAt: null,
   createdAt: "2026-06-01T09:00:00.000Z",
   updatedAt: "2026-06-01T09:00:00.000Z",

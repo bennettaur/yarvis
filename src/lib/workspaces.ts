@@ -110,6 +110,8 @@ export interface WorkspaceForPr {
   name: string;
   slug: string;
   status: WorkspaceStatus;
+  /** The workspace's repo the PR is on. */
+  workspaceRepoId: string;
 }
 
 export interface CreateWorkspaceInput {

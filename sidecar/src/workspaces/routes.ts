@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
@@ -171,6 +172,7 @@ const createReviewCommentSchema = z
     startLine: z.number().int().positive(),
     endLine: z.number().int().positive(),
     body: z.string().min(1).max(16384),
+    source: z.enum(REVIEW_COMMENT_SOURCES).optional(),
   })
   .refine((c) => c.startLine <= c.endLine, "startLine must not be after endLine");
 
