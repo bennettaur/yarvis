@@ -87,30 +87,34 @@ describe("startClaudeTask", () => {
     });
     const pushed: string[] = [];
     const unsubscribe = subscribe((item) => pushed.push(item.title));
-    const started = await startClaudeTask(db, config, input(), deps(program));
-    expect(started.outputDir.startsWith(claudeTasksRoot(config))).toBe(true);
+    try {
+      const started = await startClaudeTask(db, config, input(), deps(program));
+      expect(started.outputDir.startsWith(claudeTasksRoot(config))).toBe(true);
 
-    const finished = await waitForFinish(started.runId);
-    expect(finished).toMatchObject({
-      status: "succeeded",
-      summary: "Built a one-page site.",
-      files: [{ path: "index.html", description: "The page" }],
-      title: "Launch page",
-      outputDir: started.outputDir,
-      costUsd: 0.01,
-    });
+      const finished = await waitForFinish(started.runId);
+      expect(finished).toMatchObject({
+        status: "succeeded",
+        summary: "Built a one-page site.",
+        files: [{ path: "index.html", description: "The page" }],
+        title: "Launch page",
+        outputDir: started.outputDir,
+        costUsd: 0.01,
+      });
 
-    const items = await waitForAttention();
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      kind: "info",
-      title: "Claude Code finished: Launch page",
-      body: "Built a one-page site.",
-      payload: { runId: started.runId, outputDir: started.outputDir },
-    });
-    expect(items[0]?.nav_target).toEqual({ type: "chat" });
-    unsubscribe();
-    expect(pushed).toEqual(["Claude Code finished: Launch page"]);
+      const items = await waitForAttention();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        kind: "info",
+        title: "Claude Code finished: Launch page",
+        body: "Built a one-page site.",
+        payload: { runId: started.runId, outputDir: started.outputDir },
+      });
+      expect(items[0]?.nav_target).toEqual({ type: "chat" });
+      for (let i = 0; i < 40 && pushed.length === 0; i++) await Bun.sleep(25);
+      expect(pushed).toEqual(["Claude Code finished: Launch page"]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("can only read inside its folder, with no shell, network or subagents", async () => {
@@ -151,6 +155,7 @@ describe("startClaudeTask", () => {
       "Task",
     ]);
     expect(after("--max-budget-usd")).toBe("5");
+    expect(after("--max-turns")).toBe("150");
     expect(after("--append-system-prompt")?.startsWith(TASK_RUN_GUARDRAIL)).toBe(true);
     // The task's own instructions follow the guardrail.
     expect(args.join("\n")).toContain("prefer a single HTML file");
@@ -199,6 +204,26 @@ describe("startClaudeTask", () => {
     const started = await startClaudeTask(db, config, input(), deps(program));
     expect((await waitForFinish(started.runId)).error).toContain("too old");
     expect((await waitForAttention())[0]?.body).toContain("Update Claude Code");
+  });
+
+  it("recognises a reworded too-old error for either flag", async () => {
+    const program = fakeClaude(
+      dir,
+      "too-old-reworded",
+      'echo "Error: Unrecognized option: --permission-prompts" >&2\nexit 1',
+    );
+    const started = await startClaudeTask(db, config, input(), deps(program));
+    expect((await waitForFinish(started.runId)).error).toContain("too old");
+  });
+
+  it("leaves a model-written error that quotes the flag alone", async () => {
+    const program = fakeClaude(
+      dir,
+      "model-error",
+      `cat <<'EOF'\n${JSON.stringify(resultLine({ is_error: true, result: "unknown option '--restricted'" }))}\nEOF`,
+    );
+    const started = await startClaudeTask(db, config, input(), deps(program));
+    expect((await waitForFinish(started.runId)).error).not.toContain("too old");
   });
 
   it("keeps the bell body to one short, redacted line", async () => {
@@ -268,6 +293,44 @@ describe("startClaudeTask", () => {
       : 0;
     expect(after).toBe(before);
   });
+
+  it("counts only running tasks toward the cap", async () => {
+    await db.insert(agentRuns).values([
+      ...Array.from({ length: MAX_RUNNING_TASKS }, () => ({
+        kind: "verification-report",
+        targetKey: "t",
+        status: "running",
+        instance: "other",
+      })),
+      ...Array.from({ length: MAX_RUNNING_TASKS }, () => ({
+        kind: CLAUDE_TASK_RUN_KIND,
+        targetKey: "t",
+        status: "succeeded",
+        instance: "other",
+      })),
+    ]);
+    const started = await startClaudeTask(db, config, input(), deps(answered));
+    expect((await waitForFinish(started.runId)).status).toBe("succeeded");
+  });
+
+  it("removes its folder when the run can't start", async () => {
+    class FailingRegistry extends RunRegistry<AgentRunEvent> {
+      override start(): AbortSignal {
+        throw new Error("registry is closed");
+      }
+    }
+    const failing = new FailingRegistry({ historyCap: 10, followerQueueCap: 10 });
+    mkdirSync(claudeTasksRoot(config), { recursive: true });
+    const before = readdirSync(claudeTasksRoot(config)).length;
+    await expect(
+      startClaudeTask(db, config, input(), {
+        program: answered,
+        instance: "test",
+        registry: failing,
+      }),
+    ).rejects.toThrow("registry is closed");
+    expect(readdirSync(claudeTasksRoot(config)).length).toBe(before);
+  });
 });
 
 describe("getClaudeTask", () => {
@@ -297,6 +360,44 @@ describe("the tools", () => {
       type: "chat",
       sessionId: "chat-1",
     });
+  });
+
+  it("fences a failed run's error, which is the run's stderr", async () => {
+    const program = fakeClaude(dir, "fails-for-tool", "echo broken >&2\nexit 1");
+    const set = tools("chat-1", program);
+    const started = await call<{ runId: string }>(set.start_claude_code_task, {
+      title: "Brief",
+      task: "Write it",
+    });
+    await waitForFinish(started.runId);
+    const got = await call<{ error: string; note: string }>(set.get_claude_code_task, {
+      runId: started.runId,
+    });
+    const nonce = /claude-task-report-([0-9a-f]+)>/.exec(got.error)?.[1];
+    expect(nonce).toBeDefined();
+    expect(got.error).toContain("broken");
+    expect(got.note).toContain(nonce ?? "?");
+  });
+
+  it("opens the Heads down page for an unattended pass, and no chat for a specialist", async () => {
+    const unattended = buildClaudeTaskTools(db, config as Config, "hidden", {
+      unattended: true,
+      runDeps: deps(answered),
+    });
+    const first = await call<{ runId: string }>(unattended.start_claude_code_task, {
+      title: "Pass",
+      task: "Build it",
+    });
+    await waitForFinish(first.runId);
+    expect((await waitForAttention())[0]?.nav_target).toEqual({ type: "heads-down" });
+
+    await sql`TRUNCATE attention_items RESTART IDENTITY CASCADE`;
+    const second = await call<{ runId: string }>(tools("").start_claude_code_task, {
+      title: "Specialist",
+      task: "Build it",
+    });
+    await waitForFinish(second.runId);
+    expect((await waitForAttention())[0]?.nav_target).toEqual({ type: "chat" });
   });
 
   it("hands back the run's own words fenced", async () => {

@@ -220,13 +220,16 @@ function notificationBody(text: string | null | undefined): string | null {
 
 /**
  * A build from before restricted mode refuses its flags ("error: unknown
- * option '--restricted'" on 2.1.x); the user needs to know to update. Loose on
- * wording, so a rephrased CLI message still matches.
+ * option '--restricted'" on 2.1.x) and exits before answering; the user needs
+ * to know to update. Only that exit is checked, since its stderr is the CLI's
+ * own, while other errors can carry text the model wrote. Loose on wording, so
+ * a rephrased CLI message still matches.
  */
-const TOO_OLD_BUILD = /(unknown|unrecognized) option\W+--(restricted|permission-prompts)\b/i;
+const EXITED_EARLY = "claude exited with code ";
+const TOO_OLD_BUILD = /(unknown|unrecognized) option\W+--(restricted|permission-prompts)(?![\w-])/i;
 
 function explainError(error: string): string {
-  return TOO_OLD_BUILD.test(error)
+  return error.startsWith(EXITED_EARLY) && TOO_OLD_BUILD.test(error)
     ? "This Claude Code build is too old for tasks, which need its restricted mode. Update Claude Code and try again."
     : error;
 }
