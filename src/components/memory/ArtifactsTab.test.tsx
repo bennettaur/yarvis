@@ -47,6 +47,8 @@ let failList = false;
 let deletes: { method: string; path: string; ids?: string[]; contentType?: string }[] = [];
 /** Set to make reading one artifact answer with a server error. */
 let failRead = false;
+/** While set, deletes wait for it before answering. */
+let holdDeletes: Promise<void> | null = null;
 /** Set to make the next delete answer with a server error. */
 let failNextDelete = false;
 
@@ -70,6 +72,7 @@ stubSidecarApi({
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     let body: unknown = listed;
+    if (method !== "GET" && holdDeletes) await holdDeletes;
     if (method !== "GET" && failNextDelete) {
       failNextDelete = false;
       return new Response("boom", { status: 500 });
@@ -221,6 +224,44 @@ describe("ArtifactsTab deleting", () => {
     await settle();
     expect(host.querySelector("[role='alert']")).toBeNull();
     expect(host.textContent).not.toContain("Trip plan");
+  });
+
+  it("unticks a box that was ticked", async () => {
+    const host = await mount();
+    checkbox(host, "Select Trip plan").click();
+    await settle();
+    checkbox(host, "Select Trip plan").click();
+    await settle();
+    expect(checkbox(host, "Select Trip plan").checked).toBe(false);
+    expect(host.textContent).toContain("Select to delete several");
+  });
+
+  it("disables the controls while a delete is in flight", async () => {
+    const host = await mount();
+    let release = () => {};
+    holdDeletes = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      checkbox(host, "Select Trip plan").click();
+      await settle();
+      buttonNamed(host, "Delete selected")?.click();
+      await settle();
+      buttonNamed(host, "Delete 1")?.click();
+      await settle();
+
+      expect((buttonNamed(host, "Cancel") as HTMLButtonElement).disabled).toBe(true);
+      expect((buttonNamed(host, "Delete 1") as HTMLButtonElement).disabled).toBe(true);
+      expect((buttonNamed(host, "Delete Morning brief") as HTMLButtonElement).disabled).toBe(true);
+      expect(checkbox(host, "Select Morning brief").disabled).toBe(true);
+      expect(checkbox(host, "Select all artifacts").disabled).toBe(true);
+    } finally {
+      release();
+      holdDeletes = null;
+    }
+    await settle();
+    expect(host.textContent).not.toContain("Trip plan");
+    expect(checkbox(host, "Select Morning brief").disabled).toBe(false);
   });
 
   it("drops a pending confirm when the selection changes", async () => {

@@ -18,6 +18,12 @@ import { emitEvent } from "../events/service.ts";
  */
 export const MAX_ARTIFACT_CHARS = 100_000;
 
+/**
+ * How long a heads-down pass or specialist can make an artifact a chat turn
+ * created. Half the cap, so the user always has room to keep adding to it.
+ */
+export const CHAT_ARTIFACT_RUN_LIMIT = MAX_ARTIFACT_CHARS / 2;
+
 /** How many artifacts a listing returns, newest change first. */
 export const ARTIFACT_LIST_LIMIT = 100;
 
@@ -31,6 +37,13 @@ export class ArtifactTooLargeError extends Error {
 export class ArtifactAppendOnlyError extends Error {
   constructor() {
     super("only a chat turn can rewrite, rename or delete an artifact a chat turn created");
+  }
+}
+
+/** A heads-down pass or specialist tried to grow a chat turn's artifact past CHAT_ARTIFACT_RUN_LIMIT. */
+export class ArtifactRunLimitError extends Error {
+  constructor() {
+    super(`a run can't grow a chat turn's artifact past ${CHAT_ARTIFACT_RUN_LIMIT} characters`);
   }
 }
 
@@ -60,6 +73,18 @@ export interface UpdateArtifactInput {
 /** What a listing shows: everything but the content, which can be large. */
 export type ArtifactSummary = Omit<Artifact, "content"> & { length: number };
 
+/**
+ * What an artifact's events record. An untrusted title stays out: search_events
+ * returns payloads as they are, and consolidation can turn them into memories.
+ */
+function eventPayload(row: Artifact) {
+  return {
+    artifactId: row.id,
+    createdBy: row.createdBy,
+    ...(row.untrusted ? {} : { title: row.title }),
+  };
+}
+
 export async function createArtifact(db: Db, input: CreateArtifactInput): Promise<Artifact> {
   const content = input.content ?? "";
   if (content.length > MAX_ARTIFACT_CHARS) throw new ArtifactTooLargeError();
@@ -77,7 +102,7 @@ export async function createArtifact(db: Db, input: CreateArtifactInput): Promis
   await emitEvent(db, {
     type: "artifact.created",
     source: "artifacts",
-    payload: { artifactId: row!.id, title: row!.title },
+    payload: eventPayload(row!),
   });
   return row!;
 }
@@ -151,6 +176,9 @@ export async function updateArtifact(
         // An append-only writer skips a chat turn's artifact. When no row comes
         // back, the branch below tells "no such artifact" from "refused".
         appendOnly ? ne(artifacts.createdBy, "chat") : undefined,
+        writer === "chat"
+          ? undefined
+          : sql`(${artifacts.createdBy} <> 'chat' OR char_length(${next}) <= ${CHAT_ARTIFACT_RUN_LIMIT})`,
       ),
     )
     .returning();
@@ -159,13 +187,15 @@ export async function updateArtifact(
     // No row: no such artifact, or one of the checks in the WHERE failed.
     const current = await getArtifact(db, id);
     if (!current) return null;
-    if (appendOnly && current.createdBy === "chat") throw new ArtifactAppendOnlyError();
+    if (writer !== "chat" && current.createdBy === "chat") {
+      throw appendOnly ? new ArtifactAppendOnlyError() : new ArtifactRunLimitError();
+    }
     throw new ArtifactTooLargeError();
   }
   await emitEvent(db, {
     type: "artifact.updated",
     source: "artifacts",
-    payload: { artifactId: row.id, title: row.title },
+    payload: eventPayload(row),
   });
   return row;
 }

@@ -6,8 +6,10 @@ import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   ARTIFACT_LIST_LIMIT,
   ArtifactAppendOnlyError,
+  ArtifactRunLimitError,
   ArtifactTooLargeError,
   type ArtifactWriter,
+  CHAT_ARTIFACT_RUN_LIMIT,
   createArtifact,
   deleteArtifact,
   getArtifact,
@@ -30,6 +32,8 @@ const TOO_LARGE = `That would make the artifact longer than ${MAX_ARTIFACT_CHARS
 const APPEND_ONLY =
   "This artifact came from a chat with the user, so you can only append to it. Start a new artifact to rewrite or rename it.";
 
+const RUN_LIMIT = `This artifact came from a chat with the user, and you can't grow it past ${CHAT_ARTIFACT_RUN_LIMIT} characters, so the user has room to add to it. Start a new artifact for the rest.`;
+
 const CHAT_ARTIFACT_KEPT =
   "This artifact came from a chat with the user, so only the user can delete it.";
 
@@ -48,7 +52,7 @@ export function buildArtifactTools(
   const appendOnlyNote =
     writer === "chat"
       ? ""
-      : " You can only append to an artifact that came from a chat with the user, not rewrite, rename or delete it.";
+      : ` You can only append to an artifact that came from a chat with the user, up to ${CHAT_ARTIFACT_RUN_LIMIT} characters, not rewrite, rename or delete it.`;
 
   return {
     create_artifact: tool({
@@ -141,6 +145,7 @@ export function buildArtifactTools(
         } catch (err) {
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: APPEND_ONLY };
+          if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
           throw err;
         }
       },

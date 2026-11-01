@@ -219,7 +219,8 @@ assistant schedules for itself in a chat can only read them.
 
 A heads-down pass or a specialist (which is what a Jobs-tab job runs) can add
 to the end of an artifact you asked for in a chat, but can't rewrite, rename or
-delete it. They can rewrite and delete artifacts they created themselves, and
+delete it, and can't grow it past 50,000 characters, so you always have room to
+add to it. They can rewrite and delete artifacts they created themselves, and
 you can still have any artifact rewritten or deleted from a chat.
 
 Those runs may be working from a ticket or message someone else wrote, so their
@@ -228,8 +229,17 @@ read a web page or an untrusted artifact, and anything written from the Chrome
 side panel, whose messages carry the open tab's text. Once a chat turn reads an
 untrusted artifact, actions that can't be undone, rewriting an artifact among
 them, ask for your approval for the rest of that turn, as they do after reading
-a web page. Spoken turns always ask before rewriting one. Like page text, what
-an artifact says isn't replayed into later turns.
+a web page. Listing artifacts counts as reading the untrusted ones' titles, so
+once heads-down mode or a specialist has written one, most turns that use
+artifacts will ask. Spoken turns always ask before rewriting one. Like page
+text, what an artifact says isn't replayed into later turns, and an untrusted
+artifact's title stays out of the activity log.
+
+Only reading a web page or an untrusted artifact, or writing from the side
+panel, marks a chat turn's artifacts untrusted. Text a typed chat turn reads
+from your browser tabs, a ticket, a pull request or an MCP tool doesn't, so an
+artifact written from it is shown as trusted. The same limit already applies to
+the approvals within that turn.
 
 Open **Memory → Artifacts** to read them. Each one shows where it came from
 (a chat, heads-down mode, or a specialist or job) and whether it's untrusted.

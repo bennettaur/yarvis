@@ -245,6 +245,18 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
   specialist: SpecialistDefinition;
 }
 
+/** How a specialist run's built-in tools differ from a chat's. */
+export const SPECIALIST_TOOL_DEPS = {
+  // A delegated run is not the user asking for a session, so nothing it starts
+  // is made remotely controllable.
+  remoteControl: false,
+  // The question tools wait on the user for longer than a run may last, holding
+  // up the chat or job that started it, and a run has no chat to show them in.
+  atTheApp: false,
+  // Its artifact writes are its own: append-only on a chat's, and untrusted.
+  specialistRun: true,
+} as const;
+
 /**
  * Runs a definition the caller already holds, skipping the catalogue lookup and
  * the enabled check.
@@ -275,17 +287,11 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     sessionId: "",
     memory,
     attention: newAttentionState(),
-    // A delegated run is not the user asking for a session, so nothing it starts
-    // is made remotely controllable.
-    remoteControl: false,
     // A delegated run has no approval channel, so this gates nothing; its
     // outward-facing tools need an explicit grant instead. (What it writes to an
     // artifact is marked untrusted regardless.)
     untrustedReads: newUntrustedReads(),
-    // The question tools wait on the user for longer than a run may last, holding
-    // up the chat or job that started it, and a run has no chat to show them in.
-    atTheApp: false,
-    specialistRun: true,
+    ...SPECIALIST_TOOL_DEPS,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {
