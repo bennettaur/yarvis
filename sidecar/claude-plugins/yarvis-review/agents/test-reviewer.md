@@ -10,9 +10,9 @@ those tests fail if the code were wrong? You cannot run anything; read.
 
 <!-- yarvis-review:inputs-and-trust -->
 
-Your lane is every test patch, and every patch of code with behaviour that
-could need a test: not docs, plain configuration, generated code, lockfiles or
-vendored code.
+Read every patch in your group. Your findings are about the test patches
+and the code with behaviour that could need a test; the rest shows what the
+tests should cover.
 
 ## Method
 

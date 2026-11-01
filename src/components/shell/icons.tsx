@@ -22,6 +22,7 @@ export type IconName =
   | "jobs"
   | "sessions"
   | "headsdown"
+  | "field"
   | "dashboard"
   | "settings"
   | "shortcuts"
@@ -161,6 +162,16 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
       <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z" />
       <path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+    </>
+  ),
+  // Nodes orbiting a core, like the Agent Field page.
+  field: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="19" cy="5" r="2" />
+      <circle cx="5" cy="19" r="2" />
+      <path d="M10.4 21.9a10 10 0 0 0 9.941-15.416" />
+      <path d="M13.5 2.1a10 10 0 0 0-9.841 15.416" />
     </>
   ),
   bell: (

@@ -10,6 +10,7 @@ import { settleQuestionAttention } from "./attention.ts";
 import {
   DEFAULT_HEADS_DOWN_CONFIG,
   getHeadsDownConfig,
+  MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
   saveHeadsDownConfig,
 } from "./config.ts";
@@ -88,6 +89,9 @@ const configSchema = z
       .int()
       .min(1)
       .max(7 * 24 * 60),
+    // Optional so a client that doesn't know about it can still save the rest
+    // without resetting it.
+    passTimeoutMinutes: z.number().int().min(1).max(MAX_PASS_TIMEOUT_MINUTES).optional(),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
     // Optional so a client that doesn't know about it can still save the rest.
@@ -200,7 +204,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveHeadsDownConfig(parsed.data));
+    const passTimeoutMinutes =
+      parsed.data.passTimeoutMinutes ?? (await getHeadsDownConfig()).passTimeoutMinutes;
+    return c.json(await saveHeadsDownConfig({ ...parsed.data, passTimeoutMinutes }));
   });
 
   // Read-only, like the specialists: the files are the source of truth, so the

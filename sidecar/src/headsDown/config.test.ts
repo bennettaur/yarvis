@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,30 +82,37 @@ describe("chooseSleep", () => {
 });
 
 describe("getHeadsDownConfig", () => {
-  let dir: string;
-  const original = process.env.YARVIS_SETTINGS_PATH;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "heads-down-config-"));
-    process.env.YARVIS_SETTINGS_PATH = join(dir, "settings.json");
-  });
-  afterEach(() => {
-    process.env.YARVIS_SETTINGS_PATH = original;
+  const dir = mkdtempSync(join(tmpdir(), "heads-down-config-"));
+  const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
+    process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
   });
 
-  const withRoutines = async (value: unknown) => {
-    writeFileSync(
-      join(dir, "settings.json"),
-      JSON.stringify({ headsDown: { maxRoutinesPerPass: value } }),
-    );
+  const storedTimeout = async (passTimeoutMinutes: unknown) => {
+    const path = join(dir, "settings.json");
+    writeFileSync(path, JSON.stringify({ headsDown: { passTimeoutMinutes } }));
+    process.env.YARVIS_SETTINGS_PATH = path;
+    return (await getHeadsDownConfig()).passTimeoutMinutes;
+  };
+
+  it("falls back to the default pass timeout for a nonsensical stored value, and caps a huge one at four hours", async () => {
+    expect(await storedTimeout(90)).toBe(90);
+    for (const bad of ["90", 0, -5, null]) expect(await storedTimeout(bad)).toBe(20);
+    expect(await storedTimeout(10_000)).toBe(240);
+  });
+
+  const storedRoutines = async (maxRoutinesPerPass: unknown) => {
+    const path = join(dir, "settings.json");
+    writeFileSync(path, JSON.stringify({ headsDown: { maxRoutinesPerPass } }));
+    process.env.YARVIS_SETTINGS_PATH = path;
     return (await getHeadsDownConfig()).maxRoutinesPerPass;
   };
 
   it("keeps a hand-edited routines-per-pass within what the page allows", async () => {
-    expect(await withRoutines(0)).toBe(0);
-    expect(await withRoutines(4)).toBe(4);
-    expect(await withRoutines(50)).toBe(10);
-    for (const bad of ["3", -1, 1.5, null]) expect(await withRoutines(bad)).toBe(2);
+    expect(await storedRoutines(0)).toBe(0);
+    expect(await storedRoutines(4)).toBe(4);
+    expect(await storedRoutines(50)).toBe(10);
+    for (const bad of ["3", -1, 1.5, null]) expect(await storedRoutines(bad)).toBe(2);
   });
 });

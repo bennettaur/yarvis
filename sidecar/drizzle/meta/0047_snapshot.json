@@ -1,5 +1,5 @@
 {
-  "id": "138d7d09-eac4-4a65-b53c-843bf85ff068",
+  "id": "c8bfafbd-6626-45cc-b165-e810bd731a18",
   "prevId": "de31d028-12b6-43ab-a902-263c25c09944",
   "version": "7",
   "dialect": "postgresql",
@@ -1943,20 +1943,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "routines_offered": {
-          "name": "routines_offered",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "routines_done": {
-          "name": "routines_done",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -5396,6 +5382,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'user'"
         },
         "resolved_at": {
           "name": "resolved_at",

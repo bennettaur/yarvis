@@ -30,6 +30,14 @@ From the PRs tab, the PR's header has **Open in review workspace**, which does
 the same and switches to the Review tab. Its **▾** lists your review
 workspaces, to add the PR to one of them instead.
 
+A GitHub PR that is part of a stack brings the rest of its stack along: every
+other open layer is added to the workspace too, after the PR you asked for.
+They appear in the nav a moment later, once GitHub has answered.
+Layers the workspace already holds, merged layers and branches with no PR are
+left out. The stack is found the same way as the PRs tab's
+[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be
+read, the PR you asked for is still added on its own.
+
 The nav and the description show straight away. The PR's commits are fetched
 in the background, and the PR's header in the nav says how far that has got.
 The description, reviewers, checks and comments come from the provider, so
@@ -173,10 +181,40 @@ there.
   Complexity, comments and logging are left to their own checks.
 - A report made before these two checks existed shows only the checks it had.
 
+Above **Run verification** you pick which sections to run: risk, each check,
+and the **Flow diagram**. The summary and must-read files always run. The
+diagram is off unless you tick it; the others start ticked, and after a run
+the boxes start where that run's did. The cost estimate follows what you pick.
+If a report is already being written for the PR, starting another joins that
+run, with the sections it was started with.
+A report shows only the sections its run was asked for.
+
+The **Flow diagram** traces the whole flow the change sits in, not just the
+diff. An agent follows the changed code up to what starts the flow (a route, a
+job, a UI action) and down to where it ends, and draws it as a Mermaid
+flowchart with the changed steps highlighted, plus a short explanation.
+Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
+is too long, isn't drawn, and the section says so. The diagram is model-written from the PR's code, so
+it is drawn in Mermaid's strict mode and shown as an image, where it can't run
+anything.
+
 The report doubles as a to-do list. Once you mark a file viewed (in its diff,
 the Changed files tree or the PRs tab), every must-read, risk concern and
 finding in that file is struck through, and **Must read** counts how many of
 its files you've viewed.
+
+A risk concern or finding that names a file and line can be sent on once you've
+read it. **Post to PR** posts it as a line comment on the PR, marked as coming
+from the verification report, with its text quoted and any `@` mentions
+broken so nobody is notified and no bot takes it as a command. The provider refuses a line outside the diff, and
+the error shows beside the button. When the PR was raised from a Yarvis
+workspace, **Add to *workspace*** adds it to that workspace's
+[review comments](workspaces.md#the-right-column) instead, where its agent can
+pick it up. There it carries a **report finding** badge, and the agent reads
+it as a problem to check rather than as your request. Nothing is sent until
+you click. A report for an older head offers neither button, since its line
+numbers may point at different code now; re-run it first. Like any comment
+you post, a posted finding records where you reviewed.
 
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the
@@ -205,8 +243,9 @@ with a **Not examined** section listing each one and why. Click a path to
 open its diff. Nothing else in the report covers those files. Below it:
 
 - **Generated, skimmed**, folded away: the bulk whose first page was read.
-- **Not examined by** a check: source files in that check's area that it
-  didn't read, though another check did.
+- **Not examined by** a check: changed files that check didn't read, though
+  another check did. Every check is handed the same list of patches to read,
+  whatever kind of file each one is.
 
 When every file was read, the report says that at least one check read each
 one.
@@ -218,8 +257,8 @@ one.
   off, and the bulk the agents will only skim.
 - On a large PR, or when the estimated cost is over the report's budget
   (**Settings → PR review**), you are asked first, with a rough cost estimate
-  against the budget. A run that reaches its budget stops without a report,
-  so raise the budget there before running a PR the estimate says is over it.
+  against the budget. The budget only warns: once you choose **Run anyway**,
+  the run finishes whatever it ends up costing.
 
 ### Mutation testing
 
@@ -239,8 +278,9 @@ It runs the PR's code, so it waits for that to be allowed:
 - When the repo has no setup script, the tab asks you to confirm running the
   tests without one first.
 
-Before a pass starts, the tab says how many mutants it may try, what planning
-and explaining can cost (set under **Settings → PR review**), and what the test
+Before a pass starts, the tab says how many mutants it may try, the budget for
+planning and explaining (set under **Settings → PR review**; nothing stops a
+pass that goes over it), and what the test
 sandbox does: no network beyond your machine, writes only to the scratch copy
 and a temp folder, and no reading your home folder beyond your toolchains. The
 sandbox is a second line of defence, not a guarantee, and setup itself is not
@@ -376,8 +416,9 @@ A summary is for one range, from your last review to the checkout's head. When
 the PR has moved on since, the last summary stays in view with a note and
 **Re-run**. By default the agent waits for the button. To have it start when the
 tab opens on changes it hasn't summarised, turn on auto-start under
-**Settings → PR review → What's changed**, where its model and spend ceiling
-are set too ($1 by default).
+**Settings → PR review → What's changed**, where its model and budget
+are set too ($1 by default). Like the verification report's, the budget only
+warns; a run you start finishes even if it goes over.
 
 ### New commits pushed
 
@@ -421,7 +462,9 @@ The bar above the tabs is for the PR whose tab is in front, in its colour. It
 has the same actions as the PRs tab's header: **Ready for review** on a draft,
 **Approve** and **Request changes**, **Merge** or auto-merge when the repo
 allows them, the link to a coding [workspace](workspaces.md) on the PR's
-branch, refresh, open on GitHub or Azure DevOps, and copy link. It also has:
+branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
+approved the PR, **Approve** is replaced by a **✓ Approved** label in both
+places. It comes back if the author asks you to review again. It also has:
 
 - **Guided review** and **Verification**, which open those tabs (see
   [Guided review](#guided-review) and [Verification report](#verification-report)).

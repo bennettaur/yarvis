@@ -21,7 +21,9 @@
   "decisionModel": {
     "model": null,
     "autoApproveTools": false,
-    "autoApproveHeadsDown": false
+    "autoApproveHeadsDown": false,
+    "routeComplexity": false,
+    "pickSpecialists": false
   },
   "githubPrConfig": {
     "reviewQuery": "is:open is:pr review-requested:@me",

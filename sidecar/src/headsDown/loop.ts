@@ -6,7 +6,7 @@ import type { AttentionItemRow, HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
 import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
 import { PASS_LEASE_NAME, stopHeadsDown } from "./control.ts";
-import { PASS_TIMEOUT_MS, type PassResult, runPass } from "./pass.ts";
+import { type PassResult, runPass } from "./pass.ts";
 import { getActiveRun, msUntilStop } from "./service.ts";
 import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
 
@@ -21,8 +21,8 @@ import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
  * background workers, like the poller.
  */
 
-/** Held for a pass, longer than one can run, so a crashed pass's lease just expires. */
-const LEASE_MS = PASS_TIMEOUT_MS + 5 * 60_000;
+/** How much longer than a pass's timeout its lease is held, so a crashed pass's lease just expires. */
+const LEASE_MARGIN_MS = 5 * 60_000;
 
 /** How often the loop looks again when there is no run, or another instance holds the lease. */
 export const IDLE_CHECK_MS = 60_000;
@@ -30,8 +30,10 @@ export const IDLE_CHECK_MS = 60_000;
 /** What the loop runs on, replaceable so a test can drive it without a model or real timers. */
 export interface LoopDeps {
   db: Db;
-  runPass: (run: HeadsDownRun) => Promise<PassResult>;
+  /** `timeoutMs` is how long the pass may run; the loop's lease is sized from it. */
+  runPass: (run: HeadsDownRun, timeoutMs: number) => Promise<PassResult>;
   minSleepMs: () => Promise<number>;
+  passTimeoutMs: () => Promise<number>;
   setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 }
 
@@ -41,6 +43,14 @@ async function readMinSleepMs(): Promise<number> {
   } catch {
     // A settings file that won't parse mustn't stop the loop.
     return DEFAULT_HEADS_DOWN_CONFIG.minSleepMinutes * 60_000;
+  }
+}
+
+async function readPassTimeoutMs(): Promise<number> {
+  try {
+    return (await getHeadsDownConfig()).passTimeoutMinutes * 60_000;
+  } catch {
+    return DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes * 60_000;
   }
 }
 
@@ -91,15 +101,19 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
       const run = await getActiveRun(db);
       if (run && msUntilStop(run) === 0) {
         await stopHeadsDown(db);
-      } else if (run && !run.pausedAt && (await claimJob(db, PASS_LEASE_NAME, LEASE_MS))) {
-        let status: "ok" | "error" = "ok";
-        try {
-          nextMs = (await deps.runPass(run)).sleepMinutes * 60_000;
-        } catch (e) {
-          status = "error";
-          console.error("[heads-down] pass failed:", e);
-        } finally {
-          await finishJob(db, PASS_LEASE_NAME, { status });
+      } else if (run && !run.pausedAt) {
+        // Read once, so the lease and the pass agree even if the setting changes mid-pass.
+        const timeoutMs = await deps.passTimeoutMs();
+        if (await claimJob(db, PASS_LEASE_NAME, timeoutMs + LEASE_MARGIN_MS)) {
+          let status: "ok" | "error" = "ok";
+          try {
+            nextMs = (await deps.runPass(run, timeoutMs)).sleepMinutes * 60_000;
+          } catch (e) {
+            status = "error";
+            console.error("[heads-down] pass failed:", e);
+          } finally {
+            await finishJob(db, PASS_LEASE_NAME, { status });
+          }
         }
       }
       // Woken during the pass: something changed that the pass may not have seen.
@@ -148,8 +162,9 @@ export function startHeadsDownLoop(config: Config): () => void {
   const db = getDb(config.databaseUrl).db;
   const loop = createHeadsDownLoop({
     db,
-    runPass: (run) => runPass(config, db, run),
+    runPass: (run, timeoutMs) => runPass(config, db, run, { timeoutMs }),
     minSleepMs: readMinSleepMs,
+    passTimeoutMs: readPassTimeoutMs,
     setTimer: (fn, ms) => setTimeout(fn, ms),
   });
   setWakeHandler(loop.wake);

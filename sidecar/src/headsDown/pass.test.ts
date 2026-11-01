@@ -120,6 +120,7 @@ beforeEach(async () => {
     idleSleepMinutes: 60,
     workingHours: null,
     userAwayAfterMinutes: 120,
+    passTimeoutMinutes: 20,
     provider: null,
     model: null,
     guidance: null,
@@ -186,6 +187,15 @@ describe("a heads-down pass", () => {
     const [pass] = await listPasses(db);
     expect(pass?.error).toBeString();
     expect(result.sleepMinutes).toBe(60);
+  });
+
+  it("stops a pass that runs past its timeout and records it as out of time", async () => {
+    const run = await startRun(db, null);
+
+    await runPass(config, db, run, { model: hangingModel(), timeoutMs: 50 });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toContain("ran out of time");
   });
 
   it("keeps what a pass did when the provider fails it part-way", async () => {
@@ -350,6 +360,7 @@ describe("a heads-down pass", () => {
       idleSleepMinutes: 60,
       workingHours: null,
       userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
       provider: null,
       model: null,
       guidance: "Merging docs PRs in acme/docs is fine any time.",
@@ -453,6 +464,7 @@ describe("a heads-down pass", () => {
       idleSleepMinutes: 60,
       workingHours: null,
       userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
       provider: null,
       model: null,
       guidance: null,

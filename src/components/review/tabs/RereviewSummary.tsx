@@ -17,9 +17,9 @@ import {
   startRereview,
 } from "../../../lib/reviewWorkspaces/rereview";
 import type { SinceReview } from "../../../lib/reviewWorkspaces/sinceReview";
+import { Loader } from "../../ai-elements/loader";
 import { ThreadView, type ThreadViewProps } from "../../pr/ThreadView";
 import { useThreadActions } from "../../pr/useThreadActions";
-import { Spinner } from "../../ThinkingIndicator";
 import { rereviewKey, useLatestRereview, useReviewChangedFiles } from "./reviewData";
 import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
@@ -619,7 +619,7 @@ export default function RereviewSummary({ ctx, since }: { ctx: TabContext; since
 
       {running && progress && (
         <div className="flex items-center gap-2 text-xs text-zinc-400">
-          <Spinner />
+          <Loader />
           <span>Reading what changed{progress.steps > 0 ? ` · ${progress.steps} steps` : ""}</span>
           {progress.activity && (
             <span className="min-w-0 truncate font-mono text-[11px] text-zinc-500">

@@ -236,6 +236,12 @@ export default function HeadsDownSettings({
         onChange={(v) => set("userAwayAfterMinutes", v)}
       />
       <NumberField
+        label="Longest a pass may run (min, up to 240)"
+        value={draft.passTimeoutMinutes}
+        max={240}
+        onChange={(v) => set("passTimeoutMinutes", v)}
+      />
+      <NumberField
         label="Routines per pass (0 for none)"
         value={draft.maxRoutinesPerPass}
         // 0 is how routines are turned off; past 10 the sidecar refuses the save.

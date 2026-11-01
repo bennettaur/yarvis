@@ -288,6 +288,9 @@ Under **Pace and working hours** on the page:
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
+- The longest a pass may run before it is stopped, 20 minutes by default and
+  4 hours at most. A model running on your own machine can be slow enough to
+  need more.
 - **Routines per pass**: the most [routines](#routines) one pass takes on, up
   to 10. 0 turns them off, including the meeting alarms.
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in

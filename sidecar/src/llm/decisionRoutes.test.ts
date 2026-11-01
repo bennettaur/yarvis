@@ -56,6 +56,8 @@ describe("GET/PATCH /api/decision-model", () => {
       model: null,
       autoApproveTools: false,
       autoApproveHeadsDown: false,
+      routeComplexity: false,
+      pickSpecialists: false,
     });
   });
 
@@ -68,6 +70,8 @@ describe("GET/PATCH /api/decision-model", () => {
       model: null,
       autoApproveTools: true,
       autoApproveHeadsDown: false,
+      routeComplexity: false,
+      pickSpecialists: false,
     });
   });
 
