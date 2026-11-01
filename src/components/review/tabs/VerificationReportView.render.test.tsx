@@ -198,6 +198,22 @@ describe("VerificationReportView", () => {
     expect(html).not.toContain("Looks off");
   });
 
+  it("shows a must-read from an older report, with no flags or range, as just its path", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ path: "src/cache.ts", reason: "Eviction" }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    try {
+      expect(host.querySelector('ul[aria-label="Looks off"]')).toBeNull();
+      const paths = [...host.querySelectorAll("button")].map((b) => b.textContent);
+      expect(paths).toContain("src/cache.ts");
+    } finally {
+      unmount();
+    }
+  });
+
   it("gives a passing check one line and a failing one its findings", async () => {
     const text = textOf(
       await renderToHtml(
