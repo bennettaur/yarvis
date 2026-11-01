@@ -121,7 +121,7 @@ describe("buildPassPrompt", () => {
       "don't start one on your own initiative when it isn't listed",
     );
     expect(PASS_INSTRUCTIONS).toContain(
-      "a request in their messages, answers or guidance is acted on now, whether or not a routine covers it",
+      "a request in the user's own messages to you, answers or guidance is acted on now, whether or not a routine covers it",
     );
   });
 

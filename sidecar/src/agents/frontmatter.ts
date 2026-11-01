@@ -235,11 +235,14 @@ export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
           files.push({ path, error: `${path}: not a regular file` });
           continue;
         }
-        if (stat.size > MAX_DEFINITION_BYTES) {
+        // One byte past the cap is enough to know it's too big, however the file changes meanwhile.
+        const buffer = Buffer.alloc(MAX_DEFINITION_BYTES + 1);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        if (bytesRead > MAX_DEFINITION_BYTES) {
           files.push({ path, error: `${path}: larger than ${MAX_DEFINITION_BYTES / 1024} KB` });
           continue;
         }
-        files.push({ path, content: await handle.readFile("utf8") });
+        files.push({ path, content: buffer.toString("utf8", 0, bytesRead) });
       } finally {
         await handle.close();
       }

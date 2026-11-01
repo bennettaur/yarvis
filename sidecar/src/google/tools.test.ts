@@ -92,4 +92,13 @@ describe("list_calendar_events", () => {
     await list({ pastDays: 1 });
     expect(daysBack()).toBeCloseTo(1, 2);
   });
+
+  it("looks back at most a week", () => {
+    const schema = buildCalendarTools(db, config).list_calendar_events.inputSchema as {
+      safeParse: (input: unknown) => { success: boolean };
+    };
+    expect(schema.safeParse({ pastDays: 7 }).success).toBe(true);
+    expect(schema.safeParse({ pastDays: 8 }).success).toBe(false);
+    expect(schema.safeParse({ pastDays: -1 }).success).toBe(false);
+  });
 });

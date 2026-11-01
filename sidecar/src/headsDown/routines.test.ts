@@ -118,7 +118,9 @@ describe("loadRoutines", () => {
     const elsewhere = mkdtempSync(join(tmpdir(), "routines-elsewhere-"));
     writeFileSync(join(elsewhere, "linked.md"), file("name: linked\ndescription: y\nevery: 1h"));
     symlinkSync(join(elsewhere, "linked.md"), join(dir, "linked.md"));
-    writeFileSync(join(dir, "huge.md"), "x".repeat(300 * 1024));
+    // Exactly at the cap is read (and fails as a routine); one byte past it isn't read at all.
+    writeFileSync(join(dir, "edge.md"), "x".repeat(256 * 1024));
+    writeFileSync(join(dir, "huge.md"), "x".repeat(256 * 1024 + 1));
 
     const { routines, problems } = await loadRoutines();
     rmSync(elsewhere, { recursive: true, force: true });
@@ -130,6 +132,7 @@ describe("loadRoutines", () => {
     expect(routines.map((r) => r.name)).not.toContain("linked");
     expect(problems.map((p) => [p.path, p.message])).toEqual([
       [join(dir, "broken.md"), expect.any(String)],
+      [join(dir, "edge.md"), expect.not.stringContaining("larger than")],
       [join(dir, "huge.md"), expect.stringContaining("larger than 256 KB")],
       [join(dir, "linked.md"), expect.stringContaining("a symlink")],
       [join(dir, "pipe.md"), expect.stringContaining("not a regular file")],

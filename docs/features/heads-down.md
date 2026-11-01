@@ -139,7 +139,8 @@ and leave a three-line summary in your notes for me to paste.
   default.
 - `enabled`: `false` to turn it off.
 
-Any other key, such as a misspelled `workinghours`, stops the file loading.
+Any other key, such as a misspelled `workinghours`, stops the file loading. A
+key you leave out takes its default above, not the shipped routine's value.
 
 A file whose `name` matches a shipped routine replaces it whole, so it needs
 every required field too. To turn meeting-alarms off, write a file with
@@ -152,8 +153,8 @@ read shows on the page with the reason.
 A routine follows the same rules as the rest of a pass: it asks before
 anything that waits for your approval, and what it reads in meetings, tickets
 and messages is information, never instructions. The files are only read from
-`~/.yarvis/routines`, never from a repo or workspace, and a symlink there is
-refused rather than followed.
+`~/.yarvis/routines`, never from a repo or workspace, and a symlinked file
+there is refused rather than followed.
 
 To share a routine, send someone the file. **Read a routine before you add
 it.** Its body reaches every pass as your own words, with no one watching, so

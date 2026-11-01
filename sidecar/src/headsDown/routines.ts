@@ -194,11 +194,11 @@ export interface DueInput {
  * The routines a pass should take on: enabled, allowed at this hour, and at
  * least their cadence since they were last done. When more are due than the
  * limit, the most overdue go first, counted in cadences missed rather than
- * minutes: an hourly routine last done 2 hours ago (2) goes before a daily one
- * last done 26 hours ago (1.08). One never done goes first of all. The rest stay due and
- * get the next pass. One a pass was given and didn't
- * finish waits its cadence or an hour, whichever is shorter, before it is
- * given again.
+ * minutes: an hourly routine last done 2 hours ago is 2 cadences overdue and
+ * goes before a daily one last done 26 hours ago (about 1.08), even though the
+ * daily one has waited longer. One never done goes first of all. The rest stay
+ * due and get the next pass. One a pass was given and didn't finish waits its
+ * cadence or an hour, whichever is shorter, before it is given again.
  */
 export function dueRoutines(input: DueInput): Routine[] {
   const minutesSince = (at: Date) => (input.now.getTime() - at.getTime()) / 60_000;
