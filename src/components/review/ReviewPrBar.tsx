@@ -13,6 +13,7 @@ import {
   markReviewedHere,
   seenAt,
 } from "../../lib/reviewWorkspaces/sinceReview";
+import { userIsLooking } from "../../lib/userIsLooking";
 import PrConflictBanner from "../pr/PrConflictBanner";
 import {
   derivePrUiStatus,
@@ -176,11 +177,11 @@ export default function ReviewPrBar({
 
   // The PR's head says a push happened. Nothing else re-reads it while the PR
   // sits open, so ask again now and then — through the lightweight status
-  // rather than the whole detail, and only while the window is in view, since
-  // each ask is a provider call.
+  // rather than the whole detail, and only while the user is looking at the
+  // window, since each ask is a provider call.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refreshStatus();
+      if (userIsLooking()) void refreshStatus();
     }, NEW_COMMITS_POLL_MS);
     return () => clearInterval(timer);
   }, [refreshStatus]);

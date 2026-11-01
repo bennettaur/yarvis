@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunActivity } from "../agentRuns/service.ts";
 import { StreamJsonParser } from "../agentRuns/streamJson.ts";
-import { coverageOf, safeCoverage } from "./coverage.ts";
+import { coverageOf, LANE_CHECKS, safeCoverage } from "./coverage.ts";
 import type { PatchIndexEntry } from "./patchFiles.ts";
 
 // Real folders, so real paths resolve: the context folder sits in the temp
@@ -195,7 +195,10 @@ describe("coverage from a run's reads", () => {
       whole("src/core.ts", perf.id),
       readCall({ file_path: `${contextDir}/patches/package-lock.json.diff`, limit: 200 }).line,
     ]);
-    const { coverage, volumes } = coverageOf(index, activity, { ...where, lanes: true });
+    const { coverage, volumes } = coverageOf(index, activity, {
+      ...where,
+      lanes: new Set(Object.keys(LANE_CHECKS)),
+    });
     expect(coverage.notExamined).toEqual([]);
     const gaps = Object.fromEntries(coverage.laneGaps.map((g) => [g.check, g.paths]));
     expect(gaps["Test quality"]).toEqual(["src/core.ts"]);
@@ -203,6 +206,12 @@ describe("coverage from a run's reads", () => {
     // A check that read nothing missed every patch; skimmed bulk is never owed a whole read.
     expect(gaps.Risk).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
     expect(Object.keys(gaps)).toHaveLength(8);
+    // A check the run wasn't asked for has no lane to miss.
+    const picked = coverageOf(index, activity, {
+      ...where,
+      lanes: new Set(["yarvis-review:test-reviewer", "yarvis-review:performance-reviewer"]),
+    });
+    expect(picked.coverage.laneGaps.map((g) => g.check)).toEqual(["Test quality", "Performance"]);
     // Each agent's reading: a whole 40 KB patch per Read, and the lockfile's first page.
     expect(volumes.map((v) => [v.name, v.bytes])).toEqual([
       ["yarvis-review:test-reviewer", 80_000],

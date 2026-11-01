@@ -46,6 +46,14 @@ export default function ReviewCommentCard({
           <span className="min-w-0 truncate font-mono">{label}</span>
         )}
         <span className="shrink-0">{formatRelativeTime(comment.createdAt)}</span>
+        {comment.source === "verification" && (
+          <span
+            className="shrink-0 rounded bg-sky-900/40 px-1.5 py-0.5 text-sky-300"
+            title="A verification report finding you added. An agent reads it as a problem to check, not as your request."
+          >
+            report finding
+          </span>
+        )}
         {resolved && (
           <span className="shrink-0 rounded bg-emerald-900/40 px-1.5 py-0.5 text-emerald-300">
             resolved

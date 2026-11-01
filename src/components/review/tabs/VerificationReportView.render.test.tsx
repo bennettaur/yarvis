@@ -233,4 +233,64 @@ describe("VerificationReportView", () => {
     const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
     expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(true);
   });
+
+  it("posts a finding with a location to the PR or the linked workspace, once each", async () => {
+    const sent: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: async (f, section) => {
+            sent.push(`pr ${section} ${f.path}:${f.line}`);
+          },
+          toWorkspace: {
+            name: "cache-work",
+            add: async () => {
+              throw new Error("workspace repo not found");
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const buttons = (label: string) =>
+        [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+      // Only the risk concern has a line; the test finding names no line.
+      expect(buttons("Post to PR")).toHaveLength(1);
+      buttons("Post to PR")[0]?.click();
+      buttons("Add to cache-work")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sent).toEqual(["pr Risk src/cache.ts:22"]);
+      const posted = buttons("Posted to PR")[0];
+      expect(posted?.disabled).toBe(true);
+      expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows only the sections a run was asked for, with the flow when it has one", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            tests: pass,
+            flow: {
+              title: "How a lookup is cached",
+              explanation: "Reads go through the cache.",
+              mermaid: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("How a lookup is cached");
+    expect(text).toContain("Test quality");
+    expect(text).not.toContain("Risk");
+    expect(text).not.toContain("Performance");
+  });
 });

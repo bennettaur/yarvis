@@ -3,12 +3,13 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { stopClaudeSession } from "./claudeSession.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
-import { lookupBranchPr } from "./poller.ts";
+import { lookupBranchPr, markWorkspaceListViewed, markWorkspaceViewed } from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -172,6 +173,7 @@ const createReviewCommentSchema = z
     startLine: z.number().int().positive(),
     endLine: z.number().int().positive(),
     body: z.string().min(1).max(16384),
+    source: z.enum(REVIEW_COMMENT_SOURCES).optional(),
   })
   .refine((c) => c.startLine <= c.endLine, "startLine must not be after endLine");
 
@@ -261,7 +263,12 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  router.get("/", async (c) => c.json(await listWorkspaces(db())));
+  // `badges=1` says the list's PR badges are in front of the user, which is
+  // what lets the poller spend provider requests on them.
+  router.get("/", async (c) => {
+    if (c.req.query("badges") === "1") markWorkspaceListViewed();
+    return c.json(await listWorkspaces(db()));
+  });
 
   // The active workspace (if any) a PR was raised from, so the PR view can link
   // back to it. Registered before "/:id" so "for-pr" isn't read as an id.
@@ -310,6 +317,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
+    // `viewing=1` says the user has this workspace open, so the poller keeps its PR current.
+    if (c.req.query("viewing") === "1") markWorkspaceViewed(workspace.id);
     // `pendingBrief` stays server-side: it is how provisioning remembers a
     // kick-off it still owes a session, and nothing outside the sidecar acts on
     // it. Clients open the workspace and attach to whatever session is there.
