@@ -31,6 +31,11 @@ export interface HeadsDownConfig {
   workingHours: WorkingHours | null;
   /** How long without a reply before the user counts as away, in minutes. */
   userAwayAfterMinutes: number;
+  /**
+   * How long one pass may run before it is stopped, in minutes. A slow local
+   * model can need well past the default to get through a pass.
+   */
+  passTimeoutMinutes: number;
   /** The model passes run on. Null uses the default chat model. */
   provider: string | null;
   model: string | null;
@@ -41,12 +46,19 @@ export interface HeadsDownConfig {
   guidance: string | null;
 }
 
+/**
+ * The longest a pass may be allowed to run. A pass holds the loop while it
+ * runs, so a stuck one shouldn't be able to block it for more than a few hours.
+ */
+export const MAX_PASS_TIMEOUT_MINUTES = 4 * 60;
+
 export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   minSleepMinutes: 5,
   maxSleepMinutes: 120,
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
+  passTimeoutMinutes: 20,
   provider: null,
   model: null,
   guidance: null,
@@ -54,11 +66,22 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
 
 const SETTINGS_KEY = "headsDown";
 
+function validPassTimeout(minutes: unknown): number {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 1) {
+    return DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes;
+  }
+  return Math.min(minutes, MAX_PASS_TIMEOUT_MINUTES);
+}
+
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   const stored = await readSection<Partial<HeadsDownConfig>>(SETTINGS_KEY);
   const config = { ...DEFAULT_HEADS_DOWN_CONFIG, ...stored };
-  // Hand-edited settings can hold anything; every pass reads the guidance.
-  return { ...config, guidance: typeof config.guidance === "string" ? config.guidance : null };
+  // Hand-edited settings can hold anything, and skip the route's checks.
+  return {
+    ...config,
+    guidance: typeof config.guidance === "string" ? config.guidance : null,
+    passTimeoutMinutes: validPassTimeout(config.passTimeoutMinutes),
+  };
 }
 
 export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {

@@ -286,10 +286,11 @@ back to ad-hoc.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments. Review
-  comment bodies go out unfenced, the one exception to the rule below, because
-  the user is their only author; a feature that writes them from anywhere else
-  has to fence them first.
+  workspace, listing and resolving that workspace's review comments. Bodies
+  with `source = 'user'` go out unfenced, the one exception to the rule below,
+  because the user wrote them. Any other source (a verification finding the
+  user chose to add) is fenced there and kept out of the event log; a new
+  writer gets a source of its own rather than `user`.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -620,12 +621,16 @@ back to ad-hoc.
   so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
   security default managed settings seat. Claude Code's core agents and skills
   aren't plugins and stay.
-  The permission mode is always set and never one that approves on its own, a
-  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  The permission mode is always set and never one that approves on its own,
+  the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
   caller interpolates), and no session is saved, so the transcript never
   reaches the nightly session digest and from there memory.
-  `agentRuns/canary.ts` checks all of that against the real CLI.
+  `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
+  (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
+  setting only warns, and a run cut off at a cap ends with nothing to show
+  for what it spent. The timeout still bounds a runaway; `maxTurns` limits
+  only the main thread.
   Cancelling kills the process group, since the tools a run starts outlive a
   kill aimed only at Claude Code; so does the sidecar exiting, and the startup
   sweep kills what a crashed sidecar left, matched by pid and start time. The

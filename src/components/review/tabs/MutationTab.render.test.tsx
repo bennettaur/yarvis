@@ -158,7 +158,7 @@ describe("MutationTab", () => {
     button(host, "Run mutation testing")?.click();
     await waitFor(() => button(host, "Start mutation testing") !== undefined, "the start panel");
     const text = textOf(host.innerHTML);
-    expect(text).toContain("cost up to $1.50");
+    expect(text).toContain("budgeted at $1.50 and may cost more");
     expect(text).toContain(NOTES);
     expect(started).toEqual([]);
     button(host, "Not now")?.click();

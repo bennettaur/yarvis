@@ -1,4 +1,6 @@
 import { generateText, stepCountIs, type Tool } from "ai";
+import { yarvisToolType } from "../activity/classify.ts";
+import { type ActivityType, reportYarvisActivity } from "../activity/hub.ts";
 import { builtinIdForName, nameForBuiltinId } from "../agentTools/registry.ts";
 import { listDisabledToolIds } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
@@ -292,6 +294,10 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const prompt = material ? `${task}\n\n${materialBlock(material, nonce)}` : task;
 
+  const report = (type: ActivityType, label: string) =>
+    reportYarvisActivity(specialist.name, type, label);
+
+  report("spawn", "delegated");
   try {
     const result = await generateText({
       model,
@@ -300,7 +306,14 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
       tools,
       stopWhen: stepCountIs(specialist.maxSteps),
       abortSignal: signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS),
+      onStepFinish: (step) => {
+        for (const part of step.content) {
+          if (part.type === "tool-call") report(yarvisToolType(part.toolName), part.toolName);
+          else if (part.type === "tool-error") report("error", `${part.toolName} failed`);
+        }
+      },
     });
+    report("subagent_done", "run complete");
     return {
       specialist: specialist.name,
       text: result.text,
@@ -311,6 +324,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // The provider error carries the request and often the key; log the
     // redacted form and re-throw something the caller can show.
     console.error(`[agents] specialist ${specialist.name} failed:`, describeError(e));
+    report("error", "run failed");
     throw new Error(`specialist "${specialist.name}" failed`);
   }
 }

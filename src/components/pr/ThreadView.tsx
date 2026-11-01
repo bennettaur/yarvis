@@ -14,7 +14,6 @@ export function CommentComposer({
   label,
   placeholder = "Leave a comment…",
   submitLabel = "Comment",
-  initialBody = "",
 }: {
   onSubmit: (body: string) => Promise<void>;
   onCancel: () => void;
@@ -22,10 +21,8 @@ export function CommentComposer({
   label?: string;
   placeholder?: string;
   submitLabel?: string;
-  /** A draft to start from, which the user edits before posting. */
-  initialBody?: string;
 }) {
-  const [body, setBody] = useState(initialBody);
+  const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

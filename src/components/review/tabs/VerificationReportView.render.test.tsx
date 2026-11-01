@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
-import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../../test/render";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -188,122 +188,6 @@ describe("VerificationReportView", () => {
     }
   });
 
-  it("posts a finding on its line from an editable draft", async () => {
-    const posted: { path: string; line: number; body: string }[] = [];
-    const withLine: VerificationReport = {
-      ...report,
-      tests: {
-        status: "issues",
-        findings: [
-          { ...report.tests.findings[0], line: 12 },
-          { title: "No line", detail: "Whole PR.", severity: "low" },
-        ],
-      },
-    };
-    const { host, unmount } = await mountForInteraction(
-      createElement(VerificationReportView, {
-        report: withLine,
-        onOpen: { open: () => {}, canOpen: () => true },
-        comments: {
-          post: async ({ path, line }, body) => {
-            posted.push({ path, line, body });
-          },
-          canComment: () => true,
-        },
-      }),
-    );
-    const buttons = (label: string) =>
-      [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
-    try {
-      // Only the finding that cites a line can be posted.
-      expect(buttons("Comment")).toHaveLength(1);
-      buttons("Comment")[0]?.click();
-      await waitFor(() => !!host.querySelector("textarea"), "the composer");
-      expect(host.querySelector("textarea")?.value).toBe(
-        "**Eviction is untested**\n\nNothing covers a full cache.",
-      );
-      buttons("Post comment")[0]?.click();
-      await waitFor(() => posted.length > 0 && !host.querySelector("textarea"), "the post");
-      expect(posted).toEqual([
-        {
-          path: "src/cache.test.ts",
-          line: 12,
-          body: "**Eviction is untested**\n\nNothing covers a full cache.",
-        },
-      ]);
-      expect(host.querySelector("textarea")).toBeNull();
-      expect(host.textContent).toContain("Commented");
-    } finally {
-      unmount();
-    }
-  });
-
-  it("keeps the draft open with the error when posting fails", async () => {
-    const { host, unmount } = await mountForInteraction(
-      createElement(VerificationReportView, {
-        report: {
-          ...report,
-          tests: { ...report.tests, findings: [{ ...report.tests.findings[0], line: 12 }] },
-        },
-        onOpen: { open: () => {}, canOpen: () => true },
-        comments: {
-          post: async () => {
-            throw new Error("line 12 is not part of the diff");
-          },
-          canComment: () => true,
-        },
-      }),
-    );
-    const button = (label: string) =>
-      [...host.querySelectorAll("button")].find((b) => b.textContent === label);
-    try {
-      button("Comment")?.click();
-      await waitFor(() => !!button("Post comment"), "the composer");
-      button("Post comment")?.click();
-      await waitFor(
-        () => !!host.textContent?.includes("line 12 is not part of the diff"),
-        "the error",
-      );
-      expect(host.querySelector("textarea")).not.toBeNull();
-      expect(host.textContent).not.toContain("Commented");
-    } finally {
-      unmount();
-    }
-  });
-
-  it("offers no comment action on a path the PR doesn't change", async () => {
-    const html = await renderToHtml(
-      createElement(VerificationReportView, {
-        report: {
-          ...report,
-          tests: { ...report.tests, findings: [{ ...report.tests.findings[0], line: 12 }] },
-        },
-        onOpen: { open: () => {}, canOpen: () => true },
-        comments: { post: async () => {}, canComment: () => false },
-      }),
-    );
-    const host = document.createElement("div");
-    host.innerHTML = html;
-    const labels = [...host.querySelectorAll("button")].map((b) => b.textContent);
-    expect(labels).not.toContain("Comment");
-  });
-
-  it("offers no comment action without a way to post", async () => {
-    const html = await renderToHtml(
-      createElement(VerificationReportView, {
-        report: {
-          ...report,
-          tests: { ...report.tests, findings: [{ ...report.tests.findings[0], line: 12 }] },
-        },
-        onOpen: { open: () => {}, canOpen: () => true },
-      }),
-    );
-    const host = document.createElement("div");
-    host.innerHTML = html;
-    const labels = [...host.querySelectorAll("button")].map((b) => b.textContent);
-    expect(labels).not.toContain("Comment");
-  });
-
   it("gives a passing check one line and a failing one its findings", async () => {
     const text = textOf(
       await renderToHtml(
@@ -377,5 +261,65 @@ describe("VerificationReportView", () => {
     host.innerHTML = html;
     const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
     expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(true);
+  });
+
+  it("posts a finding with a location to the PR or the linked workspace, once each", async () => {
+    const sent: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: async (f, section) => {
+            sent.push(`pr ${section} ${f.path}:${f.line}`);
+          },
+          toWorkspace: {
+            name: "cache-work",
+            add: async () => {
+              throw new Error("workspace repo not found");
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const buttons = (label: string) =>
+        [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+      // Only the risk concern has a line; the test finding names no line.
+      expect(buttons("Post to PR")).toHaveLength(1);
+      buttons("Post to PR")[0]?.click();
+      buttons("Add to cache-work")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sent).toEqual(["pr Risk src/cache.ts:22"]);
+      const posted = buttons("Posted to PR")[0];
+      expect(posted?.disabled).toBe(true);
+      expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows only the sections a run was asked for, with the flow when it has one", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            tests: pass,
+            flow: {
+              title: "How a lookup is cached",
+              explanation: "Reads go through the cache.",
+              mermaid: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("How a lookup is cached");
+    expect(text).toContain("Test quality");
+    expect(text).not.toContain("Risk");
+    expect(text).not.toContain("Performance");
   });
 });

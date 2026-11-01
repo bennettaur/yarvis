@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
 import { type AttentionItem, hasAnswerDialog } from "./attention";
+import { userIsLooking } from "./userIsLooking";
 
 /**
  * What the user is currently looking at, as far as the attention stream cares:
@@ -27,12 +28,10 @@ export interface ViewedScope {
 
 const EMPTY: ReadonlySet<string> = new Set();
 
-const windowIsVisible = () => document.hasFocus() && document.visibilityState !== "hidden";
-
 let workspaceId: string | null = null;
 // Keyed by surface so each mounted `TerminalTabs` owns (and clears) its own entry.
 const sessionsBySurface = new Map<string, string[]>();
-let focused = windowIsVisible();
+let focused = userIsLooking();
 
 let snapshot: ViewedScope = { workspaceId: null, sessionKeys: EMPTY, focused };
 const listeners = new Set<() => void>();
@@ -70,7 +69,7 @@ export function setViewedSessions(surfaceKey: string, keys: string[]): void {
 }
 
 const onWindowVisibilityChange = () => {
-  const next = windowIsVisible();
+  const next = userIsLooking();
   if (next === focused) return;
   focused = next;
   rebuild();

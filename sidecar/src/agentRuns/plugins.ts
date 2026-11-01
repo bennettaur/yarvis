@@ -14,6 +14,9 @@ import completenessReviewer from "../../claude-plugins/yarvis-review/agents/comp
 import complexityReviewer from "../../claude-plugins/yarvis-review/agents/complexity-reviewer.md" with {
   type: "text",
 };
+import flowDiagram from "../../claude-plugins/yarvis-review/agents/flow-diagram.md" with {
+  type: "text",
+};
 import observabilityReviewer from "../../claude-plugins/yarvis-review/agents/observability-reviewer.md" with {
   type: "text",
 };
@@ -98,6 +101,7 @@ const PLUGINS = {
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
     "agents/observability-reviewer.md": withInputsAndTrust(observabilityReviewer),
     "agents/quality-reviewer.md": withInputsAndTrust(qualityReviewer),
+    "agents/flow-diagram.md": withInputsAndTrust(flowDiagram),
     "agents/rereviewer.md": withInputsAndTrust(
       rereviewer,
       rereviewInputsAndTrust,

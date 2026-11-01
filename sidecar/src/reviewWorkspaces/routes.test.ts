@@ -63,6 +63,8 @@ let loadFails: boolean;
 let checkoutFails: boolean;
 let loadGate: ReturnType<typeof gate> | null;
 let checkoutGate: ReturnType<typeof gate> | null;
+let stack: PrRef[] | Error;
+let stackLookups: number;
 
 /** Real git against the local test remote, with the checkout under the test's control. */
 function controlledGit(): ReviewGit {
@@ -90,6 +92,11 @@ const deps = (): ReviewDeps => ({
   credentialsFor: () => undefined,
   setupScriptFor: async () => setupScript,
   git: controlledGit,
+  stackOf: async () => {
+    stackLookups++;
+    if (stack instanceof Error) throw stack;
+    return stack;
+  },
 });
 
 const app = new Hono().route("/rw", createReviewWorkspaceRoutes(config, { deps }));
@@ -166,6 +173,8 @@ beforeEach(async () => {
   checkoutFails = false;
   loadGate = null;
   checkoutGate = null;
+  stack = [];
+  stackLookups = 0;
 });
 
 afterEach(() => {
@@ -291,6 +300,58 @@ describe("reads", () => {
     );
     // The merge preview's second parent is the PR head.
     expect((await prRow(prId)).headSha).toBe(sh(remote.work, "rev-parse", "feature").trim());
+  });
+});
+
+describe("stacks", () => {
+  const layer = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
+
+  /** The workspace's PRs in order, once it holds `count` and every clone has finished. */
+  async function settled(wsId: string, count: number): Promise<string[]> {
+    let prs: { id: string; refKey: string }[] = [];
+    await until(async () => {
+      prs = ((await (await call("GET", `/${wsId}`)).json()) as { prs: typeof prs }).prs;
+      return prs.length >= count;
+    }, `${count} pull requests`);
+    for (const pr of prs) await progress(wsId, pr.id);
+    return prs.map((pr) => pr.refKey);
+  }
+
+  it("brings the rest of the stack along, with the PR asked for first", async () => {
+    stack = [layer(2), layer(3)];
+    const { wsId } = await startWorkspace(layer(1));
+    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/2", "gh:o/r/3"]);
+  });
+
+  it("adds only the layers the workspace doesn't already hold", async () => {
+    const { wsId } = await startWorkspace(layer(1));
+    stack = [layer(1), layer(5)];
+    const res = await call("POST", `/${wsId}/prs`, { ref: layer(4) });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { refKey: string }).refKey).toBe("gh:o/r/4");
+    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/4", "gh:o/r/5"]);
+  });
+
+  it("looks a stack up once when the workspace is opened on two of its layers", async () => {
+    stack = [layer(2), layer(3)];
+    const res = await call("POST", "/", { name: "Review", refs: [layer(1), layer(2)] });
+    const { id: wsId } = (await res.json()) as { id: string };
+    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/2", "gh:o/r/3"]);
+    expect(stackLookups).toBe(1);
+  });
+
+  it("still adds the other layers when one can't be added", async () => {
+    // An owner that can't name a folder fails the add before anything is written.
+    stack = [{ provider: "github", owner: "..", repo: "r", number: 2 }, layer(3)];
+    const { wsId } = await startWorkspace(layer(1));
+    expect(await settled(wsId, 2)).toEqual(["gh:o/r/1", "gh:o/r/3"]);
+  });
+
+  it("adds the PR alone when the stack can't be read", async () => {
+    stack = new Error("rate limited");
+    const { wsId } = await startWorkspace(layer(1));
+    await until(async () => stackLookups > 0, "the stack lookup");
+    expect(await settled(wsId, 1)).toEqual(["gh:o/r/1"]);
   });
 });
 
@@ -663,6 +724,8 @@ describe("verification report", () => {
     quality: pass,
   };
   let budget: number;
+  // Makes startClaudeRun throw before it records a run: it reads `program` first.
+  let startFails: boolean;
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -722,7 +785,14 @@ cat "${fakeDir}/result.jsonl"`,
         verification: {
           loadDetail: async () => detail,
           settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
-          run: { program, registry, instance: "test" },
+          run: {
+            get program(): string {
+              if (startFails) throw new Error("no Claude Code here");
+              return program;
+            },
+            registry,
+            instance: "test",
+          },
         },
       }),
     );
@@ -781,12 +851,46 @@ cat "${fakeDir}/result.jsonl"`,
   beforeEach(async () => {
     await sql`TRUNCATE agent_runs`;
     budget = 0.5;
+    startFails = false;
     setUpFake();
   });
 
   afterEach(() => {
     release();
     rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  it("runs only the sections asked for, and refuses one it doesn't know", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const start = (body: unknown) =>
+      verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await start({ sections: ["tests", "vibes"] })).status).toBe(400);
+
+    const res = await start({ sections: ["tests"] });
+    expect(res.status).toBe(202);
+    // The fake creates stdin.txt before it has written the prompt into it.
+    const stdin = join(fakeDir, "stdin.txt");
+    await until(
+      async () => existsSync(stdin) && readFileSync(stdin, "utf8").includes("SECTIONS="),
+      "the fake's stdin",
+    );
+    expect(readFileSync(stdin, "utf8")).toContain("SECTIONS=tests\n");
+    release();
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the report");
+    const { run } = await latest(wsId, prId);
+    // The fake answers every section; only the one asked for is kept.
+    expect(Object.keys(run?.result ?? {}).sort()).toEqual([
+      "coverage",
+      "mustRead",
+      "summary",
+      "tests",
+    ]);
+    const [row] = await db.select().from(agentRuns);
+    expect((row?.meta as { sections?: string[] } | undefined)?.sections).toEqual(["tests"]);
   });
 
   it("refuses to start before the checkout is ready", async () => {
@@ -814,7 +918,8 @@ cat "${fakeDir}/result.jsonl"`,
     expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
-    // context is readable, and the settings chose the model and budget.
+    // context is readable, the settings chose the model, and nothing caps the
+    // run's spend because the budget only warns.
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
@@ -839,7 +944,7 @@ cat "${fakeDir}/result.jsonl"`,
       "\npatches/huge.txt.diff lines 1-",
     );
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
-    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("0.5");
+    expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
@@ -944,10 +1049,11 @@ cat "${fakeDir}/result.jsonl"`,
 
   it("removes the context folder and records nothing when the run can't start", async () => {
     const { wsId, prId } = await readyWorkspace();
-    budget = 0;
+    startFails = true;
     const before = contextDirs();
     const res = await verify("POST", wsId, prId);
     expect(res.status).toBe(500);
+    expect(await res.text()).toContain("no Claude Code here");
     expect(contextDirs()).toEqual(before);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
@@ -1145,6 +1251,7 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
     expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:rereviewer");
+    expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob"]);

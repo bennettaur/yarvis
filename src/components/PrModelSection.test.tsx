@@ -143,14 +143,15 @@ describe("PrModelSection", () => {
     const budget = mounted.host.querySelector(
       '[aria-label="Verification report budget in US dollars"]',
     ) as HTMLInputElement;
-    enter(budget, "0.75", "input");
+    // No upper limit: the budget only warns.
+    enter(budget, "50", "input");
     budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     await settle();
 
     const saves = calls
       .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
       .map((c) => JSON.parse(c.body ?? "{}"));
-    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 0.75 }]);
+    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 50 }]);
   });
 
   it("saves the What's changed summary's own budget and auto-start", async () => {
@@ -179,7 +180,7 @@ describe("PrModelSection", () => {
     );
   });
 
-  it("refuses a budget out of range without saving it", async () => {
+  it("refuses a budget below the minimum without saving it", async () => {
     const mounted = await mountForInteraction(createElement(PrModelSection));
     unmount = mounted.unmount;
     await settle();
@@ -187,11 +188,11 @@ describe("PrModelSection", () => {
     const budget = mounted.host.querySelector(
       '[aria-label="Verification report budget in US dollars"]',
     ) as HTMLInputElement;
-    enter(budget, "500", "input");
+    enter(budget, "0.1", "input");
     budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     await settle();
 
-    expect(mounted.host.textContent).toContain("The budget must be between");
+    expect(mounted.host.textContent).toContain("The budget must be at least $0.25.");
     expect(budget.value).toBe("2");
     expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
       false,

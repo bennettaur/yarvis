@@ -32,7 +32,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
       notes.push({ source: "Must read", title: flag.note, line: flag.line });
     }
   }
-  for (const c of report.risk.concerns) {
+  for (const c of report.risk?.concerns ?? []) {
     if (c.path === path && c.line) {
       notes.push({ source: "Risk", title: c.title, detail: c.detail, line: c.line });
     }

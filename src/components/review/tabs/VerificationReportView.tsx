@@ -10,7 +10,7 @@ import {
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
-import { CommentComposer } from "../../pr/ThreadView";
+import FlowDiagram from "./FlowDiagram";
 
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   completeness: "Completeness",
@@ -28,7 +28,7 @@ const SEVERITY_CLASS: Record<Severity, string> = {
   low: "border-zinc-700 text-zinc-400",
 };
 
-const RISK_CLASS: Record<VerificationReport["risk"]["level"], string> = {
+const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], string> = {
   high: "border-red-700 bg-red-950/40 text-red-300",
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
@@ -43,18 +43,6 @@ export interface OpenLocation {
   open: (path: string, line?: number) => void;
   canOpen: (path: string) => boolean;
 }
-
-/** Posting a finding as a line comment on the PR. */
-export interface FindingComments {
-  /** Posts `body` as a line comment at a finding's location. */
-  post: (location: { path: string; line: number }, body: string) => Promise<void>;
-  /** Whether `path` is a file the PR changes, the only kind the providers take comments on. */
-  canComment: (path: string) => boolean;
-}
-
-/** The draft a finding's comment starts from. */
-const findingCommentDraft = (f: Pick<VerificationFinding, "title" | "detail">) =>
-  `**${f.title}**\n\n${f.detail}`;
 
 function Location({
   path,
@@ -86,6 +74,83 @@ function Location({
   );
 }
 
+/**
+ * Where a finding can be sent once the reviewer has read it. Each takes the
+ * finding and the label of the section it came from, and only findings with a
+ * path and line get the buttons, since both targets anchor to a line.
+ */
+export interface FindingPoster {
+  toPr: (finding: Located, section: string) => Promise<void>;
+  /** Present when the PR was raised from a Yarvis workspace. */
+  toWorkspace?: { name: string; add: (finding: Located, section: string) => Promise<void> };
+}
+
+/** A finding or concern with the location both comment targets need. */
+export type Located = Pick<VerificationFinding, "title" | "detail"> &
+  Partial<Pick<VerificationFinding, "severity">> & { path: string; line: number };
+
+type PostState = "posting" | "posted" | { error: string };
+
+/** The post buttons for one finding, each remembering it was sent so a second click can't repeat it. */
+function PostFinding({
+  finding,
+  section,
+  poster,
+}: {
+  finding: Partial<Located> & Pick<Located, "title" | "detail">;
+  section: string;
+  poster?: FindingPoster;
+}) {
+  const [toPr, setToPr] = useState<PostState | null>(null);
+  const [toWorkspace, setToWorkspace] = useState<PostState | null>(null);
+  const { path, line } = finding;
+  if (!poster || !path || !line) return null;
+  const located: Located = { ...finding, path, line };
+  const send = async (fn: () => Promise<void>, set: (s: PostState) => void) => {
+    set("posting");
+    try {
+      await fn();
+      set("posted");
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={state === "posting" || state === "posted"}
+      className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+    >
+      {state === "posting" ? "Posting…" : state === "posted" ? done : idle}
+    </button>
+  );
+  const errors = [toPr, toWorkspace].flatMap((s) => (s && typeof s === "object" ? [s.error] : []));
+  const workspace = poster.toWorkspace;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {button(
+        toPr,
+        "Post to PR",
+        "Posted to PR",
+        () => void send(() => poster.toPr(located, section), setToPr),
+      )}
+      {workspace &&
+        button(
+          toWorkspace,
+          `Add to ${workspace.name}`,
+          `Added to ${workspace.name}`,
+          () => void send(() => workspace.add(located, section), setToWorkspace),
+        )}
+      {errors.map((e) => (
+        <span key={e} role="alert" className="text-[10px] text-red-400">
+          {e}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2">
@@ -106,66 +171,6 @@ const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
 const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
 /**
- * One finding, with a way to post it as a comment when it cites a line of one
- * of the PR's files: the providers only take a comment anchored to one. The
- * draft is the report's model-written text, so the user edits and sends it;
- * nothing is posted without that.
- */
-function FindingItem({
-  finding,
-  onOpen,
-  viewed,
-  comments,
-}: {
-  finding: VerificationFinding;
-  onOpen: OpenLocation;
-  viewed: Viewed;
-  comments?: FindingComments;
-}) {
-  const [composing, setComposing] = useState(false);
-  const [posted, setPosted] = useState(false);
-  const { title, detail, severity, path, line } = finding;
-  const target = comments && path && line && comments.canComment(path) ? { path, line } : null;
-  return (
-    <li className={`space-y-0.5 ${viewedClass(isViewed(viewed, path))}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span
-          className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[severity]}`}
-        >
-          {severity}
-        </span>
-        <span className="font-medium text-zinc-200">{title}</span>
-        <Location path={path} line={line} onOpen={onOpen} />
-        {target && posted && <span className="text-[11px] text-emerald-400">Commented</span>}
-        {target && !posted && !composing && (
-          <button
-            type="button"
-            onClick={() => setComposing(true)}
-            className="text-[11px] text-zinc-500 hover:text-zinc-300"
-          >
-            Comment
-          </button>
-        )}
-      </div>
-      <p className="text-xs text-zinc-400">{detail}</p>
-      {target && composing && (
-        <CommentComposer
-          label={`Comment on ${target.path}:${target.line}`}
-          initialBody={findingCommentDraft(finding)}
-          submitLabel="Post comment"
-          onSubmit={async (body) => {
-            await comments?.post(target, body);
-            setComposing(false);
-            setPosted(true);
-          }}
-          onCancel={() => setComposing(false)}
-        />
-      )}
-    </li>
-  );
-}
-
-/**
  * A check passing is one line and nothing more: the reader's time goes to the
  * checks that found something, which open with their findings showing.
  */
@@ -174,13 +179,13 @@ function CheckRow({
   check,
   onOpen,
   viewed,
-  comments,
+  poster,
 }: {
   label: string;
   check: VerificationCheck;
   onOpen: OpenLocation;
   viewed: Viewed;
-  comments?: FindingComments;
+  poster?: FindingPoster;
 }) {
   if (check.status === "pass" || check.findings.length === 0) {
     return (
@@ -206,13 +211,22 @@ function CheckRow({
       </summary>
       <ul className="mt-1 space-y-2 pl-5">
         {check.findings.map((f) => (
-          <FindingItem
+          <li
             key={`${f.title}:${f.path}:${f.line}`}
-            finding={f}
-            onOpen={onOpen}
-            viewed={viewed}
-            comments={comments}
-          />
+            className={`space-y-0.5 ${viewedClass(isViewed(viewed, f.path))}`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[f.severity]}`}
+              >
+                {f.severity}
+              </span>
+              <span className="font-medium text-zinc-200">{f.title}</span>
+              <Location path={f.path} line={f.line} onOpen={onOpen} />
+            </div>
+            <p className="text-xs text-zinc-400">{f.detail}</p>
+            <PostFinding finding={f} section={label} poster={poster} />
+          </li>
         ))}
       </ul>
     </details>
@@ -379,13 +393,13 @@ export default function VerificationReportView({
   report,
   onOpen,
   viewed = NONE_VIEWED,
-  comments,
+  poster,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
-  /** Lets a finding be posted as a PR comment; without it, findings are read-only. */
-  comments?: FindingComments;
+  /** Absent where findings can't be sent anywhere. */
+  poster?: FindingPoster;
 }) {
   const { risk } = report;
   const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
@@ -407,60 +421,71 @@ export default function VerificationReportView({
         </Section>
       )}
 
-      <Section title="Risk">
-        <div className="space-y-2 text-sm">
-          <div className="flex items-start gap-2">
-            <span
-              className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
-            >
-              {risk.level} risk
-            </span>
-            <span className="text-zinc-300">{risk.clientImpact}</span>
-          </div>
-          {risk.mitigations.length > 0 && (
-            <div className="text-xs text-zinc-400">
-              <span className="text-zinc-500">Mitigations: </span>
-              {risk.mitigations.join(" · ")}
-            </div>
-          )}
-          {risk.concerns.length > 0 && (
-            <ul className="space-y-1.5">
-              {risk.concerns.map((c) => (
-                <li
-                  key={`${c.title}:${c.path}:${c.line}`}
-                  className={viewedClass(isViewed(viewed, c.path))}
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-zinc-200">{c.title}</span>
-                    <Location path={c.path} line={c.line} onOpen={onOpen} />
-                  </div>
-                  <p className="text-xs text-zinc-400">{c.detail}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </Section>
+      {report.flow && (
+        <Section title="Flow">
+          <FlowDiagram flow={report.flow} />
+        </Section>
+      )}
 
-      <Section title="Checks">
-        <div className="space-y-2">
-          {VERIFICATION_CHECKS.map((key) => {
-            const check = report[key];
-            // A report from before a check existed has nothing to say about it.
-            if (!check) return null;
-            return (
-              <CheckRow
-                key={key}
-                label={CHECK_LABEL[key]}
-                check={check}
-                onOpen={onOpen}
-                viewed={viewed}
-                comments={comments}
-              />
-            );
-          })}
-        </div>
-      </Section>
+      {risk && (
+        <Section title="Risk">
+          <div className="space-y-2 text-sm">
+            <div className="flex items-start gap-2">
+              <span
+                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+              >
+                {risk.level} risk
+              </span>
+              <span className="text-zinc-300">{risk.clientImpact}</span>
+            </div>
+            {risk.mitigations.length > 0 && (
+              <div className="text-xs text-zinc-400">
+                <span className="text-zinc-500">Mitigations: </span>
+                {risk.mitigations.join(" · ")}
+              </div>
+            )}
+            {risk.concerns.length > 0 && (
+              <ul className="space-y-1.5">
+                {risk.concerns.map((c) => (
+                  <li
+                    key={`${c.title}:${c.path}:${c.line}`}
+                    className={viewedClass(isViewed(viewed, c.path))}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-zinc-200">{c.title}</span>
+                      <Location path={c.path} line={c.line} onOpen={onOpen} />
+                    </div>
+                    <p className="text-xs text-zinc-400">{c.detail}</p>
+                    <PostFinding finding={c} section="Risk" poster={poster} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {VERIFICATION_CHECKS.some((key) => report[key]) && (
+        <Section title="Checks">
+          <div className="space-y-2">
+            {VERIFICATION_CHECKS.map((key) => {
+              const check = report[key];
+              // Absent when the run wasn't asked for it, or was made before the check existed.
+              if (!check) return null;
+              return (
+                <CheckRow
+                  key={key}
+                  label={CHECK_LABEL[key]}
+                  check={check}
+                  onOpen={onOpen}
+                  viewed={viewed}
+                  poster={poster}
+                />
+              );
+            })}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }

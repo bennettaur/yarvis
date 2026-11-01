@@ -27,7 +27,8 @@ export async function getPrModelConfig(): Promise<PrModelConfig> {
 
 /**
  * The verification report runs on Claude Code, so it takes a Claude Code
- * model alias and a spend ceiling rather than a provider/model pair.
+ * model alias and a budget rather than a provider/model pair. The budget only
+ * warns: a run estimated over it asks first, and nothing stops it once agreed.
  */
 export const VERIFICATION_MODELS = ["sonnet", "opus", "haiku"] as const;
 
@@ -38,7 +39,8 @@ export interface VerificationRunConfig {
   maxBudgetUsd: number;
 }
 
-export const VERIFICATION_BUDGET_LIMITS = { min: 0.25, max: 20 } as const;
+/** Mirrors `verificationRunConfigSchema` in `sidecar/src/pr/models.ts`. */
+export const VERIFICATION_BUDGET_MIN_USD = 0.25;
 
 export async function getVerificationRunConfig(): Promise<VerificationRunConfig> {
   const res = await sidecarFetch("/api/pr-models/verification");
@@ -61,7 +63,7 @@ export async function saveVerificationRunConfig(
 
 /**
  * The "What's changed" summary on a re-review: a Claude Code model, its own
- * spend ceiling, and whether it starts by itself when the tab opens.
+ * budget, and whether it starts by itself when the tab opens.
  */
 export interface RereviewRunConfig extends VerificationRunConfig {
   autoStart: boolean;

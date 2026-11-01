@@ -106,6 +106,7 @@ but it isn't notarized, so macOS blocks its first launch.
 | [Review workspaces](docs/features/review-workspaces.md) | Review PRs checked out locally, in tabs, side by side, several at once |
 | [Issues and tasks](docs/features/issues-and-tasks.md) | GitHub issues, JIRA tickets and Azure Boards work items, your task list, and one-click "Start work" |
 | [Omni view](docs/features/omni-view.md) | Describe a dashboard and get one, built from live widgets |
+| [Agent Field](docs/features/agent-field.md) | An 8-bit, chiptune visualizer of what your Claude Code sessions and Yarvis are doing right now |
 | [Voice](docs/features/voice.md) | Talk to the assistant and hear it answer, fully local if you like |
 | [Calendar and alarms](docs/features/calendar-and-alarms.md) | Google Calendar, and full-screen meeting alarms |
 | [Clipboard](docs/features/clipboard.md) | Copy buttons everywhere, and a palette of saved snippets and history |
