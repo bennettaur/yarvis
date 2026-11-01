@@ -102,15 +102,21 @@ export interface UntrustedReads {
   hasReadWebPage: boolean;
   /** An artifact marked untrusted, such as one a heads-down pass or specialist wrote. */
   hasReadUntrustedArtifact: boolean;
+  /** The turn's own message quotes a page: the side panel sends the tab's title and selection. */
+  messageQuotesPage: boolean;
 }
 
-export function newUntrustedReads(): UntrustedReads {
-  return { hasReadWebPage: false, hasReadUntrustedArtifact: false };
+export function newUntrustedReads(options: { messageQuotesPage?: boolean } = {}): UntrustedReads {
+  return {
+    hasReadWebPage: false,
+    hasReadUntrustedArtifact: false,
+    messageQuotesPage: options.messageQuotesPage ?? false,
+  };
 }
 
 /** Whether the turn's next request may be coming from something it read rather than the user. */
 export function hasReadUntrusted(reads: UntrustedReads): boolean {
-  return reads.hasReadWebPage || reads.hasReadUntrustedArtifact;
+  return reads.hasReadWebPage || reads.hasReadUntrustedArtifact || reads.messageQuotesPage;
 }
 
 /** An `update_artifact` call that replaces or renames rather than appends: as lossy as a delete. */

@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { newAttentionState } from "../chat/attentionTools.ts";
+import { builtinToolFamilies } from "../chat/builtinTools.ts";
 import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
 import {
@@ -8,6 +10,7 @@ import {
   ArtifactTooLargeError,
   createArtifact,
   deleteArtifact,
+  deleteArtifacts,
   getArtifact,
   listArtifacts,
   MAX_ARTIFACT_CHARS,
@@ -57,6 +60,36 @@ describe("artifacts", () => {
     ]);
     // A wildcard in the filter is matched literally.
     expect(await listArtifacts(db, { titleContains: "%" })).toEqual([]);
+    // A blank filter is no filter.
+    expect(await listArtifacts(db, { titleContains: "   " })).toHaveLength(2);
+  });
+
+  it("matches an underscore in the title filter literally, not as any character", async () => {
+    await createArtifact(db, { title: "a_b" });
+    await createArtifact(db, { title: "axb" });
+    expect((await listArtifacts(db, { titleContains: "_" })).map((a) => a.title)).toEqual(["a_b"]);
+  });
+
+  it("refuses to create an artifact past the size cap, and writes nothing", async () => {
+    await expect(
+      createArtifact(db, { title: "Big", content: "x".repeat(MAX_ARTIFACT_CHARS + 1) }),
+    ).rejects.toBeInstanceOf(ArtifactTooLargeError);
+    expect(await listArtifacts(db)).toEqual([]);
+    expect(await sql`SELECT 1 FROM events`).toHaveLength(0);
+  });
+
+  it("trims a new title", async () => {
+    const pad = await createArtifact(db, { title: "Old" });
+    expect((await updateArtifact(db, pad.id, { title: "  New  " }))!.title).toBe("New");
+  });
+
+  it("deletes several at once and counts only the ones that existed", async () => {
+    const a = await createArtifact(db, { title: "A" });
+    const b = await createArtifact(db, { title: "B" });
+    const c = await createArtifact(db, { title: "C" });
+    expect(await deleteArtifacts(db, [a.id, b.id, crypto.randomUUID()])).toBe(2);
+    expect((await listArtifacts(db)).map((x) => x.id)).toEqual([c.id]);
+    expect(await deleteArtifacts(db, [])).toBe(0);
   });
 
   it("keeps both of two appends made at the same time", async () => {
@@ -143,6 +176,15 @@ describe("artifact tools", () => {
     };
     expect(result.error).toContain(String(MAX_ARTIFACT_CHARS));
   });
+
+  it("deletes an artifact, and says so when it is already gone", async () => {
+    const { id } = (await tools.create_artifact.execute!({ title: "Old" }, opts)) as { id: string };
+    expect(await tools.delete_artifact.execute!({ id }, opts)).toEqual({ id, deleted: true });
+    expect(await getArtifact(db, id)).toBeNull();
+    expect(await tools.delete_artifact.execute!({ id }, opts)).toEqual({
+      error: "no artifact with that id",
+    });
+  });
 });
 
 describe("who wrote an artifact", () => {
@@ -227,5 +269,89 @@ describe("who wrote an artifact", () => {
     const reads = newUntrustedReads();
     await buildArtifactTools(db, { reads }).get_artifact.execute!({ id }, opts);
     expect(reads.hasReadUntrustedArtifact).toBe(true);
+  });
+
+  it("marks what a side-panel turn writes as untrusted, since its message quotes the page", async () => {
+    const tools = buildArtifactTools(db, { reads: newUntrustedReads({ messageQuotesPage: true }) });
+    const id = await create(tools, "From the tab", "x");
+    expect((await getArtifact(db, id))!.untrusted).toBe(true);
+  });
+
+  it("won't let a pass delete an artifact a chat turn created, only its own", async () => {
+    const mine = await create(chatTools, "Plan", "the user's plan");
+    const theirs = await create(passTools, "Scratchpad", "draft");
+
+    const refused = (await passTools.delete_artifact.execute!({ id: mine }, opts)) as {
+      error?: string;
+    };
+    expect(refused.error).toContain("only the user can delete it");
+    expect(await getArtifact(db, mine)).not.toBeNull();
+
+    expect(await passTools.delete_artifact.execute!({ id: theirs }, opts)).toEqual({
+      id: theirs,
+      deleted: true,
+    });
+    expect(await deleteArtifact(db, crypto.randomUUID(), "specialist")).toBe(false);
+  });
+
+  it("tells the model who wrote each artifact and which are untrusted", async () => {
+    const id = await create(passTools, "Pass notes", "y");
+    const listed = (await chatTools.list_artifacts.execute!({}, opts)) as {
+      artifacts: { createdBy: string; untrusted: boolean }[];
+    };
+    expect(listed.artifacts[0]).toMatchObject({ createdBy: "heads-down", untrusted: true });
+    const read = (await chatTools.get_artifact.execute!({ id }, opts)) as {
+      createdBy: string;
+      untrusted: boolean;
+    };
+    expect(read).toMatchObject({ createdBy: "heads-down", untrusted: true });
+  });
+
+  it("leaves a chat turn's own append trusted", async () => {
+    const id = await create(chatTools, "Mine", "x");
+    await chatTools.update_artifact.execute!({ id, append: "y" }, opts);
+    expect((await getArtifact(db, id))!.untrusted).toBe(false);
+  });
+
+  it("reports a pass's oversized rewrite of its own artifact as too large, not append-only", async () => {
+    const id = await create(passTools, "Scratchpad", "draft");
+    await expect(
+      updateArtifact(db, id, {
+        content: "x".repeat(MAX_ARTIFACT_CHARS),
+        append: "y",
+        writer: "heads-down",
+      }),
+    ).rejects.toBeInstanceOf(ArtifactTooLargeError);
+  });
+
+  it("writes as heads-down from a pass and as a specialist from a run", async () => {
+    const id = await create(chatTools, "Plan", "the user's plan");
+    const deps = {
+      db,
+      config: { secrets: {} } as never,
+      sessionId: "s",
+      memory: undefined as never,
+      attention: newAttentionState(),
+      remoteControl: false,
+      untrustedReads: newUntrustedReads(),
+      atTheApp: false,
+    };
+    const writers = [
+      ["heads-down", builtinToolFamilies({ ...deps, unattended: true }).artifacts!],
+      ["specialist", builtinToolFamilies({ ...deps, specialistRun: true }).artifacts!],
+    ] as const;
+
+    for (const [writer, tools] of writers) {
+      const rewrite = (await tools.update_artifact!.execute!({ id, content: "gone" }, opts)) as {
+        error?: string;
+      };
+      expect(rewrite.error).toContain("only append");
+
+      const own = await create(tools as typeof chatTools, `${writer} notes`, "z");
+      const row = (await getArtifact(db, own))!;
+      expect(row.createdBy).toBe(writer);
+      expect(row.untrusted).toBe(true);
+    }
+    expect((await getArtifact(db, id))!.content).toBe("the user's plan");
   });
 });

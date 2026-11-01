@@ -278,8 +278,9 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // A delegated run is not the user asking for a session, so nothing it starts
     // is made remotely controllable.
     remoteControl: false,
-    // Nothing reads this: a delegated run has no approval channel, and its
-    // outward-facing tools need an explicit grant instead.
+    // A delegated run has no approval channel, so this gates nothing; its
+    // outward-facing tools need an explicit grant instead. (What it writes to an
+    // artifact is marked untrusted regardless.)
     untrustedReads: newUntrustedReads(),
     // The question tools wait on the user for longer than a run may last, holding
     // up the chat or job that started it, and a run has no chat to show them in.

@@ -56,6 +56,9 @@ describe("/api/artifacts", () => {
     expect(missing.status).toBe(404);
     const malformed = await app.request("/api/artifacts/not-a-uuid", { headers: auth });
     expect(malformed.status).toBe(404);
+    // An id with a valid UUID inside it is still malformed, not a database error.
+    const padded = await app.request(`/api/artifacts/${artifact.id}x`, { headers: auth });
+    expect(padded.status).toBe(404);
   });
 
   it("deletes an artifact", async () => {
@@ -65,6 +68,7 @@ describe("/api/artifacts", () => {
     expect(await (await del(artifact.id)).json()).toEqual({ deleted: true });
     expect(await (await del(artifact.id)).json()).toEqual({ deleted: false });
     expect(await (await del("not-a-uuid")).json()).toEqual({ deleted: false });
+    expect(await (await del(`x${crypto.randomUUID()}`)).json()).toEqual({ deleted: false });
   });
 
   it("deletes several artifacts at once, skipping ones already gone", async () => {
@@ -91,6 +95,7 @@ describe("/api/artifacts", () => {
         body: JSON.stringify(body),
       });
     expect((await post({ ids: ["not-a-uuid"] })).status).toBe(400);
+    expect((await post({ ids: [`${crypto.randomUUID()}x`] })).status).toBe(400);
     expect((await post({ ids: [] })).status).toBe(400);
     const tooMany = Array.from({ length: 101 }, () => crypto.randomUUID());
     expect((await post({ ids: tooMany })).status).toBe(400);

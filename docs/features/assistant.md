@@ -218,13 +218,14 @@ weekday-morning job can leave a fresh brief waiting for you. A task the
 assistant schedules for itself in a chat can only read them.
 
 A heads-down pass or a specialist (which is what a Jobs-tab job runs) can add
-to the end of an artifact you asked for in a chat, but can't rewrite or rename
-it. They can rewrite artifacts they created themselves, and you can still have
-any artifact rewritten from a chat.
+to the end of an artifact you asked for in a chat, but can't rewrite, rename or
+delete it. They can rewrite and delete artifacts they created themselves, and
+you can still have any artifact rewritten or deleted from a chat.
 
 Those runs may be working from a ticket or message someone else wrote, so their
 artifacts are marked untrusted. So is anything written in a chat turn after it
-read a web page or an untrusted artifact. Once a chat turn reads an untrusted
+read a web page or an untrusted artifact, and anything written from the Chrome
+side panel, whose messages carry the open tab's text. Once a chat turn reads an untrusted
 artifact, actions that can't be undone, rewriting an artifact among them, ask
 for your approval for the rest of that turn, as they do after reading a web
 page. Spoken turns always ask before rewriting one.

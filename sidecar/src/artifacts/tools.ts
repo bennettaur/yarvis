@@ -30,6 +30,9 @@ const TOO_LARGE = `That would make the artifact longer than ${MAX_ARTIFACT_CHARS
 const APPEND_ONLY =
   "This artifact came from a chat with the user, so you can only append to it. Start a new artifact to rewrite or rename it.";
 
+const CHAT_ARTIFACT_KEPT =
+  "This artifact came from a chat with the user, so only the user can delete it.";
+
 /**
  * `writer` is who is calling; a heads-down pass or specialist run can only
  * append to an artifact a chat turn created. `reads` is the turn's record of
@@ -40,11 +43,12 @@ export function buildArtifactTools(
   db: Db,
   { writer = "chat", reads }: { writer?: ArtifactWriter; reads?: UntrustedReads } = {},
 ) {
+  // Text written after an untrusted read may have come from what was read.
   const tainted = () => (reads ? hasReadUntrusted(reads) : false);
   const appendOnlyNote =
     writer === "chat"
       ? ""
-      : " You can only append to an artifact written in a chat with the user, not rewrite or rename it.";
+      : " You can only append to an artifact that came from a chat with the user, not rewrite, rename or delete it.";
 
   return {
     create_artifact: tool({
@@ -78,7 +82,7 @@ export function buildArtifactTools(
       execute: async ({ titleContains }) => {
         const nonce = newNonce();
         const rows = await listArtifacts(db, { titleContains });
-        // A pass can put an instruction in a title as easily as in the content.
+        // A pass can write a title as easily as content, so seeing one counts as reading it.
         if (reads && rows.some((a) => a.untrusted)) reads.hasReadUntrustedArtifact = true;
         return {
           warning: untrustedWarning(nonce),
@@ -86,6 +90,8 @@ export function buildArtifactTools(
             id: a.id,
             title: fence(a.title, nonce),
             format: a.format,
+            createdBy: a.createdBy,
+            untrusted: a.untrusted,
             length: a.length,
             updatedAt: a.updatedAt.toISOString(),
           })),
@@ -108,6 +114,8 @@ export function buildArtifactTools(
           id: artifact.id,
           title: fence(artifact.title, nonce),
           format: artifact.format,
+          createdBy: artifact.createdBy,
+          untrusted: artifact.untrusted,
           content: fence(artifact.content, nonce),
           updatedAt: artifact.updatedAt.toISOString(),
         };
@@ -142,8 +150,13 @@ export function buildArtifactTools(
       description: "Permanently delete one of your artifacts.",
       inputSchema: z.object({ id: uuid }),
       execute: async ({ id }) => {
-        const deleted = await deleteArtifact(db, id);
-        return deleted ? { id, deleted: true } : { error: "no artifact with that id" };
+        try {
+          const deleted = await deleteArtifact(db, id, writer);
+          return deleted ? { id, deleted: true } : { error: "no artifact with that id" };
+        } catch (err) {
+          if (err instanceof ArtifactAppendOnlyError) return { error: CHAT_ARTIFACT_KEPT };
+          throw err;
+        }
       },
     }),
   };

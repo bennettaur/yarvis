@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type Artifact,
   type ArtifactSummary,
@@ -8,6 +8,7 @@ import {
   getArtifact,
   listArtifacts,
 } from "../../lib/artifacts";
+import { formatError } from "../../lib/errors";
 import { useCachedResource } from "../../lib/resourceCache";
 import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
@@ -40,6 +41,7 @@ export default function ArtifactsTab() {
   const listRes = useCachedResource<ArtifactSummary[]>("memory:artifacts", listArtifacts);
   const artifacts = listRes.data ?? NO_ARTIFACTS;
   const selected = artifacts.find((a) => a.id === selectedId) ?? null;
+  const openId = selected?.id;
   // Only ticks on artifacts still listed count, so the number matches what's shown.
   const checkedIds = artifacts.filter((a) => checked.has(a.id)).map((a) => a.id);
   const allChecked = artifacts.length > 0 && checkedIds.length === artifacts.length;
@@ -48,7 +50,13 @@ export default function ArtifactsTab() {
   // last opened is fetched again rather than served from the cache.
   const artifactRes = useCachedResource<Artifact>(
     selected ? `memory:artifact:${selected.id}:${selected.updatedAt}` : null,
-    () => getArtifact(selected!.id),
+    () => getArtifact(openId as string),
+  );
+  // Ticking boxes re-renders the tab; don't re-parse a long document each time.
+  const content = artifactRes.data?.content;
+  const rendered = useMemo(
+    () => (content === undefined ? null : <Markdown>{content}</Markdown>),
+    [content],
   );
 
   // Keyboard focus would otherwise drop to the page when the confirm buttons replace the one clicked.
@@ -77,7 +85,7 @@ export default function ArtifactsTab() {
     try {
       await remove();
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : String(err));
+      setDeleteError(formatError(err).message);
       return;
     } finally {
       setDeleting(false);
@@ -110,6 +118,7 @@ export default function ArtifactsTab() {
             <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-xs">
               <input
                 type="checkbox"
+                disabled={deleting}
                 checked={allChecked}
                 onChange={toggleAll}
                 aria-label="Select all artifacts"
@@ -147,8 +156,9 @@ export default function ArtifactsTab() {
                   </span>
                   <button
                     type="button"
+                    disabled={deleting}
                     onClick={() => setConfirmIds(checkedIds)}
-                    className="text-red-400 hover:text-red-300"
+                    className="text-red-400 hover:text-red-300 disabled:opacity-50"
                   >
                     Delete selected
                   </button>
@@ -161,6 +171,7 @@ export default function ArtifactsTab() {
                   <input
                     type="checkbox"
                     className="mt-1"
+                    disabled={deleting}
                     checked={checked.has(artifact.id)}
                     onChange={() => toggle(artifact.id)}
                     aria-label={`Select ${artifact.title}`}
@@ -214,7 +225,7 @@ export default function ArtifactsTab() {
                 <p className="mb-2 text-xs text-zinc-500">
                   Source: {WRITER_LABELS[artifactRes.data.createdBy]}
                 </p>
-                <Markdown>{artifactRes.data.content}</Markdown>
+                {rendered}
               </>
             ) : null}
             {artifactRes.error && <p className="text-sm text-red-400">{artifactRes.error}</p>}

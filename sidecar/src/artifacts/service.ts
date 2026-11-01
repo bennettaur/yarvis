@@ -27,10 +27,10 @@ export class ArtifactTooLargeError extends Error {
   }
 }
 
-/** A heads-down pass or specialist tried to rewrite or rename an artifact from a chat. */
+/** A heads-down pass or specialist tried to rewrite, rename or delete an artifact a chat turn created. */
 export class ArtifactAppendOnlyError extends Error {
   constructor() {
-    super("only a chat turn can rewrite or rename an artifact a chat turn created");
+    super("only a chat turn can rewrite, rename or delete an artifact a chat turn created");
   }
 }
 
@@ -148,6 +148,7 @@ export async function updateArtifact(
       and(
         eq(artifacts.id, id),
         sql`char_length(${next}) <= ${MAX_ARTIFACT_CHARS}`,
+        // Leaves a chat turn's artifact alone; the error below tells the two apart.
         appendOnly ? ne(artifacts.createdBy, "chat") : undefined,
       ),
     )
@@ -168,11 +169,23 @@ export async function updateArtifact(
   return row;
 }
 
-export async function deleteArtifact(db: Db, id: string): Promise<boolean> {
-  return (await deleteArtifacts(db, [id])) > 0;
+/** Like an update, a heads-down pass or specialist can't delete what a chat turn created. */
+export async function deleteArtifact(
+  db: Db,
+  id: string,
+  writer: ArtifactWriter = "chat",
+): Promise<boolean> {
+  if (writer === "chat") return (await deleteArtifacts(db, [id])) > 0;
+  const deleted = await db
+    .delete(artifacts)
+    .where(and(eq(artifacts.id, id), ne(artifacts.createdBy, "chat")))
+    .returning({ id: artifacts.id });
+  if (deleted.length > 0) return true;
+  if (await getArtifact(db, id)) throw new ArtifactAppendOnlyError();
+  return false;
 }
 
-/** Deletes every artifact named; returns how many there were. */
+/** Deletes every artifact named; returns how many were deleted. */
 export async function deleteArtifacts(db: Db, ids: string[]): Promise<number> {
   if (ids.length === 0) return 0;
   const deleted = await db

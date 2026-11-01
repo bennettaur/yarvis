@@ -36,7 +36,13 @@ const ARTIFACTS = [
   },
 ];
 
-let listed: { id: string }[] = ARTIFACTS;
+let listed: { id: string; updatedAt?: string }[] = ARTIFACTS;
+/** What reading one artifact returns, by id. */
+let contents: Record<string, string> = {};
+/** Every single-artifact read the tab made. */
+let reads: string[] = [];
+/** Set to make listing answer with a server error. */
+let failList = false;
 /** Every delete request the tab made, as method and path plus the body's ids. */
 let deletes: { method: string; path: string; ids?: string[] }[] = [];
 /** Set to make the next delete answer with a server error. */
@@ -66,7 +72,15 @@ stubSidecarApi({
       failNextDelete = false;
       return new Response("boom", { status: 500 });
     }
-    if (method === "DELETE") {
+    const readId = path.match(/^\/api\/artifacts\/(\w+)$/)?.[1];
+    if (method === "GET" && failList && path === "/api/artifacts") {
+      return new Response("boom", { status: 500 });
+    }
+    if (method === "GET" && readId) {
+      reads.push(readId);
+      const row = ARTIFACTS.find((a) => a.id === readId)!;
+      body = { ...row, ...listed.find((a) => a.id === readId), content: contents[readId] };
+    } else if (method === "DELETE") {
       const id = path.split("/").pop();
       deletes.push({ method, path });
       listed = listed.filter((a) => a.id !== id);
@@ -133,6 +147,8 @@ describe("ArtifactsTab deleting", () => {
   const mount = async () => {
     listed = [...ARTIFACTS];
     deletes = [];
+    reads = [];
+    contents = { a1: "**Top** of the day", a3: "Pack the charger" };
     clearResourceCache();
     const mounted = await mountForInteraction(createElement(ArtifactsTab));
     unmount = mounted.unmount;
@@ -192,10 +208,70 @@ describe("ArtifactsTab deleting", () => {
 
     buttonNamed(host, "Delete selected")?.click();
     await settle();
+    // Keyboard focus lands on Cancel, not back on the page.
+    expect(document.activeElement?.textContent).toBe("Cancel");
     buttonNamed(host, "Cancel")?.click();
     await settle();
     expect(deletes).toEqual([]);
     expect(host.textContent).toContain("3 selected");
+
+    checkbox(host, "Select all artifacts").click();
+    await settle();
+    expect(host.textContent).toContain("Select to delete several");
+    expect(checkbox(host, "Select Trip plan").checked).toBe(false);
+  });
+
+  const titleButton = (host: HTMLElement, title: string) =>
+    Array.from(host.querySelectorAll("button")).find((b) =>
+      b.querySelector("p")?.textContent?.startsWith(title),
+    )!;
+
+  it("opens an artifact to read, with where it came from", async () => {
+    const host = await mount();
+    titleButton(host, "Morning brief").click();
+    await settle();
+    expect(reads).toEqual(["a1"]);
+    expect(host.textContent).not.toContain("Pick an artifact to read it.");
+    expect(host.textContent).toContain("Source: Specialist or job");
+    expect(host.querySelector("strong")?.textContent).toBe("Top");
+  });
+
+  it("reads an open artifact again once the agent has changed it", async () => {
+    const host = await mount();
+    titleButton(host, "Morning brief").click();
+    await settle();
+
+    contents.a1 = "Appended by a pass";
+    listed = listed.map((a) =>
+      a.id === "a1" ? { ...a, updatedAt: "2026-10-30T09:00:00.000Z" } : a,
+    );
+    // Deleting another artifact refreshes the list, which carries the new update time.
+    buttonNamed(host, "Delete Heads-down scratchpad")?.click();
+    await settle();
+    expect(reads).toEqual(["a1", "a1"]);
+    expect(host.textContent).toContain("Appended by a pass");
+  });
+
+  it("closes the reader when the open artifact is deleted", async () => {
+    const host = await mount();
+    titleButton(host, "Trip plan").click();
+    await settle();
+    expect(host.textContent).toContain("Pack the charger");
+
+    buttonNamed(host, "Delete Trip plan")?.click();
+    await settle();
+    expect(host.textContent).toContain("Pick an artifact to read it.");
+    expect(host.textContent).not.toContain("Pack the charger");
+  });
+
+  it("says so when the list can't be loaded", async () => {
+    failList = true;
+    try {
+      const host = await mount();
+      expect(host.textContent).toContain("500");
+    } finally {
+      failList = false;
+    }
   });
 });
 
