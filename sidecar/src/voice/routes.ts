@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { UrlSafetyError } from "../lib/urlSafety.ts";
+import { describeError } from "../llm/errors.ts";
 import { getVoiceConfig, saveVoiceConfig } from "./config.ts";
 import {
   createVoiceProfile,
@@ -388,7 +389,7 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
         ),
       );
     } catch (e) {
-      console.error("[voice] studio generation failed:", e);
+      console.error("[voice] studio generation failed:", describeError(e));
       return c.json({ error: errorMessage(e) }, speechErrorStatus(e));
     }
   });
@@ -409,6 +410,10 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
   router.patch("/server", async (c) => {
     const parsed = serverSettingsSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { state } = await server.status();
+    if (state === "running" || state === "starting") {
+      return c.json({ error: "stop the speech server before changing its port" }, 409);
+    }
     await saveSpeechServerSettings(parsed.data);
     return c.json(await server.status());
   });
@@ -431,10 +436,16 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
 
   /** Registers the server as a speech provider, so the pickers can offer its models. */
   router.post("/server/provider", async (c) => {
-    if ((await server.status()).state === "occupied") {
+    const status = await server.status();
+    if (status.state === "occupied") {
       return c.json({ error: "another program answers on this port; choose a different one" }, 409);
     }
-    return c.json({ providerId: await server.ensureProvider() });
+    // Only a port mlx-audio is answering on now becomes a provider, since a
+    // loopback provider is trusted with clip paths.
+    if (status.state !== "running" && status.state !== "external") {
+      return c.json({ error: "start the speech server first" }, 409);
+    }
+    return c.json({ providerId: await server.ensureProvider(status.port) });
   });
 
   return router;

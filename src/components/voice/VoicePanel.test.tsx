@@ -25,6 +25,8 @@ const NARRATOR: VoiceProfile = {
 
 /** What the fake sidecar holds; each test sets its own. */
 let config: VoiceConfig;
+/** When set, saving the voice config fails with this status. */
+let configSaveStatus: number | null = null;
 let voices: VoiceProfile[];
 let server: SpeechServerStatus;
 const requests: { method: string; path: string; body: unknown }[] = [];
@@ -42,7 +44,10 @@ async function fakeSidecar(path: string, init: RequestInit = {}): Promise<Respon
   const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
   requests.push({ method, path, body });
   if (path === "/api/voice/config") {
-    if (method === "PATCH") config = { ...config, ...body };
+    if (method === "PATCH") {
+      if (configSaveStatus) return json({ error: "settings are read-only" }, configSaveStatus);
+      config = { ...config, ...body };
+    }
     return json(config);
   }
   if (path === "/api/voice/voices") return json(voices);
@@ -93,6 +98,7 @@ beforeEach(() => {
   config = { ...DEFAULT_VOICE_CONFIG };
   voices = [NARRATOR];
   server = stoppedServer();
+  configSaveStatus = null;
   requests.length = 0;
   stubSidecarApi({ sidecarFetch: fakeSidecar });
 });
@@ -138,6 +144,18 @@ describe("Voices section", () => {
 
     expect(requests.some((r) => r.method === "DELETE")).toBe(true);
     await waitFor(() => config.activeVoiceId === "", "the page to clear the active voice");
+  });
+
+  it("says so when activating a voice can't be saved", async () => {
+    configSaveStatus = 500;
+    const mounted = await mountForInteraction(createElement(VoicePanel));
+    unmount = mounted.unmount;
+
+    button(mounted.host, "Activate", "Narrator").click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("settings are read-only") ?? false,
+      "the save error",
+    );
     expect(mounted.host.textContent).not.toContain("Deactivate");
   });
 });
@@ -183,13 +201,49 @@ describe("Speech server section", () => {
     return requests.filter((r) => r.path === "/api/voice/server").length - before;
   }
 
+  // One poll interval (2 s) plus room for a slow runner.
+  const POLL_WINDOW_MS = 2_800;
+
   it("polls the status while the server is starting", async () => {
     server = { ...stoppedServer(), state: "starting" };
-    expect(await serverReadsOver(2_300)).toBeGreaterThan(0);
+    expect(await serverReadsOver(POLL_WINDOW_MS)).toBeGreaterThan(0);
   });
 
   it("doesn't poll a server that isn't changing", async () => {
-    expect(await serverReadsOver(2_300)).toBe(0);
+    expect(await serverReadsOver(POLL_WINDOW_MS)).toBe(0);
+  });
+
+  async function mountServer() {
+    const mounted = await mountForInteraction(
+      createElement(SpeechServerSection, { onProviderReady: () => {} }),
+    );
+    unmount = mounted.unmount;
+    return mounted.host;
+  }
+
+  it("offers Stop and Use for voice for the server this instance runs, and locks the port", async () => {
+    server = { ...stoppedServer(), state: "running" };
+    const host = await mountServer();
+    expect(button(host, "Stop").disabled).toBe(false);
+    expect(() => button(host, "Start")).toThrow();
+    expect(button(host, "Use for voice").disabled).toBe(false);
+    expect((host.querySelector("input") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("uses an mlx-audio server the user started, without offering to stop it", async () => {
+    server = { ...stoppedServer(), state: "external" };
+    const host = await mountServer();
+    expect(host.textContent).toContain("Running (started elsewhere)");
+    expect(button(host, "Use for voice").disabled).toBe(false);
+    expect(() => button(host, "Stop")).toThrow();
+  });
+
+  it("won't use a port another program answers on", async () => {
+    server = { ...stoppedServer(), state: "occupied" };
+    const host = await mountServer();
+    expect(host.textContent).toContain("Port in use");
+    expect(button(host, "Start").disabled).toBe(true);
+    expect(button(host, "Use for voice").disabled).toBe(true);
   });
 
   it("names the instance that started a server it can't stop", async () => {

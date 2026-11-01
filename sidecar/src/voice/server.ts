@@ -1,5 +1,5 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { processStartTime } from "../agentRuns/process.ts";
@@ -20,10 +20,11 @@ import { assertModelId } from "./speech.ts";
  * repo's `pyproject.toml`, because a packaged app has no repo checkout to run
  * `uv sync` in. The specs mirror that file.
  *
- * Only the instance that started a server stops it. Every other case shows up
- * as `external`: a server another Yarvis instance started (named in `owner`),
- * or one the user runs by hand or with launchd. It is used, but a second one is
- * not started on the same port. Who started which server is kept on disk,
+ * Only the instance that started a server stops it. Any other mlx-audio server
+ * on the port shows up as `external`: one another Yarvis instance started
+ * (named in `owner`), or one the user runs by hand or with launchd. It is used,
+ * but a second one is not started on the same port. Anything else answering on
+ * the port is `occupied` and not used at all. Who started which server is kept on disk,
  * keyed by instance, because the core SIGKILLs the sidecar on a restart and no
  * exit hook runs then: the next sidecar of the same instance adopts the server
  * instead of stranding it.
@@ -38,6 +39,9 @@ const LOG_TAIL_LINES = 200;
 
 /** How long one readiness probe waits; the server answers instantly once it is up. */
 const PROBE_TIMEOUT_MS = 1500;
+
+/** How long a port's listener is remembered, so a status poll doesn't run lsof each time. */
+const LISTENER_CACHE_MS = 10_000;
 
 /** How long Stop waits for the port to go quiet before reporting. */
 const STOP_WAIT_MS = 5000;
@@ -226,7 +230,11 @@ function recordFile(): string {
 interface ServerRecord {
   pid: number;
   port: number;
-  /** The process's start time, so a pid reused by another process isn't mistaken for it. */
+  /**
+   * The process's start time as `ps -o lstart=` prints it, compared as an
+   * opaque string so a pid reused by another process isn't mistaken for it.
+   * Null when `ps` couldn't be asked at spawn.
+   */
   startedAt: string | null;
 }
 
@@ -252,10 +260,21 @@ function readRecords(): ServerRecords {
   }
 }
 
+/**
+ * Written to a temp file and renamed, like `settings.json` beside it, so another
+ * instance never reads half a file and writes back an empty list.
+ */
 function writeRecords(records: ServerRecords): void {
   try {
-    if (Object.keys(records).length === 0) rmSync(recordFile(), { force: true });
-    else writeFileSync(recordFile(), JSON.stringify(records), { mode: 0o600 });
+    const file = recordFile();
+    if (Object.keys(records).length === 0) {
+      rmSync(file, { force: true });
+      return;
+    }
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, JSON.stringify(records), { mode: 0o600 });
+    renameSync(temp, file);
   } catch (e) {
     console.warn("[voice] could not record the speech server's pid:", e);
   }
@@ -290,6 +309,9 @@ export class LocalSpeechServer {
   private port = DEFAULT_SPEECH_SERVER_PORT;
   private readonly downloads = new Map<string, { state: DownloadState; error: string | null }>();
   private exitHookInstalled = false;
+  /** A server an earlier sidecar of this instance started, once this one has adopted it. */
+  private adoptedPid: number | null = null;
+  private listenerCache: { port: number; command: string | null; at: number } | null = null;
   /** Set for the whole of a start, so two overlapping requests spawn one server. */
   private starting: Promise<SpeechServerStatus> | null = null;
 
@@ -300,21 +322,26 @@ export class LocalSpeechServer {
     this.log = [...this.log, ...lines].slice(-LOG_TAIL_LINES);
   }
 
-  /** A server the sidecar started must not outlive it, or the port stays taken. */
+  /**
+   * A server this instance owns, started or adopted, must not outlive the
+   * sidecar, or the port stays taken with nobody able to stop it.
+   */
   private installExitHook(): void {
     if (this.exitHookInstalled) return;
     this.exitHookInstalled = true;
     process.on("exit", () => {
-      if (this.child?.pid !== undefined) killGroup(this.child.pid);
+      const pid = this.child?.pid ?? this.adoptedPid;
+      if (pid !== undefined && pid !== null) killGroup(pid);
     });
   }
 
   /**
-   * Whether a recorded server is still the process that was recorded. A record
-   * whose process is gone is dropped. When `ps` can't be asked the record is
-   * kept but not trusted, so a failed check never kills or forgets a server.
+   * Whether a record still names the process it was written for. It also
+   * tidies: a record is dropped once its process is gone or its pid belongs to
+   * a newer process, whichever instance wrote it. A record that can't be
+   * checked, because `ps` failed now or at spawn, is kept but not trusted.
    */
-  private async live(instance: string, record: ServerRecord): Promise<boolean> {
+  private async isRecordedProcess(instance: string, record: ServerRecord): Promise<boolean> {
     let started: string | null;
     try {
       started = await this.deps.processStartTime(record.pid);
@@ -322,6 +349,7 @@ export class LocalSpeechServer {
       console.warn(`[voice] could not check speech server ${record.pid}:`, e);
       return false;
     }
+    if (started !== null && record.startedAt === null) return false;
     if (started !== null && started === record.startedAt) return true;
     setRecord(instance, null);
     return false;
@@ -331,16 +359,31 @@ export class LocalSpeechServer {
   private async adopted(): Promise<ServerRecord | null> {
     if (this.child) return null;
     const record = readRecords()[this.deps.instance];
-    return record && (await this.live(this.deps.instance, record)) ? record : null;
+    if (!record || !(await this.isRecordedProcess(this.deps.instance, record))) {
+      this.adoptedPid = null;
+      return null;
+    }
+    this.adoptedPid = record.pid;
+    this.installExitHook();
+    return record;
   }
 
   /** The other instance whose live server listens on the port, if there is one. */
   private async ownerOf(port: number): Promise<string | null> {
     for (const [instance, record] of Object.entries(readRecords())) {
       if (instance === this.deps.instance || record.port !== port) continue;
-      if (await this.live(instance, record)) return instance;
+      if (await this.isRecordedProcess(instance, record)) return instance;
     }
     return null;
+  }
+
+  /** The listener's command line, remembered briefly; it doesn't change between polls. */
+  private async listenerCommand(port: number): Promise<string | null> {
+    const cached = this.listenerCache;
+    if (cached?.port === port && Date.now() - cached.at < LISTENER_CACHE_MS) return cached.command;
+    const command = await this.deps.listenerCommand(port);
+    this.listenerCache = { port, command, at: Date.now() };
+    return command;
   }
 
   async status(): Promise<SpeechServerStatus> {
@@ -355,7 +398,7 @@ export class LocalSpeechServer {
       owner = await this.ownerOf(port);
       // Anything can answer a model list on a common port like 8000, so an
       // unclaimed listener must be mlx-audio itself before it is used.
-      state = owner || isMlxAudio(await this.deps.listenerCommand(port)) ? "external" : "occupied";
+      state = owner || isMlxAudio(await this.listenerCommand(port)) ? "external" : "occupied";
     } else state = this.error ? "failed" : "stopped";
     return {
       state,
@@ -402,7 +445,7 @@ export class LocalSpeechServer {
     ];
     const child = this.deps.spawn("uvx", args);
     this.child = child;
-    if (child.pid !== undefined) await this.record(child.pid, port);
+    // Listeners first: a uvx that fails fast can exit while the record is written.
     child.stdout?.on("data", (chunk) => this.append(chunk));
     child.stderr?.on("data", (chunk) => this.append(chunk));
     child.on("error", (e) => {
@@ -420,17 +463,19 @@ export class LocalSpeechServer {
         this.error = `the speech server exited (${signal ?? `code ${code}`}); see its log`;
       }
     });
+    if (child.pid !== undefined) await this.record(child, child.pid, port);
     return this.status();
   }
 
-  private async record(pid: number, port: number): Promise<void> {
+  private async record(child: ChildProcess, pid: number, port: number): Promise<void> {
     let startedAt: string | null = null;
     try {
       startedAt = await this.deps.processStartTime(pid);
     } catch (e) {
       console.warn("[voice] could not read the speech server's start time:", e);
     }
-    setRecord(this.deps.instance, { pid, port, startedAt });
+    // It may already have exited, and its exit handler cleared the record.
+    if (this.child === child) setRecord(this.deps.instance, { pid, port, startedAt });
   }
 
   /** Stops the server this instance started. Anyone else's is left running. */
@@ -439,6 +484,7 @@ export class LocalSpeechServer {
     const pid = this.child?.pid ?? adopted?.pid;
     const port = adopted?.port ?? this.port;
     this.child = null;
+    this.adoptedPid = null;
     this.error = null;
     if (pid !== undefined) killGroup(pid);
     setRecord(this.deps.instance, null);
@@ -504,10 +550,9 @@ export class LocalSpeechServer {
    * Makes sure a custom provider points at the server and that its catalogue
    * tags the verified models, so they appear in the speech pickers. Returns the
    * provider id (`custom:<id>`). An existing provider on the same URL is reused rather
-   * than duplicated.
+   * than duplicated. `port` is the one a status check just found mlx-audio on.
    */
-  async ensureProvider(): Promise<string> {
-    const { port } = await getSpeechServerSettings();
+  async ensureProvider(port: number): Promise<string> {
     const baseUrl = `http://127.0.0.1:${port}/v1`;
     const existing = (await listCustomProviders()).find(
       (row) => row.baseUrl.replace(/\/$/, "") === baseUrl,

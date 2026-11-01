@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -69,7 +69,7 @@ describe("LocalSpeechServer", () => {
   });
 
   /** Starts a server as `instance` whose process is `pid`, started at `startedAt`. */
-  async function startedBy(instance: string, pid: number, startedAt: string): Promise<void> {
+  async function startedBy(instance: string, pid: number, startedAt: string | null): Promise<void> {
     const child = fakeChild();
     Object.assign(child, { pid });
     await new LocalSpeechServer({
@@ -122,6 +122,46 @@ describe("LocalSpeechServer", () => {
     } finally {
       process.kill = originalKill;
     }
+  });
+
+  async function records(): Promise<Record<string, unknown>> {
+    try {
+      return JSON.parse(await readFile(join(dir, "speech-server.json"), "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  it("keeps a record it couldn't time at spawn, without trusting it, until the process is gone", async () => {
+    await startedBy("main", pid, null);
+    let alive = true;
+    const next = manager({
+      processStartTime: async () => (alive ? "Mon Nov  2 09:00:00 2026" : null),
+    });
+    expect((await next.server.status()).state).toBe("stopped");
+    expect(Object.keys(await records())).toEqual(["main"]);
+
+    alive = false;
+    await next.server.status();
+    expect(await records()).toEqual({});
+  });
+
+  it("reports a server that exits while its pid is being recorded", async () => {
+    const child = fakeChild();
+    Object.assign(child, { pid });
+    const server = new LocalSpeechServer({
+      probe: async () => false,
+      hubCacheDir: () => join(dir, "hub"),
+      spawn: () => child,
+      processStartTime: async () => {
+        child.emit("exit", 1, null);
+        return "Mon Nov  2 09:00:00 2026";
+      },
+      listenerCommand: async () => null,
+      instance: "main",
+    });
+    expect((await server.start()).state).toBe("failed");
+    expect(await records()).toEqual({});
   });
 
   it("does not adopt a process that reused the recorded pid", async () => {
@@ -205,8 +245,8 @@ describe("LocalSpeechServer", () => {
 
   it("registers one provider for the server, however often it is asked", async () => {
     const { server } = manager();
-    const first = await server.ensureProvider();
-    const second = await server.ensureProvider();
+    const first = await server.ensureProvider(8000);
+    const second = await server.ensureProvider(8000);
     expect(second).toBe(first);
     expect(await listCustomProviders()).toHaveLength(1);
   });
@@ -222,6 +262,37 @@ describe("speech server routes", () => {
     const res = await routes.request("/server/provider", { method: "POST" });
     expect(res.status).toBe(409);
     expect(await listCustomProviders()).toHaveLength(0);
+  });
+});
+
+describe("speech server routes, continued", () => {
+  it("won't register a port nothing is serving", async () => {
+    const { server } = manager();
+    const routes = createVoiceRoutes({} as Config, { server });
+    expect((await routes.request("/server/provider", { method: "POST" })).status).toBe(409);
+    expect(await listCustomProviders()).toHaveLength(0);
+  });
+
+  it("registers the port mlx-audio is running on", async () => {
+    const { server } = manager({
+      probe: async () => true,
+      listenerCommand: async () => "python -m mlx_audio.server --port 8000",
+    });
+    const routes = createVoiceRoutes({} as Config, { server });
+    expect((await routes.request("/server/provider", { method: "POST" })).status).toBe(200);
+    expect((await listCustomProviders())[0]?.baseUrl).toBe("http://127.0.0.1:8000/v1");
+  });
+
+  it("refuses a port change while this instance's server runs", async () => {
+    const { server } = manager();
+    await server.start();
+    const routes = createVoiceRoutes({} as Config, { server });
+    const res = await routes.request("/server", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port: 9000 }),
+    });
+    expect(res.status).toBe(409);
   });
 });
 

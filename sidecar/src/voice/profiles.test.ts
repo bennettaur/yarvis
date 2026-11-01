@@ -224,6 +224,7 @@ describe("saved voices", () => {
         model: "good/model",
         voice: "Kore",
       });
+      const blank = await createVoice({ name: "Blank", provider, model: "good/model" });
       const res = await app.request(`/api/voice/voices/${id}/speak`, {
         method: "POST",
         headers: jsonAuth,
@@ -232,6 +233,14 @@ describe("saved voices", () => {
       expect(res.status).toBe(200);
       expect(seen[0]?.ref_audio).toBeUndefined();
       expect(seen[0]?.voice).toBe("Kore");
+
+      // A blank voice id is left to the client's default, never sent as "".
+      await app.request(`/api/voice/voices/${blank.id}/speak`, {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ text: "hello" }),
+      });
+      expect(seen[1]?.voice).not.toBe("");
     } finally {
       server.stop(true);
     }

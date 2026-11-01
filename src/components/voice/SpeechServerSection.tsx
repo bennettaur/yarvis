@@ -200,7 +200,7 @@ function stateLabel(status: SpeechServerStatus): { text: string; tone: string } 
 
 function startHint(state: SpeechServerState | undefined): string {
   if (state === "external") {
-    return "A speech server already answers on this port. Yarvis uses it but only the one that started it can stop it.";
+    return "A speech server already answers on this port. Yarvis uses it, but only whoever started it can stop it.";
   }
   if (state === "occupied") return "Another program answers on this port. Choose a different port.";
   return "Start the server. The first start downloads its Python packages.";

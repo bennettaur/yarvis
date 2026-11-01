@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { createCustomProvider } from "../customProviders/service.ts";
 import { CUSTOM_PROVIDER_PREFIX } from "../llm/providers.ts";
-import { SpeechValidationError } from "./speech.ts";
+import { MAX_SPEECH_CHARS, SpeechValidationError } from "./speech.ts";
 import { translateText } from "./studio.ts";
 
 /** Translation through a real chat model client, against a fake chat-completions server. */
@@ -32,7 +32,7 @@ interface SeenChat {
 }
 
 /** A chat-completions server that answers every request with `reply`. */
-function startChatServer(reply: string) {
+function startChatServer(reply: string, finishReason = "stop") {
   const seen: SeenChat[] = [];
   const server = Bun.serve({
     port: 0,
@@ -52,7 +52,7 @@ function startChatServer(reply: string) {
         created: 0,
         model: "m",
         choices: [
-          { index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" },
+          { index: 0, message: { role: "assistant", content: reply }, finish_reason: finishReason },
         ],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       });
@@ -61,8 +61,8 @@ function startChatServer(reply: string) {
   return { server, seen };
 }
 
-async function translateWith(reply: string, text: string) {
-  const { server, seen } = startChatServer(reply);
+async function translateWith(reply: string, text: string, finishReason?: string) {
+  const { server, seen } = startChatServer(reply, finishReason);
   try {
     const row = await createCustomProvider({
       name: "chat",
@@ -119,8 +119,14 @@ describe("translateText", () => {
   });
 
   it("refuses a translation too long to speak, as something the user can fix", async () => {
-    const { result } = await translateWith("a".repeat(2001), "Hello");
+    const { result } = await translateWith("a".repeat(MAX_SPEECH_CHARS + 1), "Hello");
     expect(result).toBeInstanceOf(SpeechValidationError);
     expect(String(result)).toContain("longer than");
+  });
+
+  it("refuses a translation the token cap cut off, even one short enough to speak", async () => {
+    const { result } = await translateWith("Bonjour, je", "Hello, I am", "length");
+    expect(result).toBeInstanceOf(SpeechValidationError);
+    expect(String(result)).toContain("cut off");
   });
 });

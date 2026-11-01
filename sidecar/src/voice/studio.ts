@@ -189,6 +189,7 @@ export interface TranslateInput {
 export async function translateText(config: Config, input: TranslateInput): Promise<string> {
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   let text: string;
+  let cutOff: boolean;
   try {
     const result = await generateText({
       model: await resolveModel(config, input.provider, input.model),
@@ -209,11 +210,17 @@ export async function translateText(config: Config, input: TranslateInput): Prom
       abortSignal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
     text = result.text.trim();
+    cutOff = result.finishReason === "length";
   } catch (e) {
     console.error("[voice] translation failed:", describeError(e));
     throw new Error(clientError(e));
   }
   if (!text) throw new Error("the translation model returned nothing");
+  // A translation cut off by the token cap can still fit the character cap,
+  // and speaking half a sentence as if it were the whole is worse than failing.
+  if (cutOff) {
+    throw new SpeechValidationError("the translation was cut off; shorten the text");
+  }
   if (text.length > MAX_SPEECH_CHARS) {
     throw new SpeechValidationError(
       `the translation is longer than ${MAX_SPEECH_CHARS} characters; shorten the text`,

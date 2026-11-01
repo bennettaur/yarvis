@@ -243,8 +243,8 @@ back to ad-hoc.
   The Voice page (`src/components/voice/`) is for setting voice up, not for
   talking: it runs the local mlx-audio server, keeps saved voices and their
   cloning clips, and has a studio for hearing text in several voices. The
-  sidecar owns the server process (`voice/server.ts`). The port is singular to
-  the machine, so only the instance that started a server may stop it; who
+  sidecar owns the server process (`voice/server.ts`). Only one server can
+  listen on a port, so only the instance that started it may stop it; who
   started it is recorded per instance beside `settings.json`, with the
   process's start time so a reused pid isn't adopted. A saved voice's clip is
   sent as a file path only to a provider on loopback; anywhere else gets the
