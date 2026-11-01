@@ -36,6 +36,7 @@ describe("toCalendarEvent", () => {
         { title: "Notes by Gemini", fileUrl: "https://docs.google.com/d/1", mimeType: "x/doc" },
         { fileUrl: "https://docs.google.com/d/2" },
         { title: "no link" },
+        null,
       ],
     });
     expect(ev.attachments).toEqual([

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dueRoutines, loadRoutines, parseEvery, parseRoutine, type Routine } from "./routines.ts";
@@ -121,6 +121,8 @@ describe("loadRoutines", () => {
     // Exactly at the cap is read (and fails as a routine); one byte past it isn't read at all.
     writeFileSync(join(dir, "edge.md"), "x".repeat(256 * 1024));
     writeFileSync(join(dir, "huge.md"), "x".repeat(256 * 1024 + 1));
+    writeFileSync(join(dir, "locked.md"), "x");
+    chmodSync(join(dir, "locked.md"), 0o000);
 
     const { routines, problems } = await loadRoutines();
     rmSync(elsewhere, { recursive: true, force: true });
@@ -135,6 +137,7 @@ describe("loadRoutines", () => {
       [join(dir, "edge.md"), expect.not.stringContaining("larger than")],
       [join(dir, "huge.md"), expect.stringContaining("larger than 256 KB")],
       [join(dir, "linked.md"), expect.stringContaining("a symlink")],
+      [join(dir, "locked.md"), expect.stringContaining("EACCES")],
       [join(dir, "pipe.md"), expect.stringContaining("not a regular file")],
     ]);
   });

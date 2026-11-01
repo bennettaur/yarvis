@@ -622,3 +622,30 @@ describe("merge alerts", () => {
     expect(isMergeInstruction("fix CI")).toBe(false);
   });
 });
+
+describe("finish_pass", () => {
+  const finish = async (offered: string[], routinesDone?: string[]) => {
+    const outcome = newPassOutcome();
+    const tools = buildPassTools(db, outcome, () => {}, new Set(), offered);
+    const result = await tools.finish_pass.execute!(
+      { sleepMinutes: 30, reason: "idle", routinesDone },
+      {} as never,
+    );
+    return { result, done: outcome.routinesDone };
+  };
+
+  it("records only the routines the pass was given, once each, and names the rest", async () => {
+    expect(await finish(["standup"], ["standup", "standup"])).toEqual({
+      result: { ok: true, message: "Pass recorded. Stop here." },
+      done: ["standup"],
+    });
+    expect(await finish(["standup", "inbox"], ["inbox", "other"])).toEqual({
+      result: {
+        ok: true,
+        message:
+          "Pass recorded. Not recorded as done, since this pass wasn't given them: other. Not reported done, so a later pass gets them again: standup. Stop here.",
+      },
+      done: ["inbox"],
+    });
+  });
+});

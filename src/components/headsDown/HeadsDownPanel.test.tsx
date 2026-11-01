@@ -162,7 +162,7 @@ const ROUTINES = {
   userDir: "/home/me/.yarvis/routines",
 };
 
-/** What the routines list and its reload answer; null makes that call fail. */
+/** What the routines list and its reload answer; null makes that call fail, "hang" never answers. */
 let routinesAnswer: unknown = ROUTINES;
 let reloadAnswer: unknown = ROUTINES;
 
@@ -223,6 +223,7 @@ stubSidecarApi({
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       writes.push({ method, path, body });
       if (path === "/api/heads-down/routines/reload") {
+        if (reloadAnswer === "hang") return new Promise<Response>(() => {});
         return reloadAnswer ? json(reloadAnswer) : json({ error: "disk on fire" }, 500);
       }
       if (path === "/api/heads-down/config") return json(body);
@@ -258,6 +259,7 @@ stubSidecarApi({
       ]);
     }
     if (path === "/api/heads-down/routines") {
+      if (routinesAnswer === "hang") return new Promise<Response>(() => {});
       return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
     }
     if (path === "/api/heads-down/allowed-tools") {
@@ -365,6 +367,22 @@ describe("HeadsDownPanel", () => {
     buttonNamed(host, "Reload files").click();
     await waitForText(host, "disk on fire");
     expect(host.textContent).toContain("disk on fire");
+
+    // One reload at a time: the button waits for the one running.
+    reloadAnswer = "hang";
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(buttonNamed(host, "Reload files").disabled).toBe(true);
+  });
+
+  it("says the routines are loading until they arrive", async () => {
+    routinesAnswer = "hang";
+    const host = await mount();
+    await waitForText(host, "Heads down since");
+    const section = [...host.querySelectorAll("section")].find((s) =>
+      s.textContent?.startsWith("Routines"),
+    );
+    expect(section?.textContent).toBe("RoutinesLoading…");
   });
 
   it("says when the routines couldn't load, and retries from the reload button", async () => {
@@ -702,16 +720,16 @@ describe("HeadsDownSettings", () => {
       field.dispatchEvent(new Event("input", { bubbles: true }));
       await settle(20);
     };
+    const saved = async () => {
+      buttonNamed(host, "Save").click();
+      await settle();
+      return writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    };
     await type("0");
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    await type("10");
     await type("11");
-    buttonNamed(host, "Save").click();
-    await settle();
-
-    expect(writes).toContainEqual({
-      method: "PUT",
-      path: "/api/heads-down/config",
-      body: { ...CONFIG, maxRoutinesPerPass: 0 },
-    });
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
   });
 
   it("goes back to the default chat model", async () => {

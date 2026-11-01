@@ -89,8 +89,13 @@ describe("list_calendar_events", () => {
       },
     ]);
 
-    await list({ pastDays: 1 });
+    const daysAhead = () =>
+      (Date.parse(lastQuery?.get("timeMax") ?? "") - Date.now()) / (24 * 60 * 60_000);
+    expect(daysAhead()).toBeCloseTo(7, 2);
+
+    await list({ pastDays: 1, days: 2 });
     expect(daysBack()).toBeCloseTo(1, 2);
+    expect(daysAhead()).toBeCloseTo(2, 2);
   });
 
   it("looks back at most a week", () => {
