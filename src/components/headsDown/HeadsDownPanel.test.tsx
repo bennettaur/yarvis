@@ -116,7 +116,55 @@ const CONFIG = {
   provider: null,
   model: null,
   guidance: null,
+  maxRoutinesPerPass: 2,
 };
+
+const ROUTINES = {
+  routines: [
+    {
+      name: "meeting-alarms",
+      description: "Sets an alarm for each meeting",
+      everyMinutes: 180,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "builtin",
+      lastDoneAt: null,
+    },
+    {
+      name: "standup",
+      description: "Drafts my standup",
+      everyMinutes: 24 * 60,
+      workingHoursOnly: true,
+      enabled: true,
+      source: "user",
+      lastDoneAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    },
+    {
+      name: "triage",
+      description: "Triages my inbox",
+      everyMinutes: 45,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "user",
+      lastDoneAt: null,
+    },
+    {
+      name: "meeting-notes",
+      description: "Reads meeting notes",
+      everyMinutes: 240,
+      workingHoursOnly: true,
+      enabled: false,
+      source: "builtin",
+      lastDoneAt: null,
+    },
+  ],
+  problems: [{ path: "/home/me/.yarvis/routines/x.md", message: "x.md: 'every' is required" }],
+  userDir: "/home/me/.yarvis/routines",
+};
+
+/** What the routines list and its reload answer; null makes that call fail, "hang" never answers. */
+let routinesAnswer: unknown = ROUTINES;
+let reloadAnswer: unknown = ROUTINES;
 
 const PROVIDERS = [
   {
@@ -174,6 +222,10 @@ stubSidecarApi({
     if (method !== "GET") {
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       writes.push({ method, path, body });
+      if (path === "/api/heads-down/routines/reload") {
+        if (reloadAnswer === "hang") return new Promise<Response>(() => {});
+        return reloadAnswer ? json(reloadAnswer) : json({ error: "disk on fire" }, 500);
+      }
       if (path === "/api/heads-down/config") return json(body);
       if (path.startsWith("/api/heads-down/allowed-tools/")) return json({ ok: true });
       return json({ ...QUESTION, status: "answered" });
@@ -205,6 +257,10 @@ stubSidecarApi({
           answeredAt: "2026-10-19T10:05:00.000Z",
         },
       ]);
+    }
+    if (path === "/api/heads-down/routines") {
+      if (routinesAnswer === "hang") return new Promise<Response>(() => {});
+      return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
     }
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
@@ -238,6 +294,8 @@ afterEach(() => {
   streamFrames = [];
   savedConfig = CONFIG;
   currentRun = RUN;
+  routinesAnswer = ROUTINES;
+  reloadAnswer = ROUTINES;
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -267,6 +325,85 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("lists the routines, and a file that failed to load", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+    const routine = (name: string) =>
+      [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))
+        ?.textContent ?? "";
+
+    expect(
+      [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
+    ).toEqual(["every 3h", "every 1d, working hours", "every 45m", "off"]);
+    expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
+    expect(routine("meeting-alarms")).not.toContain("(yours)");
+    expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
+    expect(routine("standup")).toContain("Last done");
+    expect(routine("triage")).toContain("every 45m");
+    expect(routine("meeting-notes")).toContain("off");
+    expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
+    expect(host.textContent).toContain("x.md: 'every' is required");
+    expect(host.textContent).toContain("/home/me/.yarvis/routines");
+  });
+
+  it("reloads the routine files, and says when that fails", async () => {
+    reloadAnswer = {
+      ...ROUTINES,
+      routines: [...ROUTINES.routines, { ...ROUTINES.routines[1], name: "focus-time" }],
+    };
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "focus-time");
+    expect(host.textContent).toContain("focus-time");
+    expect(writes).toContainEqual({
+      method: "POST",
+      path: "/api/heads-down/routines/reload",
+      body: null,
+    });
+
+    reloadAnswer = null;
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "disk on fire");
+    expect(host.textContent).toContain("disk on fire");
+
+    // A reload that works clears the last one's error.
+    reloadAnswer = ROUTINES;
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(host.textContent).not.toContain("disk on fire");
+
+    // One reload at a time: the button waits for the one running.
+    reloadAnswer = "hang";
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(buttonNamed(host, "Reload files").disabled).toBe(true);
+  });
+
+  it("says the routines are loading until they arrive", async () => {
+    routinesAnswer = "hang";
+    const host = await mount();
+    await waitForText(host, "Heads down since");
+    const section = [...host.querySelectorAll("section")].find((s) =>
+      s.textContent?.startsWith("Routines"),
+    );
+    expect(section?.textContent).toContain("Loading…");
+    expect(section?.textContent).not.toContain("Couldn't load");
+  });
+
+  it("says when the routines couldn't load, and retries from the reload button", async () => {
+    routinesAnswer = null;
+    const host = await mount();
+    await waitForText(host, "Couldn't load the routines");
+    expect(host.textContent).toContain("Couldn't load the routines");
+    expect(host.textContent).not.toContain("Loading…");
+
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).not.toContain("Couldn't load the routines");
   });
 
   it("names the workspaces it mentions by id and opens them on click", async () => {
@@ -567,6 +704,16 @@ describe("HeadsDownSettings", () => {
     if (!field) throw new Error("no pass timeout field");
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "90");
     field.dispatchEvent(new Event("input", { bubbles: true }));
+    // A field with no most allowed takes any number at or above its least.
+    const longestSleep = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Longest sleep"))
+      ?.querySelector("input");
+    if (!longestSleep) throw new Error("no longest sleep field");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      longestSleep,
+      "600",
+    );
+    longestSleep.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(20);
     buttonNamed(host, "Save").click();
     await settle();
@@ -574,8 +721,35 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, passTimeoutMinutes: 90 },
+      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
     });
+  });
+
+  it("saves 0 routines per pass, and ignores a number past the most allowed", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Routines per pass"))
+      ?.querySelector("input");
+    if (!field) throw new Error("no routines per pass field");
+    const type = async (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle(20);
+    };
+    const saved = async () => {
+      buttonNamed(host, "Save").click();
+      await settle();
+      return writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    };
+    await type("0");
+    await type("-1");
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    await type("10");
+    await type("11");
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
   });
 
   it("goes back to the default chat model", async () => {
