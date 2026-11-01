@@ -788,6 +788,7 @@ export function buildVerificationMaterial(
     `REVIEW_CONTEXT=${contextDir}`,
     `SUMMARY_WORDS=${limits.summaryWords}`,
     `MUST_READ_MAX=${limits.mustReadMax}`,
+    `MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`,
     `READING_GROUPS=${groups.length}`,
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
     `SECTIONS=${input.sections.join(",")}`,

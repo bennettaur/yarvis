@@ -681,6 +681,7 @@ describe("building the run's material", () => {
     expect(prompt).toContain("REVIEW_CONTEXT=/tmp/ctx");
     expect(prompt).toContain(`SUMMARY_WORDS=${caps.summaryWords}`);
     expect(prompt).toContain(`MUST_READ_MAX=${caps.mustReadMax}`);
+    expect(prompt).toContain(`MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`);
     expect(prompt).not.toContain("CI checks (");
     expect(prompt).not.toContain("Changed files (");
   });
