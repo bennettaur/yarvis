@@ -185,7 +185,9 @@ export const defaultSpeechServerDeps: SpeechServerDeps = {
         { method: "GET" },
         { allowLoopback: true, timeoutMs: PROBE_TIMEOUT_MS },
       );
-      await response.body?.cancel();
+      // Read to the end rather than cancelled: cancelling the pinned transport's
+      // stream mid-flight throws an uncaught error that takes the sidecar down.
+      await response.arrayBuffer().catch(() => undefined);
       return response.ok;
     } catch {
       return false;
