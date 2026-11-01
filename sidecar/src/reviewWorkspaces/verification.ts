@@ -149,12 +149,14 @@ const mustReadSchema = z.object({
   reason: boundedText(160),
   lines: lineRangeSchema,
   // Optional and nullable: most must-reads have nothing to flag, and the
-  // coordinator copies the agent's answer as is, `null` included. Not
-  // `boundedList`: wrapped in `nullish`, its cap wouldn't reach Claude Code.
+  // coordinator copies the agent's answer as is, `null` included. Capped by
+  // `dropCoveredFlags`, after duplicates go, so a duplicate never costs a flag.
+  // Not `boundedList`: under `nullish` its description would sit in an `anyOf`
+  // branch rather than on the field.
   flags: z
     .array(mustReadFlagSchema)
     .nullish()
-    .transform((flags) => (flags ?? []).slice(0, MAX_MUST_READ_FLAGS))
+    .transform((flags) => flags ?? [])
     .meta({ description: `At most ${MAX_MUST_READ_FLAGS} items.` }),
 });
 
@@ -341,7 +343,8 @@ type MustRead = z.output<typeof mustReadSchema>;
 /**
  * Removes must-read flags a finding or risk concern already reports, by the
  * same rule {@link dedupeChecks} uses, so one problem isn't shown twice on the
- * same line. The finding or concern is kept, since it carries a detail.
+ * same or a nearby line, then keeps the first {@link MAX_MUST_READ_FLAGS}. The
+ * finding or concern is kept, since it carries a detail.
  */
 export function dropCoveredFlags(
   mustRead: MustRead[],
@@ -350,19 +353,21 @@ export function dropCoveredFlags(
 ): MustRead[] {
   return mustRead.map((entry) => ({
     ...entry,
-    flags: entry.flags.filter((flag) => {
-      if (flag.line === undefined) return true;
-      const { line, note } = flag;
-      const covered = cited.some(
-        (c) =>
-          c.path === entry.path &&
-          c.line !== undefined &&
-          Math.abs(c.line - line) <= NEARBY_LINES &&
-          similarTitles(c.title, note),
-      );
-      if (covered) audit.droppedFlags.push({ path: entry.path, line, note });
-      return !covered;
-    }),
+    flags: entry.flags
+      .filter((flag) => {
+        if (flag.line === undefined) return true;
+        const { line, note } = flag;
+        const covered = cited.some(
+          (c) =>
+            c.path === entry.path &&
+            c.line !== undefined &&
+            Math.abs(c.line - line) <= NEARBY_LINES &&
+            similarTitles(c.title, note),
+        );
+        if (covered) audit.droppedFlags.push({ path: entry.path, line, note });
+        return !covered;
+      })
+      .slice(0, MAX_MUST_READ_FLAGS),
   }));
 }
 
@@ -876,8 +881,14 @@ export async function recordReadVolumes(
     .where(eq(agentRuns.id, runId));
 }
 
+/** True when the server took nothing out, so there is no audit to keep. */
+export function auditIsEmpty(audit: ReportAudit): boolean {
+  // Every field of ReportAudit is a list of what was dropped.
+  return Object.values(audit).every((dropped) => dropped.length === 0);
+}
+
 async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<void> {
-  if (Object.values(audit).every((dropped) => dropped.length === 0)) return;
+  if (auditIsEmpty(audit)) return;
   console.log(
     `[verification] run ${runId}: dropped ${audit.droppedDuplicates.length} duplicate findings, ` +
       `${audit.droppedMustReads.length} must-reads for unchanged paths, ` +

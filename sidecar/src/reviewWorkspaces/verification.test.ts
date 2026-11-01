@@ -8,6 +8,7 @@ import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
 import type { PatchIndexEntry } from "./patchFiles.ts";
 import type { BulkClass } from "./service.ts";
 import {
+  auditIsEmpty,
   buildVerificationMaterial,
   checkOutcome,
   DEFAULT_SECTIONS,
@@ -308,6 +309,27 @@ describe("dropping must-read flags a finding already reports", () => {
     expect(notes).toEqual([]);
   });
 
+  it("caps what is left once duplicates are gone", () => {
+    const notes = keptNotes({
+      ...flagged([
+        { note: retry, line: 17 },
+        { note: "first", line: 30 },
+        { note: "second", line: 40 },
+        { note: "third", line: 50 },
+      ]),
+      quality: quality("Retry count is never decremented", 17),
+    });
+    expect(notes).toEqual(["first", "second", "third"]);
+  });
+
+  it("keeps an audit only when something was dropped", () => {
+    expect(auditIsEmpty(emptyAudit())).toBe(true);
+    expect(
+      auditIsEmpty({ ...emptyAudit(), droppedFlags: [{ path: "a", line: 1, note: "n" }] }),
+    ).toBe(false);
+    expect(auditIsEmpty({ ...emptyAudit(), droppedMustReads: ["a"] })).toBe(false);
+  });
+
   it("keeps one that differs in place or wording", () => {
     const finding = { quality: quality("Retry count is never decremented", 17) };
     // More than NEARBY_LINES away.
@@ -429,7 +451,26 @@ describe("paths an agent cites", () => {
     const root = "/work/checkout";
     const parsed = verificationReportSchema({ ...limits, checkoutDir: `${root}/` }, audit).parse(
       report({
-        mustRead: [{ path: `${root}/src/a.ts`, reason: "core" }],
+        mustRead: [
+          {
+            path: `${root}/src/a.ts`,
+            reason: "core",
+            flags: [{ note: "uploads retried forever, check the limit", line: 9 }],
+          },
+        ],
+        risk: {
+          level: "medium",
+          clientImpact: "Uploads can hang.",
+          mitigations: [],
+          concerns: [
+            {
+              title: "Uploads are retried forever",
+              detail: "d",
+              path: `${root}/src/a.ts`,
+              line: 9,
+            },
+          ],
+        },
         completeness: {
           status: "issues",
           findings: [finding("retry loop never stops", { path: "./src/a.ts", line: 5 })],
@@ -441,6 +482,8 @@ describe("paths an agent cites", () => {
       }),
     );
     expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
+    // The concern's absolute path still matches the must-read's flag.
+    expect(parsed.mustRead[0]?.flags).toEqual([]);
     expect(parsed.complexity?.findings[0]?.path).toBe("src/a.ts");
     expect(parsed.completeness?.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);

@@ -12,6 +12,9 @@ import {
 } from "../../../lib/reviewWorkspaces/verification";
 import FlowDiagram from "./FlowDiagram";
 
+/** What a must-read's flags are called, in the report and on the diff. */
+export const FLAG_LABEL = "Looks off";
+
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   completeness: "Completeness",
   tests: "Test quality",
@@ -358,9 +361,10 @@ function MustReadItem({
       />
       <p className="text-xs text-zinc-400">{entry.reason}</p>
       {flags.length > 0 && (
-        <ul aria-label="Looks off" className="mt-0.5 space-y-0.5">
-          {flags.map((flag) => (
-            <li key={`${flag.line}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
+        <ul aria-label={FLAG_LABEL} className="mt-0.5 space-y-0.5">
+          {flags.map((flag, i) => (
+            // The agent can repeat a note, so its position keeps the key unique.
+            <li key={`${i}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
               <span aria-hidden="true">?</span>
               <span className="min-w-0">
                 {flag.note}

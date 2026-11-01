@@ -5,7 +5,7 @@ import {
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type LineDecoration, plainHoverText } from "../editor";
-import { CHECK_LABEL } from "./VerificationReportView";
+import { CHECK_LABEL, FLAG_LABEL } from "./VerificationReportView";
 
 /** One thing the verification report says about a line of a file. */
 export interface FileNote {
@@ -29,7 +29,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
   const notes: FileNote[] = [];
   for (const flag of report.mustRead.find((m) => m.path === path)?.flags ?? []) {
     if (flag.line) {
-      notes.push({ source: "Looks off", title: flag.note, line: flag.line });
+      notes.push({ source: FLAG_LABEL, title: flag.note, line: flag.line });
     }
   }
   for (const c of report.risk?.concerns ?? []) {
