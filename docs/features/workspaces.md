@@ -573,9 +573,9 @@ Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
 saw. Archiving stops the session, removes the worktrees, and marks linked
 tasks complete. Every Claude Code session registered in the workspace is
-marked ended, so none is resumed after a restart. It runs in the background. While it runs, the right column is
-replaced by a "Removing worktrees…" note, since the worktrees it reads are being
-deleted. If the archive stops on a worktree, the right column comes back so you
+marked ended, so none is resumed after a restart. It runs in the background.
+While it runs, the right column is replaced by a "Removing worktrees…" note,
+since the worktrees it reads are being deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
 
 A worktree with uncommitted work won't remove. The workspace stays in

@@ -29,9 +29,9 @@ import { emitEvent } from "../events/service.ts";
 import {
   endWorkspaceAgentSessions,
   findResumableAgentSessions,
-  markAgentSessionResumed,
   type ResumableAgentSession,
   reapAndListAgentSessions,
+  recordResumeAttempt,
   STOPPED_END_REASON,
 } from "./agentSessions.ts";
 import { type WorkspaceForSettings, writeClaudeSettings } from "./claudeSettings.ts";
@@ -96,17 +96,18 @@ export async function startClaudeSession(
 
 /**
  * Best-effort stop of a workspace's Claude session via the core. Its
- * registration is closed first, with `reason` as its end reason, so a stopped
- * session is never resumed on the next start even when the kill doesn't reach
- * the core. The kill is still attempted when that write fails.
+ * registration is closed first, so a stopped session is never resumed on the
+ * next start even when the kill doesn't reach the core. The kill is still
+ * attempted when that write fails.
  */
-export async function stopClaudeSession(
-  db: Db,
-  workspaceId: string,
-  reason: string = STOPPED_END_REASON,
-): Promise<void> {
+export async function stopClaudeSession(db: Db, workspaceId: string): Promise<void> {
   try {
-    await endWorkspaceAgentSessions(db, workspaceId, reason, `ws-claude:${workspaceId}`);
+    await endWorkspaceAgentSessions(
+      db,
+      workspaceId,
+      STOPPED_END_REASON,
+      `ws-claude:${workspaceId}`,
+    );
   } finally {
     await killClaudeSession(workspaceId);
   }
@@ -130,8 +131,9 @@ export async function resumeAgentSessions(
   if (resumable.length === 0) return;
 
   console.log(`[workspaces] found ${resumable.length} agent session(s) cut off by a restart`);
-  // In parallel, so readiness waits for the slowest launch rather than the sum
-  // of them. Each is in its own workspace's tab, so they don't contend.
+  // Sent together, so every request's timeout runs at once: a core that stops
+  // answering holds readiness for one timeout, not one per session. The core
+  // still takes them one at a time.
   await Promise.all(resumable.map((session) => resumeAgentSession(db, session, startSession)));
 }
 
@@ -161,7 +163,7 @@ async function resumeAgentSession(
     console.error(`[workspaces] could not resume the agent session for ${session.workspaceId}:`, e);
   }
   try {
-    await markAgentSessionResumed(db, session, launched);
+    await recordResumeAttempt(db, session, launched);
   } catch (e) {
     console.error(`[workspaces] recording the resume of ${session.workspaceId}:`, e);
   }

@@ -5,8 +5,8 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
-import { stopClaudeSession } from "./claudeSession.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
 import { lookupBranchPr, markWorkspaceListViewed, markWorkspaceViewed } from "./poller.ts";
@@ -725,19 +725,18 @@ export function createWorkspaceRoutes(config: Config): Hono {
     }
   });
 
-  // The user closed the agent tab. Ending its registration here keeps that
-  // session from being resumed on the next start, whether or not Claude
-  // reported its own end when the tab was killed.
+  // The user closed the agent tab, which already killed its PTY. Ending its
+  // registration here keeps that session from being resumed on the next start,
+  // whether or not Claude reported its own end when the tab was killed.
   router.post("/:id/agent/stop", async (c) => {
     const id = c.req.param("id");
     if (!z.string().uuid().safeParse(id).success) {
       return c.json({ error: "invalid workspace id" }, 400);
     }
     try {
-      await stopClaudeSession(db(), id);
+      await endWorkspaceAgentSessions(db(), id, STOPPED_END_REASON, `ws-claude:${id}`);
     } catch (e) {
-      // The tab already killed its PTY, so a kill the core can't take is fine.
-      console.warn(`[workspaces] stopping the agent session for ${id}:`, e);
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
     return c.json({ ok: true });
   });

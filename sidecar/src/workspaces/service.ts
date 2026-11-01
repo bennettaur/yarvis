@@ -2136,17 +2136,17 @@ async function removeWorktreesAndFinish(
 ): Promise<ArchiveResult> {
   const id = detail.id;
 
+  // Every session in the workspace, terminal panes included, so none is
+  // listed as running or resumed once the worktrees are gone. First, so the
+  // agent tab's row reads `archived` rather than the stop's `stopped`.
+  await endWorkspaceAgentSessions(db, id, ARCHIVED_END_REASON);
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
   try {
-    // Archived rather than the default `stopped`, so the agent tab's row says why.
-    await stopClaudeSession(db, id, ARCHIVED_END_REASON);
+    await stopClaudeSession(db, id);
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }
-  // Every session in the workspace, terminal panes included, so none is
-  // listed as running or resumed once the worktrees are gone.
-  await endWorkspaceAgentSessions(db, id, ARCHIVED_END_REASON);
 
   // Checked while the worktrees still exist: removing them clears what was
   // planted in them, but not what was planted in the shared clone.

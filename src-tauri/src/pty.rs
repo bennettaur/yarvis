@@ -503,8 +503,8 @@ fn spawn_into_state(
     // while each is still spawning, as the startup resumes do.
     let cap = max_sessions(app);
     if sessions.len() >= cap {
-        let mut over = session;
-        let _ = over.child.kill();
+        let mut rejected = session;
+        let _ = rejected.child.kill();
         return Err(format!(
             "too many PTY sessions (cap: {cap}); close one before opening another"
         ));

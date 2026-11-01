@@ -17,6 +17,9 @@ export const SESSION_KEY_HEADER = "X-Yarvis-Session-Key";
 /** Header carrying the PTY's `YARVIS_SESSION_TOKEN`; see `sessionTokenMatches`. */
 export const SESSION_TOKEN_HEADER = "X-Yarvis-Session-Token";
 
+// A row's `endReason` is either the reason Claude Code's SessionEnd hook sent
+// or one of Yarvis's own below. Only Claude's `other` leaves it resumable.
+
 /** End reason recorded for a session whose process exited without a SessionEnd. */
 export const PROCESS_GONE_END_REASON = "process-gone";
 
@@ -42,7 +45,7 @@ const RESUME_FAILED_END_REASON = "resume-failed";
  */
 const SIGNALLED_END_REASON = "other";
 
-/** True for a row nothing has finished: still open, or only cut off by a signal. */
+/** True while a row is still open, or was only cut off by a signal, so it can still be resumed. */
 const UNFINISHED = sql<boolean>`(${workspaceAgentSessions.endedAt} IS NULL OR ${workspaceAgentSessions.endReason} = ${SIGNALLED_END_REASON})`;
 
 /**
@@ -233,7 +236,7 @@ export async function findResumableAgentSessions(
  * session id, which reopens the row with its new pid; the pid match keeps
  * this from closing it if that registration lands first.
  */
-export async function markAgentSessionResumed(
+export async function recordResumeAttempt(
   db: Db,
   session: ResumableAgentSession,
   launched: boolean,

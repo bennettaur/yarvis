@@ -1820,8 +1820,6 @@ describe("provision + archive (injected git runner)", () => {
       method: "POST",
       headers: auth,
     });
-    // The core is unreachable here, so this also shows a kill that fails
-    // doesn't fail the request: the tab already killed its own PTY.
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
 

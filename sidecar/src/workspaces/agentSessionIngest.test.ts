@@ -364,6 +364,17 @@ describe("findResumableAgentSessions", () => {
 });
 
 describe("endWorkspaceAgentSessions", () => {
+  it("leaves a session the user already exited with its own end", async () => {
+    await hook(start("exited"));
+    await hook(end("exited", "prompt_input_exit"));
+
+    await endWorkspaceAgentSessions(db, WORKSPACE, ARCHIVED_END_REASON);
+
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual(["prompt_input_exit"]);
+  });
+
   it("closes every open session in the workspace and no other", async () => {
     await hook(start("tab"));
     await hook(start("pane"), { sessionKey: PANE });

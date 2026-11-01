@@ -1123,9 +1123,13 @@ function WorkspaceDetailView({
   const dismissAgent = useCallback(() => {
     setAgentDismissed(true);
     setAgentActive(false);
-    // The PTY kill alone doesn't reach the sidecar, which would resume the
-    // session on the next start.
-    void stopWorkspaceAgent(id).catch(() => undefined);
+    // Killing the PTY doesn't tell the sidecar, so without this it would resume
+    // the session on the next start.
+    stopWorkspaceAgent(id).catch((e) => {
+      setAgentError(
+        `Couldn't record that the session was closed, so it may come back after a restart: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
   }, [id]);
 
   // Bring the agent tab back. When a session is already live — something else
