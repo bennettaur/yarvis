@@ -159,11 +159,25 @@ describe("artifact tools", () => {
     );
   });
 
-  it("refuses a title that is only whitespace", async () => {
+  it("refuses a title that is blank or too long, and content past the cap", async () => {
     const parsed = tools.create_artifact.inputSchema as unknown as {
       safeParse: (v: unknown) => { success: boolean };
     };
     expect(parsed.safeParse({ title: "   " }).success).toBe(false);
+    expect(parsed.safeParse({ title: "x".repeat(201) }).success).toBe(false);
+    expect(parsed.safeParse({ title: "x".repeat(200), content: "short" }).success).toBe(true);
+    expect(
+      parsed.safeParse({ title: "Big", content: "x".repeat(MAX_ARTIFACT_CHARS + 1) }).success,
+    ).toBe(false);
+  });
+
+  it("turns an oversized new artifact into an error the model can act on", async () => {
+    // The schema stops this first; the service's own check is the backstop.
+    const result = (await tools.create_artifact.execute!(
+      { title: "Big", content: "x".repeat(MAX_ARTIFACT_CHARS + 1) },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain(String(MAX_ARTIFACT_CHARS));
   });
 
   it("turns an oversized update into an error the model can act on", async () => {

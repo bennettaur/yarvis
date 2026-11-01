@@ -225,10 +225,11 @@ you can still have any artifact rewritten or deleted from a chat.
 Those runs may be working from a ticket or message someone else wrote, so their
 artifacts are marked untrusted. So is anything written in a chat turn after it
 read a web page or an untrusted artifact, and anything written from the Chrome
-side panel, whose messages carry the open tab's text. Once a chat turn reads an untrusted
-artifact, actions that can't be undone, rewriting an artifact among them, ask
-for your approval for the rest of that turn, as they do after reading a web
-page. Spoken turns always ask before rewriting one.
+side panel, whose messages carry the open tab's text. Once a chat turn reads an
+untrusted artifact, actions that can't be undone, rewriting an artifact among
+them, ask for your approval for the rest of that turn, as they do after reading
+a web page. Spoken turns always ask before rewriting one. Like page text, what
+an artifact says isn't replayed into later turns.
 
 Open **Memory → Artifacts** to read them. Each one shows where it came from
 (a chat, heads-down mode, or a specialist or job) and whether it's untrusted.

@@ -44,7 +44,9 @@ let reads: string[] = [];
 /** Set to make listing answer with a server error. */
 let failList = false;
 /** Every delete request the tab made, as method and path plus the body's ids. */
-let deletes: { method: string; path: string; ids?: string[] }[] = [];
+let deletes: { method: string; path: string; ids?: string[]; contentType?: string }[] = [];
+/** Set to make reading one artifact answer with a server error. */
+let failRead = false;
 /** Set to make the next delete answer with a server error. */
 let failNextDelete = false;
 
@@ -76,6 +78,9 @@ stubSidecarApi({
     if (method === "GET" && failList && path === "/api/artifacts") {
       return new Response("boom", { status: 500 });
     }
+    if (method === "GET" && readId && failRead) {
+      return new Response("gone", { status: 500 });
+    }
     if (method === "GET" && readId) {
       reads.push(readId);
       const row = ARTIFACTS.find((a) => a.id === readId)!;
@@ -87,7 +92,8 @@ stubSidecarApi({
       body = { deleted: true };
     } else if (method === "POST") {
       const { ids } = JSON.parse(String(init.body)) as { ids: string[] };
-      deletes.push({ method, path, ids });
+      const contentType = new Headers(init.headers).get("content-type") ?? undefined;
+      deletes.push({ method, path, ids, contentType });
       listed = listed.filter((a) => !ids.includes(a.id));
       body = { deleted: ids.length };
     }
@@ -178,7 +184,14 @@ describe("ArtifactsTab deleting", () => {
 
     buttonNamed(host, "Delete 2")?.click();
     await settle();
-    expect(deletes).toEqual([{ method: "POST", path: "/api/artifacts/delete", ids: ["a1", "a3"] }]);
+    expect(deletes).toEqual([
+      {
+        method: "POST",
+        path: "/api/artifacts/delete",
+        ids: ["a1", "a3"],
+        contentType: "application/json",
+      },
+    ]);
     expect(host.textContent).not.toContain("Morning brief");
     expect(host.textContent).not.toContain("Trip plan");
     expect(host.textContent).toContain("Heads-down scratchpad");
@@ -198,6 +211,37 @@ describe("ArtifactsTab deleting", () => {
     expect(host.querySelector("[role='alert']")?.textContent).toContain("500");
     expect(host.textContent).toContain("Trip plan");
     expect(host.textContent).toContain("1 selected");
+
+    // The controls come back, and a retry that works clears the error.
+    const retry = buttonNamed(host, "Delete selected") as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    retry.click();
+    await settle();
+    buttonNamed(host, "Delete 1")?.click();
+    await settle();
+    expect(host.querySelector("[role='alert']")).toBeNull();
+    expect(host.textContent).not.toContain("Trip plan");
+  });
+
+  it("drops a pending confirm when the selection changes", async () => {
+    const host = await mount();
+    checkbox(host, "Select Trip plan").click();
+    await settle();
+    buttonNamed(host, "Delete selected")?.click();
+    await settle();
+    expect(host.textContent).toContain("Delete 1 for good?");
+
+    checkbox(host, "Select Morning brief").click();
+    await settle();
+    expect(host.textContent).not.toContain("for good?");
+    expect(host.textContent).toContain("2 selected");
+
+    buttonNamed(host, "Delete selected")?.click();
+    await settle();
+    checkbox(host, "Select all artifacts").click();
+    await settle();
+    expect(host.textContent).not.toContain("for good?");
+    expect(deletes).toEqual([]);
   });
 
   it("selects every artifact with the select-all box, and cancels without deleting", async () => {
@@ -262,6 +306,19 @@ describe("ArtifactsTab deleting", () => {
     await settle();
     expect(host.textContent).toContain("Pick an artifact to read it.");
     expect(host.textContent).not.toContain("Pack the charger");
+  });
+
+  it("says so when an artifact can't be read", async () => {
+    failRead = true;
+    try {
+      const host = await mount();
+      titleButton(host, "Morning brief").click();
+      await settle();
+      expect(host.textContent).toContain("500");
+      expect(host.textContent).not.toContain("Source:");
+    } finally {
+      failRead = false;
+    }
   });
 
   it("says so when the list can't be loaded", async () => {

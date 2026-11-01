@@ -147,7 +147,7 @@ export function buildArtifactTools(
     }),
 
     delete_artifact: tool({
-      description: "Permanently delete one of your artifacts.",
+      description: `Permanently delete one of your artifacts.${appendOnlyNote}`,
       inputSchema: z.object({ id: uuid }),
       execute: async ({ id }) => {
         try {

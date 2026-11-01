@@ -41,7 +41,6 @@ export default function ArtifactsTab() {
   const listRes = useCachedResource<ArtifactSummary[]>("memory:artifacts", listArtifacts);
   const artifacts = listRes.data ?? NO_ARTIFACTS;
   const selected = artifacts.find((a) => a.id === selectedId) ?? null;
-  const openId = selected?.id;
   // Only ticks on artifacts still listed count, so the number matches what's shown.
   const checkedIds = artifacts.filter((a) => checked.has(a.id)).map((a) => a.id);
   const allChecked = artifacts.length > 0 && checkedIds.length === artifacts.length;
@@ -50,11 +49,12 @@ export default function ArtifactsTab() {
   // last opened is fetched again rather than served from the cache.
   const artifactRes = useCachedResource<Artifact>(
     selected ? `memory:artifact:${selected.id}:${selected.updatedAt}` : null,
-    () => getArtifact(openId as string),
+    // Only runs while the key is set, which is only while one is selected.
+    () => getArtifact(selected?.id ?? ""),
   );
   // Ticking boxes re-renders the tab; don't re-parse a long document each time.
   const content = artifactRes.data?.content;
-  const rendered = useMemo(
+  const markdownBody = useMemo(
     () => (content === undefined ? null : <Markdown>{content}</Markdown>),
     [content],
   );
@@ -139,6 +139,7 @@ export default function ArtifactsTab() {
                   <button
                     ref={cancelRef}
                     type="button"
+                    disabled={deleting}
                     onClick={() => setConfirmIds(null)}
                     className="text-zinc-400 hover:text-zinc-200"
                   >
@@ -225,7 +226,7 @@ export default function ArtifactsTab() {
                 <p className="mb-2 text-xs text-zinc-500">
                   Source: {WRITER_LABELS[artifactRes.data.createdBy]}
                 </p>
-                {rendered}
+                {markdownBody}
               </>
             ) : null}
             {artifactRes.error && <p className="text-sm text-red-400">{artifactRes.error}</p>}

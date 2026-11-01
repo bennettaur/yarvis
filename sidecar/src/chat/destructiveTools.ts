@@ -102,7 +102,10 @@ export interface UntrustedReads {
   hasReadWebPage: boolean;
   /** An artifact marked untrusted, such as one a heads-down pass or specialist wrote. */
   hasReadUntrustedArtifact: boolean;
-  /** The turn's own message quotes a page: the side panel sends the tab's title and selection. */
+  /**
+   * The turn's own message quotes a page: the side panel sends the tab's title
+   * and selection. Set when the turn starts, unlike the others.
+   */
   messageQuotesPage: boolean;
 }
 

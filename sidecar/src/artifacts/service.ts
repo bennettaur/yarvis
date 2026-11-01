@@ -148,7 +148,8 @@ export async function updateArtifact(
       and(
         eq(artifacts.id, id),
         sql`char_length(${next}) <= ${MAX_ARTIFACT_CHARS}`,
-        // Leaves a chat turn's artifact alone; the error below tells the two apart.
+        // An append-only writer skips a chat turn's artifact. When no row comes
+        // back, the branch below tells "no such artifact" from "refused".
         appendOnly ? ne(artifacts.createdBy, "chat") : undefined,
       ),
     )
@@ -169,7 +170,11 @@ export async function updateArtifact(
   return row;
 }
 
-/** Like an update, a heads-down pass or specialist can't delete what a chat turn created. */
+/**
+ * A chat turn can delete any artifact. A heads-down pass or specialist can only
+ * delete its own: deleting the user's document is as lossy as rewriting it.
+ * Throws ArtifactAppendOnlyError when it tries.
+ */
 export async function deleteArtifact(
   db: Db,
   id: string,
@@ -181,6 +186,7 @@ export async function deleteArtifact(
     .where(and(eq(artifacts.id, id), ne(artifacts.createdBy, "chat")))
     .returning({ id: artifacts.id });
   if (deleted.length > 0) return true;
+  // Nothing deleted: it's gone, or it came from a chat.
   if (await getArtifact(db, id)) throw new ArtifactAppendOnlyError();
   return false;
 }

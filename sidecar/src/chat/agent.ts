@@ -443,8 +443,8 @@ async function* runTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
   // reaches every turn, so it counts as unreviewed too.
   const fromPanel = userMetadata?.source === "browser";
   const unreviewed = spoken || isScheduledTask || fromPanel;
-  // Unreviewed turns already ask before everything this gates; on a panel turn
-  // it also marks what the turn writes to an artifact as untrusted.
+  // A panel turn already asks before destructive tools as an unreviewed turn;
+  // this also marks what it writes to an artifact as untrusted.
   const untrustedReads = newUntrustedReads({ messageQuotesPage: fromPanel });
   const allBuiltins = buildBuiltinTools({
     db,
