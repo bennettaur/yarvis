@@ -478,7 +478,7 @@ describe("a heads-down pass", () => {
           sleepMinutes: 30,
           reason: "routines done",
           // meeting-notes ships turned off, so it was never offered.
-          routinesDone: ["meeting-alarms", "meeting-notes"],
+          routinesDone: ["meeting-alarms", "meeting-alarms", "meeting-notes"],
         }),
         finish("tool-calls"),
       ],
@@ -490,6 +490,9 @@ describe("a heads-down pass", () => {
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
     expect(prompt).toContain("### meeting-alarms (never done before)");
     expect(prompt).not.toContain("### meeting-notes");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      "Pass recorded. Not recorded as done, since this pass wasn't given them: meeting-notes. Stop here.",
+    );
     const [pass] = await listPasses(db);
     expect(pass?.routinesOffered).toEqual(["meeting-alarms"]);
     expect(pass?.routinesDone).toEqual(["meeting-alarms"]);
@@ -501,5 +504,49 @@ describe("a heads-down pass", () => {
     const next = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: next });
     expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");
+  });
+
+  it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
+      provider: null,
+      model: null,
+      guidance: null,
+      maxRoutinesPerPass: 2,
+    });
+    await reloadRoutines();
+    const run = await startRun(db, null);
+    const offered = (model: MockLanguageModelV3) =>
+      JSON.stringify(model.doStreamCalls[0]?.prompt).includes("### meeting-alarms");
+
+    const first = streamingModel(
+      [
+        toolCall("f1", "finish_pass", { sleepMinutes: 30, reason: "ran out of time" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    await runPass(config, db, run, { model: first });
+    expect(offered(first)).toBe(true);
+    expect(JSON.stringify(first.doStreamCalls[1]?.prompt)).toContain(
+      "Not reported done, so a later pass gets them again: meeting-alarms.",
+    );
+    const [pass] = await listPasses(db);
+    expect(pass?.routinesOffered).toEqual(["meeting-alarms"]);
+    expect(pass?.routinesDone).toEqual([]);
+
+    const soon = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: soon });
+    expect(offered(soon)).toBe(false);
+
+    await sql`UPDATE heads_down_passes SET started_at = started_at - interval '61 minutes'`;
+    const later = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: later });
+    expect(offered(later)).toBe(true);
   });
 });

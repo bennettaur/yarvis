@@ -8,7 +8,6 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
 import {
-  DEFAULT_HEADS_DOWN_CONFIG,
   getHeadsDownConfig,
   MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
@@ -102,12 +101,7 @@ const configSchema = z
       .transform((g) => g || null)
       .nullable()
       .default(null),
-    maxRoutinesPerPass: z
-      .number()
-      .int()
-      .min(0)
-      .max(MAX_ROUTINES_PER_PASS)
-      .default(DEFAULT_HEADS_DOWN_CONFIG.maxRoutinesPerPass),
+    maxRoutinesPerPass: z.number().int().min(0).max(MAX_ROUTINES_PER_PASS).optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -204,9 +198,15 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const passTimeoutMinutes =
-      parsed.data.passTimeoutMinutes ?? (await getHeadsDownConfig()).passTimeoutMinutes;
-    return c.json(await saveHeadsDownConfig({ ...parsed.data, passTimeoutMinutes }));
+    // A client that doesn't send these keeps what is stored rather than resetting it.
+    const stored = await getHeadsDownConfig();
+    return c.json(
+      await saveHeadsDownConfig({
+        ...parsed.data,
+        passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
+        maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
+      }),
+    );
   });
 
   // Read-only, like the specialists: the files are the source of truth, so the

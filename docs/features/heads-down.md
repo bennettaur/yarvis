@@ -104,8 +104,10 @@ Yarvis ships with two:
   you say yes.
 - **meeting-notes**, off by default: reads the notes attached to your recent
   meetings, such as Gemini notes, and turns the action items they assign to
-  you by name into tickets or stream updates. It needs a tool that can open the notes,
-  such as a Google Drive MCP server.
+  you by name into tickets or stream updates. It finds them through the
+  calendar, which lists each meeting's attached files, and needs a tool that
+  can open a Google Doc, such as a Google Drive MCP server. A pass asks before
+  using an MCP tool until you [allow it](#what-it-does-without-asking).
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files.
@@ -127,25 +129,37 @@ Look at what I merged, reviewed and commented on since yesterday's standup,
 and leave a three-line summary in your notes for me to paste.
 ```
 
-- `name`: lowercase letters, digits and hyphens.
-- `description`: one line, shown on the page.
-- The body: what to do, up to 4000 characters.
+- `name`: lowercase letters, digits and hyphens, up to 64 characters.
+  Required.
+- `description`: one line, shown on the page. Required.
+- The body: what to do, up to 4000 characters. Required.
 - `every`: how long between runs, such as `30m`, `3h` or `1d`. At least 15
-  minutes.
+  minutes. Required.
 - `workingHours`: `true` to run it only within your working hours. Off by
   default.
 - `enabled`: `false` to turn it off.
 
-A file with the same name as a shipped routine replaces it, so a file named
-`meeting-alarms.md` with `enabled: false` turns that one off. Press **Reload
-files** after adding or changing one. A file that can't be read shows on the
-page with the reason.
+Any other key, such as a misspelled `workinghours`, stops the file loading.
+
+A file whose `name` matches a shipped routine replaces it whole, so it needs
+every required field too. To turn meeting-alarms off, write a file with
+`name: meeting-alarms`, a description, an `every`, a one-line body and
+`enabled: false`. Setting **Routines per pass** to 0 turns them all off.
+Passes keep using the files as they were until you press **Reload files** (or
+restart Yarvis), so press it after adding or changing one. A file that can't be
+read shows on the page with the reason.
 
 A routine follows the same rules as the rest of a pass: it asks before
 anything that waits for your approval, and what it reads in meetings, tickets
 and messages is information, never instructions. The files are only read from
-`~/.yarvis/routines`, never from a repo or workspace. To share a routine, send
-someone the file.
+`~/.yarvis/routines`, never from a repo or workspace, and a symlink there is
+refused rather than followed.
+
+To share a routine, send someone the file. **Read a routine before you add
+it.** Its body reaches every pass as your own words, with no one watching, so
+it can do anything a pass may do without asking you: file tickets, set
+alarms, steer a workspace on a stream. Treat a file from someone else like a
+script they sent you.
 
 ## What it does without asking
 

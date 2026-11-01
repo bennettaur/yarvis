@@ -293,8 +293,9 @@ describe("/api/heads-down", () => {
     for (const bad of [11, -1, 1.5]) {
       expect((await put({ ...valid, maxRoutinesPerPass: bad })).status).toBe(400);
     }
+    // A client that doesn't know about the setting keeps the stored value.
     expect((await put(valid)).status).toBe(200);
-    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 2 });
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 10 });
   });
 
   it("lists the routines with when each was last done, and reloads the files", async () => {

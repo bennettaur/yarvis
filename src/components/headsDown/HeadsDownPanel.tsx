@@ -490,6 +490,7 @@ export default function HeadsDownPanel() {
         <Section title="Routines">
           <RoutineList
             data={routines.data}
+            loadError={routines.error}
             onReload={async () => primeCache(CACHE_KEYS.routines, await reloadRoutines())}
           />
         </Section>

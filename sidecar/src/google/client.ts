@@ -71,6 +71,8 @@ export interface CalendarEvent {
   response: "accepted" | "tentative" | "declined" | "needsAction" | null;
   /** The organizer marked the user's attendance optional. */
   optional: boolean;
+  /** Files attached to the event, such as the Gemini notes Meet adds after a call. */
+  attachments: { title: string; url: string; mimeType: string | null }[];
 }
 
 type FetchFn = typeof fetch;
@@ -126,6 +128,15 @@ export function toCalendarEvent(item: any): CalendarEvent {
     htmlLink: item.htmlLink ?? null,
     response: self?.responseStatus ?? null,
     optional: self?.optional === true,
+    attachments: Array.isArray(item.attachments)
+      ? item.attachments
+          .filter((a: any) => typeof a?.fileUrl === "string")
+          .map((a: any) => ({
+            title: typeof a.title === "string" ? a.title : "(untitled)",
+            url: a.fileUrl,
+            mimeType: typeof a.mimeType === "string" ? a.mimeType : null,
+          }))
+      : [],
   };
 }
 

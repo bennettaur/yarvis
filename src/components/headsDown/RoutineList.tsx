@@ -15,9 +15,12 @@ function cadence(minutes: number): string {
  */
 export default function RoutineList({
   data,
+  loadError,
   onReload,
 }: {
   data: RoutinesResponse | null;
+  /** Why the list couldn't be loaded, shown in place of it with the reload button to retry. */
+  loadError: string | null;
   onReload: () => Promise<void>;
 }) {
   const [reloading, setReloading] = useState(false);
@@ -35,7 +38,29 @@ export default function RoutineList({
     }
   };
 
-  if (!data) return <p className="text-xs text-zinc-500">Loading…</p>;
+  const reloadButton = (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        disabled={reloading}
+        onClick={() => void reload()}
+        className="text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+      >
+        Reload files
+      </button>
+      {error && <span className="text-xs text-red-400">{error}</span>}
+    </div>
+  );
+
+  if (!data) {
+    if (!loadError) return <p className="text-xs text-zinc-500">Loading…</p>;
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-red-400">Couldn't load the routines: {loadError}</p>
+        {reloadButton}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2">
@@ -74,20 +99,11 @@ export default function RoutineList({
         </ul>
       )}
       <p className="text-xs text-zinc-500">
-        Add your own as markdown files in <span className="font-mono">{data.userDir}</span>. A file
-        with the same name as one above replaces it.
+        Add your own as markdown files in{" "}
+        <span className="break-all font-mono">{data.userDir}</span>. A file with the same name as
+        one above replaces it.
       </p>
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          disabled={reloading}
-          onClick={() => void reload()}
-          className="text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
-        >
-          Reload files
-        </button>
-        {error && <span className="text-xs text-red-400">{error}</span>}
-      </div>
+      {reloadButton}
     </div>
   );
 }

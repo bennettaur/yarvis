@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dueRoutines, loadRoutines, parseEvery, parseRoutine, type Routine } from "./routines.ts";
@@ -17,7 +17,6 @@ function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {
     workingHoursOnly: false,
     enabled: true,
     source: "user",
-    path: `${name}.md`,
     ...extra,
   };
 }
@@ -58,6 +57,9 @@ describe("parseRoutine", () => {
       "unknown key(s): tools",
     );
     expect(() => parseRoutine("a.md", file(base), "user")).toThrow("'every' is required");
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: soon`), "user")).toThrow(
+      "must be a duration",
+    );
     expect(() => parseRoutine("a.md", file(`${base}\nevery: 5m`), "user")).toThrow(
       "cannot be shorter than 15m",
     );
@@ -70,9 +72,14 @@ describe("parseRoutine", () => {
   });
 
   it("rejects a name that can't be a heading in the prompt or a name finish_pass reports", () => {
-    expect(() =>
-      parseRoutine("a.md", file("name: Meeting Alarms\ndescription: y\nevery: 1h"), "user"),
-    ).toThrow("lowercase letters, digits and hyphens");
+    for (const name of ["Meeting Alarms", "meeting alarms", "a".repeat(65)]) {
+      expect(() =>
+        parseRoutine("a.md", file(`name: ${name}\ndescription: y\nevery: 1h`), "user"),
+      ).toThrow("lowercase letters, digits and hyphens");
+    }
+    expect(
+      parseRoutine("a.md", file(`name: ${"a".repeat(64)}\ndescription: y\nevery: 1h`), "user").name,
+    ).toHaveLength(64);
   });
 });
 
@@ -107,15 +114,26 @@ describe("loadRoutines", () => {
     mkdirSync(join(dir, "folder.md"));
     // A FIFO would block a plain read forever, and every pass with it.
     execFileSync("mkfifo", [join(dir, "pipe.md")]);
+    // A link could point into a repo, which routines are never read from.
+    const elsewhere = mkdtempSync(join(tmpdir(), "routines-elsewhere-"));
+    writeFileSync(join(elsewhere, "linked.md"), file("name: linked\ndescription: y\nevery: 1h"));
+    symlinkSync(join(elsewhere, "linked.md"), join(dir, "linked.md"));
+    writeFileSync(join(dir, "huge.md"), "x".repeat(300 * 1024));
 
     const { routines, problems } = await loadRoutines();
+    rmSync(elsewhere, { recursive: true, force: true });
     expect(routines.find((r) => r.name === "meeting-alarms")).toMatchObject({
       source: "user",
       enabled: false,
       everyMinutes: 60,
     });
-    expect(problems.map((p) => p.path)).toEqual([join(dir, "broken.md"), join(dir, "pipe.md")]);
-    expect(problems[1]?.message).toContain("not a regular file");
+    expect(routines.map((r) => r.name)).not.toContain("linked");
+    expect(problems.map((p) => [p.path, p.message])).toEqual([
+      [join(dir, "broken.md"), expect.any(String)],
+      [join(dir, "huge.md"), expect.stringContaining("larger than 256 KB")],
+      [join(dir, "linked.md"), expect.stringContaining("a symlink")],
+      [join(dir, "pipe.md"), expect.stringContaining("not a regular file")],
+    ]);
   });
 });
 

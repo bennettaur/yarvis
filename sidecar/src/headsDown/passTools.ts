@@ -153,13 +153,14 @@ export function buildPassTools(
         const reported = [...new Set(routinesDone ?? [])];
         outcome.routinesDone = reported.filter((name) => offeredRoutines.includes(name));
         const ignored = reported.filter((name) => !offeredRoutines.includes(name));
-        if (ignored.length > 0) {
-          return {
-            ok: true,
-            message: `Pass recorded. Not recorded as done, since this pass wasn't given them: ${ignored.join(", ")}. Stop here.`,
-          };
-        }
-        return { ok: true, message: "Pass recorded. Stop here." };
+        const notDone = offeredRoutines.filter((name) => !reported.includes(name));
+        const remarks = [
+          ignored.length > 0 &&
+            `Not recorded as done, since this pass wasn't given them: ${ignored.join(", ")}.`,
+          notDone.length > 0 &&
+            `Not reported done, so a later pass gets them again: ${notDone.join(", ")}.`,
+        ].filter(Boolean);
+        return { ok: true, message: ["Pass recorded.", ...remarks, "Stop here."].join(" ") };
       },
     }),
   };

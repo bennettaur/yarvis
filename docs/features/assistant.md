@@ -645,7 +645,8 @@ parse, and reloads without a restart.
 Definitions load from `~/.yarvis/agents` only, never from a workspace or a
 cloned repo. A definition is a system prompt plus a tool list, so a repo that
 could supply one could hand the assistant both instructions and the means to
-act on them.
+act on them. For the same reason a symlinked file there is refused rather than
+followed, and listed under the problems with the reason.
 
 ## Background jobs
 

@@ -18,9 +18,9 @@ import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
  * A routine is a markdown file, like a specialist: frontmatter for how often it
  * runs, the body for what the pass is told to do. The shipped ones are embedded
  * at build time; `~/.yarvis/routines/*.md` loads beside them and wins on a name
- * collision, so a user can turn a shipped one off by writing a file with its
- * name and `enabled: false`. Files rather than rows so a routine can be shared
- * by copying a file.
+ * collision. The user's file replaces the shipped one whole, so turning one off
+ * takes a complete routine with `enabled: false`. Files rather than rows so a
+ * routine can be shared by copying a file.
  *
  * Never read from a workspace or a repo: the body goes into an unattended
  * pass's prompt as the user's own words, so a repo that could contribute one
@@ -40,8 +40,6 @@ export interface Routine {
   workingHoursOnly: boolean;
   enabled: boolean;
   source: RoutineSource;
-  /** Absolute path for a user routine; the repo-relative name for a shipped one. */
-  path: string;
 }
 
 export interface RoutineProblem {
@@ -129,7 +127,6 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
     workingHoursOnly: asBoolean(path, data, "workingHours") ?? false,
     enabled: asBoolean(path, data, "enabled") ?? true,
     source,
-    path,
   };
 }
 
@@ -196,9 +193,10 @@ export interface DueInput {
 /**
  * The routines a pass should take on: enabled, allowed at this hour, and at
  * least their cadence since they were last done. When more are due than the
- * limit, the most overdue go first, measured against their own cadence, so a
- * daily routine a few hours late doesn't lose to one that runs every hour.
- * The rest stay due and get the next pass. One a pass was given and didn't
+ * limit, the most overdue go first, counted in cadences missed rather than
+ * minutes: an hourly routine last done 2 hours ago (2) goes before a daily one
+ * last done 26 hours ago (1.08). One never done goes first of all. The rest stay due and
+ * get the next pass. One a pass was given and didn't
  * finish waits its cadence or an hour, whichever is shorter, before it is
  * given again.
  */

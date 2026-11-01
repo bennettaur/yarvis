@@ -715,6 +715,8 @@ back to ad-hoc.
   can't push back a routine it never saw. Both directories are read by
   `readMarkdownDir` in `agents/frontmatter.ts`, which opens without blocking
   and reads only regular files, since a FIFO named `x.md` would hang every load.
+  It refuses a symlinked file, which could point into a repo, and one past a
+  size cap.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

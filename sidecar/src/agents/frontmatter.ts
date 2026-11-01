@@ -199,9 +199,13 @@ export function asInteger(
 /** One file from a user's definition directory, or the reason it couldn't be read. */
 export type DefinitionFile = { path: string; content: string } | { path: string; error: string };
 
+/** Far past any real definition, so a stray large file is reported rather than read into memory. */
+const MAX_DEFINITION_BYTES = 256 * 1024;
+
 /**
  * Reads every `.md` file in a directory the user keeps definitions in, treating
- * an absent directory as simply empty.
+ * an absent directory as simply empty. A symlinked file is refused, since it
+ * could point into a repo, and definitions are never read from one.
  */
 export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
   let names: string[];
@@ -217,12 +221,22 @@ export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
       // Opened without blocking and checked through the same descriptor: a FIFO
       // named `x.md` would otherwise hang every load, and a directory named
       // `x.md` was never a definition, so it is skipped.
-      const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+      const handle = await open(
+        path,
+        constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+      ).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === "ELOOP") throw new Error(`${path}: a symlink, which isn't followed`);
+        throw e;
+      });
       try {
         const stat = await handle.stat();
         if (stat.isDirectory()) continue;
         if (!stat.isFile()) {
           files.push({ path, error: `${path}: not a regular file` });
+          continue;
+        }
+        if (stat.size > MAX_DEFINITION_BYTES) {
+          files.push({ path, error: `${path}: larger than ${MAX_DEFINITION_BYTES / 1024} KB` });
           continue;
         }
         files.push({ path, content: await handle.readFile("utf8") });
