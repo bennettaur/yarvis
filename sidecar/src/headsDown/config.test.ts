@@ -1,5 +1,13 @@
-import { describe, expect, it } from "bun:test";
-import { chooseSleep, DEFAULT_HEADS_DOWN_CONFIG, isWithinWorkingHours } from "./config.ts";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  chooseSleep,
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  isWithinWorkingHours,
+} from "./config.ts";
 
 const officeHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
 const nights = { days: [1, 2, 3, 4, 5], start: "20:00", end: "02:00" };
@@ -70,5 +78,27 @@ describe("chooseSleep", () => {
       DEFAULT_HEADS_DOWN_CONFIG,
     );
     expect(sleep).toEqual({ minutes: 60, reason: "nothing to push" });
+  });
+});
+
+describe("getHeadsDownConfig", () => {
+  const dir = mkdtempSync(join(tmpdir(), "heads-down-config-"));
+  const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+    process.env.YARVIS_SETTINGS_PATH = originalSettingsPath;
+  });
+
+  const storedTimeout = async (passTimeoutMinutes: unknown) => {
+    const path = join(dir, "settings.json");
+    writeFileSync(path, JSON.stringify({ headsDown: { passTimeoutMinutes } }));
+    process.env.YARVIS_SETTINGS_PATH = path;
+    return (await getHeadsDownConfig()).passTimeoutMinutes;
+  };
+
+  it("falls back to the default pass timeout for a nonsensical stored value, and caps a huge one at four hours", async () => {
+    expect(await storedTimeout(90)).toBe(90);
+    for (const bad of ["90", 0, -5, null]) expect(await storedTimeout(bad)).toBe(20);
+    expect(await storedTimeout(10_000)).toBe(240);
   });
 });

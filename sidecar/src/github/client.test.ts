@@ -376,14 +376,18 @@ describe("github client", () => {
                 headRefName: "f",
                 reviewThreads: { nodes: [] },
                 commits: { nodes: [] },
+                latestOpinionatedReviews: {
+                  nodes: [{ author: { login: "me" }, state: "APPROVED" }],
+                },
               },
             },
+            viewer: { login: "me" },
           },
         },
       }),
     );
     const detail = await gh.prDetail("o", "r", 9);
-    expect(detail).toMatchObject({ number: 9, draft: true, checks: [] });
+    expect(detail).toMatchObject({ number: 9, draft: true, checks: [], viewerReview: "approved" });
     expect(detail.checksUnavailable).toBeUndefined();
   });
 
@@ -521,6 +525,32 @@ describe("github client", () => {
       { login: "alice", state: "pending", isRequested: true, isTeam: false },
       { login: "org/frontend", state: "pending", isRequested: true, isTeam: true },
     ]);
+  });
+
+  it("reads the viewer's own standing verdict", () => {
+    const pr = {
+      number: 1,
+      state: "OPEN",
+      author: { login: "author" },
+      reviewThreads: { nodes: [] },
+      commits: { nodes: [] },
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "alice" } }] },
+      // Bob approved, then replied to a thread: his latest review is a comment.
+      latestReviews: { nodes: [{ author: { login: "bob" }, state: "COMMENTED" }] },
+      latestOpinionatedReviews: {
+        nodes: [
+          { author: { login: "bob" }, state: "APPROVED" },
+          { author: { login: "alice" }, state: "APPROVED" },
+          { author: { login: "carol" }, state: "CHANGES_REQUESTED" },
+        ],
+      },
+    };
+    expect(toPrDetail(pr, undefined, "bob").viewerReview).toBe("approved");
+    expect(toPrDetail(pr, undefined, "carol").viewerReview).toBe("changes_requested");
+    // Re-requested after approving: a fresh look is expected, so Approve is offered again.
+    expect(toPrDetail(pr, undefined, "alice").viewerReview).toBe("pending");
+    expect(toPrDetail(pr, undefined, "zed").viewerReview).toBe("pending");
+    expect(toPrDetail(pr).viewerReview).toBeUndefined();
   });
 
   it("defaults merge fields off when no repository node is supplied", () => {
@@ -931,6 +961,13 @@ function stackFetch(
       }
       return { repository: out };
     }
+    if (variables.n0 !== undefined) {
+      const out: Record<string, unknown> = {};
+      for (let i = 0; variables[`n${i}`] !== undefined; i++) {
+        out[`k${i}`] = nodes.find((n) => n.number === variables[`n${i}`]) ?? null;
+      }
+      return { repository: out };
+    }
     if (query.includes("defaultBranchRef")) {
       return {
         repository: {
@@ -940,8 +977,14 @@ function stackFetch(
       };
     }
     const key = query.includes("headRefName:$branch") ? "headRefName" : "baseRefName";
-    const match = nodes.find((n) => n[key] === variables.branch);
-    return { repository: { pullRequests: { nodes: match ? [match] : [] } } };
+    // Answers with only the fields the query asks for, so a test sees where the checks come from.
+    const asked = (n: any) =>
+      query.includes("statusCheckRollup") ? n : { ...n, commits: undefined };
+    return {
+      repository: {
+        pullRequests: { nodes: nodes.filter((n) => n[key] === variables.branch).map(asked) },
+      },
+    };
   });
 }
 
@@ -957,6 +1000,71 @@ describe("github stacked pull requests", () => {
     expect(result.trunk).toBe("main");
     expect(result.entries.map((e) => e.number)).toEqual([1, 2, 3]);
     expect(result.entries.map((e) => e.isCurrent)).toEqual([false, true, false]);
+  });
+
+  it("skips a fork's pull request whose branch shares a layer's name", async () => {
+    const forked = [
+      node(7, "auth", "main", { isCrossRepository: true }),
+      ...stack,
+      node(8, "api", "elsewhere", { isCrossRepository: true }),
+      node(9, "x", "ui", { isCrossRepository: true }),
+    ];
+    const gh = new GitHubClient("t", stackFetch(forked));
+    expect((await gh.prStack("o", "r", 2)).entries.map((e) => e.number)).toEqual([1, 2, 3]);
+  });
+
+  it("finds no layers above a fork's pull request, whose head branch isn't in this repo", async () => {
+    const fromFork = node(5, "main", "api", { isCrossRepository: true });
+    const gh = new GitHubClient("t", stackFetch([node(6, "docs", "main"), ...stack, fromFork]));
+    expect((await gh.prStack("o", "r", 5)).entries.map((e) => e.number)).toEqual([1, 2, 5]);
+  });
+
+  it("reads every layer's checks in one request after the walk", async () => {
+    const failing = {
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: "CheckRun",
+                      name: "test",
+                      status: "COMPLETED",
+                      conclusion: "FAILURE",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    };
+    const layered = [
+      node(1, "auth", "main", failing),
+      node(2, "api", "auth"),
+      node(3, "ui", "api", failing),
+    ];
+    const queries: string[] = [];
+    const serve = stackFetch(layered);
+    const gh = new GitHubClient("t", (async (url: string, init: any) => {
+      queries.push(JSON.parse(init.body).query);
+      return serve(url, init);
+    }) as unknown as typeof fetch);
+    const entries = (await gh.prStack("o", "r", 2)).entries;
+
+    const failingChecks = toStackEntry(node(1, "auth", "main", failing), REF, false).checks;
+    expect(entries.map((e) => e.checks)).toEqual([
+      failingChecks,
+      toStackEntry(node(2, "api", "auth"), REF, true).checks,
+      failingChecks,
+    ]);
+    // The steps pick among up to ten candidates, so they don't carry the checks.
+    const steps = queries.filter((q) => q.includes("pullRequests("));
+    expect(steps.length).toBeGreaterThan(0);
+    expect(steps.every((q) => !q.includes("statusCheckRollup"))).toBe(true);
   });
 
   it("reports a pull request that is not stacked as a stack of one", async () => {

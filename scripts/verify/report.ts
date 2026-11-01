@@ -201,6 +201,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
     requireAtLeast("human", "blocking finding");
   }
   if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
+  // Minor findings are still meant to be fixed in the PR, so one left open
+  // keeps it from merging unread.
+  if (review.findings.some((f) => f.severity === "minor")) requireAtLeast("agent", "minor finding");
   if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
   if (hasWeakMutationScore(facts)) {
     requireAtLeast("agent", "tests miss many mutations on changed lines");
@@ -365,6 +368,8 @@ export function renderReport(
     details.push(
       "**Minor findings**",
       "",
+      "Small, but fix these in this PR. Any left open keeps the verdict off auto.",
+      "",
       ...minorFindings.map((f) => `- ${inline(f.title)}${where(f.location)}: ${inline(f.detail)}`),
       "",
     );
@@ -390,7 +395,12 @@ export function renderReport(
   }
   if (facts.baseline.notDetecting.length > 0) {
     details.push(
-      "**Tests that pass without the change**",
+      "**New or changed tests that pass without the change**",
+      "",
+      "This PR adds or edits these tests, but they also pass on the base branch, so they " +
+        "wouldn't notice the change being reverted. For a feature or a fix, make each one " +
+        "check the new behavior, or remove it if another test already does. For a pure " +
+        "refactor, this is expected.",
       "",
       bulletList(facts.baseline.notDetecting),
       "",
@@ -401,7 +411,12 @@ export function renderReport(
   }
   if (facts.mutation && facts.mutation.survived.length > 0) {
     details.push(
-      "**Mutations no test caught**",
+      "**Changed lines the tests run but don't check**",
+      "",
+      "Each item is a small breaking edit to a changed line, such as a flipped comparison " +
+        "or a dropped branch, and every test still passed with it. Add or tighten a test " +
+        "so it fails on the edit. Skip edits that change nothing a user would notice, " +
+        "like a log message's wording.",
       "",
       bulletList(
         [...facts.mutation.survived].sort((a, b) => a.localeCompare(b, "en", { numeric: true })),

@@ -1,11 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
-import * as api from "./api";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
-/**
- * The transport is stubbed by spreading the real `./api` and replacing only
- * `sidecarFetch`, so `ensureOk`'s real behavior still applies here and nothing
- * is taken away from test files that run after this one.
- */
+// Only `sidecarFetch` is stubbed, so `ensureOk`'s real behavior still applies.
 
 interface Recorded {
   path: string;
@@ -15,13 +11,12 @@ interface Recorded {
 const requests: Recorded[] = [];
 let nextResponse: () => Response = () => new Response("{}");
 
-mock.module("./api", () => ({
-  ...api,
+stubSidecarApi({
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     requests.push({ path, init });
     return nextResponse();
   },
-}));
+});
 
 const { listVoiceProviders, speak, transcribe } = await import("./voice");
 
@@ -130,3 +125,5 @@ describe("listVoiceProviders", () => {
     expect(await listVoiceProviders()).toEqual(catalog);
   });
 });
+
+afterAll(resetSidecarApi);

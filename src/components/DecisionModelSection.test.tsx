@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { DEFAULT_DECISION_MODEL_CONFIG } from "../lib/decisionModel";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import DecisionModelSection from "./DecisionModelSection";
 
 const PROVIDERS = [
@@ -12,16 +14,13 @@ const PROVIDERS = [
   },
 ];
 
-let config: Record<string, unknown> = { model: null, autoApproveTools: false };
+// Spread over the defaults, as the sidecar always answers with every field.
+let config: Record<string, unknown> = { ...DEFAULT_DECISION_MODEL_CONFIG };
 /** When set, the next PATCH answers with this status instead of succeeding. */
 let nextPatchStatus: number | null = null;
 const calls: { url: string; method: string; body?: string }[] = [];
 
-// Real exports spread back in: `mock.module` replaces the module for the whole process.
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body as string | undefined });
@@ -42,7 +41,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -51,7 +50,7 @@ afterEach(() => {
   unmount = null;
   calls.length = 0;
   nextPatchStatus = null;
-  config = { model: null, autoApproveTools: false };
+  config = { ...DEFAULT_DECISION_MODEL_CONFIG };
 });
 
 async function settle() {
@@ -102,7 +101,7 @@ describe("DecisionModelSection", () => {
   });
 
   it("turns auto mode on once a model is chosen", async () => {
-    config = { model: SAVED, autoApproveTools: false };
+    config = { ...DEFAULT_DECISION_MODEL_CONFIG, model: SAVED, autoApproveTools: false };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
@@ -117,7 +116,12 @@ describe("DecisionModelSection", () => {
   });
 
   it("turns on auto mode for heads-down mode on its own", async () => {
-    config = { model: SAVED, autoApproveTools: false, autoApproveHeadsDown: false };
+    config = {
+      ...DEFAULT_DECISION_MODEL_CONFIG,
+      model: SAVED,
+      autoApproveTools: false,
+      autoApproveHeadsDown: false,
+    };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
@@ -132,8 +136,44 @@ describe("DecisionModelSection", () => {
     expect(JSON.parse(saved?.body ?? "{}")).toEqual({ autoApproveHeadsDown: true });
   });
 
+  it("turns on specialist picking on its own", async () => {
+    config = {
+      ...DEFAULT_DECISION_MODEL_CONFIG,
+      model: SAVED,
+      autoApproveTools: false,
+      pickSpecialists: false,
+    };
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const picking = [...mounted.host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Pick specialists for delegated work"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    picking.click();
+    await settle();
+
+    const saved = calls.find((c) => c.method === "PATCH");
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ pickSpecialists: true });
+  });
+
+  it("offers the playground only once a model is chosen", async () => {
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).not.toContain("Try a decision");
+  });
+
+  it("offers the playground with a model chosen", async () => {
+    config = { ...DEFAULT_DECISION_MODEL_CONFIG, model: SAVED };
+    const mounted = await mountForInteraction(createElement(DecisionModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).toContain("Try a decision");
+  });
+
   it("clears the model on picking None", async () => {
-    config = { model: SAVED, autoApproveTools: true };
+    config = { ...DEFAULT_DECISION_MODEL_CONFIG, model: SAVED, autoApproveTools: true };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
@@ -159,10 +199,16 @@ describe("DecisionModelSection", () => {
   });
 
   it("says when the saved model can no longer be used", async () => {
-    config = { model: { provider: "custom:gone", model: "old" }, autoApproveTools: true };
+    config = {
+      ...DEFAULT_DECISION_MODEL_CONFIG,
+      model: { provider: "custom:gone", model: "old" },
+      autoApproveTools: true,
+    };
     const mounted = await mountForInteraction(createElement(DecisionModelSection));
     unmount = mounted.unmount;
     await settle();
-    expect(mounted.host.textContent).toContain("auto mode is off until you pick another");
+    expect(mounted.host.textContent).toContain("the features below are off until you pick another");
   });
 });
+
+afterAll(resetSidecarApi);

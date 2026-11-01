@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { nativeInvoke } from "../test/nativeInvoke";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 /**
  * The webview stops an alarm ringing before it asks the sidecar to record the
@@ -8,10 +9,6 @@ import { nativeInvoke } from "../test/nativeInvoke";
 
 const invoked: { command: string; args: unknown }[] = [];
 
-// Copied before mocking: `mock.module` patches the namespace object in place,
-// so spreading it later would pick up the stub instead of the real exports.
-const realApi = { ...(await import("./api")) };
-
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (command: string, args?: unknown) => {
     invoked.push({ command, args });
@@ -19,12 +16,11 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-mock.module("./api", () => ({
-  ...realApi,
+stubSidecarApi({
   sidecarFetch: async () => {
     throw new Error("sidecar unreachable");
   },
-}));
+});
 
 // Other suites replace `./alarms` with a fake for the whole run; the query
 // string loads the real module whatever ran first.
@@ -37,7 +33,7 @@ afterEach(() => {
 
 // `mock.module` lasts for the whole run, so hand later suites the real modules back.
 afterAll(() => {
-  mock.module("./api", () => realApi);
+  resetSidecarApi();
   mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 });
 

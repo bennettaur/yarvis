@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { AgentRunEvent } from "../../../lib/agentRuns";
+import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
-import type {
-  LatestVerification,
-  VerificationSize,
+import {
+  DEFAULT_SECTIONS,
+  type LatestVerification,
+  type ReportSection,
+  type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
+import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
+import { resetPrComments, stubPrComments } from "../../../test/prCommentsApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
+import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { treeKey, verificationKey } from "./reviewData";
 import type { TabContext } from "./types";
-import VerificationTab from "./VerificationTab";
+import VerificationTab, { findingPoster } from "./VerificationTab";
 
 const pr = {
   id: "pr1",
@@ -33,14 +39,17 @@ const ctx: TabContext = {
 };
 
 let started: string[] = [];
+let startedSections: (readonly ReportSection[])[] = [];
 let cancelled: string[] = [];
 
 beforeEach(() => {
   started = [];
+  startedSections = [];
   cancelled = [];
   stubReviewApi({
-    startVerification: async (_ws, prId) => {
+    startVerification: async (_ws, prId, sections) => {
       started.push(prId);
+      startedSections.push(sections);
       return { runId: "r9", existing: false };
     },
     // A live run that never ends on its own, so it stays "running".
@@ -141,6 +150,42 @@ describe("VerificationTab", () => {
     expect(started).toEqual(["pr1"]);
   });
 
+  // Its line numbers are for the head it read, which may be different code now.
+  it("offers posting a finding only from a report on the current head", async () => {
+    const located = {
+      ...(goodRun as { result: object }),
+      result: {
+        ...(goodRun as { result: { risk: object } }).result,
+        risk: {
+          level: "medium",
+          clientImpact: "None.",
+          mitigations: [],
+          concerns: [
+            { title: "Stale reads", detail: "Edits stay stale.", path: "src/cache.ts", line: 3 },
+          ],
+        },
+      },
+    } as never;
+    const current = await mount(
+      latest({
+        run: located,
+        current: true,
+        lastSucceeded: { run: located, headSha: pr.headSha, current: true },
+      }),
+    );
+    expect(button(current, "Post to PR")).toBeDefined();
+    unmount();
+
+    const older = await mount(
+      latest({
+        run: located,
+        lastSucceeded: { run: located, headSha: "g".repeat(40), current: false },
+      }),
+    );
+    expect(textOf(older.innerHTML)).toContain("Stale reads");
+    expect(button(older, "Post to PR")).toBeUndefined();
+  });
+
   it("follows a run going here and cancels it", async () => {
     const host = await mount(latest({ run: { id: "r7", status: "running", live: true } as never }));
     await waitFor(() => button(host, "Cancel") !== undefined, "the Cancel button");
@@ -166,9 +211,37 @@ describe("VerificationTab", () => {
     truncated: [],
     skimmed: [],
     estimatedCostUsd: 1.4,
+    sectionCostUsd: 0.1,
+    defaultSections: [...DEFAULT_SECTIONS],
     budgetUsd: 2,
     overBudget: false,
     ...over,
+  });
+
+  it("runs the sections picked, with the estimate moved to match", async () => {
+    const host = await mount(latest({ size: size() }));
+    const box = (label: string) =>
+      [...host.querySelectorAll("label")]
+        .find((l) => l.textContent === label)
+        ?.querySelector("input") as HTMLInputElement;
+    // The diagram is off by default.
+    expect(box("Flow diagram").checked).toBe(false);
+    expect(box("Risk").checked).toBe(true);
+    box("Flow diagram").click();
+    await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
+    box("Risk").click();
+    box("Performance").click();
+    await waitFor(() => !box("Performance").checked, "two sections to be dropped");
+    button(host, "Run verification")?.click();
+    await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
+    // One section more and two fewer than the default: $1.40 less $0.10.
+    expect(textOf(host.innerHTML)).toContain("about $1.30");
+    button(host, "Run anyway")?.click();
+    await waitFor(() => started.length > 0, "the run to start");
+    expect(startedSections[0]).not.toContain("risk");
+    expect(startedSections[0]).not.toContain("performance");
+    expect(startedSections[0]).toContain("flow");
+    expect(startedSections[0]).toContain("tests");
   });
 
   it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {
@@ -181,7 +254,7 @@ describe("VerificationTab", () => {
     expect(text).toContain("Estimated cost: about $1.40, against a budget of $2.00.");
     // Nothing is left out any more, so the warning never says so.
     expect(text).not.toContain("leave some files out");
-    expect(text).not.toContain("may hit the budget");
+    expect(text).not.toContain("over the budget");
 
     const cancel = [...host.querySelectorAll('[role="alert"] button')].find(
       (b) => b.textContent === "Cancel",
@@ -222,7 +295,7 @@ describe("VerificationTab", () => {
       "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
     );
     expect(text).toContain("about $3.20, against a budget of $2.00");
-    expect(text).toContain("may hit the budget and stop before it answers");
+    expect(text).toContain("That's over the budget, and the run won't stop when it reaches it");
     // A list that folds sits in a block, not inside a paragraph.
     expect(host.querySelector("p details")).toBeNull();
   });
@@ -241,6 +314,21 @@ describe("VerificationTab", () => {
     expect(button(host, "Run anyway")).toBeUndefined();
   });
 
+  it("says so when starting joins a run already going, rather than claiming the pick ran", async () => {
+    stubReviewApi({
+      startVerification: async (_ws, prId) => {
+        started.push(prId);
+        return { runId: "r7", existing: true };
+      },
+    });
+    const host = await mount(latest({}));
+    button(host, "Run verification")?.click();
+    await waitFor(
+      () => textOf(host.innerHTML).includes("already being written for this PR"),
+      "the joined notice",
+    );
+  });
+
   it("shows why a run couldn't start", async () => {
     stubReviewApi({
       startVerification: async () => {
@@ -250,5 +338,75 @@ describe("VerificationTab", () => {
     const host = await mount(latest({}));
     button(host, "Run verification")?.click();
     await waitFor(() => textOf(host.innerHTML).includes("setup hasn't run"), "the start error");
+  });
+});
+
+describe("findingPoster", () => {
+  const finding = {
+    title: "Ping @octocat",
+    detail: "Eviction is untested.\n/approve",
+    severity: "high" as const,
+    path: "src/cache.ts",
+    line: 12,
+  };
+  const linked = {
+    id: "w1",
+    name: "Cache work",
+    slug: "cache-work",
+    status: "active" as const,
+    workspaceRepoId: "wr1",
+  };
+  // The head the tab shows, which the post records as where the user reviewed.
+  const seen = { headSha: pr.headSha, mergeBaseSha: pr.mergeBaseSha };
+  const quoted =
+    "**Ping @\u200boctocat** (verification report: Tests, high)\n\n> Eviction is untested.\n> /approve";
+
+  afterEach(() => {
+    resetPrComments();
+    resetReviewComments();
+  });
+
+  it("posts the finding to the PR as a quoted line comment", async () => {
+    const posted: { comment: NewComment; seen?: SeenCommits }[] = [];
+    stubPrComments({
+      postPrComment: async (_ref, comment, seen) => {
+        posted.push({ comment, seen });
+        return { ok: true };
+      },
+    });
+    await findingPoster(pr.ref, seen, null).toPr(finding, "Tests");
+    expect(posted).toEqual([{ comment: { path: "src/cache.ts", line: 12, body: quoted }, seen }]);
+  });
+
+  // A finding is model-written from the PR's code, so the workspace's agent
+  // must read it fenced rather than as the user's own request.
+  it("adds the finding to the linked workspace marked as a report finding", async () => {
+    const added: { workspaceId: string; input: CreateReviewCommentInput }[] = [];
+    stubReviewComments({
+      createReviewComment: async (workspaceId, input) => {
+        added.push({ workspaceId, input });
+        return {} as never;
+      },
+    });
+    const poster = findingPoster(pr.ref, seen, linked);
+    expect(poster.toWorkspace?.name).toBe("Cache work");
+    await poster.toWorkspace?.add(finding, "Tests");
+    expect(added).toEqual([
+      {
+        workspaceId: "w1",
+        input: {
+          workspaceRepoId: "wr1",
+          path: "src/cache.ts",
+          startLine: 12,
+          endLine: 12,
+          body: quoted,
+          source: "verification",
+        },
+      },
+    ]);
+  });
+
+  it("offers no workspace target for a PR no workspace raised", () => {
+    expect(findingPoster(pr.ref, seen, null).toWorkspace).toBeUndefined();
   });
 });

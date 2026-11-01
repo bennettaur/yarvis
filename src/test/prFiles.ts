@@ -70,9 +70,7 @@ mock.module("../lib/pr/cache", () => ({
 }));
 
 // `PrFileDiffs` mounts `usePrInsights`, which loads through `lib/pr/insights`.
-// Sibling test files mock `lib/api` with partial factories, leaving that fetch
-// resolving `undefined` and the hook bucketing a non-array. Stub the one call
-// so a diff render doesn't depend on which other test file ran first.
+// Stub the one call so a diff render never reaches the sidecar client.
 //
 // This registration is process-global like the one above, so a future test of
 // the real `fetchPrInsights` would be stubbed out merely by sharing a process

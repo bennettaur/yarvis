@@ -430,7 +430,9 @@ Always available:
 - **Activity.** Search the event log and count activity by type.
 - **Planning.** Find dangling work, suggest what's next, dismiss or restore a
   suggestion, and summarize the week.
-- **Delegation.** List specialists and delegate to one.
+- **Delegation.** List specialists and delegate to one. With **Pick
+  specialists for delegated work** on, it can leave the name out and have one
+  picked.
 - **Attention.** Raise a notification when it needs you.
 - **Scheduled tasks.** Schedule, list and cancel a prompt it runs later in the
   same chat.
@@ -530,6 +532,8 @@ The shipped specialists:
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
 | `workspace-recap` | Says in a few sentences what a workspace's agent session is working on and where it got to. Has no tools, on purpose. | The assistant, when you ask about workspace activity |
 | `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat or **Help → Ask Yarvis** |
+| `complexity-router` | A decision specialist. Picks the low, medium or max tier for a specialist that names no model of its own. | Delegated runs and scheduled jobs, when **Pick a model tier for specialists** is on |
+| `specialist-picker` | A decision specialist. Picks the specialist for a delegation that doesn't name one. | The assistant, when **Pick specialists for delegated work** is on |
 
 A delegated run has limits:
 
@@ -585,6 +589,55 @@ The fields:
 
 A misspelled key is an error too. `tool:` instead of `tools:` would otherwise
 give a specialist with no tools and no warning.
+
+### Decision specialists
+
+A file with `kind: decision` is a **decision specialist**. It doesn't run a
+task. It makes one quick choice on the decision model (see
+[Auto mode](mcp.md)): its body says what is being decided, and the answer is
+one of a fixed set of options plus a one-sentence reason.
+
+```markdown
+---
+name: complexity-router
+kind: decision
+description: Picks the complexity tier a delegated task needs.
+choices: [low, medium, max]   # optional; the caller can supply its own
+---
+
+You decide how capable a model a task needs…
+```
+
+A decision specialist can't set `tools`, `unattended`, `model`, `complexity` or
+`maxSteps`, and the assistant can't delegate to one. Options are letters,
+digits, `_`, `.` or `-`. When the decision model fails, times out, or isn't
+sure, the feature that asked does what it would have done without it.
+
+The app uses two of them, each behind its own switch under **Settings → Tools &
+MCP → Decision model**, both off by default:
+
+- **Pick a model tier for specialists.** A specialist that names no `model`
+  or `complexity` gets a tier from `complexity-router`, based on the task it
+  was handed. That includes a scheduled job with no specialist, judged on its
+  prompt. Without an answer it runs on the default chat model.
+- **Pick specialists for delegated work.** The assistant may delegate without
+  naming a specialist, and `specialist-picker` chooses one from their
+  descriptions. Nothing runs on that call: the assistant delegates again with
+  the name, so when a delegation needs your approval (on a spoken turn, say)
+  the prompt shows which specialist will run. If none clearly fits, the
+  assistant is asked to name one.
+
+A specialist that acts unattended (Settings marks it) is left out of both. It
+is never picked, so it runs only when the assistant names it, and never
+routed, so it keeps the default chat model. It reads text other people wrote
+while holding tools nobody approves per call, so that text must not be able
+to choose it or move it onto a smaller model.
+
+Both send the task text, or the job's prompt, to the decision model's provider. You can override
+either one with a file of the same name, or turn one off with
+`enabled: false`. **Try a decision** under the decision model setting asks
+the saved model once, so you can check how it answers first. It can run a
+decision specialist or instructions you type there.
 
 **Settings → Assistant** lists what loaded, reports any file that failed to
 parse, and reloads without a restart.

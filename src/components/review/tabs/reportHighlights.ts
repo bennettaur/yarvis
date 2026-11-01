@@ -26,7 +26,7 @@ export interface FileNote {
 export function fileNotes(report: VerificationReport | null, path: string): FileNote[] {
   if (!report) return [];
   const notes: FileNote[] = [];
-  for (const c of report.risk.concerns) {
+  for (const c of report.risk?.concerns ?? []) {
     if (c.path === path && c.line) {
       notes.push({ source: "Risk", title: c.title, detail: c.detail, line: c.line });
     }

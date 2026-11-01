@@ -1,51 +1,14 @@
-import { describe, expect, it, mock } from "bun:test";
-import { createElement } from "react";
+import { afterAll, describe, expect, it } from "bun:test";
+import { act, createElement, useState } from "react";
 import type { PrDetail, PrSummary } from "../../lib/pr/types";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import PrFloatingHeader from "./PrFloatingHeader";
 
 // The header renders PrWorkspaceAction, which calls sidecarFetch to look up a
 // linked workspace. Stub it to report "no workspace" so it falls back to the
 // start-workspace button and the merge controls are the only variable under test.
-mock.module("../../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Faithful copy of the real implementation: a naive stub here would leak
-  // into any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the
-  // actual error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -61,8 +24,8 @@ mock.module("../../lib/api", () => ({
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async () => new Response("null", { status: 200 }),
-  streamSSE: () => () => {},
-}));
+  streamSSE: async function* () {},
+});
 
 const summary = (overrides: Partial<PrSummary> = {}): PrSummary => ({
   ref: { provider: "github", owner: "octo", repo: "repo", number: 1 },
@@ -289,3 +252,56 @@ describe("PrFloatingHeader star toggle", () => {
     unmount();
   });
 });
+
+describe("PrFloatingHeader viewer's review", () => {
+  it("shows the approval in place of the Approve button once the viewer approved", async () => {
+    const html = await render(detail({ viewerReview: "approved" }));
+    expect(html).toContain("✓ Approved");
+    expect(html).not.toContain(">Approve<");
+    expect(html).toContain("Request changes");
+  });
+
+  it("offers Approve when the viewer hasn't approved", async () => {
+    const html = await render(detail({ viewerReview: "changes_requested" }));
+    expect(html).toContain(">Approve<");
+    expect(html).not.toContain("✓ Approved");
+  });
+
+  it("offers Approve when the provider couldn't say who the viewer is", async () => {
+    const html = await render(detail());
+    expect(html).toContain(">Approve<");
+  });
+
+  it("shows the approval as soon as the submit succeeds, then defers to the reloaded detail", async () => {
+    // Stands in for the PR cache: the test hands the header a reloaded detail.
+    let setDetail: (d: PrDetail) => void = () => {};
+    function Host() {
+      const [d, set] = useState(detail({ viewerReview: "pending" }));
+      setDetail = set;
+      return createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: d,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      });
+    }
+    const { host, unmount } = await mountForInteraction(createElement(Host));
+    const buttons = (label: string) =>
+      [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+
+    buttons("Approve")[0]?.click();
+    await waitFor(() => buttons("Approve").length === 2, "the approval composer");
+    // The header's Approve comes first, the composer's confirm after it.
+    buttons("Approve")[1]?.click();
+    await waitFor(() => host.textContent?.includes("✓ Approved") ?? false, "the approved label");
+    expect(buttons("Approve")).toHaveLength(0);
+
+    // The author asks for another look: the reloaded detail wins.
+    act(() => setDetail(detail({ viewerReview: "pending" })));
+    await waitFor(() => buttons("Approve").length === 1, "Approve to come back");
+    expect(host.textContent).not.toContain("✓ Approved");
+    unmount();
+  });
+});
+afterAll(resetSidecarApi);
