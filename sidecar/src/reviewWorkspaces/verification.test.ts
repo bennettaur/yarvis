@@ -316,18 +316,22 @@ describe("dropping must-read flags a finding already reports", () => {
         { note: "first", line: 30 },
         { note: "second", line: 40 },
         { note: "third", line: 50 },
+        { note: "fourth", line: 60 },
       ]),
       quality: quality("Retry count is never decremented", 17),
     });
     expect(notes).toEqual(["first", "second", "third"]);
   });
 
-  it("keeps an audit only when something was dropped", () => {
-    expect(auditIsEmpty(emptyAudit())).toBe(true);
-    expect(
-      auditIsEmpty({ ...emptyAudit(), droppedFlags: [{ path: "a", line: 1, note: "n" }] }),
-    ).toBe(false);
-    expect(auditIsEmpty({ ...emptyAudit(), droppedMustReads: ["a"] })).toBe(false);
+  it("reads only a few past the cap, so the audit of dropped ones stays small", () => {
+    const audit = emptyAudit();
+    verificationReportSchema(limits, audit).parse(
+      report({
+        ...flagged(Array.from({ length: 20 }, () => ({ note: retry, line: 17 }))),
+        quality: quality("Retry count is never decremented", 17),
+      }),
+    );
+    expect(audit.droppedFlags).toHaveLength(2 * MAX_MUST_READ_FLAGS);
   });
 
   it("keeps one that differs in place or wording", () => {
@@ -343,6 +347,24 @@ describe("dropping must-read flags a finding already reports", () => {
     ]);
     // No line to place it by.
     expect(keptNotes({ ...flagged([{ note: retry }]), ...finding })).toEqual([retry]);
+  });
+});
+
+describe("the audit of what the server dropped", () => {
+  it("is kept only when something was dropped", () => {
+    expect(auditIsEmpty(emptyAudit())).toBe(true);
+    const dropped = {
+      section: "tests",
+      keptIn: "quality",
+      title: "t",
+      path: "a",
+      line: 1,
+    } as const;
+    expect(auditIsEmpty({ ...emptyAudit(), droppedDuplicates: [dropped] })).toBe(false);
+    expect(auditIsEmpty({ ...emptyAudit(), droppedMustReads: ["a"] })).toBe(false);
+    expect(
+      auditIsEmpty({ ...emptyAudit(), droppedFlags: [{ path: "a", line: 1, note: "n" }] }),
+    ).toBe(false);
   });
 });
 
@@ -484,6 +506,9 @@ describe("paths an agent cites", () => {
     expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
     // The concern's absolute path still matches the must-read's flag.
     expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(audit.droppedFlags).toEqual([
+      { path: "src/a.ts", line: 9, note: "uploads retried forever, check the limit" },
+    ]);
     expect(parsed.complexity?.findings[0]?.path).toBe("src/a.ts");
     expect(parsed.completeness?.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);

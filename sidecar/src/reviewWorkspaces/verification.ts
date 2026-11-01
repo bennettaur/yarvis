@@ -86,6 +86,11 @@ export const MAX_FINDINGS = 5;
 export const MAX_MUST_READ = 8;
 /** Most things a must-read flags as already looking off or unclear. */
 export const MAX_MUST_READ_FLAGS = 3;
+/**
+ * Most flags read from one must-read before duplicates are dropped: room for
+ * a few duplicates, while keeping the audit of dropped ones small.
+ */
+const MAX_MUST_READ_FLAGS_READ = 2 * MAX_MUST_READ_FLAGS;
 
 const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
@@ -156,7 +161,7 @@ const mustReadSchema = z.object({
   flags: z
     .array(mustReadFlagSchema)
     .nullish()
-    .transform((flags) => flags ?? [])
+    .transform((flags) => (flags ?? []).slice(0, MAX_MUST_READ_FLAGS_READ))
     .meta({ description: `At most ${MAX_MUST_READ_FLAGS} items.` }),
 });
 
