@@ -239,7 +239,7 @@ export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
           continue;
         }
         // Reads to the end or one byte past the cap, however the file changes meanwhile.
-        const buffer = Buffer.alloc(Math.min(stat.size, MAX_DEFINITION_BYTES) + 1);
+        const buffer = Buffer.alloc(MAX_DEFINITION_BYTES + 1);
         let bytesRead = 0;
         while (bytesRead < buffer.length) {
           const { bytesRead: n } = await handle.read(buffer, bytesRead, buffer.length - bytesRead);
