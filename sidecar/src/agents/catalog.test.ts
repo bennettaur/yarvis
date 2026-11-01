@@ -271,6 +271,16 @@ describe("the catalogue", () => {
     });
   });
 
+  it("loads one of two user files with the same name, and reports the other", async () => {
+    writeAgent("a", "---\nname: tidier\ndescription: First.\n---\nYou tidy.");
+    writeAgent("b", "---\nname: tidier\ndescription: Second.\n---\nYou tidy.");
+    const { specialists, problems } = await reloadCatalog();
+    expect(specialists.find((s) => s.name === "tidier")?.description).toBe("First.");
+    expect(problems).toEqual([
+      { path: join(dir, "b.md"), message: expect.stringContaining("already defines 'tidier'") },
+    ]);
+  });
+
   it("reports a file it cannot parse instead of dropping it silently", async () => {
     writeAgent("broken", "no frontmatter here");
     const { specialists, problems } = await reloadCatalog();
