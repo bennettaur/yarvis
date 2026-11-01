@@ -214,6 +214,29 @@ describe("saved voices", () => {
     }
   });
 
+  it("sends no reference audio for a voice without a clip", async () => {
+    const { server, seen, baseUrl } = startSpeechServer();
+    try {
+      const provider = await registerProvider(baseUrl);
+      const { id } = await createVoice({
+        name: "Plain",
+        provider,
+        model: "good/model",
+        voice: "Kore",
+      });
+      const res = await app.request(`/api/voice/voices/${id}/speak`, {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ text: "hello" }),
+      });
+      expect(res.status).toBe(200);
+      expect(seen[0]?.ref_audio).toBeUndefined();
+      expect(seen[0]?.voice).toBe("Kore");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   it("sends a path-mode clip to a remote provider as audio, never as a path", async () => {
     const provider = await registerProvider("https://speech.example.com/v1");
     const { id } = await createVoice({ name: "Me", provider, model: "x" });
