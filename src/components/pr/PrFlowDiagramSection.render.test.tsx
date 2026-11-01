@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { createElement } from "react";
 import type { PrGuideGraph } from "../../lib/pr/flowDiagram";
 import type { PrGuide } from "../../lib/pr/guide";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 
 // Excalidraw needs a real canvas, which happy-dom does not have, so the lazy
-// chunk is replaced with a stand-in that shows what it was handed, and throws
-// on a node named "throws" the way Excalidraw might on odd data.
+// chunk is replaced with a stand-in that shows what it was handed. It throws
+// on a node named "throws", so the error boundary can be tested.
 mock.module("./PrFlowDiagram", () => ({
   default: ({ graph }: { graph: PrGuideGraph }) => {
     if (graph.nodes.some((n) => n.id === "throws")) throw new Error("diagram broke");
@@ -72,10 +72,10 @@ describe("PrFlowDiagramSection", () => {
       );
       unmount = mounted.unmount;
       mounted.host.querySelector("button")!.click();
-      for (let i = 0; i < 40 && !mounted.host.textContent?.includes("could not be drawn"); i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(mounted.host.textContent).toContain("The diagram could not be drawn.");
+      await waitFor(
+        () => !!mounted.host.textContent?.includes("The diagram could not be drawn."),
+        "the boundary's message",
+      );
       // The section's own toggle is still there to fold it away again.
       expect(mounted.host.querySelector("button")?.textContent).toContain("Flow diagram");
       expect(quiet.mock.calls.some((c) => c[0] === "[pr] flow diagram failed:")).toBe(true);
@@ -96,9 +96,7 @@ describe("PrFlowDiagramSection", () => {
 
     button.click();
     // The lazy chunk resolves on its own schedule; the loading line shows meanwhile.
-    for (let i = 0; i < 40 && !mounted.host.querySelector("[data-diagram]"); i++) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    await waitFor(() => !!mounted.host.querySelector("[data-diagram]"), "the diagram");
     expect(button.getAttribute("aria-expanded")).toBe("true");
     expect(mounted.host.querySelector("[data-diagram]")?.getAttribute("data-diagram")).toBe(
       "route,store",

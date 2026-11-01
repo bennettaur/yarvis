@@ -239,7 +239,10 @@ describe("POST /api/pr/guide", () => {
 
 describe("POST /api/pr/guide with a guide agent", () => {
   const graph = {
-    nodes: [{ id: "route", kind: "endpoint", file: "src/api.ts", line: 3, changed: true }],
+    nodes: [
+      { id: "route", kind: "endpoint", file: "src/api.ts", line: 3, changed: true },
+      { id: "store", kind: "function", changed: false },
+    ],
     edges: [{ from: "route", to: "store", kind: "calls" }],
   };
   // The agent is replaced, so nothing calls a model or reads the pull request;

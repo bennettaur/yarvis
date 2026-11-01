@@ -107,6 +107,7 @@ describe("newCodeGraph", () => {
     expect(graph.addNode({ id: "a", kind: "function", file: "./src/a.ts" }).file).toBe("src/a.ts");
     expect(graph.addNode({ id: "b", kind: "function", file: "/src/b.ts" }).file).toBe("src/b.ts");
     expect(graph.addNode({ id: "c", kind: "function", file: ".//src/c.ts" }).file).toBe("src/c.ts");
+    // Only a leading prefix is stripped.
     expect(graph.addNode({ id: "d", kind: "function", file: "src/./d.ts" }).file).toBe(
       "src/./d.ts",
     );
@@ -269,6 +270,15 @@ describe("changedLineRanges", () => {
     const patch =
       "@@ -1,2 +1,2 @@\n-a\n\\ No newline at end of file\n+a\n\\ No newline at end of file\n+b";
     expect(changedLineRanges(patch)).toEqual([[1, 2]]);
+  });
+
+  it("reads multi-digit line numbers", () => {
+    expect(changedLineRanges("@@ -120,3 +345,4 @@\n ctx\n+new")).toEqual([[346, 346]]);
+  });
+
+  // Deleting a whole file leaves a hunk at line 0, which no node can sit on.
+  it("places a deletion at the top of an emptied file on line 1", () => {
+    expect(changedLineRanges("@@ -1,2 +0,0 @@\n-a\n-b")).toEqual([[1, 1]]);
   });
 
   it("ignores rows before the first hunk", () => {

@@ -182,7 +182,7 @@ record is kept with the guide and drawn as a **Flow diagram** section above
 2. Open the section. The diagram loads in [Excalidraw](https://excalidraw.com),
    reading left to right from the outermost entry point inward.
 3. Pan and zoom to read it, or save it as an image from the menu. The diagram
-   is read-only: you can't move boxes, add text or paste images.
+   is read-only: you can't move boxes, add text, or paste or drop anything onto it.
 
 Solid blue boxes are code this PR changes. Dashed grey boxes are the code
 around it that the agent followed, such as the caller of a changed function or

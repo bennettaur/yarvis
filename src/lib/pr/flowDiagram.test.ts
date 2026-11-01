@@ -64,6 +64,20 @@ describe("toExcalidrawSkeleton", () => {
     ]);
   });
 
+  it("keeps the same spacing further out", () => {
+    const elements = toExcalidrawSkeleton(
+      graph([
+        ["a", "b"],
+        ["b", "c"],
+        ["a", "d"],
+        ["a", "e"],
+      ]),
+    );
+    const box = (n: number) => elements[n] as { x: number; y: number };
+    expect(box(2)).toMatchObject({ x: 760, y: 0 });
+    expect(box(4)).toMatchObject({ x: 380, y: 240 });
+  });
+
   it("draws no arrow for an edge whose other end is not in the graph", () => {
     const g = graph([["route", "store"]]);
     g.edges.push({ from: "route", to: "missing", kind: "calls" });
