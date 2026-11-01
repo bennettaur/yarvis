@@ -190,6 +190,25 @@ describe("newCodeGraph", () => {
       expect(nodes.map((n) => n.changed)).toEqual([true, true, false]);
     });
 
+    it("reaches a change on the last line of a span up to the cap, and no further", () => {
+      const graph = newCodeGraph();
+      const changedLines = new Map<string, [number, number][]>();
+      // Away from line 1, so the end is measured from the node's own first line.
+      for (const span of [MAX_NODE_SPAN - 1, MAX_NODE_SPAN, MAX_NODE_SPAN + 1]) {
+        const file = `src/span${span}.ts`;
+        graph.addNode({
+          id: `span-${span}`,
+          kind: "function",
+          file,
+          line: 300,
+          endLine: 300 + span,
+        });
+        changedLines.set(file, [[300 + span, 300 + span]]);
+      }
+      const { nodes } = graph.snapshot(changedLines);
+      expect(nodes.map((n) => n.changed)).toEqual([true, true, false]);
+    });
+
     it("keeps changed code first when the graph is too big to draw", () => {
       const graph = newCodeGraph();
       for (let i = 0; i < MAX_DIAGRAM_NODES; i++) {
