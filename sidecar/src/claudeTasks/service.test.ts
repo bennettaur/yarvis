@@ -142,11 +142,18 @@ describe("startClaudeTask", () => {
     expect(after("--tools")).toBe("Read,Write,Edit,Glob,Grep,TodoWrite");
     expect(args).toContain("--restricted");
     expect(after("--permission-prompts")).toBe("none");
-    expect(listAfter("--disallowedTools")).toEqual(
-      expect.arrayContaining(["Bash", "WebFetch", "WebSearch", "Agent", "Task"]),
-    );
+    expect(listAfter("--disallowedTools")).toEqual([
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "Agent",
+      "Task",
+    ]);
     expect(after("--max-budget-usd")).toBe("5");
     expect(after("--append-system-prompt")?.startsWith(TASK_RUN_GUARDRAIL)).toBe(true);
+    // The task's own instructions follow the guardrail.
+    expect(args.join("\n")).toContain("prefer a single HTML file");
     // The task goes in on stdin, not argv.
     expect(args).not.toContain("SECRET-TASK-TEXT");
   });
