@@ -406,6 +406,9 @@ describe("resumeAgentSessions", () => {
     ]);
     // A resume that never starts isn't retried on every restart.
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    const [closed] =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(closed?.end_reason).toBe("resumed");
     // The resumed Claude registers under the same id, which reopens the row.
     await hook(start(S1, "resume"));
     expect((await live()).map((s) => s.claudeSessionId)).toEqual([S1]);
@@ -495,6 +498,9 @@ describe("resumeAgentSessions", () => {
     const rows =
       await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
     expect(rows.map((r) => r.end_reason)).toEqual(["resume-failed"]);
+    // Only the session that came back shows in the activity log.
+    const events = await sql`SELECT payload FROM events WHERE type = 'workspace.session_started'`;
+    expect(events.map((e) => e.payload.workspaceId)).toEqual([OTHER_WORKSPACE]);
   });
 
   it("waits for every launch even when recording a resume fails", async () => {
