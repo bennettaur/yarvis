@@ -549,7 +549,9 @@ A delegated run has limits:
 A specialist is a markdown file: YAML frontmatter for its settings, and the
 body as its system prompt. The shipped ones live in
 `sidecar/src/agents/definitions/`. Yours go in `~/.yarvis/agents/*.md`. A file
-with the same name as a shipped one **replaces** it.
+with the same name as a shipped one **replaces** it. When two of your own
+files use the same name, the first by filename loads and the other is listed
+under the problems.
 
 ```markdown
 ---
@@ -645,7 +647,8 @@ parse, and reloads without a restart.
 Definitions load from `~/.yarvis/agents` only, never from a workspace or a
 cloned repo. A definition is a system prompt plus a tool list, so a repo that
 could supply one could hand the assistant both instructions and the means to
-act on them.
+act on them. For the same reason a symlinked folder or file there is refused
+rather than followed, and listed under the problems with the reason.
 
 ## Background jobs
 

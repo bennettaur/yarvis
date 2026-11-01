@@ -27,6 +27,29 @@ describe("google oauth url", () => {
 });
 
 describe("toCalendarEvent", () => {
+  it("keeps attachments that link somewhere, filling in a missing title or type", () => {
+    const ev = toCalendarEvent({
+      id: "e9",
+      start: { dateTime: "2026-05-25T09:00:00Z" },
+      end: { dateTime: "2026-05-25T09:30:00Z" },
+      attachments: [
+        { title: "Notes by Gemini", fileUrl: "https://docs.google.com/d/1", mimeType: "x/doc" },
+        { fileUrl: "https://docs.google.com/d/2" },
+        { title: "no link" },
+        { title: "plain", fileUrl: "http://intranet/notes" },
+        { title: "script", fileUrl: "javascript:alert(1)" },
+        { title: "hidden", fileUrl: "javascript:fetch('https://x')" },
+        null,
+      ],
+    });
+    expect(ev.attachments).toEqual([
+      { title: "Notes by Gemini", url: "https://docs.google.com/d/1", mimeType: "x/doc" },
+      { title: "(untitled)", url: "https://docs.google.com/d/2", mimeType: null },
+      { title: "plain", url: "http://intranet/notes", mimeType: null },
+    ]);
+    expect(toCalendarEvent({ id: "e10", attachments: "nope" }).attachments).toEqual([]);
+  });
+
   it("normalizes a timed event with a meet link", () => {
     const ev = toCalendarEvent({
       id: "e1",
