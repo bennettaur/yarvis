@@ -710,7 +710,12 @@ describe("verification report", () => {
   const report = {
     summary: `${"word ".repeat(200)}end.`,
     mustRead: [
-      { path: "src/a.ts", reason: "the change" },
+      // The flag repeats the tests finding at line 2, so the server drops it.
+      {
+        path: "src/a.ts",
+        reason: "the change",
+        flags: [{ note: "b is never read; check it is used", line: 2 }],
+      },
       { path: "src/elsewhere.ts", reason: "not changed by the PR" },
     ],
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
@@ -1001,6 +1006,7 @@ cat "${fakeDir}/result.jsonl"`,
       refKey: "gh:o/r/1",
       headSha,
       droppedMustReads: ["src/elsewhere.ts"],
+      droppedFlags: [{ path: "src/a.ts", line: 2, note: "b is never read; check it is used" }],
       droppedDuplicates: [
         {
           section: "completeness",

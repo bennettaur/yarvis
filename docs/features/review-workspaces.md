@@ -101,9 +101,9 @@ head in a tab of its own.
 - When the [verification report](#verification-report) has something to say
   about the file, a strip above the diff gives the must-read reason and lists
   each must-read flag, risk concern and check finding that cites a line, with
-  where it came from. Click a line number to jump there. The must-read lines
-  are marked in amber on the new side of the diff, and each cited line in red;
-  hover one to read why.
+  its source: **Looks off** for a flag, **Risk**, or the check's name. Click a
+  line number to jump there. The must-read lines are marked in amber on the
+  new side of the diff, and each cited line in red; hover one to read why.
 
 A **file tab** shows any file at the PR's head whole, with the PR's threads
 on it. Questions work on any file; comments only on files the PR changes,

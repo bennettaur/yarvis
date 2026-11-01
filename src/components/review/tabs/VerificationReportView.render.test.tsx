@@ -179,13 +179,23 @@ describe("VerificationReportView", () => {
       const flags = host.querySelector('ul[aria-label="Looks off"]');
       expect(flags?.textContent).toContain("TTL is read but never applied");
       expect(flags?.textContent).toContain("No line");
-      const link = [...(flags?.querySelectorAll("button") ?? [])];
-      expect(link.map((b) => b.textContent)).toEqual(["src/cache.ts:31"]);
-      link[0]?.click();
+      const links = [...(flags?.querySelectorAll("button") ?? [])];
+      expect(links.map((b) => b.textContent)).toEqual(["src/cache.ts:31"]);
+      links[0]?.click();
       expect(opened).toEqual([["src/cache.ts", 31]]);
     } finally {
       unmount();
     }
+  });
+
+  it("shows no flag list for a must-read with nothing flagged", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ ...report.mustRead[0], flags: [] }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    expect(html).not.toContain("Looks off");
   });
 
   it("gives a passing check one line and a failing one its findings", async () => {

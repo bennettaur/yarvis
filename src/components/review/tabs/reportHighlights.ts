@@ -9,7 +9,7 @@ import { CHECK_LABEL } from "./VerificationReportView";
 
 /** One thing the verification report says about a line of a file. */
 export interface FileNote {
-  /** The check that raised it, "Risk" for a risk concern, or "Must read" for a must-read's flag. */
+  /** The check that raised it, "Risk" for a risk concern, or "Looks off" for a must-read's flag. */
   source: string;
   title: string;
   /** Absent for a must-read flag, which is only a note. */
@@ -29,7 +29,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
   const notes: FileNote[] = [];
   for (const flag of report.mustRead.find((m) => m.path === path)?.flags ?? []) {
     if (flag.line) {
-      notes.push({ source: "Must read", title: flag.note, line: flag.line });
+      notes.push({ source: "Looks off", title: flag.note, line: flag.line });
     }
   }
   for (const c of report.risk?.concerns ?? []) {
@@ -55,7 +55,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
 
 /**
  * Highlights for the head side of a diff: the must-read range and each line a
- * finding cites, with the report's reason on hover. The text is the model's,
+ * note cites, with the report's reason on hover. The text is the model's,
  * so it is shown as plain text, never as markdown.
  */
 export function reportDecorations(

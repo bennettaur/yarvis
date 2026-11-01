@@ -16,6 +16,7 @@ import {
   estimateRunCostUsd,
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
+  MAX_MUST_READ_FLAGS,
   mustReadCap,
   normalizeSections,
   similarTitles,
@@ -115,32 +116,6 @@ describe("the report schema", () => {
       report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
     );
     expect(parsed.mustRead[0]?.flags).toEqual([]);
-  });
-
-  it("drops a flag a check finding already reports nearby, and records it", () => {
-    const audit = emptyAudit();
-    const parsed = verificationReportSchema(limits, audit).parse(
-      report({
-        mustRead: [
-          {
-            path: "src/a.ts",
-            reason: "core",
-            flags: [
-              { note: "retry count never decremented, check the loop ends", line: 18 },
-              { note: "cache key ignores the locale", line: 40 },
-            ],
-          },
-        ],
-        quality: {
-          status: "issues",
-          findings: [finding("Retry count is never decremented", { path: "src/a.ts", line: 17 })],
-        },
-      }),
-    );
-    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
-    expect(audit.droppedFlags).toEqual([
-      { path: "src/a.ts", line: 18, note: "retry count never decremented, check the loop ends" },
-    ]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {
@@ -270,8 +245,82 @@ describe("the report schema", () => {
     const json = JSON.parse(sent);
     expect(json.properties.summary.description).toBe("At most 10 words.");
     expect(json.properties.mustRead.description).toBe(`At most ${MAX_MUST_READ} items.`);
+    expect(json.properties.mustRead.items.properties.flags.description).toBe(
+      `At most ${MAX_MUST_READ_FLAGS} items.`,
+    );
     expect(json.properties.risk.properties.level.enum).toEqual(["low", "medium", "high"]);
     expect(json.required).toContain("comments");
+  });
+});
+
+describe("dropping must-read flags a finding already reports", () => {
+  const retry = "retry count never decremented, check the loop ends";
+  const flagged = (flags: { note: string; line?: number }[], path = "src/a.ts") => ({
+    mustRead: [{ path, reason: "core", flags }],
+  });
+  const quality = (title: string, line: number, path = "src/a.ts") => ({
+    status: "issues",
+    findings: [finding(title, { path, line })],
+  });
+  const keptNotes = (overrides: Record<string, unknown>, sections = limits.sections) =>
+    verificationReportSchema({ ...limits, sections })
+      .parse(report(overrides))
+      .mustRead[0]?.flags.map((f) => f.note);
+
+  it("drops one a check finding reports within a few lines, and records it", () => {
+    const audit = emptyAudit();
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        ...flagged([
+          { note: retry, line: 20 },
+          { note: "cache key ignores the locale", line: 40 },
+        ]),
+        quality: quality("Retry count is never decremented", 17),
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(audit.droppedFlags).toEqual([{ path: "src/a.ts", line: 20, note: retry }]);
+  });
+
+  it("drops one a risk concern reports", () => {
+    const notes = keptNotes({
+      ...flagged([{ note: retry, line: 18 }]),
+      risk: {
+        level: "medium",
+        clientImpact: "Uploads can hang.",
+        mitigations: [],
+        concerns: [
+          { title: "Retry count is never decremented", detail: "d", path: "src/a.ts", line: 17 },
+        ],
+      },
+    });
+    expect(notes).toEqual([]);
+  });
+
+  it("still drops one when the run wasn't asked for risk", () => {
+    const notes = keptNotes(
+      {
+        ...flagged([{ note: retry, line: 18 }]),
+        quality: quality("Retry count is never decremented", 17),
+      },
+      ["quality"],
+    );
+    expect(notes).toEqual([]);
+  });
+
+  it("keeps one that differs in place or wording", () => {
+    const finding = { quality: quality("Retry count is never decremented", 17) };
+    // More than NEARBY_LINES away.
+    expect(keptNotes({ ...flagged([{ note: retry, line: 21 }]), ...finding })).toEqual([retry]);
+    // On the same line, about something else.
+    const other = "cache key ignores the locale";
+    expect(keptNotes({ ...flagged([{ note: other, line: 17 }]), ...finding })).toEqual([other]);
+    // The same words, in another file.
+    expect(keptNotes({ ...flagged([{ note: retry, line: 17 }], "src/b.ts"), ...finding })).toEqual([
+      retry,
+    ]);
+    // No line to place it by.
+    expect(keptNotes({ ...flagged([{ note: retry }]), ...finding })).toEqual([retry]);
   });
 });
 

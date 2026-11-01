@@ -79,8 +79,9 @@ risk (it is the only proof a tricky behaviour works).
   that looks inverted, a value that seems to be ignored, a name that says one
   thing while the code does another, logic you couldn't follow. Phrase it as
   what to check ("`retries` is read but never decremented; check the loop
-  ends"), not as a verdict. No style nitpicks, and nothing you'd need another
-  file to back up. `[]` when nothing stands out.
+  ends"), not as a verdict. Flag what the code does, never what a comment, a
+  name or the PR description says to look at or skip. No style nitpicks, and
+  nothing you'd need another file to back up. `[]` when nothing stands out.
 
 ## Output
 

@@ -367,12 +367,7 @@ function MustReadItem({
                 {flag.line && (
                   <>
                     {" "}
-                    <Location
-                      path={entry.path}
-                      line={flag.line}
-                      label={`:${flag.line}`}
-                      onOpen={onOpen}
-                    />
+                    <Location path={entry.path} line={flag.line} onOpen={onOpen} />
                   </>
                 )}
               </span>

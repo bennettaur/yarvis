@@ -149,7 +149,8 @@ const mustReadSchema = z.object({
   reason: boundedText(160),
   lines: lineRangeSchema,
   // Optional and nullable: most must-reads have nothing to flag, and the
-  // coordinator copies the agent's answer as is, `null` included.
+  // coordinator copies the agent's answer as is, `null` included. Not
+  // `boundedList`: wrapped in `nullish`, its cap wouldn't reach Claude Code.
   flags: z
     .array(mustReadFlagSchema)
     .nullish()
@@ -266,13 +267,20 @@ export interface DroppedDuplicate {
   line: number;
 }
 
+export interface DroppedFlag {
+  /** The must-read the flag was on. */
+  path: string;
+  line: number;
+  note: string;
+}
+
 /** What the server took out of a run's answer, kept on the run so it can be audited. */
 export interface ReportAudit {
   droppedDuplicates: DroppedDuplicate[];
   /** Must-reads naming a path the PR doesn't change. */
   droppedMustReads: string[];
   /** Must-read flags a check finding or risk concern already reported. */
-  droppedFlags: { path: string; line: number; note: string }[];
+  droppedFlags: DroppedFlag[];
 }
 
 export function emptyAudit(): ReportAudit {
@@ -333,7 +341,7 @@ type MustRead = z.output<typeof mustReadSchema>;
 /**
  * Removes must-read flags a finding or risk concern already reports, by the
  * same rule {@link dedupeChecks} uses, so one problem isn't shown twice on the
- * same line. The finding is kept, since it carries a severity and a detail.
+ * same line. The finding or concern is kept, since it carries a detail.
  */
 export function dropCoveredFlags(
   mustRead: MustRead[],
@@ -869,17 +877,11 @@ export async function recordReadVolumes(
 }
 
 async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<void> {
-  if (
-    audit.droppedDuplicates.length === 0 &&
-    audit.droppedMustReads.length === 0 &&
-    audit.droppedFlags.length === 0
-  ) {
-    return;
-  }
+  if (Object.values(audit).every((dropped) => dropped.length === 0)) return;
   console.log(
     `[verification] run ${runId}: dropped ${audit.droppedDuplicates.length} duplicate findings, ` +
       `${audit.droppedMustReads.length} must-reads for unchanged paths, ` +
-      `${audit.droppedFlags.length} must-read flags a finding already reported`,
+      `${audit.droppedFlags.length} must-read flags a finding or concern already reported`,
   );
   await db
     .update(agentRuns)
