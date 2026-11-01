@@ -116,7 +116,7 @@ stubSidecarApi({
   sidecarFetch: async (url: string, init?: RequestInit) => {
     if (init?.method && init.method !== "GET") {
       writes.push({ path: url, method: init.method });
-      return json({ ok: true });
+      return stopFails ? json({ error: "database unavailable" }, 500) : json({ ok: true });
     }
     requested.push(url);
     // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
@@ -135,6 +135,8 @@ stubSidecarApi({
 
 /** Sidecar calls other than reads, which is what a user action sends. */
 let writes: { path: string; method: string }[] = [];
+/** Makes the sidecar refuse the agent-tab stop, as when its database write fails. */
+let stopFails = false;
 
 // The agent tab shows only while the core reports its session alive.
 mock.module("@tauri-apps/api/core", () => ({
@@ -228,23 +230,35 @@ describe("WorkspacesPanel agent tab", () => {
     if (!hadObserver) delete globalWithObserver.IntersectionObserver;
   });
 
-  it("ends the agent's registration in the sidecar when the user closes its tab", async () => {
+  async function closeAgentTab(): Promise<HTMLElement> {
     const mounted = await mountForInteraction(
       <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
       200,
     );
     unmount = mounted.unmount;
-    const close = mounted.host.querySelector<HTMLButtonElement>('[aria-label="End Claude"]');
-    expect(close).not.toBeNull();
-
-    close?.click();
+    mounted.host.querySelector<HTMLButtonElement>('[aria-label="End Claude"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 50));
+    return mounted.host;
+  }
+
+  it("ends the agent's registration in the sidecar when the user closes its tab", async () => {
+    await closeAgentTab();
 
     // Without this the sidecar resumes the closed session on the next start.
     expect(writes).toContainEqual({
       path: `/api/workspaces/${JUST_CREATED.id}/agent/stop`,
       method: "POST",
     });
+  });
+
+  it("says so when the sidecar couldn't record the close", async () => {
+    stopFails = true;
+    try {
+      const host = await closeAgentTab();
+      expect(host.textContent).toContain("may come back after a restart");
+    } finally {
+      stopFails = false;
+    }
   });
 });
 

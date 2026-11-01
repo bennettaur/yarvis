@@ -15,7 +15,11 @@ import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
 } from "./agentSessions.ts";
-import { resumeAgentSessions, type StartClaudeSessionInput } from "./claudeSession.ts";
+import {
+  resumeAgentSessions,
+  type StartClaudeSessionInput,
+  stopClaudeSession,
+} from "./claudeSession.ts";
 import { agentSessionHookCommand } from "./claudeSettings.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -360,6 +364,23 @@ describe("findResumableAgentSessions", () => {
       await hook(start(id), { pid: "999999" });
       expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
     }
+  });
+});
+
+describe("stopClaudeSession", () => {
+  it("ends the agent tab's registration even when the core can't take the kill", async () => {
+    await hook(start("tab"), { pid: "999999" });
+    await hook(start("pane"), { pid: "999998", sessionKey: PANE });
+
+    // No core is listening in tests, so the kill fails after the write.
+    await expect(stopClaudeSession(db, WORKSPACE)).rejects.toThrow();
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${WORKSPACE} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", null],
+      ["tab", "stopped"],
+    ]);
   });
 });
 
