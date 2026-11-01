@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -162,6 +163,39 @@ describe("LocalSpeechServer", () => {
     });
     expect((await server.start()).state).toBe("failed");
     expect(await records()).toEqual({});
+  });
+
+  describe("record lock", () => {
+    const lock = () => join(dir, "speech-server.json.lock");
+    const work = { pid: 123, port: 9000, startedAt: "Mon Nov  2 08:00:00 2026" };
+
+    it("waits for another instance's update instead of writing over it", async () => {
+      await writeFile(join(dir, "speech-server.json"), JSON.stringify({ work }));
+      await writeFile(lock(), "");
+      // Another instance holds the lock briefly, then lets go.
+      const other = Bun.spawn(["sh", "-c", `sleep 0.3; rm -f '${lock()}'`]);
+      await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+      await other.exited;
+      expect(Object.keys(await records()).sort()).toEqual(["main", "work"]);
+      expect(existsSync(lock())).toBe(false);
+    });
+
+    it("takes over a lock a crashed instance left behind", async () => {
+      await writeFile(lock(), "");
+      const old = new Date(Date.now() - 60_000);
+      await utimes(lock(), old, old);
+      await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+      expect(Object.keys(await records())).toEqual(["main"]);
+      expect(existsSync(lock())).toBe(false);
+    });
+
+    it("gives up, leaving the file and the other instance's lock alone, when the lock stays held", async () => {
+      await writeFile(join(dir, "speech-server.json"), JSON.stringify({ work }));
+      await writeFile(lock(), "");
+      await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+      expect(Object.keys(await records())).toEqual(["work"]);
+      expect(existsSync(lock())).toBe(true);
+    });
   });
 
   it("does not adopt a process that reused the recorded pid", async () => {

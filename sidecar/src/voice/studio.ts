@@ -186,7 +186,11 @@ export interface TranslateInput {
  * it is still fenced so a line in it reads as something to translate rather
  * than a request to the model.
  */
-export async function translateText(config: Config, input: TranslateInput): Promise<string> {
+export async function translateText(
+  config: Config,
+  input: TranslateInput,
+  timeoutMs = TRANSLATE_TIMEOUT_MS,
+): Promise<string> {
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   let text: string;
   let cutOff: boolean;
@@ -207,12 +211,15 @@ export async function translateText(config: Config, input: TranslateInput): Prom
       // A model that runs on past a speakable length is cut off rather than
       // paid for in full; one token per character allows for scripts like CJK.
       maxOutputTokens: MAX_SPEECH_CHARS,
-      abortSignal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
+      abortSignal: AbortSignal.timeout(timeoutMs),
     });
     text = result.text.trim();
     cutOff = result.finishReason === "length";
   } catch (e) {
     console.error("[voice] translation failed:", describeError(e));
+    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new Error(`the translation model didn't answer within ${timeoutMs / 1000} s`);
+    }
     throw new Error(clientError(e));
   }
   if (!text) throw new Error("the translation model returned nothing");

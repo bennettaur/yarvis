@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../../lib/resourceCache";
-import type { SpeechServerStatus } from "../../lib/speechServer";
+import type { LocalModelStatus, SpeechServerStatus } from "../../lib/speechServer";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "../../lib/voiceConfig";
 import type { VoiceProfile } from "../../lib/voiceProfiles";
 import { mountForInteraction, waitFor } from "../../test/render";
@@ -29,6 +29,7 @@ let config: VoiceConfig;
 let configSaveStatus: number | null = null;
 let voices: VoiceProfile[];
 let server: SpeechServerStatus;
+let models: LocalModelStatus[];
 const requests: { method: string; path: string; body: unknown }[] = [];
 
 function json(body: unknown, status = 200): Response {
@@ -59,8 +60,32 @@ async function fakeSidecar(path: string, init: RequestInit = {}): Promise<Respon
     return json(null, 204);
   }
   if (path === "/api/voice/server") return json(server);
-  if (path === "/api/voice/server/models") return json([]);
+  if (path === "/api/voice/server/models") return json(models);
+  if (path === "/api/voice/server/stop") {
+    server = stoppedServer();
+    return json(server);
+  }
   if (path === "/api/voice/studio/takes") return json([]);
+  if (path === "/api/voice/studio/generate") {
+    return json({
+      takes: [
+        {
+          file: "take-1762000000000-default-0a1b2c3d.wav",
+          voiceId: "default",
+          voiceName: "Default",
+          text: body.text,
+          contentType: "audio/wav",
+          savedPath: null,
+          createdAt: "2026-11-01T09:00:00.000Z",
+        },
+      ],
+      failures: [],
+      translation: null,
+    });
+  }
+  if (path.startsWith("/api/voice/studio/takes/")) {
+    return new Response(new Uint8Array([1]), { headers: { "content-type": "audio/wav" } });
+  }
   return json([]);
 }
 
@@ -86,8 +111,12 @@ function button(host: HTMLElement, label: string, within?: string): HTMLButtonEl
   return found as HTMLButtonElement;
 }
 
-function type(field: HTMLTextAreaElement, value: string) {
-  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(field, value);
+function type(field: HTMLTextAreaElement | HTMLInputElement, value: string) {
+  const proto =
+    field instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, value);
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
@@ -98,6 +127,7 @@ beforeEach(() => {
   config = { ...DEFAULT_VOICE_CONFIG };
   voices = [NARRATOR];
   server = stoppedServer();
+  models = [];
   configSaveStatus = null;
   requests.length = 0;
   stubSidecarApi({ sidecarFetch: fakeSidecar });
@@ -188,6 +218,36 @@ describe("Studio", () => {
     }
     await waitFor(() => generate.disabled, "Generate to disable with no voice ticked");
   });
+
+  it("asks for a take in each ticked voice, with the language trimmed, and lists what comes back", async () => {
+    config = { ...config, translationProvider: "anthropic", translationModel: "m" };
+    const mounted = await mountForInteraction(createElement(VoicePanel));
+    unmount = mounted.unmount;
+    const { host } = mounted;
+    await waitFor(() => host.querySelector("textarea") !== null, "the studio");
+
+    type(host.querySelector("textarea") as HTMLTextAreaElement, "Your build finished.");
+    type(host.querySelector('input[placeholder="e.g. French"]') as HTMLInputElement, "  French ");
+    const narrator = [...host.querySelectorAll("label")].find((l) =>
+      l.textContent?.includes("Narrator"),
+    );
+    narrator?.querySelector("input")?.click();
+    const generate = button(host, "Generate");
+    await waitFor(() => !generate.disabled, "Generate to enable");
+    generate.click();
+
+    await waitFor(
+      () => requests.some((r) => r.path === "/api/voice/studio/generate"),
+      "the generate request",
+    );
+    expect(requests.find((r) => r.path === "/api/voice/studio/generate")?.body).toEqual({
+      text: "Your build finished.",
+      voiceIds: ["default", NARRATOR.id],
+      language: "French",
+    });
+    await waitFor(() => host.querySelector("audio") !== null, "the take to load");
+    expect(button(host, "Save").disabled).toBe(false);
+  });
 });
 
 describe("Speech server section", () => {
@@ -220,6 +280,41 @@ describe("Speech server section", () => {
     unmount = mounted.unmount;
     return mounted.host;
   }
+
+  it("polls while a model downloads", async () => {
+    models = [
+      {
+        id: "mlx-community/Kokoro-82M-bf16",
+        kind: "tts",
+        cloning: false,
+        note: "",
+        state: "downloading",
+        error: null,
+      },
+    ];
+    expect(await serverReadsOver(POLL_WINDOW_MS)).toBeGreaterThan(0);
+  });
+
+  it("offers Stop while the server is starting", async () => {
+    server = { ...stoppedServer(), state: "starting" };
+    const host = await mountServer();
+    expect(host.textContent).toContain("Starting…");
+    expect(button(host, "Stop").disabled).toBe(false);
+    expect(() => button(host, "Start")).toThrow();
+  });
+
+  it("shows the saved port, and stops the server when asked", async () => {
+    server = { ...stoppedServer(), state: "running", port: 8123 };
+    const host = await mountServer();
+    expect((host.querySelector("input") as HTMLInputElement).value).toBe("8123");
+
+    button(host, "Stop").click();
+    await waitFor(
+      () => requests.some((r) => r.method === "POST" && r.path === "/api/voice/server/stop"),
+      "the stop request",
+    );
+    await waitFor(() => host.textContent?.includes("Stopped") ?? false, "the stopped state");
+  });
 
   it("offers Stop and Use for voice for the server this instance runs, and locks the port", async () => {
     server = { ...stoppedServer(), state: "running" };

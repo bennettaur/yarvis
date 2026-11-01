@@ -129,4 +129,40 @@ describe("translateText", () => {
     expect(result).toBeInstanceOf(SpeechValidationError);
     expect(String(result)).toContain("cut off");
   });
+
+  it("gives up on a model that never answers, and says so", async () => {
+    const hung = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    try {
+      const row = await createCustomProvider({
+        name: "hung",
+        baseUrl: `http://127.0.0.1:${hung.port}/v1`,
+        apiKind: "openai-chat",
+        models: ["m"],
+        headerNames: [],
+      });
+      const withKey = {
+        ...config,
+        customProviderSecrets: { [row.id]: { apiKey: "sk-test-0000", headers: {} } },
+      };
+      const started = Date.now();
+      const result = await translateText(
+        withKey,
+        {
+          provider: `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+          model: "m",
+          language: "French",
+          text: "Hello",
+        },
+        200,
+      ).catch((e: unknown) => e);
+      expect(String(result)).toContain("didn't answer within 0.2 s");
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      hung.stop(true);
+    }
+  });
 });

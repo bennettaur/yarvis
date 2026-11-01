@@ -1,5 +1,15 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { processStartTime } from "../agentRuns/process.ts";
@@ -282,9 +292,54 @@ function writeRecords(records: ServerRecords): void {
   }
 }
 
+/** How long an update waits for another instance's, and when a lock counts as left by a crash. */
+const RECORD_LOCK_WAIT_MS = 1000;
+const RECORD_LOCK_STALE_MS = 5000;
+
+/**
+ * Runs `update` holding a lock file beside the record, so two instances
+ * updating at once can't each read the old list and drop the other's entry.
+ * Synchronous on purpose: nothing else in this sidecar can run while it holds
+ * the lock, and the wait is short.
+ */
+function withRecordLock(update: () => void): void {
+  const lock = `${recordFile()}.lock`;
+  mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + RECORD_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lock, "wx", 0o600));
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    let age: number;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // Released between the two calls.
+    }
+    if (age > RECORD_LOCK_STALE_MS) rmSync(lock, { force: true });
+    else if (Date.now() > deadline) {
+      throw new Error("another instance is updating the speech server record");
+    } else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  try {
+    update();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
 function setRecord(instance: string, record: ServerRecord | null): void {
-  const { [instance]: _, ...others } = readRecords();
-  writeRecords(record ? { ...others, [instance]: record } : others);
+  try {
+    withRecordLock(() => {
+      const { [instance]: _, ...others } = readRecords();
+      writeRecords(record ? { ...others, [instance]: record } : others);
+    });
+  } catch (e) {
+    console.warn("[voice] could not update the speech server record:", e);
+  }
 }
 
 /** A downloadable model is a plain Hub `namespace/name`: no Ollama tag, nothing else. */
