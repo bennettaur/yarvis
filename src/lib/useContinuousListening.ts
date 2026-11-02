@@ -25,8 +25,6 @@ export interface ContinuousListeningOptions {
   onSpeechStart: () => void;
   onTurn: (audio: Blob, reason: TurnEndReason) => void;
   io: ContinuousIO;
-  /** Poll interval; settable so a test needn't wait a real second. */
-  pollMs?: number;
 }
 
 export interface ContinuousListening {
@@ -45,7 +43,6 @@ export function useContinuousListening({
   onSpeechStart,
   onTurn,
   io,
-  pollMs = POLL_MS,
 }: ContinuousListeningOptions): ContinuousListening {
   const [starting, setStarting] = useState(false);
   const [listening, setListening] = useState(false);
@@ -83,7 +80,7 @@ export function useContinuousListening({
       try {
         let status = await ioRef.current.startDetector();
         while (!cancelled && status.state === "starting") {
-          await new Promise((resolve) => setTimeout(resolve, pollMs));
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
           if (cancelled) return;
           status = await ioRef.current.detectorStatus();
         }
@@ -103,7 +100,9 @@ export function useContinuousListening({
             setHearing(false);
             onTurnRef.current(audio, reason);
           },
-          onLevel: setLevel,
+          // Rounded so a quiet room stops changing it: every change re-renders
+          // the whole chat surface, ten times a second.
+          onLevel: (rms) => setLevel(Math.round(rms * 50) / 50),
           onError: fail,
         });
         if (cancelled) {
@@ -126,7 +125,7 @@ export function useContinuousListening({
       setHearing(false);
       setLevel(0);
     };
-  }, [active, pollMs]);
+  }, [active]);
 
   return { starting, listening, hearing, level, error };
 }

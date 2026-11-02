@@ -440,7 +440,8 @@ sidecar/        Bun + TS service (Hono)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution, the model catalog (catalog.ts) and
                    the decision model (decision.ts)
-  src/voice/       speech to text and text to speech
+  src/voice/       speech to text, text to speech, and continuous mode's
+                   turn detector (turnDetector.ts, turn_server.py)
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
   src/tasks/       daily and weekly tasks, dedupe, "did I already finish this?"

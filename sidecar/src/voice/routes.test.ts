@@ -248,3 +248,36 @@ describe("POST /api/voice/speak", () => {
     expect(await res.text()).toContain("Hugging Face API key not configured");
   });
 });
+
+describe("the turn detector routes", () => {
+  it("require the bearer token, since the status carries the detector's token", async () => {
+    expect((await app().request("/api/voice/turn-detector")).status).toBe(401);
+    expect((await app().request("/api/voice/turn-detector/start", { method: "POST" })).status).toBe(
+      401,
+    );
+  });
+
+  it("start the detector and report its status", async () => {
+    const { EventEmitter } = await import("node:events");
+    const { createVoiceRoutes } = await import("./routes.ts");
+    const { TurnDetector } = await import("./turnDetector.ts");
+    const turnDetector = new TurnDetector({
+      spawn: () =>
+        Object.assign(new EventEmitter(), {
+          pid: 1,
+          stdout: new EventEmitter(),
+          stderr: new EventEmitter(),
+        }) as never,
+      writeScript: () => "/tmp/turn_server.py",
+      newToken: () => "token",
+      kill: () => {},
+      startTimeoutMs: 60_000,
+    });
+    const routes = createVoiceRoutes({} as Config, { turnDetector });
+
+    const started = await routes.request("/turn-detector/start", { method: "POST" });
+    expect(((await started.json()) as { state: string }).state).toBe("starting");
+    const status = await routes.request("/turn-detector");
+    expect(((await status.json()) as { state: string }).state).toBe("starting");
+  });
+});

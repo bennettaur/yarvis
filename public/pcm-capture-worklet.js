@@ -4,13 +4,13 @@
  *
  * Plain JavaScript loaded with `audioWorklet.addModule`, so it runs in the
  * audio thread's own scope rather than through the app's bundle. Render quanta
- * are only 128 samples, so they're batched into ~20 ms posts to keep message
- * traffic down.
+ * are only 128 samples, so they're batched into 32 ms posts: one Silero frame
+ * each once resampled to 16 kHz.
  */
 class PcmCapture extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.batch = new Float32Array(Math.round(sampleRate / 50));
+    this.batch = new Float32Array(Math.round(sampleRate * 0.032));
     this.filled = 0;
   }
 

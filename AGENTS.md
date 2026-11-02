@@ -253,9 +253,8 @@ back to ad-hoc.
   share or adopt. It exits when its stdin closes, which covers a sidecar killed
   without warning. The webview streams 16 kHz PCM straight to it over a
   loopback websocket, gated by a per-start token the sidecar hands out. A
-  saved voice's clip is
-  sent as a file path only to a provider on loopback; anywhere else gets the
-  audio, since the path names the user's home folder.
+  saved voice's clip is sent as a file path only to a provider on loopback;
+  anywhere else gets the audio, since the path names the user's home folder.
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
   Ollama decision calls, URL ingest, `read_web_page` — go through
   `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every

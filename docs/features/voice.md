@@ -69,9 +69,9 @@ While the assistant is replying:
 
 Both models run on your Mac in a small Python process the app starts the first
 time you use continuous mode. It needs [uv](https://docs.astral.sh/uv/)
-(`brew install uv`). The first start installs its Python packages and
-downloads both models (about 10 MB) into the Hugging Face cache, so it takes a
-minute. The status beside the microphone says **Starting turn detection…**
+(`brew install uv`). The first start installs its Python packages (a few
+hundred MB, once) and downloads both models (about 10 MB) into the Hugging Face
+cache, so it can take a few minutes. The status beside the microphone says **Starting turn detection…**
 until it's ready. The process listens only on `127.0.0.1`, needs a token the
 app gives it, and stops when Yarvis quits. Only the finished turn's audio
 goes on to your speech-to-text provider.

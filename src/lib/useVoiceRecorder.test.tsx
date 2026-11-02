@@ -9,7 +9,7 @@ import { MAX_UTTERANCE_MS, useVoiceRecorder } from "./useVoiceRecorder";
  * `mock.module` deliberately: a module stub would leak into every test file
  * that runs after this one (see `src/test/setup.ts`), and the fakes here need
  * to be driveable anyway — loudness has to be steered sample by sample to
- * exercise the silence detection.
+ * exercise the speech check behind the length cap.
  */
 
 let currentRecorder: FakeMediaRecorder | null = null;

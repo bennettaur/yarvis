@@ -2,7 +2,7 @@
  * Built-in tools that need the user's explicit go-ahead on an unproof-read turn.
  *
  * A typed turn is read before it is sent; a spoken one is not. Speech recognition
- * mishears, and a hands-free microphone can pick up a sentence the user never
+ * mishears, and an always-open microphone can pick up a sentence the user never
  * addressed to the assistant — so on a voice turn the words reaching the model
  * are not reliably the words the user chose. That is fine for the great majority
  * of the tool surface, which is read-only or trivially undone.

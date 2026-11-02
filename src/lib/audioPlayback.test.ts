@@ -5,7 +5,7 @@ import { playAudioBlob } from "./audioPlayback";
  * happy-dom's Audio never fires `ended`, so playback would hang forever here.
  * These install a fake Audio plus object-URL bookkeeping as globals — no
  * `mock.module`, so nothing leaks into another test file — and check the URL is
- * released on every exit path. Over a long hands-free conversation a leaked URL
+ * released on every exit path. Over a long spoken conversation a leaked URL
  * per spoken sentence is the failure that would actually bite.
  */
 

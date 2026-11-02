@@ -62,10 +62,13 @@ function voiceAt(frame: number): UseVoiceResult {
     ? 0.12 + 0.1 * Math.abs(Math.sin(frame / 3.1) * Math.cos(frame / 7.3))
     : 0;
   return {
-    config: { ...DEFAULT_VOICE_CONFIG, speakReplies: true, handsFree: false },
+    config: { ...DEFAULT_VOICE_CONFIG, speakReplies: true, continuous: false },
     updateConfig: asyncNoop,
     ready: { stt: true, tts: true },
     recording: listening,
+    starting: false,
+    hearing: listening,
+    queued: 0,
     level,
     phase: speaking ? "speaking" : "idle",
     error: null,

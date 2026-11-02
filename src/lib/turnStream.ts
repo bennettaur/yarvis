@@ -23,8 +23,6 @@ export interface TurnStreamHandlers {
 }
 
 export interface TurnStream {
-  /** Drops the turn in progress, keeping the stream open. */
-  reset: () => void;
   close: () => void;
 }
 
@@ -84,7 +82,12 @@ export function createTurnMessageHandler(
       pendingReason = null;
       return;
     }
-    const event = JSON.parse(data) as { type: string; reason?: TurnEndReason };
+    let event: { type?: string; reason?: TurnEndReason };
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return;
+    }
     if (event.type === "speech_start") handlers.onSpeechStart();
     else if (event.type === "turn") pendingReason = event.reason ?? "complete";
   };
@@ -106,6 +109,23 @@ export async function openTurnStream(
     socket.onerror = () => reject(new Error("could not reach the turn detector"));
   });
 
+  // Watched from here on: the detector can drop the socket while the
+  // permission prompt is still up, and that must not look like listening.
+  let closed = false;
+  let release = () => {};
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    // A close we asked for isn't a lost connection.
+    socket.onclose = null;
+    socket.close();
+    release();
+  };
+  socket.onclose = () => {
+    close();
+    handlers.onError("lost the connection to the turn detector");
+  };
+
   let stream: MediaStream;
   try {
     // Echo cancellation matters more here than for push-to-talk: the mic stays
@@ -114,40 +134,43 @@ export async function openTurnStream(
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
   } catch (e) {
-    socket.close();
+    close();
     throw new Error(
       e instanceof Error ? `microphone unavailable: ${e.message}` : "microphone unavailable",
     );
   }
-
-  const context = new AudioContext();
-  let closed = false;
-  const close = () => {
-    if (closed) return;
-    closed = true;
+  if (closed) {
     for (const track of stream.getTracks()) track.stop();
-    context.close().catch(() => {});
-    socket.onclose = null;
-    socket.close();
+    throw new Error("lost the connection to the turn detector");
+  }
+
+  let context: AudioContext | null = null;
+  let capture: AudioWorkletNode | null = null;
+  release = () => {
+    if (capture) capture.port.onmessage = null;
+    for (const track of stream.getTracks()) track.stop();
+    context?.close().catch(() => {});
   };
 
   try {
-    // Imported here rather than at the top so bun's test runner, which has no
-    // `?url` loader, can still import this module's pure helpers.
-    const { default: workletUrl } = await import("./pcmCaptureWorklet.js?url");
-    await context.audioWorklet.addModule(workletUrl);
+    context = new AudioContext();
+    // Created after several awaits, so outside the click that started this;
+    // a context that starts suspended would capture nothing.
+    await context.resume();
+    // Served from public/ as a file: Vite would inline a module this small as a
+    // data: URL, which the app's CSP (script-src 'self') refuses to load.
+    await context.audioWorklet.addModule("/pcm-capture-worklet.js");
+    const source = context.createMediaStreamSource(stream);
+    capture = new AudioWorkletNode(context, "pcm-capture");
+    // A node with no path to the output may never be processed, so route it
+    // through a muted gain rather than leaving it dangling.
+    const mute = context.createGain();
+    mute.gain.value = 0;
+    source.connect(capture).connect(mute).connect(context.destination);
   } catch (e) {
     close();
     throw new Error(`could not start audio capture: ${e instanceof Error ? e.message : e}`);
   }
-
-  const source = context.createMediaStreamSource(stream);
-  const capture = new AudioWorkletNode(context, "pcm-capture");
-  // A node with no path to the output may never be processed, so route it
-  // through a muted gain rather than leaving it dangling.
-  const mute = context.createGain();
-  mute.gain.value = 0;
-  source.connect(capture).connect(mute).connect(context.destination);
 
   const resample = createResampler(context.sampleRate, SPEECH_SAMPLE_RATE);
   let levelSum = 0;
@@ -169,15 +192,6 @@ export async function openTurnStream(
 
   const onMessage = createTurnMessageHandler(handlers);
   socket.onmessage = (event: MessageEvent<string | ArrayBuffer>) => onMessage(event.data);
-  socket.onclose = () => {
-    close();
-    handlers.onError("lost the connection to the turn detector");
-  };
 
-  return {
-    reset: () => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "reset" }));
-    },
-    close,
-  };
+  return { close };
 }

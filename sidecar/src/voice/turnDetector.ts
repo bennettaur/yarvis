@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { settingsPath } from "../settings/store.ts";
 import { speechChildEnv } from "./server.ts";
@@ -13,7 +13,8 @@ import script from "./turn_server.py" with { type: "text" };
  *
  * Unlike the mlx-audio server, each sidecar runs its own on a port the OS
  * picks, so instances never share or fight over one. It starts when a chat
- * first asks for it and stops when the sidecar exits. A sidecar killed without
+ * first asks for it and stops when the sidecar exits, staying up between
+ * conversations so a second one doesn't wait for the models to load again. A sidecar killed without
  * warning closes the server's stdin, which the server exits on.
  *
  * The script ships embedded in the sidecar, because a packaged app has no repo
@@ -25,6 +26,12 @@ import script from "./turn_server.py" with { type: "text" };
 const LOG_TAIL_LINES = 200;
 
 const READY_LINE = /^YARVIS_TURN_READY (\d+)$/;
+
+/**
+ * How long a start may take before it counts as hung. Generous, because the
+ * first start installs the Python packages and downloads the models.
+ */
+export const START_TIMEOUT_MS = 10 * 60_000;
 
 export type TurnDetectorState = "stopped" | "starting" | "running" | "failed";
 
@@ -42,6 +49,9 @@ export interface TurnDetectorDeps {
   writeScript: () => string;
   /** The token every websocket connection must present. */
   newToken: () => string;
+  /** Kills the server's process group. */
+  kill: (pid: number) => void;
+  startTimeoutMs: number;
 }
 
 export const defaultTurnDetectorDeps: TurnDetectorDeps = {
@@ -54,22 +64,37 @@ export const defaultTurnDetectorDeps: TurnDetectorDeps = {
       // stdin stays open for the server's lifetime; its closing is the exit signal.
       stdio: ["pipe", "pipe", "pipe"],
     }),
+  // Written to a temp file and renamed, because instances share ~/.yarvis and
+  // one rewriting the file must never let another's uv read half of it.
   writeScript: () => {
     const dir = join(dirname(settingsPath()), "voice");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
     const file = join(dir, "turn_server.py");
-    writeFileSync(file, script, { mode: 0o600 });
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, script, { mode: 0o600, flag: "w" });
+    renameSync(temp, file);
     return file;
   },
   newToken: () => randomBytes(32).toString("hex"),
+  kill: (pid) => {
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      // Already gone.
+    }
+  },
+  startTimeoutMs: START_TIMEOUT_MS,
 };
 
-function killGroup(pid: number): void {
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    // Already gone.
-  }
+/** Splits a stream into lines, holding back a line that hasn't ended yet. */
+function lineReader(onLine: (line: string) => void): (chunk: Buffer | string) => void {
+  let partialLine = "";
+  return (chunk) => {
+    const lines = (partialLine + chunk.toString()).split("\n");
+    partialLine = lines.pop() ?? "";
+    for (const line of lines) onLine(line);
+  };
 }
 
 export class TurnDetector {
@@ -116,25 +141,36 @@ export class TurnDetector {
 
     // The built environment keeps provider keys and the sidecar's bearer out of
     // the child; the token is the one secret it gets.
-    const env = { ...speechChildEnv(), YARVIS_TURN_TOKEN: this.token };
+    const env = {
+      ...speechChildEnv(),
+      YARVIS_TURN_TOKEN: this.token,
+      HF_HUB_DISABLE_TELEMETRY: "1",
+    };
     const child = this.deps.spawn("uv", ["run", "--quiet", "--script", path], env);
     this.child = child;
 
-    let pending = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      pending += chunk.toString();
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      for (const line of lines) {
+    const startTimer = setTimeout(() => {
+      if (this.child !== child || this.port !== null) return;
+      this.fail(child, "the turn detector didn't start in time; see its log");
+    }, this.deps.startTimeoutMs);
+    startTimer.unref?.();
+
+    child.stdout?.on(
+      "data",
+      lineReader((line) => {
         const ready = READY_LINE.exec(line.trim());
-        if (ready && this.child === child) this.port = Number(ready[1]);
-        else this.append(line);
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      for (const line of chunk.toString().split("\n")) this.append(line);
-    });
+        if (ready && this.child === child) {
+          this.port = Number(ready[1]);
+          clearTimeout(startTimer);
+        } else this.append(line);
+      }),
+    );
+    child.stderr?.on(
+      "data",
+      lineReader((line) => this.append(line)),
+    );
     child.on("error", (e) => {
+      clearTimeout(startTimer);
       if (this.child !== child) return;
       this.child = null;
       this.error =
@@ -143,6 +179,7 @@ export class TurnDetector {
           : e.message;
     });
     child.on("exit", (code, signal) => {
+      clearTimeout(startTimer);
       if (this.child !== child) return;
       this.child = null;
       this.port = null;
@@ -151,13 +188,12 @@ export class TurnDetector {
     return this.status();
   }
 
-  stop(): TurnDetectorStatus {
-    const pid = this.child?.pid;
+  /** Kills a server and reports why, so the next start begins fresh. */
+  private fail(child: ChildProcess, error: string): void {
     this.child = null;
     this.port = null;
-    this.error = null;
-    if (pid !== undefined) killGroup(pid);
-    return this.status();
+    this.error = error;
+    if (child.pid !== undefined) this.deps.kill(child.pid);
   }
 
   private append(line: string): void {
@@ -170,7 +206,7 @@ export class TurnDetector {
     this.exitHookInstalled = true;
     process.on("exit", () => {
       const pid = this.child?.pid;
-      if (pid !== undefined) killGroup(pid);
+      if (pid !== undefined) this.deps.kill(pid);
     });
   }
 }

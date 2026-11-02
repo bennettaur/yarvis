@@ -5,9 +5,14 @@ import { readFile } from "node:fs/promises";
 import { TurnDetector, type TurnDetectorDeps } from "./turnDetector.ts";
 
 /** A child process that only exits or prints when the test says so. */
+let nextPid = 100;
 function fakeChild(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
-  Object.assign(child, { pid: undefined, stdout: new EventEmitter(), stderr: new EventEmitter() });
+  Object.assign(child, {
+    pid: nextPid++,
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+  });
   return child;
 }
 
@@ -24,6 +29,7 @@ afterEach(() => {
 });
 
 function detector(overrides: Partial<TurnDetectorDeps> = {}) {
+  const killed: number[] = [];
   const spawned: {
     program: string;
     args: string[];
@@ -38,9 +44,11 @@ function detector(overrides: Partial<TurnDetectorDeps> = {}) {
     },
     writeScript: () => "/tmp/turn_server.py",
     newToken: () => "tok en",
+    kill: (pid) => killed.push(pid),
+    startTimeoutMs: 60_000,
     ...overrides,
   };
-  return { detector: new TurnDetector(deps), spawned };
+  return { detector: new TurnDetector(deps), spawned, killed };
 }
 
 describe("TurnDetector", () => {
@@ -107,9 +115,57 @@ describe("TurnDetector", () => {
     let n = 0;
     const { detector: turns, spawned } = detector({ newToken: () => `token-${++n}` });
     turns.start();
-    turns.stop();
+    spawned[0]?.child.emit("exit", 1, null);
     turns.start();
     expect(spawned.map((s) => s.env.YARVIS_TURN_TOKEN)).toEqual(["token-1", "token-2"]);
+  });
+
+  it("ignores a replaced server's exit and ready line", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("exit", 1, null);
+    turns.start();
+
+    spawned[0]?.child.emit("exit", 0, null);
+    const replaced = spawned[0]?.child.stdout as EventEmitter;
+    replaced.emit("data", "YARVIS_TURN_READY 9999\n");
+
+    expect(turns.status().state).toBe("starting");
+  });
+
+  it("reports a script it couldn't write without starting anything", () => {
+    const { detector: turns, spawned } = detector({
+      writeScript: () => {
+        throw new Error("read-only file system");
+      },
+    });
+    const status = turns.start();
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/read-only file system/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("keeps stderr lines whole when they arrive in pieces", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]?.child.stderr as EventEmitter;
+    stderr.emit("data", "Traceback (most re");
+    stderr.emit("data", "cent call last):\n");
+    expect(turns.status().log).toEqual(["Traceback (most recent call last):"]);
+  });
+
+  it("kills a start that never becomes ready and lets the next request retry", async () => {
+    const { detector: turns, spawned, killed } = detector({ startTimeoutMs: 20 });
+    turns.start();
+    await Bun.sleep(40);
+
+    const status = turns.status();
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/didn't start in time/);
+    expect(killed).toEqual([spawned[0]?.child.pid as number]);
+
+    turns.start();
+    expect(spawned).toHaveLength(2);
   });
 });
 

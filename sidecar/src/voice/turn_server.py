@@ -1,14 +1,19 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "numpy>=2.0,<3",
-#     "onnxruntime>=1.20,<2",
-#     "websockets>=14,<16",
-#     "huggingface_hub>=0.30,<2",
+#     "numpy==2.5.4",
+#     "onnxruntime==1.31.1",
+#     "websockets==15.0.1",
+#     "huggingface_hub==0.36.2",
 #     # Only for WhisperFeatureExtractor, which smart-turn was trained on. It
 #     # runs on numpy, so torch is not needed.
-#     "transformers>=4.50,<5",
+#     "transformers==4.57.6",
 # ]
+#
+# [tool.uv]
+# # Exact versions above, and a cutoff for what they pull in, so every machine
+# # installs the same code and a later bad release can't reach this process.
+# exclude-newer = "2026-11-01T00:00:00Z"
 # ///
 """Turn detection for Yarvis's continuous voice mode.
 
@@ -26,7 +31,7 @@ it running.
 
 Protocol, per connection:
   client -> server  binary: int16 little-endian PCM, 16 kHz mono, any length
-                    text:   {"type": "reset"} drops the turn in progress
+                    text:   ignored
   server -> client  text:   {"type": "speech_start"}
                             {"type": "pause", "probability": p}
                             {"type": "turn", "reason": r, "probability": p|null}
@@ -50,7 +55,7 @@ import onnxruntime as ort  # noqa: E402
 from huggingface_hub import hf_hub_download  # noqa: E402
 from transformers import WhisperFeatureExtractor  # noqa: E402
 from websockets.asyncio.server import ServerConnection, serve  # noqa: E402
-from websockets.http11 import Request  # noqa: E402
+from websockets.http11 import Request, Response  # noqa: E402
 
 ort.disable_telemetry_events()
 
@@ -72,6 +77,7 @@ CONTEXT_SAMPLES = 64
 FRAME_MS = FRAME_SAMPLES * 1000 // SAMPLE_RATE
 
 # Hysteresis: a frame counts as speech above START, and as silence below STOP.
+# Inside a turn, a frame above START also resets the silence count.
 SPEECH_START_PROB = 0.5
 SPEECH_STOP_PROB = 0.35
 # Speech must last this long to open a turn, so a click or cough doesn't.
@@ -85,8 +91,16 @@ PAUSE_MS = 200
 MAX_SILENCE_MS = 3000
 # One turn's cap, matching the push-to-talk recorder's.
 MAX_TURN_MS = 60_000
+# The most audio one message may carry: about 8 s, far more than the webview's
+# 32 ms posts.
+MAX_MESSAGE_BYTES = 256 * 1024
 SMART_TURN_SECONDS = 8
 SMART_TURN_THRESHOLD = 0.5
+# Frames that cover smart-turn's window, so a pause check copies only those.
+SMART_TURN_FRAMES = SMART_TURN_SECONDS * SAMPLE_RATE // FRAME_SAMPLES + 1
+
+# A message for the client, and the audio that follows it when there is any.
+Event = tuple[dict, np.ndarray | None]
 
 
 def load_session(path: str) -> ort.InferenceSession:
@@ -154,10 +168,14 @@ class TurnTracker:
     def __init__(self, models: Models) -> None:
         self.models = models
         self.vad = Vad(models.silero)
+        # What is left over between messages: samples short of a whole frame,
+        # and a byte short of a whole sample.
         self.pending = np.zeros(0, dtype=np.float32)
-        self.reset()
+        self.odd_byte = b""
+        self.start_listening()
 
-    def reset(self) -> None:
+    def start_listening(self) -> None:
+        """Waits for the next turn. The stream and the VAD's state carry on."""
         self.preroll: deque[np.ndarray] = deque(maxlen=PREROLL_MS // FRAME_MS)
         self.speech_ms = 0
         self.in_turn = False
@@ -168,24 +186,30 @@ class TurnTracker:
         # isn't asked again until the user speaks.
         self.checked_pause = False
 
-    def push(self, pcm: bytes) -> list[tuple[dict, np.ndarray | None]]:
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    def push_pcm(self, pcm: bytes) -> list[Event]:
+        pcm = self.odd_byte + pcm
+        whole = len(pcm) - len(pcm) % 2
+        self.odd_byte = pcm[whole:]
+        samples = np.frombuffer(pcm[:whole], dtype="<i2").astype(np.float32) / 32768.0
         self.pending = np.concatenate([self.pending, samples])
-        events: list[tuple[dict, np.ndarray | None]] = []
+        events: list[Event] = []
         while len(self.pending) >= FRAME_SAMPLES:
             frame = self.pending[:FRAME_SAMPLES]
             self.pending = self.pending[FRAME_SAMPLES:]
-            event = self.frame(frame)
+            event = self.process_frame(frame)
             if event:
                 events.append(event)
         return events
 
-    def frame(self, frame: np.ndarray) -> tuple[dict, np.ndarray | None] | None:
-        prob = self.vad.probability(frame)
+    def process_frame(self, frame: np.ndarray) -> Event | None:
+        speech_probability = self.vad.probability(frame)
 
         if not self.in_turn:
             self.preroll.append(frame)
-            self.speech_ms = self.speech_ms + FRAME_MS if prob >= SPEECH_START_PROB else 0
+            if speech_probability >= SPEECH_START_PROB:
+                self.speech_ms += FRAME_MS
+            else:
+                self.speech_ms = 0
             if self.speech_ms < MIN_SPEECH_MS:
                 return None
             self.in_turn = True
@@ -196,10 +220,10 @@ class TurnTracker:
 
         self.turn.append(frame)
         self.turn_ms += FRAME_MS
-        if prob >= SPEECH_START_PROB:
+        if speech_probability >= SPEECH_START_PROB:
             self.silence_ms = 0
             self.checked_pause = False
-        elif prob < SPEECH_STOP_PROB:
+        elif speech_probability < SPEECH_STOP_PROB:
             self.silence_ms += FRAME_MS
 
         if self.turn_ms >= MAX_TURN_MS:
@@ -208,15 +232,16 @@ class TurnTracker:
             return self.finish("silence", None)
         if self.silence_ms >= PAUSE_MS and not self.checked_pause:
             self.checked_pause = True
-            p = self.models.turn_probability(np.concatenate(self.turn))
-            if p >= SMART_TURN_THRESHOLD:
-                return self.finish("complete", p)
-            return {"type": "pause", "probability": p}, None
+            recent = np.concatenate(self.turn[-SMART_TURN_FRAMES:])
+            end_probability = self.models.turn_probability(recent)
+            if end_probability >= SMART_TURN_THRESHOLD:
+                return self.finish("complete", end_probability)
+            return {"type": "pause", "probability": end_probability}, None
         return None
 
-    def finish(self, reason: str, probability: float | None) -> tuple[dict, np.ndarray]:
+    def finish(self, reason: str, probability: float | None) -> Event:
         audio = np.concatenate(self.turn)
-        self.reset()
+        self.start_listening()
         return {"type": "turn", "reason": reason, "probability": probability}, audio
 
 
@@ -231,7 +256,7 @@ async def main() -> None:
 
     models = Models()
 
-    def authorize(connection: ServerConnection, request: Request):
+    def authorize(connection: ServerConnection, request: Request) -> Response | None:
         query = parse_qs(urlparse(request.path).query)
         given = query.get("token", [""])[0]
         if not hmac.compare_digest(given.encode(), token.encode()):
@@ -242,18 +267,18 @@ async def main() -> None:
         tracker = TurnTracker(models)
         async for message in connection:
             if isinstance(message, str):
-                if json.loads(message).get("type") == "reset":
-                    tracker.reset()
                 continue
             # Inference runs off the event loop so other connections keep up.
-            events = await asyncio.to_thread(tracker.push, message)
+            events = await asyncio.to_thread(tracker.push_pcm, message)
             for event, audio in events:
                 await connection.send(json.dumps(event))
                 if audio is not None:
                     await connection.send(to_pcm(audio))
 
     # Loopback only; port 0 lets the OS pick, so instances never collide.
-    async with serve(handle, "127.0.0.1", 0, process_request=authorize) as server:
+    async with serve(
+        handle, "127.0.0.1", 0, process_request=authorize, max_size=MAX_MESSAGE_BYTES
+    ) as server:
         port = server.sockets[0].getsockname()[1]
         print(f"YARVIS_TURN_READY {port}", flush=True)
         await asyncio.get_running_loop().run_in_executor(None, sys.stdin.read)

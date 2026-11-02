@@ -21,8 +21,21 @@ let transcriptResult: string | Error = "turn the build green";
 
 let deliverUtterance: (() => void) | null = null;
 
+/** Transcriptions a test answers by hand, consumed one per call, in order. */
+const transcribeGates: Promise<string>[] = [];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 /** What `send` answers; `false` is a surface refusing the turn. */
 let sendResult: unknown;
+/** Thrown by the next `send`, then cleared. */
+let sendError: Error | null = null;
 
 const RUNNING: TurnDetectorStatus = {
   state: "running",
@@ -99,6 +112,8 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
 
   const io = {
     transcribe: async () => {
+      const gate = transcribeGates.shift();
+      if (gate) return gate;
       if (transcriptResult instanceof Error) throw transcriptResult;
       return transcriptResult;
     },
@@ -118,7 +133,6 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       detector = handlers;
       streamClosed = false;
       return {
-        reset: () => {},
         close: () => {
           streamClosed = true;
         },
@@ -137,6 +151,11 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
   function Probe({ streaming, busy }: { streaming: string; busy: boolean }) {
     harness.voice = useVoice({
       send: (text, options) => {
+        if (sendError) {
+          const error = sendError;
+          sendError = null;
+          throw error;
+        }
         sent.push({ text, source: options.source });
         return sendResult;
       },
@@ -174,11 +193,13 @@ afterEach(() => {
   transcriptResult = "turn the build green";
   deliverUtterance = null;
   sendResult = undefined;
+  sendError = null;
   detectorStatus = RUNNING;
   detector = null;
   openedUrl = null;
   streamClosed = false;
   playing.length = 0;
+  transcribeGates.length = 0;
 });
 
 const configured: VoiceConfig = {
@@ -365,11 +386,11 @@ describe("useVoice in continuous mode", () => {
     await settle();
 
     expect(active.sent).toEqual([]);
-    expect(active.voice.held).toBe(2);
+    expect(active.voice.queued).toBe(2);
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent).toEqual([{ text: "and add a step for two factor auth", source: "voice" }]);
-    expect(active.voice.held).toBe(0);
+    expect(active.voice.queued).toBe(0);
   });
 
   it("retries a refused turn once, then says it was dropped", async () => {
@@ -381,7 +402,7 @@ describe("useVoice in continuous mode", () => {
     await settle();
 
     expect(active.sent).toHaveLength(2);
-    expect(active.voice.held).toBe(0);
+    expect(active.voice.queued).toBe(0);
     expect(active.voice.error).toMatch(/dropped/);
   });
 
@@ -411,7 +432,7 @@ describe("useVoice in continuous mode", () => {
     await active.rerender({ streaming: "", busy: true });
     detector?.onTurn(turnAudio(), "complete");
     await settle();
-    expect(active.voice.held).toBe(1);
+    expect(active.voice.queued).toBe(1);
 
     active.voice.cancel();
     await active.rerender({ streaming: "", busy: false });
@@ -441,5 +462,103 @@ describe("useVoice in continuous mode", () => {
     expect(openedUrl).toBeNull();
     expect(active.voice.error).toMatch(/uv is not installed/);
     expect(active.voice.recording).toBe(false);
+  });
+
+  it("starts again on the next click after a failed start", async () => {
+    detectorStatus = { state: "failed", url: null, log: [], error: "no uv" };
+    active = await listening();
+    expect(active.voice.error).toMatch(/no uv/);
+
+    detectorStatus = RUNNING;
+    active.voice.startListening();
+    await settle();
+
+    expect(openedUrl).toBe(RUNNING.url);
+    expect(active.voice.recording).toBe(true);
+    expect(active.voice.error).toBeNull();
+  });
+
+  it("starts again on the next click after the connection drops", async () => {
+    active = await listening();
+    detector?.onError("lost the connection to the turn detector");
+    await settle();
+    expect(active.voice.recording).toBe(false);
+
+    openedUrl = null;
+    active.voice.startListening();
+    await settle();
+
+    expect(openedUrl as string | null).toBe(RUNNING.url);
+    expect(active.voice.recording).toBe(true);
+  });
+
+  it("waits for a detector that is still starting", async () => {
+    detectorStatus = { state: "starting", url: null, log: [], error: null };
+    active = await listening();
+    expect(active.voice.starting).toBe(true);
+    expect(openedUrl).toBeNull();
+
+    detectorStatus = RUNNING;
+    await settle(1100);
+
+    expect(openedUrl).toBe(RUNNING.url);
+    expect(active.voice.starting).toBe(false);
+  });
+
+  it("sends turns in the order spoken, even when the first transcribes slower", async () => {
+    active = await listening();
+    const first = deferred<string>();
+    transcribeGates.push(first.promise, Promise.resolve("second"));
+
+    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.sent).toEqual([]);
+
+    first.resolve("first");
+    await settle();
+    expect(active.sent.map((m) => m.text)).toEqual(["first", "second"]);
+  });
+
+  it("drops a turn still being transcribed when the user cancels", async () => {
+    active = await listening();
+    const pending = deferred<string>();
+    transcribeGates.push(pending.promise);
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+
+    active.voice.cancel();
+    pending.resolve("stop that");
+    await settle();
+
+    expect(active.sent).toEqual([]);
+  });
+
+  it("keeps listening after a transcription fails", async () => {
+    active = await listening();
+    transcriptResult = new Error("speech provider unavailable");
+
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.voice.error).toMatch(/speech provider unavailable/);
+    expect(active.voice.recording).toBe(true);
+
+    transcriptResult = "try again";
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.sent.map((m) => m.text)).toEqual(["try again"]);
+  });
+
+  it("keeps sending turns after one send throws", async () => {
+    active = await listening();
+    sendError = new Error("session create failed");
+
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.voice.error).toMatch(/session create failed/);
+
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.sent).toHaveLength(1);
   });
 });

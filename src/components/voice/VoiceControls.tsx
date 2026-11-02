@@ -3,9 +3,9 @@ import MicButton from "./MicButton";
 
 /**
  * The voice affordances a chat surface offers: talk instead of typing, hear
- * replies, and talk continuously. Sits beside the composer on both the Chat tab and
- * Omni Chat; what each backend is set to lives in Settings → Voice, because it
- * is shared with everything else that speaks.
+ * replies, and talk continuously. Sits beside the composer on both the Chat
+ * tab and Omni Chat; what each backend is set to lives in Settings → Voice,
+ * because it is shared with everything else that speaks.
  */
 
 const PHASE_LABEL: Record<string, string> = {
@@ -79,9 +79,9 @@ export default function VoiceControls({
         Continuous
       </label>
 
-      {voice.held > 0 && (
+      {voice.queued > 0 && (
         <span className="text-xs text-zinc-400" title="Sent when the current reply finishes.">
-          {voice.held} queued
+          {voice.queued} queued
         </span>
       )}
 
