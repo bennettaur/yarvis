@@ -235,6 +235,40 @@ Give one to four short reasons, each naming the change that sets the tier.
 The report takes the stricter of this and the changed paths' tier, so you can
 raise a PR's tier but not lower it.
 
+### Sensitive files
+
+`facts.tier.assess` lists files the path floor flagged for a closer look
+rather than marking high outright: workflows, git hooks, build and test
+config, the database schema, migrations that do more than add, and
+dependency files changed beyond registry versions. Read each one's diff and
+rate it in `assessed`, `standard` or `high`, with a reason naming what you
+checked. A file you leave out counts as high, and so does the PR. The
+verifier's own files and workflows are high whatever the change, and aren't
+listed here.
+
+- **`package.json` scripts, `lefthook.yml`, build and test config**:
+  standard when it runs tools the repo already uses (`bun`, `biome`, `tsc`,
+  `vite`, `tauri`, `cargo`, `playwright`, its own `scripts/`) in a plain way,
+  like a convenience script to run the linter. High when the command is
+  convoluted or new to the repo, downloads or pipes into a shell, reads
+  secrets or the environment, adds a lifecycle hook (`prepare`,
+  `postinstall`) or `trustedDependencies`, or points a package at a git, path
+  or URL source.
+- **Workflows and other `.github/` files**: these run with the repo's
+  secrets. Standard when steps change using the tools and SHA-pinned actions
+  already in use, with read-only permissions. High when it widens
+  `permissions:`, uses a secret somewhere new, adds a `pull_request_target`
+  or `workflow_run` trigger, runs PR code where a secret or write token is
+  reachable, adds a third-party or unpinned action, or fetches and runs a
+  script.
+- **Migrations and the schema**: adding tables, columns, types or indexes is
+  already standard and isn't listed. Rate high a migration that drops,
+  renames or retypes anything, deletes or rewrites rows, or edits a migration
+  that already ran, unless the PR shows why it's safe (the column was never
+  written, say), and then say so in the reason.
+
+When unsure, rate high: a person looking costs a minute.
+
 ## 6c. Check the supply chain
 
 Do this when the PR changes a dependency manifest or lockfile (`package.json`,
@@ -321,6 +355,7 @@ Write `$TMPDIR/verify/<N>/review.json`:
   "verdict": "auto | visual | agent | human",
   "verdictReason": "one sentence",
   "risk": { "tier": "low | standard | high", "reasons": ["what sets the tier, in under 140 characters"] },
+  "assessed": [{ "path": ".github/workflows/ci.yml", "tier": "standard", "reason": "Adds a typecheck step with the same pinned setup action" }],
   "dimensions": {
     "goal": { "status": "pass", "note": "..." },
     "tests": { "status": "pass", "note": "..." },
@@ -484,7 +519,8 @@ R11; a bare "step N" means the full run's step.
   forward unless the fix diff changes the code its note was about; then re-judge
   it.
 - **R9. Assess the risk.** Keep the previous tier, or raise it if the fix diff
-  adds something step 6b rates higher. A recheck never lowers it: the previous
+  adds something step 6b rates higher. Carry `assessed` forward, re-rating
+  any file the fix diff changes and adding any new one in `facts.tier.assess`. A recheck never lowers it: the previous
   reasons may not name every risky change, so a lower tier needs a full step 6b
   over the whole PR diff.
 - **R10. Redo screenshots** only for screens the fix diff changes. Earlier ones

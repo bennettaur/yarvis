@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { classify } from "./tier.ts";
+import { classify, floorTier, isAdditiveMigration } from "./tier.ts";
 
 const file = (path: string, additions = 10, deletions = 0) => ({ path, additions, deletions });
 
@@ -13,20 +13,17 @@ describe("classify", () => {
     expect(classify([file(".github/workflows/verify.yml")]).tier).toBe("high");
   });
 
-  it("treats secrets, permissions, migrations and agent instructions as high risk", () => {
+  it("treats secrets, permissions, the verifier's workflows and agent instructions as high risk", () => {
     for (const path of [
       "src-tauri/src/keychain.rs",
       "src-tauri/capabilities/default.json",
-      "sidecar/drizzle/0042_new.sql",
       "sidecar/src/agentTools/store.ts",
+      ".github/workflows/verify.yml",
+      ".github/workflows/verify-revert.yml",
       ".claude/skills/verify-pr/SKILL.md",
       ".claude/settings.json",
       "CLAUDE.md",
       "AGENTS.md",
-      "lefthook.yml",
-      "bunfig.toml",
-      "sidecar/bunfig.toml",
-      "vite.config.ts",
       "sidecar/src/app.ts",
       "extension/page.js",
       "src-tauri/tauri.release.conf.json",
@@ -47,6 +44,7 @@ describe("classify", () => {
       expect(classify([file(path)])).toEqual({
         tier: "standard",
         reasons: [`dependencies (${path})`],
+        assess: [],
       });
     }
   });
@@ -71,7 +69,7 @@ describe("classify", () => {
       }
     });
 
-    it("are high when they change scripts, hooks or where a package comes from", () => {
+    it("need assessing when they change scripts, hooks or where a package comes from", () => {
       for (const [path, text] of [
         ["package.json", '    "verify:report": "bun run evil.ts",'],
         ["package.json", '  "trustedDependencies": ["esbuild"],'],
@@ -83,8 +81,76 @@ describe("classify", () => {
         ["bun.lock", '    "zod": ["zod@4.6.7", "https://mirror.example/zod.tgz", {}, "sha512"],'],
         ["src-tauri/Cargo.lock", 'source = "git+https://example.com/foo#abc"'],
       ] as const) {
-        expect(classify([changed(path, text)]).tier).toBe("high");
+        const result = classify([changed(path, text)]);
+        expect(result.assess).toEqual([
+          { path, reason: "a dependency file change beyond registry versions" },
+        ]);
+        expect(floorTier(result, [])).toBe("high");
+        expect(floorTier(result, [path])).toBe("standard");
       }
+    });
+  });
+
+  it("sends CI, git hooks, build config and the schema for assessment", () => {
+    for (const path of [
+      ".github/workflows/ci.yml",
+      ".github/dependabot.yml",
+      "lefthook.yml",
+      "bunfig.toml",
+      "sidecar/bunfig.toml",
+      "vite.config.ts",
+      "sidecar/src/db/schema.ts",
+    ]) {
+      const result = classify([file(path)]);
+      expect(result.assess.map((a) => a.path)).toEqual([path]);
+      expect(floorTier(result, [])).toBe("high");
+      expect(floorTier(result, [path])).toBe("standard");
+    }
+  });
+
+  describe("migrations", () => {
+    const migration = (addedText: string, deletions = 0) => ({
+      path: "sidecar/drizzle/0050_new.sql",
+      addedText,
+      additions: 5,
+      deletions,
+    });
+
+    it("are standard when they only add tables, columns, types or indexes", () => {
+      const sql = `CREATE TYPE "public"."kind" AS ENUM('a', 'b');--> statement-breakpoint
+CREATE TABLE "things" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"kind" "kind" NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "memories" ADD COLUMN "pinned" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
+      expect(isAdditiveMigration(sql, 0)).toBe(true);
+      expect(classify([migration(sql)])).toMatchObject({ tier: "standard", assess: [] });
+    });
+
+    it("need assessing when they drop, rename, retype or rewrite data", () => {
+      for (const sql of [
+        'DROP TABLE "things";',
+        'ALTER TABLE "things" RENAME COLUMN "kind" TO "type";',
+        'ALTER TABLE "things" ALTER COLUMN "kind" SET DATA TYPE text;',
+        'ALTER TABLE "things" DROP COLUMN "kind";',
+        `UPDATE "things" SET "kind" = 'a';`,
+        'CREATE TABLE "x" ("id" int);--> statement-breakpoint\nDELETE FROM "y";',
+      ]) {
+        expect(classify([migration(sql)]).assess).toHaveLength(1);
+      }
+    });
+
+    it("need assessing when they edit a migration that already ran", () => {
+      expect(classify([migration('CREATE INDEX "a" ON "b" ("c");', 1)]).assess).toHaveLength(1);
+    });
+
+    it("treats drizzle's metadata as standard", () => {
+      expect(classify([file("sidecar/drizzle/meta/0050_snapshot.json")])).toMatchObject({
+        tier: "standard",
+        assess: [],
+      });
     });
   });
 

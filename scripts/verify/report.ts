@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
-import { isDependencyFile, stricterTier, type Tier } from "./tier.ts";
+import { floorTier, isDependencyFile, stricterTier, type Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
@@ -75,6 +75,20 @@ export const Review = z.object({
     tier: z.enum(["low", "standard", "high"]),
     reasons: z.array(z.string().max(140)).min(1).max(4),
   }),
+  /**
+   * The skill's rating of each file the path floor sent for assessment
+   * (`facts.tier.assess`). One left out counts as high.
+   */
+  assessed: z
+    .array(
+      z.object({
+        path: z.string().max(200),
+        tier: z.enum(["standard", "high"]),
+        reason: z.string().max(140),
+      }),
+    )
+    .max(50)
+    .default([]),
   dimensions: z.object({
     goal: Dimension,
     tests: Dimension,
@@ -132,6 +146,11 @@ const ReportData = z.object({
   verdict: Verdict,
   /** The stricter of the changed paths' tier and the assessed one. */
   riskTier: z.enum(["low", "standard", "high"]),
+  /**
+   * The files the skill assessed out of those the path floor flagged. The
+   * gate counts any flagged file missing here as high.
+   */
+  assessed: z.array(z.string()).optional(),
   blockers: z.number().int().nonnegative(),
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
@@ -188,7 +207,12 @@ function code(text: string): string {
 
 /** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
 export function riskTier(review: Review, facts: Facts): Tier {
-  return stricterTier(facts.tier.tier, review.risk.tier);
+  const floor = floorTier(
+    facts.tier,
+    review.assessed.map((file) => file.path),
+  );
+  const assessedHigh = review.assessed.some((file) => file.tier === "high");
+  return stricterTier(stricterTier(floor, review.risk.tier), assessedHigh ? "high" : "low");
 }
 
 /**
@@ -367,6 +391,19 @@ export function renderReport(
     ...rows,
   ];
 
+  if (facts.tier.assess.length > 0) {
+    const rated = new Map(review.assessed.map((file) => [file.path, file]));
+    lines.push("", "### Sensitive files", "");
+    for (const { path, reason } of facts.tier.assess) {
+      const file = rated.get(path);
+      lines.push(
+        file
+          ? `- ${code(path)}: ${file.tier}. ${inline(file.reason)}`
+          : `- ${code(path)}: not assessed, so high. Flagged for ${inline(reason)}.`,
+      );
+    }
+  }
+
   if (headlineFindings.length > 0) {
     lines.push("", "### Findings", "");
     for (const f of headlineFindings) {
@@ -456,6 +493,7 @@ export function renderReport(
     issuedAt: now.toISOString(),
     verdict,
     riskTier: tier,
+    assessed: review.assessed.map((file) => file.path),
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,
     flagged: [

@@ -60,7 +60,8 @@ The report's verdict picks the path. Verdicts go from loosest to strictest:
 `auto`, `visual`, `agent`, `human`. A PR's verdict can't be looser than its
 risk tier allows, and the gate checks both again. High risk is kept for the
 changes a person has to check the safeguards on: secrets, what an agent or a
-Claude session can be made to do, auth, migrations, the verifier and CI.
+Claude session can be made to do, auth, the verifier, and any workflow,
+script, config or migration the skill rated high after reading it.
 
 | Verdict | For example | What happens |
 | --- | --- | --- |

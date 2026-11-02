@@ -26,8 +26,16 @@ export interface ChangedFile {
 }
 
 export interface TierResult {
+  /** The floor once every file in `assess` has been assessed; see `floorTier`. */
   tier: Tier;
   reasons: string[];
+  /**
+   * Files whose risk depends on what the change does there, which a pattern
+   * can't tell: a lint script and a script that downloads and runs a binary
+   * look alike to it. The `/verify-pr` skill rates each one and signs the
+   * paths it rated; any it didn't rate counts as high.
+   */
+  assess: { path: string; reason: string }[];
 }
 
 interface PathRule {
@@ -37,8 +45,9 @@ interface PathRule {
 
 /** Paths where a mistake leaks secrets, widens what the agent may do, or loses data. */
 const HIGH_RISK_PATHS: PathRule[] = [
-  // The verifier must not be able to approve a change to itself.
-  { pattern: /^\.github\//, reason: "CI or repo config" },
+  // The verifier must not be able to approve a change to itself, so its
+  // workflows are high whatever the change, unlike the rest of `.github/`.
+  { pattern: /^\.github\/workflows\/verify[^/]*\.ya?ml$/, reason: "the verification layer itself" },
   { pattern: /^scripts\/verify\//, reason: "the verification layer itself" },
   // The merge reviewer's half: its prompt, its tools and signer, the grant that
   // lets it post, the fencing it reads through, and how its key reaches it.
@@ -50,12 +59,6 @@ const HIGH_RISK_PATHS: PathRule[] = [
   },
   // Instructions and hooks the verifying agent itself loads.
   { pattern: /^(\.claude\/|CLAUDE\.md$|AGENTS\.md$)/, reason: "agent instructions or hooks" },
-  { pattern: /^lefthook\.yml$/, reason: "git hooks" },
-  {
-    pattern:
-      /^((sidecar\/)?(bunfig\.toml|tsconfig[^/]*\.json)|mise\.toml|vite\.config\.ts|biome\.json|\.npmrc)$/,
-    reason: "build or test config, which runs code",
-  },
   {
     pattern:
       /^src-tauri\/src\/(keychain|secret_store|onepassword|embeddings_secrets|control|pty)\.rs$/,
@@ -71,7 +74,6 @@ const HIGH_RISK_PATHS: PathRule[] = [
     pattern: /^sidecar\/src\/(agentTools|mcpServer|settings)\//,
     reason: "agent tool approvals, the MCP server or settings",
   },
-  { pattern: /^sidecar\/(drizzle\/|src\/db\/)/, reason: "database schema or migrations" },
   {
     pattern: /^src-tauri\/src\/(mcp|custom_providers)\.rs$/,
     reason: "secrets, the control socket or shell access",
@@ -99,6 +101,46 @@ const HIGH_RISK_PATHS: PathRule[] = [
     reason: "what the Chrome extension may do in a page",
   },
 ];
+
+/**
+ * Paths that run code or shape data, where a routine change is common and a
+ * risky one looks the same to a pattern. They go to the skill's assessment
+ * rather than straight to high.
+ */
+const ASSESSED_PATHS: PathRule[] = [
+  { pattern: /^\.github\//, reason: "CI or repo config, which runs with the repo's secrets" },
+  { pattern: /^lefthook\.yml$/, reason: "git hooks" },
+  {
+    pattern:
+      /^((sidecar\/)?(bunfig\.toml|tsconfig[^/]*\.json)|mise\.toml|vite\.config\.ts|biome\.json|\.npmrc)$/,
+    reason: "build or test config, which runs code",
+  },
+  { pattern: /^sidecar\/src\/db\//, reason: "the database schema" },
+];
+
+const MIGRATION = /^sidecar\/drizzle\/[^/]+\.sql$/;
+const MIGRATION_METADATA = /^sidecar\/drizzle\/meta\//;
+
+/** Statements that only add to the schema, so no existing data or query can break. */
+const ADDITIVE_STATEMENT =
+  /^(CREATE (TABLE|TYPE|EXTENSION IF NOT EXISTS|(UNIQUE )?INDEX)|ALTER TABLE ("[^"]+"\.)?"?[\w]+"? ADD (COLUMN|CONSTRAINT))\b/i;
+
+/**
+ * Whether a new migration only adds tables, columns, types or indexes. An
+ * edit to an existing migration (any deleted line) or anything else, such as a
+ * drop, a rename, a type change or an `UPDATE`, needs assessing.
+ */
+export function isAdditiveMigration(
+  addedText: string | null | undefined,
+  deletions: number,
+): boolean {
+  if (typeof addedText !== "string" || deletions > 0) return false;
+  return addedText
+    .split(/--> statement-breakpoint|;\s*$/m)
+    .map((statement) => statement.replace(/^\s*--.*$/gm, "").trim())
+    .filter(Boolean)
+    .every((statement) => ADDITIVE_STATEMENT.test(statement));
+}
 
 /**
  * Dependency manifests and lockfiles. A change here is standard rather than
@@ -241,15 +283,29 @@ export function classify(files: ChangedFile[]): TierResult {
     if (path) paths.push(path);
     byTier[tier].set(reason, paths);
   };
+  const assess: TierResult["assess"] = [];
+  // Counts as standard here; `floorTier` makes it high if it goes unassessed.
+  const toAssess = (reason: string, path: string) => {
+    assess.push({ path, reason });
+    note("standard", reason, path);
+  };
 
   for (const file of files) {
     for (const path of file.previousPath ? [file.path, file.previousPath] : [file.path]) {
       // Tests count too: the verifier's own tests are part of the verifier.
       const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
+      const assessed = ASSESSED_PATHS.find((rule) => rule.pattern.test(path));
       if (high) note("high", high.reason, path);
-      else if (!isDependencyFile(path)) continue;
+      else if (assessed) toAssess(assessed.reason, path);
+      else if (MIGRATION_METADATA.test(path)) note("standard", "migration metadata", path);
+      else if (MIGRATION.test(path)) {
+        // A rename's old path has no added text of its own, so it is assessed.
+        if (path === file.path && isAdditiveMigration(file.addedText, file.deletions)) {
+          note("standard", "a migration that only adds", path);
+        } else toAssess("a migration that changes or removes existing schema or data", path);
+      } else if (!isDependencyFile(path)) continue;
       else if (onlyRegistryPackages(path, file.addedText)) note("standard", "dependencies", path);
-      else note("high", "a dependency file change beyond registry versions", path);
+      else toAssess("a dependency file change beyond registry versions", path);
     }
   }
 
@@ -276,5 +332,14 @@ export function classify(files: ChangedFile[]): TierResult {
     if (paths.length === 0) return reason;
     return paths.length === 1 ? `${reason} (${paths[0]})` : `${reason} (${paths.length} files)`;
   });
-  return { tier, reasons };
+  return { tier, reasons, assess };
+}
+
+/**
+ * The floor once the report's assessment is in: high if any file that needed
+ * assessing isn't among the paths the signed report says it assessed.
+ */
+export function floorTier(result: TierResult, assessedPaths: readonly string[]): Tier {
+  const assessed = new Set(assessedPaths);
+  return result.assess.every(({ path }) => assessed.has(path)) ? result.tier : "high";
 }

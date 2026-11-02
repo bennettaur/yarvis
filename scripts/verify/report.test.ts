@@ -22,6 +22,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
     verdict: "auto",
     verdictReason: "Small, tested, UI only.",
     risk: { tier: "low", reasons: ["Layout only; calls nothing new"] },
+    assessed: [],
     dimensions: {
       goal: pass,
       tests: pass,
@@ -45,7 +46,7 @@ function makeFacts(overrides: Partial<Facts> = {}): Facts {
     base: "a".repeat(40),
     head: "b".repeat(40),
     files: [{ path: "src/components/List.tsx", additions: 40, deletions: 2 }],
-    tier: { tier: "low", reasons: [] },
+    tier: { tier: "low", reasons: [], assess: [] },
     coverage: {
       changedLines: 20,
       coveredLines: 18,
@@ -67,14 +68,47 @@ describe("finalVerdict", () => {
   });
 
   it("needs a human for high risk and lets a clean standard-risk PR merge", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["CI or repo config"] } });
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["CI or repo config"], assess: [] } });
     expect(finalVerdict(makeReview(), facts)).toEqual({
       verdict: "human",
       why: ["high-risk change"],
     });
     expect(
-      finalVerdict(makeReview(), makeFacts({ tier: { tier: "standard", reasons: [] } })).verdict,
+      finalVerdict(makeReview(), makeFacts({ tier: { tier: "standard", reasons: [], assess: [] } }))
+        .verdict,
     ).toBe("auto");
+  });
+
+  describe("files the path floor sent for assessment", () => {
+    const facts = makeFacts({
+      tier: {
+        tier: "standard",
+        reasons: [],
+        assess: [
+          { path: "package.json", reason: "a dependency file change beyond registry versions" },
+        ],
+      },
+    });
+    const rated = (tier: "standard" | "high") =>
+      makeReview({ assessed: [{ path: "package.json", tier, reason: "Adds a lint script" }] });
+
+    it("need a human when one wasn't assessed", () => {
+      expect(finalVerdict(makeReview(), facts).verdict).toBe("human");
+    });
+
+    it("follow the assessment", () => {
+      expect(finalVerdict(rated("standard"), facts).verdict).toBe("auto");
+      expect(finalVerdict(rated("high"), facts).verdict).toBe("human");
+    });
+
+    it("are listed with their rating and signed as assessed", () => {
+      const { body, data } = renderReport(rated("standard"), facts, TARGET);
+      expect(body).toContain("`package.json`: standard. Adds a lint script");
+      expect(data.assessed).toEqual(["package.json"]);
+      expect(renderReport(makeReview(), facts, TARGET).body).toContain(
+        "`package.json`: not assessed, so high.",
+      );
+    });
   });
 
   it("needs an agent for a major finding and a human for a blocker", () => {
@@ -189,7 +223,7 @@ describe("finalVerdict", () => {
 
   it("only ever tightens when several limits apply", () => {
     const review = makeReview({ findings: [{ severity: "blocker", title: "x", detail: "…" }] });
-    const facts = makeFacts({ tier: { tier: "standard", reasons: [] } });
+    const facts = makeFacts({ tier: { tier: "standard", reasons: [], assess: [] } });
     expect(finalVerdict(review, facts).verdict).toBe("human");
   });
 
@@ -200,7 +234,9 @@ describe("finalVerdict", () => {
   });
 
   it("never lets an assessed low risk lower the paths' tier", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+    const facts = makeFacts({
+      tier: { tier: "high", reasons: ["dependencies (bun.lock)"], assess: [] },
+    });
     expect(renderReport(makeReview(), facts, TARGET).data.riskTier).toBe("high");
   });
 

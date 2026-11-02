@@ -252,11 +252,18 @@ describe("gateTier", () => {
         deletions: 0,
       },
     ];
-    expect(gateTier(makePr(), moved)).toBe("high");
+    expect(gateTier(makePr(), moved, cleanReport)).toBe("high");
   });
 
   it("counts a file list cut short by the API as high risk", () => {
-    expect(gateTier(makePr({ changed_files: 2 }), lowRiskFiles)).toBe("high");
+    expect(gateTier(makePr({ changed_files: 2 }), lowRiskFiles, cleanReport)).toBe("high");
+  });
+
+  it("counts a file that needed assessing as high unless the report assessed it", () => {
+    const files = [{ path: ".github/workflows/ci.yml", additions: 1, deletions: 0 }];
+    expect(gateTier(makePr({ changed_files: 1 }), files, cleanReport)).toBe("high");
+    const assessed = { ...cleanReport, assessed: [".github/workflows/ci.yml"] };
+    expect(gateTier(makePr({ changed_files: 1 }), files, assessed)).toBe("standard");
   });
 });
 

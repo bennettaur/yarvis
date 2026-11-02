@@ -101,6 +101,7 @@ describe("a report from the gate's side", () => {
         verdict: "agent",
         verdictReason: "r",
         risk: { tier: "standard", reasons: ["Changes how recall ranks memories"] },
+        assessed: [],
         dimensions: Object.fromEntries(
           [
             "goal",
@@ -122,7 +123,7 @@ describe("a report from the gate's side", () => {
         base: "a".repeat(40),
         head: "b".repeat(40),
         files: [],
-        tier: { tier: "standard", reasons: [] },
+        tier: { tier: "standard", reasons: [], assess: [] },
         coverage: {
           changedLines: 0,
           coveredLines: 0,

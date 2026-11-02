@@ -149,7 +149,7 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   `/approve` is ignored.
 
 Low- and standard-risk PRs can merge on a report alone; high-risk ones need
-`/approve`. A PR's tier is the stricter of two things:
+`/approve`. A PR's tier is the strictest of three things:
 
 - **The risk assessment** in the report: how much harm the change could do,
   judged from what it does, whatever part of the app it is in. A UI change
@@ -158,16 +158,21 @@ Low- and standard-risk PRs can merge on a report alone; high-risk ones need
   things around on screen is low. The `/verify-pr` skill makes this call and
   signs it into the report.
 - **A floor from the changed paths** (`scripts/verify/tier.ts`, from both
-  sides of any rename), which the assessment can't lower. It is high for CI
-  and repo config, the verifier itself, agent instructions and hooks
-  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
-  secrets and shell access, app permissions, sidecar request handling, agent
-  tool approvals, the MCP server, settings, migrations, or what the Chrome
-  extension may do. A dependency change that only adds, removes or bumps
-  registry packages, and more than 300 changed lines of code, are standard;
-  any other manifest edit (a script, a hook, a git or path source) is high.
-  The skill's supply-chain check raises a dependency change to high when it
-  finds a real risk. Anything else starts low: no area is presumed
+  sides of any rename), which the assessment can't lower. It is high for the
+  verifier itself and its workflows, agent instructions and hooks
+  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), secrets and shell access, app
+  permissions, sidecar request handling, agent tool approvals, the MCP
+  server, settings, or what the Chrome extension may do. A dependency change
+  that only adds, removes or bumps registry packages, a migration that only
+  adds tables, columns, types or indexes, and more than 300 changed lines of
+  code, are standard. The skill's supply-chain check raises a dependency
+  change to high when it finds a real risk.
+- **Files sent for assessment.** Other workflows and `.github/` files, git
+  hooks, build and test config, the database schema, other migrations, and
+  any other dependency-file edit (a script, a hook, a git or path source) are
+  flagged rather than marked high. The skill rates each one standard or high
+  from what the change does, and signs the paths it rated; the gate counts a
+  flagged file the report didn't rate as high. Anything else starts low: no area is presumed
   safe or risky.
 
 Tests, docs and lockfiles don't count toward the line limits.
