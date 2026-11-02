@@ -197,15 +197,39 @@ describe("decideReport", () => {
     expect(decision.status).toContain("verdict is human");
   });
 
-  it("refuses when the report's assessed risk is above low, though the paths are low", () => {
+  it("approves a clean report at standard risk", () => {
     const comment = reportComment(BENNETTAUR, { ...cleanReport, riskTier: "standard" });
+    expect(decide({ comment, comments: [comment] })).toMatchObject({ approve: true });
+  });
+
+  it("refuses when the report's assessed risk is high, though the paths are low", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, riskTier: "high" });
     expect(decide({ comment, comments: [comment] })).toMatchObject({
       approve: false,
-      status: expect.stringContaining("standard-risk change"),
+      status: expect.stringContaining("high-risk change"),
     });
   });
 
-  it("refuses when the gate's own tier is higher than low", () => {
+  it("asks for a visual check, not a merge, on a visual verdict", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, verdict: "visual" });
+    expect(decide({ comment, comments: [comment] })).toEqual({
+      approve: false,
+      status: "Report: visual. Check the screenshots, then comment /approve",
+    });
+  });
+
+  it("names every reason when a visual verdict isn't the only one", () => {
+    const comment = reportComment(BENNETTAUR, {
+      ...cleanReport,
+      verdict: "visual",
+      riskTier: "high",
+    });
+    expect(acted(decide({ comment, comments: [comment] })).status).toBe(
+      "Report: visual. Not auto-merging: high-risk change; verdict is visual",
+    );
+  });
+
+  it("refuses when the gate's own tier is high", () => {
     const files = [{ path: "sidecar/src/agentTools/store.ts", additions: 1, deletions: 0 }];
     expect(acted(decide({ files })).status).toContain("high-risk change");
   });
@@ -744,7 +768,7 @@ describe("handleSigned", () => {
     const comment = reportComment(BENNETTAUR);
     const { gh, writes } = fakeGitHub({
       comments: [comment],
-      files: [{ filename: "bun.lock", additions: 1, deletions: 1, patch: "+x" }],
+      files: [{ filename: "lefthook.yml", additions: 1, deletions: 1, patch: "+x" }],
     });
     handleSigned(gh, "report", reportEvent(comment), makePr(), ctx);
     expect(writes()).toEqual([`repos/{owner}/{repo}/statuses/${HEAD}`]);

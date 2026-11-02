@@ -135,8 +135,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow sets a `Verification report` commit status on that commit. The
   status is always a success: it records that a current report exists, and its
   description carries the verdict. If the PR is a maintainer's, not a draft,
-  low risk, and the report has no concerns, the bot also approves it and turns
-  on squash auto-merge. A push makes the report stale, so run `/verify-pr`
+  low or standard risk, and the report's verdict is `auto`, the bot also
+  approves it and turns on squash auto-merge. A push makes the report stale, so run `/verify-pr`
   again, or `/verify-pr <N> --recheck` to re-verify only what the last report
   flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
@@ -146,8 +146,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   push made after you read the diff isn't approved with it. Anything else after
   `/approve` is ignored.
 
-Only low-risk PRs can merge on a report alone. A PR's tier is the stricter of
-two things:
+Low- and standard-risk PRs can merge on a report alone; high-risk ones need
+`/approve`. A PR's tier is the stricter of two things:
 
 - **The risk assessment** in the report: how much harm the change could do,
   judged from what it does, whatever part of the app it is in. A UI change
@@ -160,9 +160,10 @@ two things:
   and repo config, the verifier itself, agent instructions and hooks
   (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
   secrets and shell access, app permissions, sidecar request handling, agent
-  tool approvals, the MCP server, settings, migrations, dependencies, what
-  the Chrome extension may do, or more than 800 changed lines of code. More
-  than 300 lines is standard. Anything else starts low: no area is presumed
+  tool approvals, the MCP server, settings, migrations, or what the Chrome
+  extension may do. Dependencies and more than 300 changed lines of code are
+  standard; the skill's supply-chain check raises a dependency change to high
+  when it finds a real risk. Anything else starts low: no area is presumed
   safe or risky.
 
 Tests, docs and lockfiles don't count toward the line limits.

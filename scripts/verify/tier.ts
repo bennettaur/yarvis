@@ -98,18 +98,27 @@ const HIGH_RISK_PATHS: PathRule[] = [
     pattern: /^extension\/(page|background|site)\.js$|^extension\/manifest\.json$/,
     reason: "what the Chrome extension may do in a page",
   },
-  {
-    pattern: /(^|\/)(package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|pyproject\.toml|uv\.lock)$/,
-    reason: "dependencies",
-  },
 ];
 
 /**
- * Past these sizes a reviewer, human or agent, starts missing things. Counted
- * on code only: lockfiles, tests and docs inflate the number without adding risk.
+ * Dependency manifests and lockfiles. A change here is standard rather than
+ * high: the `/verify-pr` skill analyses each added or bumped package, and its
+ * assessment raises the tier when that turns up a real risk.
+ */
+const DEPENDENCY_FILE =
+  /(^|\/)(package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|pyproject\.toml|uv\.lock)$/;
+
+export function isDependencyFile(path: string): boolean {
+  return DEPENDENCY_FILE.test(path);
+}
+
+/**
+ * Past this size a reviewer, human or agent, starts missing things. Counted
+ * on code only: lockfiles, tests and docs inflate the number without adding
+ * risk. Size alone never makes a change high: that tier is for what a change
+ * can reach, not how big it is.
  */
 const STANDARD_SIZE_LINES = 300;
-const HIGH_SIZE_LINES = 800;
 
 interface Tripwire {
   tier: Tier;
@@ -174,9 +183,7 @@ export function isTestFile(path: string): boolean {
   return /\.test\.tsx?$/.test(path);
 }
 
-/** Agent definitions are markdown but behave like code, so their lines count. */
 function isCode(path: string): boolean {
-  if (/^sidecar\/src\/agents\/definitions\/.*\.md$/.test(path)) return true;
   return !isTestFile(path) && !/(^|\/)(bun\.lock|Cargo\.lock|uv\.lock)$|\.md$/.test(path);
 }
 
@@ -201,6 +208,7 @@ export function classify(files: ChangedFile[]): TierResult {
     // Tests count too: the verifier's own tests are part of the verifier.
     const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
     if (high) note("high", high.reason, path);
+    else if (isDependencyFile(path)) note("standard", "dependencies", path);
   }
 
   for (const file of files) {
@@ -217,8 +225,7 @@ export function classify(files: ChangedFile[]): TierResult {
   const codeLines = files
     .filter((file) => isCode(file.path))
     .reduce((sum, file) => sum + file.additions + file.deletions, 0);
-  if (codeLines > HIGH_SIZE_LINES) note("high", `${codeLines} changed lines of code`);
-  else if (codeLines > STANDARD_SIZE_LINES) note("standard", `${codeLines} changed lines of code`);
+  if (codeLines > STANDARD_SIZE_LINES) note("standard", `${codeLines} changed lines of code`);
 
   const tier: Tier = byTier.high.size > 0 ? "high" : byTier.standard.size > 0 ? "standard" : "low";
   // Only the winning tier's reasons: the report says why it is high, not

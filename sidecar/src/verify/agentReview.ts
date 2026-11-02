@@ -25,7 +25,7 @@ const ReportData = z.object({
   repo: z.string(),
   pr: z.number().int().positive(),
   headSha: z.string(),
-  verdict: z.enum(["auto", "agent", "human"]),
+  verdict: z.enum(["auto", "visual", "agent", "human"]),
   /** The report's signed risk tier, which the reviewer weighs its approval against. */
   riskTier: z.enum(["low", "standard", "high"]),
 });

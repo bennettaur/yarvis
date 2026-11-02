@@ -37,7 +37,7 @@ flowchart TB
   report --> gate
   review --> gate
   approve --> gate
-  gate -- "verdict auto, tier low" --> bot
+  gate -- "verdict auto, tier low or standard" --> bot
   gate -- "agent review approves,<br/>tier low or standard" --> bot
   gate -- "any tier" --> bot
 ```
@@ -57,13 +57,16 @@ the `Verification report` commit status.
 ## Which path a PR takes
 
 The report's verdict picks the path. Verdicts go from loosest to strictest:
-`auto`, `agent`, `human`. A PR's verdict can't be looser than its risk tier
-allows, and the gate checks both again.
+`auto`, `visual`, `agent`, `human`. A PR's verdict can't be looser than its
+risk tier allows, and the gate checks both again. High risk is kept for the
+changes a person has to check the safeguards on: secrets, what an agent or a
+Claude session can be made to do, auth, migrations, the verifier and CI.
 
 | Verdict | For example | What happens |
 | --- | --- | --- |
-| `auto` | Low risk, and every check passed: no finding of any severity, no check with a concern, enough of the changed lines covered by tests | The report alone is enough. The gate approves as soon as the signed report is posted. |
-| `agent` | Standard risk, a major or minor finding, a check with a concern, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
+| `auto` | Low or standard risk, no blocker or major finding, no check with a concern, enough of the changed lines covered by tests. Minor findings are allowed. | The report alone is enough. The gate approves as soon as the signed report is posted. |
+| `visual` | The same, but the PR changes what the app shows | Look at the report's screenshots, then comment `/approve`. |
+| `agent` | A major finding, a check with a concern, a dependency change nobody checked, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
 | `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
 
 On an outside contributor's PR, the comment has to name the commit you read,
@@ -130,13 +133,16 @@ all of these hold:
 
 1. You run `/verify-pr` on your PR. 1Password may ask to use your SSH signing
    key, and the signed report is posted.
-2. The gate sets the `Verification report` status. If the verdict is `auto`,
-   the bot approves and auto-merge waits for the rest of CI.
-3. If the verdict is `agent`, you ask Yarvis to have the merge reviewer check
+2. On your own PR, the skill then fixes what the report found, pushes, and
+   rechecks, up to two rounds.
+3. The gate sets the `Verification report` status. If the verdict is `auto`,
+   the bot approves and auto-merge waits for the rest of CI. If it is
+   `visual`, you look at the screenshots and comment `/approve`.
+4. If the verdict is `agent`, you ask Yarvis to have the merge reviewer check
    the PR. It posts a signed agent review, and the gate acts on an approve.
-4. If the verdict is `human`, or you disagree with a reject, you read the PR
+5. If the verdict is `human`, or you disagree with a reject, you read the PR
    and comment `/approve`.
-5. If you push again, every earlier comment goes stale. Run `/verify-pr`
+6. If you push again, every earlier comment goes stale. Run `/verify-pr`
    again. After pushing fixes for what a report flagged,
    `/verify-pr <N> --recheck` re-verifies only that and the new commits.
 

@@ -13,15 +13,12 @@ describe("classify", () => {
     expect(classify([file(".github/workflows/verify.yml")]).tier).toBe("high");
   });
 
-  it("treats secrets, permissions, migrations and dependencies as high risk", () => {
+  it("treats secrets, permissions, migrations and agent instructions as high risk", () => {
     for (const path of [
       "src-tauri/src/keychain.rs",
       "src-tauri/capabilities/default.json",
       "sidecar/drizzle/0042_new.sql",
       "sidecar/src/agentTools/store.ts",
-      "bun.lock",
-      "sidecar/package.json",
-      "Cargo.toml",
       ".claude/skills/verify-pr/SKILL.md",
       ".claude/settings.json",
       "CLAUDE.md",
@@ -45,9 +42,18 @@ describe("classify", () => {
     }
   });
 
-  it("raises the tier by size, counting code but not tests or lockfiles", () => {
+  it("treats dependency changes as standard, for the skill's analysis to raise", () => {
+    for (const path of ["bun.lock", "sidecar/package.json", "Cargo.toml", "src-tauri/Cargo.lock"]) {
+      expect(classify([file(path)])).toEqual({
+        tier: "standard",
+        reasons: [`dependencies (${path})`],
+      });
+    }
+  });
+
+  it("raises the tier by size to standard at most, counting code but not tests or lockfiles", () => {
     expect(classify([file("src/App.tsx", 301)]).tier).toBe("standard");
-    expect(classify([file("src/App.tsx", 500, 301)]).tier).toBe("high");
+    expect(classify([file("src/App.tsx", 5000, 3000)]).tier).toBe("standard");
     expect(classify([file("src/App.tsx", 10), file("src/App.test.tsx", 2000)]).tier).toBe("low");
   });
 
@@ -90,9 +96,9 @@ describe("classify", () => {
   });
 
   it("gives only the reasons for the tier that won", () => {
-    const result = classify([file("sidecar/src/memory/recall.ts"), file("bun.lock")]);
+    const result = classify([file("src/App.tsx", 400), file("CLAUDE.md")]);
     expect(result.tier).toBe("high");
-    expect(result.reasons).toEqual(["dependencies (bun.lock)"]);
+    expect(result.reasons).toEqual(["agent instructions or hooks (CLAUDE.md)"]);
   });
 });
 
@@ -175,11 +181,5 @@ describe("the floor's paths", () => {
     ]) {
       expect(classify([file(path)]).tier).toBe("high");
     }
-  });
-
-  it("counts an agent definition's lines toward size, though it is markdown", () => {
-    // Already high by path; this checks the lines are counted, via the reason.
-    const result = classify([file("sidecar/src/agents/definitions/planner.md", 900)]);
-    expect(result.reasons).toContain("900 changed lines of code");
   });
 });

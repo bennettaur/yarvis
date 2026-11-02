@@ -134,12 +134,16 @@ export interface AutoMergeContext {
   tier: Tier;
 }
 
-/** Every reason the PR can't merge on its report alone. Empty means it can. */
+/**
+ * Every reason the PR can't merge on its report alone. Empty means it can.
+ * Standard risk can: high is kept for what a person has to check the
+ * safeguards on (secrets, what agents may do, the verifier and CI).
+ */
 export function autoMergeBlockers(ctx: AutoMergeContext): string[] {
   const reasons: string[] = [];
   if (!ctx.trusted.includes(ctx.prAuthor.id)) reasons.push("PR author is not a maintainer");
   if (ctx.draft) reasons.push("PR is a draft");
-  if (ctx.tier !== "low") reasons.push(`${ctx.tier}-risk change`);
+  if (ctx.tier === "high") reasons.push("high-risk change");
   if (ctx.report.verdict !== "auto") reasons.push(`verdict is ${ctx.report.verdict}`);
   if (ctx.report.blockers > 0 || ctx.report.majors > 0) {
     reasons.push("report has blocker or major findings");
@@ -263,6 +267,12 @@ export function decideReport(input: {
     // gate's own from the paths is a floor under it that the report can't lower.
     tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
+  if (report.verdict === "visual" && reasons.length === 1) {
+    return {
+      status: "Report: visual. Check the screenshots, then comment /approve",
+      approve: false,
+    };
+  }
   if (reasons.length > 0) {
     return {
       status: `Report: ${report.verdict}. Not auto-merging: ${reasons.join("; ")}`,

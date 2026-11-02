@@ -29,7 +29,8 @@ function makeReview(overrides: Partial<Review> = {}): Review {
       security: pass,
       complexity: pass,
       maintainability: pass,
-      ui: pass,
+      ui: { status: "n/a", note: "Nothing renders differently" },
+      supplyChain: { status: "n/a", note: "No dependency changed" },
     },
     findings: [],
     screenshots: [],
@@ -65,15 +66,15 @@ describe("finalVerdict", () => {
     expect(finalVerdict(makeReview(), makeFacts()).verdict).toBe("auto");
   });
 
-  it("never lets the reviewer's verdict be looser than the risk tier", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+  it("needs a human for high risk and lets a clean standard-risk PR merge", () => {
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["CI or repo config"] } });
     expect(finalVerdict(makeReview(), facts)).toEqual({
       verdict: "human",
       why: ["high-risk change"],
     });
     expect(
       finalVerdict(makeReview(), makeFacts({ tier: { tier: "standard", reasons: [] } })).verdict,
-    ).toBe("agent");
+    ).toBe("auto");
   });
 
   it("needs an agent for a major finding and a human for a blocker", () => {
@@ -83,14 +84,42 @@ describe("finalVerdict", () => {
     expect(finalVerdict(finding("blocker"), makeFacts()).verdict).toBe("human");
   });
 
-  it("keeps a PR with an open minor finding off auto", () => {
+  it("lets a PR with only minor findings merge", () => {
     const review = makeReview({
       findings: [{ severity: "minor", title: "Stale comment", detail: "…" }],
     });
-    expect(finalVerdict(review, makeFacts())).toEqual({
-      verdict: "agent",
-      why: ["minor finding"],
+    expect(finalVerdict(review, makeFacts())).toEqual({ verdict: "auto", why: [] });
+  });
+
+  it("asks for a visual check when the UI changes and screenshots show it", () => {
+    const review = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: [{ path: "/tmp/verify/7/after.png", caption: "Resized list" }],
     });
+    expect(finalVerdict(review, makeFacts())).toEqual({
+      verdict: "visual",
+      why: ["changes what the app shows"],
+    });
+  });
+
+  it("needs an agent for a UI change with no screenshots to look at", () => {
+    const review = makeReview({ dimensions: { ...makeReview().dimensions, ui: pass } });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("agent");
+  });
+
+  it("needs an agent when dependencies changed and nobody checked the supply chain", () => {
+    const facts = makeFacts({ files: [{ path: "bun.lock", additions: 4, deletions: 4 }] });
+    expect(finalVerdict(makeReview(), facts)).toEqual({
+      verdict: "agent",
+      why: ["dependencies changed without a supply-chain check"],
+    });
+    const checked = makeReview({
+      dimensions: {
+        ...makeReview().dimensions,
+        supplyChain: { status: "pass", note: "zod 4.6.6 to 4.6.7: patch, no advisories" },
+      },
+    });
+    expect(finalVerdict(checked, facts).verdict).toBe("auto");
   });
 
   it("needs an agent for a concern and a human for a failed check", () => {
@@ -244,7 +273,7 @@ describe("renderReport", () => {
     expect(headline).toContain("Races on unmount");
     expect(headline).not.toContain("Rename a variable");
     expect(details).toContain("Rename a variable");
-    expect(details).toContain("fix these in this PR");
+    expect(details).toContain("still worth fixing in this PR");
   });
 });
 
