@@ -198,7 +198,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
-| **Artifacts** | Markdown documents the assistant wrote and can read back, such as a morning brief, a report, or a scratchpad it adds to over time | Memory → Artifacts |
+| **Artifacts** | Markdown documents and diagrams the assistant wrote and can read back, such as a morning brief, a report, an architecture sketch, or a scratchpad it adds to over time | Beside the chat, from a link in a reply; Memory → Artifacts |
 | **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
@@ -241,11 +241,36 @@ from your browser tabs, a ticket, a pull request or an MCP tool doesn't, so an
 artifact written from it is shown as trusted. The same limit already applies to
 the approvals within that turn.
 
-Open **Memory → Artifacts** to read them. Each one shows where it came from
-(a chat, heads-down mode, or a specialist or job) and whether it's untrusted.
-Delete one with its ✕, or tick several (or all) and delete them together;
-deleting can't be undone. Only the assistant edits them. Artifacts are
-markdown for now, and each one is capped at 100,000 characters.
+When the assistant creates or changes an artifact, it links to it in its
+reply. Click the link and the artifact opens beside the conversation, in the
+Chat tab or the Omni Chat overlay, so you can read it while you keep talking.
+Drag the divider to resize it; ✕ closes it. The pane follows the artifact as it
+changes, so you can watch the assistant write it. A link somewhere other than a
+chat, or **Open beside chat** in Memory → Artifacts, opens it beside the Chat
+tab's conversation. An untrusted artifact's links open where they say rather
+than inside Yarvis.
+
+Ask for a diagram ("sketch how the checkout services talk to each other") and
+the assistant draws one in Excalidraw: boxes, ellipses, diamonds and free text,
+joined by arrows. It lays them out left to right along the arrows unless it
+places them itself. Ask it to change the diagram and it edits it in place,
+element by element, and the open pane redraws with each change. The view
+follows the drawing until you pan or zoom it yourself. Diagrams are view-only:
+you can pan, zoom and save one as an image, but only the assistant edits them.
+A heads-down pass or specialist can only add to a diagram you asked for in a
+chat. Removing parts of a diagram, or renaming it, asks for approval under the
+same conditions as rewriting a document. A diagram can have up to 300 boxes and
+600 arrows.
+
+Open **Memory → Artifacts** to find them later. Each one shows where it came
+from (a chat, heads-down mode, or a specialist or job) and whether it's
+untrusted. Delete one with its ✕, or tick several (or all) and delete them
+together; deleting can't be undone. Only the assistant edits them. Each one is
+capped at 100,000 characters.
+
+The pane hears about changes from the app instance it's running in. If you run
+a second instance against the same database, a change the other one makes
+shows up the next time you open the artifact.
 
 ### Memory kinds
 

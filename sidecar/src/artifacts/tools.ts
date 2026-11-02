@@ -4,18 +4,30 @@ import { hasReadUntrusted, type UntrustedReads } from "../chat/destructiveTools.
 import type { Db } from "../db/client.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
+  DIAGRAM_COLORS,
+  DiagramError,
+  diagramChangesSchema,
+  diagramSchema,
+  MAX_DIAGRAM_EDGES,
+  MAX_DIAGRAM_NODES,
+} from "./diagram.ts";
+import {
   ARTIFACT_LIST_LIMIT,
   ArtifactAppendOnlyError,
+  ArtifactFormatError,
   ArtifactRunLimitError,
   ArtifactTooLargeError,
   type ArtifactWriter,
   CHAT_ARTIFACT_RUN_LIMIT,
   createArtifact,
+  createDiagram,
   deleteArtifact,
   getArtifact,
   listArtifacts,
   MAX_ARTIFACT_CHARS,
+  NotADiagramError,
   updateArtifact,
+  updateDiagram,
 } from "./service.ts";
 
 /**
@@ -37,6 +49,23 @@ const RUN_LIMIT = `This artifact came from a chat with the user, and you can't g
 const CHAT_ARTIFACT_KEPT =
   "This artifact came from a chat with the user, so only the user can delete it.";
 
+const DIAGRAM_APPEND_ONLY =
+  "This diagram came from a chat with the user, so you can only add new nodes and edges to it. Start a new diagram to change or remove what is there.";
+
+const NOT_TEXT =
+  "That artifact is a diagram. Change it with update_diagram; update_artifact can only rename it.";
+
+/**
+ * The address the chat renders as a link that opens the artifact beside the
+ * conversation (`src/lib/artifactLink.ts`).
+ */
+export function artifactLink(id: string): string {
+  return `yarvis://artifact/${id}`;
+}
+
+const LINK_HINT =
+  "Returns a link: put it in your reply as a markdown link, e.g. [Morning brief](yarvis://artifact/<id>), so the user can open it beside the chat.";
+
 /**
  * `writer` is who is calling; a heads-down pass or specialist run can only
  * append to an artifact a chat turn created. `reads` is the turn's record of
@@ -56,8 +85,7 @@ export function buildArtifactTools(
 
   return {
     create_artifact: tool({
-      description:
-        "Write a document you or the user will come back to: a morning brief, a report, a plan, or a scratchpad of your own notes. Content is markdown. Returns the id to read or update it later.",
+      description: `Write a document you or the user will come back to: a morning brief, a report, a plan, or a scratchpad of your own notes. Content is markdown. Returns the id to read or update it later. ${LINK_HINT}`,
       inputSchema: z.object({
         title: title.describe("Short and specific, e.g. 'Morning brief 2026-10-30'"),
         content: content.optional().describe("Markdown. Leave out to start an empty scratchpad"),
@@ -70,7 +98,12 @@ export function buildArtifactTools(
             writer,
             untrusted: tainted(),
           });
-          return { id: artifact.id, title: artifact.title, length: artifact.content.length };
+          return {
+            id: artifact.id,
+            title: artifact.title,
+            length: artifact.content.length,
+            link: artifactLink(artifact.id),
+          };
         } catch (err) {
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           throw err;
@@ -104,7 +137,8 @@ export function buildArtifactTools(
     }),
 
     get_artifact: tool({
-      description: "Read one of your artifacts in full.",
+      description:
+        "Read one of your artifacts in full. A diagram's content is its JSON nodes and edges; read it before update_diagram so you use the ids already there.",
       inputSchema: z.object({ id: uuid }),
       execute: async ({ id }) => {
         const artifact = await getArtifact(db, id);
@@ -140,11 +174,76 @@ export function buildArtifactTools(
         try {
           const artifact = await updateArtifact(db, id, { ...patch, writer, untrusted: tainted() });
           return artifact
-            ? { id: artifact.id, length: artifact.content.length }
+            ? { id: artifact.id, length: artifact.content.length, link: artifactLink(artifact.id) }
             : { error: "no artifact with that id" };
         } catch (err) {
+          if (err instanceof ArtifactFormatError) return { error: NOT_TEXT };
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: APPEND_ONLY };
+          if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
+          throw err;
+        }
+      },
+    }),
+
+    create_diagram: tool({
+      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_DIAGRAM_NODES} nodes and ${MAX_DIAGRAM_EDGES} edges. ${LINK_HINT}`,
+      inputSchema: z.object({
+        title: title.describe("Short and specific, e.g. 'Checkout service architecture'"),
+        nodes: diagramSchema.shape.nodes.describe(
+          `Each needs an id. label is the text shown; shape defaults to rectangle; color is one of ${DIAGRAM_COLORS.join(", ")}`,
+        ),
+        edges: diagramSchema.shape.edges
+          .default([])
+          .describe("Arrows from one node id to another, each with its own id"),
+      }),
+      execute: async ({ title: t, nodes, edges }) => {
+        try {
+          const artifact = await createDiagram(db, {
+            title: t,
+            diagram: { nodes, edges },
+            writer,
+            untrusted: tainted(),
+          });
+          return { id: artifact.id, title: artifact.title, link: artifactLink(artifact.id) };
+        } catch (err) {
+          if (err instanceof DiagramError) return { error: err.message };
+          if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
+          throw err;
+        }
+      },
+    }),
+
+    update_diagram: tool({
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids.${
+        writer === "chat"
+          ? ""
+          : " You can only add new nodes and edges to a diagram that came from a chat with the user."
+      }`,
+      inputSchema: diagramChangesSchema.extend({ id: uuid, title: title.optional() }),
+      execute: async ({ id, title: t, ...changes }) => {
+        try {
+          const artifact = await updateDiagram(db, id, {
+            title: t,
+            changes,
+            writer,
+            untrusted: tainted(),
+          });
+          if (!artifact) return { error: "no artifact with that id" };
+          const diagram = JSON.parse(artifact.content) as { nodes: unknown[]; edges: unknown[] };
+          return {
+            id: artifact.id,
+            nodes: diagram.nodes.length,
+            edges: diagram.edges.length,
+            link: artifactLink(artifact.id),
+          };
+        } catch (err) {
+          if (err instanceof DiagramError) return { error: err.message };
+          if (err instanceof NotADiagramError) {
+            return { error: "That artifact is markdown, not a diagram. Use update_artifact." };
+          }
+          if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
+          if (err instanceof ArtifactAppendOnlyError) return { error: DIAGRAM_APPEND_ONLY };
           if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
           throw err;
         }

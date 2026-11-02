@@ -1485,10 +1485,12 @@ export const agentTodos = pgTable(
 );
 
 /**
- * How an artifact's content is meant to be read. Only markdown for now; a
- * format goes here once the models in use can write it reliably.
+ * How an artifact's content is meant to be read. A format goes here once the
+ * models in use can write it reliably. An `excalidraw` artifact's content is a
+ * JSON diagram of nodes and edges (`artifacts/diagram.ts`), not Excalidraw's
+ * own scene format: the app draws it into Excalidraw when it is opened.
  */
-export const artifactFormat = pgEnum("artifact_format", ["markdown"]);
+export const artifactFormat = pgEnum("artifact_format", ["markdown", "excalidraw"]);
 
 /**
  * Who wrote an artifact. Only a chat turn is the user asking; a heads-down pass

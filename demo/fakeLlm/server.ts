@@ -68,6 +68,23 @@ type Step =
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; args: Record<string, unknown> };
 
+const ARTIFACT_LINK = /yarvis:\/\/artifact\/([0-9a-f-]{36})/g;
+
+/**
+ * Fills `{{artifactId}}` with the newest artifact the conversation links to:
+ * the one a tool call just returned, or one an earlier reply linked. Lets a
+ * canned reply link to an artifact, or change it, without knowing its id.
+ */
+function fillArtifactId(text: string, request: ChatRequest): string {
+  if (!text.includes("{{artifactId}}")) return text;
+  let id: string | undefined;
+  for (const message of request.messages) {
+    for (const match of textOf(message).matchAll(ARTIFACT_LINK)) id = match[1];
+  }
+  if (!id) console.warn("[fake-llm] no artifact link in the conversation for {{artifactId}}");
+  return text.replaceAll("{{artifactId}}", id ?? "");
+}
+
 /**
  * What to send for this request. A reply with a tool call takes two requests:
  * the first returns the call, and the second, which carries the tool's result,
@@ -78,7 +95,7 @@ function nextStep(request: ChatRequest, isOmni: boolean): Step {
   if (!("toolCall" in reply)) return { kind: "text", text: reply.text };
 
   const toolHasRun = request.messages[request.messages.length - 1]?.role === "tool";
-  if (toolHasRun) return { kind: "text", text: reply.after };
+  if (toolHasRun) return { kind: "text", text: fillArtifactId(reply.after, request) };
 
   const { name } = reply.toolCall;
   const offered = request.tools?.map((t) => t.function.name) ?? [];
@@ -88,7 +105,8 @@ function nextStep(request: ChatRequest, isOmni: boolean): Step {
     );
     return { kind: "text", text: reply.after };
   }
-  return { kind: "tool", ...reply.toolCall };
+  const args = JSON.parse(fillArtifactId(JSON.stringify(reply.toolCall.args), request));
+  return { kind: "tool", name, args };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

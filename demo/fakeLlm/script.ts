@@ -43,6 +43,9 @@ export const SAFE_TOOLS = new Set([
   "recall",
   "list_memories",
   "take_note",
+  "create_artifact",
+  "create_diagram",
+  "update_diagram",
 ]);
 
 /**
@@ -100,6 +103,66 @@ export const REPLIES: Reply[] = [
       "",
       "The demo prep is the one with a hard deadline. Want me to block out an hour for it tomorrow morning, before your 11am cutoff?",
     ].join("\n"),
+  },
+  {
+    when: /sketch|draw.*architecture/i,
+    toolCall: {
+      name: "create_diagram",
+      args: {
+        title: "Checkout architecture",
+        nodes: [
+          { id: "web", label: "Checkout web", color: "blue" },
+          { id: "api", label: "Payments API", color: "green" },
+          { id: "cache", label: "Session cache", shape: "ellipse", color: "yellow" },
+          { id: "db", label: "Orders DB", shape: "ellipse", color: "purple" },
+        ],
+        edges: [
+          { id: "web-api", from: "web", to: "api", label: "POST /pay" },
+          { id: "api-cache", from: "api", to: "cache", label: "session" },
+          { id: "api-db", from: "api", to: "db", label: "orders" },
+        ],
+      },
+    },
+    after:
+      "Here's a first sketch: [Checkout architecture](yarvis://artifact/{{artifactId}}). The web app calls the payments API, which keeps sessions in the cache and writes orders to the database.",
+  },
+  {
+    when: /add a queue/i,
+    toolCall: {
+      name: "update_diagram",
+      args: {
+        id: "{{artifactId}}",
+        callReason: "The user asked to add a receipts queue to the diagram.",
+        upsertNodes: [{ id: "queue", label: "Receipts queue", shape: "diamond", color: "orange" }],
+        upsertEdges: [{ id: "api-queue", from: "api", to: "queue", label: "paid", dashed: true }],
+      },
+    },
+    after:
+      "Added the receipts queue to [Checkout architecture](yarvis://artifact/{{artifactId}}). The API drops a message on it once a payment clears.",
+  },
+  {
+    when: /launch plan|write.*plan/i,
+    toolCall: {
+      name: "create_artifact",
+      args: {
+        title: "Payment step launch plan",
+        content: [
+          "# Payment step launch plan",
+          "",
+          "## Before Thursday",
+          "- Finish review of Priya's payment-step PR",
+          "- Turn the flag on for staff",
+          "",
+          "## Rollout",
+          "1. 5% of checkouts, watch error rates for a day",
+          "2. 50%, then everyone by Friday",
+          "",
+          "> Roll back by turning the flag off; no migration to undo.",
+        ].join("\n"),
+      },
+    },
+    after:
+      "Wrote it up: [Payment step launch plan](yarvis://artifact/{{artifactId}}). It covers what's left before Thursday and a three-step rollout.",
   },
   {
     surface: "omni",

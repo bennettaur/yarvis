@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { createArtifact } from "./service.ts";
+import { createArtifact, createDiagram, deleteArtifact, updateDiagram } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -105,5 +105,36 @@ describe("/api/artifacts", () => {
     const noDb = createApp({ ...config, databaseUrl: undefined });
     const res = await noDb.request("/api/artifacts", { headers: auth });
     expect(res.status).toBe(503);
+  });
+
+  it("streams a change signal for one artifact, and ends after its delete", async () => {
+    const artifact = await createDiagram(db, {
+      title: "Flow",
+      diagram: { nodes: [{ id: "a" }], edges: [] },
+    });
+    const res = await app.request(`/api/artifacts/${artifact.id}/stream`, { headers: auth });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const readUntil = async (needle: string) => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value);
+      }
+    };
+    await readUntil('"ping"');
+    await updateDiagram(db, artifact.id, { changes: { upsertNodes: [{ id: "b" }] } });
+    await readUntil('"updated"');
+    await deleteArtifact(db, artifact.id);
+    await readUntil('"deleted"');
+    // The stream closes itself once the artifact is gone.
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("refuses a stream for a malformed id", async () => {
+    const res = await app.request("/api/artifacts/nope/stream", { headers: auth });
+    expect(res.status).toBe(404);
   });
 });

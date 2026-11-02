@@ -72,7 +72,10 @@ const ADAPTIVE_RADIUS = 3;
  * every node of an acyclic graph, and in a cyclic one it leaves the cycle's
  * nodes in some column rather than pushing them ever further right.
  */
-export function nodeColumns(graph: PrGuideGraph): Map<string, number> {
+export function nodeColumns(graph: {
+  nodes: readonly { id: string }[];
+  edges: readonly { from: string; to: string }[];
+}): Map<string, number> {
   const column = new Map(graph.nodes.map((n) => [n.id, 0]));
   const lastColumn = graph.nodes.length - 1;
   const edges = graph.edges.filter((e) => column.has(e.from) && column.has(e.to));

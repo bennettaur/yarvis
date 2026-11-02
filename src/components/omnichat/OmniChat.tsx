@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArtifactPaneContext, useArtifactPane } from "../../lib/artifactPane";
 import type { ProviderId } from "../../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
@@ -6,10 +7,12 @@ import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
 import { REASONING_HINT, useReasoningPreference } from "../../lib/useReasoningPreference";
 import { useVoice } from "../../lib/useVoice";
+import ArtifactPane from "../artifacts/ArtifactPane";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
 import ErrorNotice from "../ErrorNotice";
 import McpConnectionBar from "../McpConnectionBar";
+import SplitPane, { usePersistedRatio } from "../SplitPane";
 import ToolApprovalBar from "../ToolApprovalBar";
 import VoiceControls from "../voice/VoiceControls";
 
@@ -63,6 +66,8 @@ export default function OmniChat({
   const voice = useVoice({ send, streaming, busy });
   const panelRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const artifactPane = useArtifactPane();
+  const [splitRatio, setSplitRatio] = usePersistedRatio("yarvis.omniChat.artifactSplit", 0.5);
 
   // Focus the composer whenever the overlay opens.
   useEffect(() => {
@@ -115,114 +120,144 @@ export default function OmniChat({
         onClick={onClose}
         className="absolute inset-0 h-full w-full cursor-default bg-black/40"
       />
+      {/* Wider and a fixed height while an artifact is open, so the pane has room beside the thread. */}
       <div
         ref={panelRef}
-        className="relative z-10 flex max-h-[80vh] w-[820px] max-w-[92vw] flex-col gap-3 rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-zinc-100 shadow-2xl"
+        className={`relative z-10 flex flex-col rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-100 shadow-2xl ${
+          artifactPane.openId
+            ? "h-[80vh] w-[1400px] max-w-[95vw]"
+            : "max-h-[80vh] w-[820px] max-w-[92vw]"
+        }`}
       >
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-zinc-300">Omni Chat</span>
-          <button
-            type="button"
-            onClick={() => void newChat()}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
-          >
-            New chat
-          </button>
-          <div className="ml-auto flex items-center gap-2">
-            <label title={REASONING_HINT} className="flex items-center gap-1 text-xs text-zinc-400">
-              <input
-                type="checkbox"
-                checked={reasoning}
-                onChange={(e) => setReasoning(e.target.checked)}
-              />
-              Thinking
-            </label>
-            <select
-              title={PROVIDER_HINT}
-              value={provider}
-              onChange={(e) => {
-                const id = e.target.value as ProviderId;
-                setProvider(id);
-                setModel(modelsFor(id)[0] ?? "");
-              }}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
-            >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id} disabled={!p.available}>
-                  {p.label}
-                  {p.available ? "" : " (no key)"}
-                </option>
-              ))}
-            </select>
-            <select
-              title={MODEL_HINT}
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
-            >
-              {(provider ? modelsFor(provider) : []).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        <ArtifactPaneContext.Provider value={artifactPane.open}>
+          <SplitPane
+            orientation="horizontal"
+            ratio={splitRatio}
+            onRatioChange={setSplitRatio}
+            minRatio={0.3}
+            className="min-h-0 flex-1"
+            first={
+              <div className="flex h-full flex-col gap-3 p-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-zinc-300">Omni Chat</span>
+                  <button
+                    type="button"
+                    onClick={() => void newChat()}
+                    className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+                  >
+                    New chat
+                  </button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <label
+                      title={REASONING_HINT}
+                      className="flex items-center gap-1 text-xs text-zinc-400"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={reasoning}
+                        onChange={(e) => setReasoning(e.target.checked)}
+                      />
+                      Thinking
+                    </label>
+                    <select
+                      title={PROVIDER_HINT}
+                      value={provider}
+                      onChange={(e) => {
+                        const id = e.target.value as ProviderId;
+                        setProvider(id);
+                        setModel(modelsFor(id)[0] ?? "");
+                      }}
+                      className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
+                    >
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id} disabled={!p.available}>
+                          {p.label}
+                          {p.available ? "" : " (no key)"}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      title={MODEL_HINT}
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
+                    >
+                      {(provider ? modelsFor(provider) : []).map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-        <div
-          ref={threadRef}
-          className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
-        >
-          <ChatMessages
-            messages={messages}
-            streaming={streaming}
-            busy={busy}
-            thinking={thinking}
-            activity={activity}
-            onRewind={rewind}
-            emptyHint="Ask about whatever you're looking at — it's sent along as context."
-          />
-        </div>
+                <div
+                  ref={threadRef}
+                  className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
+                >
+                  <ChatMessages
+                    messages={messages}
+                    streaming={streaming}
+                    busy={busy}
+                    thinking={thinking}
+                    activity={activity}
+                    onRewind={rewind}
+                    emptyHint="Ask about whatever you're looking at — it's sent along as context."
+                  />
+                </div>
 
-        <ToolApprovalBar
-          approvals={approvals}
-          visible={open}
-          onRespond={(id, approved) => void respondApproval(id, approved)}
-          onAlwaysAllow={(a) => void alwaysAllow(a)}
-        />
+                <ToolApprovalBar
+                  approvals={approvals}
+                  visible={open}
+                  onRespond={(id, approved) => void respondApproval(id, approved)}
+                  onAlwaysAllow={(a) => void alwaysAllow(a)}
+                />
 
-        {error && (
-          <ErrorNotice
-            error={error}
-            actions={
-              <button
-                type="button"
-                onClick={retry}
-                disabled={busy}
-                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-              >
-                Retry
-              </button>
+                {error && (
+                  <ErrorNotice
+                    error={error}
+                    actions={
+                      <button
+                        type="button"
+                        onClick={retry}
+                        disabled={busy}
+                        className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                    }
+                  />
+                )}
+
+                <McpConnectionBar visible={open} />
+
+                <ChatComposer
+                  value={input}
+                  onChange={setInput}
+                  onSubmit={submit}
+                  busy={busy}
+                  placeholder="Ask anything about what you're looking at…"
+                  submitLabel="Send"
+                  textareaClassName="min-h-24"
+                  onStop={stop}
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <VoiceControls voice={voice} compact />
+                  <p className="text-xs text-zinc-600">
+                    Esc to hide · keeps running in the background
+                  </p>
+                </div>
+              </div>
+            }
+            second={
+              artifactPane.openId && (
+                <div className="h-full py-4 pr-4 pl-3">
+                  <ArtifactPane id={artifactPane.openId} onClose={artifactPane.close} />
+                </div>
+              )
             }
           />
-        )}
-
-        <McpConnectionBar visible={open} />
-
-        <ChatComposer
-          value={input}
-          onChange={setInput}
-          onSubmit={submit}
-          busy={busy}
-          placeholder="Ask anything about what you're looking at…"
-          submitLabel="Send"
-          textareaClassName="min-h-24"
-          onStop={stop}
-        />
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <VoiceControls voice={voice} compact />
-          <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
-        </div>
+        </ArtifactPaneContext.Provider>
       </div>
     </div>
   );

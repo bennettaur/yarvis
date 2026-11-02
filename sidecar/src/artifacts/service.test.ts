@@ -6,18 +6,23 @@ import { newAttentionState } from "../chat/attentionTools.ts";
 import { builtinToolFamilies } from "../chat/builtinTools.ts";
 import { newUntrustedReads } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
+import { subscribeArtifact } from "./hub.ts";
 import {
   ArtifactAppendOnlyError,
+  ArtifactFormatError,
   ArtifactRunLimitError,
   ArtifactTooLargeError,
   CHAT_ARTIFACT_RUN_LIMIT,
   createArtifact,
+  createDiagram,
   deleteArtifact,
   deleteArtifacts,
   getArtifact,
   listArtifacts,
   MAX_ARTIFACT_CHARS,
+  NotADiagramError,
   updateArtifact,
+  updateDiagram,
 } from "./service.ts";
 import { buildArtifactTools } from "./tools.ts";
 
@@ -406,5 +411,118 @@ describe("who wrote an artifact", () => {
       expect(row.untrusted).toBe(true);
     }
     expect((await getArtifact(db, id))!.content).toBe("the user's plan");
+  });
+});
+
+describe("diagrams", () => {
+  const diagram = {
+    nodes: [{ id: "api" }, { id: "db" }],
+    edges: [{ id: "api-db", from: "api", to: "db" }],
+  };
+
+  it("stores a diagram as JSON and changes it in place", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    expect(created.format).toBe("excalidraw");
+    const updated = await updateDiagram(db, created.id, {
+      changes: { upsertNodes: [{ id: "cache" }], removeEdges: ["api-db"] },
+    });
+    expect(JSON.parse(updated!.content)).toEqual({
+      nodes: [{ id: "api" }, { id: "db" }, { id: "cache" }],
+      edges: [],
+    });
+  });
+
+  it("keeps both of two changes made at the same time", async () => {
+    const created = await createDiagram(db, { title: "Race", diagram });
+    await Promise.all([
+      updateDiagram(db, created.id, { changes: { upsertNodes: [{ id: "a" }] } }),
+      updateDiagram(db2, created.id, { changes: { upsertNodes: [{ id: "b" }] } }),
+    ]);
+    const ids = JSON.parse((await getArtifact(db, created.id))!.content).nodes.map(
+      (n: { id: string }) => n.id,
+    );
+    expect(ids.sort()).toEqual(["a", "api", "b", "db"]);
+  });
+
+  it("won't edit a diagram's JSON as text, though it can rename it", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    await expect(updateArtifact(db, created.id, { append: "x" })).rejects.toThrow(
+      ArtifactFormatError,
+    );
+    await expect(updateArtifact(db, created.id, { content: "x" })).rejects.toThrow(
+      ArtifactFormatError,
+    );
+    expect((await updateArtifact(db, created.id, { title: "Renamed" }))?.title).toBe("Renamed");
+    expect(JSON.parse((await getArtifact(db, created.id))!.content)).toEqual(diagram);
+  });
+
+  it("refuses to change a markdown artifact as a diagram", async () => {
+    const note = await createArtifact(db, { title: "Notes", content: "hi" });
+    await expect(
+      updateDiagram(db, note.id, { changes: { upsertNodes: [{ id: "a" }] } }),
+    ).rejects.toThrow(NotADiagramError);
+  });
+
+  it("lets a pass only add to a chat turn's diagram, and marks it untrusted", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    await expect(
+      updateDiagram(db, created.id, { writer: "heads-down", changes: { removeNodes: ["db"] } }),
+    ).rejects.toThrow(ArtifactAppendOnlyError);
+    await expect(
+      updateDiagram(db, created.id, {
+        writer: "heads-down",
+        changes: { upsertNodes: [{ id: "api", label: "changed" }] },
+      }),
+    ).rejects.toThrow(ArtifactAppendOnlyError);
+    const added = await updateDiagram(db, created.id, {
+      writer: "heads-down",
+      changes: { upsertNodes: [{ id: "queue" }] },
+    });
+    expect(added?.untrusted).toBe(true);
+  });
+
+  it("returns null for a change to a missing diagram", async () => {
+    expect(
+      await updateDiagram(db, crypto.randomUUID(), { changes: { upsertNodes: [{ id: "a" }] } }),
+    ).toBeNull();
+  });
+
+  it("tells an open pane about each write and the delete", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    const seen: string[] = [];
+    const unsubscribe = subscribeArtifact(created.id, (change) => seen.push(change));
+    await updateDiagram(db, created.id, { changes: { upsertNodes: [{ id: "a" }] } });
+    await updateArtifact(db, created.id, { title: "Renamed" });
+    await deleteArtifact(db, created.id);
+    unsubscribe();
+    expect(seen).toEqual(["updated", "updated", "deleted"]);
+  });
+});
+
+describe("diagram tools", () => {
+  const tools = buildArtifactTools(db);
+
+  it("returns a link the chat can open, and model-fixable errors", async () => {
+    const made = (await tools.create_diagram.execute!(
+      {
+        title: "Flow",
+        nodes: [{ id: "a" }, { id: "b" }],
+        edges: [{ id: "a-b", from: "a", to: "b" }],
+      },
+      opts,
+    )) as { id: string; link: string };
+    expect(made.link).toBe(`yarvis://artifact/${made.id}`);
+
+    const dangling = (await tools.update_diagram.execute!(
+      { id: made.id, upsertEdges: [{ id: "x", from: "a", to: "zzz" }] },
+      opts,
+    )) as { error: string };
+    expect(dangling.error).toMatch(/not a node/);
+
+    const asText = (await tools.update_artifact.execute!(
+      { id: made.id, append: "oops" },
+      opts,
+    )) as { error: string };
+    expect(asText.error).toMatch(/update_diagram/);
   });
 });

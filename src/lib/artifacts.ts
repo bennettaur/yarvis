@@ -1,4 +1,4 @@
-import { sidecarFetch } from "./api";
+import { sidecarFetch, streamSSE } from "./api";
 
 /**
  * Client for the assistant's artifacts: documents it wrote, like a morning
@@ -6,7 +6,8 @@ import { sidecarFetch } from "./api";
  * only reads them and deletes the ones the user doesn't want kept.
  */
 
-export type ArtifactFormat = "markdown";
+/** An `excalidraw` artifact's content is a JSON `Diagram` (`./artifactDiagram`). */
+export type ArtifactFormat = "markdown" | "excalidraw";
 
 /** Who created it: a chat with the user, a heads-down pass, or a specialist (which runs jobs). */
 export type ArtifactWriter = "chat" | "heads-down" | "specialist";
@@ -48,3 +49,50 @@ export const deleteArtifact = (id: string) =>
 
 export const deleteArtifacts = (ids: string[]) =>
   request<{ deleted: number }>("/api/artifacts/delete", "POST", { ids });
+
+const RECONNECT_MS = 2_000;
+
+/**
+ * Follows one artifact until the returned function is called, reconnecting
+ * when the stream drops. `onChange` fires on each write (and once on every
+ * reconnect, since a write may have landed while it was down), so the caller
+ * re-reads the artifact; `onDeleted` fires once and ends the subscription.
+ */
+export function subscribeArtifact(
+  id: string,
+  { onChange, onDeleted }: { onChange: () => void; onDeleted: () => void },
+  reconnectMs = RECONNECT_MS,
+): () => void {
+  const controller = new AbortController();
+  const signal = controller.signal;
+
+  void (async () => {
+    let reconnecting = false;
+    while (!signal.aborted) {
+      try {
+        for await (const data of streamSSE(`/api/artifacts/${id}/stream`, { signal })) {
+          let frame: { type?: string };
+          try {
+            frame = JSON.parse(data);
+          } catch (e) {
+            console.warn("[artifacts] dropped unparseable stream frame:", e);
+            continue;
+          }
+          if (frame.type === "deleted") {
+            onDeleted();
+            return;
+          }
+          if (frame.type === "updated" || reconnecting) onChange();
+          reconnecting = false;
+        }
+      } catch (e) {
+        if (!signal.aborted) console.warn("[artifacts] stream dropped, reconnecting:", e);
+      }
+      if (signal.aborted) break;
+      reconnecting = true;
+      await new Promise((resolve) => setTimeout(resolve, reconnectMs));
+    }
+  })();
+
+  return () => controller.abort();
+}

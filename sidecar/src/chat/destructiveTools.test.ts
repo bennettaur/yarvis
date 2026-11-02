@@ -109,6 +109,26 @@ describe("conditionalConfirmations", () => {
     expect(spoken.get("update_artifact")?.({ id: "a", append: "more" })).toBe(false);
   });
 
+  it("asks before a diagram removal or rename, not an addition, where a delete would ask", () => {
+    const reads = newUntrustedReads();
+    const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const update = typed.get("update_diagram");
+    expect(update?.({ id: "a", removeNodes: ["x"] })).toBe(false);
+    reads.hasReadUntrustedArtifact = true;
+    expect(update?.({ id: "a", removeNodes: ["x"] })).toBe(true);
+    expect(update?.({ id: "a", removeEdges: ["x-y"] })).toBe(true);
+    expect(update?.({ id: "a", title: "new" })).toBe(true);
+    expect(update?.({ id: "a", upsertNodes: [{ id: "x" }], removeNodes: [] })).toBe(false);
+
+    const spoken = conditionalConfirmations({
+      spoken: true,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    expect(spoken.get("update_diagram")?.({ id: "a", removeNodes: ["x"] })).toBe(true);
+    expect(spoken.get("update_diagram")?.({ id: "a", upsertNodes: [{ id: "x" }] })).toBe(false);
+  });
+
   it("leaves destructive tools to the always-ask set on a spoken turn", () => {
     const conditions = conditionalConfirmations({
       spoken: true,
