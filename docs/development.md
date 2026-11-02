@@ -165,10 +165,13 @@ Low- and standard-risk PRs can merge on a report alone; high-risk ones need
   server, settings, or what the Chrome extension may do. A dependency change
   that only adds, removes or bumps registry packages, a migration that only
   adds tables, columns, types or plain indexes, and more than 300 changed
-  lines of code, are standard. Install hooks, `verify:` scripts, lockfile
-  sources outside the registry, the root `bunfig.toml`, `tsconfig.json` and
-  `.npmrc`, `.github/actions/`, and any `.github/` change whose added lines
-  name a secret, a write permission or a privileged trigger are high. The skill's supply-chain check raises a dependency
+  lines of code, are standard. "Only adds" is an allowlist of the statement
+  shapes drizzle generates; anything else in a migration is assessed. Install
+  hooks, `verify:` scripts, lockfile sources outside the registry, the root
+  `bunfig.toml`, `tsconfig.json` and `.npmrc`, any `node_modules/` or nested
+  package or tsconfig outside `sidecar/` and `video/`, `.github/actions/`,
+  and any `.github/` change whose added lines name a secret, a write
+  permission or a trigger that runs with them are high. The skill's supply-chain check raises a dependency
   change to high when it finds a real risk.
 - **Files sent for assessment.** Other workflows and `.github/` files, git
   hooks, build and test config, the database schema, other migrations, and

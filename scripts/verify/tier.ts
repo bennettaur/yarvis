@@ -21,6 +21,8 @@ export interface ChangedFile {
    * big for GitHub to send, which can't be scanned; left out to skip them.
    */
   addedText?: string | null;
+  /** The file's removed lines, read like `addedText`. */
+  removedText?: string | null;
   additions: number;
   deletions: number;
 }
@@ -106,6 +108,14 @@ const HIGH_RISK_PATHS: PathRule[] = [
     pattern: /^(bunfig\.toml|tsconfig\.json|\.npmrc)$|^\.github\/actions\//,
     reason: "what the verify workflows install and run with",
   },
+  // Bun resolves a bare import through the nearest `node_modules`, and the
+  // nearest tsconfig's `paths`, so one planted beside the verifier replaces
+  // what it imports. Only the known workspaces keep their own.
+  {
+    pattern:
+      /(^|\/)node_modules\/|^(?!sidecar\/|video\/)[^/]+\/(.+\/)?((tsconfig|jsconfig)[^/]*\.json|package\.json|bunfig\.toml|\.npmrc)$/,
+    reason: "what the verify workflows install and run with",
+  },
 ];
 
 /**
@@ -125,62 +135,119 @@ const ASSESSED_PATHS: PathRule[] = [
 ];
 
 /**
- * Added lines in a `.github/` file that reach a secret, a write token or a
- * trigger that runs with them. A change with any of these is high without
- * assessment: the merge credential is a repo secret any workflow can read.
+ * Added lines in a `.github/` file that reach a secret, a write token, a
+ * trigger that runs with them, or the CI workflow's name, which
+ * `verify-revert.yml` and the required checks go by. A change with any of
+ * these is high without assessment: the merge credential is a repo secret
+ * any workflow can read. Crude on purpose; a false hit only means a person looks.
  */
-const PRIVILEGED_WORKFLOW_TEXT =
-  /secrets\.|create-github-app-token|YARVIS_BOT|pull_request_target|workflow_run|issue_comment|:\s*write\b|write-all|GITHUB_ENV|GITHUB_PATH|self-hosted|^\s*name:\s*CI\s*$/m;
+const PRIVILEGED_WORKFLOW_TEXT = new RegExp(
+  [
+    "\\bsecrets\\b",
+    "YARVIS_",
+    "create-github-app-token",
+    ":\\s*[\"']?write\\b",
+    "write-all",
+    "GITHUB_ENV|GITHUB_PATH",
+    "self-hosted",
+    "^name:",
+    "^\\s*(pull_request_target|workflow_run|issue_comment|push|schedule|workflow_dispatch|repository_dispatch|issues|workflow_call)\\s*:",
+  ].join("|"),
+  "m",
+);
 
-/** Lifecycle hooks and settings that run code on `bun install`, including the verify workflows'. */
+/**
+ * Lifecycle hooks and settings that run code on `bun install`, including the
+ * verify workflows'. A JSON escape (`\\u`) could spell any of these, so one
+ * counts too.
+ */
 const INSTALL_HOOK_TEXT =
-  /"(pre|post)?(install|prepare|publish|pack)"\s*:|"trustedDependencies"\s*:|"verify:[\w-]*"\s*:/;
+  /"(pre|post)?(install|prepare|publish|pack)"\s*:|"trustedDependencies"\s*:|"verify:[\w-]*"\s*:|\\u/;
 
 const MIGRATION = /^sidecar\/drizzle\/[^/]+\.sql$/;
 const MIGRATION_SNAPSHOT = /^sidecar\/drizzle\/meta\/\d+_snapshot\.json$/;
 const MIGRATION_JOURNAL = "sidecar/drizzle/meta/_journal.json";
 
-/** Statements that only add to the schema, so nothing existing changes. */
-const ADDITIVE_STATEMENT =
-  /^(CREATE (TABLE|TYPE|INDEX)\b|CREATE EXTENSION IF NOT EXISTS "?vector"?$|ALTER TABLE ("[^"]+"\.)?"?\w+"? ADD COLUMN\b)/i;
-
 /**
- * Parts of an otherwise additive statement that can still lose data or stop
- * the app starting on existing rows: a copy from other tables, a cascade, or
- * a required column with no default on a table that may have rows.
+ * The statements an additive migration may hold, in the exact shapes drizzle
+ * generates: an allowlist, since every pattern of what not to allow has had a
+ * way around it. Anything else, or anything odd inside these, is assessed.
  */
-const RISKY_IN_ADDITIVE = /\bSELECT\b|\bCASCADE\b|\$|\/\*/i;
+const NAME = '"\\w+"';
+const TABLE = `("public"\\.)?${NAME}`;
+// One word, or one of Postgres's few multi-word types: a free extra word
+// would let `UNIQUE` or `CHECK` pass as part of the type.
+const COLUMN_TYPE = `(${TABLE}|(timestamp|time) with(out)? time zone|double precision|character varying|[a-z][a-z0-9_]*)(\\(\\d+(,\\s*\\d+)?\\))?(\\[\\])?`;
+// Values that run nothing against the rows already in the table.
+const DEFAULT_VALUE = `'[^']*'(::[a-z]+(\\[\\])?)?|-?\\d+(\\.\\d+)?|true|false|null|now\\(\\)|gen_random_uuid\\(\\)`;
+const INDEX_COLUMN = `${NAME}( [a-z_]+_ops)?( (asc|desc))?( nulls (first|last))?`;
+const NULL_TEST = `(${NAME}\\.)?${NAME} is (not )?null`;
+const ADDITIVE_STATEMENTS = [
+  new RegExp(`^CREATE TYPE ${TABLE} AS ENUM\\(\\s*'[^']*'(\\s*,\\s*'[^']*')*\\s*\\)$`, "i"),
+  new RegExp(
+    `^ALTER TABLE ${TABLE} ADD COLUMN ${NAME} ${COLUMN_TYPE}( DEFAULT (${DEFAULT_VALUE}))?( NOT NULL)?$`,
+    "i",
+  ),
+  new RegExp(
+    `^CREATE INDEX( IF NOT EXISTS)? ${NAME} ON ${TABLE} USING [a-z]+ \\(${INDEX_COLUMN}(\\s*,\\s*${INDEX_COLUMN})*\\)( WHERE ${NULL_TEST}( and ${NULL_TEST})*)?$`,
+    "i",
+  ),
+  /^CREATE EXTENSION IF NOT EXISTS "?vector"?$/i,
+];
+const CREATE_TABLE = new RegExp(`^CREATE TABLE( IF NOT EXISTS)? ${TABLE} \\(([\\s\\S]*)\\)$`, "i");
+/** Inside a new table's columns: a copy of, or a link into, an existing table. */
+const NOT_A_NEW_TABLE = /\b(AS|LIKE|INHERITS|PARTITION|SELECT)\b/i;
+
+function isAdditiveStatement(statement: string): boolean {
+  if (ADDITIVE_STATEMENTS.some((re) => re.test(statement))) {
+    // A required column needs a default, or it fails on the rows already there.
+    return (
+      !/ ADD COLUMN /i.test(statement) ||
+      !/ NOT NULL$/i.test(statement) ||
+      / DEFAULT /i.test(statement)
+    );
+  }
+  const table = statement.match(CREATE_TABLE);
+  // A new table has no rows, so its columns' defaults and constraints can't
+  // break anything; only a body that reaches another table can.
+  return table !== null && !NOT_A_NEW_TABLE.test(table[3].replace(/"[^"]*"|'[^']*'/g, "x"));
+}
 
 /**
- * Whether a new migration only adds tables, columns, types or indexes. An
- * edit to an existing migration (any deleted line) or anything else, such as a
- * drop, a rename, a type change, a constraint or an `UPDATE`, needs assessing.
- * Drizzle sends each breakpoint-separated chunk as one query, so a chunk with
- * a second statement in it is refused rather than parsed.
+ * Whether a new migration only adds tables, columns, enum types or indexes.
+ * An edit to an existing migration (any deleted line) or anything else, such
+ * as a drop, a rename, a type change, a constraint or an `UPDATE`, needs
+ * assessing. Drizzle sends each breakpoint-separated chunk as one query, so a
+ * chunk with a `;` before its end, a comment or a `$` quote is refused
+ * outright rather than parsed: any of them can hide a second statement.
  */
 export function isAdditiveMigration(
   addedText: string | null | undefined,
   deletions: number,
 ): boolean {
   if (typeof addedText !== "string" || deletions > 0) return false;
-  const statements = addedText
-    .split("--> statement-breakpoint")
-    .map((chunk) => chunk.replace(/--.*$/gm, "").trim().replace(/;$/, "").trim())
-    .filter(Boolean);
+  const chunks = addedText.split("--> statement-breakpoint").map((chunk) => chunk.trim());
+  const statements = chunks.filter(Boolean).map((chunk) => chunk.replace(/;$/, "").trim());
   return (
     statements.length > 0 &&
     statements.every(
       (statement) =>
-        !statement.includes(";") &&
-        ADDITIVE_STATEMENT.test(statement) &&
-        !RISKY_IN_ADDITIVE.test(statement) &&
-        !(
-          /\bADD COLUMN\b/i.test(statement) &&
-          /\bNOT NULL\b/i.test(statement) &&
-          !/\bDEFAULT\b/i.test(statement)
-        ),
+        !/;|--|\/\*|\$/.test(statement) && isAdditiveStatement(statement.replace(/\s+/g, " ")),
     )
   );
+}
+
+/**
+ * Whether a journal edit only appends entries for this PR's additive
+ * migrations. Appending rewrites just the previous entry's closing brace, so
+ * a removed line that is anything else edits an entry that already ran,
+ * which can make drizzle run it again.
+ */
+function appendsAdditiveEntries(file: ChangedFile, additive: Set<string>): boolean {
+  if (typeof file.addedText !== "string" || typeof file.removedText !== "string") return false;
+  if (!file.removedText.split("\n").every((line) => /^\s*\}?\s*$/.test(line))) return false;
+  const tags = [...file.addedText.matchAll(/"tag"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+  return tags.length > 0 && tags.every((tag) => additive.has(`sidecar/drizzle/${tag}.sql`));
 }
 
 /**
@@ -221,7 +288,7 @@ const PLAIN_MANIFEST_LINE = [
 
 /** A package fetched from somewhere other than its registry, which a lockfile can name. */
 const UNUSUAL_SOURCE =
-  /git\+|"(git|github|file|link|workspace):|\{\s*(git|path)\s*=|"https?:\/\/(?!files\.pythonhosted\.org\/|pypi\.org\/)/;
+  /git\+|"(git|github|file|link|workspace|npm):|@npm:|\{\s*(git|path)\s*=|"https?:\/\/(?!files\.pythonhosted\.org\/|pypi\.org\/)/;
 
 /**
  * Whether a dependency file's added lines only add, remove or bump packages
@@ -331,6 +398,13 @@ export function classify(files: ChangedFile[]): TierResult {
     note("standard", reason, path);
   };
 
+  const additiveMigrations = new Set(
+    files
+      .filter(
+        (file) => MIGRATION.test(file.path) && isAdditiveMigration(file.addedText, file.deletions),
+      )
+      .map((file) => file.path),
+  );
   for (const file of files) {
     for (const path of file.previousPath ? [file.path, file.previousPath] : [file.path]) {
       // Tests count too: the verifier's own tests are part of the verifier.
@@ -346,10 +420,13 @@ export function classify(files: ChangedFile[]): TierResult {
         } else toAssess("CI or repo config, which runs with the repo's secrets", path);
       } else if (assessed) toAssess(assessed.reason, path);
       else if (MIGRATION_SNAPSHOT.test(path)) note("standard", "migration metadata", path);
-      // Appending an entry rewrites only the previous entry's closing brace.
-      else if (path === MIGRATION_JOURNAL && file.deletions <= 1) {
+      else if (
+        path === MIGRATION_JOURNAL &&
+        path === file.path &&
+        appendsAdditiveEntries(file, additiveMigrations)
+      ) {
         note("standard", "migration metadata", path);
-      } else if (MIGRATION.test(path) && isAdditiveMigration(text, file.deletions)) {
+      } else if (path === file.path && additiveMigrations.has(path)) {
         note("standard", "a migration that only adds", path);
       } else if (path.startsWith("sidecar/drizzle/")) {
         toAssess("a migration that changes or removes existing schema or data", path);

