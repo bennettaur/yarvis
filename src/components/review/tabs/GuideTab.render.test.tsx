@@ -44,8 +44,8 @@ const guide = (over: Partial<PrGuide> = {}): PrGuide => ({
   ...over,
 });
 
-// Answers the guide route with `stored` and every other call (the viewed
-// files, the progress write) with an empty list.
+// Answers the guide route with `stored` and the viewed-files list with an
+// empty one. These tests never move a step, so no progress write is answered.
 function serve(stored: PrGuide) {
   stubSidecarApi({
     sidecarFetch: async (path: string) => {
