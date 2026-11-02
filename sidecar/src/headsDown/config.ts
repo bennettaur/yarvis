@@ -44,6 +44,11 @@ export interface HeadsDownConfig {
    * words (ex. "don't merge PRs while the market is open"). Null for none.
    */
   guidance: string | null;
+  /**
+   * The most routines (`routines.ts`) one pass takes on. Each costs steps and
+   * time a pass would otherwise spend on the work streams. 0 turns them off.
+   */
+  maxRoutinesPerPass: number;
 }
 
 /**
@@ -62,7 +67,11 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   provider: null,
   model: null,
   guidance: null,
+  maxRoutinesPerPass: 2,
 };
+
+/** Past this a pass spends its time on routines rather than the work streams. */
+export const MAX_ROUTINES_PER_PASS = 10;
 
 const SETTINGS_KEY = "headsDown";
 
@@ -81,6 +90,10 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
     ...config,
     guidance: typeof config.guidance === "string" ? config.guidance : null,
     passTimeoutMinutes: validPassTimeout(config.passTimeoutMinutes),
+    maxRoutinesPerPass:
+      Number.isInteger(config.maxRoutinesPerPass) && config.maxRoutinesPerPass >= 0
+        ? Math.min(config.maxRoutinesPerPass, MAX_ROUTINES_PER_PASS)
+        : DEFAULT_HEADS_DOWN_CONFIG.maxRoutinesPerPass,
   };
 }
 

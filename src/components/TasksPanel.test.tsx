@@ -156,3 +156,4 @@ describe("groupTasks", () => {
 });
 
 afterAll(resetSidecarApi);
+afterAll(() => setSystemTime());

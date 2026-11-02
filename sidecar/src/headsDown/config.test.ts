@@ -101,4 +101,18 @@ describe("getHeadsDownConfig", () => {
     for (const bad of ["90", 0, -5, null]) expect(await storedTimeout(bad)).toBe(20);
     expect(await storedTimeout(10_000)).toBe(240);
   });
+
+  const storedRoutines = async (maxRoutinesPerPass: unknown) => {
+    const path = join(dir, "settings.json");
+    writeFileSync(path, JSON.stringify({ headsDown: { maxRoutinesPerPass } }));
+    process.env.YARVIS_SETTINGS_PATH = path;
+    return (await getHeadsDownConfig()).maxRoutinesPerPass;
+  };
+
+  it("keeps a hand-edited routines-per-pass within what the page allows", async () => {
+    expect(await storedRoutines(0)).toBe(0);
+    expect(await storedRoutines(4)).toBe(4);
+    expect(await storedRoutines(50)).toBe(10);
+    for (const bad of ["3", -1, 1.5, null]) expect(await storedRoutines(bad)).toBe(2);
+  });
 });

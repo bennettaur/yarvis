@@ -48,7 +48,9 @@ also show a **join** link for Google Meet.
 
 ## Ask the assistant
 
-The assistant can read your calendar and book new events:
+The assistant can read your calendar and book new events. It reads up to a week
+back as well as ahead, and sees the files attached to each event, such as
+Gemini meeting notes:
 
 > What does my week look like? Find me two hours of focus time on Thursday.
 

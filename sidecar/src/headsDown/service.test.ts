@@ -291,7 +291,7 @@ describe("what a pass may do", () => {
   it("won't ask the user about a stream they paused", async () => {
     const stream = await createStream(db, { title: "ship billing" });
     await updateStream(db, stream.id, { paused: true });
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), []);
 
     const result = await tools.ask_user.execute!(
       { question: "Ready to merge?", situation: "CI is green", streamId: stream.id },
@@ -545,7 +545,7 @@ describe("what a pass may do", () => {
 describe("merge alerts", () => {
   it("shows an announced merge in the bell with its risk, and remembers it for the pass", async () => {
     const announced = new Set<string>();
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced);
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced, []);
     await tools.announce_merge.execute!(
       {
         repo: "acme/infra",
@@ -567,7 +567,7 @@ describe("merge alerts", () => {
   });
 
   it("keeps the higher risk when a PR is announced again", async () => {
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set());
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), []);
     const announce = (risk: "low" | "high", why: string) =>
       tools.announce_merge.execute!({ repo: "acme/infra", number: 7, risk, why }, {
         toolCallId: "t",
@@ -620,5 +620,46 @@ describe("merge alerts", () => {
     expect(isMergeInstruction("Resolve the merge conflicts in the PR and push")).toBe(false);
     expect(isMergeInstruction("merge main into the PR branch and push")).toBe(false);
     expect(isMergeInstruction("fix CI")).toBe(false);
+  });
+});
+
+describe("finish_pass", () => {
+  const finish = async (offered: string[], routinesDone?: string[]) => {
+    const outcome = newPassOutcome();
+    const tools = buildPassTools(db, outcome, () => {}, new Set(), offered);
+    const result = await tools.finish_pass.execute!(
+      { sleepMinutes: 30, reason: "idle", routinesDone },
+      {} as never,
+    );
+    return { result, done: outcome.routinesDone };
+  };
+
+  it("records only the routines the pass was given, once each, and names the rest", async () => {
+    expect(await finish(["standup"], ["standup", "standup"])).toEqual({
+      result: { ok: true, message: "Pass recorded. Stop here." },
+      done: ["standup"],
+    });
+    expect(await finish(["standup", "triage", "inbox"], ["inbox", "other", "another"])).toEqual({
+      result: {
+        ok: true,
+        message:
+          "Pass recorded. Not recorded as done, since this pass wasn't given them: other, another. Not reported done, so a later pass gets them again: standup, triage. Stop here.",
+      },
+      done: ["inbox"],
+    });
+    expect(await finish([])).toEqual({
+      result: { ok: true, message: "Pass recorded. Stop here." },
+      done: [],
+    });
+  });
+
+  it("starts a pass with nothing finished and no routines done", () => {
+    expect(newPassOutcome()).toEqual({
+      finished: false,
+      notes: null,
+      sleepMinutes: null,
+      reason: null,
+      routinesDone: [],
+    });
   });
 });
