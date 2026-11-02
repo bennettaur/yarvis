@@ -21,8 +21,6 @@ export interface ChangedFile {
    * big for GitHub to send, which can't be scanned; left out to skip them.
    */
   addedText?: string | null;
-  /** The file's removed lines, read like `addedText`. */
-  removedText?: string | null;
   additions: number;
   deletions: number;
 }
@@ -243,42 +241,6 @@ export function isAdditiveMigration(
   );
 }
 
-const JOURNAL_ENTRY_KEYS = ["breakpoints", "idx", "tag", "version", "when"];
-
-/**
- * Whether a journal edit only appends entries for this PR's additive
- * migrations. Appending rewrites just the previous entry's closing brace, so
- * the removed lines must be that brace, and the added lines must parse as
- * nothing but whole new entries: a stray line, such as a second `"when"`
- * inside an entry that already ran (JSON keeps the last), would make drizzle
- * run that migration again.
- */
-function appendsAdditiveEntries(file: ChangedFile, additive: Set<string>): boolean {
-  if (typeof file.addedText !== "string" || typeof file.removedText !== "string") return false;
-  if (!file.removedText.split("\n").every((line) => /^\s*\}?\s*$/.test(line))) return false;
-  // Git often keeps the old closing brace and adds the new entry's lines
-  // before it, so the added text can end without one.
-  let entriesText = file.addedText.replace(/^\s*\},/, "").trim();
-  if (!entriesText.endsWith("}")) entriesText += "}";
-  let entries: unknown;
-  try {
-    entries = JSON.parse(`[${entriesText}]`);
-  } catch {
-    return false;
-  }
-  return (
-    Array.isArray(entries) &&
-    entries.length > 0 &&
-    entries.every(
-      (entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        Object.keys(entry).sort().join() === JOURNAL_ENTRY_KEYS.join() &&
-        additive.has(`sidecar/drizzle/${(entry as { tag: unknown }).tag}.sql`),
-    )
-  );
-}
-
 /**
  * Dependency manifests and lockfiles. A change here is standard rather than
  * high: the `/verify-pr` skill analyses each added or bumped package, and its
@@ -427,13 +389,6 @@ export function classify(files: ChangedFile[]): TierResult {
     note("standard", reason, path);
   };
 
-  const additiveMigrations = new Set(
-    files
-      .filter(
-        (file) => MIGRATION.test(file.path) && isAdditiveMigration(file.addedText, file.deletions),
-      )
-      .map((file) => file.path),
-  );
   for (const file of files) {
     for (const path of file.previousPath ? [file.path, file.previousPath] : [file.path]) {
       // Tests count too: the verifier's own tests are part of the verifier.
@@ -449,14 +404,13 @@ export function classify(files: ChangedFile[]): TierResult {
         } else toAssess("CI or repo config, which runs with the repo's secrets", path);
       } else if (assessed) toAssess(assessed.reason, path);
       else if (MIGRATION_SNAPSHOT.test(path)) note("standard", "migration metadata", path);
-      else if (
-        path === MIGRATION_JOURNAL &&
-        path === file.path &&
-        appendsAdditiveEntries(file, additiveMigrations)
-      ) {
-        note("standard", "migration metadata", path);
-      } else if (path === file.path && additiveMigrations.has(path)) {
+      else if (MIGRATION.test(path) && isAdditiveMigration(text, file.deletions)) {
         note("standard", "a migration that only adds", path);
+      } else if (path === MIGRATION_JOURNAL) {
+        // An edit to an entry that already ran can make drizzle run it again,
+        // and a parser of the diff's added lines can be shown a different
+        // file than the one drizzle reads, so a reader checks where it lands.
+        toAssess("the migration journal, which decides what runs", path);
       } else if (path.startsWith("sidecar/drizzle/")) {
         toAssess("a migration that changes or removes existing schema or data", path);
       } else if (!isDependencyFile(path)) continue;

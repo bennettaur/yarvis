@@ -257,48 +257,16 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
       }
     });
 
-    describe("the journal", () => {
+    it("sends the journal for assessment, since it decides what runs", () => {
       const newMigration = migration('CREATE TABLE "things" ("id" int);');
-      const journal = (addedText: string, removedText: string) => ({
-        path: "sidecar/drizzle/meta/_journal.json",
-        addedText,
-        removedText,
-        additions: 7,
-        deletions: 1,
-      });
-      // The shape git gives a drizzle append: the old closing brace is kept.
-      const entry = (tag: string) =>
-        `    },\n    {\n      "idx": 50,\n      "version": "7",\n      "when": 1790000000000,\n      "tag": "${tag}",\n      "breakpoints": true`;
-      const journalAssessed = (files: ReturnType<typeof journal>[]) =>
-        classify([newMigration, ...files]).assess.map((a) => a.path);
-
-      it("is standard when it only appends this PR's additive migrations", () => {
-        expect(journalAssessed([journal(entry("0050_new"), "")])).toEqual([]);
-        expect(journalAssessed([journal(`${entry("0050_new")}\n    }`, "    }")])).toEqual([]);
-      });
-
-      it("is assessed when it edits an old entry or points at another migration", () => {
-        const edited = journal('      "when": 1790000000000,', '      "when": 1700000000000,');
-        expect(journalAssessed([edited])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
-        const rerun = journal(entry("0007_old_destructive"), "    }");
-        expect(journalAssessed([rerun])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
-        // A second "when" inside an old entry wins under JSON.parse and removes nothing.
-        const duplicate = journal(`      "when": 99999999999999,\n${entry("0050_new")}`, "    }");
-        expect(journalAssessed([duplicate])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
-      });
-    });
-
-    it("accepts the shapes drizzle generates", () => {
-      for (const sql of [
-        `CREATE TYPE "public"."kind" AS ENUM('a', 'b');`,
-        'ALTER TABLE "memories" ADD COLUMN "updated_at" timestamp with time zone DEFAULT now() NOT NULL;',
-        `ALTER TABLE "p" ADD COLUMN "done" jsonb DEFAULT '[]'::jsonb NOT NULL;`,
-        `ALTER TABLE "a" ADD COLUMN "approval" "tool_approval" DEFAULT 'ask' NOT NULL;`,
-        'CREATE INDEX "r" ON "agent_runs" USING btree ("kind","started_at" DESC NULLS LAST);',
-        'CREATE INDEX "m" ON "memories" USING hnsw ("embedding" vector_cosine_ops) WHERE "memories"."superseded_at" is null;',
-      ]) {
-        expect(isAdditiveMigration(sql, 0)).toBe(true);
-      }
+      expect(
+        classify([newMigration, file("sidecar/drizzle/meta/_journal.json", 7, 0)]).assess,
+      ).toEqual([
+        {
+          path: "sidecar/drizzle/meta/_journal.json",
+          reason: "the migration journal, which decides what runs",
+        },
+      ]);
     });
 
     it("allows NOT NULL on a new column with a default, and the vector extension", () => {

@@ -96,8 +96,8 @@ export function parseChangedRanges(diff: string): Map<string, LineRange[]> {
   return changed;
 }
 
-/** Reads `git diff -U0` output into each file's added (or, with `-`, removed) lines, joined. */
-export function parseAddedText(diff: string, sign: "+" | "-" = "+"): Map<string, string> {
+/** Reads `git diff -U0` output into each file's added lines, joined, for the tripwires. */
+export function parseAddedText(diff: string): Map<string, string> {
   const added = new Map<string, string[]>();
   let current: string[] | null = null;
   let previous = "";
@@ -110,7 +110,7 @@ export function parseAddedText(diff: string, sign: "+" | "-" = "+"): Map<string,
       const path = line.slice(4);
       current = path === "/dev/null" ? null : [];
       if (current) added.set(path.replace(/^b\//, ""), current);
-    } else if (current && line.startsWith(sign)) {
+    } else if (current && line.startsWith("+")) {
       current.push(line.slice(1));
     }
   }

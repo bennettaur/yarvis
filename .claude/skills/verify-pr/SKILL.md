@@ -281,6 +281,11 @@ listed here.
   it's safe (the column was never written, say), and then say so in the
   reason. A constraint or unique index on a table the same migration creates
   is standard.
+- **The migration journal** (`sidecar/drizzle/meta/_journal.json`): it
+  decides which migrations run, and an old entry given a later `when` runs
+  again. Standard only when the diff is one block at the end of `entries`
+  that appends a whole entry per new migration in this PR, each `tag`
+  naming one of them, and touches no earlier entry. Anything else is high.
 
 When unsure, rate high: a person looking costs a minute.
 
