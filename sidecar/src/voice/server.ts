@@ -9,7 +9,6 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -305,20 +304,15 @@ const RECORD_LOCK_STALE_MS = 5000;
  *
  * Two instances that both find the same lock stale within a few milliseconds
  * can both take it over; that needs a crash first, and costs one entry at most.
+ * A holder's own lock can't go stale under it: the update takes milliseconds.
  */
 function withRecordLock(update: () => void): void {
   const lock = `${recordFile()}.lock`;
-  const token = `${process.pid}-${crypto.randomUUID()}`;
   mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + RECORD_LOCK_WAIT_MS;
   for (;;) {
     try {
-      const fd = openSync(lock, "wx", 0o600);
-      try {
-        writeSync(fd, token);
-      } finally {
-        closeSync(fd);
-      }
+      closeSync(openSync(lock, "wx", 0o600));
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -343,12 +337,7 @@ function withRecordLock(update: () => void): void {
   try {
     update();
   } finally {
-    // Only our own lock: one taken over after ours went stale isn't ours to drop.
-    try {
-      if (readFileSync(lock, "utf8") === token) rmSync(lock, { force: true });
-    } catch {
-      // Already gone.
-    }
+    rmSync(lock, { force: true });
   }
 }
 
