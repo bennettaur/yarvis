@@ -5,6 +5,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
@@ -722,6 +723,22 @@ export function createWorkspaceRoutes(config: Config): Hono {
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
+  });
+
+  // The user closed the agent tab, which already killed its PTY. Ending its
+  // registration here keeps that session from being resumed on the next start,
+  // whether or not Claude reported its own end when the tab was killed.
+  router.post("/:id/agent/stop", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    try {
+      await endWorkspaceAgentSessions(db(), id, STOPPED_END_REASON, `ws-claude:${id}`);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+    return c.json({ ok: true });
   });
 
   return router;

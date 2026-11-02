@@ -1,9 +1,9 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { clearResourceCache } from "../lib/resourceCache";
 import type { WorkspaceSummary } from "../lib/workspaces";
-import { renderToHtml } from "../test/render";
+import { nativeInvoke } from "../test/nativeInvoke";
+import { mountForInteraction, renderToHtml } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
-import WorkspacesPanel, { groupWorkspaces } from "./WorkspacesPanel";
 
 const EXISTING = {
   id: "ws-old",
@@ -113,7 +113,11 @@ stubSidecarApi({
     providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
-  sidecarFetch: async (url: string) => {
+  sidecarFetch: async (url: string, init?: RequestInit) => {
+    if (init?.method && init.method !== "GET") {
+      writes.push({ path: url, method: init.method });
+      return stopFails ? json({ error: "database unavailable" }, 500) : json({ ok: true });
+    }
     requested.push(url);
     // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
     // which doesn't change what they return.
@@ -128,6 +132,20 @@ stubSidecarApi({
   // The attention store subscribes to an SSE stream; an empty one keeps it quiet.
   streamSSE: async function* () {},
 });
+
+/** Sidecar calls other than reads, which is what a user action sends. */
+let writes: { path: string; method: string }[] = [];
+/** Makes the sidecar refuse the agent-tab stop, as when its database write fails. */
+let stopFails = false;
+
+// The agent tab shows only while the core reports its session alive.
+mock.module("@tauri-apps/api/core", () => ({
+  invoke: async (command: string, args?: { id?: string }) =>
+    command === "pty_exists" ? args?.id === `ws-claude:${JUST_CREATED.id}` : nativeInvoke(command),
+}));
+
+// Imported after the mock so the panel binds to it.
+const { default: WorkspacesPanel, groupWorkspaces } = await import("./WorkspacesPanel");
 
 const EMPTY_STATE = "Select a workspace or create a new one";
 
@@ -187,6 +205,63 @@ describe("WorkspacesPanel", () => {
   });
 });
 
+describe("WorkspacesPanel agent tab", () => {
+  let unmount: (() => void) | null = null;
+  const globalWithObserver = globalThis as { IntersectionObserver?: unknown };
+  const hadObserver = "IntersectionObserver" in globalWithObserver;
+
+  beforeEach(() => {
+    localStorage.clear();
+    writes = [];
+    // xterm builds one when the agent tab's terminal opens, and happy-dom has none.
+    globalWithObserver.IntersectionObserver ??= class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    };
+  });
+
+  afterEach(() => {
+    unmount?.();
+    unmount = null;
+    if (!hadObserver) delete globalWithObserver.IntersectionObserver;
+  });
+
+  async function closeAgentTab(): Promise<HTMLElement> {
+    const mounted = await mountForInteraction(
+      <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
+      200,
+    );
+    unmount = mounted.unmount;
+    mounted.host.querySelector<HTMLButtonElement>('[aria-label="End Claude"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return mounted.host;
+  }
+
+  it("ends the agent's registration in the sidecar when the user closes its tab", async () => {
+    await closeAgentTab();
+
+    // Without this the sidecar resumes the closed session on the next start.
+    expect(writes).toContainEqual({
+      path: `/api/workspaces/${JUST_CREATED.id}/agent/stop`,
+      method: "POST",
+    });
+  });
+
+  it("says so when the sidecar couldn't record the close", async () => {
+    stopFails = true;
+    try {
+      const host = await closeAgentTab();
+      expect(host.textContent).toContain("may come back after a restart");
+    } finally {
+      stopFails = false;
+    }
+  });
+});
+
 describe("groupWorkspaces", () => {
   const summary = (id: string, repoNames: string[]) =>
     ({ ...EXISTING, id, repoNames, prs: [] }) as WorkspaceSummary;
@@ -228,4 +303,8 @@ describe("groupWorkspaces", () => {
   });
 });
 
-afterAll(resetSidecarApi);
+// `mock.module` lasts for the whole run, so hand later suites the shared stub back.
+afterAll(() => {
+  resetSidecarApi();
+  mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
+});
