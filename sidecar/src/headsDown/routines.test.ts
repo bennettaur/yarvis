@@ -1,0 +1,279 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { dueRoutines, loadRoutines, parseEvery, parseRoutine, type Routine } from "./routines.ts";
+
+const file = (frontmatter: string, body = "Do the thing.") =>
+  `---\n${frontmatter}\n---\n\n${body}\n`;
+
+function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {}): Routine {
+  return {
+    name,
+    description: name,
+    prompt: "Do the thing.",
+    everyMinutes,
+    workingHoursOnly: false,
+    enabled: true,
+    source: "user",
+    ...extra,
+  };
+}
+
+describe("parseEvery", () => {
+  it("reads minutes, hours and days", () => {
+    expect(parseEvery("30m")).toBe(30);
+    expect(parseEvery("3h")).toBe(180);
+    expect(parseEvery(" 1D ")).toBe(24 * 60);
+  });
+
+  it("refuses anything else", () => {
+    expect(parseEvery("3 hours")).toBeNull();
+    expect(parseEvery("1.5h")).toBeNull();
+    expect(parseEvery("")).toBeNull();
+  });
+});
+
+describe("parseRoutine", () => {
+  it("reads a routine", () => {
+    const parsed = parseRoutine(
+      "standup.md",
+      file("name: standup\ndescription: Prepares standup notes\nevery: 1d\nworkingHours: yes"),
+      "user",
+    );
+    expect(parsed).toMatchObject({
+      name: "standup",
+      everyMinutes: 24 * 60,
+      workingHoursOnly: true,
+      enabled: true,
+      prompt: "Do the thing.",
+    });
+  });
+
+  it("rejects an unknown key, a missing cadence, one too short, and an empty body", () => {
+    const base = "name: x\ndescription: y";
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h\ntools: a`), "user")).toThrow(
+      "unknown key(s): tools",
+    );
+    expect(() => parseRoutine("a.md", file(base), "user")).toThrow("'every' is required");
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: soon`), "user")).toThrow(
+      "must be a duration",
+    );
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 5m`), "user")).toThrow(
+      "cannot be shorter than 15m",
+    );
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 31d`), "user")).toThrow(
+      "cannot be longer than 30d",
+    );
+    expect(parseRoutine("a.md", file(`${base}\nevery: 30d`), "user").everyMinutes).toBe(
+      30 * 24 * 60,
+    );
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h`, ""), "user")).toThrow(
+      "cannot be empty",
+    );
+    expect(() =>
+      parseRoutine("a.md", file(`${base}\nevery: 1h`, "x".repeat(4001)), "user"),
+    ).toThrow("cannot be longer than 4000");
+  });
+
+  it("rejects a name that can't be a heading in the prompt or a name finish_pass reports", () => {
+    for (const name of ["Meeting Alarms", "meeting alarms", "a".repeat(65)]) {
+      expect(() =>
+        parseRoutine("a.md", file(`name: ${name}\ndescription: y\nevery: 1h`), "user"),
+      ).toThrow("lowercase letters, digits and hyphens");
+    }
+    expect(
+      parseRoutine("a.md", file(`name: ${"a".repeat(64)}\ndescription: y\nevery: 1h`), "user").name,
+    ).toHaveLength(64);
+  });
+});
+
+describe("loadRoutines", () => {
+  let dir: string;
+  const original = process.env.YARVIS_ROUTINES_DIR;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "routines-"));
+    process.env.YARVIS_ROUTINES_DIR = dir;
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    process.env.YARVIS_ROUTINES_DIR = original;
+  });
+
+  it("loads the shipped routines when the user has none", async () => {
+    const { routines, problems } = await loadRoutines();
+    expect(problems).toEqual([]);
+    expect(routines.map((r) => [r.name, r.enabled])).toEqual([
+      ["meeting-alarms", true],
+      ["meeting-notes", false],
+    ]);
+  });
+
+  it("lets a user file replace a shipped one, and reports a broken file", async () => {
+    writeFileSync(
+      join(dir, "meeting-alarms.md"),
+      file("name: meeting-alarms\ndescription: mine\nevery: 1h\nenabled: false"),
+    );
+    writeFileSync(join(dir, "broken.md"), "no frontmatter");
+    mkdirSync(join(dir, "folder.md"));
+    // A FIFO would block a plain read forever, and every pass with it.
+    execFileSync("mkfifo", [join(dir, "pipe.md")]);
+    // A link could point into a repo, which routines are never read from.
+    const elsewhere = mkdtempSync(join(tmpdir(), "routines-elsewhere-"));
+    writeFileSync(join(elsewhere, "linked.md"), file("name: linked\ndescription: y\nevery: 1h"));
+    symlinkSync(join(elsewhere, "linked.md"), join(dir, "linked.md"));
+    // Exactly at the cap is read (and fails as a routine); one byte past it isn't read at all.
+    writeFileSync(join(dir, "edge.md"), "x".repeat(256 * 1024));
+    writeFileSync(join(dir, "huge.md"), "x".repeat(256 * 1024 + 1));
+
+    const { routines, problems } = await loadRoutines();
+    rmSync(elsewhere, { recursive: true, force: true });
+    expect(routines.find((r) => r.name === "meeting-alarms")).toMatchObject({
+      source: "user",
+      enabled: false,
+      everyMinutes: 60,
+    });
+    expect(routines.map((r) => r.name)).not.toContain("linked");
+    expect(problems.map((p) => [p.path, p.message])).toEqual([
+      [join(dir, "broken.md"), expect.any(String)],
+      [join(dir, "edge.md"), expect.not.stringContaining("larger than")],
+      [join(dir, "huge.md"), expect.stringContaining("larger than 256 KB")],
+      [join(dir, "linked.md"), expect.stringContaining("a symlink")],
+      [join(dir, "pipe.md"), expect.stringContaining("not a regular file")],
+    ]);
+  });
+
+  it("loads one of two files with the same name, and reports the other", async () => {
+    writeFileSync(join(dir, "a.md"), file("name: standup\ndescription: first\nevery: 1d"));
+    writeFileSync(join(dir, "b.md"), file("name: standup\ndescription: second\nevery: 1d"));
+    const { routines, problems } = await loadRoutines();
+    expect(routines.find((r) => r.name === "standup")?.description).toBe("first");
+    expect(problems).toEqual([
+      { path: join(dir, "b.md"), message: expect.stringContaining("already defines 'standup'") },
+    ]);
+  });
+
+  it("refuses a routines folder that is a symlink", async () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "routines-elsewhere-"));
+    writeFileSync(join(elsewhere, "linked.md"), file("name: linked\ndescription: y\nevery: 1h"));
+    const link = join(dir, "linked-dir");
+    symlinkSync(elsewhere, link);
+    process.env.YARVIS_ROUTINES_DIR = link;
+    try {
+      const { routines, problems } = await loadRoutines();
+      expect(routines.map((r) => r.name)).not.toContain("linked");
+      expect(problems).toEqual([{ path: link, message: expect.stringContaining("a symlink") }]);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = dir;
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  // Root reads a file whatever its mode, so there is nothing unreadable to test.
+  it.skipIf(process.getuid?.() === 0)(
+    "reports a file it can't read with the reason, not as a symlink",
+    async () => {
+      writeFileSync(join(dir, "locked.md"), "x");
+      chmodSync(join(dir, "locked.md"), 0o000);
+      const { problems } = await loadRoutines();
+      expect(problems).toEqual([
+        { path: join(dir, "locked.md"), message: expect.stringContaining("EACCES") },
+      ]);
+
+      // A folder that can't be listed is reported too, not taken as empty.
+      chmodSync(dir, 0o000);
+      try {
+        expect((await loadRoutines()).problems).toEqual([
+          { path: dir, message: expect.stringContaining("EACCES") },
+        ]);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    },
+  );
+});
+
+describe("dueRoutines", () => {
+  const now = new Date("2026-10-27T15:00:00Z");
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60_000);
+  const base = { now, withinWorkingHours: true, limit: 5, lastOffered: new Map<string, Date>() };
+
+  it("offers a routine once its cadence has passed since it was last done", () => {
+    const routines = [routine("hourly", 60), routine("daily", 24 * 60), routine("fresh", 60)];
+    const lastDone = new Map([
+      ["hourly", hoursAgo(2)],
+      ["daily", hoursAgo(3)],
+    ]);
+    expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual([
+      "fresh",
+      "hourly",
+    ]);
+  });
+
+  it("counts a routine due at exactly its cadence, and breaks a tie between never-done ones by name", () => {
+    const routines = [routine("zeta", 60), routine("alpha", 60), routine("hourly", 60)];
+    const lastDone = new Map([["hourly", hoursAgo(1)]]);
+    expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual([
+      "alpha",
+      "zeta",
+      "hourly",
+    ]);
+    expect(dueRoutines({ ...base, routines, lastDone, limit: 1 }).map((r) => r.name)).toEqual([
+      "alpha",
+    ]);
+  });
+
+  it("keeps to the limit, most overdue against its own cadence first", () => {
+    const routines = [routine("hourly", 60), routine("daily", 24 * 60)];
+    const lastDone = new Map([
+      ["hourly", hoursAgo(1.5)],
+      ["daily", hoursAgo(48)],
+    ]);
+    expect(dueRoutines({ ...base, routines, lastDone, limit: 1 }).map((r) => r.name)).toEqual([
+      "daily",
+    ]);
+    expect(dueRoutines({ ...base, routines, lastDone, limit: 0 })).toEqual([]);
+  });
+
+  it("leaves out a turned-off routine, and a working-hours one outside them", () => {
+    const routines = [
+      routine("off", 60, { enabled: false }),
+      routine("office", 60, { workingHoursOnly: true }),
+    ];
+    const lastDone = new Map<string, Date>();
+    expect(dueRoutines({ ...base, routines, lastDone }).map((r) => r.name)).toEqual(["office"]);
+    expect(dueRoutines({ ...base, routines, lastDone, withinWorkingHours: false })).toEqual([]);
+  });
+
+  it("waits before giving a pass a routine an earlier one was given and didn't finish", () => {
+    const routines = [routine("flaky", 3 * 60), routine("quick", 30)];
+    const lastDone = new Map([
+      ["flaky", hoursAgo(10)],
+      ["quick", hoursAgo(5)],
+    ]);
+    const due = (lastOffered: Map<string, Date>) =>
+      dueRoutines({ ...base, routines, lastDone, lastOffered }).map((r) => r.name);
+
+    // Given 30 minutes ago and not done: an hour for flaky, its own 30m for quick.
+    expect(
+      due(
+        new Map([
+          ["flaky", hoursAgo(0.5)],
+          ["quick", hoursAgo(0.5)],
+        ]),
+      ),
+    ).toEqual(["quick"]);
+    expect(due(new Map([["flaky", hoursAgo(1)]]))).toEqual(["quick", "flaky"]);
+    // Given and done in the same pass is not a failure to retry.
+    expect(
+      dueRoutines({
+        ...base,
+        routines,
+        lastDone: new Map([["flaky", hoursAgo(4)]]),
+        lastOffered: new Map([["flaky", hoursAgo(4)]]),
+      }).map((r) => r.name),
+    ).toEqual(["quick", "flaky"]);
+  });
+});

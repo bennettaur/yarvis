@@ -19,6 +19,16 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
 
+  // A task spends money and writes files; checking on one does neither.
+  it("asks before handing a task to Claude Code, and not before checking on one", () => {
+    const names = Object.keys(builtinToolMetadata());
+    expect(names).toEqual(
+      expect.arrayContaining(["start_claude_code_task", "get_claude_code_task"]),
+    );
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_claude_code_task")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("get_claude_code_task")).toBe(false);
+  });
+
   // Every tool that files or changes a ticket writes where other people see it.
   // Walking the families rather than naming the writes means a new write tool
   // that was never added to the set fails here instead of running unasked.
@@ -71,6 +81,32 @@ describe("conditionalConfirmations", () => {
     expect(deleteTask?.({})).toBe(false);
     reads.hasReadWebPage = true;
     expect(deleteTask?.({})).toBe(true);
+  });
+
+  it("asks before destructive tools once a typed turn has read an agent-written artifact", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    reads.hasReadUntrustedArtifact = true;
+    expect(conditions.get("delete_task")?.({})).toBe(true);
+  });
+
+  it("asks before an artifact rewrite, not an append, where a delete would ask", () => {
+    const reads = newUntrustedReads();
+    const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const update = typed.get("update_artifact");
+    expect(update?.({ id: "a", content: "new" })).toBe(false);
+    reads.hasReadWebPage = true;
+    expect(update?.({ id: "a", content: "new" })).toBe(true);
+    expect(update?.({ id: "a", title: "new" })).toBe(true);
+    expect(update?.({ id: "a", append: "more" })).toBe(false);
+
+    const spoken = conditionalConfirmations({
+      spoken: true,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    expect(spoken.get("update_artifact")?.({ id: "a", content: "new" })).toBe(true);
+    expect(spoken.get("update_artifact")?.({ id: "a", append: "more" })).toBe(false);
   });
 
   it("leaves destructive tools to the always-ask set on a spoken turn", () => {

@@ -16,7 +16,7 @@ read the patches, and you don't add findings of your own.
 ## 1. Run the requested checks at once
 
 Your task gives REVIEW_CONTEXT (a directory), SUMMARY_WORDS, MUST_READ_MAX,
-READING_GROUPS, READ_BUDGET_KB and SECTIONS. READING_GROUPS is how many groups
+MUST_READ_FLAGS_MAX, READING_GROUPS, READ_BUDGET_KB and SECTIONS. READING_GROUPS is how many groups
 the patches to read were split into, so that no one agent reads more than
 READ_BUDGET_KB of them. SECTIONS is a comma-separated list of the report's
 fields the reviewer asked for.
@@ -50,6 +50,7 @@ Give each one exactly this prompt, with the values filled in, and nothing else
 REVIEW_CONTEXT=<directory>
 SUMMARY_WORDS=<number>
 MUST_READ_MAX=<number>
+MUST_READ_FLAGS_MAX=<number>
 READ_BUDGET_KB=<number>
 GROUP=<n>
 ```

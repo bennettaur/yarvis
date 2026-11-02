@@ -19,6 +19,7 @@ const {
   idleDays,
   listWorkspaces,
   saveWorkspaceRepoFile,
+  stopWorkspaceAgent,
 } = await import("./workspaces");
 
 beforeEach(() => {
@@ -123,6 +124,22 @@ describe("idleDays", () => {
   it("only marks active workspaces", () => {
     expect(idleDays(row("archiving", "2026-01-01T00:00:00Z"), now)).toBeNull();
     expect(idleDays(row("archived", null), now)).toBeNull();
+  });
+});
+
+describe("stopWorkspaceAgent", () => {
+  it("resolves when the sidecar ends the session", async () => {
+    response = new Response(JSON.stringify({ ok: true }), { status: 200 });
+
+    await expect(stopWorkspaceAgent("ws-1")).resolves.toBeUndefined();
+  });
+
+  it("reports a refused stop with the sidecar's reason", async () => {
+    response = new Response(JSON.stringify({ error: "invalid workspace id" }), { status: 400 });
+
+    await expect(stopWorkspaceAgent("ws-1")).rejects.toThrow(
+      "stop agent session failed: invalid workspace id",
+    );
   });
 });
 

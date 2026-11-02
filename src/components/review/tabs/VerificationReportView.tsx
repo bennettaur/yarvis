@@ -7,9 +7,13 @@ import {
   type VerificationCheckKey,
   type VerificationCoverage,
   type VerificationFinding,
+  type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import FlowDiagram from "./FlowDiagram";
+
+/** What a must-read's flags are called, in the report and on the diff. */
+export const FLAG_LABEL = "Looks off";
 
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   completeness: "Completeness",
@@ -335,6 +339,50 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
+/** A must-read and what already looks off or unclear in it. */
+function MustReadItem({
+  entry,
+  onOpen,
+  viewed,
+}: {
+  entry: VerificationMustRead;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+}) {
+  const flags = entry.flags ?? [];
+  return (
+    <li className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}>
+      <Location
+        path={entry.path}
+        line={entry.lines?.start}
+        label={entry.lines ? `:${entry.lines.start}–${entry.lines.end}` : ""}
+        className="text-xs"
+        onOpen={onOpen}
+      />
+      <p className="text-xs text-zinc-400">{entry.reason}</p>
+      {flags.length > 0 && (
+        <ul aria-label={FLAG_LABEL} className="mt-0.5 space-y-0.5">
+          {flags.map((flag, i) => (
+            // The agent can repeat a note, so its position keeps the key unique.
+            <li key={`${i}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
+              <span aria-hidden="true">?</span>
+              <span className="min-w-0">
+                {flag.note}
+                {flag.line && (
+                  <>
+                    {" "}
+                    <Location path={entry.path} line={flag.line} onOpen={onOpen} />
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 /**
  * The report in the order a reviewer uses it: which files it didn't cover,
  * what the change is, which files to read first, how risky it is, then the
@@ -366,19 +414,7 @@ export default function VerificationReportView({
         <Section title={`Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`}>
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
-              <li
-                key={entry.path}
-                className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}
-              >
-                <Location
-                  path={entry.path}
-                  line={entry.lines?.start}
-                  label={entry.lines ? `:${entry.lines.start}–${entry.lines.end}` : ""}
-                  className="text-xs"
-                  onOpen={onOpen}
-                />
-                <p className="text-xs text-zinc-400">{entry.reason}</p>
-              </li>
+              <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
             ))}
           </ul>
         </Section>

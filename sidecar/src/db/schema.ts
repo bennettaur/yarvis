@@ -1475,6 +1475,45 @@ export const agentTodos = pgTable(
 );
 
 /**
+ * How an artifact's content is meant to be read. Only markdown for now; a
+ * format goes here once the models in use can write it reliably.
+ */
+export const artifactFormat = pgEnum("artifact_format", ["markdown"]);
+
+/**
+ * Who wrote an artifact. Only a chat turn is the user asking; a heads-down pass
+ * or a specialist run (a Jobs-tab job, a delegation) may be acting on text it
+ * read from a ticket or a message.
+ */
+export const artifactWriter = pgEnum("artifact_writer", ["chat", "heads-down", "specialist"]);
+
+/**
+ * A document the assistant writes and comes back to: a morning brief, a
+ * scratchpad of its own notes, a list heads-down mode builds up over several
+ * passes. Unlike a memory it is one piece of text the agent edits as a whole,
+ * and unlike a todo it is the product rather than a reminder to make one.
+ */
+export const artifacts = pgTable(
+  "artifacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    format: artifactFormat("format").notNull().default("markdown"),
+    content: text("content").notNull().default(""),
+    createdBy: artifactWriter("created_by").notNull().default("chat"),
+    /**
+     * Set once something other than the user may have shaped its text: a pass or
+     * specialist wrote to it, or a chat turn did after reading a web page or
+     * another untrusted artifact. Reading it back then counts as an untrusted read.
+     */
+    untrusted: boolean("untrusted").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("artifacts_updated_at_idx").on(t.updatedAt)],
+);
+
+/**
  * Where a work stream stands. `waiting-on-user` and `waiting-on-others` are
  * what let the heads-down loop skip a stream it can't move and keep pushing the
  * rest; `done`/`dropped` are terminal.
@@ -1656,8 +1695,15 @@ export const headsDownPasses = pgTable(
     sleepMinutes: integer("sleep_minutes"),
     sleepReason: text("sleep_reason"),
     error: text("error"),
+    /** Names of the routines (`headsDown/routines.ts`) this pass was given, and the ones it reported done. */
+    routinesOffered: jsonb("routines_offered").$type<string[]>().notNull().default([]),
+    routinesDone: jsonb("routines_done").$type<string[]>().notNull().default([]),
   },
-  (t) => [index("heads_down_passes_run_idx").on(t.runId, t.startedAt)],
+  (t) => [
+    index("heads_down_passes_run_idx").on(t.runId, t.startedAt),
+    // Routine history reads every run's passes, by start time only.
+    index("heads_down_passes_started_idx").on(t.startedAt),
+  ],
 );
 
 /**
@@ -1814,6 +1860,7 @@ export type ProjectItem = typeof projectItems.$inferSelect;
 export type NewProjectItem = typeof projectItems.$inferInsert;
 export type AgentTodo = typeof agentTodos.$inferSelect;
 export type NewAgentTodo = typeof agentTodos.$inferInsert;
+export type Artifact = typeof artifacts.$inferSelect;
 export type WorkStream = typeof workStreams.$inferSelect;
 export type WorkStreamLink = typeof workStreamLinks.$inferSelect;
 export type HeadsDownRun = typeof headsDownRuns.$inferSelect;

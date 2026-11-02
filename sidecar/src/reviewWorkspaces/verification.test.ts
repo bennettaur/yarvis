@@ -8,6 +8,7 @@ import { clipWords, numberPatch, sweepContextDirs } from "./agentContext.ts";
 import type { PatchIndexEntry } from "./patchFiles.ts";
 import type { BulkClass } from "./service.ts";
 import {
+  auditIsEmpty,
   buildVerificationMaterial,
   checkOutcome,
   DEFAULT_SECTIONS,
@@ -16,6 +17,7 @@ import {
   estimateRunCostUsd,
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
+  MAX_MUST_READ_FLAGS,
   mustReadCap,
   normalizeSections,
   similarTitles,
@@ -80,10 +82,41 @@ describe("the report schema", () => {
       }),
     );
     expect(parsed.mustRead).toEqual([
-      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 } },
-      { path: "src/b.ts", reason: "second", lines: undefined },
+      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 }, flags: [] },
+      { path: "src/b.ts", reason: "second", lines: undefined, flags: [] },
     ]);
     expect(audit.droppedMustReads).toEqual(["../../etc/passwd"]);
+  });
+
+  it("keeps a must-read's flags, capped, with any invalid line dropped", () => {
+    const parsed = schema.parse(
+      report({
+        mustRead: [
+          {
+            path: "src/a.ts",
+            reason: "core",
+            flags: [
+              { note: "retries never decremented", line: 17 },
+              { note: "no line", line: -1 },
+              { note: "third" },
+              { note: "over the cap", line: 4 },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([
+      { note: "retries never decremented", line: 17 },
+      { note: "no line", line: undefined },
+      { note: "third", line: undefined },
+    ]);
+  });
+
+  it("reads null flags as none", () => {
+    const parsed = schema.parse(
+      report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
+    );
+    expect(parsed.mustRead[0]?.flags).toEqual([]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {
@@ -213,8 +246,125 @@ describe("the report schema", () => {
     const json = JSON.parse(sent);
     expect(json.properties.summary.description).toBe("At most 10 words.");
     expect(json.properties.mustRead.description).toBe(`At most ${MAX_MUST_READ} items.`);
+    expect(json.properties.mustRead.items.properties.flags.description).toBe(
+      `At most ${MAX_MUST_READ_FLAGS} items.`,
+    );
     expect(json.properties.risk.properties.level.enum).toEqual(["low", "medium", "high"]);
     expect(json.required).toContain("comments");
+  });
+});
+
+describe("dropping must-read flags a finding already reports", () => {
+  const retry = "retry count never decremented, check the loop ends";
+  const flagged = (flags: { note: string; line?: number }[], path = "src/a.ts") => ({
+    mustRead: [{ path, reason: "core", flags }],
+  });
+  const quality = (title: string, line: number, path = "src/a.ts") => ({
+    status: "issues",
+    findings: [finding(title, { path, line })],
+  });
+  const keptNotes = (overrides: Record<string, unknown>, sections = limits.sections) =>
+    verificationReportSchema({ ...limits, sections })
+      .parse(report(overrides))
+      .mustRead[0]?.flags.map((f) => f.note);
+
+  it("drops one a check finding reports within a few lines, and records it", () => {
+    const audit = emptyAudit();
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        ...flagged([
+          { note: retry, line: 20 },
+          { note: "cache key ignores the locale", line: 40 },
+        ]),
+        quality: quality("Retry count is never decremented", 17),
+      }),
+    );
+    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(audit.droppedFlags).toEqual([{ path: "src/a.ts", line: 20, note: retry }]);
+  });
+
+  it("drops one a risk concern reports", () => {
+    const notes = keptNotes({
+      ...flagged([{ note: retry, line: 18 }]),
+      risk: {
+        level: "medium",
+        clientImpact: "Uploads can hang.",
+        mitigations: [],
+        concerns: [
+          { title: "Retry count is never decremented", detail: "d", path: "src/a.ts", line: 17 },
+        ],
+      },
+    });
+    expect(notes).toEqual([]);
+  });
+
+  it("still drops one when the run wasn't asked for risk", () => {
+    const notes = keptNotes(
+      {
+        ...flagged([{ note: retry, line: 18 }]),
+        quality: quality("Retry count is never decremented", 17),
+      },
+      ["quality"],
+    );
+    expect(notes).toEqual([]);
+  });
+
+  it("caps what is left once duplicates are gone", () => {
+    const notes = keptNotes({
+      ...flagged([
+        { note: retry, line: 17 },
+        { note: "first", line: 30 },
+        { note: "second", line: 40 },
+        { note: "third", line: 50 },
+        { note: "fourth", line: 60 },
+      ]),
+      quality: quality("Retry count is never decremented", 17),
+    });
+    expect(notes).toEqual(["first", "second", "third"]);
+  });
+
+  it("reads only a few past the cap, so the audit of dropped ones stays small", () => {
+    const audit = emptyAudit();
+    verificationReportSchema(limits, audit).parse(
+      report({
+        ...flagged(Array.from({ length: 20 }, () => ({ note: retry, line: 17 }))),
+        quality: quality("Retry count is never decremented", 17),
+      }),
+    );
+    expect(audit.droppedFlags).toHaveLength(2 * MAX_MUST_READ_FLAGS);
+  });
+
+  it("keeps one that differs in place or wording", () => {
+    const finding = { quality: quality("Retry count is never decremented", 17) };
+    // More than NEARBY_LINES away.
+    expect(keptNotes({ ...flagged([{ note: retry, line: 21 }]), ...finding })).toEqual([retry]);
+    // On the same line, about something else.
+    const other = "cache key ignores the locale";
+    expect(keptNotes({ ...flagged([{ note: other, line: 17 }]), ...finding })).toEqual([other]);
+    // The same words, in another file.
+    expect(keptNotes({ ...flagged([{ note: retry, line: 17 }], "src/b.ts"), ...finding })).toEqual([
+      retry,
+    ]);
+    // No line to place it by.
+    expect(keptNotes({ ...flagged([{ note: retry }]), ...finding })).toEqual([retry]);
+  });
+});
+
+describe("the audit of what the server dropped", () => {
+  it("is kept only when something was dropped", () => {
+    expect(auditIsEmpty(emptyAudit())).toBe(true);
+    const dropped = {
+      section: "tests",
+      keptIn: "quality",
+      title: "t",
+      path: "a",
+      line: 1,
+    } as const;
+    expect(auditIsEmpty({ ...emptyAudit(), droppedDuplicates: [dropped] })).toBe(false);
+    expect(auditIsEmpty({ ...emptyAudit(), droppedMustReads: ["a"] })).toBe(false);
+    expect(
+      auditIsEmpty({ ...emptyAudit(), droppedFlags: [{ path: "a", line: 1, note: "n" }] }),
+    ).toBe(false);
   });
 });
 
@@ -323,7 +473,26 @@ describe("paths an agent cites", () => {
     const root = "/work/checkout";
     const parsed = verificationReportSchema({ ...limits, checkoutDir: `${root}/` }, audit).parse(
       report({
-        mustRead: [{ path: `${root}/src/a.ts`, reason: "core" }],
+        mustRead: [
+          {
+            path: `${root}/src/a.ts`,
+            reason: "core",
+            flags: [{ note: "uploads retried forever, check the limit", line: 9 }],
+          },
+        ],
+        risk: {
+          level: "medium",
+          clientImpact: "Uploads can hang.",
+          mitigations: [],
+          concerns: [
+            {
+              title: "Uploads are retried forever",
+              detail: "d",
+              path: `${root}/src/a.ts`,
+              line: 9,
+            },
+          ],
+        },
         completeness: {
           status: "issues",
           findings: [finding("retry loop never stops", { path: "./src/a.ts", line: 5 })],
@@ -335,6 +504,11 @@ describe("paths an agent cites", () => {
       }),
     );
     expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
+    // The concern's absolute path still matches the must-read's flag.
+    expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(audit.droppedFlags).toEqual([
+      { path: "src/a.ts", line: 9, note: "uploads retried forever, check the limit" },
+    ]);
     expect(parsed.complexity?.findings[0]?.path).toBe("src/a.ts");
     expect(parsed.completeness?.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);
@@ -507,6 +681,7 @@ describe("building the run's material", () => {
     expect(prompt).toContain("REVIEW_CONTEXT=/tmp/ctx");
     expect(prompt).toContain(`SUMMARY_WORDS=${caps.summaryWords}`);
     expect(prompt).toContain(`MUST_READ_MAX=${caps.mustReadMax}`);
+    expect(prompt).toContain(`MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`);
     expect(prompt).not.toContain("CI checks (");
     expect(prompt).not.toContain("Changed files (");
   });

@@ -654,6 +654,23 @@ back to ad-hoc.
   run the PR's code and its setup runs unsandboxed, so this is defence in
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
+  not pointed at a checkout: it runs in a fresh empty folder under
+  `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its
+  permission mode is `acceptEdits`, the one exception to "never approves on
+  its own", because the run's whole job is writing files. `startClaudeRun`
+  refuses that mode unless the run is also `restricted` (`--restricted
+  --permission-prompts none`), which keeps every file tool inside the working
+  folder and refuses writes to settings and tool-configuration files there.
+  `--tools` leaves the run only the file tools: no Bash, since the sandbox's
+  read deny list was written for PR checkouts and leaves most of the home
+  folder readable. The canary checks the run can't read, list, search or
+  write outside its folder. Its prompt leads with `TASK_RUN_GUARDRAIL` rather
+  than the checkout guardrail, since there is no code to analyse; it still
+  treats quoted material as data and publishes nothing. What the run writes
+  back is fenced
+  before the chat model reads it, and the file list is the model's claim, so
+  `filesInFolder` keeps only files that really are inside the folder.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.
@@ -701,6 +718,22 @@ back to ad-hoc.
     approval a repo's CI can merge on. The second is narrowed again at the
     tool: `post_merge_review` re-reads the PR and its report itself, and posts
     only for a current report whose verdict asked for an agent.
+- Heads-down routines (`sidecar/src/headsDown/routines.ts`) follow the same
+  files-not-rows shape: shipped ones in `headsDown/routines/`, embedded, and
+  `~/.yarvis/routines/*.md` beside them, winning on a name. The body goes into
+  an unattended pass's prompt unfenced, as the user's own words, which is why
+  they are never read from a repo either. Which ones a pass gets is decided in
+  code, not by the model: `dueRoutines` offers those whose cadence has passed
+  since a pass last reported them done (`heads_down_passes.routines_done`), most
+  overdue first, capped by `maxRoutinesPerPass`. One a pass was given
+  (`routines_offered`, written when the pass starts) and didn't finish waits
+  before it is given again, so a routine that keeps failing can't take a slot
+  on every pass. `finish_pass` records only names it was offered, so a pass
+  can't push back a routine it never saw. Both directories are read by
+  `readMarkdownDir` in `agents/frontmatter.ts`, which opens without blocking
+  and reads only regular files, since a FIFO named `x.md` would hang every load.
+  It refuses a symlinked folder or file, which could point into a repo, and a
+  file past a size cap.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

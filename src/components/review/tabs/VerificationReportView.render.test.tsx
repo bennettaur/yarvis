@@ -159,6 +159,61 @@ describe("VerificationReportView", () => {
     expect(old).not.toContain("read all");
   });
 
+  it("lists what already looks off in a must-read, each linking its line", async () => {
+    const opened: [string, number | undefined][] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          mustRead: [
+            {
+              ...report.mustRead[0],
+              flags: [{ note: "TTL is read but never applied", line: 31 }, { note: "No line" }],
+            },
+          ],
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const flags = host.querySelector('ul[aria-label="Looks off"]');
+      expect(flags?.textContent).toContain("TTL is read but never applied");
+      expect(flags?.textContent).toContain("No line");
+      const links = [...(flags?.querySelectorAll("button") ?? [])];
+      expect(links.map((b) => b.textContent)).toEqual(["src/cache.ts:31"]);
+      links[0]?.click();
+      expect(opened).toEqual([["src/cache.ts", 31]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows no flag list for a must-read with nothing flagged", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ ...report.mustRead[0], flags: [] }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    expect(html).not.toContain("Looks off");
+  });
+
+  it("shows a must-read from an older report, with no flags or range, as just its path", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ path: "src/cache.ts", reason: "Eviction" }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    try {
+      expect(host.querySelector('ul[aria-label="Looks off"]')).toBeNull();
+      const paths = [...host.querySelectorAll("button")].map((b) => b.textContent);
+      expect(paths).toContain("src/cache.ts");
+    } finally {
+      unmount();
+    }
+  });
+
   it("gives a passing check one line and a failing one its findings", async () => {
     const text = textOf(
       await renderToHtml(
