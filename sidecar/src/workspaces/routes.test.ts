@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import { basename, join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
+import { ccProjectDirFor } from "../cc/sessions.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import {
@@ -24,11 +26,11 @@ import {
   workspaceRepos,
   workspaces,
 } from "../db/schema.ts";
-import { listEvents } from "../events/service.ts";
+import { listEvents, recordEvent } from "../events/service.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import type { RunResult } from "./exec.ts";
-import { defaultGitRunner, type GitRunner } from "./git.ts";
+import { canonicalPath, defaultGitRunner, type GitRunner } from "./git.ts";
 import { isDueForRefresh, resetWorkspaceViews } from "./poller.ts";
 import {
   addRepoToWorkspace,
@@ -876,6 +878,40 @@ describe("workspace routes", () => {
     // Never opened and no transcript, so it falls back to when it was created.
     expect(byId.get(live.id)).toBe(live.createdAt.toISOString());
     expect(byId.get(gone.id)).toBeNull();
+  });
+
+  it("counts a view or an agent transcript write as activity, whichever is later", async () => {
+    const repo = await addRepo();
+    const viewed = await createWorkspace(db, config, { name: "viewed", repoIds: [repo.id] });
+    const agentRan = await createWorkspace(db, config, { name: "agent ran", repoIds: [repo.id] });
+    const viewedAt = new Date(viewed.createdAt.getTime() + 60_000);
+    const transcriptAt = new Date(agentRan.createdAt.getTime() + 120_000);
+    await recordEvent(db, {
+      type: "workspace.viewed",
+      payload: { workspaceId: viewed.id, tab: "agent" },
+      occurredAt: viewedAt,
+    });
+
+    const previousHome = process.env.CLAUDE_HOME;
+    const claudeHome = mkdtempSync(join(tmpdir(), "yarvis-idle-home-"));
+    process.env.CLAUDE_HOME = claudeHome;
+    try {
+      const dir = join(claudeHome, "projects", ccProjectDirFor(agentRan.rootPath));
+      mkdirSync(dir, { recursive: true });
+      const transcript = join(dir, "s-1.jsonl");
+      writeFileSync(transcript, "{}\n");
+      utimesSync(transcript, transcriptAt, transcriptAt);
+
+      const res = await app.request("/api/workspaces", { headers: auth });
+      const list = (await res.json()) as { id: string; lastActiveAt: string | null }[];
+      const byId = new Map(list.map((w) => [w.id, w.lastActiveAt]));
+      expect(byId.get(viewed.id)).toBe(viewedAt.toISOString());
+      expect(byId.get(agentRan.id)).toBe(transcriptAt.toISOString());
+    } finally {
+      if (previousHome === undefined) delete process.env.CLAUDE_HOME;
+      else process.env.CLAUDE_HOME = previousHome;
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
   });
 
   it("drops the PR of a repo torn down by an archive, whose cache is frozen", async () => {
@@ -2129,6 +2165,9 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const extra = join(ws.rootPath, "widget-layer-2");
     mkdirSync(extra);
+    // Archive reports the resolved path (/private/var on macOS), and only
+    // resolves while the folder exists.
+    const extraReal = canonicalPath(extra);
 
     const removed: string[] = [];
     const extraGit: GitRunner = async (args, opts) => {
@@ -2145,7 +2184,7 @@ describe("provision + archive (injected git runner)", () => {
     const result = await archiveWorkspace(db, ws.id, {}, extraGit);
 
     expect(result.status).toBe("archived");
-    expect(removed[0]).toBe(extra);
+    expect(removed[0]).toBe(extraReal);
     expect(existsSync(ws.rootPath)).toBe(false);
   });
 
@@ -2166,7 +2205,7 @@ describe("provision + archive (injected git runner)", () => {
       if (
         args[0] === "worktree" &&
         args[1] === "remove" &&
-        target === extra &&
+        target === canonicalPath(extra) &&
         !args.includes("--force")
       ) {
         return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
