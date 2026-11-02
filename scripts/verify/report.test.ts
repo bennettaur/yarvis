@@ -125,15 +125,23 @@ describe("finalVerdict", () => {
     expect(finalVerdict(review, makeFacts())).toEqual({ verdict: "auto", why: [] });
   });
 
-  it("asks for a visual check when the UI changes and screenshots show it", () => {
+  it("lets a small UI change the screenshots show merge on its own", () => {
     const review = makeReview({
       dimensions: { ...makeReview().dimensions, ui: pass },
       screenshots: [{ path: "/tmp/verify/7/after.png", caption: "Resized list" }],
     });
-    expect(finalVerdict(review, makeFacts())).toEqual({
+    expect(finalVerdict(review, makeFacts())).toEqual({ verdict: "auto", why: [] });
+    expect(renderReport(review, makeFacts(), TARGET).data.needsVisual).toBe(false);
+  });
+
+  it("keeps a visual verdict the review gives, and signs that a person looks", () => {
+    const review = makeReview({
       verdict: "visual",
-      why: ["changes what the app shows"],
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: [{ path: "/tmp/verify/7/after.png", caption: "New settings page" }],
     });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("visual");
+    expect(renderReport(review, makeFacts(), TARGET).data.needsVisual).toBe(true);
   });
 
   it("lets a concern or a blocker outrank a visual check", () => {
@@ -151,7 +159,7 @@ describe("finalVerdict", () => {
     expect(finalVerdict(blocked, makeFacts()).verdict).toBe("human");
   });
 
-  it("signs whether a person has to look at the UI", () => {
+  it("signs that a person has to look when the UI check is flagged", () => {
     expect(renderReport(makeReview(), makeFacts(), TARGET).data.needsVisual).toBe(false);
     const concern = makeReview({
       dimensions: { ...makeReview().dimensions, ui: { status: "concern", note: "Not captured" } },

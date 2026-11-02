@@ -156,8 +156,9 @@ const ReportData = z.object({
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
   flagged: z.array(z.string()),
   /**
-   * The PR changes what the app shows, so a person looks before it merges.
-   * The merge reviewer can't approve one, whatever the verdict.
+   * A person has to look at what the PR shows before it merges: the verdict
+   * is `visual`, or the UI check was flagged. The merge reviewer can't
+   * approve one, whatever the verdict.
    */
   needsVisual: z.boolean().optional(),
   /** The model that reviewed, so calibration can compare verdicts across models. */
@@ -250,11 +251,12 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   ];
   if (statuses.includes("fail")) requireAtLeast("human", "a check failed");
   if (statuses.includes("concern")) requireAtLeast("agent", "a check has concerns");
-  // A UI that renders differently is judged by looking at it. With no
-  // screenshots there is nothing for the maintainer to look at.
-  if (ui.status === "pass") {
-    if (review.screenshots.length === 0) requireAtLeast("agent", "UI change without screenshots");
-    else requireAtLeast("visual", "changes what the app shows");
+  // A UI change is judged by looking at it, so one with no screenshots can't
+  // merge on the report. Whether a person also looks is the review's call:
+  // `visual` for a new screen or a design change, not for a small one the
+  // screenshots already show working.
+  if (ui.status === "pass" && review.screenshots.length === 0) {
+    requireAtLeast("agent", "UI change without screenshots");
   }
   return { verdict, why };
 }
@@ -503,7 +505,7 @@ export function renderReport(
       ...(isFlagged(coverage) ? ["coverage"] : []),
       ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
-    needsVisual: review.dimensions.ui.status !== "n/a",
+    needsVisual: verdict === "visual" || isFlagged(review.dimensions.ui.status),
     model: review.model,
   };
 

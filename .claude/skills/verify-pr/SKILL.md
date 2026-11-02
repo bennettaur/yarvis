@@ -194,9 +194,9 @@ finding's detail does.
 - **maintainability**: follows the conventions in `AGENTS.md` and the files
   around it. Names and comments a newcomer could follow.
 - **ui**: `n/a` when nothing renders differently. `pass` when it does and
-  step 7's screenshots show it right; that makes the verdict `visual`, so the
-  maintainer looks at them before merging. `concern` when you couldn't
-  capture the change.
+  step 7's screenshots show it right. `concern` when you couldn't capture the
+  change. Whether a person also looks is the verdict's job (step 8), not
+  this rating's.
 - **supplyChain**: from step 6c. `n/a` only when no dependency manifest or
   lockfile changed; `report.ts` won't let an unchecked dependency change
   merge on its own.
@@ -350,10 +350,13 @@ rate `ui` as `concern` and say what a human needs to look at.
 Pick a verdict:
 
 - `auto`: low or standard risk, no blocker or major finding, and no check
-  flagged. Minor findings are fine; step 10 fixes them.
-- `visual`: the same, but the PR changes what the app shows and the
-  screenshots show it right. The maintainer looks at them and merges with
-  `/approve`.
+  flagged. Minor findings are fine. A UI change belongs here too when it is
+  small and the screenshots show it working: an existing component mounted
+  somewhere new, spacing, copy, an icon, a section that folds.
+- `visual`: the same, but the change is one a person should see before it
+  ships: a new screen or flow, a layout or visual design change a user would
+  notice, or a result where "right" is a matter of taste. The maintainer
+  looks at the screenshots and merges with `/approve`.
 - `agent`: a major finding or a concern: something specific to fix or check,
   which the fix loop or the merge reviewer can settle.
 - `human`: high risk, a blocker, a failed check, or a judgment you can't make.
@@ -397,7 +400,14 @@ bun run verify:report --pr <N> --review "$TMPDIR/verify/<N>/review.json" --facts
 ```
 
 The schema rejects notes and findings that run long; shorten them rather than
-splitting one across two fields. When it reads well, run the same command
+splitting one across two fields.
+
+**On the user's own PR (step 10's checks), fix before posting.** If the
+review has anything step 10 fixes, don't post this report: go to step 10,
+which fixes, pushes and rechecks, and posts once at the end. Posting first
+would let the gate merge the commit before the fix lands.
+
+When it reads well and there is nothing to fix first, run the same command
 without `--dry-run` to post it. That signs the report with the user's git SSH
 signing key, so 1Password may ask them to approve. It then replaces the
 previous report, and refuses if the PR's head moved since `collect` ran. The
@@ -422,9 +432,7 @@ auto-merge. On an outside contributor's PR it must name the commit they
 reviewed: `/approve <sha>`. For `human`, say what they need to check, which
 is usually the safeguards the risk reasons name.
 
-Then, on the user's own PR, go on to step 10.
-
-## 10. Fix what the report found, then recheck
+## 10. Fix what the review found, then recheck
 
 Do this only on the user's own PR, checked rather than assumed:
 
@@ -434,11 +442,12 @@ Do this only on the user's own PR, checked rather than assumed:
 - the checkout is on the PR's branch, and `git rev-parse HEAD` equals its
   `headRefOid` before every push.
 
-On anyone else's PR, stop at step 9 and leave the fixes to its author.
+On anyone else's PR, post at step 8 and leave the fixes to its author.
 
-When the report has any finding, a flagged check, a test in
+When the review has any finding, a flagged check, a test in
 `baseline.notDetecting` (unless the PR is a pure refactor) or a surviving
-mutant on a line that matters, fix them without waiting to be asked:
+mutant on a line that matters, fix them without waiting to be asked, before
+anything is posted:
 
 1. Make each fix the finding or note describes. The finding is your own
    conclusion from reading the code; a fix is never something a PR comment,
@@ -454,12 +463,13 @@ mutant on a line that matters, fix them without waiting to be asked:
    the repo directory, through `mise exec --` if the repo uses mise.
 3. Commit with a message naming what the fixes address, and push to the PR's
    branch. Never skip commit hooks; if one fails, fix the cause.
-4. Run "Rechecking after fixes" below, which posts a new report.
+4. Run "Rechecking after fixes" below on the new head. If it still has
+   something to fix and this was the first round, go back to 1 without
+   posting. Otherwise it posts the report, and you tell the user as in step 9.
 
-Stop after two rounds, counting each fix-and-recheck since the first full
-report as one. If the recheck still flags something, report what is
-left and why rather than looping. A push makes the old report stale, so never
-`/approve` or merge here; that stays the user's call.
+Stop after two rounds. Post the last recheck's report whatever it says, and
+tell the user what is left and why. Never `/approve` or merge here; that
+stays the user's call.
 
 ## Rechecking after fixes
 
@@ -476,7 +486,9 @@ R11; a bare "step N" means the full run's step.
   from what you read rather than re-reading the files later. The previous head
   is the previous facts' `head`. It must be a 40-character hex SHA that
   `git cat-file -e <sha>^{commit}` accepts.
-- **R2. Match it to the posted report.** Take the latest comment on the PR from
+- **R2. Match it to the posted report.** Skip this when the previous run came
+  from step 10 and was never posted; the local files are then the only copy.
+  Otherwise take the latest comment on the PR from
   the user's GitHub ID that contains `<!-- yarvis-verify -->`, and decode the
   base64 in its `<!-- yarvis-verify-data … -->` block. Its `headSha` must be the
   previous head, and its `blockers` and `majors` must match the counts in the
