@@ -102,6 +102,21 @@ describe("finalVerdict", () => {
     });
   });
 
+  it("lets a concern or a blocker outrank a visual check", () => {
+    const shots = [{ path: "/tmp/verify/7/after.png", caption: "Resized list" }];
+    const concern = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: { status: "concern", note: "Clipped" } },
+      screenshots: shots,
+    });
+    expect(finalVerdict(concern, makeFacts()).verdict).toBe("agent");
+    const blocked = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: shots,
+      findings: [{ severity: "blocker", title: "Loses data", detail: "…" }],
+    });
+    expect(finalVerdict(blocked, makeFacts()).verdict).toBe("human");
+  });
+
   it("needs an agent for a UI change with no screenshots to look at", () => {
     const review = makeReview({ dimensions: { ...makeReview().dimensions, ui: pass } });
     expect(finalVerdict(review, makeFacts()).verdict).toBe("agent");

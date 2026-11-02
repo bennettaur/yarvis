@@ -267,7 +267,9 @@ export function decideReport(input: {
     // gate's own from the paths is a floor under it that the report can't lower.
     tier: stricterTier(gateTier(pr, input.files), report.riskTier),
   });
-  if (report.verdict === "visual" && reasons.length === 1) {
+  // A visual verdict is the maintainer's to merge once they've looked; say
+  // so rather than listing it as a failure, unless something else also blocks.
+  if (report.verdict === "visual" && reasons.length === 1 && reasons[0] === "verdict is visual") {
     return {
       status: "Report: visual. Check the screenshots, then comment /approve",
       approve: false,

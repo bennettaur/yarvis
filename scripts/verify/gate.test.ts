@@ -229,6 +229,13 @@ describe("decideReport", () => {
     );
   });
 
+  it("doesn't let a visual verdict hide a draft", () => {
+    const comment = reportComment(BENNETTAUR, { ...cleanReport, verdict: "visual" });
+    expect(
+      acted(decide({ comment, comments: [comment], pr: makePr({ draft: true }) })).status,
+    ).toBe("Report: visual. Not auto-merging: PR is a draft; verdict is visual");
+  });
+
   it("refuses when the gate's own tier is high", () => {
     const files = [{ path: "sidecar/src/agentTools/store.ts", additions: 1, deletions: 0 }];
     expect(acted(decide({ files })).status).toContain("high-risk change");

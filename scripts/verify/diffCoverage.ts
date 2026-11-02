@@ -10,6 +10,9 @@ import { isTestFile } from "./tier.ts";
 /** Line numbers each file gained, keyed by repo-relative path. */
 export type AddedLines = Map<string, Set<number>>;
 
+/** An inclusive range of line numbers. */
+export type LineRange = [number, number];
+
 /** Hit count per executable line, keyed by repo-relative path. */
 export type LineHits = Map<string, Map<number, number>>;
 
@@ -79,11 +82,11 @@ export function parseAddedLines(diff: string): AddedLines {
 
 /**
  * Where each file changed, as inclusive new-side line ranges. An added or
- * edited line is its own range. A deletion becomes the two lines either side
- * of it, so it counts as inside a block only when both are.
+ * edited line is its own range. A deletion becomes the line before it and
+ * the line after it, so it counts as inside a block only when both are.
  */
-export function parseChangedRanges(diff: string): Map<string, [number, number][]> {
-  const changed = new Map<string, [number, number][]>();
+export function parseChangedRanges(diff: string): Map<string, LineRange[]> {
+  const changed = new Map<string, LineRange[]>();
   forEachHunk(diff, (path, start, count) => {
     const ranges = changed.get(path) ?? [];
     changed.set(path, ranges);

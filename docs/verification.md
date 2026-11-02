@@ -66,7 +66,7 @@ Claude session can be made to do, auth, migrations, the verifier and CI.
 | --- | --- | --- |
 | `auto` | Low or standard risk, no blocker or major finding, no check with a concern, enough of the changed lines covered by tests. Minor findings are allowed. | The report alone is enough. The gate approves as soon as the signed report is posted. |
 | `visual` | The same, but the PR changes what the app shows | Look at the report's screenshots, then comment `/approve`. |
-| `agent` | A major finding, a check with a concern, a dependency change nobody checked, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
+| `agent` | A major finding, a check with a concern, a dependency change without a supply-chain check, a UI change with no screenshots, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
 | `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
 
 On an outside contributor's PR, the comment has to name the commit you read,
@@ -94,7 +94,7 @@ as.
 | Lives in | 1Password, the same key that signs your commits | Yarvis, Settings → Credentials |
 | Used by | `/verify-pr`, when it posts the report | The merge reviewer, when it posts an agent review |
 | Signs as | `verify-pr`, namespace `yarvis-verify` | `yarvis-merge-reviewer`, namespace `yarvis-agent-review` |
-| Can unlock | Any verdict, up to auto-merging a low-risk PR | Only a PR you already signed an `agent` report for, at that same commit |
+| Can unlock | Any verdict, up to auto-merging a low- or standard-risk PR | Only a PR you already signed an `agent` report for, at that same commit |
 
 The merge reviewer doesn't use your SSH signing key, for two reasons:
 

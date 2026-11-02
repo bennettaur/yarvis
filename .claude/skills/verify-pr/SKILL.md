@@ -372,7 +372,7 @@ auto-merge. On an outside contributor's PR it must name the commit they
 reviewed: `/approve <sha>`. For `human`, say what they need to check, which
 is usually the safeguards the risk reasons name.
 
-Then go on to step 10 if it applies.
+Then, on the user's own PR, go on to step 10.
 
 ## 10. Fix what the report found, then recheck
 
@@ -394,7 +394,8 @@ mutant on a line that matters, fix them without waiting to be asked:
    branch. Never skip commit hooks; if one fails, fix the cause.
 4. Run "Rechecking after fixes" below, which posts a new report.
 
-Stop after two rounds. If the recheck still flags something, report what is
+Stop after two rounds, counting each fix-and-recheck since the first full
+report as one. If the recheck still flags something, report what is
 left and why rather than looping. A push makes the old report stale, so never
 `/approve` or merge here; that stays the user's call.
 

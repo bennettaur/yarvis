@@ -20,6 +20,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "@babel/parser";
+import type { LineRange } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
 import { isTestFile } from "./tier.ts";
 
@@ -29,12 +30,9 @@ export interface TestCase {
   file: string;
   name: string;
   outcome: Outcome;
-  /** A line inside the test's call, as bun reports it; `null` when it doesn't. */
+  /** A line inside the test's call, as bun reports it; `null` when the report has none. */
   line: number | null;
 }
-
-/** Inclusive line ranges. */
-type Span = [number, number];
 
 export interface BaselineResult {
   /** Tests that pass on the PR and fail (or don't load) on the base: they test the change. */
@@ -124,7 +122,7 @@ function calleeChain(node: AstNode): { root: string | null; inner: AstNode[] } {
  * The line span of every `it(...)` and `test(...)` call in a test file, or
  * `null` when it can't be parsed.
  */
-export function testSpans(source: string, path: string): Span[] | null {
+export function testSpans(source: string, path: string): LineRange[] | null {
   let program: unknown;
   try {
     program = parse(source, {
@@ -134,7 +132,7 @@ export function testSpans(source: string, path: string): Span[] | null {
   } catch {
     return null;
   }
-  const spans: Span[] = [];
+  const spans: LineRange[] = [];
   // `test.each(rows)` is part of the test call around it, not a test of its own.
   const chained = new Set<AstNode>();
   const visit = (value: unknown) => {
@@ -150,6 +148,7 @@ export function testSpans(source: string, path: string): Span[] | null {
         for (const call of inner) chained.add(call);
       }
     }
+    // `loc` and the `*Comments` arrays are metadata about a node, not its children.
     for (const [key, child] of Object.entries(value)) {
       if (key !== "loc" && !key.endsWith("Comments")) visit(child);
     }
@@ -163,13 +162,17 @@ export function testSpans(source: string, path: string): Span[] | null {
  * the line bun gives for it, since a test can sit inside another's callback.
  * A test that can't be placed counts as changed, so nothing is hidden.
  */
-export function isTouched(line: number | null, spans: Span[] | null, changed: Span[]): boolean {
+export function isTouched(
+  line: number | null,
+  spans: LineRange[] | null,
+  changed: LineRange[],
+): boolean {
   if (line === null || spans === null) return true;
-  const own = spans
+  const innermost = spans
     .filter(([start, end]) => start <= line && line <= end)
     .sort((a, b) => a[1] - a[0] - (b[1] - b[0]))[0];
-  if (!own) return true;
-  return changed.some(([from, to]) => own[0] <= from && to <= own[1]);
+  if (!innermost) return true;
+  return changed.some(([from, to]) => innermost[0] <= from && to <= innermost[1]);
 }
 
 const testKey = (test: TestCase) => `${test.file} > ${test.name}`;
@@ -216,7 +219,7 @@ export function runBaseline(
   root: string,
   base: string,
   changedFiles: string[],
-  changedRanges: Map<string, Span[]>,
+  changedRanges: Map<string, LineRange[]>,
 ): BaselineResult {
   const testFiles = changedFiles.filter(isTestFile);
   const result: BaselineResult = { detecting: 0, notDetecting: [], failingOnHead: [] };
@@ -244,11 +247,16 @@ export function runBaseline(
       const files = testFiles.filter((file) => suiteFor(file) === suite);
       if (files.length === 0) continue;
       const name = suite || "root";
+      // A failure counts wherever it is: an edit to a shared mock can break a
+      // test the diff never touched.
       const head = runSuite(root, suite, files, join(scratch, `${name}-head.xml`)).filter(
-        (test) => {
-          const spans = spansByFile.get(test.file);
-          return isTouched(test.line, spans ?? null, changedRanges.get(test.file) ?? []);
-        },
+        (test) =>
+          test.outcome === "fail" ||
+          isTouched(
+            test.line,
+            spansByFile.get(test.file) ?? null,
+            changedRanges.get(test.file) ?? [],
+          ),
       );
       const baseRun = runSuite(baseTree, suite, files, join(scratch, `${name}-base.xml`));
       const compared = compareRuns(head, baseRun);

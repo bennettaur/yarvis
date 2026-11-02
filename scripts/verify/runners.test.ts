@@ -130,6 +130,34 @@ it("is on", () => expect(flag && other === 1).toBe(true));
       runBaseline(root, base, ["src/flag.ts", "src/flag.test.ts"], changedRanges(root, base)),
     ).toEqual({ detecting: 1, notDetecting: [], failingOnHead: [] });
   });
+
+  it("still reports an untouched test that the PR breaks", () => {
+    const root = repo({
+      "src/flag.ts": "export const flag = false;\n",
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag } from "./flag.ts";
+it("is off", () => {
+  expect(flag).toBe(false);
+});
+`,
+    });
+    const base = commitPr(root, { "src/flag.ts": "export const flag = true;\n" });
+    // The test file is in the list but its test's own lines didn't change.
+    writeAll(root, {
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag } from "./flag.ts";
+
+it("is off", () => {
+  expect(flag).toBe(false);
+});
+`,
+    });
+    git(root, "add", "-A");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "blank line");
+    expect(
+      runBaseline(root, base, ["src/flag.ts", "src/flag.test.ts"], changedRanges(root, base)),
+    ).toEqual({ detecting: 0, notDetecting: [], failingOnHead: ["src/flag.test.ts > is off"] });
+  });
 });
 
 describe("collectCoverage", () => {

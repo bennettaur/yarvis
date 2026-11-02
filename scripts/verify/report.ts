@@ -211,6 +211,7 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
     requireAtLeast("agent", "tests miss many mutations on changed lines");
   }
   const { ui, supplyChain } = review.dimensions;
+  // `n/a` is the skill's claim that no dependency changed; the paths check it.
   if (supplyChain.status === "n/a" && facts.files.some((file) => isDependencyFile(file.path))) {
     requireAtLeast("agent", "dependencies changed without a supply-chain check");
   }
@@ -220,12 +221,12 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   ];
   if (statuses.includes("fail")) requireAtLeast("human", "a check failed");
   if (statuses.includes("concern")) requireAtLeast("agent", "a check has concerns");
-  // A UI that renders differently is judged by looking at it, so the
-  // screenshots are what the maintainer checks before merging.
-  if (ui.status === "pass" && review.screenshots.length === 0) {
-    requireAtLeast("agent", "UI change without screenshots");
+  // A UI that renders differently is judged by looking at it. With no
+  // screenshots there is nothing for the maintainer to look at.
+  if (ui.status === "pass") {
+    if (review.screenshots.length === 0) requireAtLeast("agent", "UI change without screenshots");
+    else requireAtLeast("visual", "changes what the app shows");
   }
-  if (ui.status === "pass") requireAtLeast("visual", "changes what the app shows");
   return { verdict, why };
 }
 

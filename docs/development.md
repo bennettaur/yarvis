@@ -132,13 +132,15 @@ The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
 PR comment from users with write access, and acts as the yarvis GitHub App:
 
 - **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, signed by a key in
-  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow sets a `Verification report` commit status on that commit. The
-  status is always a success: it records that a current report exists, and its
+  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow
+  sets a `Verification report` commit status on that commit. The status is
+  always a success: it records that a current report exists, and its
   description carries the verdict. If the PR is a maintainer's, not a draft,
   low or standard risk, and the report's verdict is `auto`, the bot also
-  approves it and turns on squash auto-merge. A push makes the report stale, so run `/verify-pr`
-  again, or `/verify-pr <N> --recheck` to re-verify only what the last report
-  flagged plus the new commits.
+  approves it and turns on squash auto-merge. A `visual` verdict waits for you
+  to look at the screenshots and comment `/approve`. A push makes the report
+  stale, so run `/verify-pr` again, or `/verify-pr <N> --recheck` to
+  re-verify only what the last report flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
   merges their own PR, since GitHub won't let them approve it. On an outside
