@@ -98,16 +98,22 @@ export default function OmniChat({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  // Clear only once the turn is under way: `send` declines while the provider
-  // list is still loading, and a message that vanished without being sent is
-  // worse than a button that briefly does nothing.
-  const submit = () => {
-    void send(input).then((sent) => {
-      if (sent) setInput("");
-    });
-  };
   const queue = () => {
     if (enqueue(input)) setInput("");
+  };
+  // Cleared straight away, since the box stays usable while the reply runs and
+  // `send` only settles when it ends. The text comes back if `send` declines
+  // (the provider list may still be loading): a message that vanished without
+  // being sent is worse than a button that briefly does nothing.
+  // While anything is queued, a new message joins the back of the queue rather
+  // than jumping ahead of it.
+  const submit = () => {
+    if (queued.length > 0) return queue();
+    const text = input;
+    setInput("");
+    void send(text).then((sent) => {
+      if (!sent) setInput((current) => current || text);
+    });
   };
 
   return (

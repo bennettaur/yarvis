@@ -330,6 +330,8 @@ describe("ChatPanel", () => {
 
     await say(mounted.host, "first question");
     expect(composerOf(mounted.host)?.disabled).toBe(false);
+    // Otherwise the next message is typed onto the end of the one already sent.
+    expect(composerOf(mounted.host)?.value).toBe("");
     await say(mounted.host, "follow-up", "Queue");
     expect(sent.map((body) => body.message)).toEqual(["first question"]);
     expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
@@ -340,6 +342,24 @@ describe("ChatPanel", () => {
     expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
     await settle(300);
     expect(mounted.host.querySelector('[aria-label="Queued messages"]')).toBeNull();
+  });
+
+  it("drops the queued message the user removes", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "keep me", "Queue");
+    await say(mounted.host, "drop me", "Queue");
+    mounted.host
+      .querySelectorAll<HTMLButtonElement>('[aria-label="Remove queued message"]')[1]
+      ?.click();
+    await settle(20);
+
+    const queue = mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent;
+    expect(queue).toContain("keep me");
+    expect(queue).not.toContain("drop me");
   });
 
   it("holds the queue after a failed reply and sends it on Send next", async () => {
@@ -353,12 +373,23 @@ describe("ChatPanel", () => {
     expect(sent).toHaveLength(1);
     expect(mounted.host.textContent).toContain("waiting until you send them");
 
+    // Sending now would jump the queue and, once it landed, release it.
+    await say(mounted.host, "another thought");
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "another thought",
+    );
+
     scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
     Array.from(mounted.host.querySelectorAll("button"))
       .find((b) => b.textContent === "Send next")
       ?.click();
-    await settle();
-    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual([
+      "first question",
+      "follow-up",
+      "another thought",
+    ]);
   });
 
   it("sends what is left in the queue in order, one turn at a time", async () => {
@@ -638,6 +669,20 @@ describe("useChatThread", () => {
     await settle();
     expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
     expect(thread?.queued).toEqual([]);
+  });
+
+  it("queues trimmed text and refuses a blank message", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    expect(thread?.enqueue("   ")).toBe(false);
+    expect(thread?.enqueue("  follow-up \n")).toBe(true);
+    await settle(20);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
   });
 
   it("drops the queue when the user starts a new chat", async () => {

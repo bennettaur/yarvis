@@ -278,7 +278,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         source?: "voice";
         resend?: boolean;
         rewindTo?: string;
-        /** Used instead of reading the screen context now. */
+        /**
+         * Used instead of reading the screen context now. Present but
+         * undefined means "no context", not "read it now".
+         */
         context?: string;
       } = {},
     ) => {

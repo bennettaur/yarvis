@@ -70,6 +70,15 @@ describe("ChatComposer", () => {
     expect(sent).toBe(0);
   });
 
+  it("doesn't send on Enter while busy on a surface that can't queue", async () => {
+    let sent = 0;
+    const host = await mount({ busy: true, onStop: () => {}, onSubmit: () => sent++ });
+    host
+      .querySelector("textarea")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sent).toBe(0);
+  });
+
   it("can't queue an empty message", async () => {
     const host = await mount({ value: "  ", busy: true, onStop: () => {}, onQueue: () => {} });
     expect(buttons(host)[0]?.disabled).toBe(true);
