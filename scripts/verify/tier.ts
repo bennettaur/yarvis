@@ -109,11 +109,13 @@ const HIGH_RISK_PATHS: PathRule[] = [
     reason: "what the verify workflows install and run with",
   },
   // Bun resolves a bare import through the nearest `node_modules`, and the
-  // nearest tsconfig's `paths`, so one planted beside the verifier replaces
-  // what it imports. Only the known workspaces keep their own.
+  // nearest tsconfig's `paths`, so one planted on the path of anything the
+  // verifier imports (which reaches into `sidecar/src/verify/`) replaces it.
+  // `video/` is a separate package the verifier never loads. Bun also loads a
+  // `.env` into the process that holds the merge credential.
   {
     pattern:
-      /(^|\/)node_modules\/|^(?!sidecar\/|video\/)[^/]+\/(.+\/)?((tsconfig|jsconfig)[^/]*\.json|package\.json|bunfig\.toml|\.npmrc)$/,
+      /(^|\/)node_modules\/|^(?!video\/)(.+\/)?(tsconfig|jsconfig)[^/]*\.json$|^(?!sidecar\/|video\/)[^/]+\/(.+\/)?(package\.json|bunfig\.toml|\.npmrc)$|(^|\/)\.env/,
     reason: "what the verify workflows install and run with",
   },
 ];
@@ -127,8 +129,7 @@ const ASSESSED_PATHS: PathRule[] = [
   { pattern: /^\.github\//, reason: "CI or repo config, which runs with the repo's secrets" },
   { pattern: /^lefthook\.yml$/, reason: "git hooks" },
   {
-    pattern:
-      /^(sidecar\/(bunfig\.toml|tsconfig[^/]*\.json)|tsconfig[^/]+\.json|mise\.toml|vite\.config\.ts|biome\.json)$/,
+    pattern: /^(sidecar\/bunfig\.toml|mise\.toml|vite\.config\.ts|biome\.json)$/,
     reason: "build or test config, which runs code",
   },
   { pattern: /^sidecar\/src\/db\//, reason: "the database schema" },
@@ -145,15 +146,18 @@ const PRIVILEGED_WORKFLOW_TEXT = new RegExp(
   [
     "\\bsecrets\\b",
     "YARVIS_",
+    "github\\.token",
     "create-github-app-token",
     ":\\s*[\"']?write\\b",
     "write-all",
     "GITHUB_ENV|GITHUB_PATH",
     "self-hosted",
-    "^name:",
-    "^\\s*(pull_request_target|workflow_run|issue_comment|push|schedule|workflow_dispatch|repository_dispatch|issues|workflow_call)\\s*:",
+    // Keys may be quoted, and `on:` may list its triggers inline.
+    "^[\"']?name[\"']?\\s*:",
+    "^[\"']?on[\"']?\\s*:\\s*\\S",
+    "^\\s*[\"']?(pull_request_target|workflow_run|issue_comment|push|schedule|workflow_dispatch|repository_dispatch|issues|workflow_call)[\"']?\\s*:",
   ].join("|"),
-  "m",
+  "im",
 );
 
 /**
@@ -232,22 +236,47 @@ export function isAdditiveMigration(
     statements.length > 0 &&
     statements.every(
       (statement) =>
-        !/;|--|\/\*|\$/.test(statement) && isAdditiveStatement(statement.replace(/\s+/g, " ")),
+        // A backslash too: an `E'...'` string reads it as an escape, which
+        // would shift where this check thinks a string ends.
+        !/;|--|\/\*|\$|\\/.test(statement) && isAdditiveStatement(statement.replace(/\s+/g, " ")),
     )
   );
 }
 
+const JOURNAL_ENTRY_KEYS = ["breakpoints", "idx", "tag", "version", "when"];
+
 /**
  * Whether a journal edit only appends entries for this PR's additive
  * migrations. Appending rewrites just the previous entry's closing brace, so
- * a removed line that is anything else edits an entry that already ran,
- * which can make drizzle run it again.
+ * the removed lines must be that brace, and the added lines must parse as
+ * nothing but whole new entries: a stray line, such as a second `"when"`
+ * inside an entry that already ran (JSON keeps the last), would make drizzle
+ * run that migration again.
  */
 function appendsAdditiveEntries(file: ChangedFile, additive: Set<string>): boolean {
   if (typeof file.addedText !== "string" || typeof file.removedText !== "string") return false;
   if (!file.removedText.split("\n").every((line) => /^\s*\}?\s*$/.test(line))) return false;
-  const tags = [...file.addedText.matchAll(/"tag"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
-  return tags.length > 0 && tags.every((tag) => additive.has(`sidecar/drizzle/${tag}.sql`));
+  // Git often keeps the old closing brace and adds the new entry's lines
+  // before it, so the added text can end without one.
+  let entriesText = file.addedText.replace(/^\s*\},/, "").trim();
+  if (!entriesText.endsWith("}")) entriesText += "}";
+  let entries: unknown;
+  try {
+    entries = JSON.parse(`[${entriesText}]`);
+  } catch {
+    return false;
+  }
+  return (
+    Array.isArray(entries) &&
+    entries.length > 0 &&
+    entries.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        Object.keys(entry).sort().join() === JOURNAL_ENTRY_KEYS.join() &&
+        additive.has(`sidecar/drizzle/${(entry as { tag: unknown }).tag}.sql`),
+    )
+  );
 }
 
 /**

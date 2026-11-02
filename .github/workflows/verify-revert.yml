@@ -55,4 +55,5 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
-        run: bun run scripts/verify/revert.ts
+        # No .env: a committed one would load into the process holding the token.
+        run: bun --no-env-file run scripts/verify/revert.ts

@@ -108,6 +108,11 @@ describe("classify", () => {
     for (const path of [
       "scripts/node_modules/zod/index.js",
       "scripts/tsconfig.json",
+      "sidecar/tsconfig.json",
+      "sidecar/src/tsconfig.json",
+      "tsconfig.app.json",
+      ".env",
+      ".env.production",
       "src/lib/package.json",
       "node_modules/zod/index.js",
       "bunfig.toml",
@@ -129,6 +134,11 @@ describe("classify", () => {
       "  push:",
       "  schedule:",
       "  workflow_dispatch:",
+      "on: [push, schedule]",
+      '"name": CI2',
+      '  "push":',
+      "        run: echo ${{ toJSON(Secrets) }}",
+      "        run: gh api -H 'Authorization: token ${{ github.token }}' /x",
       "  pull_request_target:",
       "  issue_comment:",
       "      contents: write",
@@ -159,7 +169,6 @@ describe("classify", () => {
       ".github/dependabot.yml",
       "lefthook.yml",
       "sidecar/bunfig.toml",
-      "tsconfig.app.json",
       "vite.config.ts",
       "sidecar/src/db/schema.ts",
     ]) {
@@ -222,6 +231,7 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
         'ALTER TABLE "t" ADD COLUMN "x" text UNIQUE;',
         'ALTER TABLE "t" ADD COLUMN "x" int CHECK (x > 0);',
         'CREATE INDEX "i" ON "t" USING btree (lower("x"));',
+        `CREATE TABLE "a" ("x" text DEFAULT E'\\'') INHERITS ("memories") WITH (fillfactor = '70');`,
       ]) {
         expect(classify([migration(sql)]).assess).toHaveLength(1);
       }
@@ -256,13 +266,15 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
         additions: 7,
         deletions: 1,
       });
+      // The shape git gives a drizzle append: the old closing brace is kept.
       const entry = (tag: string) =>
-        `    },\n    {\n      "idx": 50,\n      "when": 1790000000000,\n      "tag": "${tag}",\n      "breakpoints": true\n    }`;
+        `    },\n    {\n      "idx": 50,\n      "version": "7",\n      "when": 1790000000000,\n      "tag": "${tag}",\n      "breakpoints": true`;
       const journalAssessed = (files: ReturnType<typeof journal>[]) =>
         classify([newMigration, ...files]).assess.map((a) => a.path);
 
       it("is standard when it only appends this PR's additive migrations", () => {
-        expect(journalAssessed([journal(entry("0050_new"), "    }")])).toEqual([]);
+        expect(journalAssessed([journal(entry("0050_new"), "")])).toEqual([]);
+        expect(journalAssessed([journal(`${entry("0050_new")}\n    }`, "    }")])).toEqual([]);
       });
 
       it("is assessed when it edits an old entry or points at another migration", () => {
@@ -270,6 +282,9 @@ CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
         expect(journalAssessed([edited])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
         const rerun = journal(entry("0007_old_destructive"), "    }");
         expect(journalAssessed([rerun])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
+        // A second "when" inside an old entry wins under JSON.parse and removes nothing.
+        const duplicate = journal(`      "when": 99999999999999,\n${entry("0050_new")}`, "    }");
+        expect(journalAssessed([duplicate])).toEqual(["sidecar/drizzle/meta/_journal.json"]);
       });
     });
 
