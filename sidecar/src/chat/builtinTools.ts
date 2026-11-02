@@ -5,6 +5,7 @@ import type { ArtifactWriter } from "../artifacts/service.ts";
 import { buildArtifactTools } from "../artifacts/tools.ts";
 import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
+import { buildClaudeTaskTools } from "../claudeTasks/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
@@ -112,6 +113,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),
+    claudeTasks: buildClaudeTaskTools(db, config, sessionId, { unattended }),
     workspaces: buildWorkspaceTools(db, config, { remoteControl }),
     jira: buildJiraTools(db, config, { remoteControl }),
     githubIssues: buildIssueTools(db, config),
