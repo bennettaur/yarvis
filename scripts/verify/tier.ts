@@ -145,6 +145,8 @@ const PRIVILEGED_WORKFLOW_TEXT = new RegExp(
     "\\bsecrets\\b",
     "YARVIS_",
     "github\\.token",
+    // The environment that holds the merge credential, or any other.
+    "^\\s*[\"']?environment[\"']?\\s*:",
     "create-github-app-token",
     ":\\s*[\"']?write\\b",
     "write-all",

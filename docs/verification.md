@@ -172,7 +172,8 @@ These run from the Yarvis repo.
 4. In Yarvis, open Settings → Credentials and paste the key file's contents
    into **Merge reviewer signing key**. Then delete `merge-reviewer.key`.
 5. Check the other repo settings: `VERIFY_TRUSTED_USER_IDS`,
-   `YARVIS_BOT_CLIENT_ID` and `YARVIS_BOT_PRIVATE_KEY`. See
+   `YARVIS_BOT_CLIENT_ID`, and `YARVIS_BOT_PRIVATE_KEY` in the `yarvis-bot`
+   environment (limited to `main`), not as a repo secret. See
    [Development](development.md#verifying-a-pr-for-merge) for what each one
    holds.
 6. Leave `VERIFY_MODE` on `shadow` for a while. In shadow mode the gate sets

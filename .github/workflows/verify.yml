@@ -36,6 +36,9 @@ jobs:
     concurrency:
       group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || contains(github.event.comment.body, '<!-- yarvis-agent-review -->') && 'agent-review' || 'report' }}
       cancel-in-progress: false
+    # The merge credential lives in this environment, which only main can
+    # use, so no other workflow or branch can read it.
+    environment: yarvis-bot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

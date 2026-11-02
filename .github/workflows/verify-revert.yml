@@ -25,6 +25,9 @@ jobs:
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    # The merge credential lives in this environment, which only main can
+    # use, so no other workflow or branch can read it.
+    environment: yarvis-bot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

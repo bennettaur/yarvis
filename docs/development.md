@@ -189,7 +189,11 @@ settings:
 
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
-  access to actions, contents, pull requests, issues and commit statuses.
+  access to actions, contents, pull requests, issues and commit statuses. The
+  key is a secret of the `yarvis-bot` environment, not of the repo, and that
+  environment only accepts runs on `main`. Only `verify.yml` and
+  `verify-revert.yml` name it, so no other workflow, and no PR branch, can
+  read the key.
 - `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
   IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
   IDs, not logins, because a login freed by a rename can be taken by someone

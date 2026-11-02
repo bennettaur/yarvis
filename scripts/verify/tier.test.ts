@@ -127,6 +127,7 @@ describe("classify", () => {
   it("keeps CI that reaches secrets, write tokens or privileged triggers high", () => {
     for (const text of [
       "        run: echo ${{ secrets.TOKEN }}",
+      "    environment: yarvis-bot",
       "        run: echo '${{ toJSON(secrets) }}'",
       "        key: ${{ secrets[format('YARVIS_{0}_PRIVATE_KEY', 'BOT')] }}",
       '      contents: "write"',
