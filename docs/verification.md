@@ -65,7 +65,7 @@ Claude session can be made to do, auth, migrations, the verifier and CI.
 | Verdict | For example | What happens |
 | --- | --- | --- |
 | `auto` | Low or standard risk, no blocker or major finding, no check with a concern, enough of the changed lines covered by tests. Minor findings are allowed. | The report alone is enough. The gate approves as soon as the signed report is posted. |
-| `visual` | The same, but the PR changes what the app shows | Look at the report's screenshots, then comment `/approve`. |
+| `visual` | The same, but the PR changes what the app shows | Look at the report's screenshots, then comment `/approve`. The merge reviewer can't approve a PR that changes what the app shows, whatever its verdict. |
 | `agent` | A major finding, a check with a concern, a dependency change without a supply-chain check, a UI change with no screenshots, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
 | `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
 

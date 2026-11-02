@@ -163,9 +163,11 @@ Low- and standard-risk PRs can merge on a report alone; high-risk ones need
   (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
   secrets and shell access, app permissions, sidecar request handling, agent
   tool approvals, the MCP server, settings, migrations, or what the Chrome
-  extension may do. Dependencies and more than 300 changed lines of code are
-  standard; the skill's supply-chain check raises a dependency change to high
-  when it finds a real risk. Anything else starts low: no area is presumed
+  extension may do. A dependency change that only adds, removes or bumps
+  registry packages, and more than 300 changed lines of code, are standard;
+  any other manifest edit (a script, a hook, a git or path source) is high.
+  The skill's supply-chain check raises a dependency change to high when it
+  finds a real risk. Anything else starts low: no area is presumed
   safe or risky.
 
 Tests, docs and lockfiles don't count toward the line limits.
