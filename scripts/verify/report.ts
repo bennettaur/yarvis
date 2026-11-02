@@ -136,6 +136,11 @@ const ReportData = z.object({
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
   flagged: z.array(z.string()),
+  /**
+   * The PR changes what the app shows, so a person looks before it merges.
+   * The merge reviewer can't approve one, whatever the verdict.
+   */
+  needsVisual: z.boolean().optional(),
   /** The model that reviewed, so calibration can compare verdicts across models. */
   model: z.string().optional(),
 });
@@ -460,6 +465,7 @@ export function renderReport(
       ...(isFlagged(coverage) ? ["coverage"] : []),
       ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
+    needsVisual: review.dimensions.ui.status !== "n/a",
     model: review.model,
   };
 

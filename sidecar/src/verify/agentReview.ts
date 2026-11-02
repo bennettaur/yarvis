@@ -28,6 +28,8 @@ const ReportData = z.object({
   verdict: z.enum(["auto", "visual", "agent", "human"]),
   /** The report's signed risk tier, which the reviewer weighs its approval against. */
   riskTier: z.enum(["low", "standard", "high"]),
+  /** The PR changes what the app shows, which a person checks rather than the reviewer. */
+  needsVisual: z.boolean().optional(),
 });
 export type ReportData = z.infer<typeof ReportData>;
 

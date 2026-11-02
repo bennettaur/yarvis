@@ -112,6 +112,47 @@ export function isDependencyFile(path: string): boolean {
   return DEPENDENCY_FILE.test(path);
 }
 
+const LOCKFILE = /(^|\/)(bun\.lock|Cargo\.lock|uv\.lock)$/;
+
+/**
+ * The lines a manifest may gain and still be only a dependency change: a
+ * name and a registry version, brackets, and the section headers that hold
+ * them. Anything else in a manifest (a script, a lifecycle hook,
+ * `trustedDependencies`, a `[patch]` section, a build script, a git or path
+ * source) runs code or changes where it comes from, so it stays high.
+ */
+const PLAIN_MANIFEST_LINE = [
+  /^\s*$/,
+  /^\s*[{}[\]],?\s*$/,
+  // package.json: "name": "^1.2.3"
+  /^\s*"[@\w./-]+"\s*:\s*"[\^~]?\d[\w.+-]*"\s*,?\s*$/,
+  // package.json: the start of a dependency section
+  /^\s*"(dependencies|devDependencies|peerDependencies|optionalDependencies)"\s*:\s*\{\s*$/,
+  // Cargo.toml: name = "1.2" or name = { version = "1.2", features = [...] }
+  /^\s*[\w-]+\s*=\s*"[\^~=]?\d[\w.+-]*"\s*$/,
+  /^\s*[\w-]+\s*=\s*\{\s*version\s*=\s*"[^"]*"(\s*,\s*(features\s*=\s*\[[^\]]*\]|default-features\s*=\s*(true|false)|optional\s*=\s*(true|false)))*\s*\}\s*$/,
+  /^\s*\[((target\.[^\]]+\.)?(dev-|build-)?dependencies)\]\s*$/,
+  // pyproject.toml: "name>=1.2",
+  /^\s*"[\w.-]+(\[[\w,.-]+\])?\s*([<>=!~]=?|===)\s*\d[^"@;]*"\s*,?\s*$/,
+];
+
+/** A package fetched from somewhere other than its registry, which a lockfile can name. */
+const UNUSUAL_SOURCE =
+  /git\+|"(git|github|file|link|workspace):|\{\s*(git|path)\s*=|"https?:\/\/(?!files\.pythonhosted\.org\/|pypi\.org\/)/;
+
+/**
+ * Whether a dependency file's added lines only add, remove or bump packages
+ * from their registry. `undefined` text (no tripwires asked for) passes; a
+ * manifest too big to scan doesn't, but a lockfile does, since a large bump
+ * is normal there and the skill's supply-chain check reads it.
+ */
+function onlyRegistryPackages(path: string, addedText: string | null | undefined): boolean {
+  if (addedText === undefined) return true;
+  if (LOCKFILE.test(path)) return addedText === null || !UNUSUAL_SOURCE.test(addedText);
+  if (addedText === null) return false;
+  return addedText.split("\n").every((line) => PLAIN_MANIFEST_LINE.some((re) => re.test(line)));
+}
+
 /**
  * Past this size a reviewer, human or agent, starts missing things. Counted
  * on code only: lockfiles, tests and docs inflate the number without adding
@@ -201,14 +242,15 @@ export function classify(files: ChangedFile[]): TierResult {
     byTier[tier].set(reason, paths);
   };
 
-  const paths = files.flatMap((file) =>
-    file.previousPath ? [file.path, file.previousPath] : [file.path],
-  );
-  for (const path of paths) {
-    // Tests count too: the verifier's own tests are part of the verifier.
-    const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
-    if (high) note("high", high.reason, path);
-    else if (isDependencyFile(path)) note("standard", "dependencies", path);
+  for (const file of files) {
+    for (const path of file.previousPath ? [file.path, file.previousPath] : [file.path]) {
+      // Tests count too: the verifier's own tests are part of the verifier.
+      const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
+      if (high) note("high", high.reason, path);
+      else if (!isDependencyFile(path)) continue;
+      else if (onlyRegistryPackages(path, file.addedText)) note("standard", "dependencies", path);
+      else note("high", "a dependency file change beyond registry versions", path);
+    }
   }
 
   for (const file of files) {

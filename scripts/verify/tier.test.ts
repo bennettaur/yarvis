@@ -51,6 +51,43 @@ describe("classify", () => {
     }
   });
 
+  describe("a dependency file's added lines", () => {
+    const changed = (path: string, addedText: string | null) => ({
+      path,
+      addedText,
+      additions: 1,
+      deletions: 1,
+    });
+
+    it("stay standard when they only name registry versions", () => {
+      for (const [path, text] of [
+        ["package.json", '    "zod": "^4.6.7",\n    "@babel/parser": "^8.0.8"'],
+        ["src-tauri/Cargo.toml", 'serde = { version = "1.0.220", features = ["derive"] }'],
+        ["pyproject.toml", '  "httpx>=0.28.1",'],
+        ["bun.lock", '    "zod": ["zod@4.6.7", "", {}, "sha512-abc"],'],
+        ["bun.lock", null],
+      ] as const) {
+        expect(classify([changed(path, text)]).tier).toBe("standard");
+      }
+    });
+
+    it("are high when they change scripts, hooks or where a package comes from", () => {
+      for (const [path, text] of [
+        ["package.json", '    "verify:report": "bun run evil.ts",'],
+        ["package.json", '  "trustedDependencies": ["esbuild"],'],
+        ["package.json", '    "left-pad": "github:someone/left-pad",'],
+        ["package.json", null],
+        ["src-tauri/Cargo.toml", 'build = "build.rs"'],
+        ["src-tauri/Cargo.toml", "[patch.crates-io]"],
+        ["src-tauri/Cargo.toml", 'foo = { git = "https://example.com/foo" }'],
+        ["bun.lock", '    "zod": ["zod@4.6.7", "https://mirror.example/zod.tgz", {}, "sha512"],'],
+        ["src-tauri/Cargo.lock", 'source = "git+https://example.com/foo#abc"'],
+      ] as const) {
+        expect(classify([changed(path, text)]).tier).toBe("high");
+      }
+    });
+  });
+
   it("raises the tier by size to standard at most, counting code but not tests or lockfiles", () => {
     expect(classify([file("src/App.tsx", 301)]).tier).toBe("standard");
     expect(classify([file("src/App.tsx", 5000, 3000)]).tier).toBe("standard");

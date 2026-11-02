@@ -458,6 +458,16 @@ describe("decideAgentReview", () => {
     );
   });
 
+  it("never approves a PR that changes what the app shows", () => {
+    const report = reportComment(BENNETTAUR, { ...agentReport, needsVisual: true });
+    const review = agentReviewComment(report);
+    expect(acted(decideReview({ comment: review, comments: [report, review] }))).toEqual({
+      status:
+        "Report: agent, reviewed. Not auto-merging: it changes what the app shows, so a person looks",
+      approve: false,
+    });
+  });
+
   it("never approves a high-risk change", () => {
     const files = [{ path: "src-tauri/src/keychain.rs", additions: 1, deletions: 0 }];
     expect(acted(decideReview({ files })).status).toContain("high-risk change");

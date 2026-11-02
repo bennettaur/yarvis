@@ -117,6 +117,14 @@ describe("finalVerdict", () => {
     expect(finalVerdict(blocked, makeFacts()).verdict).toBe("human");
   });
 
+  it("signs whether a person has to look at the UI", () => {
+    expect(renderReport(makeReview(), makeFacts(), TARGET).data.needsVisual).toBe(false);
+    const concern = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: { status: "concern", note: "Not captured" } },
+    });
+    expect(renderReport(concern, makeFacts(), TARGET).data.needsVisual).toBe(true);
+  });
+
   it("needs an agent for a UI change with no screenshots to look at", () => {
     const review = makeReview({ dimensions: { ...makeReview().dimensions, ui: pass } });
     expect(finalVerdict(review, makeFacts()).verdict).toBe("agent");

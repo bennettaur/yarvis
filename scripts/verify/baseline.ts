@@ -123,15 +123,6 @@ function calleeChain(node: AstNode): { root: string | null; inner: AstNode[] } {
  * `null` when it can't be parsed.
  */
 export function testSpans(source: string, path: string): LineRange[] | null {
-  let program: unknown;
-  try {
-    program = parse(source, {
-      sourceType: "module",
-      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
-    }).program;
-  } catch {
-    return null;
-  }
   const spans: LineRange[] = [];
   // `test.each(rows)` is part of the test call around it, not a test of its own.
   const chained = new Set<AstNode>();
@@ -153,7 +144,16 @@ export function testSpans(source: string, path: string): LineRange[] | null {
       if (key !== "loc" && !key.endsWith("Comments")) visit(child);
     }
   };
-  visit(program);
+  // The walk is inside the try too: a deeply nested file can overflow the stack.
+  try {
+    const { program } = parse(source, {
+      sourceType: "module",
+      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+    });
+    visit(program);
+  } catch {
+    return null;
+  }
   return spans;
 }
 
