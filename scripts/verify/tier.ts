@@ -100,6 +100,12 @@ const HIGH_RISK_PATHS: PathRule[] = [
     pattern: /^extension\/(page|background|site)\.js$|^extension\/manifest\.json$/,
     reason: "what the Chrome extension may do in a page",
   },
+  // The verify workflows install and run the default branch's code with the
+  // merge credential, so what shapes that run is part of the verifier.
+  {
+    pattern: /^(bunfig\.toml|tsconfig\.json|\.npmrc)$|^\.github\/actions\//,
+    reason: "what the verify workflows install and run with",
+  },
 ];
 
 /**
@@ -112,34 +118,69 @@ const ASSESSED_PATHS: PathRule[] = [
   { pattern: /^lefthook\.yml$/, reason: "git hooks" },
   {
     pattern:
-      /^((sidecar\/)?(bunfig\.toml|tsconfig[^/]*\.json)|mise\.toml|vite\.config\.ts|biome\.json|\.npmrc)$/,
+      /^(sidecar\/(bunfig\.toml|tsconfig[^/]*\.json)|tsconfig[^/]+\.json|mise\.toml|vite\.config\.ts|biome\.json)$/,
     reason: "build or test config, which runs code",
   },
   { pattern: /^sidecar\/src\/db\//, reason: "the database schema" },
 ];
 
-const MIGRATION = /^sidecar\/drizzle\/[^/]+\.sql$/;
-const MIGRATION_METADATA = /^sidecar\/drizzle\/meta\//;
+/**
+ * Added lines in a `.github/` file that reach a secret, a write token or a
+ * trigger that runs with them. A change with any of these is high without
+ * assessment: the merge credential is a repo secret any workflow can read.
+ */
+const PRIVILEGED_WORKFLOW_TEXT =
+  /secrets\.|create-github-app-token|YARVIS_BOT|pull_request_target|workflow_run|issue_comment|:\s*write\b|write-all|GITHUB_ENV|GITHUB_PATH|self-hosted|^\s*name:\s*CI\s*$/m;
 
-/** Statements that only add to the schema, so no existing data or query can break. */
+/** Lifecycle hooks and settings that run code on `bun install`, including the verify workflows'. */
+const INSTALL_HOOK_TEXT =
+  /"(pre|post)?(install|prepare|publish|pack)"\s*:|"trustedDependencies"\s*:|"verify:[\w-]*"\s*:/;
+
+const MIGRATION = /^sidecar\/drizzle\/[^/]+\.sql$/;
+const MIGRATION_SNAPSHOT = /^sidecar\/drizzle\/meta\/\d+_snapshot\.json$/;
+const MIGRATION_JOURNAL = "sidecar/drizzle/meta/_journal.json";
+
+/** Statements that only add to the schema, so nothing existing changes. */
 const ADDITIVE_STATEMENT =
-  /^(CREATE (TABLE|TYPE|EXTENSION IF NOT EXISTS|(UNIQUE )?INDEX)|ALTER TABLE ("[^"]+"\.)?"?[\w]+"? ADD (COLUMN|CONSTRAINT))\b/i;
+  /^(CREATE (TABLE|TYPE|INDEX)\b|CREATE EXTENSION IF NOT EXISTS "?vector"?$|ALTER TABLE ("[^"]+"\.)?"?\w+"? ADD COLUMN\b)/i;
+
+/**
+ * Parts of an otherwise additive statement that can still lose data or stop
+ * the app starting on existing rows: a copy from other tables, a cascade, or
+ * a required column with no default on a table that may have rows.
+ */
+const RISKY_IN_ADDITIVE = /\bSELECT\b|\bCASCADE\b|\$|\/\*/i;
 
 /**
  * Whether a new migration only adds tables, columns, types or indexes. An
  * edit to an existing migration (any deleted line) or anything else, such as a
- * drop, a rename, a type change or an `UPDATE`, needs assessing.
+ * drop, a rename, a type change, a constraint or an `UPDATE`, needs assessing.
+ * Drizzle sends each breakpoint-separated chunk as one query, so a chunk with
+ * a second statement in it is refused rather than parsed.
  */
 export function isAdditiveMigration(
   addedText: string | null | undefined,
   deletions: number,
 ): boolean {
   if (typeof addedText !== "string" || deletions > 0) return false;
-  return addedText
-    .split(/--> statement-breakpoint|;\s*$/m)
-    .map((statement) => statement.replace(/^\s*--.*$/gm, "").trim())
-    .filter(Boolean)
-    .every((statement) => ADDITIVE_STATEMENT.test(statement));
+  const statements = addedText
+    .split("--> statement-breakpoint")
+    .map((chunk) => chunk.replace(/--.*$/gm, "").trim().replace(/;$/, "").trim())
+    .filter(Boolean);
+  return (
+    statements.length > 0 &&
+    statements.every(
+      (statement) =>
+        !statement.includes(";") &&
+        ADDITIVE_STATEMENT.test(statement) &&
+        !RISKY_IN_ADDITIVE.test(statement) &&
+        !(
+          /\bADD COLUMN\b/i.test(statement) &&
+          /\bNOT NULL\b/i.test(statement) &&
+          !/\bDEFAULT\b/i.test(statement)
+        ),
+    )
+  );
 }
 
 /**
@@ -295,16 +336,32 @@ export function classify(files: ChangedFile[]): TierResult {
       // Tests count too: the verifier's own tests are part of the verifier.
       const high = HIGH_RISK_PATHS.find((rule) => rule.pattern.test(path));
       const assessed = ASSESSED_PATHS.find((rule) => rule.pattern.test(path));
+      // A rename's old path has no added text of its own, so it is judged
+      // as if nothing could be read from it.
+      const text = path === file.path ? file.addedText : null;
       if (high) note("high", high.reason, path);
-      else if (assessed) toAssess(assessed.reason, path);
-      else if (MIGRATION_METADATA.test(path)) note("standard", "migration metadata", path);
-      else if (MIGRATION.test(path)) {
-        // A rename's old path has no added text of its own, so it is assessed.
-        if (path === file.path && isAdditiveMigration(file.addedText, file.deletions)) {
-          note("standard", "a migration that only adds", path);
-        } else toAssess("a migration that changes or removes existing schema or data", path);
+      else if (path.startsWith(".github/") && text !== undefined) {
+        if (text === null || PRIVILEGED_WORKFLOW_TEXT.test(text)) {
+          note("high", "CI that reaches secrets, write tokens or privileged triggers", path);
+        } else toAssess("CI or repo config, which runs with the repo's secrets", path);
+      } else if (assessed) toAssess(assessed.reason, path);
+      else if (MIGRATION_SNAPSHOT.test(path)) note("standard", "migration metadata", path);
+      // Appending an entry rewrites only the previous entry's closing brace.
+      else if (path === MIGRATION_JOURNAL && file.deletions <= 1) {
+        note("standard", "migration metadata", path);
+      } else if (MIGRATION.test(path) && isAdditiveMigration(text, file.deletions)) {
+        note("standard", "a migration that only adds", path);
+      } else if (path.startsWith("sidecar/drizzle/")) {
+        toAssess("a migration that changes or removes existing schema or data", path);
       } else if (!isDependencyFile(path)) continue;
-      else if (onlyRegistryPackages(path, file.addedText)) note("standard", "dependencies", path);
+      else if (
+        /(^|\/)package\.json$/.test(path) &&
+        (text === null || INSTALL_HOOK_TEXT.test(text ?? ""))
+      ) {
+        note("high", "an install hook or a verify script", path);
+      } else if (LOCKFILE.test(path) && typeof text === "string" && UNUSUAL_SOURCE.test(text)) {
+        note("high", "a package from outside its registry", path);
+      } else if (onlyRegistryPackages(path, text)) note("standard", "dependencies", path);
       else toAssess("a dependency file change beyond registry versions", path);
     }
   }

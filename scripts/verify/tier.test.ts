@@ -69,17 +69,13 @@ describe("classify", () => {
       }
     });
 
-    it("need assessing when they change scripts, hooks or where a package comes from", () => {
+    it("need assessing when they change scripts or where a manifest gets a package", () => {
       for (const [path, text] of [
-        ["package.json", '    "verify:report": "bun run evil.ts",'],
-        ["package.json", '  "trustedDependencies": ["esbuild"],'],
+        ["package.json", '    "lint:fix": "biome check --write .",'],
         ["package.json", '    "left-pad": "github:someone/left-pad",'],
-        ["package.json", null],
         ["src-tauri/Cargo.toml", 'build = "build.rs"'],
         ["src-tauri/Cargo.toml", "[patch.crates-io]"],
         ["src-tauri/Cargo.toml", 'foo = { git = "https://example.com/foo" }'],
-        ["bun.lock", '    "zod": ["zod@4.6.7", "https://mirror.example/zod.tgz", {}, "sha512"],'],
-        ["src-tauri/Cargo.lock", 'source = "git+https://example.com/foo#abc"'],
       ] as const) {
         const result = classify([changed(path, text)]);
         expect(result.assess).toEqual([
@@ -89,6 +85,60 @@ describe("classify", () => {
         expect(floorTier(result, [path])).toBe("standard");
       }
     });
+
+    it("are high for install hooks, verify scripts and lockfile sources outside the registry", () => {
+      for (const [path, text] of [
+        ["package.json", '    "postinstall": "node setup.js",'],
+        ["sidecar/package.json", '    "prepare": "bun run build",'],
+        ["package.json", '  "trustedDependencies": ["esbuild"],'],
+        ["package.json", '    "verify:report": "bun run evil.ts",'],
+        ["package.json", null],
+        ["bun.lock", '    "zod": ["zod@4.6.7", "https://mirror.example/zod.tgz", {}, "sha512"],'],
+        ["src-tauri/Cargo.lock", 'source = "git+https://example.com/foo#abc"'],
+      ] as const) {
+        const result = classify([changed(path, text)]);
+        expect(result.tier).toBe("high");
+        expect(result.assess).toEqual([]);
+      }
+    });
+  });
+
+  it("keeps what the verify workflows install and run with high", () => {
+    for (const path of [
+      "bunfig.toml",
+      "tsconfig.json",
+      ".npmrc",
+      ".github/actions/setup/action.yml",
+    ]) {
+      expect(classify([file(path)]).tier).toBe("high");
+    }
+  });
+
+  it("keeps CI that reaches secrets, write tokens or privileged triggers high", () => {
+    for (const text of [
+      "        run: echo ${{ secrets.TOKEN }}",
+      "  pull_request_target:",
+      "  issue_comment:",
+      "      contents: write",
+      "        uses: actions/create-github-app-token@abc",
+      '        run: echo "X=1" >> $GITHUB_ENV',
+      "name: CI",
+      null,
+    ]) {
+      const result = classify([
+        { path: ".github/workflows/zz.yml", addedText: text, additions: 1, deletions: 0 },
+      ]);
+      expect(result.tier).toBe("high");
+    }
+    const routine = classify([
+      {
+        path: ".github/workflows/ci.yml",
+        addedText: "      - run: bun run typecheck",
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
+    expect(routine.assess.map((a) => a.path)).toEqual([".github/workflows/ci.yml"]);
   });
 
   it("sends CI, git hooks, build config and the schema for assessment", () => {
@@ -96,8 +146,8 @@ describe("classify", () => {
       ".github/workflows/ci.yml",
       ".github/dependabot.yml",
       "lefthook.yml",
-      "bunfig.toml",
       "sidecar/bunfig.toml",
+      "tsconfig.app.json",
       "vite.config.ts",
       "sidecar/src/db/schema.ts",
     ]) {
@@ -124,7 +174,7 @@ CREATE TABLE "things" (
 );
 --> statement-breakpoint
 ALTER TABLE "memories" ADD COLUMN "pinned" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
+CREATE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
       expect(isAdditiveMigration(sql, 0)).toBe(true);
       expect(classify([migration(sql)])).toMatchObject({ tier: "standard", assess: [] });
     });
@@ -137,6 +187,17 @@ CREATE UNIQUE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
         'ALTER TABLE "things" DROP COLUMN "kind";',
         `UPDATE "things" SET "kind" = 'a';`,
         'CREATE TABLE "x" ("id" int);--> statement-breakpoint\nDELETE FROM "y";',
+        // A second statement in one chunk runs too.
+        'CREATE TABLE "a" ("x" int); DROP TABLE "memories";',
+        'CREATE TABLE "a" ("x" int)\n; DROP TABLE "memories";',
+        'CREATE TABLE "a" ("x" int); DO $$ BEGIN DELETE FROM memories; END $$;',
+        'CREATE TABLE "a" AS SELECT * FROM "memories";',
+        'CREATE UNIQUE INDEX "u" ON "memories" ("content");',
+        'ALTER TABLE "notes" ADD CONSTRAINT "f" FOREIGN KEY ("m") REFERENCES "memories"("id");',
+        'ALTER TABLE "notes" ADD COLUMN "owner" text NOT NULL;',
+        'CREATE EXTENSION IF NOT EXISTS "dblink";',
+        'CREATE TABLE "a" ("x" int) /* ; DROP TABLE "memories" */;',
+        "",
       ]) {
         expect(classify([migration(sql)]).assess).toHaveLength(1);
       }
@@ -146,11 +207,30 @@ CREATE UNIQUE INDEX "things_kind_idx" ON "things" USING btree ("kind");`;
       expect(classify([migration('CREATE INDEX "a" ON "b" ("c");', 1)]).assess).toHaveLength(1);
     });
 
-    it("treats drizzle's metadata as standard", () => {
-      expect(classify([file("sidecar/drizzle/meta/0050_snapshot.json")])).toMatchObject({
-        tier: "standard",
-        assess: [],
-      });
+    it("treats drizzle's snapshots and an appended journal entry as standard", () => {
+      for (const path of [
+        "sidecar/drizzle/meta/0050_snapshot.json",
+        "sidecar/drizzle/meta/_journal.json",
+      ]) {
+        expect(classify([file(path, 7, 1)])).toMatchObject({ tier: "standard", assess: [] });
+      }
+    });
+
+    it("assesses SQL outside the top level and journal edits to old entries", () => {
+      for (const changed of [
+        file("sidecar/drizzle/meta/0050_x.sql"),
+        file("sidecar/drizzle/sub/0050_x.sql"),
+        file("sidecar/drizzle/meta/_journal.json", 1, 1 + 1),
+      ]) {
+        expect(classify([changed]).assess).toHaveLength(1);
+      }
+    });
+
+    it("allows NOT NULL on a new column with a default, and the vector extension", () => {
+      expect(
+        isAdditiveMigration('ALTER TABLE "t" ADD COLUMN "p" boolean DEFAULT false NOT NULL;', 0),
+      ).toBe(true);
+      expect(isAdditiveMigration('CREATE EXTENSION IF NOT EXISTS "vector";', 0)).toBe(true);
     });
   });
 

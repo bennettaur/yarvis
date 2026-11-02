@@ -188,7 +188,9 @@ if (import.meta.main) {
   const addedText = parseAddedText(unified);
   const files = parseNumstat(gitDiff(root, ["--numstat", base, head])).map((file) => ({
     ...file,
-    addedText: addedText.get(file.path) ?? "",
+    // No text for a file that gained lines means it couldn't be read, as when
+    // it is binary; the tripwires treat that as unscannable, not empty.
+    addedText: addedText.get(file.path) ?? (file.additions > 0 ? null : ""),
   }));
   const addedOrModified = gitDiff(root, ["--name-only", "--diff-filter=AM", base, head])
     .split("\n")
