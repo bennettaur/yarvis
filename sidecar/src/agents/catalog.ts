@@ -1,13 +1,15 @@
-import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinToolMetadata } from "../chat/builtinTools.ts";
 import { COMPLEXITY_TIERS, type ComplexityTier, isComplexityTier } from "../llm/complexity.ts";
+import { CHOICE_PATTERN, MAX_INSTRUCTIONS_CHARS } from "./decisionLimits.ts";
 import activityConsolidator from "./definitions/activity-consolidator.md" with { type: "text" };
+import complexityRouter from "./definitions/complexity-router.md" with { type: "text" };
 import mergeReviewer from "./definitions/merge-reviewer.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
+import specialistPicker from "./definitions/specialist-picker.md" with { type: "text" };
 import workScout from "./definitions/work-scout.md" with { type: "text" };
 import workspaceRecap from "./definitions/workspace-recap.md" with { type: "text" };
 import yarvisGuide from "./definitions/yarvis-guide.md" with { type: "text" };
@@ -20,6 +22,7 @@ import {
   assertKnownKeys,
   FrontmatterError,
   parseDocument,
+  readMarkdownDir,
 } from "./frontmatter.ts";
 
 /**
@@ -46,11 +49,21 @@ import {
 /** Where a definition came from, which is also its precedence. */
 export type SpecialistSource = "builtin" | "user";
 
+/**
+ * `task`: a delegated run with tools that answers in text.
+ * `decision`: one call to the decision model that picks one of a set of
+ * options (`agents/decide.ts`). It has no tools and no model of its own.
+ */
+export type SpecialistKind = "task" | "decision";
+
 export interface SpecialistDefinition {
   name: string;
   description: string;
+  kind: SpecialistKind;
   /** The file body: this specialist's system prompt. */
   prompt: string;
+  /** A decision specialist's fixed options, for one whose caller doesn't supply them. */
+  choices: string[];
   /** Bare built-in tool names, as written in the file. */
   tools: string[];
   /** Tools it may use without the user approving the call; a subset of `tools`. */
@@ -94,6 +107,8 @@ const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "definitions/planner.md", content: planner },
   { path: "definitions/yarvis-guide.md", content: yarvisGuide },
   { path: "definitions/merge-reviewer.md", content: mergeReviewer },
+  { path: "definitions/complexity-router.md", content: complexityRouter },
+  { path: "definitions/specialist-picker.md", content: specialistPicker },
 ];
 
 /** `~/.yarvis/agents`, overridable so tests and a second instance can point elsewhere. */
@@ -111,6 +126,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KNOWN_KEYS = [
   "name",
   "description",
+  "kind",
+  "choices",
   "tools",
   "unattended",
   "model",
@@ -118,6 +135,13 @@ const KNOWN_KEYS = [
   "maxSteps",
   "enabled",
 ] as const;
+
+/**
+ * Keys that configure a delegated run. A decision specialist rejects them
+ * rather than ignoring them, so a file that sets one isn't read as having tools
+ * or a model it will never get.
+ */
+const TASK_ONLY_KEYS = ["tools", "unattended", "model", "complexity", "maxSteps"] as const;
 
 /**
  * Turns one file into a definition. Tool names and keys are checked here rather
@@ -144,6 +168,40 @@ export function parseSpecialist(
   const description = asRequiredString(path, data, "description");
   if (!body.trim()) {
     throw new FrontmatterError(path, "the body is the system prompt and cannot be empty", 1);
+  }
+
+  const kind = asString(path, data, "kind") ?? "task";
+  if (kind !== "task" && kind !== "decision") {
+    throw new FrontmatterError(path, "'kind' must be task or decision", 1);
+  }
+  if (kind === "decision") {
+    if (body.length > MAX_INSTRUCTIONS_CHARS) {
+      throw new FrontmatterError(
+        path,
+        `a decision specialist's prompt cannot exceed ${MAX_INSTRUCTIONS_CHARS} characters, so it fits a small decision model's context`,
+        1,
+      );
+    }
+    const taskKeys = TASK_ONLY_KEYS.filter((key) => data[key] !== undefined);
+    if (taskKeys.length) {
+      throw new FrontmatterError(
+        path,
+        `a decision specialist runs on the decision model with no tools, so it cannot set: ${taskKeys.join(", ")}`,
+        1,
+      );
+    }
+  }
+  const choices = asList(path, data, "choices") ?? [];
+  if (choices.length && kind !== "decision") {
+    throw new FrontmatterError(path, "'choices' is only for a decision specialist", 1);
+  }
+  const badChoices = choices.filter((choice) => !CHOICE_PATTERN.test(choice));
+  if (badChoices.length) {
+    throw new FrontmatterError(
+      path,
+      `choice(s) must be letters, digits, '_', '.' or '-': ${badChoices.join(", ")}`,
+      1,
+    );
   }
 
   const tools = asList(path, data, "tools") ?? [];
@@ -204,7 +262,9 @@ export function parseSpecialist(
   return {
     name,
     description,
+    kind,
     prompt: body,
+    choices,
     tools,
     unattended,
     provider,
@@ -215,34 +275,6 @@ export function parseSpecialist(
     source,
     path,
   };
-}
-
-/** One file from the user's directory, or the reason it couldn't be read. */
-type UserFile = { path: string; content: string } | { path: string; error: string };
-
-/** Reads the user's directory, treating an absent one as simply empty. */
-async function readUserFiles(dir: string): Promise<UserFile[]> {
-  let names: string[];
-  try {
-    names = (await readdir(dir)).filter((name) => name.endsWith(".md"));
-  } catch {
-    return [];
-  }
-  const files: UserFile[] = [];
-  for (const name of names.sort()) {
-    const path = join(dir, name);
-    try {
-      files.push({ path, content: await readFile(path, "utf8") });
-    } catch (e) {
-      // Let the read decide what the path is rather than stat-ing first: a
-      // directory named `x.md` is skipped, as it was never a definition.
-      if ((e as NodeJS.ErrnoException).code === "EISDIR") continue;
-      // A file that can't be read is reported, not silently skipped: the user
-      // put it there deliberately and would otherwise wonder where it went.
-      files.push({ path, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  return files;
 }
 
 /**
@@ -258,6 +290,10 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
   const add = (path: string, content: string, source: SpecialistSource) => {
     try {
       const definition = parseSpecialist(path, content, source, knownTools);
+      // Two of the user's own files can't both win, so the second is reported, not loaded.
+      if (source === "user" && byName.get(definition.name)?.source === "user") {
+        throw new Error(`${path}: another file already defines '${definition.name}'`);
+      }
       byName.set(definition.name, definition);
     } catch (e) {
       problems.push({ path, message: e instanceof Error ? e.message : String(e) });
@@ -266,7 +302,7 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
 
   for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
   const dir = agentsDir();
-  for (const file of await readUserFiles(dir)) {
+  for (const file of await readMarkdownDir(dir)) {
     if ("error" in file) problems.push({ path: file.path, message: file.error });
     else add(file.path, file.content, "user");
   }
@@ -293,10 +329,12 @@ export function reloadCatalog(): Promise<SpecialistCatalog> {
 }
 
 export async function listSpecialists(
-  options: { enabledOnly?: boolean } = {},
+  options: { enabledOnly?: boolean; kind?: SpecialistKind } = {},
 ): Promise<SpecialistDefinition[]> {
   const { specialists } = await catalog();
-  return options.enabledOnly ? specialists.filter((s) => s.enabled) : specialists;
+  return specialists.filter(
+    (s) => (!options.enabledOnly || s.enabled) && (!options.kind || s.kind === options.kind),
+  );
 }
 
 /** Resolves a name the way the user would write it, case-insensitively. */
@@ -325,7 +363,7 @@ export async function searchSpecialists(query: string, limit = 5): Promise<Speci
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((term) => term.length > 2);
-  const candidates = await listSpecialists({ enabledOnly: true });
+  const candidates = await listSpecialists({ enabledOnly: true, kind: "task" });
   if (terms.length === 0) return candidates.map((specialist) => ({ specialist, score: 0 }));
 
   return candidates

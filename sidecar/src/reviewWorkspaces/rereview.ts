@@ -1198,7 +1198,6 @@ export async function startRereview(
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
           model: settings.model,
-          maxBudgetUsd: settings.maxBudgetUsd,
           maxTurns: rereviewMaxTurns(index),
           timeoutMs: REREVIEW_RUN_TIMEOUT_MS,
           meta: {

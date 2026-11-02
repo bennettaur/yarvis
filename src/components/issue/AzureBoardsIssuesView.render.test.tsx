@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueSummary } from "../../lib/issues/types";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 const item: IssueSummary = {
   provider: "azure",
@@ -57,8 +58,7 @@ function responseFor(path: string): unknown {
 
 // Stubbing the transport (rather than lib/azureBoards/api) keeps the request
 // paths the api client builds under test, matching the JIRA render test.
-mock.module("../../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -84,45 +84,8 @@ mock.module("../../lib/api", () => ({
     if (failing && path.startsWith(failing)) return new Response("nope", { status: 500 });
     return new Response(JSON.stringify(responseFor(path)), { status: 200 });
   },
-  // Faithful copy of the real implementation: a naive stub here would leak
-  // into any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the
-  // actual error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
-  streamSSE: () => () => {},
-}));
+  streamSSE: async function* () {},
+});
 
 // The repo picker lists the registered repos; none are needed for a scratch
 // workspace, which is what this test starts.
@@ -311,3 +274,5 @@ describe("AzureBoardsIssuesView", () => {
     cleanup();
   });
 });
+
+afterAll(resetSidecarApi);

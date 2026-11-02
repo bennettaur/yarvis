@@ -319,11 +319,29 @@ function toReviewers(pr: any): Reviewer[] {
 }
 
 /**
+ * The viewer's own standing verdict on the PR. Read from
+ * `latestOpinionatedReviews` rather than `latestReviews`, which also counts a
+ * comment-only review, so replying to a thread after approving would read as
+ * no approval. A pending request for the viewer wins, as in `toReviewers`.
+ */
+function viewerReviewState(pr: any, viewerLogin: string): ReviewerState {
+  const requested = (pr.reviewRequests?.nodes ?? []).some(
+    (node: any) => node?.requestedReviewer?.login === viewerLogin,
+  );
+  if (requested) return "pending";
+  const review = (pr.latestOpinionatedReviews?.nodes ?? []).find(
+    (node: any) => node?.author?.login === viewerLogin,
+  );
+  return review ? mapReviewState(review.state) : "pending";
+}
+
+/**
  * Shapes the GraphQL `pullRequest` payload into a flat PrDetail. `repo` carries
  * the sibling `repository` node whose merge-method flags the UI needs; it's
  * optional so unit tests can shape a PR without it (merge buttons stay hidden).
+ * `viewerLogin` is who the token belongs to, for `viewerReview`.
  */
-export function toPrDetail(pr: any, repo?: any): PrDetail {
+export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail {
   const rollupNodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const threadNodes = pr.reviewThreads?.nodes ?? [];
   return {
@@ -352,6 +370,7 @@ export function toPrDetail(pr: any, repo?: any): PrDetail {
     // A check the token may not read comes back as null; see `prDetail`.
     checks: rollupNodes.filter(Boolean).map(toCheckItem),
     reviewers: toReviewers(pr),
+    ...(viewerLogin ? { viewerReview: viewerReviewState(pr, viewerLogin) } : {}),
     reviewThreads: threadNodes.map(toReviewThread),
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
@@ -472,16 +491,23 @@ export function toStackEntry(node: any, ref: PrRef, isCurrent: boolean): StackEn
   };
 }
 
-/** The fields {@link toStackEntry} reads. Shared by all three stack queries. */
-const STACK_NODE_FIELDS = `
-  number title url state isDraft isInMergeQueue
+/** The fields {@link toStackEntry} reads, but for the checks. */
+const STACK_LINK_FIELDS = `
+  number title url state isDraft isInMergeQueue isCrossRepository
   baseRefName headRefName mergeStateStatus reviewDecision
+`;
+
+/** A layer's checks, the heavy part of a node: up to 100 contexts each. */
+const STACK_CHECK_FIELDS = `
   commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
     __typename
     ... on CheckRun { name status conclusion detailsUrl }
     ... on StatusContext { context state targetUrl }
   }}}}}}
 `;
+
+/** The fields {@link toStackEntry} reads. */
+const STACK_NODE_FIELDS = STACK_LINK_FIELDS + STACK_CHECK_FIELDS;
 
 const STACK_SEED_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
@@ -500,8 +526,8 @@ query($owner:String!,$repo:String!,$number:Int!){
 const STACK_DOWN_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:1, orderBy:{field:CREATED_AT,direction:DESC}){
-      nodes{ ${STACK_NODE_FIELDS} }
+    pullRequests(headRefName:$branch, states:[OPEN,MERGED], first:10, orderBy:{field:CREATED_AT,direction:DESC}){
+      nodes{ ${STACK_LINK_FIELDS} }
     }
   }
 }`;
@@ -510,8 +536,8 @@ query($owner:String!,$repo:String!,$branch:String!){
 const STACK_UP_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
-    pullRequests(baseRefName:$branch, states:[OPEN], first:1, orderBy:{field:CREATED_AT,direction:ASC}){
-      nodes{ ${STACK_NODE_FIELDS} }
+    pullRequests(baseRefName:$branch, states:[OPEN], first:10, orderBy:{field:CREATED_AT,direction:ASC}){
+      nodes{ ${STACK_LINK_FIELDS} }
     }
   }
 }`;
@@ -531,6 +557,19 @@ const STACK_MAX_DEPTH = 10;
  * same batching {@link buildPrLookupQuery} uses, so settling it for the entire
  * stack costs one round trip rather than one per layer.
  */
+/**
+ * The checks of each numbered layer, in one request. The walk's steps select
+ * up to ten candidates each, to skip fork PRs, so they leave the checks to this.
+ */
+function buildLayerChecksQuery(count: number): string {
+  const varDecls = Array.from({ length: count }, (_, i) => `$n${i}:Int!`).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) => `  k${i}: pullRequest(number:$n${i}){ ${STACK_CHECK_FIELDS} }`,
+  ).join("\n");
+  return `query($owner:String!,$repo:String!,${varDecls}){\n repository(owner:$owner,name:$repo){\n${fields}\n }\n}`;
+}
+
 function buildBehindQuery(count: number): string {
   const varDecls = Array.from({ length: count }, (_, i) => `$b${i}:String!,$h${i}:String!`).join(
     ",",
@@ -781,6 +820,7 @@ const CONVERSATION_PAGE_SIZE = 100;
 
 const PR_DETAIL_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
+  viewer{ login }
   repository(owner:$owner,name:$repo){
     mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
     pullRequest(number:$number){
@@ -801,6 +841,9 @@ query($owner:String!,$repo:String!,$number:Int!){
         }
       }
       latestReviews(first:50){
+        nodes{ author{login} state }
+      }
+      latestOpinionatedReviews(first:50){
         nodes{ author{login} state }
       }
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
@@ -911,28 +954,82 @@ query($owner:String!,$repo:String!,$branch:String!){
 }`;
 
 /** Check runs and legacy commit statuses, matching the two REST reads. */
+const PR_STATUS_FIELDS = `
+  state merged mergeable mergeStateStatus headRefOid
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
+    __typename
+    ... on CheckRun { status conclusion }
+    ... on StatusContext { state }
+  }}}}}}
+`;
+
 const PR_STATUS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      state merged mergeable mergeStateStatus headRefOid
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
-        __typename
-        ... on CheckRun { status conclusion }
-        ... on StatusContext { state }
-      }}}}}}
-    }
+    pullRequest(number:$number){ ${PR_STATUS_FIELDS} }
   }
 }`;
+
+const PR_REVIEW_FIELDS = "reviews(first:100){ nodes{ state authorAssociation author{ login } } }";
 
 const PR_REVIEWS_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      reviews(first:100){ nodes{ state authorAssociation author{ login } } }
-    }
+    pullRequest(number:$number){ ${PR_REVIEW_FIELDS} }
   }
 }`;
+
+/** What the workspace poller reads about each PR, in one query: summary, status and reviews. */
+const PR_POLL_FIELDS = `number url isDraft ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
+
+/**
+ * Same-named branches a batched branch read looks through for the one in the
+ * repo itself. Each one costs its checks and reviews, so this stays far below
+ * the single lookup's 20: a fork's branch has to be among a repo's five newest
+ * PRs on that name to crowd out the real one.
+ */
+const BRANCH_POLL_CANDIDATES = 5;
+
+/**
+ * The most refs one batched poll read takes. Every PR's checks and reviews
+ * count toward GitHub's per-query cost and time limit, so a caller splits a
+ * longer list rather than sending one query GitHub might refuse.
+ */
+export const POLL_BATCH_SIZE = 25;
+
+/** The alias each ref's answer comes back under in a batched poll query. */
+const pollAlias = (i: number) => `p${i}`;
+
+/**
+ * One aliased query reading the PR on each branch, built like
+ * {@link buildPrLookupQuery} so nothing from a ref reaches the query text.
+ */
+function buildBranchPollQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$b${i}:String!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `${pollAlias(i)}: repository(owner:$o${i},name:$r${i}){ pullRequests(headRefName:$b${i}, first:${BRANCH_POLL_CANDIDATES}, orderBy:{field:CREATED_AT,direction:DESC}){ nodes{ headRepositoryOwner{ login } ${PR_POLL_FIELDS} } } }`,
+  ).join("\n");
+  return `query(${varDecls}){\n${fields}\n}`;
+}
+
+/** One aliased query reading each known PR by number, built like {@link buildBranchPollQuery}. */
+function buildNumberPollQuery(count: number): string {
+  const varDecls = Array.from(
+    { length: count },
+    (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
+  ).join(",");
+  const fields = Array.from(
+    { length: count },
+    (_, i) =>
+      `${pollAlias(i)}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_POLL_FIELDS} } }`,
+  ).join("\n");
+  return `query(${varDecls}){\n${fields}\n}`;
+}
 
 /** The fields `restLikeIssue` reads. */
 const ISSUE_FIELDS = `
@@ -1027,6 +1124,75 @@ function restMergeable(value: unknown): boolean | null {
   if (value === "MERGEABLE") return true;
   if (value === "CONFLICTING") return false;
   return null;
+}
+
+/** A GraphQL pull request's status fields ({@link PR_STATUS_FIELDS}) as a {@link PrStatus}. */
+function prStatusFromNode(pr: any): PrStatus {
+  const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  const runs = contexts
+    .filter((c: any) => c?.__typename === "CheckRun")
+    .map((c: any) => ({
+      status: String(c.status ?? "").toLowerCase(),
+      conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
+    }));
+  // EXPECTED is a required status that hasn't reported yet, so it waits
+  // like REST's pending rather than counting as a failure.
+  const statuses = contexts
+    .filter((c: any) => c?.__typename === "StatusContext")
+    .map((c: any) => ({
+      state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
+    }));
+  return {
+    state: pr.state === "OPEN" ? "open" : "closed",
+    merged: Boolean(pr.merged),
+    mergeable: restMergeable(pr.mergeable),
+    mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
+    headSha: pr.headRefOid ?? null,
+    checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
+  };
+}
+
+/** A GraphQL pull request's reviews ({@link PR_REVIEW_FIELDS}), in the REST shape `summarizeReviewDecision` reads. */
+function restLikeReviews(pr: any): any[] {
+  // In submission order, like REST, which the summary depends on.
+  return (pr.reviews?.nodes ?? []).map((r: any) => ({
+    state: r?.state,
+    author_association: r?.authorAssociation,
+    user: { login: r?.author?.login },
+  }));
+}
+
+/** One PR as the workspace poller reads it. */
+export interface PolledPr {
+  number: number;
+  url: string;
+  draft: boolean;
+  status: PrStatus;
+  /** Null when nothing waits on review: a draft, or a PR that is no longer open. */
+  reviewDecision: ReviewDecision | null;
+}
+
+/** A PR read with {@link PR_POLL_FIELDS} as a {@link PolledPr}. */
+function toPolledPr(pr: any): PolledPr {
+  const status = prStatusFromNode(pr);
+  const awaitingReview = !status.merged && status.state === "open" && !pr.isDraft;
+  return {
+    number: pr.number,
+    url: pr.url,
+    draft: Boolean(pr.isDraft),
+    status,
+    reviewDecision: awaitingReview ? summarizeReviewDecision(restLikeReviews(pr)) : null,
+  };
+}
+
+/** Each ref's answer from a batched read, or why that one ref couldn't be read. */
+export type BatchResult<T> = { ok: true; value: T } | { ok: false; error: GitHubError };
+
+/** A branch in a GitHub repo. */
+export interface BranchRef {
+  owner: string;
+  repo: string;
+  branch: string;
 }
 
 /** Where a `GitHubClient` sends REST and GraphQL requests. */
@@ -1300,28 +1466,7 @@ export class GitHubClient {
         if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
         const pr = data?.repository?.pullRequest;
         if (!pr) throw notFound(`${owner}/${repo}#${number}`);
-        const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-        const runs = contexts
-          .filter((c: any) => c?.__typename === "CheckRun")
-          .map((c: any) => ({
-            status: String(c.status ?? "").toLowerCase(),
-            conclusion: c.conclusion ? String(c.conclusion).toLowerCase() : null,
-          }));
-        // EXPECTED is a required status that hasn't reported yet, so it waits
-        // like REST's pending rather than counting as a failure.
-        const statuses = contexts
-          .filter((c: any) => c?.__typename === "StatusContext")
-          .map((c: any) => ({
-            state: c.state === "EXPECTED" ? "pending" : String(c.state ?? "").toLowerCase(),
-          }));
-        return {
-          state: pr.state === "OPEN" ? "open" : "closed",
-          merged: Boolean(pr.merged),
-          mergeable: restMergeable(pr.mergeable),
-          mergeableState: String(pr.mergeStateStatus ?? "unknown").toLowerCase(),
-          headSha: pr.headRefOid ?? null,
-          checks: sumCheckSummaries(summarizeChecks(runs), summarizeCommitStatuses(statuses)),
-        };
+        return prStatusFromNode(pr);
       },
       () => this.prStatusViaRest(owner, repo, number),
     );
@@ -1369,13 +1514,7 @@ export class GitHubClient {
         });
         const pr = data.repository?.pullRequest;
         if (!pr) throw notFound(`${owner}/${repo}#${number}`);
-        // In submission order, like REST, which the summary depends on.
-        const reviews = (pr.reviews?.nodes ?? []).map((r: any) => ({
-          state: r?.state,
-          author_association: r?.authorAssociation,
-          user: { login: r?.author?.login },
-        }));
-        return summarizeReviewDecision(reviews);
+        return summarizeReviewDecision(restLikeReviews(pr));
       },
       async () => {
         const reviews = await this.api<any[]>(
@@ -1414,9 +1553,102 @@ export class GitHubClient {
     );
   }
 
+  /**
+   * The PR on each branch with its status and review verdict, for the
+   * workspace poller: one request for up to {@link POLL_BATCH_SIZE} branches,
+   * where the single-PR reads take three per branch. Null where a branch has
+   * no PR.
+   * GraphQL only, with no REST fallback: a background read that runs out of
+   * GraphQL budget waits for it rather than spending the REST budget the PR
+   * pages need.
+   */
+  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr | null>[]> {
+    return this.pollBatch(
+      refs,
+      buildBranchPollQuery,
+      (ref, i) => ({
+        [`o${i}`]: ref.owner,
+        [`r${i}`]: ref.repo,
+        [`b${i}`]: ref.branch,
+      }),
+      (ref, repo) => {
+        const pr = (repo?.pullRequests?.nodes ?? []).find(
+          (node: any) =>
+            node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
+        );
+        return { ok: true, value: pr ? toPolledPr(pr) : null };
+      },
+    );
+  }
+
+  /**
+   * Known PRs' status and review verdicts, read by number in one request like
+   * {@link branchPrStatuses}. Cheaper per PR than a branch read, since there
+   * are no same-named branches to sift, but it can't find a PR it isn't given.
+   */
+  async prStatusesByNumber(refs: PrNumberRef[]): Promise<BatchResult<PolledPr>[]> {
+    return this.pollBatch(
+      refs,
+      buildNumberPollQuery,
+      (ref, i) => ({
+        [`o${i}`]: ref.owner,
+        [`r${i}`]: ref.repo,
+        [`n${i}`]: ref.number,
+      }),
+      (ref, repo) => {
+        const pr = repo?.pullRequest;
+        if (!pr) return { ok: false, error: notFound(`${ref.owner}/${ref.repo}#${ref.number}`) };
+        return { ok: true, value: toPolledPr(pr) };
+      },
+    );
+  }
+
+  /**
+   * Sends `refs` as one aliased query. An error naming one alias fails only
+   * that ref, so a deleted repo doesn't cost the rest of the batch. An error
+   * naming none (a spent rate limit, a bad token) fails them all, and is thrown.
+   */
+  private async pollBatch<R, T>(
+    refs: R[],
+    build: (count: number) => string,
+    variablesFor: (ref: R, i: number) => Record<string, unknown>,
+    read: (ref: R, repo: any) => BatchResult<T>,
+  ): Promise<BatchResult<T>[]> {
+    if (refs.length === 0) return [];
+    if (refs.length > POLL_BATCH_SIZE) {
+      throw new RangeError(
+        `a poll batch takes at most ${POLL_BATCH_SIZE} refs, not ${refs.length}`,
+      );
+    }
+    const variables = Object.assign({}, ...refs.map((ref, i) => variablesFor(ref, i)));
+    const { data, errors } = await this.graphqlPayload<Record<string, any>>(
+      build(refs.length),
+      variables,
+    );
+    const byAlias = new Map<string, GraphqlErrorEntry[]>();
+    const unattributed: GraphqlErrorEntry[] = [];
+    for (const error of errors ?? []) {
+      // A fine-grained token is refused the check runs in place; the rest of the PR stands.
+      if (isRefusedCheck(error)) continue;
+      const alias = error.path?.[0];
+      if (typeof alias === "string") byAlias.set(alias, [...(byAlias.get(alias) ?? []), error]);
+      else unattributed.push(error);
+    }
+    if (unattributed.length || !data) {
+      throw githubErrorFromGraphql(unattributed.length ? unattributed : (errors ?? []));
+    }
+    return refs.map((ref, i) => {
+      const failed = byAlias.get(pollAlias(i));
+      return failed
+        ? { ok: false, error: githubErrorFromGraphql(failed) }
+        : read(ref, data[pollAlias(i)]);
+    });
+  }
+
   async prDetail(owner: string, repo: string, number: number): Promise<PrDetail> {
     const { data, errors } = await this.graphqlPayload<{
       repository?: { pullRequest?: any };
+      viewer?: { login?: string };
     }>(PR_DETAIL_QUERY, { owner, repo, number });
     // A fine-grained token can't be granted the Checks permission, so GitHub
     // refuses every CheckRun in the rollup. That costs the checks, not the PR:
@@ -1424,7 +1656,7 @@ export class GitHubClient {
     if (errors && !(data && errors.every(isRefusedCheck))) throw githubErrorFromGraphql(errors);
     const pr = data?.repository?.pullRequest;
     if (!pr) throw new Error(`pull request ${owner}/${repo}#${number} not found`);
-    const detail = toPrDetail(pr, data?.repository);
+    const detail = toPrDetail(pr, data?.repository, data?.viewer?.login);
     const more = await this.remainingReviewThreads(owner, repo, number, pr.reviewThreads?.pageInfo);
     detail.reviewThreads.push(...more.threads);
     if (more.truncated) detail.reviewThreadsTruncated = true;
@@ -1587,7 +1819,9 @@ export class GitHubClient {
         query,
         { owner, repo, branch },
       );
-      const node = data.repository?.pullRequests?.nodes?.[0];
+      // A branch name matches fork PRs too, so anyone could otherwise slot a
+      // PR of theirs into the stack. A real layer's branch is in this repo.
+      const node = data.repository?.pullRequests?.nodes?.find((n) => n && !n.isCrossRepository);
       if (!node?.number || seen.has(node.number)) return null;
       seen.add(node.number);
       return node;
@@ -1602,15 +1836,18 @@ export class GitHubClient {
       cursor = next;
     }
 
+    // A fork PR's head branch lives in the fork, so this repo's PRs based on a
+    // branch of that name (often main) aren't layers above it.
     const above: any[] = [];
     cursor = pr;
-    while (above.length < STACK_MAX_DEPTH) {
+    while (!pr.isCrossRepository && above.length < STACK_MAX_DEPTH) {
       const next = await step(STACK_UP_QUERY, cursor.headRefName);
       if (!next) break;
       above.push(next);
       cursor = next;
     }
 
+    await this.attachLayerChecks(owner, repo, [...below, ...above]);
     const entries = [...below, pr, ...above].map((node) =>
       toStackEntry(
         node,
@@ -1639,6 +1876,22 @@ export class GitHubClient {
    * `mergeStateStatus` said standing, since a stack that can't answer this is
    * still worth showing.
    */
+  /** Fills in the checks the walk's steps left out, on each layer node in place. */
+  private async attachLayerChecks(owner: string, repo: string, layers: any[]): Promise<void> {
+    if (layers.length === 0) return;
+    const variables: Record<string, unknown> = { owner, repo };
+    layers.forEach((layer, i) => {
+      variables[`n${i}`] = layer.number;
+    });
+    const data = await this.graphql<{ repository?: Record<string, any> }>(
+      buildLayerChecksQuery(layers.length),
+      variables,
+    );
+    layers.forEach((layer, i) => {
+      layer.commits = data.repository?.[`k${i}`]?.commits;
+    });
+  }
+
   private async markBehindLayers(
     owner: string,
     repo: string,

@@ -35,7 +35,7 @@ export function createPrModelRoutes(_config: Config): Hono {
     return c.json(await savePrModelConfig(parsed.data));
   });
 
-  // The verification report's Claude Code model and spend ceiling.
+  // The verification report's Claude Code model and budget.
   router.get("/verification", async (c) => c.json(await getVerificationRunConfig()));
 
   router.patch("/verification", async (c) => {
@@ -47,7 +47,7 @@ export function createPrModelRoutes(_config: Config): Hono {
     return c.json(await saveVerificationRunConfig(parsed.data));
   });
 
-  // The "What's changed" summary's model, spend ceiling and auto-start.
+  // The "What's changed" summary's model, budget and auto-start.
   router.get("/rereview", async (c) => c.json(await getRereviewRunConfig()));
 
   router.patch("/rereview", async (c) => {

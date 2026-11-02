@@ -140,7 +140,11 @@ back to ad-hoc.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
   `src/test/setup.ts` registers the DOM, pins the timezone, and stubs Tauri
   runtime APIs. Component tests stub the sidecar API client
-  (`src/lib/api`) and render with `src/test/render.tsx`'s `renderToHtml`.
+  (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
+  clear it with `resetSidecarApi` in `afterAll`, never with their own
+  `mock.module` of it: that replaces the module for the whole run, so a
+  partial stub breaks whichever file loads next. They render with
+  `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
@@ -282,10 +286,11 @@ back to ad-hoc.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments. Review
-  comment bodies go out unfenced, the one exception to the rule below, because
-  the user is their only author; a feature that writes them from anywhere else
-  has to fence them first.
+  workspace, listing and resolving that workspace's review comments. Bodies
+  with `source = 'user'` go out unfenced, the one exception to the rule below,
+  because the user wrote them. Any other source (a verification finding the
+  user chose to add) is fenced there and kept out of the event log; a new
+  writer gets a source of its own rather than `user`.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -639,12 +644,16 @@ back to ad-hoc.
   so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
   security default managed settings seat. Claude Code's core agents and skills
   aren't plugins and stay.
-  The permission mode is always set and never one that approves on its own, a
-  budget is required, the prompt goes on stdin, a fixed guardrail says the
+  The permission mode is always set and never one that approves on its own,
+  the prompt goes on stdin, a fixed guardrail says the
   checkout is material rather than instructions (`spotlight` fences PR text a
   caller interpolates), and no session is saved, so the transcript never
   reaches the nightly session digest and from there memory.
-  `agentRuns/canary.ts` checks all of that against the real CLI.
+  `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
+  (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
+  setting only warns, and a run cut off at a cap ends with nothing to show
+  for what it spent. The timeout still bounds a runaway; `maxTurns` limits
+  only the main thread.
   Cancelling kills the process group, since the tools a run starts outlive a
   kill aimed only at Claude Code; so does the sidecar exiting, and the startup
   sweep kills what a crashed sidecar left, matched by pid and start time. The
@@ -678,6 +687,20 @@ back to ad-hoc.
   improves with the app while a user's definition stays theirs, with no
   seed-once rule and nothing to reset. Adding a specialist is writing a file,
   which is what "let the agent reach for one it needs" requires.
+  - A file with `kind: decision` is a decision specialist: no tools, no model
+    of its own, and one call to the decision model that picks one of a set of
+    options (`agents/decide.ts`). Callers go through
+    `consultDecisionSpecialist`, which answers null when the feature's toggle
+    is off or the call fails, and the caller then does what it did before. Same
+    rule as auto mode: a failed or unsure decision model means the old
+    behavior, never a guessed answer. `runSpecialistDefinition` refuses one, so
+    it can't be delegated to or scheduled. A task specialist with `unattended`
+    grants is kept out of both shipped uses: the picker never offers it and
+    complexity routing never changes its model, because the task text it is
+    judged on can be shaped by what other people wrote. The picker only
+    suggests: `delegate` with no name returns the pick and runs nothing, so a
+    run always takes a call that names its specialist, which is what an
+    approval prompt on `delegate` shows.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to
@@ -701,6 +724,22 @@ back to ad-hoc.
     approval a repo's CI can merge on. The second is narrowed again at the
     tool: `post_merge_review` re-reads the PR and its report itself, and posts
     only for a current report whose verdict asked for an agent.
+- Heads-down routines (`sidecar/src/headsDown/routines.ts`) follow the same
+  files-not-rows shape: shipped ones in `headsDown/routines/`, embedded, and
+  `~/.yarvis/routines/*.md` beside them, winning on a name. The body goes into
+  an unattended pass's prompt unfenced, as the user's own words, which is why
+  they are never read from a repo either. Which ones a pass gets is decided in
+  code, not by the model: `dueRoutines` offers those whose cadence has passed
+  since a pass last reported them done (`heads_down_passes.routines_done`), most
+  overdue first, capped by `maxRoutinesPerPass`. One a pass was given
+  (`routines_offered`, written when the pass starts) and didn't finish waits
+  before it is given again, so a routine that keeps failing can't take a slot
+  on every pass. `finish_pass` records only names it was offered, so a pass
+  can't push back a routine it never saw. Both directories are read by
+  `readMarkdownDir` in `agents/frontmatter.ts`, which opens without blocking
+  and reads only regular files, since a FIFO named `x.md` would hang every load.
+  It refuses a symlinked folder or file, which could point into a repo, and a
+  file past a size cap.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

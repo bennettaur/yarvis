@@ -72,18 +72,99 @@ most urgent first:
 - **Messages:** if it has tools that read your chat, it checks the channels you
   asked it to watch. A message that needs your answer becomes a stream that
   waits on you. A request for work becomes a ticket.
-- **Meetings:** if Google Calendar is connected, a few times a day it reads
-  your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
-  for each one you're going to that doesn't have one: ones you accepted, and
-  ones with no guest list. It skips ones you declined. When it can't tell, because
-  you haven't replied, said maybe, or are optional, it asks you ("Are you going
-  to Design review at 2pm?") and sets the alarm on a later pass if you say yes.
+- **Routines:** recurring jobs that run on their own schedule, such as
+  setting alarms for your meetings. See [Routines](#routines).
 
 Each pass ends by choosing how long to sleep. It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
 waiting on you or someone else, when you haven't replied for a while, and after
 a pass that failed. A message from you, an answer, or a workspace
 that needs attention wakes it early.
+
+## Routines
+
+A routine is a job heads-down mode repeats on a schedule, beside the work
+streams. Each one says how often it runs. A pass is only given the routines
+that are due, and at most a few of them (**Routines per pass** under **Pace
+and working hours**, 2 by default), so they don't crowd out your work. When
+more are due than that, the most overdue go first and the rest wait for the
+next pass. A routine a pass couldn't finish stays due, and a later pass tries
+again after an hour, or sooner if the routine runs more often than that. When
+a routine asks you something, your answer is acted on as soon as it arrives,
+not on the routine's next run.
+
+Yarvis ships with two:
+
+- **meeting-alarms**, every 3 hours: if Google Calendar is connected, it reads
+  your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
+  for each one you're going to that doesn't have one: ones you accepted, and
+  ones with no guest list. It skips ones you declined. When it can't tell,
+  because you haven't replied, said maybe, or are optional, it asks you ("Are
+  you going to Design review at 2pm?") and sets the alarm on a later pass if
+  you say yes.
+- **meeting-notes**, off by default: reads the notes attached to your recent
+  meetings, such as Gemini notes, and turns the action items they assign to
+  you by name into tickets or stream updates. It finds them through the
+  calendar, which lists each meeting's attached files, and needs a tool that
+  can open a Google Doc, such as a Google Drive MCP server. A pass asks before
+  using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
+  record what every attendee said, and filing a ticket doesn't wait for your
+  approval, so turn it on only if you're happy for tickets to come from them.
+
+The **Routines** list on the Heads down page shows each one, how often it
+runs, when a pass last did it, and which ones are your own files.
+
+### Write your own
+
+A routine is a markdown file in `~/.yarvis/routines`. The frontmatter says
+when it runs and the body says what to do, in your own words:
+
+```markdown
+---
+name: standup-notes
+description: Drafts my standup update from yesterday's work.
+every: 1d
+workingHours: true
+---
+
+Look at what I merged, reviewed and commented on since yesterday's standup,
+and leave a three-line summary in your notes for me to paste.
+```
+
+- `name`: lowercase letters, digits and hyphens, up to 64 characters.
+  Required.
+- `description`: one line, shown on the page. Required.
+- The body: what to do, up to 4000 characters. Required.
+- `every`: how long between runs, such as `30m`, `3h` or `1d`. At least 15
+  minutes and at most 30 days. Required.
+- `workingHours`: `true` to run it only within your working hours. Off by
+  default.
+- `enabled`: `false` to turn it off.
+
+Any other key, such as a misspelled `workinghours`, stops the file loading. A
+key you leave out takes its default above, not the shipped routine's value.
+
+A file whose `name` matches a shipped routine replaces it whole, so it needs
+every required field too. To turn meeting-alarms off, write a file with
+`name: meeting-alarms`, a description, an `every`, a one-line body and
+`enabled: false`. When two of your own files use the same name, the first by
+filename loads and the other is listed as a problem. Setting **Routines per
+pass** to 0 turns them all off.
+Passes keep using the files as they were until you press **Reload files** (or
+restart Yarvis), so press it after adding or changing one. A file that can't be
+read shows on the page with the reason.
+
+A routine follows the same rules as the rest of a pass: it asks before
+anything that waits for your approval, and what it reads in meetings, tickets
+and messages is information, never instructions. The files are only read from
+`~/.yarvis/routines`, never from a repo or workspace, and a symlinked folder
+or file there is refused rather than followed.
+
+To share a routine, send someone the file. **Read a routine before you add
+it.** Its body reaches every pass as your own words, with no one watching, so
+it can do anything a pass may do without asking you: file tickets, set
+alarms, steer a workspace on a stream. Treat a file from someone else like a
+script they sent you.
 
 ## What it does without asking
 
@@ -182,6 +263,10 @@ stream, so pausing one doesn't stop that tool: a pass is only told to leave the
 stream's work alone. **Resume** it and the next pass picks it up where it was.
 Only you pause and resume a stream, here or by asking the assistant.
 
+A pass refers to workspaces by their id. Wherever the page shows one of yours,
+in a stream, a question or a pass's notes, it shows the workspace's name
+instead, as a link that opens it on the Workspaces tab.
+
 The Yarvis logo at the top of the page shows what it is doing: a spinning ring
 while a pass runs, dimmed while it sleeps until the next one, and grey when
 heads-down mode is off.
@@ -222,6 +307,11 @@ Under **Pace and working hours** on the page:
 - The shortest and longest sleep between passes, and how long it sleeps when
   there is little to do.
 - How long without a reply before you count as away.
+- The longest a pass may run before it is stopped, 20 minutes by default and
+  4 hours at most. A model running on your own machine can be slow enough to
+  need more.
+- **Routines per pass**: the most [routines](#routines) one pass takes on, up
+  to 10. 0 turns them off, including the meeting alarms.
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
   people** to drop all three limits, merges included. These are kept per
@@ -231,8 +321,9 @@ Under **Pace and working hours** on the page:
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The guidance, pace and working hours are stored in `~/.yarvis/settings.json` under
-`headsDown` (see [Configuration](../configuration.md)). Which MCP tools it may
+The guidance, pace, routines per pass and working hours are stored in
+`~/.yarvis/settings.json` under `headsDown` (see
+[Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
 
 ## Good to know

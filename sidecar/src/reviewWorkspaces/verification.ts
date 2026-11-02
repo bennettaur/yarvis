@@ -11,7 +11,7 @@
  * shown once.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -56,6 +56,7 @@ import {
 } from "./coverage.ts";
 import type { ChangedFileWithSizes } from "./git.ts";
 import {
+  groupFile,
   PATCH_LIMITS,
   type PatchIndexEntry,
   patchIndex,
@@ -83,6 +84,13 @@ export const VERIFICATION_RUN_KIND = "verification-report";
 /** Most findings a check reports, and most must-read files a report lists. */
 export const MAX_FINDINGS = 5;
 export const MAX_MUST_READ = 8;
+/** Most things a must-read flags as already looking off or unclear. */
+export const MAX_MUST_READ_FLAGS = 3;
+/**
+ * Most flags read from one must-read before duplicates are dropped: room for
+ * a few duplicates, while keeping the audit of dropped ones small.
+ */
+const MAX_MUST_READ_FLAGS_READ = 2 * MAX_MUST_READ_FLAGS;
 
 const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
@@ -136,11 +144,43 @@ const riskSchema = z.object({
   concerns: boundedList(concernSchema, MAX_FINDINGS),
 });
 
+const mustReadFlagSchema = z.object({
+  note: boundedText(160),
+  line: optionalLine,
+});
+
 const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
   reason: boundedText(160),
   lines: lineRangeSchema,
+  // Optional and nullable: most must-reads have nothing to flag, and the
+  // coordinator copies the agent's answer as is, `null` included. Capped by
+  // `dropCoveredFlags`, after duplicates go, so a duplicate never costs a flag.
+  // Not `boundedList`: under `nullish` its description would sit in an `anyOf`
+  // branch rather than on the field.
+  flags: z
+    .array(mustReadFlagSchema)
+    .nullish()
+    .transform((flags) => (flags ?? []).slice(0, MAX_MUST_READ_FLAGS_READ))
+    .meta({ description: `At most ${MAX_MUST_READ_FLAGS} items.` }),
 });
+
+/** Past this a diagram is dropped rather than cut, since a cut one doesn't render. */
+export const MAX_MERMAID_CHARS = 6000;
+
+const flowSchema = z
+  .object({
+    title: boundedText(TITLE_CHARS),
+    explanation: boundedText(700),
+    mermaid: z
+      .string()
+      .meta({ description: `A Mermaid flowchart, at most ${MAX_MERMAID_CHARS} characters.` }),
+  })
+  .transform((flow) =>
+    flow.mermaid.length > MAX_MERMAID_CHARS
+      ? { ...flow, mermaid: "", tooLarge: true }
+      : { ...flow, mermaid: flow.mermaid.trim() },
+  );
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
@@ -156,6 +196,34 @@ export const CHECK_SECTIONS = [
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
+
+/** The sections a reviewer can pick. The summary and must-reads always run. */
+export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "flow"] as const;
+export type ReportSection = (typeof REPORT_SECTIONS)[number];
+
+/** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
+export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
+  (s) => s !== "flow",
+);
+
+/** The agent that writes each section, for following its reads. */
+export const SECTION_AGENTS: Record<ReportSection, string> = {
+  risk: "yarvis-review:risk-reviewer",
+  completeness: "yarvis-review:completeness-reviewer",
+  tests: "yarvis-review:test-reviewer",
+  complexity: "yarvis-review:complexity-reviewer",
+  performance: "yarvis-review:performance-reviewer",
+  comments: "yarvis-review:comment-reviewer",
+  observability: "yarvis-review:observability-reviewer",
+  quality: "yarvis-review:quality-reviewer",
+  flow: "yarvis-review:flow-diagram",
+};
+
+/** The picked sections in report order, without repeats; the default when none are given. */
+export function normalizeSections(picked?: readonly ReportSection[]): ReportSection[] {
+  if (!picked || picked.length === 0) return [...DEFAULT_SECTIONS];
+  return REPORT_SECTIONS.filter((s) => picked.includes(s));
+}
 
 /** How far apart two findings' lines can be and still be the same finding. */
 const NEARBY_LINES = 3;
@@ -206,15 +274,24 @@ export interface DroppedDuplicate {
   line: number;
 }
 
+export interface DroppedFlag {
+  /** The must-read the flag was on. */
+  path: string;
+  line: number;
+  note: string;
+}
+
 /** What the server took out of a run's answer, kept on the run so it can be audited. */
 export interface ReportAudit {
   droppedDuplicates: DroppedDuplicate[];
   /** Must-reads naming a path the PR doesn't change. */
   droppedMustReads: string[];
+  /** Must-read flags a check finding or risk concern already reported. */
+  droppedFlags: DroppedFlag[];
 }
 
 export function emptyAudit(): ReportAudit {
-  return { droppedDuplicates: [], droppedMustReads: [] };
+  return { droppedDuplicates: [], droppedMustReads: [], droppedFlags: [] };
 }
 
 /**
@@ -229,14 +306,16 @@ export function emptyAudit(): ReportAudit {
  * nothing a check reported disappears without a record.
  */
 export function dedupeChecks(
-  checks: Record<CheckSection, Check>,
+  checks: Partial<Record<CheckSection, Check>>,
   audit: ReportAudit,
-): Record<CheckSection, Check> {
+): Partial<Record<CheckSection, Check>> {
   const kept: { section: CheckSection; path: string; line: number; title: string }[] = [];
-  const result = {} as Record<CheckSection, Check>;
+  const result: Partial<Record<CheckSection, Check>> = {};
   for (const section of CHECK_SECTIONS) {
+    const check = checks[section];
+    if (!check) continue;
     const own: typeof kept = [];
-    const findings = checks[section].findings.filter((f) => {
+    const findings = check.findings.filter((f) => {
       if (!f.path || f.line === undefined) return true;
       const { path, line, title } = f;
       const earlier = kept.find(
@@ -264,6 +343,39 @@ export function dedupeChecks(
   return result;
 }
 
+type MustRead = z.output<typeof mustReadSchema>;
+
+/**
+ * Removes must-read flags a finding or risk concern already reports, by the
+ * same rule {@link dedupeChecks} uses, so one problem isn't shown twice on the
+ * same or a nearby line, then keeps the first {@link MAX_MUST_READ_FLAGS}. The
+ * finding or concern is kept, since it carries a detail.
+ */
+export function dropCoveredFlags(
+  mustRead: MustRead[],
+  cited: { path?: string; line?: number; title: string }[],
+  audit: ReportAudit,
+): MustRead[] {
+  return mustRead.map((entry) => ({
+    ...entry,
+    flags: entry.flags
+      .filter((flag) => {
+        if (flag.line === undefined) return true;
+        const { line, note } = flag;
+        const covered = cited.some(
+          (c) =>
+            c.path === entry.path &&
+            c.line !== undefined &&
+            Math.abs(c.line - line) <= NEARBY_LINES &&
+            similarTitles(c.title, note),
+        );
+        if (covered) audit.droppedFlags.push({ path: entry.path, line, note });
+        return !covered;
+      })
+      .slice(0, MAX_MUST_READ_FLAGS),
+  }));
+}
+
 export interface ReportLimits {
   /** Most words the summary may have. */
   summaryWords: number;
@@ -273,6 +385,8 @@ export interface ReportLimits {
   changedPaths: ReadonlySet<string>;
   /** The checkout the run reads; a path an agent gives under it is made relative. */
   checkoutDir?: string;
+  /** The sections the run was asked for; the answer must have each, and keeps no others. */
+  sections: readonly ReportSection[];
 }
 
 function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string): T {
@@ -282,56 +396,78 @@ function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string
 /**
  * The report's schema for one PR. Built per run because its bounds come from
  * the PR: the summary's word cap from the diff size, the must-read list from
- * the changed files. What it takes out goes into `audit`.
+ * the changed files, and its sections from what the reviewer picked. What it
+ * takes out goes into `audit`.
  */
 export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
-  return z
-    .object({
-      summary: z
-        .string()
-        .transform((s) => clipWords(s, limits.summaryWords))
-        .meta({ description: `At most ${limits.summaryWords} words.` }),
-      mustRead: boundedList(mustReadSchema, MAX_MUST_READ).transform((entries) => {
-        const seen = new Set<string>();
-        const known = entries
-          .map((e) => withRepoPath(e, limits.checkoutDir))
-          .filter((e) => {
-            if (!limits.changedPaths.has(e.path)) {
-              audit.droppedMustReads.push(e.path);
-              return false;
-            }
-            if (seen.has(e.path)) return false;
-            seen.add(e.path);
-            return true;
-          });
-        return known.slice(0, limits.mustReadMax);
-      }),
-      risk: riskSchema,
-      completeness: checkSchema,
-      tests: checkSchema,
-      complexity: checkSchema,
-      performance: checkSchema,
-      comments: checkSchema,
-      observability: checkSchema,
-      quality: checkSchema,
-    })
-    .transform((report) => {
-      const relative = (check: Check): Check => ({
+  const sectionSchemas = {
+    risk: riskSchema,
+    completeness: checkSchema,
+    tests: checkSchema,
+    complexity: checkSchema,
+    performance: checkSchema,
+    comments: checkSchema,
+    observability: checkSchema,
+    quality: checkSchema,
+    flow: flowSchema,
+  };
+  // Only the asked-for sections are in the shape, all required: Claude Code is
+  // shown only what to write, and a section the model adds anyway is stripped
+  // unread, so a malformed extra can't fail the run.
+  const askedSchemas: Record<string, z.ZodType> = Object.fromEntries(
+    limits.sections.map((name) => [name, sectionSchemas[name]]),
+  );
+  type Answered = {
+    [K in keyof typeof sectionSchemas]?: z.output<(typeof sectionSchemas)[K]>;
+  };
+  const fixed = z.object({
+    summary: z
+      .string()
+      .transform((s) => clipWords(s, limits.summaryWords))
+      .meta({ description: `At most ${limits.summaryWords} words.` }),
+    mustRead: boundedList(mustReadSchema, MAX_MUST_READ).transform((entries) => {
+      const seen = new Set<string>();
+      const known = entries
+        .map((e) => withRepoPath(e, limits.checkoutDir))
+        .filter((e) => {
+          if (!limits.changedPaths.has(e.path)) {
+            audit.droppedMustReads.push(e.path);
+            return false;
+          }
+          if (seen.has(e.path)) return false;
+          seen.add(e.path);
+          return true;
+        });
+      return known.slice(0, limits.mustReadMax);
+    }),
+  });
+  return fixed.extend(askedSchemas).transform((report) => {
+    // The shape is built per run, so its type can't say which sections it has.
+    const { summary, mustRead, risk, flow, ...answered } = report as z.output<typeof fixed> &
+      Answered;
+    const checks: Partial<Record<CheckSection, Check>> = {};
+    for (const name of CHECK_SECTIONS) {
+      const check = answered[name];
+      if (!check) continue;
+      checks[name] = {
         ...check,
         findings: check.findings.map((f) => withRepoPath(f, limits.checkoutDir)),
-      });
-      const checks = Object.fromEntries(
-        CHECK_SECTIONS.map((section) => [section, relative(report[section])]),
-      ) as Record<CheckSection, Check>;
-      return {
-        ...report,
-        risk: {
-          ...report.risk,
-          concerns: report.risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
-        },
-        ...dedupeChecks(checks, audit),
       };
-    });
+    }
+    const concerns = risk?.concerns.map((c) => withRepoPath(c, limits.checkoutDir)) ?? [];
+    const deduped = dedupeChecks(checks, audit);
+    const cited = [
+      ...concerns,
+      ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
+    ];
+    return {
+      summary,
+      mustRead: dropCoveredFlags(mustRead, cited, audit),
+      ...(risk && { risk: { ...risk, concerns } }),
+      ...deduped,
+      ...(flow && { flow }),
+    };
+  });
 }
 
 export type VerificationReport = z.output<ReturnType<typeof verificationReportSchema>>;
@@ -399,8 +535,9 @@ const MODEL_IDS: Record<VerificationModel, string> = {
   sonnet: "claude-sonnet-5",
   opus: "claude-opus-5-5",
 };
-/** Agents that read a file: every check agent; a bulk file's first page by one. */
-const READERS = { file: 9, bulk: 1 };
+/** Agents that read every file: the summary agent and one per section. A bulk file's first page is read by one. */
+export const fileReaders = (sections: readonly ReportSection[]) => 1 + sections.length;
+const BULK_READERS = 1;
 /** A numbered patch line is about this long, its share of context lines included. */
 const BYTES_PER_CHANGED_LINE = 115;
 const BYTES_PER_TOKEN = 3.5;
@@ -420,29 +557,42 @@ export function sizedFileBytes(
   return skim ? Math.min(whole, SKIM_LINES * BYTES_PER_CHANGED_LINE) : whole;
 }
 
-/** About how many bytes of patch the agents read in all, each reader counted. */
+/**
+ * About how many bytes of patch the agents read in all, each reader counted:
+ * `perReader` is what one agent reading every file reads, `bulk` the first
+ * pages of bulk files, read once.
+ */
 export function estimateReadBytes(
   files: SizedFile[],
   truncated: ReadonlySet<string>,
   bulk: ReadonlyMap<string, BulkClass>,
-): number {
-  let bytes = 0;
+): { perReader: number; bulk: number } {
+  const bytes = { perReader: 0, bulk: 0 };
   for (const f of files) {
     if (f.binary) continue;
     const skim = !!bulk.get(f.path)?.skim;
-    bytes +=
-      sizedFileBytes(f, { truncated: truncated.has(f.path), skim }) *
-      (skim ? READERS.bulk : READERS.file);
+    const read = sizedFileBytes(f, { truncated: truncated.has(f.path), skim });
+    if (skim) bytes.bulk += read * BULK_READERS;
+    else bytes.perReader += read;
   }
   return bytes;
 }
 
+const perTokenUsd = (model: VerificationModel) => {
+  const rates = ratesFor(MODEL_IDS[model]);
+  return (1.25 * rates.input + RESEND * rates.cacheRead) / 1_000_000;
+};
+
+const roundToCents = (usd: number) => Math.round(usd * 100) / 100;
+
 /** About what a run whose agents read `readBytes` of patch costs with `model`, in USD. */
 export function estimateRunCostUsd(model: VerificationModel, readBytes: number): number {
-  const rates = ratesFor(MODEL_IDS[model]);
-  const tokens = BASE_TOKENS + readBytes / BYTES_PER_TOKEN;
-  const perToken = (1.25 * rates.input + RESEND * rates.cacheRead) / 1_000_000;
-  return Math.round(tokens * perToken * 100) / 100;
+  return roundToCents((BASE_TOKENS + readBytes / BYTES_PER_TOKEN) * perTokenUsd(model));
+}
+
+/** About what one more agent reading every file adds, in USD, unrounded so a client can sum it. */
+export function readerCostUsd(model: VerificationModel, perReaderBytes: number): number {
+  return (perReaderBytes / BYTES_PER_TOKEN) * perTokenUsd(model);
 }
 
 export interface VerificationInput {
@@ -464,6 +614,8 @@ export interface VerificationInput {
   fallbackTitle: string;
   /** Every changed file and the patch written for it. */
   index: PatchIndexEntry[];
+  /** What the reviewer asked for, from {@link normalizeSections}. */
+  sections: readonly ReportSection[];
 }
 
 export interface VerificationMaterial {
@@ -474,8 +626,10 @@ export interface VerificationMaterial {
   /** `index.md`. */
   indexFile: string;
   limits: ReportLimits;
-  /** How many reading groups the patches were split into: agents per lane. */
+  /** How many reading groups the patches were split into: agents per check. */
   groups: number;
+  /** `groups/<n>.md`, in group order from 1. */
+  groupFiles: string[];
 }
 
 export const CHECK_OUTCOMES = [
@@ -589,6 +743,7 @@ export function buildVerificationMaterial(
     summaryWords: summaryWordCap(changedLines),
     mustReadMax: mustReadCap(index.length),
     changedPaths: new Set(index.map((e) => e.path)),
+    sections: input.sections,
   };
 
   const pr = detail
@@ -633,13 +788,15 @@ export function buildVerificationMaterial(
     `REVIEW_CONTEXT=${contextDir}`,
     `SUMMARY_WORDS=${limits.summaryWords}`,
     `MUST_READ_MAX=${limits.mustReadMax}`,
+    `MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`,
     `READING_GROUPS=${groups.length}`,
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
+    `SECTIONS=${input.sections.join(",")}`,
     "",
     "REVIEW_CONTEXT holds pr.md (the PR's description, CI checks and comments), index.md " +
-      "(every changed file and its patch, and the reading groups) and patches/ (one numbered " +
-      "patch per changed file, from the merge-base to the head). The agents read them there; " +
-      "you don't need to.",
+      "(every changed file and its patch, and the reading groups), groups/ (each reading " +
+      "group's patches, one file per group) and patches/ (one numbered patch per changed " +
+      "file, from the merge-base to the head). The agents read them there; you don't need to.",
   ].join("\n");
 
   return {
@@ -648,6 +805,7 @@ export function buildVerificationMaterial(
     indexFile: patchIndex(index, { title: "Changed files", groups }),
     limits,
     groups: groups.length,
+    groupFiles: groups.map((g, i) => groupFile(g, i + 1)),
   };
 }
 
@@ -729,11 +887,18 @@ export async function recordReadVolumes(
     .where(eq(agentRuns.id, runId));
 }
 
+/** True when the server took nothing out, so there is no audit to keep. */
+export function auditIsEmpty(audit: ReportAudit): boolean {
+  // Every field of ReportAudit is a list of what was dropped.
+  return Object.values(audit).every((dropped) => dropped.length === 0);
+}
+
 async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<void> {
-  if (audit.droppedDuplicates.length === 0 && audit.droppedMustReads.length === 0) return;
+  if (auditIsEmpty(audit)) return;
   console.log(
     `[verification] run ${runId}: dropped ${audit.droppedDuplicates.length} duplicate findings, ` +
-      `${audit.droppedMustReads.length} must-reads for unchanged paths`,
+      `${audit.droppedMustReads.length} must-reads for unchanged paths, ` +
+      `${audit.droppedFlags.length} must-read flags a finding or concern already reported`,
   );
   await db
     .update(agentRuns)
@@ -775,7 +940,9 @@ export async function startVerification(
   prId: string,
   reviewDeps: ReviewDeps,
   deps: VerificationDeps,
+  picked?: readonly ReportSection[],
 ): Promise<StartedVerification> {
+  const sections = normalizeSections(picked);
   // Read once for the lock key, which can't change; everything else comes
   // from the read inside.
   const { refKey } = await getReviewPr(db, workspaceId, prId);
@@ -802,11 +969,15 @@ export async function startVerification(
     try {
       const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
       const material = buildVerificationMaterial(
-        { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index },
+        { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index, sections },
         contextDir,
       );
       writeFileSync(join(contextDir, "pr.md"), material.contextFile);
       writeFileSync(join(contextDir, "index.md"), material.indexFile);
+      mkdirSync(join(contextDir, "groups"));
+      material.groupFiles.forEach((file, i) => {
+        writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
+      });
       const audit = emptyAudit();
       let volumes: ReadVolume[] = [];
       const handle = await startClaudeRun(
@@ -823,7 +994,11 @@ export async function startVerification(
           ),
           finishOutput: (report, activity): CoveredReport => {
             const counted = safeCoverage("verification", () =>
-              coverageOf(index, activity, { cwd: pr.worktreePath, contextDir, lanes: true }),
+              coverageOf(index, activity, {
+                cwd: pr.worktreePath,
+                contextDir,
+                lanes: new Set(sections.map((s) => SECTION_AGENTS[s])),
+              }),
             );
             volumes = counted.volumes;
             return { ...report, coverage: counted.coverage };
@@ -832,7 +1007,6 @@ export async function startVerification(
           allowedTools: ALLOWED_TOOLS,
           disallowedTools: DISALLOWED_TOOLS,
           model: settings.model,
-          maxBudgetUsd: settings.maxBudgetUsd,
           maxTurns: MAX_TURNS,
           timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
           meta: {
@@ -847,6 +1021,7 @@ export async function startVerification(
             patchBytes: index.reduce((n, e) => n + e.bytes, 0),
             readingGroups: material.groups,
             detailLoaded: detail !== null,
+            sections,
           },
         },
         deps.run,
@@ -904,9 +1079,18 @@ export interface VerificationSize {
   truncated: string[];
   /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
   skimmed: string[];
-  /** A rough figure from {@link estimateRunCostUsd}, for the configured model. */
+  /** A rough figure from {@link estimateRunCostUsd}, for the configured model and the default sections. */
   estimatedCostUsd: number;
-  /** The configured budget; past it, Claude Code stops the run before it answers. */
+  /**
+   * About what one section adds: one more agent reading every file. The
+   * estimate moves by this much per section added to or taken from the
+   * defaults. It leaves out the agent's own fixed overhead and, for the flow
+   * diagram, its reads of the checkout, so it runs low.
+   */
+  sectionCostUsd: number;
+  /** The sections {@link estimatedCostUsd} assumes. */
+  defaultSections: readonly ReportSection[];
+  /** The configured budget. It only warns: past it the UI asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
 }
@@ -919,9 +1103,10 @@ export function verificationSize(
   settings: VerificationRunConfig,
 ): VerificationSize {
   const changedLines = files.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0);
+  const read = estimateReadBytes(files, new Set(truncated), bulk);
   const estimatedCostUsd = estimateRunCostUsd(
     settings.model,
-    estimateReadBytes(files, new Set(truncated), bulk),
+    read.perReader * fileReaders(DEFAULT_SECTIONS) + read.bulk,
   );
   return {
     files: files.length,
@@ -931,6 +1116,8 @@ export function verificationSize(
     truncated,
     skimmed: files.filter((f) => !f.binary && bulk.get(f.path)?.skim).map((f) => f.path),
     estimatedCostUsd,
+    sectionCostUsd: readerCostUsd(settings.model, read.perReader),
+    defaultSections: DEFAULT_SECTIONS,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
   };

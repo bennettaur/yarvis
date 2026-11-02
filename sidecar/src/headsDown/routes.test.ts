@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -11,7 +11,7 @@ import * as schema from "../db/schema.ts";
 import { CUT_SHORT_RESULT } from "../db/schema.ts";
 import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
-import { startPass, startRun } from "./service.ts";
+import { startPass, startRun, stopRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -213,6 +213,7 @@ describe("/api/heads-down", () => {
       idleSleepMinutes: 60,
       workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
       userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
       provider: null,
       model: null,
     };
@@ -226,6 +227,15 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, workingHours: null })).status).toBe(200);
     expect(await get("/config")).toMatchObject({ workingHours: null });
     expect((await put({ ...valid, minSleepMinutes: 200 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 0 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 5 * 60 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
+    // A client that doesn't send it keeps the saved one.
+    const { passTimeoutMinutes: _, ...withoutTimeout } = valid;
+    expect((await put({ ...withoutTimeout, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect((await put(withoutTimeout)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);
@@ -258,6 +268,91 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, guidance: null })).status).toBe(200);
     // A client that doesn't send it can still save.
     expect((await put(valid)).status).toBe(200);
+  });
+
+  it("saves how many routines a pass takes on, 0 to 10", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, maxRoutinesPerPass: 0 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 0 });
+    expect((await put({ ...valid, maxRoutinesPerPass: 10 })).status).toBe(200);
+    for (const bad of [11, -1, 1.5]) {
+      expect((await put({ ...valid, maxRoutinesPerPass: bad })).status).toBe(400);
+    }
+    // A client that doesn't know about the setting keeps the stored value.
+    expect((await put(valid)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 10 });
+  });
+
+  it("lists the routines with when each was last done, and reloads the files", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    try {
+      await post("/routines/reload");
+      // Two runs' worth of passes: the latest one that did it counts, even from a
+      // run that has since stopped, and an empty list counts for nothing.
+      const earlier = await startRun(db, null);
+      await stopRun(db);
+      const current = await startRun(db, null);
+      await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
+                VALUES (${current.id}, '2026-10-27T09:00:00Z', '["meeting-alarms"]'),
+                       (${earlier.id}, '2026-10-27T12:00:00Z', '["meeting-alarms"]'),
+                       (${current.id}, '2026-10-27T13:00:00Z', '[]')`;
+
+      const body = await get("/routines");
+      expect(body.problems).toEqual([]);
+      expect(body.userDir).toBe(routinesDir);
+      expect(body.routines).toContainEqual({
+        name: "meeting-alarms",
+        description: expect.any(String),
+        everyMinutes: 180,
+        workingHoursOnly: false,
+        enabled: true,
+        source: "builtin",
+        lastDoneAt: "2026-10-27T12:00:00.000Z",
+      });
+      expect(body.routines).toContainEqual(
+        expect.objectContaining({ name: "meeting-notes", enabled: false, lastDoneAt: null }),
+      );
+
+      writeFileSync(
+        join(routinesDir, "standup.md"),
+        "---\nname: standup\ndescription: Standup notes\nevery: 1d\n---\n\nWrite them.\n",
+      );
+      writeFileSync(join(routinesDir, "broken.md"), "no frontmatter");
+      // Served from the cache until reloaded.
+      expect((await get("/routines")).routines.map((r: { name: string }) => r.name)).not.toContain(
+        "standup",
+      );
+      const reloaded = (await (await post("/routines/reload")).json()) as {
+        routines: unknown[];
+        problems: { path: string }[];
+      };
+      expect(reloaded.routines).toContainEqual(
+        expect.objectContaining({ name: "standup", source: "user", everyMinutes: 24 * 60 }),
+      );
+      expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      // Later tests in this process read the shared cache.
+      await post("/routines/reload");
+      rmSync(routinesDir, { recursive: true, force: true });
+    }
   });
 
   it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {

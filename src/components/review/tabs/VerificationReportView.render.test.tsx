@@ -159,6 +159,61 @@ describe("VerificationReportView", () => {
     expect(old).not.toContain("read all");
   });
 
+  it("lists what already looks off in a must-read, each linking its line", async () => {
+    const opened: [string, number | undefined][] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          mustRead: [
+            {
+              ...report.mustRead[0],
+              flags: [{ note: "TTL is read but never applied", line: 31 }, { note: "No line" }],
+            },
+          ],
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const flags = host.querySelector('ul[aria-label="Looks off"]');
+      expect(flags?.textContent).toContain("TTL is read but never applied");
+      expect(flags?.textContent).toContain("No line");
+      const links = [...(flags?.querySelectorAll("button") ?? [])];
+      expect(links.map((b) => b.textContent)).toEqual(["src/cache.ts:31"]);
+      links[0]?.click();
+      expect(opened).toEqual([["src/cache.ts", 31]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows no flag list for a must-read with nothing flagged", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ ...report.mustRead[0], flags: [] }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    expect(html).not.toContain("Looks off");
+  });
+
+  it("shows a must-read from an older report, with no flags or range, as just its path", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: { ...report, mustRead: [{ path: "src/cache.ts", reason: "Eviction" }] },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    try {
+      expect(host.querySelector('ul[aria-label="Looks off"]')).toBeNull();
+      const paths = [...host.querySelectorAll("button")].map((b) => b.textContent);
+      expect(paths).toContain("src/cache.ts");
+    } finally {
+      unmount();
+    }
+  });
+
   it("gives a passing check one line and a failing one its findings", async () => {
     const text = textOf(
       await renderToHtml(
@@ -232,5 +287,65 @@ describe("VerificationReportView", () => {
     host.innerHTML = html;
     const struck = [...host.querySelectorAll("li.line-through")].map((li) => li.textContent ?? "");
     expect(struck.some((t) => t.includes("Eviction is untested"))).toBe(true);
+  });
+
+  it("posts a finding with a location to the PR or the linked workspace, once each", async () => {
+    const sent: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: async (f, section) => {
+            sent.push(`pr ${section} ${f.path}:${f.line}`);
+          },
+          toWorkspace: {
+            name: "cache-work",
+            add: async () => {
+              throw new Error("workspace repo not found");
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const buttons = (label: string) =>
+        [...host.querySelectorAll("button")].filter((b) => b.textContent === label);
+      // Only the risk concern has a line; the test finding names no line.
+      expect(buttons("Post to PR")).toHaveLength(1);
+      buttons("Post to PR")[0]?.click();
+      buttons("Add to cache-work")[0]?.click();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sent).toEqual(["pr Risk src/cache.ts:22"]);
+      const posted = buttons("Posted to PR")[0];
+      expect(posted?.disabled).toBe(true);
+      expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows only the sections a run was asked for, with the flow when it has one", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            tests: pass,
+            flow: {
+              title: "How a lookup is cached",
+              explanation: "Reads go through the cache.",
+              mermaid: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("How a lookup is cached");
+    expect(text).toContain("Test quality");
+    expect(text).not.toContain("Risk");
+    expect(text).not.toContain("Performance");
   });
 });

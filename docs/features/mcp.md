@@ -136,6 +136,12 @@ too long for it to read in full. Each verdict is logged under `[auto-approve]`
 in **Settings → Diagnostics**. Everything it reads is sent to the decision
 model's provider, so a local model keeps your conversation on this machine.
 
+The same decision model can also pick a specialist and a model tier for
+delegated work, with **Pick specialists for delegated work** and **Pick a model
+tier for specialists**. **Try a decision**, under the same setting, asks it one
+question so you can see how it answers. See
+[Decision specialists](assistant.md#decision-specialists).
+
 Your consent is for the tool as it was described. If a resync finds a tool's
 description or schema changed, its approval resets to **Ask**.
 
@@ -238,9 +244,13 @@ So "address the feedback left in Yarvis" is enough for the session to fetch the
 comments, work through them, and resolve each one.
 
 The tools only see the workspace the header names. That is a convenience, not
-a boundary: the same token can name any workspace. Comment bodies are returned
-as written, without the untrusted-data fencing memory gets, because only you
-write them and acting on them is the point.
+a boundary: the same token can name any workspace. Comments you wrote are
+returned as written, without the untrusted-data fencing memory gets, because
+acting on them is the point. A verification report finding you added to the
+workspace has `source: "verification"` and its body is fenced: a model wrote
+it while reading the PR's code, so the session is told to treat it as a
+problem to check, not as instructions. **Copy review** marks and fences
+findings the same way in the text it copies.
 
 A workspace provisioned before this header existed gets it the next time it
 is provisioned.
