@@ -2,6 +2,10 @@
  * Runs a pull request's new and changed tests against the base branch's code.
  * A test that still passes there isn't checking anything the PR changed. That
  * is expected for a pure refactor and a warning sign for a feature or a fix.
+ *
+ * A test counts as new or changed only when the diff touches its own
+ * `it(...)`/`test(...)` call. The PR's edits elsewhere in a test file (imports,
+ * mock setup, hooks) don't make every older test in that file part of it.
  */
 
 import {
@@ -15,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parse } from "@babel/parser";
 import { run } from "./exec.ts";
 import { isTestFile } from "./tier.ts";
 
@@ -24,7 +29,12 @@ export interface TestCase {
   file: string;
   name: string;
   outcome: Outcome;
+  /** A line inside the test's call, as bun reports it; `null` when it doesn't. */
+  line: number | null;
 }
+
+/** Inclusive line ranges. */
+type Span = [number, number];
 
 export interface BaselineResult {
   /** Tests that pass on the PR and fail (or don't load) on the base: they test the change. */
@@ -73,13 +83,93 @@ export function parseJunit(xml: string, prefix: string): TestCase[] {
     const file = attr(attrs, "file");
     const classname = attr(attrs, "classname");
     const name = attr(attrs, "name");
+    const line = Number(attr(attrs, "line"));
     cases.push({
       file: prefix ? `${prefix}/${file}` : file,
       name: classname ? `${classname} > ${name}` : name,
       outcome,
+      line: Number.isInteger(line) && line > 0 ? line : null,
     });
   }
   return cases;
+}
+
+const TEST_FUNCTIONS = new Set(["it", "test"]);
+
+/** The parts of a Babel AST node this file reads. */
+interface AstNode {
+  type: string;
+  loc?: { start: { line: number }; end: { line: number } };
+  [key: string]: unknown;
+}
+
+const isAstNode = (value: unknown): value is AstNode =>
+  typeof value === "object" && value !== null && typeof (value as AstNode).type === "string";
+
+/**
+ * The name a call chain like `test.each(rows)(...)` or `it.only(...)` starts
+ * from, and the calls inside the chain, such as `test.each(rows)`.
+ */
+function calleeChain(node: AstNode): { root: string | null; inner: AstNode[] } {
+  const inner: AstNode[] = [];
+  let current = node;
+  while (current.type === "MemberExpression" || current.type === "CallExpression") {
+    if (current.type === "CallExpression") inner.push(current);
+    current = (current.type === "MemberExpression" ? current.object : current.callee) as AstNode;
+  }
+  return { root: current.type === "Identifier" ? (current.name as string) : null, inner };
+}
+
+/**
+ * The line span of every `it(...)` and `test(...)` call in a test file, or
+ * `null` when it can't be parsed.
+ */
+export function testSpans(source: string, path: string): Span[] | null {
+  let program: unknown;
+  try {
+    program = parse(source, {
+      sourceType: "module",
+      plugins: path.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+    }).program;
+  } catch {
+    return null;
+  }
+  const spans: Span[] = [];
+  // `test.each(rows)` is part of the test call around it, not a test of its own.
+  const chained = new Set<AstNode>();
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!isAstNode(value)) return;
+    if (value.type === "CallExpression" && value.loc && !chained.has(value)) {
+      const { root, inner } = calleeChain(value.callee as AstNode);
+      if (root && TEST_FUNCTIONS.has(root)) {
+        spans.push([value.loc.start.line, value.loc.end.line]);
+        for (const call of inner) chained.add(call);
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key !== "loc" && !key.endsWith("Comments")) visit(child);
+    }
+  };
+  visit(program);
+  return spans;
+}
+
+/**
+ * Whether the diff touches the test's own call: the innermost span holding
+ * the line bun gives for it, since a test can sit inside another's callback.
+ * A test that can't be placed counts as changed, so nothing is hidden.
+ */
+export function isTouched(line: number | null, spans: Span[] | null, changed: Span[]): boolean {
+  if (line === null || spans === null) return true;
+  const own = spans
+    .filter(([start, end]) => start <= line && line <= end)
+    .sort((a, b) => a[1] - a[0] - (b[1] - b[0]))[0];
+  if (!own) return true;
+  return changed.some(([from, to]) => own[0] <= from && to <= own[1]);
 }
 
 const testKey = (test: TestCase) => `${test.file} > ${test.name}`;
@@ -120,12 +210,21 @@ function runSuite(root: string, suite: string, files: string[], outFile: string)
  * @param root the PR's checkout, on its head commit.
  * @param base the commit the PR branched from, usually `git merge-base origin/main HEAD`.
  * @param changedFiles repo-relative paths of files the PR added or modified.
+ * @param changedRanges where each file changed, from `parseChangedRanges`.
  */
-export function runBaseline(root: string, base: string, changedFiles: string[]): BaselineResult {
+export function runBaseline(
+  root: string,
+  base: string,
+  changedFiles: string[],
+  changedRanges: Map<string, Span[]>,
+): BaselineResult {
   const testFiles = changedFiles.filter(isTestFile);
   const result: BaselineResult = { detecting: 0, notDetecting: [], failingOnHead: [] };
   if (testFiles.length === 0) return result;
 
+  const spansByFile = new Map(
+    testFiles.map((file) => [file, testSpans(readFileSync(join(root, file), "utf8"), file)]),
+  );
   const scratch = mkdtempSync(join(tmpdir(), "verify-baseline-"));
   const baseTree = join(scratch, "base");
   try {
@@ -145,7 +244,12 @@ export function runBaseline(root: string, base: string, changedFiles: string[]):
       const files = testFiles.filter((file) => suiteFor(file) === suite);
       if (files.length === 0) continue;
       const name = suite || "root";
-      const head = runSuite(root, suite, files, join(scratch, `${name}-head.xml`));
+      const head = runSuite(root, suite, files, join(scratch, `${name}-head.xml`)).filter(
+        (test) => {
+          const spans = spansByFile.get(test.file);
+          return isTouched(test.line, spans ?? null, changedRanges.get(test.file) ?? []);
+        },
+      );
       const baseRun = runSuite(baseTree, suite, files, join(scratch, `${name}-base.xml`));
       const compared = compareRuns(head, baseRun);
       result.detecting += compared.detecting;

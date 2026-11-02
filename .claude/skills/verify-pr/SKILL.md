@@ -78,7 +78,9 @@ Run it with the sandbox disabled: the sidecar suite needs the local test
 database, set up as in `docs/development.md` ("Test database"), with
 `TEST_DATABASE_URL` exported. It writes `facts.json` with the risk tier, diff
 coverage, and the baseline run: the tests this PR adds or edits, run against
-the base branch's code. Tests the PR doesn't touch aren't part of it. One that
+the base branch's code. A test counts only when the diff touches its own
+`it(...)` or `test(...)` call; older tests in the same file, and edits to
+imports, mocks or hooks around them, aren't part of it. One that
 passes on the base would still pass if the change were reverted, so it doesn't
 check the change; `baseline.notDetecting` lists them. Read the file; you'll use
 all of it.

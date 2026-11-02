@@ -68,6 +68,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@babel/parser": "^8.0.8",
     "@biomejs/biome": "2.5.14",
     "@happy-dom/global-registrator": "^21.0.4",
     "@playwright/test": "^1.63.0",

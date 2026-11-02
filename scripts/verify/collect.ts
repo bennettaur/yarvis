@@ -29,6 +29,7 @@ import {
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
+  parseChangedRanges,
   parseLcov,
 } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
@@ -212,7 +213,7 @@ if (import.meta.main) {
       measuredRun?.measurement ?? (() => "not-run"),
     ),
     baseline: measuredRun
-      ? runBaseline(root, base, addedOrModified)
+      ? runBaseline(root, base, addedOrModified, parseChangedRanges(unified))
       : { detecting: 0, notDetecting: [], failingOnHead: [] },
     suites: measuredRun?.suites ?? [],
   };
