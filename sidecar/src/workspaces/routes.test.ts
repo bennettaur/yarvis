@@ -2231,7 +2231,9 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
-      if (args[0] === "status") return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
+      if (args[0] === "status" && opts?.cwd === wr!.worktreePath) {
+        return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
+      }
       if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
       return fakeGit(args, opts);
     };

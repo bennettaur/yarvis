@@ -658,7 +658,7 @@ describe("archive cleanup helpers", () => {
     };
     commit("pushed.txt");
     const prHead = git("rev-parse", "refs/heads/task").stdout.toString().trim();
-    // Squash-merge onto main, then delete the remote branch as a pruning fetch would.
+    // Squash-merge onto main. The branch has no remote branch, as after a pruning fetch.
     const squash = git(
       "commit-tree",
       "refs/heads/task^{tree}",
@@ -676,6 +676,13 @@ describe("archive cleanup helpers", () => {
 
     commit("after-merge.txt");
     expect(await unpushedCommitCount(defaultGitRunner, clone, "task", prHead)).toBe(1);
+  });
+
+  it("fails rather than counts when the merged head isn't in the clone", async () => {
+    const { clone } = cloneWithOrigin();
+    await expect(
+      unpushedCommitCount(defaultGitRunner, clone, "task", "e".repeat(40)),
+    ).rejects.toThrow();
   });
 
   it("refuses a merged head that isn't a commit id before it reaches git", async () => {

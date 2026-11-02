@@ -591,7 +591,8 @@ was deleted, the archive stops before removing the worktree and says how many,
 and whether the worktree also has uncommitted changes. Push them, or **Force
 remove** to delete them with the branch. A branch whose PR merged before Yarvis
 recorded the PR's head commit is kept unless you force the archive, since
-there's no telling which of its commits the merge took.
+there's no telling which of its commits the merge took. Opening the workspace
+first records it.
 
 Last, the archive deletes the workspace folder. If anything other than the
 files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,
