@@ -159,7 +159,13 @@ export async function saveVoiceClip(id: string, wav: Uint8Array): Promise<VoiceP
 export async function readVoiceClip(id: string): Promise<Uint8Array | null> {
   const profile = await getVoiceProfile(id);
   if (!profile?.hasClip) return null;
-  return new Uint8Array(await readFile(clipPath(id)));
+  try {
+    return new Uint8Array(await readFile(clipPath(id)));
+  } catch (e) {
+    // A clip deleted by hand leaves hasClip set; that is still "no clip", not a server error.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
 }
 
 export async function deleteVoiceClip(id: string): Promise<VoiceProfile | null> {

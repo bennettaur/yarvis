@@ -296,6 +296,10 @@ describe("saved voices", () => {
     expect(res.headers.get("content-type")).toBe("audio/wav");
     expect(Buffer.from(await res.arrayBuffer()).equals(Buffer.from(bytes))).toBe(true);
 
+    await rm(clipPath(id));
+    expect((await clip(id)).status).toBe(404);
+
+    expect((await putClip(id, bytes)).status).toBe(200);
     await app.request(`/api/voice/voices/${id}/clip`, { method: "DELETE", headers: auth });
     expect((await clip(id)).status).toBe(404);
     expect((await clip(crypto.randomUUID())).status).toBe(404);

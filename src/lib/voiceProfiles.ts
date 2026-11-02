@@ -72,9 +72,10 @@ export async function uploadVoiceClip(id: string, wav: Blob): Promise<VoiceProfi
   return res.json();
 }
 
+/** Downloads a voice's stored cloning clip as WAV, for playback. */
 export async function fetchVoiceClip(id: string): Promise<Blob> {
   const res = await sidecarFetch(`/api/voice/voices/${encodeURIComponent(id)}/clip`);
-  await ensureOk(res, "clip");
+  await ensureOk(res, "load clip");
   return res.blob();
 }
 
