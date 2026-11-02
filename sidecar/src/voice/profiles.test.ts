@@ -284,6 +284,23 @@ describe("saved voices", () => {
     expect(((await res.json()) as { error: string }).error).toContain("44100 Hz");
   });
 
+  it("serves the stored clip back for playback", async () => {
+    const { id } = await createVoice({ name: "Me", provider: "gemini", model: "x" });
+    const clip = (id: string) => app.request(`/api/voice/voices/${id}/clip`, { headers: auth });
+    expect((await clip(id)).status).toBe(404);
+
+    const bytes = wav(16_000);
+    expect((await putClip(id, bytes)).status).toBe(200);
+    const res = await clip(id);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/wav");
+    expect(Buffer.from(await res.arrayBuffer()).equals(Buffer.from(bytes))).toBe(true);
+
+    await app.request(`/api/voice/voices/${id}/clip`, { method: "DELETE", headers: auth });
+    expect((await clip(id)).status).toBe(404);
+    expect((await clip(crypto.randomUUID())).status).toBe(404);
+  });
+
   it("refuses a clip that isn't sent as WAV", async () => {
     const { id } = await createVoice({ name: "Me", provider: "gemini", model: "x" });
     expect((await putClip(id, wav(16_000), "audio/webm")).status).toBe(415);

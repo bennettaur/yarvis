@@ -73,7 +73,8 @@ id, and an optional clip to clone from.
 
 - **Record clip** records up to 15 seconds from the microphone. Press it again
   to stop. **Upload clip** takes any audio file. Either way, Yarvis converts
-  the clip to 16 kHz mono WAV and stores it in `~/.yarvis/voices/`.
+  the clip to 16 kHz mono WAV and stores it in `~/.yarvis/voices/`. **Play
+  clip** plays the stored clip back, so you can check it before cloning from it.
 - **Clip sent as** decides how the clip reaches the server. **File path** is for
   mlx-audio, which reads the file itself. **Inline audio** sends the audio in
   the request, which is what vLLM-Omni expects. A file path is only sent to a

@@ -9,6 +9,7 @@ import {
   createVoiceProfile,
   deleteVoiceClip,
   deleteVoiceProfile,
+  fetchVoiceClip,
   type RefAudioMode,
   uploadVoiceClip,
   type VoiceProfile,
@@ -188,6 +189,20 @@ export default function VoicesSection({
                     }}
                   />
                 </label>
+                {voice.hasClip && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void withStatus(voice.id, async () =>
+                        playAudioBlob(await fetchVoiceClip(voice.id)),
+                      )
+                    }
+                    disabled={busy}
+                    className={BUTTON}
+                  >
+                    Play clip
+                  </button>
+                )}
                 {voice.hasClip && (
                   <button
                     type="button"

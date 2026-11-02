@@ -155,6 +155,13 @@ export async function saveVoiceClip(id: string, wav: Uint8Array): Promise<VoiceP
   return updateVoiceProfile(id, { hasClip: true });
 }
 
+/** The profile's stored clip, or null when the profile is unknown or has none. */
+export async function readVoiceClip(id: string): Promise<Uint8Array | null> {
+  const profile = await getVoiceProfile(id);
+  if (!profile?.hasClip) return null;
+  return new Uint8Array(await readFile(clipPath(id)));
+}
+
 export async function deleteVoiceClip(id: string): Promise<VoiceProfile | null> {
   if (!(await getVoiceProfile(id))) return null;
   await rm(clipPath(id), { force: true });

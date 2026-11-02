@@ -72,6 +72,12 @@ export async function uploadVoiceClip(id: string, wav: Blob): Promise<VoiceProfi
   return res.json();
 }
 
+export async function fetchVoiceClip(id: string): Promise<Blob> {
+  const res = await sidecarFetch(`/api/voice/voices/${encodeURIComponent(id)}/clip`);
+  await ensureOk(res, "clip");
+  return res.blob();
+}
+
 export async function deleteVoiceClip(id: string): Promise<VoiceProfile> {
   const res = await sidecarFetch(`/api/voice/voices/${encodeURIComponent(id)}/clip`, {
     method: "DELETE",

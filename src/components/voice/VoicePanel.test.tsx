@@ -23,6 +23,8 @@ const NARRATOR: VoiceProfile = {
   updatedAt: "2026-11-01T09:00:00.000Z",
 };
 
+const CLIP_BYTES = new Uint8Array([82, 73, 70, 70]);
+
 /** What the fake sidecar holds; each test sets its own. */
 let config: VoiceConfig;
 /** When set, saving the voice config fails with this status. */
@@ -58,6 +60,9 @@ async function fakeSidecar(path: string, init: RequestInit = {}): Promise<Respon
     // page, so the test sees what the page itself does.
     voices = voices.filter((v) => v.id !== voice[1]);
     return json(null, 204);
+  }
+  if (/^\/api\/voice\/voices\/[^/]+\/clip$/.test(path) && method === "GET") {
+    return new Response(CLIP_BYTES, { headers: { "content-type": "audio/wav" } });
   }
   if (path === "/api/voice/server") return json(server);
   if (path === "/api/voice/server/models") return json(models);
@@ -174,6 +179,45 @@ describe("Voices section", () => {
 
     expect(requests.some((r) => r.method === "DELETE")).toBe(true);
     await waitFor(() => config.activeVoiceId === "", "the page to clear the active voice");
+  });
+
+  it("plays back a voice's saved clip", async () => {
+    voices = [{ ...NARRATOR, hasClip: true }];
+    const played: string[] = [];
+    const realAudio = globalThis.Audio;
+    // happy-dom's Audio never plays, so this one records what it was given and ends at once.
+    globalThis.Audio = class {
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(readonly src: string) {}
+      play() {
+        played.push(this.src);
+        queueMicrotask(() => this.onended?.());
+        return Promise.resolve();
+      }
+    } as unknown as typeof Audio;
+    try {
+      const mounted = await mountForInteraction(createElement(VoicePanel));
+      unmount = mounted.unmount;
+
+      button(mounted.host, "Play clip", "Narrator").click();
+      await waitFor(() => played.length === 1, "the clip to play");
+
+      expect(requests).toContainEqual({
+        method: "GET",
+        path: `/api/voice/voices/${NARRATOR.id}/clip`,
+        body: undefined,
+      });
+      expect(played[0]).toStartWith("blob:");
+    } finally {
+      globalThis.Audio = realAudio;
+    }
+  });
+
+  it("offers no playback for a voice without a clip", async () => {
+    const mounted = await mountForInteraction(createElement(VoicePanel));
+    unmount = mounted.unmount;
+    expect(() => button(mounted.host, "Play clip", "Narrator")).toThrow("no Play clip button");
   });
 
   it("says so when activating a voice can't be saved", async () => {

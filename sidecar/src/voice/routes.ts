@@ -12,6 +12,7 @@ import {
   getVoiceProfile,
   listVoiceProfiles,
   MAX_CLIP_BYTES,
+  readVoiceClip,
   saveVoiceClip,
   speakWithProfile,
   updateVoiceProfile,
@@ -350,6 +351,14 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
       }
     },
   );
+
+  /** Serves the stored clip so the page can play back what it will clone from. */
+  router.get("/voices/:id/clip", async (c) => {
+    const clip = await readVoiceClip(c.req.param("id"));
+    return clip
+      ? audioResponse(clip, "audio/wav")
+      : c.json({ error: "no clip for that voice" }, 404);
+  });
 
   router.delete("/voices/:id/clip", async (c) => {
     const row = await deleteVoiceClip(c.req.param("id"));
