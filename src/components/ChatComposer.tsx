@@ -101,7 +101,7 @@ export default function ChatComposer({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if (busy && onQueue) onQueue();
+              if (queueing) onQueue?.();
               else if (!busy) onSubmit();
             }
           }}

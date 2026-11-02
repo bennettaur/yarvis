@@ -35,8 +35,7 @@ export default function QueuedMessages({
       <ul className="flex flex-col gap-1">
         {queued.map((text, i) => (
           <li
-            // Rows hold no state, and identical messages can both be queued.
-            // biome-ignore lint/suspicious/noArrayIndexKey: entries can repeat
+            // biome-ignore lint/suspicious/noArrayIndexKey: rows hold no state, and identical messages can both be queued
             key={i}
             className="flex items-start gap-2 rounded-md border border-dashed border-border px-2 py-1 text-sm text-muted-foreground"
           >

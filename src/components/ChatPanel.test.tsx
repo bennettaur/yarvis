@@ -118,8 +118,10 @@ mock.module("../lib/chat", () => ({
  * module elsewhere would make both order-dependent.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
+/** What the harness reports as on screen, as Omni Chat would. */
+let screen: string | undefined;
 function ThreadHarness() {
-  thread = useChatThread({});
+  thread = useChatThread({ getContext: () => screen });
   return null;
 }
 
@@ -142,7 +144,7 @@ function TogglingHost({
 const composerOf = (host: HTMLElement) =>
   host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Message..."]');
 
-/** Types a message into the composer and presses Send (or another composer button). */
+/** Types a message into the composer and presses the named button (Send by default). */
 async function say(host: HTMLElement, text: string, button = "Send") {
   const box = host.querySelector("textarea")!;
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set as (
@@ -168,6 +170,7 @@ afterEach(() => {
   unmount?.();
   unmount = null;
   thread = null;
+  screen = undefined;
   sessions = [];
   created = 0;
   scripted = [];
@@ -337,6 +340,63 @@ describe("ChatPanel", () => {
     expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
     await settle(300);
     expect(mounted.host.querySelector('[aria-label="Queued messages"]')).toBeNull();
+  });
+
+  it("holds the queue after a failed reply and sends it on Send next", async () => {
+    scripted = [{ type: "wait" }, { type: "error", message: "model not found (status 404)" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "follow-up", "Queue");
+    await settle(300);
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.textContent).toContain("waiting until you send them");
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    Array.from(mounted.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Send next")
+      ?.click();
+    await settle();
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+  });
+
+  it("sends what is left in the queue in order, one turn at a time", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle(20);
+    thread?.enqueue("one");
+    thread?.enqueue("two");
+    thread?.enqueue("three");
+    await settle(20);
+    thread?.removeQueued(1);
+    await settle(100);
+    expect(sent).toHaveLength(1);
+
+    await settle(900);
+    expect(sent.map((body) => body.message)).toEqual(["first question", "one", "three"]);
+  });
+
+  // The overlay can be hidden and the user can move on while a reply runs; the
+  // queued message is about what they were looking at when they wrote it.
+  it("sends a queued message with the screen context from when it was queued", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    screen = "PR #18";
+    void thread?.send("what's risky here?");
+    await settle();
+    thread?.enqueue("merge it if it's fine");
+    screen = "PR #19";
+    await settle(500);
+
+    expect(sent.map((body) => body.context)).toEqual(["PR #18", "PR #18"]);
   });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
@@ -571,10 +631,10 @@ describe("useChatThread", () => {
     thread?.stop();
     await settle();
     expect(sent).toHaveLength(1);
-    expect(thread?.queued).toEqual(["follow-up"]);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
 
     scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
-    thread?.sendQueued();
+    thread?.sendNextQueued();
     await settle();
     expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
     expect(thread?.queued).toEqual([]);

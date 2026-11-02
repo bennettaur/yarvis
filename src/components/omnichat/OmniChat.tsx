@@ -49,9 +49,10 @@ export default function OmniChat({
     alwaysAllow,
     send,
     queued,
+    queueHeld,
     enqueue,
-    unqueue,
-    sendQueued,
+    removeQueued,
+    sendNextQueued,
     retry,
     rewind,
     stop,
@@ -218,10 +219,10 @@ export default function OmniChat({
         <McpConnectionBar visible={open} />
 
         <QueuedMessages
-          queued={queued}
-          held={!busy && error !== null}
-          onRemove={unqueue}
-          onSendNext={sendQueued}
+          queued={queued.map((q) => q.text)}
+          held={queueHeld}
+          onRemove={removeQueued}
+          onSendNext={sendNextQueued}
         />
 
         <ChatComposer

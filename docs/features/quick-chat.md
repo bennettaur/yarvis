@@ -58,9 +58,10 @@ the thread jumps back to the newest message.
 - **Enter** sends. **Shift+Enter** adds a new line.
 - While a reply is running, **Send** becomes **Stop**. Stopping discards the
   partial reply and saves nothing for that turn.
-- You can keep typing while a reply is running. **Enter** (or **Queue**) puts
-  the message in a queue above the message box. When the reply finishes, the
-  queued messages go out one per turn, in order. Click **×** to drop one.
+- You can keep typing while a reply is running. **Queue** appears beside
+  **Stop**, and **Enter** (or **Queue**) puts the message in a queue above the
+  message box. When the reply finishes, the queued messages go out one per
+  turn, in order. Click **×** to drop one.
 - If the reply fails or you stop it, the queue waits. **Send next** sends the
   next queued message. Starting a new chat or switching sessions clears the
   queue. This works the same in Omni Chat.

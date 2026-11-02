@@ -35,6 +35,16 @@ function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
 /** localStorage key under which the Chat tab's open session id is kept. */
 export const CHAT_TAB_SESSION_KEY = "yarvis.chat.sessionId";
 
+/** A message typed while a turn was running, waiting to be sent. */
+export interface QueuedMessage {
+  text: string;
+  /**
+   * The screen context when the message was queued. The user may have moved on
+   * by the time it is sent, and the message is about what they were looking at.
+   */
+  context?: string;
+}
+
 export interface UseChatThreadOptions {
   /** localStorage key under which this thread's session id is persisted. */
   sessionStorageKey?: string;
@@ -77,7 +87,11 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   // Messages typed while a turn runs, sent one per turn once it finishes.
-  const [queued, setQueued] = useState<string[]>([]);
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  // Set when a turn fails or is stopped, or a queued message can't be sent. The
+  // queue then waits for the user: what they queued may not make sense after a
+  // reply that never came.
+  const [held, setHeld] = useState(false);
 
   // Lets the surface end a turn early. Aborting the fetch disconnects the SSE
   // stream, which the sidecar reads as the client going away and uses to cancel
@@ -143,6 +157,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setError(null);
     // Queued messages were written for the thread being left.
     setQueued([]);
+    setHeld(false);
   }, []);
 
   // Bumped on each load, so a slow fetch for a session the user has already
@@ -219,6 +234,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     const session = await createSession();
     setSessionId(session.id);
     setMessages([]);
+    // Anything queued while the session was being created was typed into the
+    // chat being left; sent now, it would go there.
+    setQueued([]);
     onSessionCreated?.(session);
     return session;
   }, [onSessionCreated, abandonTurn]);
@@ -256,7 +274,13 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const send = useCallback(
     async (
       text: string,
-      sendOptions: { source?: "voice"; resend?: boolean; rewindTo?: string } = {},
+      sendOptions: {
+        source?: "voice";
+        resend?: boolean;
+        rewindTo?: string;
+        /** Used instead of reading the screen context now. */
+        context?: string;
+      } = {},
     ) => {
       const trimmed = text.trim();
       // Nothing to send, nothing to send it with, or a turn already running.
@@ -291,10 +315,11 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         return [...prev, turn];
       });
       setBusy(true);
+      setHeld(false);
       setError(null);
       setThinking("");
       setActivity([]);
-      const context = getContext?.();
+      const context = "context" in sendOptions ? sendOptions.context : getContext?.();
       const controller = new AbortController();
       inFlight.current = controller;
       latestTurn.current = controller;
@@ -414,6 +439,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         }
         setStreaming("");
         setBusy(false);
+        if (failed) setHeld(true);
         // A rewind that failed may have left the screen and the transcript
         // disagreeing about what was dropped; the sidecar's copy is the truth.
         if (sendOptions.rewindTo && failed) void reloadMessages(activeId);
@@ -438,34 +464,43 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   );
 
   /** Holds a message until the turn in flight finishes. */
-  const enqueue = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return false;
-    setQueued((prev) => [...prev, trimmed]);
-    return true;
-  }, []);
+  const enqueue = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      // Read now: the updater runs later, when the screen may have changed.
+      const context = getContext?.();
+      setQueued((prev) => [...prev, { text: trimmed, context }]);
+      return true;
+    },
+    [getContext],
+  );
 
-  const unqueue = useCallback((index: number) => {
+  const removeQueued = useCallback((index: number) => {
     setQueued((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  /** Sends the oldest queued message now, for a queue held by a failed or stopped turn. */
-  const sendQueued = useCallback(() => {
+  /** Sends the oldest queued message: on its own after a clean turn, or by hand when the queue is held. */
+  const sendNextQueued = useCallback(() => {
     const [next, ...rest] = queued;
     if (next === undefined || busy) return;
     setQueued(rest);
-    void send(next).then((sent) => {
-      if (!sent) setQueued((prev) => [next, ...prev]);
-    });
+    void send(next.text, { context: next.context })
+      .catch(() => false)
+      .then((sent) => {
+        if (sent) return;
+        // Held rather than retried: the drain below would otherwise pick it
+        // straight back up and loop.
+        setQueued((prev) => [next, ...prev]);
+        setHeld(true);
+      });
   }, [queued, busy, send]);
 
-  // Send the next queued message once a turn ends cleanly. A failed or stopped
-  // turn leaves an error up, and the queue waits: the user may not want what
-  // they queued to follow a reply that never came.
+  const queueHeld = held && !busy && queued.length > 0;
   useEffect(() => {
-    if (busy || error || queued.length === 0 || !provider || !model) return;
-    sendQueued();
-  }, [busy, error, queued, provider, model, sendQueued]);
+    if (busy || held || queued.length === 0) return;
+    sendNextQueued();
+  }, [busy, held, queued, sendNextQueued]);
 
   /**
    * Runs the last user message again. Used after a failure, where the reply is
@@ -517,9 +552,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     alwaysAllow,
     send,
     queued,
+    queueHeld,
     enqueue,
-    unqueue,
-    sendQueued,
+    removeQueued,
+    sendNextQueued,
     retry,
     rewind,
     stop,
