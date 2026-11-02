@@ -101,7 +101,7 @@ export default function ChatPanel({
   // own, so ours must stop answering the keyboard while it is up.
   const overlayOpen = useOmniChatOverlayOpen();
 
-  // A hands-free mic left open behind another tab would send what it hears into
+  // A continuous mic left open behind another tab would send what it hears into
   // a chat nobody is looking at.
   const { cancel: cancelVoice } = voice;
   useEffect(() => {

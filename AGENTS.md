@@ -246,7 +246,14 @@ back to ad-hoc.
   sidecar owns the server process (`voice/server.ts`). Only one server can
   listen on a port, so only the instance that started it may stop it; who
   started it is recorded per instance beside `settings.json`, with the
-  process's start time so a reused pid isn't adopted. A saved voice's clip is
+  process's start time so a reused pid isn't adopted. Continuous mode's turn
+  detector (`voice/turnDetector.ts`) is different: Silero VAD plus smart-turn
+  in a Python script embedded in the sidecar and run with `uv run --script`.
+  Each sidecar starts its own on a port the OS picks, so there is nothing to
+  share or adopt. It exits when its stdin closes, which covers a sidecar killed
+  without warning. The webview streams 16 kHz PCM straight to it over a
+  loopback websocket, gated by a per-start token the sidecar hands out. A
+  saved voice's clip is
   sent as a file path only to a provider on loopback; anywhere else gets the
   audio, since the path names the user's home folder.
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,

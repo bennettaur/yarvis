@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { TurnStreamHandlers } from "./turnStream";
+import type { TurnDetectorStatus } from "./voice";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "./voiceConfig";
 
 /**
@@ -18,6 +20,23 @@ const spoken: string[] = [];
 let transcriptResult: string | Error = "turn the build green";
 
 let deliverUtterance: (() => void) | null = null;
+
+/** What `send` answers; `false` is a surface refusing the turn. */
+let sendResult: unknown;
+
+const RUNNING: TurnDetectorStatus = {
+  state: "running",
+  url: "ws://127.0.0.1:5555/?token=t",
+  log: [],
+  error: null,
+};
+let detectorStatus: TurnDetectorStatus = RUNNING;
+/** The handlers of the turn stream the hook opened, standing in for the detector. */
+let detector: TurnStreamHandlers | null = null;
+let openedUrl: string | null = null;
+let streamClosed = false;
+/** Signals of replies playing now; a test aborts nothing itself, the hook does. */
+const playing: AbortSignal[] = [];
 
 function installRecorderFakes(): void {
   const g = globalThis as Record<string, unknown>;
@@ -87,7 +106,24 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       spoken.push(request.text);
       return new Blob(["audio"]);
     },
-    playAudio: async () => {},
+    // Plays until stopped, like a real sentence that hasn't finished yet.
+    playAudio: (_audio: Blob, signal: AbortSignal) => {
+      playing.push(signal);
+      return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+    },
+    startDetector: async () => detectorStatus,
+    detectorStatus: async () => detectorStatus,
+    openStream: async (url: string, handlers: TurnStreamHandlers) => {
+      openedUrl = url;
+      detector = handlers;
+      streamClosed = false;
+      return {
+        reset: () => {},
+        close: () => {
+          streamClosed = true;
+        },
+      };
+    },
     // Decoding a fake blob is not the subject here.
     toWav: async (recording: Blob) => recording,
     loadConfig: async () => storedConfig,
@@ -102,6 +138,7 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
     harness.voice = useVoice({
       send: (text, options) => {
         sent.push({ text, source: options.source });
+        return sendResult;
       },
       streaming,
       busy,
@@ -136,6 +173,12 @@ afterEach(() => {
   spoken.length = 0;
   transcriptResult = "turn the build green";
   deliverUtterance = null;
+  sendResult = undefined;
+  detectorStatus = RUNNING;
+  detector = null;
+  openedUrl = null;
+  streamClosed = false;
+  playing.length = 0;
 });
 
 const configured: VoiceConfig = {
@@ -264,11 +307,11 @@ describe("useVoice", () => {
     storedConfig = { ...configured };
     active = await mountVoice();
 
-    await active.voice.updateConfig({ handsFree: true });
+    await active.voice.updateConfig({ continuous: true });
     await settle();
 
-    expect(savedPatches).toEqual([{ handsFree: true }]);
-    expect(active.voice.config.handsFree).toBe(true);
+    expect(savedPatches).toEqual([{ continuous: true }]);
+    expect(active.voice.config.continuous).toBe(true);
   });
 
   it("drops queued speech when the turn is cancelled", async () => {
@@ -282,5 +325,121 @@ describe("useVoice", () => {
 
     // Whatever was already handed over may finish; nothing new is queued.
     expect(spoken.length).toBe(spokenBefore);
+  });
+});
+
+describe("useVoice in continuous mode", () => {
+  const continuous: VoiceConfig = { ...configured, continuous: true };
+  const turnAudio = () => new Blob(["pcm"], { type: "audio/wav" });
+
+  async function listening(): Promise<Harness> {
+    storedConfig = { ...continuous };
+    const harness = await mountVoice();
+    harness.voice.startListening();
+    await settle();
+    return harness;
+  }
+
+  it("streams to the turn detector and sends each finished turn", async () => {
+    active = await listening();
+    expect(openedUrl).toBe(RUNNING.url);
+    expect(active.voice.recording).toBe(true);
+
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+
+    expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
+    // Still listening for the next turn without a click.
+    expect(active.voice.recording).toBe(true);
+  });
+
+  it("holds turns finished mid-reply and sends them together when it ends", async () => {
+    active = await listening();
+    await active.rerender({ streaming: "", busy: true });
+
+    transcriptResult = "and add a step";
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    transcriptResult = "for two factor auth";
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+
+    expect(active.sent).toEqual([]);
+    expect(active.voice.held).toBe(2);
+
+    await active.rerender({ streaming: "", busy: false });
+    expect(active.sent).toEqual([{ text: "and add a step for two factor auth", source: "voice" }]);
+    expect(active.voice.held).toBe(0);
+  });
+
+  it("retries a refused turn once, then says it was dropped", async () => {
+    active = await listening();
+    // The surface refuses when a turn started between the check and the send.
+    sendResult = false;
+
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+
+    expect(active.sent).toHaveLength(2);
+    expect(active.voice.held).toBe(0);
+    expect(active.voice.error).toMatch(/dropped/);
+  });
+
+  it("stops the spoken reply when the user starts talking, and keeps it stopped", async () => {
+    active = await listening();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    expect(playing).toHaveLength(1);
+
+    detector?.onSpeechStart();
+    await settle();
+    expect(playing[0]?.aborted).toBe(true);
+
+    // The rest of the reply that was cut off isn't spoken either.
+    await active.rerender({
+      streaming:
+        "The build is green and the deploy finished a couple of minutes ago. Nothing else is outstanding on that branch, as far as I can tell. ",
+      busy: true,
+    });
+    expect(spoken).toHaveLength(1);
+  });
+
+  it("drops held turns and closes the mic on cancel", async () => {
+    active = await listening();
+    await active.rerender({ streaming: "", busy: true });
+    detector?.onTurn(turnAudio(), "complete");
+    await settle();
+    expect(active.voice.held).toBe(1);
+
+    active.voice.cancel();
+    await active.rerender({ streaming: "", busy: false });
+
+    expect(streamClosed).toBe(true);
+    expect(active.sent).toEqual([]);
+  });
+
+  it("closes the mic when continuous mode is switched off", async () => {
+    active = await listening();
+    await active.voice.updateConfig({ continuous: false });
+    await settle();
+
+    expect(streamClosed).toBe(true);
+    expect(active.voice.recording).toBe(false);
+  });
+
+  it("explains a detector that failed to start", async () => {
+    detectorStatus = {
+      state: "failed",
+      url: null,
+      log: [],
+      error: "uv is not installed. Install it with `brew install uv`.",
+    };
+    active = await listening();
+
+    expect(openedUrl).toBeNull();
+    expect(active.voice.error).toMatch(/uv is not installed/);
+    expect(active.voice.recording).toBe(false);
   });
 });

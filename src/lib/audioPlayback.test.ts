@@ -11,6 +11,7 @@ import { playAudioBlob } from "./audioPlayback";
 
 interface FakeAudio {
   src: string;
+  paused: boolean;
   onended: (() => void) | null;
   onerror: (() => void) | null;
 }
@@ -34,11 +35,15 @@ function install(): void {
 
   (globalThis as Record<string, unknown>).Audio = class {
     src: string;
+    paused = false;
     onended: (() => void) | null = null;
     onerror: (() => void) | null = null;
     constructor(src: string) {
       this.src = src;
       created.push(this as unknown as FakeAudio);
+    }
+    pause() {
+      this.paused = true;
     }
     play() {
       return playBehavior === "resolve" ? Promise.resolve() : Promise.reject(new Error("no codec"));
@@ -97,5 +102,28 @@ describe("playAudioBlob", () => {
     }
     expect(revoked).toHaveLength(5);
     expect(new Set(revoked).size).toBe(5);
+  });
+
+  it("stops and resolves when its signal aborts", async () => {
+    install();
+    const stop = new AbortController();
+    const playing = playAudioBlob(new Blob(["audio"]), stop.signal);
+    await Promise.resolve();
+
+    stop.abort();
+    await playing;
+
+    expect(created[0]?.paused).toBe(true);
+    expect(revoked).toEqual(["blob:fake-1"]);
+  });
+
+  it("plays nothing when the signal has already aborted", async () => {
+    install();
+    const stop = new AbortController();
+    stop.abort();
+
+    await playAudioBlob(new Blob(["audio"]), stop.signal);
+
+    expect(created).toHaveLength(0);
   });
 });

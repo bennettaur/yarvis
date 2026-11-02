@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withSection } from "../settings/store.ts";
 import { DEFAULT_VOICE_CONFIG, getVoiceConfig, saveVoiceConfig } from "./config.ts";
 
 /**
@@ -39,7 +40,7 @@ describe("voice config", () => {
       ttsProvider: "custom:abc",
       ttsModel: "mlx-community/Soprano-1.1-80M-bf16",
       ttsExtras: { response_format: "wav" },
-      handsFree: true,
+      continuous: true,
     });
     expect(saved).toEqual({
       ...DEFAULT_VOICE_CONFIG,
@@ -49,7 +50,7 @@ describe("voice config", () => {
       ttsProvider: "custom:abc",
       ttsModel: "mlx-community/Soprano-1.1-80M-bf16",
       ttsExtras: { response_format: "wav" },
-      handsFree: true,
+      continuous: true,
     });
 
     expect(await getVoiceConfig()).toEqual(saved);
@@ -75,5 +76,18 @@ describe("voice config", () => {
     const config = await getVoiceConfig();
     expect(config.sttProvider).toBe("");
     expect(config.ttsRefAudio).toBe("");
+  });
+
+  it("drops a stored handsFree rather than turning continuous mode on", async () => {
+    await withSection<unknown, void>("voiceConfig", () => ({
+      next: { sttModel: "kept", handsFree: true },
+      result: undefined,
+    }));
+
+    const config = await getVoiceConfig();
+    expect(config).toEqual({ ...DEFAULT_VOICE_CONFIG, sttModel: "kept" });
+
+    await saveVoiceConfig({ ttsModel: "next" });
+    expect("handsFree" in (await getVoiceConfig())).toBe(false);
   });
 });

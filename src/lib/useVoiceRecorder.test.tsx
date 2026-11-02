@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DEFAULT_SILENCE_MS, MAX_UTTERANCE_MS, useVoiceRecorder } from "./useVoiceRecorder";
+import { MAX_UTTERANCE_MS, useVoiceRecorder } from "./useVoiceRecorder";
 
 /**
  * happy-dom has none of MediaRecorder, AudioContext or mediaDevices, so these
@@ -124,9 +124,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
  * Async because React commits the first render on a later tick, so `recorder`
  * isn't populated until after one.
  */
-async function mountRecorder(
-  options: { autoStopSilenceMs?: number | null; maxUtteranceMs?: number } = {},
-): Promise<Harness> {
+async function mountRecorder(options: { maxUtteranceMs?: number } = {}): Promise<Harness> {
   installFakes();
   const utterances: Blob[] = [];
   const harness = { utterances } as Harness;
@@ -168,32 +166,8 @@ afterEach(() => {
 });
 
 describe("useVoiceRecorder", () => {
-  it("delivers the utterance after silence follows speech", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: 300 });
-    await active.recorder.start();
-    await settle();
-    expect(active.recorder.recording).toBe(true);
-
-    await tick(3, SPEAKING);
-    await tick(5, SILENT);
-
-    expect(active.utterances).toHaveLength(1);
-  });
-
-  it("does not end a turn on silence alone", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: 300 });
-    await active.recorder.start();
-    await settle();
-
-    // Quiet from the start: nothing was said, so there is nothing to send.
-    await tick(10, SILENT);
-
-    expect(active.utterances).toHaveLength(0);
-    expect(currentRecorder?.state).toBe("recording");
-  });
-
-  it("never auto-stops in push-to-talk mode", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: null });
+  it("keeps recording through silence until the user stops it", async () => {
+    active = await mountRecorder();
     await active.recorder.start();
     await settle();
 
@@ -207,7 +181,7 @@ describe("useVoiceRecorder", () => {
   });
 
   it("discards the recording when the user stops it explicitly", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: null });
+    active = await mountRecorder();
     await active.recorder.start();
     await settle();
     await tick(3, SPEAKING);
@@ -220,12 +194,11 @@ describe("useVoiceRecorder", () => {
   });
 
   it("throws away a capped recording that never heard speech", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: null, maxUtteranceMs: 500 });
+    active = await mountRecorder({ maxUtteranceMs: 500 });
     await active.recorder.start();
     await settle();
 
-    // Loud enough that a silence timer would never fire, quiet enough that it
-    // is not speech: a noisy room nobody is talking to.
+    // Not loud enough to count as speech: a noisy room nobody is talking to.
     await tick(7, 0.03);
 
     expect(currentRecorder?.state).toBe("inactive");
@@ -234,7 +207,7 @@ describe("useVoiceRecorder", () => {
   });
 
   it("still delivers a capped recording that did hear speech", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: null, maxUtteranceMs: 500 });
+    active = await mountRecorder({ maxUtteranceMs: 500 });
     await active.recorder.start();
     await settle();
 
@@ -286,7 +259,7 @@ describe("useVoiceRecorder", () => {
   });
 
   it("stops the microphone when unmounted mid-recording", async () => {
-    active = await mountRecorder({ autoStopSilenceMs: null });
+    active = await mountRecorder();
     await active.recorder.start();
     await settle();
     await tick(2, SPEAKING);
@@ -304,6 +277,5 @@ describe("useVoiceRecorder", () => {
     // The tests above shorten it; production uses this value, and
     // docs/features/voice.md tells the user about it.
     expect(MAX_UTTERANCE_MS).toBe(60_000);
-    expect(DEFAULT_SILENCE_MS).toBe(1200);
   });
 });

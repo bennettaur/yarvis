@@ -35,6 +35,7 @@ import {
   type StudioDeps,
   saveTake,
 } from "./studio.ts";
+import { TurnDetector } from "./turnDetector.ts";
 
 /**
  * Voice routes, mounted under /api/voice.
@@ -104,7 +105,7 @@ const voiceConfigSchema = z.object({
   ttsRefAudio: z.union([refAudioSchema, z.literal("")]).optional(),
   ttsExtras: extrasSchema.optional(),
   speakReplies: z.boolean().optional(),
-  handsFree: z.boolean().optional(),
+  continuous: z.boolean().optional(),
   activeVoiceId: z.string().max(64).optional(),
   translationProvider: z.string().max(128).optional(),
   translationModel: z.string().max(128).optional(),
@@ -200,14 +201,19 @@ function audioResponse(audio: Uint8Array, contentType: string): Response {
 /** The machine's one speech server, shared by every request this sidecar serves. */
 const sharedSpeechServer = new LocalSpeechServer();
 
+/** This sidecar's turn detector, shared by the Chat tab and Omni Chat. */
+const sharedTurnDetector = new TurnDetector();
+
 export interface VoiceRouteOptions {
   server?: LocalSpeechServer;
+  turnDetector?: TurnDetector;
   studio?: StudioDeps;
 }
 
 export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {}): Hono {
   const router = new Hono();
   const server = options.server ?? sharedSpeechServer;
+  const turnDetector = options.turnDetector ?? sharedTurnDetector;
 
   router.get("/providers", async (c) => c.json(await availableVoiceProviders(config)));
 
@@ -456,6 +462,14 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
     }
     return c.json({ providerId: await server.ensureProvider(status.port) });
   });
+
+  /**
+   * Continuous mode's turn detector. The status carries the websocket URL with
+   * its token, which is why it sits behind the sidecar's bearer like the rest.
+   */
+  router.get("/turn-detector", (c) => c.json(turnDetector.status()));
+
+  router.post("/turn-detector/start", (c) => c.json(turnDetector.start()));
 
   return router;
 }

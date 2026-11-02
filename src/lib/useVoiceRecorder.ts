@@ -1,26 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Microphone capture for the voice loop: one utterance in, one audio blob out.
+ * Microphone capture for push-to-talk: one utterance in, one audio blob out.
  *
- * Recording ends either when the user stops it or, with auto-stop on, after a
- * stretch of silence that follows actual speech — so a hands-free turn doesn't
- * need a second click to send. Loudness is sampled from a WebAudio analyser
- * rather than from the recorded bytes, which stay opaque until the recorder
- * finishes.
+ * Recording ends when the user stops it, or at the length cap. Loudness is
+ * sampled from a WebAudio analyser rather than from the recorded bytes, which
+ * stay opaque until the recorder finishes. Continuous mode doesn't use this;
+ * see `useContinuousListening`.
  */
 
-/** Sampling period for the level meter and the silence timer (ms). */
+/** Sampling period for the level meter (ms). */
 const LEVEL_INTERVAL_MS = 100;
 
 /** RMS above which we consider the user to be speaking (0..1). */
 const SPEECH_LEVEL = 0.04;
-
-/** RMS below which we consider the line silent (0..1). */
-const SILENCE_LEVEL = 0.02;
-
-/** Silence after speech that ends the utterance, when auto-stop is on. */
-export const DEFAULT_SILENCE_MS = 1200;
 
 /** Hard cap on one utterance, bounding both the upload and a stuck recorder. */
 export const MAX_UTTERANCE_MS = 60_000;
@@ -47,8 +40,6 @@ export interface VoiceRecorder {
 export interface VoiceRecorderOptions {
   /** Receives the finished utterance. Not called for an empty recording. */
   onUtterance: (audio: Blob) => void;
-  /** Silence that ends a turn; null keeps recording until `stop`. */
-  autoStopSilenceMs?: number | null;
   /**
    * Longest one recording may run. Callers use the default; it is settable so a
    * test can reach the cap without waiting a real minute.
@@ -57,11 +48,10 @@ export interface VoiceRecorderOptions {
 }
 
 /** Why a recording ended, which decides whether its audio is worth sending. */
-type EndReason = "user" | "silence" | "cap" | "discard";
+type EndReason = "user" | "cap" | "discard";
 
 export function useVoiceRecorder({
   onUtterance,
-  autoStopSilenceMs = DEFAULT_SILENCE_MS,
   maxUtteranceMs = MAX_UTTERANCE_MS,
 }: VoiceRecorderOptions): VoiceRecorder {
   const [recording, setRecording] = useState(false);
@@ -73,8 +63,7 @@ export function useVoiceRecorder({
   const audioContextRef = useRef<AudioContext | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Set before the `getUserMedia` await so a second `start` during that window
-  // — the hands-free effect can fire again before `recording` flips — can't
-  // open a second stream onto the same microphone.
+  // can't open a second stream onto the same microphone.
   const startingRef = useRef(false);
   /**
    * Bumped by every teardown. `start` captures it before awaiting permission
@@ -87,11 +76,9 @@ export function useVoiceRecorder({
   const endReasonRef = useRef<EndReason>("user");
 
   // Held in refs so the sampling loop, which is set up once per recording, always
-  // sees the current handler and threshold rather than the ones it started with.
+  // sees the current handler and cap rather than the ones it started with.
   const onUtteranceRef = useRef(onUtterance);
   onUtteranceRef.current = onUtterance;
-  const silenceMsRef = useRef(autoStopSilenceMs);
-  silenceMsRef.current = autoStopSilenceMs;
   const maxUtteranceMsRef = useRef(maxUtteranceMs);
   maxUtteranceMsRef.current = maxUtteranceMs;
 
@@ -164,7 +151,6 @@ export function useVoiceRecorder({
     // Declared before the handlers that read them, since `onstop` consults
     // `heardSpeech` to decide whether the recording is worth sending.
     let heardSpeech = false;
-    let silentMs = 0;
     let elapsedMs = 0;
 
     const parts: Blob[] = [];
@@ -176,11 +162,10 @@ export function useVoiceRecorder({
       const reason = endReasonRef.current;
       const heard = heardSpeech;
       teardown();
-      // The cap can fire in a room that was never quiet enough to auto-stop but
-      // where nobody was talking to the assistant either. Sending that is a
-      // minute of ambient audio uploaded to a third party for nothing, so an
-      // utterance with no speech in it is only delivered when the user
-      // themselves ended it.
+      // The cap can fire on a mic left open where nobody was talking to the
+      // assistant. Sending that is a minute of ambient audio uploaded to a third
+      // party for nothing, so an utterance with no speech in it is only
+      // delivered when the user themselves ended it.
       if (reason === "discard") return;
       if (reason !== "user" && !heard) return;
       if (blob.size > 0) onUtteranceRef.current(blob);
@@ -210,15 +195,7 @@ export function useVoiceRecorder({
       if (rms >= SPEECH_LEVEL) heardSpeech = true;
 
       elapsedMs += LEVEL_INTERVAL_MS;
-      if (elapsedMs >= maxUtteranceMsRef.current) {
-        endRecording("cap");
-        return;
-      }
-
-      const silenceMs = silenceMsRef.current;
-      if (silenceMs === null) return;
-      silentMs = rms < SILENCE_LEVEL ? silentMs + LEVEL_INTERVAL_MS : 0;
-      if (heardSpeech && silentMs >= silenceMs) endRecording("silence");
+      if (elapsedMs >= maxUtteranceMsRef.current) endRecording("cap");
     }, LEVEL_INTERVAL_MS);
 
     recorder.start(LEVEL_INTERVAL_MS);
