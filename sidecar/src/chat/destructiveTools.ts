@@ -87,28 +87,56 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
+  // No trash or history to restore it from.
+  "delete_artifact",
   // Stores an answer that later turns act on without asking, typed ones
   // included, so a misheard "yes" would outlive the turn it was heard in.
   "record_decision",
   // Runs a whole specialist with its own tools; a misheard task becomes a
   // multi-step run nobody reviewed.
   "delegate",
+  // Starts a Claude Code run that spends money and writes files with nobody
+  // reviewing the task it was given.
+  "start_claude_code_task",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */
 export interface UntrustedReads {
   hasReadWebPage: boolean;
+  /** An artifact marked untrusted, such as one a heads-down pass or specialist wrote. */
+  hasReadUntrustedArtifact: boolean;
   /** A workspace session's reply, which it may have written from whatever it read. */
   hasReadSessionReply: boolean;
+  /**
+   * The turn's own message quotes a page: the side panel sends the tab's title
+   * and selection. Set when the turn starts, unlike the others.
+   */
+  messageQuotesPage: boolean;
 }
 
-export function newUntrustedReads(): UntrustedReads {
-  return { hasReadWebPage: false, hasReadSessionReply: false };
+export function newUntrustedReads(options: { messageQuotesPage?: boolean } = {}): UntrustedReads {
+  return {
+    hasReadWebPage: false,
+    hasReadUntrustedArtifact: false,
+    hasReadSessionReply: false,
+    messageQuotesPage: options.messageQuotesPage ?? false,
+  };
 }
 
-/** True once a turn has read anything someone other than the user wrote for it. */
+/** Whether the turn's next request may be coming from something it read rather than the user. */
 export function hasReadUntrusted(reads: UntrustedReads): boolean {
-  return reads.hasReadWebPage || reads.hasReadSessionReply;
+  return (
+    reads.hasReadWebPage ||
+    reads.hasReadUntrustedArtifact ||
+    reads.hasReadSessionReply ||
+    reads.messageQuotesPage
+  );
+}
+
+/** An `update_artifact` call that replaces or renames rather than appends: as lossy as a delete. */
+function rewritesArtifact(args: unknown): boolean {
+  const a = args as { content?: unknown; title?: unknown } | null;
+  return a?.content !== undefined || a?.title !== undefined;
 }
 
 /**
@@ -118,8 +146,12 @@ export function hasReadUntrusted(reads: UntrustedReads): boolean {
  * before the model did. So once a turn has read one, the destructive set asks
  * first exactly as it does on a spoken turn: the request reaching those tools
  * may now be the page's rather than the user's. (On a spoken turn they already
- * always ask.) A workspace session's reply counts the same: the session may
- * have written it from a file or PR it read.
+ * always ask.) An untrusted artifact counts the same, since a heads-down pass or
+ * specialist may have copied a page or message into it. So does a workspace
+ * session's reply: the session may have written it from a file or PR it read.
+ *
+ * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
+ * it asks under the same conditions; an append does not.
  *
  * `read_web_page` itself asks for any URL the user didn't type in this
  * conversation, because the URL is also a way out: a page can ask for a fetch
@@ -133,9 +165,14 @@ export function conditionalConfirmations(options: {
   const { spoken, reads, isUserGivenUrl } = options;
   const conditions = new Map<string, (args: unknown) => boolean>();
   if (!spoken) {
-    for (const name of DESTRUCTIVE_BUILTIN_TOOLS)
+    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) {
       conditions.set(name, () => hasReadUntrusted(reads));
+    }
   }
+  conditions.set(
+    "update_artifact",
+    (args) => rewritesArtifact(args) && (spoken || hasReadUntrusted(reads)),
+  );
   conditions.set("read_web_page", (args) => {
     const url = (args as { url?: unknown } | null)?.url;
     return typeof url !== "string" || !isUserGivenUrl(url);
@@ -167,6 +204,8 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_project_items",
   "list_todos",
   "get_todo",
+  "list_artifacts",
+  "get_artifact",
   "list_work_streams",
   "get_work_stream",
   "find_work_streams_for",

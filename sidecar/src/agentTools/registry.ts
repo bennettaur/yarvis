@@ -38,9 +38,13 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   questions: "always",
   projects: "always",
   todos: "always",
+  // Always on so a Jobs-tab job can write its morning brief without searching.
+  // Scheduled tasks stay read-only: SCHEDULED_TASK_TOOLS offers only list and get.
+  artifacts: "always",
   events: "always",
   digest: "always",
   delegation: "always",
+  claudeTasks: "search",
   // Heads-down mode's working state. A chat reaches for it while planning; the
   // heads-down loop picks its own tools.
   workStreams: "search",

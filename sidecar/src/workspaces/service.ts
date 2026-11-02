@@ -33,6 +33,7 @@ import {
 } from "../issues/service.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
+import { ARCHIVED_END_REASON, endWorkspaceAgentSessions } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
 import { syncClaudeAssets } from "./claudeAssets.ts";
 import {
@@ -2135,10 +2136,14 @@ async function removeWorktreesAndFinish(
 ): Promise<ArchiveResult> {
   const id = detail.id;
 
+  // Every session in the workspace, terminal panes included, so none is
+  // listed as running or resumed once the worktrees are gone. First, so the
+  // agent tab's row reads `archived` rather than the stop's `stopped`.
+  await endWorkspaceAgentSessions(db, id, ARCHIVED_END_REASON);
   // Stop any remote-control Claude session first so it isn't holding the
   // worktree while we remove it. Best-effort: the core may be unreachable.
   try {
-    await stopClaudeSession(id);
+    await stopClaudeSession(db, id);
   } catch (e) {
     console.warn("[workspaces] failed to stop Claude session on archive:", e);
   }

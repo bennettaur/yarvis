@@ -417,7 +417,7 @@ src/            React frontend (Vite + TS + Tailwind)
     shell/      nav rail, top bar, boot screen, tab shortcuts, cheat sheet
     omni/       Omni view, the chat-built widget canvas
     omnichat/   Omni Chat, the summon-from-anywhere chat overlay
-    memory/     memory library, activity log, agent todos, projects
+    memory/     memory library, activity log, agent todos, artifacts, projects
     clipboard/  clipboard palette
     onboarding/ first-run setup guide and the app tour
     find/       find-on-page bar (Cmd+F)
@@ -449,12 +449,15 @@ sidecar/        Bun + TS service (Hono)
   src/web/         reading public web pages, with hidden text and injections screened
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
+  src/artifacts/   markdown documents the assistant writes and reads back
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision
                    specialists (decide.ts) and their playground route
   src/agentRuns/   headless Claude Code runs streamed to the UI, and the
                    Claude Code plugins shipped to them
+  src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in
+                   an empty folder, with no workspace
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, GitHub review sync, and your own scheduled jobs

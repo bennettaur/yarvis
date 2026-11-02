@@ -198,6 +198,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Artifacts** | Markdown documents the assistant wrote and can read back, such as a morning brief, a report, or a scratchpad it adds to over time | Memory → Artifacts |
 | **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
@@ -205,6 +206,46 @@ named. It works well for status updates and brag docs.
 
 Tasks and agent todos are separate on purpose. One is your plan, the other is
 the assistant's.
+
+### Artifacts
+
+Ask the assistant to write something up, like "put together my morning brief",
+and it saves the result as an artifact rather than only replying in the chat.
+It can read an artifact back later and add to it, so it also uses them as
+scratchpads: notes it builds up over a heads-down run, or a list it keeps
+across conversations. A job on the Jobs tab can write one too, so a
+weekday-morning job can leave a fresh brief waiting for you. A task the
+assistant schedules for itself in a chat can only read them.
+
+A heads-down pass or a specialist (which is what a Jobs-tab job runs) can add
+to the end of an artifact you asked for in a chat, but can't rewrite, rename or
+delete it, and can't grow it past 50,000 characters, so you always have room to
+add to it. They can rewrite and delete artifacts they created themselves, and
+you can still have any artifact rewritten or deleted from a chat.
+
+Those runs may be working from a ticket or message someone else wrote, so their
+artifacts are marked untrusted. So is anything written in a chat turn after it
+read a web page or an untrusted artifact, and anything written from the Chrome
+side panel, whose messages carry the open tab's text. Once a chat turn reads an
+untrusted artifact, actions that can't be undone, rewriting an artifact among
+them, ask for your approval for the rest of that turn, as they do after reading
+a web page. Listing artifacts counts as reading the untrusted ones' titles, so
+once heads-down mode or a specialist has written one, most turns that use
+artifacts will ask. Spoken turns always ask before rewriting one. Like page
+text, what an artifact says isn't replayed into later turns, and an untrusted
+artifact's title stays out of the activity log.
+
+Only reading a web page or an untrusted artifact, or writing from the side
+panel, marks a chat turn's artifacts untrusted. Text a typed chat turn reads
+from your browser tabs, a ticket, a pull request or an MCP tool doesn't, so an
+artifact written from it is shown as trusted. The same limit already applies to
+the approvals within that turn.
+
+Open **Memory → Artifacts** to read them. Each one shows where it came from
+(a chat, heads-down mode, or a specialist or job) and whether it's untrusted.
+Delete one with its ✕, or tick several (or all) and delete them together;
+deleting can't be undone. Only the assistant edits them. Artifacts are
+markdown for now, and each one is capped at 100,000 characters.
 
 ### Memory kinds
 
@@ -396,8 +437,8 @@ you asked.
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
   syncing branches, sending an instruction to a session, launching a
-  session, forgetting a memory, or delegating. A transcript can be misheard,
-  or picked up from the room.
+  session, handing a task to Claude Code, forgetting a memory, or delegating.
+  A transcript can be misheard, or picked up from the room.
 - **Scheduled tasks** can't ask, because nobody is watching them. They only
   get tools that read. See [Scheduled tasks](#scheduled-tasks).
 
@@ -472,6 +513,9 @@ Loaded on demand:
   and cancel one. In heads-down mode it can only set meeting alarms, and can't
   cancel any.
 - **Web.** Read a public web page you link to.
+- **Claude Code tasks.** Hand a self-contained task to Claude Code without
+  starting a workspace, and check on it. See
+  [Handing a task to Claude Code](#handing-a-task-to-claude-code).
 - **Help.** Search and read Yarvis's own user docs, and check which parts of
   the app are configured (yes or no only, never a secret's value).
 
@@ -513,6 +557,36 @@ can't read web pages unless you grant it to them.
 Requests go straight to the site's address after it is checked, which keeps a
 site from passing the check and then pointing its name at your local network.
 That also means they don't go through an HTTP proxy set in your environment.
+
+### Handing a task to Claude Code
+
+Ask for something that is easier to build than to write in chat, such as a
+small website, a formatted brief or a script, and the assistant can hand it to
+Claude Code in the background. No workspace or repo is involved: Claude Code
+starts in a new empty folder under your workspaces root
+(`<workspaces root>/.claude-tasks/<id>`) and leaves its files there. When it
+finishes, the attention bell tells you, and the assistant can show you its
+summary and the files it made.
+
+Each run is locked down more tightly than the review agents' runs:
+
+- It can only read and write inside its own folder. It can't see your repos or
+  any other file, so put everything it needs in your request, or ask the
+  assistant to pass along a ticket or page it has read.
+- It has no shell and no network access, so it can't install packages or
+  fetch anything. It builds with plain files: HTML, CSS, JavaScript, Markdown.
+- It reads none of your Claude Code settings, hooks, plugins or MCP servers,
+  and it can't publish or push anything.
+- It stops after 30 minutes or US$5 of usage, whichever comes first, and at
+  most 3 tasks run at once.
+
+Task folders are kept until you delete them.
+
+It runs on the Claude Code build set in Settings, and its usage counts against
+that Claude Code account. That build needs restricted mode (`--restricted`),
+which keeps the run inside its folder; tasks are checked against Claude Code
+2.1.314. On a build without it, the task fails
+instead of running unconfined, and its notification says to update Claude Code.
 
 ## Specialists
 

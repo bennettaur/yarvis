@@ -15,6 +15,7 @@
 //! two without a gap or an overlap — see `PtySnapshot`.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -498,6 +499,16 @@ fn spawn_into_state(
         let _ = loser.child.kill();
         return Ok(());
     }
+    // Checked again: spawns for different ids can all pass the check above
+    // while each is still spawning, as the startup resumes do.
+    let cap = max_sessions(app);
+    if sessions.len() >= cap {
+        let mut rejected = session;
+        let _ = rejected.child.kill();
+        return Err(format!(
+            "too many PTY sessions (cap: {cap}); close one before opening another"
+        ));
+    }
     sessions.insert(id.to_string(), session);
     Ok(())
 }
@@ -914,9 +925,46 @@ fn remote_control_command(base: &str, name: &str) -> String {
     )
 }
 
+/// True when `id` is shaped like a Claude Code session id, a UUID. It is typed
+/// into a shell, and Claude would read one starting with `-` as a flag, so
+/// nothing else is accepted, on top of being quoted.
+fn is_valid_resume_id(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// True when the agent command launches Claude Code, judged by the file name of
+/// its program, past any leading `VAR=value` assignments. Only Claude Code takes
+/// `--resume` with a Claude Code session id.
+fn runs_claude_code(base: &str) -> bool {
+    base.split_whitespace()
+        .find(|word| !word.contains('='))
+        .is_some_and(|program| Path::new(program).file_name() == Some(OsStr::new("claude")))
+}
+
+/// Refuses a `resume` the launch can't honour: an id that isn't a Claude Code
+/// session id, or an agent command that isn't Claude Code. Refused rather than
+/// launched without the flag, since an unattended relaunch should continue the
+/// session that was cut off, not start a different agent.
+fn check_resume(base: &str, resume: Option<&str>) -> Result<(), String> {
+    match resume {
+        None => Ok(()),
+        Some(id) if !is_valid_resume_id(id) => Err("invalid resume session id".into()),
+        Some(_) if !runs_claude_code(base) => {
+            Err("the configured agent is not Claude Code, so it can't resume a session".into())
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 /// The launch line for an agent session: the base command, with Remote Control
-/// added only when asked for, and an `instruction` the session should start on
-/// appended as a single argument. Extracted from `spawn_claude_session` alongside
+/// added only when asked for, `--resume` when it continues an earlier Claude
+/// Code session, and an `instruction` the session should start on appended as
+/// a single argument. Extracted from `spawn_claude_session` alongside
 /// `remote_control_command` so the choice is unit-testable without app state.
 ///
 /// The instruction carries issue text, which an outside party writes, so it is
@@ -925,13 +973,17 @@ fn agent_launch_command(
     base: &str,
     name: &str,
     remote_control: bool,
+    resume: Option<&str>,
     instruction: Option<&str>,
 ) -> String {
-    let command = if remote_control {
+    let mut command = if remote_control {
         remote_control_command(base, name)
     } else {
         base.trim().to_string()
     };
+    if let Some(id) = resume {
+        command = format!("{} --resume {}", command, shell_single_quote(id));
+    }
     match instruction.map(str::trim).filter(|i| !i.is_empty()) {
         Some(instruction) => format!("{} {}", command, shell_single_quote(instruction)),
         None => command,
@@ -970,6 +1022,10 @@ fn shell_single_quote(s: &str) -> String {
 /// when the launch came from somewhere the user isn't at the machine — a
 /// Telegram turn. A session started at the laptop is driven in its own tab, and
 /// can be made remotely controllable later from inside the session itself.
+///
+/// `resume` is the id of a Claude Code session to continue, which the sidecar
+/// passes when it relaunches a workspace's agent after the app restarted.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_session(
     app: &AppHandle,
     state: &PtyState,
@@ -977,10 +1033,13 @@ pub fn spawn_claude_session(
     cwd: String,
     name: &str,
     remote_control: bool,
+    resume: Option<&str>,
     instruction: Option<&str>,
 ) -> Result<(), String> {
+    let base = agent_command(app);
+    check_resume(&base, resume)?;
     let id = format!("ws-claude:{workspace_id}");
-    let command = agent_launch_command(&agent_command(app), name, remote_control, instruction);
+    let command = agent_launch_command(&base, name, remote_control, resume, instruction);
     spawn_into_state(
         app,
         state,
@@ -1085,6 +1144,7 @@ pub fn pty_start_claude(
         &name,
         remote_control,
         None,
+        None,
     )
 }
 
@@ -1164,11 +1224,12 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, hmac_sha256_hex, is_unsafe_name_char,
-        lock_scrollback, prepare_instruction, remote_control_command, resolve_agent_command,
-        resolve_max_sessions, session_env, session_token, snapshot, Scrollback,
-        DEFAULT_AGENT_COMMAND, DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS,
-        MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        agent_launch_command, attention_workspace_id, check_resume, hmac_sha256_hex,
+        is_unsafe_name_char, is_valid_resume_id, lock_scrollback, prepare_instruction,
+        remote_control_command, resolve_agent_command, resolve_max_sessions, runs_claude_code,
+        session_env, session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
+        MAX_SESSION_NAME_CHARS,
     };
     use std::sync::Mutex;
 
@@ -1411,13 +1472,19 @@ mod tests {
     #[test]
     fn agent_launch_command_adds_remote_control_only_when_asked() {
         assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", true, None),
+            agent_launch_command("claude --permission-mode auto", "Fix bug", true, None, None),
             "claude --permission-mode auto --remote-control 'Fix bug'"
         );
         // A session started at the machine is driven in its own tab; Remote
         // Control is enabled from inside it if the user later steps away.
         assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", false, None),
+            agent_launch_command(
+                "claude --permission-mode auto",
+                "Fix bug",
+                false,
+                None,
+                None
+            ),
             "claude --permission-mode auto"
         );
     }
@@ -1429,6 +1496,7 @@ mod tests {
                 "claude --permission-mode auto",
                 "Fix bug",
                 false,
+                None,
                 Some("Read .yarvis/brief.md")
             ),
             "claude --permission-mode auto 'Read .yarvis/brief.md'"
@@ -1436,7 +1504,7 @@ mod tests {
         // Remote Control and an instruction compose; the name and the
         // instruction are quoted independently.
         assert_eq!(
-            agent_launch_command("claude", "Fix bug", true, Some("Do the thing")),
+            agent_launch_command("claude", "Fix bug", true, None, Some("Do the thing")),
             "claude --remote-control 'Fix bug' 'Do the thing'"
         );
     }
@@ -1445,14 +1513,81 @@ mod tests {
     fn agent_launch_command_quotes_an_instruction_that_carries_shell_metacharacters() {
         // Issue text is written by an outside party, so it must not be able to
         // end the argument and start a command of its own.
-        let cmd = agent_launch_command("claude", "n", false, Some("it's; rm -rf ~ `id` $(id)"));
+        let cmd = agent_launch_command(
+            "claude",
+            "n",
+            false,
+            None,
+            Some("it's; rm -rf ~ `id` $(id)"),
+        );
         assert_eq!(cmd, r"claude 'it'\''s; rm -rf ~ `id` $(id)'");
+    }
+
+    #[test]
+    fn agent_launch_command_resumes_a_session_before_any_instruction() {
+        assert_eq!(
+            agent_launch_command(
+                "claude --permission-mode auto",
+                "Fix bug",
+                false,
+                Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"),
+                None
+            ),
+            "claude --permission-mode auto --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'"
+        );
+        assert_eq!(
+            agent_launch_command(
+                "claude",
+                "Fix bug",
+                true,
+                Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"),
+                Some("Go on")
+            ),
+            "claude --remote-control 'Fix bug' --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70' 'Go on'"
+        );
+    }
+
+    #[test]
+    fn is_valid_resume_id_accepts_only_a_uuid() {
+        assert!(is_valid_resume_id("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"));
+        assert!(is_valid_resume_id("0B6A3F1E-9C1D-4E55-8A5B-2F3C4D5E6F70"));
+        assert!(!is_valid_resume_id(""));
+        assert!(!is_valid_resume_id("abc-123"));
+        // Claude would read this as a flag rather than the option's value.
+        assert!(!is_valid_resume_id("--dangerously-skip-permissions"));
+        assert!(!is_valid_resume_id("-b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"));
+        assert!(!is_valid_resume_id(
+            "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'; id"
+        ));
+    }
+
+    #[test]
+    fn runs_claude_code_matches_only_the_claude_program() {
+        assert!(runs_claude_code("claude --permission-mode auto"));
+        assert!(runs_claude_code("/opt/homebrew/bin/claude"));
+        assert!(runs_claude_code("CLAUDE_CONFIG_DIR=/tmp/c claude"));
+        assert!(!runs_claude_code("codex"));
+        assert!(!runs_claude_code("aider --model sonnet"));
+        assert!(!runs_claude_code("npx claude-code"));
+        assert!(!runs_claude_code("echo claude"));
+        assert!(!runs_claude_code(""));
+    }
+
+    #[test]
+    fn check_resume_refuses_a_resume_the_agent_cannot_take() {
+        let id = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
+        assert!(check_resume("claude --permission-mode auto", Some(id)).is_ok());
+        assert!(check_resume("claude", Some("--dangerously-skip-permissions")).is_err());
+        // Another agent would read the flag as its own, or fail on it.
+        assert!(check_resume("codex", Some(id)).is_err());
+        // Without a resume, any agent launches as before.
+        assert!(check_resume("codex", None).is_ok());
     }
 
     #[test]
     fn agent_launch_command_ignores_a_blank_instruction() {
         assert_eq!(
-            agent_launch_command("claude", "n", false, Some("   ")),
+            agent_launch_command("claude", "n", false, None, Some("   ")),
             "claude"
         );
     }
