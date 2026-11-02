@@ -1,14 +1,15 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import {
   closeSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -301,33 +302,53 @@ const RECORD_LOCK_STALE_MS = 5000;
  * updating at once can't each read the old list and drop the other's entry.
  * Synchronous on purpose: nothing else in this sidecar can run while it holds
  * the lock, and the wait is short.
+ *
+ * Two instances that both find the same lock stale within a few milliseconds
+ * can both take it over; that needs a crash first, and costs one entry at most.
  */
 function withRecordLock(update: () => void): void {
   const lock = `${recordFile()}.lock`;
+  const token = `${process.pid}-${crypto.randomUUID()}`;
   mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + RECORD_LOCK_WAIT_MS;
   for (;;) {
     try {
-      closeSync(openSync(lock, "wx", 0o600));
+      const fd = openSync(lock, "wx", 0o600);
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync(fd);
+      }
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
-    let age: number;
+    // lstat, not stat: a lock path that is a dangling link must still age out
+    // rather than look forever like a lock released a moment ago.
+    let age: number | null = null;
     try {
-      age = Date.now() - statSync(lock).mtimeMs;
+      age = Date.now() - lstatSync(lock).mtimeMs;
     } catch {
-      continue; // Released between the two calls.
+      // Released between the two calls; try again.
     }
-    if (age > RECORD_LOCK_STALE_MS) rmSync(lock, { force: true });
-    else if (Date.now() > deadline) {
+    if (age !== null && age > RECORD_LOCK_STALE_MS) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
       throw new Error("another instance is updating the speech server record");
-    } else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
   }
   try {
     update();
   } finally {
-    rmSync(lock, { force: true });
+    // Only our own lock: one taken over after ours went stale isn't ours to drop.
+    try {
+      if (readFileSync(lock, "utf8") === token) rmSync(lock, { force: true });
+    } catch {
+      // Already gone.
+    }
   }
 }
 

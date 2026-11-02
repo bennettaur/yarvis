@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  lutimes,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -187,6 +196,19 @@ describe("LocalSpeechServer", () => {
       await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
       expect(Object.keys(await records())).toEqual(["main"]);
       expect(existsSync(lock())).toBe(false);
+    });
+
+    it("doesn't spin on a lock that is a dangling link, and takes it over once stale", async () => {
+      await symlink(join(dir, "nowhere"), lock());
+      const started = Date.now();
+      await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(await records()).toEqual({});
+
+      const old = new Date(Date.now() - 60_000);
+      await lutimes(lock(), old, old);
+      await startedBy("main", pid, "Mon Nov  2 09:00:00 2026");
+      expect(Object.keys(await records())).toEqual(["main"]);
     });
 
     it("gives up, leaving the file and the other instance's lock alone, when the lock stays held", async () => {
