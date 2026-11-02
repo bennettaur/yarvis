@@ -884,23 +884,32 @@ describe("workspace routes", () => {
     const repo = await addRepo();
     const viewed = await createWorkspace(db, config, { name: "viewed", repoIds: [repo.id] });
     const agentRan = await createWorkspace(db, config, { name: "agent ran", repoIds: [repo.id] });
-    const viewedAt = new Date(viewed.createdAt.getTime() + 60_000);
+    // Each workspace has both inputs; the later one should win.
+    const viewedAt = new Date(viewed.createdAt.getTime() + 120_000);
     const transcriptAt = new Date(agentRan.createdAt.getTime() + 120_000);
-    await recordEvent(db, {
-      type: "workspace.viewed",
-      payload: { workspaceId: viewed.id, tab: "agent" },
-      occurredAt: viewedAt,
-    });
+    const earlier = (w: { createdAt: Date }) => new Date(w.createdAt.getTime() + 60_000);
+    const view = (workspaceId: string, at: Date) =>
+      recordEvent(db, {
+        type: "workspace.viewed",
+        payload: { workspaceId, tab: "agent" },
+        occurredAt: at,
+      });
+    await view(viewed.id, viewedAt);
+    await view(agentRan.id, earlier(agentRan));
 
     const previousHome = process.env.CLAUDE_HOME;
     const claudeHome = mkdtempSync(join(tmpdir(), "yarvis-idle-home-"));
     process.env.CLAUDE_HOME = claudeHome;
     try {
-      const dir = join(claudeHome, "projects", ccProjectDirFor(agentRan.rootPath));
-      mkdirSync(dir, { recursive: true });
-      const transcript = join(dir, "s-1.jsonl");
-      writeFileSync(transcript, "{}\n");
-      utimesSync(transcript, transcriptAt, transcriptAt);
+      const writeTranscript = (rootPath: string, at: Date) => {
+        const dir = join(claudeHome, "projects", ccProjectDirFor(rootPath));
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, "s-1.jsonl");
+        writeFileSync(file, "{}\n");
+        utimesSync(file, at, at);
+      };
+      writeTranscript(viewed.rootPath, earlier(viewed));
+      writeTranscript(agentRan.rootPath, transcriptAt);
 
       const res = await app.request("/api/workspaces", { headers: auth });
       const list = (await res.json()) as { id: string; lastActiveAt: string | null }[];
@@ -2194,6 +2203,7 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const extra = join(ws.rootPath, "widget-layer-2");
     mkdirSync(extra);
+    const extraReal = canonicalPath(extra);
 
     const dirtyExtraGit: GitRunner = async (args, opts) => {
       if (args[0] === "worktree" && args[1] === "list") {
@@ -2205,7 +2215,7 @@ describe("provision + archive (injected git runner)", () => {
       if (
         args[0] === "worktree" &&
         args[1] === "remove" &&
-        target === canonicalPath(extra) &&
+        target === extraReal &&
         !args.includes("--force")
       ) {
         return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
