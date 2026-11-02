@@ -2137,6 +2137,7 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const stuckBranchGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
+      if (args[0] === "rev-list") return { stdout: "0\n", stderr: "", exitCode: 0 };
       if (args[0] === "branch") return { stdout: "", stderr: "branch is locked", exitCode: 1 };
       return fakeGit(args, opts);
     };
@@ -2183,6 +2184,7 @@ describe("provision + archive (injected git runner)", () => {
         return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "rev-list") return { stdout: "0\n", stderr: "", exitCode: 0 };
       if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
       return fakeGit(args, opts);
     };
@@ -2194,6 +2196,42 @@ describe("provision + archive (injected git runner)", () => {
     deleted.length = 0;
     await archiveWorkspace(db, open.id, {}, branchGit);
     expect(deleted).toEqual([]);
+  });
+
+  it("stops on a merged branch with unpushed commits, and deletes it on a forced retry", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "after-merge", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 2, prState: "merged" });
+
+    const deleted: string[] = [];
+    // Merged and the remote branch deleted, but two commits were made after the merge.
+    const unpushedGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+      }
+      if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "rev-list") return { stdout: "2\n", stderr: "", exitCode: 0 };
+      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      return fakeGit(args, opts);
+    };
+
+    const blocked = await archiveWorkspace(db, ws.id, {}, unpushedGit);
+    expect(blocked.status).toBe("archiving");
+    expect(blocked.errors[0]?.message).toContain("2 commit(s) that aren't on the remote");
+    expect(existsSync(wr!.worktreePath)).toBe(true);
+    expect(deleted).toEqual([]);
+
+    const forced = await archiveWorkspace(db, ws.id, { force: true }, unpushedGit);
+    expect(forced.status).toBe("archived");
+    expect(deleted).toEqual([wr!.branch]);
   });
 
   it("completes a linked task when the workspace is fully archived", async () => {

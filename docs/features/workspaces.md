@@ -585,7 +585,10 @@ force it.
 Once a repo's worktrees are gone, its local branch is deleted if the work has
 landed: the base branch already contains it, or its PR merged and the remote
 branch, if it's still there, has every local commit. Any other branch is kept
-in the shared clone.
+in the shared clone. If a landed branch has commits that no remote has, such
+as work added after its PR merged and the remote branch was deleted, the
+archive stops before removing the worktree and says how many. Push them, or
+**Force remove** to delete the branch anyway.
 
 Last, the archive deletes the workspace folder. If anything other than the
 files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,

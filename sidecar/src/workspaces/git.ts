@@ -630,6 +630,22 @@ export async function branchLanded(
   return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
 }
 
+/** How many of a local branch's commits no remote-tracking ref has, so deleting it would lose them. */
+export async function unpushedCommitCount(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<number> {
+  const out = await git(
+    runner,
+    ["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"],
+    primaryClonePath,
+  );
+  const count = Number.parseInt(out.trim(), 10);
+  if (!Number.isInteger(count)) throw new Error(`git rev-list gave no count: ${out.trim()}`);
+  return count;
+}
+
 /** Deletes a local branch. Git refuses while a worktree has it checked out. */
 export async function deleteBranch(
   runner: GitRunner,

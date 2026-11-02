@@ -30,6 +30,7 @@ import {
   pushBranch,
   remoteExists,
   removeWorktree,
+  unpushedCommitCount,
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
@@ -628,6 +629,20 @@ describe("archive cleanup helpers", () => {
 
     commit("after-merge.txt");
     expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(false);
+  });
+
+  it("counts the commits on a branch that no remote has", async () => {
+    const { clone, own } = cloneWithOrigin();
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(0);
+    for (const name of ["one.txt", "two.txt"]) {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    }
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(2);
   });
 
   it("doesn't count a branch that isn't there as landed", async () => {

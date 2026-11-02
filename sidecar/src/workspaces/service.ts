@@ -74,6 +74,7 @@ import {
   mergeBaseIntoWorktree,
   pushBranch,
   removeWorktree,
+  unpushedCommitCount,
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
@@ -2177,17 +2178,41 @@ function trackArchive(
 }
 
 /**
- * Deletes a torn-down repo's local branch once its work has landed, so archived
- * workspaces don't pile up branches in the shared clone. Best-effort: a branch
- * left behind costs nothing, so a failure is logged and the archive goes on.
+ * Whether to delete a repo's local branch once its worktree is gone, so archived
+ * workspaces don't pile up branches in the shared clone. Only a landed branch
+ * goes. Throws when a landed branch still has commits on no remote (a merged
+ * PR's branch with work added after the merge) and `force` isn't set, so the
+ * user hears about them while the worktree is still there to push from.
+ * Otherwise best-effort: a branch left behind costs nothing, so a git failure
+ * keeps it and the archive goes on.
  */
-async function deleteLandedBranch(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+async function branchToDeleteOnArchive(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  force: boolean,
+): Promise<boolean> {
   const primaryClonePath = wr.repo.primaryClonePath;
+  let unpushed: number;
   try {
     const prMerged = wr.pr?.prState === "merged";
-    if (await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged)) {
-      await deleteBranch(runner, primaryClonePath, wr.branch);
-    }
+    const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
+    if (!landed || force) return landed;
+    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch);
+  } catch (e) {
+    console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
+    return false;
+  }
+  if (unpushed > 0) {
+    throw new Error(
+      `branch ${wr.branch} has ${unpushed} commit(s) that aren't on the remote — force remove to delete it anyway`,
+    );
+  }
+  return true;
+}
+
+async function deleteBranchAfterArchive(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+  try {
+    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch);
   } catch (e) {
     console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
   }
@@ -2235,11 +2260,12 @@ async function removeWorktreesAndFinish(
           });
         }
         if (wr.status === "removed") return;
+        const deleteBranchAfter = await branchToDeleteOnArchive(runner, wr, force);
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {
           force,
           workspaceRoot: detail.rootPath,
         });
-        await deleteLandedBranch(runner, wr);
+        if (deleteBranchAfter) await deleteBranchAfterArchive(runner, wr);
       });
       if (wr.status === "removed") continue;
       await db
