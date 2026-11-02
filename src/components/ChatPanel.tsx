@@ -17,6 +17,7 @@ import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
+import QueuedMessages from "./QueuedMessages";
 import ToolApprovalBar from "./ToolApprovalBar";
 import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
@@ -80,6 +81,10 @@ export default function ChatPanel({
     respondApproval,
     alwaysAllow,
     send,
+    queued,
+    enqueue,
+    unqueue,
+    sendQueued,
     retry,
     rewind,
     stop,
@@ -140,6 +145,9 @@ export default function ChatPanel({
     void send(input).then((sent) => {
       if (sent) setInput("");
     });
+  };
+  const queue = () => {
+    if (enqueue(input)) setInput("");
   };
 
   return (
@@ -207,6 +215,13 @@ export default function ChatPanel({
 
       <McpConnectionBar />
 
+      <QueuedMessages
+        queued={queued}
+        held={!busy && error !== null}
+        onRemove={unqueue}
+        onSendNext={sendQueued}
+      />
+
       <ChatComposer
         value={input}
         onChange={setInput}
@@ -216,6 +231,7 @@ export default function ChatPanel({
         submitLabel="Send"
         maxHeight={360}
         onStop={stop}
+        onQueue={queue}
         inputRef={composerRef}
         tools={
           <>

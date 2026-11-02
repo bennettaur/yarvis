@@ -142,8 +142,8 @@ function TogglingHost({
 const composerOf = (host: HTMLElement) =>
   host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Message..."]');
 
-/** Types a message into the composer and presses Send. */
-async function say(host: HTMLElement, text: string) {
+/** Types a message into the composer and presses Send (or another composer button). */
+async function say(host: HTMLElement, text: string, button = "Send") {
   const box = host.querySelector("textarea")!;
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set as (
     v: string,
@@ -152,7 +152,7 @@ async function say(host: HTMLElement, text: string) {
   box.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 20));
   Array.from(host.querySelectorAll("button"))
-    .find((b) => b.textContent === "Send")
+    .find((b) => b.textContent === button)
     ?.click();
   await new Promise((resolve) => setTimeout(resolve, 80));
 }
@@ -318,6 +318,25 @@ describe("ChatPanel", () => {
     const asked = mounted.host.textContent?.split("pull the notion doc").length ?? 0;
     expect(asked - 1).toBe(1);
     expect(mounted.host.textContent).toContain("second time lucky");
+  });
+
+  it("queues a message typed during a reply and sends it once the reply lands", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    expect(composerOf(mounted.host)?.disabled).toBe(false);
+    await say(mounted.host, "follow-up", "Queue");
+    expect(sent.map((body) => body.message)).toEqual(["first question"]);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "follow-up",
+    );
+
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    await settle(300);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')).toBeNull();
   });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
@@ -536,6 +555,44 @@ describe("useChatThread", () => {
     expect(thread?.error?.message).toContain("Turn stopped");
     // Nothing was persisted for it, so the partial reply goes with it.
     expect(thread?.messages.some((m) => m.content.includes("half a th"))).toBe(false);
+  });
+
+  // A follow-up written for a reply that never came may no longer make sense,
+  // so it waits for the user rather than going out on its own.
+  it("holds the queue after a stopped turn until the user sends it", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    thread?.stop();
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(thread?.queued).toEqual(["follow-up"]);
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    thread?.sendQueued();
+    await settle();
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    expect(thread?.queued).toEqual([]);
+  });
+
+  it("drops the queue when the user starts a new chat", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    await thread?.newChat();
+    await settle();
+    expect(thread?.queued).toEqual([]);
+    expect(sent).toHaveLength(1);
   });
 
   it("explains a dropped stream by the last real event, not a heartbeat", async () => {

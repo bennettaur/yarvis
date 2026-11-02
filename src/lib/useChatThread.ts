@@ -76,6 +76,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  // Messages typed while a turn runs, sent one per turn once it finishes.
+  const [queued, setQueued] = useState<string[]>([]);
 
   // Lets the surface end a turn early. Aborting the fetch disconnects the SSE
   // stream, which the sidecar reads as the client going away and uses to cancel
@@ -139,6 +141,8 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setActivity([]);
     setApprovals([]);
     setError(null);
+    // Queued messages were written for the thread being left.
+    setQueued([]);
   }, []);
 
   // Bumped on each load, so a slow fetch for a session the user has already
@@ -433,6 +437,36 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     ],
   );
 
+  /** Holds a message until the turn in flight finishes. */
+  const enqueue = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    setQueued((prev) => [...prev, trimmed]);
+    return true;
+  }, []);
+
+  const unqueue = useCallback((index: number) => {
+    setQueued((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  /** Sends the oldest queued message now, for a queue held by a failed or stopped turn. */
+  const sendQueued = useCallback(() => {
+    const [next, ...rest] = queued;
+    if (next === undefined || busy) return;
+    setQueued(rest);
+    void send(next).then((sent) => {
+      if (!sent) setQueued((prev) => [next, ...prev]);
+    });
+  }, [queued, busy, send]);
+
+  // Send the next queued message once a turn ends cleanly. A failed or stopped
+  // turn leaves an error up, and the queue waits: the user may not want what
+  // they queued to follow a reply that never came.
+  useEffect(() => {
+    if (busy || error || queued.length === 0 || !provider || !model) return;
+    sendQueued();
+  }, [busy, error, queued, provider, model, sendQueued]);
+
   /**
    * Runs the last user message again. Used after a failure, where the reply is
    * what went missing — asking the user to retype what they already sent is
@@ -482,6 +516,10 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     respondApproval,
     alwaysAllow,
     send,
+    queued,
+    enqueue,
+    unqueue,
+    sendQueued,
     retry,
     rewind,
     stop,

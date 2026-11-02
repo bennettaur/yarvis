@@ -10,6 +10,7 @@ import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
 import ErrorNotice from "../ErrorNotice";
 import McpConnectionBar from "../McpConnectionBar";
+import QueuedMessages from "../QueuedMessages";
 import ToolApprovalBar from "../ToolApprovalBar";
 import VoiceControls from "../voice/VoiceControls";
 
@@ -47,6 +48,10 @@ export default function OmniChat({
     respondApproval,
     alwaysAllow,
     send,
+    queued,
+    enqueue,
+    unqueue,
+    sendQueued,
     retry,
     rewind,
     stop,
@@ -99,6 +104,9 @@ export default function OmniChat({
     void send(input).then((sent) => {
       if (sent) setInput("");
     });
+  };
+  const queue = () => {
+    if (enqueue(input)) setInput("");
   };
 
   return (
@@ -209,6 +217,13 @@ export default function OmniChat({
 
         <McpConnectionBar visible={open} />
 
+        <QueuedMessages
+          queued={queued}
+          held={!busy && error !== null}
+          onRemove={unqueue}
+          onSendNext={sendQueued}
+        />
+
         <ChatComposer
           value={input}
           onChange={setInput}
@@ -218,6 +233,7 @@ export default function OmniChat({
           submitLabel="Send"
           textareaClassName="min-h-24"
           onStop={stop}
+          onQueue={queue}
         />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <VoiceControls voice={voice} compact />
