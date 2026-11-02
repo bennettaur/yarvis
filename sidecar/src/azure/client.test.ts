@@ -302,6 +302,7 @@ describe("azure client", () => {
       url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
       draft: true,
       state: "open",
+      headSha: null,
       mergeable: "MERGEABLE",
       reviewDecision: "review_required",
       projectId: "",

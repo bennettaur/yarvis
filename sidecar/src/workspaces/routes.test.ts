@@ -77,6 +77,8 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "ls-remote")
     return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
+  if (args[0] === "rev-list" && args[1] === "--count")
+    return { stdout: "0\n", stderr: "", exitCode: 0 };
   // Create the worktree dir like real git would, so setup scripts have a cwd.
   // New branch: "worktree add -b <branch> <path> <base>" (path is args[4]).
   // Existing branch: "worktree add <path> <branch>" (path is args[2]).
@@ -2137,7 +2139,6 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const stuckBranchGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
-      if (args[0] === "rev-list") return { stdout: "0\n", stderr: "", exitCode: 0 };
       if (args[0] === "branch") return { stdout: "", stderr: "branch is locked", exitCode: 1 };
       return fakeGit(args, opts);
     };
@@ -2163,6 +2164,17 @@ describe("provision + archive (injected git runner)", () => {
     expect(existsSync(ws.rootPath)).toBe(false);
   });
 
+  const PR_HEAD = "c".repeat(40);
+  /**
+   * A squash-merged branch as `rev-list --count` sees it: its own commits are on
+   * no remote, so only excluding the PR's head leaves just the work after it.
+   */
+  const squashedCount = (args: string[], afterMerge: number) => ({
+    stdout: `${args.includes(PR_HEAD) ? afterMerge : afterMerge + 3}\n`,
+    stderr: "",
+    exitCode: 0,
+  });
+
   it("deletes the local branch once its PR merged, and keeps one that hasn't landed", async () => {
     const landed = await addRepo();
     const ws = await createWorkspace(db, config, { name: "merged-work", repoIds: [landed.id] });
@@ -2173,7 +2185,7 @@ describe("provision + archive (injected git runner)", () => {
       .where(eq(workspaceRepos.workspaceId, ws.id));
     await db
       .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wr!.id, prNumber: 1, prState: "merged" });
+      .values({ workspaceRepoId: wr!.id, prNumber: 1, prState: "merged", headSha: PR_HEAD });
 
     const deleted: string[] = [];
     // The local branch exists, the base doesn't contain it (a squash merge), and
@@ -2184,7 +2196,7 @@ describe("provision + archive (injected git runner)", () => {
         return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
-      if (args[0] === "rev-list") return { stdout: "0\n", stderr: "", exitCode: 0 };
+      if (args[0] === "rev-list") return squashedCount(args, 0);
       if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
       return fakeGit(args, opts);
     };
@@ -2208,7 +2220,7 @@ describe("provision + archive (injected git runner)", () => {
       .where(eq(workspaceRepos.workspaceId, ws.id));
     await db
       .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wr!.id, prNumber: 2, prState: "merged" });
+      .values({ workspaceRepoId: wr!.id, prNumber: 2, prState: "merged", headSha: PR_HEAD });
 
     const deleted: string[] = [];
     // Merged and the remote branch deleted, but two commits were made after the merge.
@@ -2218,20 +2230,51 @@ describe("provision + archive (injected git runner)", () => {
         return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
-      if (args[0] === "rev-list") return { stdout: "2\n", stderr: "", exitCode: 0 };
+      if (args[0] === "rev-list") return squashedCount(args, 2);
+      if (args[0] === "status") return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
       if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
       return fakeGit(args, opts);
     };
 
     const blocked = await archiveWorkspace(db, ws.id, {}, unpushedGit);
     expect(blocked.status).toBe("archiving");
-    expect(blocked.errors[0]?.message).toContain("2 commit(s) that aren't on the remote");
+    expect(blocked.errors[0]?.message).toContain("2 commit(s) that no remote has");
+    expect(blocked.errors[0]?.message).toContain("uncommitted changes");
     expect(existsSync(wr!.worktreePath)).toBe(true);
     expect(deleted).toEqual([]);
 
     const forced = await archiveWorkspace(db, ws.id, { force: true }, unpushedGit);
     expect(forced.status).toBe("archived");
     expect(deleted).toEqual([wr!.branch]);
+  });
+
+  it("keeps a merged branch without stopping when its PR's head commit is unknown", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "old-merge", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 3, prState: "merged" });
+
+    const deleted: string[] = [];
+    const noHeadGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+      }
+      if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "rev-list") return squashedCount(args, 0);
+      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      return fakeGit(args, opts);
+    };
+
+    const result = await archiveWorkspace(db, ws.id, {}, noHeadGit);
+    expect(result.status).toBe("archived");
+    expect(deleted).toEqual([]);
   });
 
   it("completes a linked task when the workspace is fully archived", async () => {

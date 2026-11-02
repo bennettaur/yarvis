@@ -67,6 +67,7 @@ import {
   fetchRemote,
   fileDiff,
   type GitRunner,
+  hasUncommittedChanges,
   listChangedFiles,
   listFiles,
   listRemoteBranches,
@@ -2180,41 +2181,54 @@ function trackArchive(
 /**
  * Whether to delete a repo's local branch once its worktree is gone, so archived
  * workspaces don't pile up branches in the shared clone. Only a landed branch
- * goes. Throws when a landed branch still has commits on no remote (a merged
- * PR's branch with work added after the merge) and `force` isn't set, so the
- * user hears about them while the worktree is still there to push from.
- * Otherwise best-effort: a branch left behind costs nothing, so a git failure
- * keeps it and the archive goes on.
+ * goes. Throws when a landed branch has commits that neither a remote nor its
+ * merged PR has (work added after the merge) and `force` isn't set, so the user
+ * hears about them while the worktree is still there to push from. Otherwise
+ * best-effort: a branch left behind costs nothing, so a git failure keeps it.
  */
-async function branchToDeleteOnArchive(
+async function shouldDeleteBranchOnArchive(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
 ): Promise<boolean> {
   const primaryClonePath = wr.repo.primaryClonePath;
+  const prMerged = wr.pr?.prState === "merged";
+  const mergedHead = prMerged ? (wr.pr?.headSha ?? null) : null;
+  // Declared out here so the throw below isn't caught by the best-effort catch:
+  // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;
   try {
-    const prMerged = wr.pr?.prState === "merged";
     const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
-    if (!landed || force) return landed;
-    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch);
+    if (!landed) return false;
+    if (force) return true;
+    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch, mergedHead);
   } catch (e) {
-    console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
+    console.warn(`[workspaces] couldn't check branch ${wr.branch} before archive, keeping it:`, e);
     return false;
   }
-  if (unpushed > 0) {
-    throw new Error(
-      `branch ${wr.branch} has ${unpushed} commit(s) that aren't on the remote — force remove to delete it anyway`,
-    );
+  if (unpushed === 0) return true;
+  if (prMerged && !mergedHead) {
+    // Polled before the PR cache kept a head commit: a squash merge's own
+    // commits look unpushed too, so there's no telling them from new work.
+    console.warn(`[workspaces] kept branch ${wr.branch}: its merged PR's head commit is unknown`);
+    return false;
   }
-  return true;
+  const dirty = await hasUncommittedChanges(runner, wr.worktreePath).catch(() => false);
+  throw new Error(
+    `branch ${wr.branch} has ${unpushed} commit(s) that no remote has${
+      dirty ? ", and its worktree has uncommitted changes" : ""
+    } — Force remove deletes them`,
+  );
 }
 
-async function deleteBranchAfterArchive(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
   try {
     await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch);
   } catch (e) {
-    console.warn(`[workspaces] kept branch ${wr.branch} after archive:`, e);
+    console.warn(
+      `[workspaces] couldn't delete branch ${wr.branch} after removing its worktree:`,
+      e,
+    );
   }
 }
 
@@ -2260,12 +2274,12 @@ async function removeWorktreesAndFinish(
           });
         }
         if (wr.status === "removed") return;
-        const deleteBranchAfter = await branchToDeleteOnArchive(runner, wr, force);
+        const shouldDeleteBranch = await shouldDeleteBranchOnArchive(runner, wr, force);
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (deleteBranchAfter) await deleteBranchAfterArchive(runner, wr);
+        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
       });
       if (wr.status === "removed") continue;
       await db

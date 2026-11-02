@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_repo_pr" ADD COLUMN "head_sha" text;

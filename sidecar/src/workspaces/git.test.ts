@@ -19,6 +19,7 @@ import {
   fileDiff,
   type GitRunner,
   type GitRunResult,
+  hasUncommittedChanges,
   listChangedFiles,
   listFiles,
   listRemoteBranches,
@@ -643,6 +644,52 @@ describe("archive cleanup helpers", () => {
       });
     }
     expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(2);
+  });
+
+  it("counts a squash-merged branch's commits as kept by its PR, but not work after it", async () => {
+    const { clone, git, own } = cloneWithOrigin();
+    const commit = (name: string) => {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    };
+    commit("pushed.txt");
+    const prHead = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    // Squash-merge onto main, then delete the remote branch as a pruning fetch would.
+    const squash = git(
+      "commit-tree",
+      "refs/heads/task^{tree}",
+      "-p",
+      "refs/remotes/origin/main",
+      "-m",
+      "squash",
+    )
+      .stdout.toString()
+      .trim();
+    git("update-ref", "refs/remotes/origin/main", squash);
+
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(1);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "task", prHead)).toBe(0);
+
+    commit("after-merge.txt");
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "task", prHead)).toBe(1);
+  });
+
+  it("refuses a merged head that isn't a commit id before it reaches git", async () => {
+    const { clone } = cloneWithOrigin();
+    await expect(unpushedCommitCount(defaultGitRunner, clone, "task", "--all")).rejects.toThrow(
+      "not a commit id",
+    );
+  });
+
+  it("sees untracked files as changes a worktree removal would refuse to drop", async () => {
+    const { own } = cloneWithOrigin();
+    expect(await hasUncommittedChanges(defaultGitRunner, own)).toBe(false);
+    writeFileSync(join(own, "notes.txt"), "notes");
+    expect(await hasUncommittedChanges(defaultGitRunner, own)).toBe(true);
   });
 
   it("doesn't count a branch that isn't there as landed", async () => {

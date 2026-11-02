@@ -723,6 +723,10 @@ export const workspaceRepoPr = pgTable(
     prNumber: integer("pr_number"), // null = no PR found yet
     prUrl: text("pr_url"),
     prState: text("pr_state"), // open | closed | merged
+    // The PR's head commit as last polled; for a merged PR, what it merged.
+    // Archive deletes a merged branch only up to here, since a squash merge
+    // leaves the branch's own commits on no remote once its branch is gone.
+    headSha: text("head_sha"),
     isDraft: boolean("is_draft"),
     mergeable: text("mergeable"), // MERGEABLE | CONFLICTING | UNKNOWN
     // Null when unknown: no PR, not polled, or a provider that can't answer.
