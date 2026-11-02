@@ -49,6 +49,7 @@ import { setPassAbort, setPassStopTimeHandler } from "./wake.ts";
  */
 const PASS_FAMILIES = [
   "workStreams",
+  "artifacts",
   "workspaces",
   "jira",
   "prReview",

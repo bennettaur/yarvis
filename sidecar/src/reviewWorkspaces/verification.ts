@@ -84,6 +84,13 @@ export const VERIFICATION_RUN_KIND = "verification-report";
 /** Most findings a check reports, and most must-read files a report lists. */
 export const MAX_FINDINGS = 5;
 export const MAX_MUST_READ = 8;
+/** Most things a must-read flags as already looking off or unclear. */
+export const MAX_MUST_READ_FLAGS = 3;
+/**
+ * Most flags read from one must-read before duplicates are dropped: room for
+ * a few duplicates, while keeping the audit of dropped ones small.
+ */
+const MAX_MUST_READ_FLAGS_READ = 2 * MAX_MUST_READ_FLAGS;
 
 const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
@@ -137,10 +144,25 @@ const riskSchema = z.object({
   concerns: boundedList(concernSchema, MAX_FINDINGS),
 });
 
+const mustReadFlagSchema = z.object({
+  note: boundedText(160),
+  line: optionalLine,
+});
+
 const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
   reason: boundedText(160),
   lines: lineRangeSchema,
+  // Optional and nullable: most must-reads have nothing to flag, and the
+  // coordinator copies the agent's answer as is, `null` included. Capped by
+  // `dropCoveredFlags`, after duplicates go, so a duplicate never costs a flag.
+  // Not `boundedList`: under `nullish` its description would sit in an `anyOf`
+  // branch rather than on the field.
+  flags: z
+    .array(mustReadFlagSchema)
+    .nullish()
+    .transform((flags) => (flags ?? []).slice(0, MAX_MUST_READ_FLAGS_READ))
+    .meta({ description: `At most ${MAX_MUST_READ_FLAGS} items.` }),
 });
 
 /** Past this a diagram is dropped rather than cut, since a cut one doesn't render. */
@@ -252,15 +274,24 @@ export interface DroppedDuplicate {
   line: number;
 }
 
+export interface DroppedFlag {
+  /** The must-read the flag was on. */
+  path: string;
+  line: number;
+  note: string;
+}
+
 /** What the server took out of a run's answer, kept on the run so it can be audited. */
 export interface ReportAudit {
   droppedDuplicates: DroppedDuplicate[];
   /** Must-reads naming a path the PR doesn't change. */
   droppedMustReads: string[];
+  /** Must-read flags a check finding or risk concern already reported. */
+  droppedFlags: DroppedFlag[];
 }
 
 export function emptyAudit(): ReportAudit {
-  return { droppedDuplicates: [], droppedMustReads: [] };
+  return { droppedDuplicates: [], droppedMustReads: [], droppedFlags: [] };
 }
 
 /**
@@ -310,6 +341,39 @@ export function dedupeChecks(
     result[section] = checkFrom(findings);
   }
   return result;
+}
+
+type MustRead = z.output<typeof mustReadSchema>;
+
+/**
+ * Removes must-read flags a finding or risk concern already reports, by the
+ * same rule {@link dedupeChecks} uses, so one problem isn't shown twice on the
+ * same or a nearby line, then keeps the first {@link MAX_MUST_READ_FLAGS}. The
+ * finding or concern is kept, since it carries a detail.
+ */
+export function dropCoveredFlags(
+  mustRead: MustRead[],
+  cited: { path?: string; line?: number; title: string }[],
+  audit: ReportAudit,
+): MustRead[] {
+  return mustRead.map((entry) => ({
+    ...entry,
+    flags: entry.flags
+      .filter((flag) => {
+        if (flag.line === undefined) return true;
+        const { line, note } = flag;
+        const covered = cited.some(
+          (c) =>
+            c.path === entry.path &&
+            c.line !== undefined &&
+            Math.abs(c.line - line) <= NEARBY_LINES &&
+            similarTitles(c.title, note),
+        );
+        if (covered) audit.droppedFlags.push({ path: entry.path, line, note });
+        return !covered;
+      })
+      .slice(0, MAX_MUST_READ_FLAGS),
+  }));
 }
 
 export interface ReportLimits {
@@ -390,16 +454,17 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
         findings: check.findings.map((f) => withRepoPath(f, limits.checkoutDir)),
       };
     }
+    const concerns = risk?.concerns.map((c) => withRepoPath(c, limits.checkoutDir)) ?? [];
+    const deduped = dedupeChecks(checks, audit);
+    const cited = [
+      ...concerns,
+      ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
+    ];
     return {
       summary,
-      mustRead,
-      ...(risk && {
-        risk: {
-          ...risk,
-          concerns: risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
-        },
-      }),
-      ...dedupeChecks(checks, audit),
+      mustRead: dropCoveredFlags(mustRead, cited, audit),
+      ...(risk && { risk: { ...risk, concerns } }),
+      ...deduped,
       ...(flow && { flow }),
     };
   });
@@ -723,6 +788,7 @@ export function buildVerificationMaterial(
     `REVIEW_CONTEXT=${contextDir}`,
     `SUMMARY_WORDS=${limits.summaryWords}`,
     `MUST_READ_MAX=${limits.mustReadMax}`,
+    `MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`,
     `READING_GROUPS=${groups.length}`,
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
     `SECTIONS=${input.sections.join(",")}`,
@@ -821,11 +887,18 @@ export async function recordReadVolumes(
     .where(eq(agentRuns.id, runId));
 }
 
+/** True when the server took nothing out, so there is no audit to keep. */
+export function auditIsEmpty(audit: ReportAudit): boolean {
+  // Every field of ReportAudit is a list of what was dropped.
+  return Object.values(audit).every((dropped) => dropped.length === 0);
+}
+
 async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<void> {
-  if (audit.droppedDuplicates.length === 0 && audit.droppedMustReads.length === 0) return;
+  if (auditIsEmpty(audit)) return;
   console.log(
     `[verification] run ${runId}: dropped ${audit.droppedDuplicates.length} duplicate findings, ` +
-      `${audit.droppedMustReads.length} must-reads for unchanged paths`,
+      `${audit.droppedMustReads.length} must-reads for unchanged paths, ` +
+      `${audit.droppedFlags.length} must-read flags a finding or concern already reported`,
   );
   await db
     .update(agentRuns)

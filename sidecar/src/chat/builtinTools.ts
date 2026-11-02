@@ -1,6 +1,8 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
 import { buildAlarmTools } from "../alarms/tools.ts";
+import type { ArtifactWriter } from "../artifacts/service.ts";
+import { buildArtifactTools } from "../artifacts/tools.ts";
 import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
 import type { Config } from "../config.ts";
@@ -58,6 +60,8 @@ export interface BuiltinToolDeps {
   atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
+  /** A specialist run, from a Jobs-tab job or a delegation: also unwatched. */
+  specialistRun?: boolean;
   /** What a task scheduled from this turn inherits. Absent off a chat turn. */
   scheduledTask?: ScheduledTaskTurnContext;
 }
@@ -81,7 +85,11 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     untrustedReads,
     atTheApp,
     unattended,
+    specialistRun,
   } = deps;
+  let artifactWriter: ArtifactWriter = "chat";
+  if (unattended) artifactWriter = "heads-down";
+  else if (specialistRun) artifactWriter = "specialist";
   // Only a chat turn can schedule a task; the others get a context that is never used.
   const scheduledTask = deps.scheduledTask ?? {
     provider: null,
@@ -98,6 +106,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
+    artifacts: buildArtifactTools(db, { writer: artifactWriter, reads: untrustedReads }),
     workStreams: buildWorkStreamTools(db, { unattended }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
