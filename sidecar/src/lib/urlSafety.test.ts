@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { UrlSafetyError, validateOutboundUrl } from "./urlSafety.ts";
+import { isLoopbackUrl, UrlSafetyError, validateOutboundUrl } from "./urlSafety.ts";
 
 describe("validateOutboundUrl", () => {
   it("accepts a plain https url", () => {
@@ -72,6 +72,37 @@ describe("validateOutboundUrl", () => {
     expect(validateOutboundUrl("https://[2001:4860:4860::8888]/").hostname).toBe(
       "[2001:4860:4860::8888]",
     );
+  });
+});
+
+describe("isLoopbackUrl", () => {
+  it("counts loopback addresses and the names that always mean this machine", () => {
+    for (const url of [
+      "http://127.0.0.1:8000/v1",
+      "http://127.0.0.2/v1",
+      "http://[::1]:8000/v1",
+      "http://[::ffff:127.0.0.1]/v1",
+      "http://localhost:8000/v1",
+      "http://LOCALHOST/v1",
+      "http://ip6-localhost/v1",
+      "http://ip6-loopback/v1",
+      "http://speech.localhost/v1",
+    ]) {
+      expect(isLoopbackUrl(url)).toBe(true);
+    }
+  });
+
+  it("counts every other host as remote, private ranges and lookalikes included", () => {
+    for (const url of [
+      "https://speech.example.com/v1",
+      "http://10.0.0.5:8000/v1",
+      "http://[fe80::1]/v1",
+      "http://localhost.example.com/v1",
+      "http://mybox.local/v1",
+      "not a url",
+    ]) {
+      expect(isLoopbackUrl(url)).toBe(false);
+    }
   });
 });
 
