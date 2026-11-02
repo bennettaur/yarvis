@@ -82,7 +82,7 @@ function fillArtifactId(text: string, request: ChatRequest): string {
     for (const match of textOf(message).matchAll(ARTIFACT_LINK)) id = match[1];
   }
   if (!id) console.warn("[fake-llm] no artifact link in the conversation for {{artifactId}}");
-  return text.replaceAll("{{artifactId}}", id ?? "");
+  return text.split("{{artifactId}}").join(id ?? "");
 }
 
 /**

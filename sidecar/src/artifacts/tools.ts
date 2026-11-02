@@ -10,6 +10,7 @@ import {
   diagramSchema,
   MAX_DIAGRAM_EDGES,
   MAX_DIAGRAM_NODES,
+  parseDiagram,
 } from "./diagram.ts";
 import {
   ARTIFACT_LIST_LIMIT,
@@ -52,14 +53,18 @@ const CHAT_ARTIFACT_KEPT =
 const DIAGRAM_APPEND_ONLY =
   "This diagram came from a chat with the user, so you can only add new nodes and edges to it. Start a new diagram to change or remove what is there.";
 
-const NOT_TEXT =
-  "That artifact is a diagram. Change it with update_diagram; update_artifact can only rename it.";
+const DIAGRAM_NOT_TEXT =
+  "That artifact is a diagram. Change it with update_diagram; update_artifact can't edit its content.";
+
+const NOT_A_DIAGRAM = "That artifact is a document, not a diagram. Use update_artifact.";
+
+const DIAGRAM_TOO_LARGE = `That would make the diagram longer than ${MAX_ARTIFACT_CHARS} characters. Shorten labels, or split it into two diagrams.`;
 
 /**
  * The address the chat renders as a link that opens the artifact beside the
- * conversation (`src/lib/artifactLink.ts`).
+ * conversation. `src/lib/artifactLink.ts` parses it.
  */
-export function artifactLink(id: string): string {
+function artifactLink(id: string): string {
   return `yarvis://artifact/${id}`;
 }
 
@@ -177,7 +182,7 @@ export function buildArtifactTools(
             ? { id: artifact.id, length: artifact.content.length, link: artifactLink(artifact.id) }
             : { error: "no artifact with that id" };
         } catch (err) {
-          if (err instanceof ArtifactFormatError) return { error: NOT_TEXT };
+          if (err instanceof ArtifactFormatError) return { error: DIAGRAM_NOT_TEXT };
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: APPEND_ONLY };
           if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
@@ -187,7 +192,7 @@ export function buildArtifactTools(
     }),
 
     create_diagram: tool({
-      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_DIAGRAM_NODES} nodes and ${MAX_DIAGRAM_EDGES} edges. ${LINK_HINT}`,
+      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_DIAGRAM_NODES} nodes and ${MAX_DIAGRAM_EDGES} edges, and ${MAX_ARTIFACT_CHARS} characters in all. ${LINK_HINT}`,
       inputSchema: z.object({
         title: title.describe("Short and specific, e.g. 'Checkout service architecture'"),
         nodes: diagramSchema.shape.nodes.describe(
@@ -208,14 +213,14 @@ export function buildArtifactTools(
           return { id: artifact.id, title: artifact.title, link: artifactLink(artifact.id) };
         } catch (err) {
           if (err instanceof DiagramError) return { error: err.message };
-          if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
+          if (err instanceof ArtifactTooLargeError) return { error: DIAGRAM_TOO_LARGE };
           throw err;
         }
       },
     }),
 
     update_diagram: tool({
-      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids.${
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids.${
         writer === "chat"
           ? ""
           : " You can only add new nodes and edges to a diagram that came from a chat with the user."
@@ -230,7 +235,7 @@ export function buildArtifactTools(
             untrusted: tainted(),
           });
           if (!artifact) return { error: "no artifact with that id" };
-          const diagram = JSON.parse(artifact.content) as { nodes: unknown[]; edges: unknown[] };
+          const diagram = parseDiagram(artifact.content);
           return {
             id: artifact.id,
             nodes: diagram.nodes.length,
@@ -239,10 +244,8 @@ export function buildArtifactTools(
           };
         } catch (err) {
           if (err instanceof DiagramError) return { error: err.message };
-          if (err instanceof NotADiagramError) {
-            return { error: "That artifact is markdown, not a diagram. Use update_artifact." };
-          }
-          if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
+          if (err instanceof NotADiagramError) return { error: NOT_A_DIAGRAM };
+          if (err instanceof ArtifactTooLargeError) return { error: DIAGRAM_TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: DIAGRAM_APPEND_ONLY };
           if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
           throw err;

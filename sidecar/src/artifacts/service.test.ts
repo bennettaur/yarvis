@@ -481,6 +481,41 @@ describe("diagrams", () => {
     expect(added?.untrusted).toBe(true);
   });
 
+  it("refuses a pass's rename of a chat turn's diagram, and growth past the run limit", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    await expect(
+      updateDiagram(db, created.id, {
+        writer: "specialist",
+        title: "Renamed",
+        changes: { upsertNodes: [{ id: "new" }] },
+      }),
+    ).rejects.toThrow(ArtifactAppendOnlyError);
+    // About 52k characters of labels, past the 50k a run may grow a chat's artifact to.
+    const big = Array.from({ length: 104 }, (_, i) => ({ id: `n${i}`, label: "x".repeat(500) }));
+    await expect(
+      updateDiagram(db, created.id, { writer: "heads-down", changes: { upsertNodes: big } }),
+    ).rejects.toThrow(ArtifactRunLimitError);
+    expect(JSON.parse((await getArtifact(db, created.id))!.content)).toEqual(diagram);
+  });
+
+  it("refuses a change that would take a diagram past the size cap", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    const huge = Array.from({ length: 210 }, (_, i) => ({ id: `n${i}`, label: "x".repeat(500) }));
+    await expect(updateDiagram(db, created.id, { changes: { upsertNodes: huge } })).rejects.toThrow(
+      ArtifactTooLargeError,
+    );
+  });
+
+  it("marks a chat turn's diagram untrusted when it writes after an untrusted read", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    expect(created.untrusted).toBe(false);
+    const updated = await updateDiagram(db, created.id, {
+      untrusted: true,
+      changes: { upsertNodes: [{ id: "a" }] },
+    });
+    expect(updated?.untrusted).toBe(true);
+  });
+
   it("returns null for a change to a missing diagram", async () => {
     expect(
       await updateDiagram(db, crypto.randomUUID(), { changes: { upsertNodes: [{ id: "a" }] } }),

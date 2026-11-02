@@ -35,7 +35,8 @@ export default function SplitPane({
   ratio: number;
   onRatioChange: (ratio: number) => void;
   first: ReactNode;
-  second: ReactNode | null;
+  /** Null, undefined or false shows `first` alone. */
+  second: ReactNode;
   /** Smallest fraction either pane may shrink to, clamping the drag. */
   minRatio?: number;
   className?: string;
@@ -43,6 +44,7 @@ export default function SplitPane({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const horizontal = orientation === "horizontal";
+  const hasSecond = second !== null && second !== undefined && second !== false;
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
@@ -67,11 +69,11 @@ export default function SplitPane({
     >
       <div
         className="min-h-0 min-w-0 shrink-0 grow-0"
-        style={{ flexBasis: second === null ? "100%" : `${clamped * 100}%` }}
+        style={{ flexBasis: hasSecond ? `${clamped * 100}%` : "100%" }}
       >
         {first}
       </div>
-      {second !== null && (
+      {hasSecond && (
         <div
           onPointerDown={(e) => {
             e.preventDefault();
@@ -97,7 +99,7 @@ export default function SplitPane({
           />
         </div>
       )}
-      {second !== null && <div className="min-h-0 min-w-0 flex-1">{second}</div>}
+      {hasSecond && <div className="min-h-0 min-w-0 flex-1">{second}</div>}
     </div>
   );
 }

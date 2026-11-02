@@ -36,9 +36,11 @@ export default function ArtifactDiagram({ content }: { content: string }) {
   useEffect(() => {
     if (!api) return;
     api.updateScene({ elements: toElements(content) });
-    if (!readerMoved.current) {
-      requestAnimationFrame(() => api.scrollToContent(undefined, { fitToContent: true }));
-    }
+    if (readerMoved.current) return;
+    const frame = requestAnimationFrame(() =>
+      api.scrollToContent(undefined, { fitToContent: true }),
+    );
+    return () => cancelAnimationFrame(frame);
   }, [api, content]);
 
   return (

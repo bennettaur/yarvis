@@ -131,12 +131,6 @@ function rewritesArtifact(args: unknown): boolean {
   return a?.content !== undefined || a?.title !== undefined;
 }
 
-/** An `update_diagram` call that removes elements or renames: lossy the same way a rewrite is. */
-function rewritesDiagram(args: unknown): boolean {
-  const a = args as { removeNodes?: unknown[]; removeEdges?: unknown[]; title?: unknown } | null;
-  return Boolean(a?.removeNodes?.length || a?.removeEdges?.length || a?.title !== undefined);
-}
-
 /**
  * Built-ins that ask only under a condition checked when they are called.
  *
@@ -148,8 +142,10 @@ function rewritesDiagram(args: unknown): boolean {
  * specialist may have copied a page or message into it.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
- * it asks under the same conditions; an append does not. Removing a diagram's
- * elements counts as a rewrite; adding or changing them does not.
+ * it asks under the same conditions; an append does not. Every `update_diagram`
+ * call asks under those conditions too: an upsert onto an existing id
+ * overwrites that element, which is as lossy as removing it, and which ids
+ * exist isn't known until the call runs.
  *
  * `read_web_page` itself asks for any URL the user didn't type in this
  * conversation, because the URL is also a way out: a page can ask for a fetch
@@ -171,10 +167,7 @@ export function conditionalConfirmations(options: {
     "update_artifact",
     (args) => rewritesArtifact(args) && (spoken || hasReadUntrusted(reads)),
   );
-  conditions.set(
-    "update_diagram",
-    (args) => rewritesDiagram(args) && (spoken || hasReadUntrusted(reads)),
-  );
+  conditions.set("update_diagram", () => spoken || hasReadUntrusted(reads));
   conditions.set("read_web_page", (args) => {
     const url = (args as { url?: unknown } | null)?.url;
     return typeof url !== "string" || !isUserGivenUrl(url);

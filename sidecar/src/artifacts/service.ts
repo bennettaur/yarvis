@@ -60,7 +60,7 @@ export class ArtifactRunLimitError extends Error {
 /** `update_artifact`'s content and append are text edits, which would corrupt a diagram's JSON. */
 export class ArtifactFormatError extends Error {
   constructor(readonly format: Artifact["format"]) {
-    super(`a ${format} artifact's content can't be edited as text`);
+    super(`the content of a ${format}-format artifact can't be edited as text`);
   }
 }
 
@@ -308,13 +308,14 @@ export async function updateDiagram(
     if (!current) return null;
     if (current.format !== "excalidraw") throw new NotADiagramError();
     const diagram = parseDiagram(current.content);
-    const fromChat = writer !== "chat" && current.createdBy === "chat";
-    if (fromChat && (input.title !== undefined || !onlyAdds(diagram, input.changes))) {
+    const editsChatDiagram = writer !== "chat" && current.createdBy === "chat";
+    if (editsChatDiagram && (input.title !== undefined || !onlyAdds(diagram, input.changes))) {
       throw new ArtifactAppendOnlyError();
     }
     const content = serializeDiagram(applyDiagramChanges(diagram, input.changes));
     if (content.length > MAX_ARTIFACT_CHARS) throw new ArtifactTooLargeError();
-    if (fromChat && content.length > CHAT_ARTIFACT_RUN_LIMIT) throw new ArtifactRunLimitError();
+    if (editsChatDiagram && content.length > CHAT_ARTIFACT_RUN_LIMIT)
+      throw new ArtifactRunLimitError();
     const [updated] = await tx
       .update(artifacts)
       .set({

@@ -8,7 +8,11 @@ import Markdown from "../Markdown";
 
 const ArtifactDiagram = lazy(() => import("./ArtifactDiagram"));
 
-/** Keeps a diagram that fails to draw, or a chunk that won't load, from taking the chat down with it. */
+/**
+ * Keeps a diagram that fails to draw, or a chunk that won't load, from taking
+ * the chat down with it. Keyed on the artifact's update time by its caller, so
+ * the agent's next change gets a fresh attempt.
+ */
 class DiagramBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
 
@@ -100,7 +104,7 @@ export default function ArtifactPane({ id, onClose }: { id: string; onClose: () 
     body = <LoadingIndicator label="Loading the artifact…" className="p-4 text-sm text-zinc-500" />;
   } else if (artifact.format === "excalidraw") {
     body = (
-      <DiagramBoundary>
+      <DiagramBoundary key={artifact.updatedAt}>
         <Suspense
           fallback={
             <LoadingIndicator label="Loading the diagram…" className="p-4 text-xs text-zinc-500" />

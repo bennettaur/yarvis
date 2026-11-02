@@ -77,11 +77,16 @@ const ADAPTIVE_RADIUS = 3;
 
 const ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 
-const finite = (v: unknown): number | undefined =>
+/** The sidecar's cap on a label, applied again here. */
+const MAX_LABEL = 500;
+
+const finiteOrUndefined = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
-const text = (v: unknown): string | undefined =>
-  // Newlines stay, since a label may want two lines; other control characters go.
-  typeof v === "string" ? v.replace(/(?!\n)\p{Cc}/gu, "").slice(0, 500) : undefined;
+const cleanLabel = (v: unknown): string | undefined =>
+  // Newlines stay, since a label may want two lines. Other control characters
+  // go, and so do format characters like a right-to-left override, which can
+  // make a label read differently from what it says.
+  typeof v === "string" ? v.replace(/(?!\n)[\p{Cc}\p{Cf}]/gu, "").slice(0, MAX_LABEL) : undefined;
 
 /**
  * Reads an artifact's stored content. The sidecar validated it on write, but
@@ -96,13 +101,13 @@ export function parseDiagram(content: string): Diagram {
     if (typeof n?.id !== "string" || !ID.test(n.id)) continue;
     nodes.push({
       id: n.id,
-      label: text(n.label),
+      label: cleanLabel(n.label),
       shape: SHAPES.has(n.shape) ? n.shape : undefined,
       color: n.color in COLORS ? n.color : undefined,
-      x: finite(n.x),
-      y: finite(n.y),
-      width: finite(n.width),
-      height: finite(n.height),
+      x: finiteOrUndefined(n.x),
+      y: finiteOrUndefined(n.y),
+      width: finiteOrUndefined(n.width),
+      height: finiteOrUndefined(n.height),
     });
   }
   const ids = new Set(nodes.map((n) => n.id));
@@ -114,7 +119,7 @@ export function parseDiagram(content: string): Diagram {
       id: e.id,
       from: e.from,
       to: e.to,
-      label: text(e.label),
+      label: cleanLabel(e.label),
       dashed: e.dashed === true,
     });
   }

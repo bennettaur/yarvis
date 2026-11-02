@@ -117,9 +117,14 @@ describe("/api/artifacts", () => {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let text = "";
+    // Bounded, so a stream that never sends the frame fails the test rather than hanging it.
     const readUntil = async (needle: string) => {
+      const deadline = Date.now() + 2_000;
       while (!text.includes(needle)) {
-        const { value, done } = await reader.read();
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`no ${needle} frame`)), deadline - Date.now()),
+        );
+        const { value, done } = await Promise.race([reader.read(), timeout]);
         if (done) break;
         text += decoder.decode(value);
       }

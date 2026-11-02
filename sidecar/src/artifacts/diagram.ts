@@ -4,7 +4,7 @@ import { z } from "zod";
  * The content of an `excalidraw` artifact: boxes, free text and arrows, each
  * with an id the agent picked, so a later turn can change one element without
  * resending the rest. The app turns it into Excalidraw elements when it draws
- * it (`src/lib/artifacts/diagram.ts`).
+ * it (`src/lib/artifactDiagram.ts`).
  *
  * This is a smaller language than Excalidraw's own scene: a model gets arrow
  * bindings and coordinates wrong far more often than it gets "a box called api
@@ -119,6 +119,7 @@ export function checkDiagram(diagram: Diagram): Diagram {
       }
     }
   }
+  // The schema caps what one call sends; this caps what a merge of several adds up to.
   if (diagram.nodes.length > MAX_DIAGRAM_NODES) {
     throw new DiagramError(`a diagram can have at most ${MAX_DIAGRAM_NODES} nodes`);
   }

@@ -106,6 +106,115 @@ export default function OmniChat({
     });
   };
 
+  const thread = (
+    <div className="flex h-full flex-col gap-3 p-4">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-zinc-300">Omni Chat</span>
+        <button
+          type="button"
+          onClick={() => void newChat()}
+          className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+        >
+          New chat
+        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <label title={REASONING_HINT} className="flex items-center gap-1 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={reasoning}
+              onChange={(e) => setReasoning(e.target.checked)}
+            />
+            Thinking
+          </label>
+          <select
+            title={PROVIDER_HINT}
+            value={provider}
+            onChange={(e) => {
+              const id = e.target.value as ProviderId;
+              setProvider(id);
+              setModel(modelsFor(id)[0] ?? "");
+            }}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
+          >
+            {providers.map((p) => (
+              <option key={p.id} value={p.id} disabled={!p.available}>
+                {p.label}
+                {p.available ? "" : " (no key)"}
+              </option>
+            ))}
+          </select>
+          <select
+            title={MODEL_HINT}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
+          >
+            {(provider ? modelsFor(provider) : []).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div
+        ref={threadRef}
+        className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
+      >
+        <ChatMessages
+          messages={messages}
+          streaming={streaming}
+          busy={busy}
+          thinking={thinking}
+          activity={activity}
+          onRewind={rewind}
+          emptyHint="Ask about whatever you're looking at — it's sent along as context."
+        />
+      </div>
+
+      <ToolApprovalBar
+        approvals={approvals}
+        visible={open}
+        onRespond={(id, approved) => void respondApproval(id, approved)}
+        onAlwaysAllow={(a) => void alwaysAllow(a)}
+      />
+
+      {error && (
+        <ErrorNotice
+          error={error}
+          actions={
+            <button
+              type="button"
+              onClick={retry}
+              disabled={busy}
+              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Retry
+            </button>
+          }
+        />
+      )}
+
+      <McpConnectionBar visible={open} />
+
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSubmit={submit}
+        busy={busy}
+        placeholder="Ask anything about what you're looking at…"
+        submitLabel="Send"
+        textareaClassName="min-h-24"
+        onStop={stop}
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <VoiceControls voice={voice} compact />
+        <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
+      </div>
+    </div>
+  );
+
   return (
     <div
       className={`fixed inset-0 z-50 flex items-start justify-center pt-[15vh] ${
@@ -136,119 +245,7 @@ export default function OmniChat({
             onRatioChange={setSplitRatio}
             minRatio={0.3}
             className="min-h-0 flex-1"
-            first={
-              <div className="flex h-full flex-col gap-3 p-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-zinc-300">Omni Chat</span>
-                  <button
-                    type="button"
-                    onClick={() => void newChat()}
-                    className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
-                  >
-                    New chat
-                  </button>
-                  <div className="ml-auto flex items-center gap-2">
-                    <label
-                      title={REASONING_HINT}
-                      className="flex items-center gap-1 text-xs text-zinc-400"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={reasoning}
-                        onChange={(e) => setReasoning(e.target.checked)}
-                      />
-                      Thinking
-                    </label>
-                    <select
-                      title={PROVIDER_HINT}
-                      value={provider}
-                      onChange={(e) => {
-                        const id = e.target.value as ProviderId;
-                        setProvider(id);
-                        setModel(modelsFor(id)[0] ?? "");
-                      }}
-                      className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
-                    >
-                      {providers.map((p) => (
-                        <option key={p.id} value={p.id} disabled={!p.available}>
-                          {p.label}
-                          {p.available ? "" : " (no key)"}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      title={MODEL_HINT}
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      className="max-w-[160px] rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
-                    >
-                      {(provider ? modelsFor(provider) : []).map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div
-                  ref={threadRef}
-                  className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
-                >
-                  <ChatMessages
-                    messages={messages}
-                    streaming={streaming}
-                    busy={busy}
-                    thinking={thinking}
-                    activity={activity}
-                    onRewind={rewind}
-                    emptyHint="Ask about whatever you're looking at — it's sent along as context."
-                  />
-                </div>
-
-                <ToolApprovalBar
-                  approvals={approvals}
-                  visible={open}
-                  onRespond={(id, approved) => void respondApproval(id, approved)}
-                  onAlwaysAllow={(a) => void alwaysAllow(a)}
-                />
-
-                {error && (
-                  <ErrorNotice
-                    error={error}
-                    actions={
-                      <button
-                        type="button"
-                        onClick={retry}
-                        disabled={busy}
-                        className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-                      >
-                        Retry
-                      </button>
-                    }
-                  />
-                )}
-
-                <McpConnectionBar visible={open} />
-
-                <ChatComposer
-                  value={input}
-                  onChange={setInput}
-                  onSubmit={submit}
-                  busy={busy}
-                  placeholder="Ask anything about what you're looking at…"
-                  submitLabel="Send"
-                  textareaClassName="min-h-24"
-                  onStop={stop}
-                />
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <VoiceControls voice={voice} compact />
-                  <p className="text-xs text-zinc-600">
-                    Esc to hide · keeps running in the background
-                  </p>
-                </div>
-              </div>
-            }
+            first={thread}
             second={
               artifactPane.openId && (
                 <div className="h-full py-4 pr-4 pl-3">

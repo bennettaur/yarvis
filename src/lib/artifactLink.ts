@@ -13,7 +13,3 @@ export function parseArtifactLink(href: string | undefined): string | null {
   const id = href.slice(PREFIX.length).replace(/\/$/, "");
   return UUID.test(id) ? id.toLowerCase() : null;
 }
-
-export function artifactLink(id: string): string {
-  return `${PREFIX}${id}`;
-}

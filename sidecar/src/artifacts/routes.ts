@@ -64,6 +64,13 @@ export function createArtifactRoutes(config: Config): Hono {
         if (pending !== "deleted") pending = change;
         wake?.();
       });
+      // Read through a function: the listener sets `pending` during an await,
+      // which TypeScript's narrowing can't see.
+      const takePending = (): ArtifactChange | null => {
+        const change = pending;
+        pending = null;
+        return change;
+      };
       const signal = c.req.raw.signal;
       const waitForChange = () =>
         new Promise<void>((resolve) => {
@@ -83,10 +90,10 @@ export function createArtifactRoutes(config: Config): Hono {
         while (!signal.aborted) {
           if (pending === null) await waitForChange();
           if (signal.aborted) break;
-          const change: ArtifactChange | null = pending;
-          pending = null;
-          await stream.writeSSE({ data: JSON.stringify({ type: change ?? "ping" }) });
-          if (change === "deleted") break;
+          // A wait that ended with nothing pending was the heartbeat timer.
+          const frame = takePending() ?? "ping";
+          await stream.writeSSE({ data: JSON.stringify({ type: frame }) });
+          if (frame === "deleted") break;
         }
       } finally {
         unsubscribe();
