@@ -168,7 +168,7 @@ function layout(diagram: Diagram): Map<string, Box> {
     const column = columns.get(node.id) ?? 0;
     const x = column * (CELL.width + COLUMN_GAP);
     let row = rowsUsed.get(column) ?? 0;
-    // Each placed box blocks at least one row, so this ends.
+    // Placed boxes are finite in number and size, so a clear row is always found.
     while (
       placed.some((p) => overlaps({ x, y: row * (CELL.height + ROW_GAP), width, height }, p))
     ) {

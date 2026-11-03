@@ -11,6 +11,10 @@ function toElements(content: string) {
   });
 }
 
+/** Excalidraw's main menu: its trigger button and the dropdown it opens. */
+const inMenu = (target: EventTarget) =>
+  target instanceof Element && target.closest(".main-menu-trigger, .dropdown-menu") !== null;
+
 /**
  * A diagram artifact drawn in Excalidraw, redrawn each time the agent changes
  * it. Loaded lazily by `ArtifactPane`, since Excalidraw is a large bundle.
@@ -21,8 +25,8 @@ function toElements(content: string) {
  * replace the scene.
  *
  * It follows the drawing with the viewport, zooming to fit after each change,
- * until the reader pans or zooms it themselves. Only input on the canvas
- * counts, so opening the menu to save an image doesn't stop it.
+ * until the reader pans or zooms it themselves, on the canvas or with the zoom
+ * buttons. Opening the menu to save an image doesn't count.
  */
 export default function ArtifactDiagram({ content }: { content: string }) {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
@@ -48,10 +52,10 @@ export default function ArtifactDiagram({ content }: { content: string }) {
     <div
       className="h-full overflow-hidden"
       onPointerDownCapture={(e) => {
-        if (e.target instanceof HTMLCanvasElement) readerMoved.current = true;
+        if (!inMenu(e.target)) readerMoved.current = true;
       }}
       onWheelCapture={(e) => {
-        if (e.target instanceof HTMLCanvasElement) readerMoved.current = true;
+        if (!inMenu(e.target)) readerMoved.current = true;
       }}
       onDragOverCapture={(e) => e.preventDefault()}
       onDropCapture={(e) => {

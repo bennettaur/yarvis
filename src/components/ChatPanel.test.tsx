@@ -107,7 +107,8 @@ mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, tok
 
 /**
  * The turn itself is faked at `streamChat` rather than at the socket, so the
- * test scripts chat events instead of SSE frames. Nothing else stubs `lib/chat`.
+ * test scripts chat events instead of SSE frames. `OmniChat.test.tsx` stubs it
+ * the same way; each file sets its stub as it loads, so neither runs on the other's.
  */
 mock.module("../lib/chat", () => ({
   ...realChat,
@@ -137,9 +138,9 @@ mock.module("../lib/chat", () => ({
 
 /**
  * The turn machine on its own, for what the Chat tab has no affordance to
- * drive — a spoken turn. `lib/chat` is already stubbed for this file, and the
- * hook has no test file of its own because a second `mock.module` on the same
- * module elsewhere would make both order-dependent.
+ * drive — a spoken turn. `lib/chat` is already stubbed for this file. The hook
+ * has no test file of its own: a file that loads it without stubbing `lib/chat`
+ * gets whichever stub an earlier file left behind.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
 /** What the harness reports as on screen, as Omni Chat would. */
