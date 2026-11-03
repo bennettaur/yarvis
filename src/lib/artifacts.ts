@@ -90,6 +90,12 @@ export function subscribeArtifact(
           reconnecting = false;
         }
       } catch (e) {
+        // The sidecar refuses a stream for an artifact that is gone, which is how
+        // a delete sent while the stream was down still reaches the pane.
+        if (e instanceof SidecarError && e.status === 404) {
+          onDeleted();
+          return;
+        }
         if (!signal.aborted) console.warn("[artifacts] stream dropped, reconnecting:", e);
       }
       if (signal.aborted) break;

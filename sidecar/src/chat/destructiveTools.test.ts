@@ -122,6 +122,12 @@ describe("conditionalConfirmations", () => {
     expect(update?.({ id: "a", addOnly: true, upsertNodes: [{ id: "x" }] })).toBe(false);
     expect(update?.({ id: "a", addOnly: true, title: "Renamed" })).toBe(true);
     expect(update?.({ id: "a", addOnly: false, upsertNodes: [{ id: "x" }] })).toBe(true);
+    // A node placed or sized by the call could cover one already drawn.
+    for (const field of ["x", "y", "width", "height"]) {
+      expect(
+        update?.({ id: "a", addOnly: true, upsertNodes: [{ id: "y" }, { id: "x", [field]: 0 }] }),
+      ).toBe(true);
+    }
 
     const spoken = conditionalConfirmations({
       spoken: true,

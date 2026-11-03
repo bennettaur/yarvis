@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
+import { SidecarError } from "./api";
 import { subscribeArtifact } from "./artifacts";
 
 afterAll(resetSidecarApi);
@@ -77,6 +78,22 @@ describe("subscribeArtifact", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(seen).toEqual(["change", "deleted"]);
     expect(server.calls()).toBe(1);
+  });
+
+  it("counts a stream the sidecar refuses as the artifact gone, and stops", async () => {
+    let calls = 0;
+    stubSidecarApi({
+      streamSSE: async function* () {
+        calls += 1;
+        yield* [];
+        throw new SidecarError("stream → 404", 404);
+      },
+    });
+    const seen = follow();
+    await waitFor(() => seen.includes("deleted"), "the delete");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(seen).toEqual(["deleted"]);
+    expect(calls).toBe(1);
   });
 
   it("stops reconnecting once unsubscribed", async () => {

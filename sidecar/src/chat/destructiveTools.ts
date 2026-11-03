@@ -133,11 +133,15 @@ function rewritesArtifact(args: unknown): boolean {
 
 /**
  * An `update_diagram` call that may change what is already drawn. One marked
- * `addOnly` can't: `updateDiagram` refuses it if any id it sends exists.
+ * `addOnly` can't change an element (`updateDiagram` refuses it if any id it
+ * sends exists), but a node it places or sizes itself could still be a filled
+ * box laid over one, so that still asks.
  */
 function changesDiagram(args: unknown): boolean {
-  const a = args as { addOnly?: unknown; title?: unknown } | null;
-  return a?.addOnly !== true || a.title !== undefined;
+  const a = args as { addOnly?: unknown; title?: unknown; upsertNodes?: unknown } | null;
+  if (a?.addOnly !== true || a.title !== undefined) return true;
+  const nodes = Array.isArray(a.upsertNodes) ? (a.upsertNodes as Record<string, unknown>[]) : [];
+  return nodes.some((n) => ["x", "y", "width", "height"].some((k) => n?.[k] !== undefined));
 }
 
 /**

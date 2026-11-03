@@ -220,7 +220,7 @@ export function buildArtifactTools(
     }),
 
     update_diagram: tool({
-      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids. Set addOnly when every node and edge you send is new and you remove nothing: such a change never needs the user's approval, and it is refused if it would touch an existing element.${
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids. Set addOnly when every node and edge you send is new and you remove nothing: such a change doesn't need the user's approval unless it gives a node x, y, width or height, and it is refused if it would touch an existing element.${
         writer === "chat"
           ? ""
           : " You can only add new nodes and edges to a diagram that came from a chat with the user, without x, y, width or height."
