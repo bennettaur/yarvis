@@ -118,8 +118,10 @@ mock.module("../lib/chat", () => ({
  * module elsewhere would make both order-dependent.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
+/** What the harness reports as on screen, as Omni Chat would. */
+let screen: string | undefined;
 function ThreadHarness() {
-  thread = useChatThread({});
+  thread = useChatThread({ getContext: () => screen });
   return null;
 }
 
@@ -142,8 +144,8 @@ function TogglingHost({
 const composerOf = (host: HTMLElement) =>
   host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Message..."]');
 
-/** Types a message into the composer and presses Send. */
-async function say(host: HTMLElement, text: string) {
+/** Types a message into the composer and presses the named button (Send by default). */
+async function say(host: HTMLElement, text: string, button = "Send") {
   const box = host.querySelector("textarea")!;
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set as (
     v: string,
@@ -152,7 +154,7 @@ async function say(host: HTMLElement, text: string) {
   box.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 20));
   Array.from(host.querySelectorAll("button"))
-    .find((b) => b.textContent === "Send")
+    .find((b) => b.textContent === button)
     ?.click();
   await new Promise((resolve) => setTimeout(resolve, 80));
 }
@@ -168,6 +170,7 @@ afterEach(() => {
   unmount?.();
   unmount = null;
   thread = null;
+  screen = undefined;
   sessions = [];
   created = 0;
   scripted = [];
@@ -318,6 +321,113 @@ describe("ChatPanel", () => {
     const asked = mounted.host.textContent?.split("pull the notion doc").length ?? 0;
     expect(asked - 1).toBe(1);
     expect(mounted.host.textContent).toContain("second time lucky");
+  });
+
+  it("queues a message typed during a reply and sends it once the reply lands", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    expect(composerOf(mounted.host)?.disabled).toBe(false);
+    // Otherwise the next message is typed onto the end of the one already sent.
+    expect(composerOf(mounted.host)?.value).toBe("");
+    await say(mounted.host, "follow-up", "Queue");
+    expect(sent.map((body) => body.message)).toEqual(["first question"]);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "follow-up",
+    );
+
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    await settle(300);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')).toBeNull();
+  });
+
+  it("drops the queued message the user removes", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "keep me", "Queue");
+    await say(mounted.host, "drop me", "Queue");
+    mounted.host
+      .querySelectorAll<HTMLButtonElement>('[aria-label="Remove queued message"]')[1]
+      ?.click();
+    await settle(20);
+
+    const queue = mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent;
+    expect(queue).toContain("keep me");
+    expect(queue).not.toContain("drop me");
+  });
+
+  it("holds the queue after a failed reply and sends it on Send next", async () => {
+    scripted = [{ type: "wait" }, { type: "error", message: "model not found (status 404)" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "follow-up", "Queue");
+    await settle(300);
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.textContent).toContain("waiting until you send them");
+
+    // Sending now would jump the queue and, once it landed, release it.
+    await say(mounted.host, "another thought");
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "another thought",
+    );
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    Array.from(mounted.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Send next")
+      ?.click();
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual([
+      "first question",
+      "follow-up",
+      "another thought",
+    ]);
+  });
+
+  it("sends what is left in the queue in order, one turn at a time", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle(20);
+    thread?.enqueue("one");
+    thread?.enqueue("two");
+    thread?.enqueue("three");
+    await settle(20);
+    thread?.removeQueued(1);
+    await settle(100);
+    expect(sent).toHaveLength(1);
+
+    await settle(900);
+    expect(sent.map((body) => body.message)).toEqual(["first question", "one", "three"]);
+  });
+
+  // The overlay can be hidden and the user can move on while a reply runs; the
+  // queued message is about what they were looking at when they wrote it.
+  it("sends a queued message with the screen context from when it was queued", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    screen = "PR #18";
+    void thread?.send("what's risky here?");
+    await settle();
+    thread?.enqueue("merge it if it's fine");
+    screen = "PR #19";
+    await settle(500);
+
+    expect(sent.map((body) => body.context)).toEqual(["PR #18", "PR #18"]);
   });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
@@ -536,6 +646,58 @@ describe("useChatThread", () => {
     expect(thread?.error?.message).toContain("Turn stopped");
     // Nothing was persisted for it, so the partial reply goes with it.
     expect(thread?.messages.some((m) => m.content.includes("half a th"))).toBe(false);
+  });
+
+  // A follow-up written for a reply that never came may no longer make sense,
+  // so it waits for the user rather than going out on its own.
+  it("holds the queue after a stopped turn until the user sends it", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    thread?.stop();
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    thread?.sendNextQueued();
+    await settle();
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    expect(thread?.queued).toEqual([]);
+  });
+
+  it("queues trimmed text and refuses a blank message", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    expect(thread?.enqueue("   ")).toBe(false);
+    expect(thread?.enqueue("  follow-up \n")).toBe(true);
+    await settle(20);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
+  });
+
+  it("drops the queue when the user starts a new chat", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    await thread?.newChat();
+    await settle();
+    expect(thread?.queued).toEqual([]);
+    expect(sent).toHaveLength(1);
   });
 
   it("explains a dropped stream by the last real event, not a heartbeat", async () => {
