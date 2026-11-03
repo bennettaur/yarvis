@@ -38,8 +38,8 @@ Protocol, per connection:
                     binary: the turn's PCM, sent right after each "turn"
 
   `reason` is "complete" (smart-turn judged it finished), "silence" or "cap";
-  `probability` is null for the last two. `pause` is for the server log and
-  debugging; the webview ignores it.
+  `probability` is null for the last two. `pause` is for debugging with a
+  websocket client; the webview ignores it.
 """
 
 import asyncio

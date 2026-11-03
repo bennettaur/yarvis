@@ -45,6 +45,13 @@ import {
  * test can drive the hook without stubbing the modules other tests assert on —
  * the same seam `fetchImpl` gives the sidecar's speech clients.
  */
+/**
+ * How long after a reply stops playing a new turn is still checked as its
+ * echo. Covers the detector's own delay: it confirms speech only after
+ * hearing some, and the audio reaches it over a websocket.
+ */
+const ECHO_TAIL_MS = 1500;
+
 export interface VoiceIO extends ContinuousIO {
   transcribe: typeof transcribe;
   speak: typeof speak;
@@ -148,6 +155,8 @@ export function useVoice({
   const spokenTextRef = useRef("");
   /** The reply text queued for speech when the user's current turn started; "" when none was. */
   const echoReferenceRef = useRef("");
+  /** When the last reply finished playing, as `Date.now()`. */
+  const playbackEndedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const [levelMeter] = useState(createLevelMeter);
   /** The user has started continuous mode's microphone and not stopped it. */
   const [continuousArmed, setContinuousArmed] = useState(false);
@@ -252,7 +261,10 @@ export function useVoice({
     spokenThroughRef.current = 0;
     setPhase("speaking");
     void queue.drain().then(() => {
-      if (queueRef.current === queue) queueRef.current = null;
+      if (queueRef.current === queue) {
+        queueRef.current = null;
+        playbackEndedAtRef.current = Date.now();
+      }
       setPhase("idle");
     });
   }, [busy, speakChunk]);
@@ -289,11 +301,17 @@ export function useVoice({
 
   const sendPushToTalkUtterance = useCallback(
     async (recording: Blob) => {
-      // Converted because backends disagree about compressed containers; see
-      // `toSpeechWav`. The turn detector already sends WAV.
-      const wav = await ioRef.current.toWav(recording);
-      const text = await transcribeTurn(wav, turnGenerationRef.current);
-      if (text) await sendRef.current(text, { source: "voice" });
+      const generation = turnGenerationRef.current;
+      try {
+        // Converted because backends disagree about compressed containers; see
+        // `toSpeechWav`. The turn detector already sends WAV.
+        const wav = await ioRef.current.toWav(recording);
+        const text = await transcribeTurn(wav, generation);
+        if (!text || generation !== turnGenerationRef.current) return;
+        await sendRef.current(text, { source: "voice" });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     },
     [transcribeTurn],
   );
@@ -354,7 +372,10 @@ export function useVoice({
   const handleSpeechStart = useCallback(() => {
     const playing = queueRef.current !== null;
     // Kept to recognise this turn as the reply's own echo once transcribed.
-    echoReferenceRef.current = playing ? spokenTextRef.current : "";
+    // The detector hears speech a little after it is played, so a turn that
+    // starts just after the reply ends can still be its echo.
+    const justPlayed = Date.now() - playbackEndedAtRef.current < ECHO_TAIL_MS;
+    echoReferenceRef.current = playing || justPlayed ? spokenTextRef.current : "";
     if (busyRef.current || sendingRef.current) silencedRef.current = true;
     if (!playing) return;
     endSpeech();
@@ -396,6 +417,13 @@ export function useVoice({
     );
   }, [busy, sending, heldTurns, sendContinuous]);
 
+  // The streaming effect lifts a barge-in's silence when the reply text clears,
+  // but a turn that ends before any reply text never changes it. The next
+  // reply must still be spoken.
+  useEffect(() => {
+    if (!busy && !sending) silencedRef.current = false;
+  }, [busy, sending]);
+
   // Turning the mode off closes the mic, and turning it back on waits for a click.
   useEffect(() => {
     if (!config.continuous) setContinuousArmed(false);
@@ -415,7 +443,7 @@ export function useVoice({
     turnGenerationRef.current++;
     // Without this, the reply's next token would start a fresh speech queue
     // and speak the whole reply again from the top.
-    if (busyRef.current) silencedRef.current = true;
+    if (busyRef.current || sendingRef.current) silencedRef.current = true;
     setContinuousArmed(false);
     // Left alone when already empty: the surfaces call this from effects.
     setHeldTurns((prev) => (prev.length ? [] : prev));

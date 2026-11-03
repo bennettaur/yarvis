@@ -8,7 +8,11 @@ const POLL_MS = 1000;
 export interface ContinuousIO {
   startDetector: () => Promise<TurnDetectorStatus>;
   detectorStatus: () => Promise<TurnDetectorStatus>;
-  openStream: (url: string, handlers: TurnStreamHandlers) => Promise<TurnStream>;
+  openStream: (
+    url: string,
+    handlers: TurnStreamHandlers,
+    signal?: AbortSignal,
+  ) => Promise<TurnStream>;
 }
 
 export interface ContinuousListeningOptions {
@@ -68,6 +72,8 @@ export function useContinuousListening({
     // Set by cleanup. Every await below re-checks it, so a deactivation during
     // the detector's start or the permission prompt never leaves a mic open.
     let cancelled = false;
+    // Reaches into the stream's own setup, which has awaits of its own.
+    const abort = new AbortController();
     let stream: TurnStream | null = null;
     setError(null);
     setStarting(true);
@@ -96,18 +102,22 @@ export function useContinuousListening({
           fail(`turn detector didn't start: ${detail}`);
           return;
         }
-        const opened = await ioRef.current.openStream(status.url, {
-          onSpeechStart: () => {
-            setHearing(true);
-            onSpeechStartRef.current();
+        const opened = await ioRef.current.openStream(
+          status.url,
+          {
+            onSpeechStart: () => {
+              setHearing(true);
+              onSpeechStartRef.current();
+            },
+            onTurn: (audio) => {
+              setHearing(false);
+              onTurnRef.current(audio);
+            },
+            onLevel: (rms) => onLevelRef.current(rms),
+            onError: fail,
           },
-          onTurn: (audio) => {
-            setHearing(false);
-            onTurnRef.current(audio);
-          },
-          onLevel: (rms) => onLevelRef.current(rms),
-          onError: fail,
-        });
+          abort.signal,
+        );
         if (cancelled) {
           opened.close();
           return;
@@ -122,6 +132,7 @@ export function useContinuousListening({
 
     return () => {
       cancelled = true;
+      abort.abort();
       stream?.close();
       setStarting(false);
       setListening(false);

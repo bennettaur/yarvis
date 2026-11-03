@@ -99,6 +99,11 @@ function lineReader(onLine: (line: string) => void): (chunk: Buffer | string) =>
 
 export class TurnDetector {
   private child: ChildProcess | null = null;
+  /**
+   * The last process started, kept after it exits so its dying words still
+   * reach the log. Output from any earlier one is dropped.
+   */
+  private logged: ChildProcess | null = null;
   private port: number | null = null;
   private token = "";
   private log: string[] = [];
@@ -148,6 +153,7 @@ export class TurnDetector {
     };
     const child = this.deps.spawn("uv", ["run", "--quiet", "--script", path], env);
     this.child = child;
+    this.logged = child;
 
     const startTimer = setTimeout(() => {
       if (this.child !== child || this.port !== null) return;
@@ -162,12 +168,14 @@ export class TurnDetector {
         if (ready && this.child === child) {
           this.port = Number(ready[1]);
           clearTimeout(startTimer);
-        } else this.append(line);
+        } else if (this.logged === child) this.append(line);
       }),
     );
     child.stderr?.on(
       "data",
-      lineReader((line) => this.append(line)),
+      lineReader((line) => {
+        if (this.logged === child) this.append(line);
+      }),
     );
     child.on("error", (e) => {
       clearTimeout(startTimer);

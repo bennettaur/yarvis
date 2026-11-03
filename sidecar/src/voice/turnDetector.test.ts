@@ -154,6 +154,21 @@ describe("TurnDetector", () => {
     expect(turns.status().log).toEqual(["Traceback (most recent call last):"]);
   });
 
+  it("keeps an exited server's last lines, but not a replaced one's", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const first = spawned[0]?.child.stderr as EventEmitter;
+    spawned[0]?.child.emit("exit", 1, null);
+    first.emit("data", "ModuleNotFoundError: onnxruntime\n");
+    expect(turns.status().log).toEqual(["ModuleNotFoundError: onnxruntime"]);
+
+    turns.start();
+    first.emit("data", "late line\n");
+    (spawned[0]!.child.stdout as EventEmitter).emit("data", "late stdout\n");
+    (spawned[1]!.child.stderr as EventEmitter).emit("data", "Downloading model\n");
+    expect(turns.status().log).toEqual(["Downloading model"]);
+  });
+
   it("kills a start that never becomes ready and lets the next request retry", async () => {
     const { detector: turns, spawned, killed } = detector({ startTimeoutMs: 20 });
     turns.start();

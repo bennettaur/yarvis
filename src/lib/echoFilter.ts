@@ -6,7 +6,7 @@
  */
 
 /**
- * Share of a transcript's word pairs that must appear, in order, in the reply.
+ * Share of a transcript's word pairs that must also be word pairs of the reply.
  * Below 1 because speech-to-text mishears a word now and then, and each
  * misheard word breaks the two pairs around it.
  */
@@ -25,8 +25,9 @@ function pairs(list: string[]): string[] {
 }
 
 /**
- * True when `transcript` reads as a run of `spokenReply`, the reply text queued
- * for speech when the turn started. Pairs rather than single words, so the
+ * True when most of `transcript`'s adjacent word pairs also appear somewhere in
+ * `spokenReply`, the reply text queued for speech when the turn started. The
+ * pairs may come in any order. Pairs rather than single words, so the
  * user's own words said over a long reply aren't dropped just because each
  * word appears in it somewhere. A one-word turn that is also a word of the
  * reply, such as "yes", is still dropped.

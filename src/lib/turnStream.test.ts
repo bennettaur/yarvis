@@ -318,6 +318,42 @@ describe("openTurnStream", () => {
     expect(trackStops).toBe(1);
   });
 
+  it("never asks for the microphone when stopped while connecting", async () => {
+    let asked = 0;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: () => {
+          asked++;
+          return permission.promise;
+        },
+      },
+    });
+    const { h } = handlers();
+    const abort = new AbortController();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    abort.abort();
+    FakeSocket.last?.accept();
+
+    await expect(opening).rejects.toThrow(/stopped before the microphone opened/);
+    expect(asked).toBe(0);
+    expect(FakeSocket.last?.closeCalls).toBe(1);
+  });
+
+  it("releases a microphone granted after a stop", async () => {
+    const { h, errors } = handlers();
+    const abort = new AbortController();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    FakeSocket.last?.accept();
+    await settle();
+    abort.abort();
+    permission.resolve(micStream());
+
+    await expect(opening).rejects.toThrow(/stopped before the microphone opened/);
+    expect(trackStops).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
   it("gives up when the connection drops while audio capture is starting", async () => {
     const { h } = handlers();
     const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);

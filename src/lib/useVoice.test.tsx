@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TurnStreamHandlers } from "./turnStream";
@@ -59,6 +59,10 @@ let openedUrl: string | null = null;
 let streamClosed = false;
 /** Signals of replies playing now; a test aborts nothing itself, the hook does. */
 const playing: AbortSignal[] = [];
+/** Ends the sentence playing now, as if it had finished on its own. */
+const finishPlayback: (() => void)[] = [];
+/** Thrown by `toWav`, as when a recording can't be decoded. */
+let wavError: Error | null = null;
 
 function installRecorderFakes(): void {
   const g = globalThis as Record<string, unknown>;
@@ -133,7 +137,10 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
     // Plays until stopped, like a real sentence that hasn't finished yet.
     playAudio: (_audio: Blob, signal: AbortSignal) => {
       playing.push(signal);
-      return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+      return new Promise<void>((resolve) => {
+        finishPlayback.push(resolve);
+        signal.addEventListener("abort", () => resolve());
+      });
     },
     startDetector: async () => {
       if (detectorError) throw detectorError;
@@ -152,7 +159,10 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       };
     },
     // Decoding a fake blob is not the subject here.
-    toWav: async (recording: Blob) => recording,
+    toWav: async (recording: Blob) => {
+      if (wavError) throw wavError;
+      return recording;
+    },
     loadConfig: async () => storedConfig,
     saveConfig: async (patch: Partial<VoiceConfig>) => {
       savedPatches.push(patch);
@@ -224,7 +234,10 @@ afterEach(() => {
   openedUrl = null;
   streamClosed = false;
   playing.length = 0;
+  finishPlayback.length = 0;
+  wavError = null;
   transcribeGates.length = 0;
+  setSystemTime();
 });
 
 const configured: VoiceConfig = {
@@ -264,6 +277,43 @@ describe("useVoice", () => {
     // The turn goes to whatever model that surface uses; the hook only supplies
     // the words and the provenance.
     expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
+  });
+
+  it("shows why a recording couldn't be sent", async () => {
+    storedConfig = { ...configured };
+    active = await mountVoice();
+    wavError = new Error("could not decode the recording");
+
+    active.voice.startListening();
+    await settle();
+    deliverUtterance?.();
+    await settle();
+    expect(active.voice.error).toMatch(/could not decode the recording/);
+
+    wavError = null;
+    sendError = new Error("session create failed");
+    active.voice.startListening();
+    await settle();
+    deliverUtterance?.();
+    await settle();
+    expect(active.voice.error).toMatch(/session create failed/);
+  });
+
+  it("doesn't send a recording cancelled while it was being transcribed", async () => {
+    storedConfig = { ...configured };
+    active = await mountVoice();
+    const pending = deferred<string>();
+    transcribeGates.push(pending.promise);
+
+    active.voice.startListening();
+    await settle();
+    deliverUtterance?.();
+    await settle();
+    active.voice.cancel();
+    pending.resolve("delete the branch");
+    await settle();
+
+    expect(active.sent).toEqual([]);
   });
 
   it("says nothing to the agent when the clip had no words in it", async () => {
@@ -498,6 +548,63 @@ describe("useVoice in continuous mode", () => {
       busy: true,
     });
     expect(spoken).toEqual([]);
+  });
+
+  it("speaks the next reply after cutting in on a turn that ended with no text", async () => {
+    active = await listening();
+    await active.rerender({ streaming: "", busy: true });
+    detector?.onSpeechStart();
+    await settle();
+    // The turn errors or is stopped before any reply text arrives.
+    await active.rerender({ streaming: "", busy: false });
+
+    await active.rerender({
+      streaming: "Done, the logs from the failed run are attached to the incident ticket. ",
+      busy: true,
+    });
+    expect(spoken).toEqual([
+      "Done, the logs from the failed run are attached to the incident ticket.",
+    ]);
+  });
+
+  it("doesn't speak a reply whose send was still settling when the surface was cancelled", async () => {
+    active = await listening();
+    const reply = deferred<unknown>();
+    sendSettles = reply.promise;
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    // Hidden before the surface reports itself busy.
+    active.voice.cancel();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    expect(spoken).toEqual([]);
+  });
+
+  it("treats a turn that starts just after the reply finished playing as possible echo", async () => {
+    const reply = "The build is green and the deploy finished a couple of minutes ago. ";
+    active = await listening();
+    await active.rerender({ streaming: reply, busy: true });
+    await active.rerender({ streaming: "", busy: false });
+    finishPlayback[0]?.();
+    await settle();
+    expect(active.voice.phase).toBe("idle");
+
+    // The tail of the reply, reaching the detector after playback ended.
+    detector?.onSpeechStart();
+    transcriptResult = "the deploy finished a couple of minutes ago";
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.sent).toEqual([]);
+
+    // Well after the reply, the same words are the user's.
+    setSystemTime(new Date(Date.now() + 5_000));
+    detector?.onSpeechStart();
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.sent.map((m) => m.text)).toEqual(["the deploy finished a couple of minutes ago"]);
   });
 
   it("stops the last reply's unfinished speech when the next reply starts", async () => {

@@ -91,21 +91,35 @@ export function createTurnMessageHandler(
   };
 }
 
-/** Opens the microphone and the detector's websocket. Rejects when either can't start. */
+/**
+ * Opens the microphone and the detector's websocket. Rejects when either can't
+ * start, or when `signal` aborts first: a stop while the socket connects must
+ * not go on to ask for the microphone.
+ */
 export async function openTurnStream(
   url: string,
   handlers: TurnStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<TurnStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("this build has no microphone support");
   }
+  const stopped = () => new Error("stopped before the microphone opened");
+  if (signal?.aborted) throw stopped();
 
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
-  await new Promise<void>((resolve, reject) => {
-    socket.onopen = () => resolve();
-    socket.onerror = () => reject(new Error("could not reach the turn detector"));
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => reject(new Error("could not reach the turn detector"));
+      signal?.addEventListener("abort", () => reject(stopped()), { once: true });
+    });
+  } catch (e) {
+    socket.onclose = null;
+    socket.close();
+    throw e;
+  }
 
   // Watched from here on: the detector can drop the socket while the
   // permission prompt is still up, and that must not look like listening.
@@ -123,6 +137,13 @@ export async function openTurnStream(
     close();
     handlers.onError("lost the connection to the turn detector");
   };
+  signal?.addEventListener("abort", close, { once: true });
+  const gaveUp = () =>
+    signal?.aborted ? stopped() : new Error("lost the connection to the turn detector");
+  if (signal?.aborted) {
+    close();
+    throw stopped();
+  }
 
   let stream: MediaStream;
   try {
@@ -139,7 +160,7 @@ export async function openTurnStream(
   }
   if (closed) {
     for (const track of stream.getTracks()) track.stop();
-    throw new Error("lost the connection to the turn detector");
+    throw gaveUp();
   }
 
   let context: AudioContext | null = null;
@@ -170,12 +191,13 @@ export async function openTurnStream(
     throw new Error(`could not start audio capture: ${e instanceof Error ? e.message : e}`);
   }
   // The awaits above leave the same window as the permission prompt.
-  if (closed) throw new Error("lost the connection to the turn detector");
+  if (closed) throw gaveUp();
 
   const resample = createResampler(context.sampleRate, SPEECH_SAMPLE_RATE);
   let levelSum = 0;
   let levelCount = 0;
-  let lastLevelAt = 0;
+  // -Infinity so the first batch reports a level, however soon after page load.
+  let lastLevelAt = Number.NEGATIVE_INFINITY;
   capture.port.onmessage = (event: MessageEvent<Float32Array>) => {
     const samples = event.data;
     for (const sample of samples) levelSum += sample * sample;

@@ -67,9 +67,11 @@ While the assistant is replying:
 - Starting to talk stops the spoken reply, and the rest of that reply isn't
   spoken. The text still arrives. That's true even before the reply starts
   speaking, while the assistant is still thinking.
-- A turn that starts over the spoken reply and repeats a run of its words is
-  dropped: it's the reply leaking back into the microphone, not you. A one-word
-  turn that is also a word of the reply, like "yes", is dropped too.
+- A turn that starts over the spoken reply, or within a second and a half of
+  it ending, and mostly repeats its words is dropped: it's the reply leaking
+  back into the microphone, not you. A one-word turn that is also a word of the
+  reply, like "yes", is dropped too. This is a check on the transcript, so a
+  badly misheard echo can still get through as a turn.
 
 Switching to another tab, closing Omni Chat, or opening Omni Chat over the Chat
 tab closes the microphone, and drops queued turns.

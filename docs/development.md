@@ -38,7 +38,7 @@ bun run demo                      # record screenshots and video of the UI (see 
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database
-bun run voice:test-turns          # continuous voice's Python turn logic; needs uv, not in CI
+bun run voice:test-turns          # continuous voice's Python turn logic; needs uv
 bun run typecheck                 # frontend tsc --noEmit
 bun run sidecar:typecheck         # sidecar tsc --noEmit
 bun run build                     # typecheck + vite build
