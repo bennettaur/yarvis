@@ -4,11 +4,12 @@ import type { Db } from "../db/client.ts";
 import { getStream, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
+import { watchPrMerge } from "./prWatches.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
- * them, telling them about a merge, and ending the pass with notes and a
- * sleep length.
+ * them, telling them about a merge, asking to be woken when a PR merges, and
+ * ending the pass with notes and a sleep length.
  */
 
 /** What `finish_pass` asked for, read by the loop once the pass is over. */
@@ -122,6 +123,32 @@ export function buildPassTools(
         }
         onAsked();
         return { questionId: asked.id, status: asked.status };
+      },
+    }),
+
+    watch_pr_merge: tool({
+      description:
+        "Ask to be woken when a workspace's PR merges, for work that starts at the merge: watching its deploy, following a GraphQL change, unblocking a PR that waits on it. A later pass is woken soon after the merge is seen (within about 15 minutes) and is told the PR merged, with your note. Only the PR a workspace tracks for one of its repos can be watched; get_workspace_status lists them. Watching the same PR again replaces the note.",
+      inputSchema: z.object({
+        workspaceId: z.string().uuid().describe("The workspace whose repo has the PR"),
+        repo: z
+          .string()
+          .regex(/^[\w.-]+\/[\w.-]+$/)
+          .describe("The PR's repo, as owner/name"),
+        number: z.number().int().positive(),
+        note: z
+          .string()
+          .max(500)
+          .optional()
+          .describe("What to do once it merges, for the pass that is told"),
+      }),
+      execute: async (input) => {
+        const result = await watchPrMerge(db, input);
+        if (result.ok) return { ok: true, message: "Watching. A pass is woken when it merges." };
+        if ("alreadyMerged" in result) {
+          return { ok: false, message: "It has already merged: do the follow-up work now." };
+        }
+        return { error: result.error };
       },
     }),
 
