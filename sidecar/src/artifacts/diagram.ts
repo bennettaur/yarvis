@@ -92,11 +92,15 @@ export function onlyAdds(diagram: Diagram, changes: DiagramChanges): boolean {
   );
 }
 
-/** True when the changes set where a node sits or how big it is, rather than leaving that to the app's layout. */
-export function placesNodes(changes: DiagramChanges): boolean {
-  return (changes.upsertNodes ?? []).some(
-    (n) =>
-      n.x !== undefined || n.y !== undefined || n.width !== undefined || n.height !== undefined,
+/**
+ * True when the changes set where a node sits or how big it is, rather than
+ * leaving that to the app's layout. Takes unparsed tool arguments too, so the
+ * approval check reads the same fields the service enforces.
+ */
+export function placesNodes(changes: { readonly [key: string]: unknown }): boolean {
+  const nodes = Array.isArray(changes.upsertNodes) ? changes.upsertNodes : [];
+  return nodes.some((n) =>
+    (["x", "y", "width", "height"] as const).some((k) => n?.[k] !== undefined),
   );
 }
 

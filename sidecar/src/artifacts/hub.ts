@@ -37,3 +37,8 @@ export function subscribeArtifact(id: string, listener: Listener): () => void {
     if (set.size === 0 && listeners.get(id) === set) listeners.delete(id);
   };
 }
+
+/** How many streams follow an artifact, so a test can see a closed one let go. */
+export function artifactListenerCount(id: string): number {
+  return listeners.get(id)?.size ?? 0;
+}

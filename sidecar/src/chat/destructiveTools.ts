@@ -13,6 +13,9 @@
  * same approval prompt that MCP tools already use, so the user sees the exact
  * operation before it happens.
  */
+
+import { placesNodes } from "../artifacts/diagram.ts";
+
 /**
  * Built-in tools that need approval on *every* turn, typed or spoken.
  *
@@ -140,8 +143,7 @@ function rewritesArtifact(args: unknown): boolean {
 function changesDiagram(args: unknown): boolean {
   const a = args as { addOnly?: unknown; title?: unknown; upsertNodes?: unknown } | null;
   if (a?.addOnly !== true || a.title !== undefined) return true;
-  const nodes = Array.isArray(a.upsertNodes) ? (a.upsertNodes as Record<string, unknown>[]) : [];
-  return nodes.some((n) => ["x", "y", "width", "height"].some((k) => n?.[k] !== undefined));
+  return placesNodes(a);
 }
 
 /**

@@ -85,9 +85,12 @@ const finiteOrUndefined = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
 const cleanLabel = (v: unknown): string | undefined =>
   // Newlines stay, since a label may want two lines. Other control characters
-  // go, and so do format characters like a right-to-left override, which can
-  // make a label read differently from what it says.
-  typeof v === "string" ? v.replace(/(?!\n)[\p{Cc}\p{Cf}]/gu, "").slice(0, MAX_LABEL) : undefined;
+  // and line or paragraph separators go, and so do format characters like a
+  // right-to-left override, which can make a label read differently from what
+  // it says.
+  typeof v === "string"
+    ? v.replace(/(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").slice(0, MAX_LABEL)
+    : undefined;
 
 /**
  * Reads an artifact's stored content. The sidecar validated it on write, but
@@ -135,27 +138,50 @@ interface Box {
   height: number;
 }
 
+const overlaps = (a: Omit<Box, "elementId">, b: Box) =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
 /**
  * Where a node sits: its own x/y when it has both, otherwise a grid cell by
  * its column along the edges (see `nodeColumns`) and its order in that column.
+ * A grid cell that would overlap a placed node is skipped, so a node left to
+ * the layout never covers one placed by hand.
  */
 function layout(diagram: Diagram): Map<string, Box> {
   const columns = nodeColumns(diagram);
   const rowsUsed = new Map<number, number>();
   const boxes = new Map<string, Box>();
-  for (const node of diagram.nodes) {
+  const sizeOf = (node: DiagramNode) => {
     const size = DEFAULT_SIZE[node.shape ?? "rectangle"];
-    const width = node.width ?? size.width;
-    const height = node.height ?? size.height;
-    let { x, y } = node;
-    if (x === undefined || y === undefined) {
-      const column = columns.get(node.id) ?? 0;
-      const row = rowsUsed.get(column) ?? 0;
-      rowsUsed.set(column, row + 1);
-      x = column * (CELL.width + COLUMN_GAP);
-      y = row * (CELL.height + ROW_GAP);
+    return { width: node.width ?? size.width, height: node.height ?? size.height };
+  };
+  const placed: Box[] = [];
+  for (const node of diagram.nodes) {
+    if (node.x === undefined || node.y === undefined) continue;
+    const box = { elementId: `node:${node.id}`, x: node.x, y: node.y, ...sizeOf(node) };
+    placed.push(box);
+    boxes.set(node.id, box);
+  }
+  for (const node of diagram.nodes) {
+    if (boxes.has(node.id)) continue;
+    const { width, height } = sizeOf(node);
+    const column = columns.get(node.id) ?? 0;
+    const x = column * (CELL.width + COLUMN_GAP);
+    let row = rowsUsed.get(column) ?? 0;
+    // Each placed box blocks at least one row, so this ends.
+    while (
+      placed.some((p) => overlaps({ x, y: row * (CELL.height + ROW_GAP), width, height }, p))
+    ) {
+      row += 1;
     }
-    boxes.set(node.id, { elementId: `node:${node.id}`, x, y, width, height });
+    rowsUsed.set(column, row + 1);
+    boxes.set(node.id, {
+      elementId: `node:${node.id}`,
+      x,
+      y: row * (CELL.height + ROW_GAP),
+      width,
+      height,
+    });
   }
   return boxes;
 }

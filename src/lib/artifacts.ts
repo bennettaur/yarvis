@@ -54,11 +54,10 @@ const RECONNECT_MS = 2_000;
 
 /**
  * Follows one artifact until the returned function is called, reconnecting
- * when the stream drops. `onChange` fires on each write (and once on every
- * reconnect, since a write may have landed while it was down), so the caller
- * re-reads the artifact; `onDeleted` fires once and ends the subscription.
- * `onChange` also fires once each time the stream connects, since a write may
- * have landed before it did.
+ * when the stream drops. `onChange` fires on each write, and once each time
+ * the stream connects, since a write may have landed before it did. The
+ * caller re-reads the artifact on it. `onDeleted` fires once and ends the
+ * subscription.
  */
 export function subscribeArtifact(
   id: string,

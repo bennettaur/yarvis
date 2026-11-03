@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import type { z } from "zod";
 import { SPECIALIST_TOOL_DEPS } from "../agents/run.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
 import { builtinToolFamilies } from "../chat/builtinTools.ts";
@@ -164,6 +165,19 @@ describe("artifacts", () => {
 
 describe("artifact tools", () => {
   const tools = buildArtifactTools(db);
+
+  it("returns a link the chat can open from a create and an update", async () => {
+    const made = (await tools.create_artifact.execute!({ title: "Plan" }, opts)) as {
+      id: string;
+      link: string;
+    };
+    expect(made.link).toBe(`yarvis://artifact/${made.id}`);
+    const updated = (await tools.update_artifact.execute!(
+      { id: made.id, append: "Ship it." },
+      opts,
+    )) as { link: string };
+    expect(updated.link).toBe(`yarvis://artifact/${made.id}`);
+  });
 
   it("fences what it reads back, so stored text can't pose as an instruction", async () => {
     const { id } = (await tools.create_artifact.execute!(
@@ -582,10 +596,35 @@ describe("diagrams", () => {
     unsubscribe();
     expect(seen).toEqual(["updated", "updated", "deleted"]);
   });
+
+  it("tells each open pane when a bulk delete removes its artifact", async () => {
+    const one = await createDiagram(db, { title: "One", diagram });
+    const two = await createArtifact(db, { title: "Two" });
+    const seen: string[] = [];
+    const stops = [one.id, two.id].map((id) =>
+      subscribeArtifact(id, (change) => seen.push(`${id}:${change}`)),
+    );
+    await deleteArtifacts(db, [one.id, two.id, crypto.randomUUID()]);
+    for (const stop of stops) stop();
+    expect(seen.sort()).toEqual([`${one.id}:deleted`, `${two.id}:deleted`].sort());
+  });
 });
 
 describe("diagram tools", () => {
   const tools = buildArtifactTools(db);
+
+  it("takes the arguments a model sends, as its own schemas parse them", () => {
+    const create = tools.create_diagram.inputSchema as z.ZodType;
+    expect(create.parse({ title: "Flow", nodes: [{ id: "a" }] })).toMatchObject({ edges: [] });
+    const update = tools.update_diagram.inputSchema as z.ZodType;
+    const id = crypto.randomUUID();
+    expect(update.parse({ id, addOnly: true, upsertNodes: [{ id: "b" }] })).toMatchObject({
+      id,
+      addOnly: true,
+    });
+    expect(update.safeParse({ id, addOnly: "yes" }).success).toBe(false);
+    expect(update.safeParse({ id: "not-a-uuid" }).success).toBe(false);
+  });
 
   it("returns a link the chat can open, and model-fixable errors", async () => {
     const made = (await tools.create_diagram.execute!(

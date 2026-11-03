@@ -42,7 +42,7 @@ describe("parseDiagram", () => {
 
   it("keeps a label's newlines but strips other control characters", () => {
     const diagram = parseDiagram(
-      JSON.stringify({ nodes: [{ id: "a", label: "one\ntwo\u0007" }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "a", label: "one\ntwo\u0007\u2028\u2029" }], edges: [] }),
     );
     expect(diagram.nodes[0]?.label).toBe("one\ntwo");
   });
@@ -66,6 +66,21 @@ describe("diagramToSkeleton", () => {
       edges: [],
     }) as Positioned[];
     expect(box).toMatchObject({ x: 500, y: -20 });
+  });
+
+  it("never lays an unplaced node over a placed one, wherever it sits in the list", () => {
+    const elements = diagramToSkeleton({
+      nodes: [
+        { id: "free" },
+        { id: "pinned", x: 0, y: 0 },
+        { id: "big", x: 0, y: 200, height: 300 },
+      ],
+      edges: [],
+    }) as Positioned[];
+    const free = elements.find((e) => e.id === "node:free");
+    expect(free?.x).toBe(0);
+    // "big" ends at y 500, and the first row clear of both placed boxes starts below it.
+    expect(free?.y).toBeGreaterThanOrEqual(500);
   });
 
   it("draws an arrow between the facing edges of its two shapes, bound to both", () => {

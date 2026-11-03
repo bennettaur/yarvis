@@ -21,7 +21,8 @@ function toElements(content: string) {
  * replace the scene.
  *
  * It follows the drawing with the viewport, zooming to fit after each change,
- * until the reader pans or zooms it themselves.
+ * until the reader pans or zooms it themselves. Only input on the canvas
+ * counts, so opening the menu to save an image doesn't stop it.
  */
 export default function ArtifactDiagram({ content }: { content: string }) {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
@@ -46,11 +47,11 @@ export default function ArtifactDiagram({ content }: { content: string }) {
   return (
     <div
       className="h-full overflow-hidden"
-      onPointerDownCapture={() => {
-        readerMoved.current = true;
+      onPointerDownCapture={(e) => {
+        if (e.target instanceof HTMLCanvasElement) readerMoved.current = true;
       }}
-      onWheelCapture={() => {
-        readerMoved.current = true;
+      onWheelCapture={(e) => {
+        if (e.target instanceof HTMLCanvasElement) readerMoved.current = true;
       }}
       onDragOverCapture={(e) => e.preventDefault()}
       onDropCapture={(e) => {

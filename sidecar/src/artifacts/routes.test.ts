@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { publishArtifactChange } from "./hub.ts";
+import { artifactListenerCount, publishArtifactChange } from "./hub.ts";
 import { createArtifact, createDiagram, deleteArtifact, updateDiagram } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -160,6 +160,24 @@ describe("/api/artifacts", () => {
     await stream.readUntil('"deleted"');
     expect(stream.text).not.toContain('"updated"');
     expect((await stream.reader.read()).done).toBe(true);
+  });
+
+  it("stops following the artifact once the pane disconnects", async () => {
+    const artifact = await createArtifact(db, { title: "Notes" });
+    const controller = new AbortController();
+    const res = await app.request(`/api/artifacts/${artifact.id}/stream`, {
+      headers: auth,
+      signal: controller.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(artifactListenerCount(artifact.id)).toBe(1);
+    controller.abort();
+    const deadline = Date.now() + 2_000;
+    while (artifactListenerCount(artifact.id) > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(artifactListenerCount(artifact.id)).toBe(0);
   });
 
   it("refuses a stream for a malformed id, or an artifact that doesn't exist", async () => {
