@@ -133,9 +133,10 @@ export function buildPassTools(
         workspaceId: z.string().uuid().describe("The workspace whose repo has the PR"),
         repo: z
           .string()
-          .regex(/^[\w.-]+\/[\w.-]+$/)
-          .describe("The PR's repo, as owner/name"),
-        number: z.number().int().positive(),
+          .min(1)
+          .max(200)
+          .describe("The repo's name as get_workspace_status gives it, or owner/name"),
+        number: z.number().int().positive().describe("The PR number"),
         note: z
           .string()
           .max(500)

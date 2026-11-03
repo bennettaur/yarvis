@@ -406,8 +406,10 @@ export async function runPass(
     setPassAbort(null);
     setPassStopTimeHandler(null);
     unmountAll(session.id);
-    // Seen once a pass has had them in its prompt, even one that failed
-    // part-way: re-sending the same instruction every pass would loop on it.
+    // Messages and merge watches count as delivered once a pass has had them in
+    // its prompt, even one that failed part-way: re-sending the same instruction
+    // every pass would loop on it. A merge notice lost that way still shows as a
+    // merged PR in get_workspace_status.
     if (promptSent) {
       await markMessagesSeen(
         db,

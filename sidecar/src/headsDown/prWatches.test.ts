@@ -14,35 +14,52 @@ const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_t
 const sql = postgres(url, { max: 1 });
 const db = getDb(url).db;
 
-/** One workspace with one repo `acme/api` whose cached PR is `prNumber`, open. */
-async function seed(prNumber = 42): Promise<{ workspaceId: string; workspaceRepoId: string }> {
+async function addWorkspace(slug: string): Promise<string> {
+  const [ws] = await db
+    .insert(workspaces)
+    .values({ name: slug, slug, rootPath: `/tmp/${slug}`, status: "active" })
+    .returning();
+  return ws!.id;
+}
+
+/** The repo `acme/<name>`, created on first use. */
+async function repoId(name: string): Promise<string> {
+  const [existing] = await db.select().from(repos).where(eq(repos.name, name));
+  if (existing) return existing.id;
   const [repo] = await db
     .insert(repos)
     .values({
-      name: "api",
+      name,
       owner: "acme",
-      repo: "api",
-      cloneUrl: "git@github.com:acme/api.git",
-      primaryClonePath: "/tmp/primary-api",
+      repo: name,
+      cloneUrl: `git@github.com:acme/${name}.git`,
+      primaryClonePath: `/tmp/primary-${name}`,
     })
     .returning();
-  const [ws] = await db
-    .insert(workspaces)
-    .values({ name: "billing", slug: "billing", rootPath: "/tmp/billing", status: "active" })
-    .returning();
+  return repo!.id;
+}
+
+/** Adds repo `acme/<name>` to a workspace, with `prNumber` as its cached open PR. */
+async function addRepo(workspaceId: string, name: string, prNumber: number): Promise<string> {
   const [wr] = await db
     .insert(workspaceRepos)
     .values({
-      workspaceId: ws!.id,
-      repoId: repo!.id,
-      branch: "yarvis/billing",
+      workspaceId,
+      repoId: await repoId(name),
+      branch: `yarvis/${name}`,
       baseBranch: "main",
-      worktreePath: "/tmp/billing/api",
+      worktreePath: `/tmp/${workspaceId}/${name}`,
       status: "ready",
     })
     .returning();
   await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr!.id, prNumber, prState: "open" });
-  return { workspaceId: ws!.id, workspaceRepoId: wr!.id };
+  return wr!.id;
+}
+
+/** One workspace with one repo `acme/api` whose cached PR is #42, open. */
+async function seed(): Promise<{ workspaceId: string; workspaceRepoId: string }> {
+  const workspaceId = await addWorkspace("billing");
+  return { workspaceId, workspaceRepoId: await addRepo(workspaceId, "api", 42) };
 }
 
 async function setPrState(workspaceRepoId: string, prState: string): Promise<void> {
@@ -83,7 +100,6 @@ describe("PR merge watches", () => {
     expect(merged).toEqual([
       expect.objectContaining({
         workspaceId,
-        workspaceName: "billing",
         repo: "acme/api",
         prNumber: 42,
         note: "watch the deploy",
@@ -97,7 +113,12 @@ describe("PR merge watches", () => {
     expect(await undeliveredMergedWatches(db)).toEqual([]);
   });
 
-  it("refuses a PR the workspace doesn't track, and says when it already merged", async () => {
+  it("takes the repo by the name get_workspace_status shows", async () => {
+    const { workspaceId } = await seed();
+    expect(await watchPrMerge(db, { workspaceId, repo: "api", number: 42 })).toEqual({ ok: true });
+  });
+
+  it("refuses a PR the workspace doesn't track, or one that can't merge any more", async () => {
     const { workspaceId, workspaceRepoId } = await seed();
 
     const wrongNumber = await watchPrMerge(db, { workspaceId, repo: "acme/api", number: 7 });
@@ -105,11 +126,49 @@ describe("PR merge watches", () => {
     const wrongRepo = await watchPrMerge(db, { workspaceId, repo: "acme/web", number: 42 });
     expect(wrongRepo.ok).toBe(false);
 
+    await setPrState(workspaceRepoId, "closed");
+    expect(await watchPrMerge(db, { workspaceId, repo: "api", number: 42 })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("closed without merging"),
+    });
+
     await setPrState(workspaceRepoId, "merged");
     expect(await watchPrMerge(db, { workspaceId, repo: "acme/api", number: 42 })).toEqual({
       ok: false,
       alreadyMerged: true,
     });
+  });
+
+  it("refuses a repo whose worktree was removed, since the poller no longer reads it", async () => {
+    const { workspaceId, workspaceRepoId } = await seed();
+    await db
+      .update(workspaceRepos)
+      .set({ status: "removed" })
+      .where(eq(workspaceRepos.id, workspaceRepoId));
+    expect(await watchPrMerge(db, { workspaceId, repo: "api", number: 42 })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("removed"),
+    });
+  });
+
+  it("matches the watched PR by workspace and repo", async () => {
+    const billing = await addWorkspace("billing");
+    const apiInBilling = await addRepo(billing, "api", 42);
+    await addRepo(billing, "web", 9);
+    const other = await addWorkspace("other");
+    await addRepo(other, "api", 50);
+
+    expect((await watchPrMerge(db, { workspaceId: billing, repo: "web", number: 9 })).ok).toBe(
+      true,
+    );
+    // The same repo's PR in another workspace isn't this workspace's to watch.
+    expect((await watchPrMerge(db, { workspaceId: billing, repo: "api", number: 50 })).ok).toBe(
+      false,
+    );
+
+    // A merge of the workspace's other repo doesn't fire the web watch.
+    await setPrState(apiInBilling, "merged");
+    expect(await markMergedWatches(db)).toBe(0);
   });
 
   it("doesn't fire for a different PR that merged on the same branch", async () => {
@@ -121,6 +180,29 @@ describe("PR merge watches", () => {
       .set({ prNumber: 43, prState: "merged" })
       .where(eq(workspaceRepoPr.workspaceRepoId, workspaceRepoId));
     expect(await markMergedWatches(db)).toBe(0);
+  });
+
+  it("delivers only the watches a pass was told about, so one merging mid-pass reaches the next", async () => {
+    const first = await addWorkspace("first");
+    const firstRepo = await addRepo(first, "api", 1);
+    const second = await addWorkspace("second");
+    const secondRepo = await addRepo(second, "web", 2);
+    await watchPrMerge(db, { workspaceId: first, repo: "api", number: 1 });
+    await watchPrMerge(db, { workspaceId: second, repo: "web", number: 2 });
+
+    await setPrState(firstRepo, "merged");
+    await markMergedWatches(db, new Date("2026-11-03T10:00:00Z"));
+    const toldThisPass = await undeliveredMergedWatches(db);
+
+    await setPrState(secondRepo, "merged");
+    await markMergedWatches(db, new Date("2026-11-03T10:05:00Z"));
+    await markWatchesDelivered(
+      db,
+      toldThisPass.map((w) => w.id),
+    );
+
+    const left = await undeliveredMergedWatches(db);
+    expect(left.map((w) => w.prNumber)).toEqual([2]);
   });
 
   it("re-watching a PR replaces its note", async () => {

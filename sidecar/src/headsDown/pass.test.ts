@@ -7,10 +7,12 @@ import postgres from "postgres";
 import { getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
+import { markMergedWatches, undeliveredMergedWatches, watchPrMerge } from "./prWatches.ts";
 import { reloadRoutines } from "./routines.ts";
 import {
   addMessage,
@@ -598,5 +600,81 @@ describe("a heads-down pass", () => {
     const later = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: later });
     expect(offered(later)).toBe(true);
+  });
+});
+
+describe("merge watches in a pass", () => {
+  /** A watched PR, acme/api#42, that the poller has since cached as merged. */
+  async function mergedWatch(): Promise<void> {
+    await sql`TRUNCATE repos, workspaces RESTART IDENTITY CASCADE`;
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        name: "api",
+        owner: "acme",
+        repo: "api",
+        cloneUrl: "git@github.com:acme/api.git",
+        primaryClonePath: "/tmp/primary-api",
+      })
+      .returning();
+    const [ws] = await db
+      .insert(workspaces)
+      .values({ name: "api", slug: "api", rootPath: "/tmp/api", status: "active" })
+      .returning();
+    const [wr] = await db
+      .insert(workspaceRepos)
+      .values({
+        workspaceId: ws!.id,
+        repoId: repo!.id,
+        branch: "yarvis/api",
+        baseBranch: "main",
+        worktreePath: "/tmp/api/api",
+        status: "ready",
+      })
+      .returning();
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 42, prState: "open" });
+    await watchPrMerge(db, {
+      workspaceId: ws!.id,
+      repo: "api",
+      number: 42,
+      note: "Run monitor-feature-rollout",
+    });
+    await sql`UPDATE workspace_repo_pr SET pr_state = 'merged'`;
+    await markMergedWatches(db);
+  }
+
+  const finishing = () =>
+    streamingModel(
+      [toolCall("f", "finish_pass", { sleepMinutes: 30, reason: "x" }), finish("tool-calls")],
+      [finish("stop")],
+    );
+
+  it("tells a pass which watched PRs merged, and doesn't tell the next pass again", async () => {
+    await mergedWatch();
+    const run = await startRun(db, null);
+
+    const first = finishing();
+    await runPass(config, db, run, { model: first });
+    const prompt = JSON.stringify(first.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("acme/api#42");
+    expect(prompt).toContain("Run monitor-feature-rollout");
+    expect(await undeliveredMergedWatches(db)).toEqual([]);
+
+    const second = finishing();
+    await runPass(config, db, run, { model: second });
+    expect(JSON.stringify(second.doStreamCalls[0]?.prompt)).not.toContain(
+      "PRs you asked to hear about",
+    );
+  });
+
+  it("keeps a merged watch for a later pass when the pass stops before its prompt is sent", async () => {
+    await mergedWatch();
+    const run = await startRun(db, null);
+    await pauseRun(db);
+
+    await runPass(config, db, run, { model: finishing() });
+    expect(await undeliveredMergedWatches(db)).toHaveLength(1);
   });
 });

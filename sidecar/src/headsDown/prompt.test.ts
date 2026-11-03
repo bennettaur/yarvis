@@ -138,7 +138,6 @@ describe("buildPassPrompt", () => {
         {
           id: "w1",
           workspaceId: "ws-1",
-          workspaceName: "billing",
           repo: "acme/api",
           prNumber: 42,
           note: "Run monitor-feature-rollout for BILL-7",
@@ -147,7 +146,7 @@ describe("buildPassPrompt", () => {
       ],
     });
     expect(prompt).toContain(
-      '- acme/api#42 in workspace "billing" (ws-1), merge seen 2026-10-19T09:30:00.000Z',
+      "- acme/api#42 in workspace ws-1, merge seen 2026-10-19T09:30:00.000Z",
     );
     expect(prompt).toMatch(
       /<recalled-content-[^>]+>\s*Run monitor-feature-rollout for BILL-7\s*<\/recalled-content-/,

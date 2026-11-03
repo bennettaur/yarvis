@@ -600,16 +600,18 @@ export function startWorkspacePoller(config: Config): () => void {
     if (running) return; // never overlap a slow cycle with the next
     running = true;
     try {
-      await pollDueRepos(db, clients);
-    } catch (e) {
-      console.error("[workspace poller] cycle failed:", e);
-    }
-    try {
-      // Checked on every tick, not only after a read that saw the merge, so a
-      // merge cached by some other read (the UI's, a crashed tick's) still fires.
-      if ((await markMergedWatches(db)) > 0) wakeHeadsDown();
-    } catch (e) {
-      console.error("[workspace poller] checking merge watches failed:", e);
+      try {
+        await pollDueRepos(db, clients);
+      } catch (e) {
+        console.error("[workspace poller] cycle failed:", e);
+      }
+      try {
+        // Checked on every tick, not only after a read that saw the merge, so a
+        // merge cached by some other read (the UI's, a crashed tick's) still fires.
+        if ((await markMergedWatches(db)) > 0) wakeHeadsDown();
+      } catch (e) {
+        console.error("[workspace poller] checking merge watches failed:", e);
+      }
     } finally {
       running = false;
     }
