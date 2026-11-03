@@ -1,5 +1,5 @@
 {
-  "id": "60a0935a-f968-40b0-9001-3557fc325479",
+  "id": "8c662584-150b-43bf-840b-3cf2ba2e6ec6",
   "prevId": "658f122c-010f-46e9-8769-eb5d9a4bcafd",
   "version": "7",
   "dialect": "postgresql",
@@ -3253,6 +3253,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "graph": {
+          "name": "graph",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "current_step": {
           "name": "current_step",
           "type": "integer",
@@ -5218,12 +5224,6 @@
         },
         "pr_state": {
           "name": "pr_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "head_sha": {
-          "name": "head_sha",
           "type": "text",
           "primaryKey": false,
           "notNull": false

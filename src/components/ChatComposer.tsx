@@ -24,6 +24,7 @@ export default function ChatComposer({
   placeholder,
   submitLabel,
   onStop,
+  onQueue,
   tools,
   className = "",
   textareaClassName = "",
@@ -40,6 +41,11 @@ export default function ChatComposer({
    * have to be waited out.
    */
   onStop?: () => void;
+  /**
+   * Holds the message until the turn in flight finishes. Present on surfaces
+   * that queue; the composer then stays usable while busy, and Enter queues.
+   */
+  onQueue?: () => void;
   placeholder?: string;
   submitLabel: string;
   /** Controls for the toolbar under the textarea, such as the model picker. */
@@ -79,6 +85,8 @@ export default function ChatComposer({
     el.style.height = `${Math.min(el.scrollHeight + borderY, maxHeight)}px`;
   }, [value, maxHeight]);
 
+  const queueing = busy && onQueue !== undefined;
+
   return (
     <div className={className}>
       <PromptInput>
@@ -88,36 +96,50 @@ export default function ChatComposer({
           value={value}
           placeholder={placeholder}
           title="Enter sends, Shift+Enter inserts a newline."
-          disabled={busy}
+          disabled={busy && !queueing}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              onSubmit();
+              if (queueing) onQueue?.();
+              else if (!busy) onSubmit();
             }
           }}
           className={textareaClassName}
         />
         <PromptInputFooter>
           <PromptInputTools>{tools}</PromptInputTools>
-          {busy && onStop ? (
-            <PromptInputSubmit
-              status="streaming"
-              variant="outline"
-              onClick={onStop}
-              title="Cancel the reply in progress."
-            >
-              Stop
-            </PromptInputSubmit>
-          ) : (
-            <PromptInputSubmit
-              status={busy ? "submitted" : "ready"}
-              onClick={onSubmit}
-              disabled={busy}
-            >
-              {submitLabel}
-            </PromptInputSubmit>
-          )}
+          <div className="flex items-center gap-1">
+            {queueing && (
+              <PromptInputSubmit
+                status="ready"
+                variant="outline"
+                onClick={onQueue}
+                disabled={!value.trim()}
+                title="Send this after the current reply finishes."
+              >
+                Queue
+              </PromptInputSubmit>
+            )}
+            {busy && onStop ? (
+              <PromptInputSubmit
+                status="streaming"
+                variant="outline"
+                onClick={onStop}
+                title="Cancel the reply in progress."
+              >
+                Stop
+              </PromptInputSubmit>
+            ) : (
+              <PromptInputSubmit
+                status={busy ? "submitted" : "ready"}
+                onClick={onSubmit}
+                disabled={busy}
+              >
+                {submitLabel}
+              </PromptInputSubmit>
+            )}
+          </div>
         </PromptInputFooter>
       </PromptInput>
     </div>

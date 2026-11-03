@@ -66,7 +66,7 @@ why tabs cycle on other keys here. See [Review workspaces](review-workspaces.md)
 
 | Keys | Does |
 | --- | --- |
-| Enter | Send |
+| Enter | Send, or queue the message while a reply is running |
 | Shift+Enter | New line |
 | A / D | Approve / deny the tool call in the approval bar |
 | Esc | Hide Omni Chat (the reply keeps streaming) |

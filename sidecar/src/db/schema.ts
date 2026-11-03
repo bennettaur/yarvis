@@ -17,6 +17,7 @@ import {
   uuid,
   vector,
 } from "drizzle-orm/pg-core";
+import type { GraphEdge, GraphNode } from "../pr/graph.ts";
 import type { PrRef, ReviewDecision } from "../pr/types.ts";
 import type { RepoTracker } from "../workspaces/tracker.ts";
 
@@ -404,6 +405,17 @@ export interface PrGuideFinding {
   note: string;
 }
 
+/**
+ * How the code a guide walks through fits together, as the agent recorded it
+ * while exploring. It reaches past the pull request's own changes into the code
+ * they call and are called from, so the diagram drawn from it shows the flow
+ * the change sits in, not only the files it touches.
+ */
+export interface PrGuideGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 /** One stop on a guided review: what to look at, and why it comes here. */
 export interface PrGuideStep {
   path: string;
@@ -450,6 +462,8 @@ export const prGuides = pgTable(
     url: text("url"),
     headSha: text("head_sha").notNull(),
     steps: jsonb("steps").$type<PrGuideStep[]>().notNull(),
+    /** Null on guides generated before the graph was kept, or when the agent recorded none. */
+    graph: jsonb("graph").$type<PrGuideGraph>(),
     /** How far the reviewer has read; an index into `steps`. */
     currentStep: integer("current_step").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
