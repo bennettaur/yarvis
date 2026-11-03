@@ -43,35 +43,39 @@ describe("subscribeArtifact", () => {
     return seen;
   }
 
-  it("signals each update, but not the opening ping", async () => {
-    serve([{ frames: [frame("ping"), frame("updated"), frame("updated")], hold: true }]);
+  it("signals each update, and once when it connects, but not each heartbeat", async () => {
+    serve([
+      { frames: [frame("ping"), frame("updated"), frame("ping"), frame("updated")], hold: true },
+    ]);
     const seen = follow();
-    await waitFor(() => seen.length === 2, "two changes");
-    expect(seen).toEqual(["change", "change"]);
+    await waitFor(() => seen.length === 3, "the connect and two changes");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual(["change", "change", "change"]);
   });
 
-  it("signals a change once on reconnect, since a write may have landed while it was down", async () => {
+  it("signals a change once on each connect, since a write may have landed before it", async () => {
     const server = serve([
       { frames: [frame("ping")] },
       { frames: [frame("ping"), frame("ping")], hold: true },
     ]);
     const seen = follow();
-    await waitFor(() => server.calls() === 2 && seen.length === 1, "the reconnect");
-    expect(seen).toEqual(["change"]);
+    await waitFor(() => server.calls() === 2 && seen.length === 2, "the reconnect");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual(["change", "change"]);
   });
 
   it("skips an unparseable frame and keeps following", async () => {
     serve([{ frames: [frame("ping"), "not json", frame("updated")], hold: true }]);
     const seen = follow();
-    await waitFor(() => seen.length === 1, "the change after the bad frame");
+    await waitFor(() => seen.length === 2, "the change after the bad frame");
   });
 
   it("stops for good once the artifact is deleted", async () => {
     const server = serve([{ frames: [frame("ping"), frame("deleted")] }]);
     const seen = follow();
-    await waitFor(() => seen.length === 1, "the delete");
+    await waitFor(() => seen.includes("deleted"), "the delete");
     await new Promise((r) => setTimeout(r, 30));
-    expect(seen).toEqual(["deleted"]);
+    expect(seen).toEqual(["change", "deleted"]);
     expect(server.calls()).toBe(1);
   });
 

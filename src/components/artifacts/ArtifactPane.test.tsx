@@ -33,7 +33,8 @@ function serve(read: () => Promise<unknown>) {
     sidecarFetch: async (path: string) => {
       expect(path).toBe(`/api/artifacts/${ID}`);
       reads += 1;
-      return new Response(JSON.stringify(await read()), { status: 200 });
+      const body = await read();
+      return body instanceof Response ? body : new Response(JSON.stringify(body), { status: 200 });
     },
     streamSSE: async function* (_path: string, init: RequestInit = {}) {
       const queue: string[] = [JSON.stringify({ type: "ping" })];
@@ -97,16 +98,44 @@ describe("ArtifactPane", () => {
     );
   });
 
+  it("says so when a re-read finds it gone, since the delete's signal can be missed", async () => {
+    let gone = false;
+    const server = serve(async () => (gone ? new Response("{}", { status: 404 }) : artifact()));
+    const host = await mount();
+    await waitFor(() => host.textContent?.includes("Launch plan") ?? false, "the artifact");
+    gone = true;
+    server.push("updated");
+    await waitFor(
+      () => host.textContent?.includes("This artifact was deleted.") ?? false,
+      "the deleted note",
+    );
+  });
+
+  it("keeps the last read on screen, with the error, when a re-read fails", async () => {
+    let failing = false;
+    const server = serve(async () =>
+      failing ? new Response("{}", { status: 500 }) : artifact({ content: "Still here" }),
+    );
+    const host = await mount();
+    await waitFor(() => host.textContent?.includes("Still here") ?? false, "the artifact");
+    await new Promise((r) => setTimeout(r, 20));
+    failing = true;
+    server.push("updated");
+    await waitFor(() => host.querySelector('[role="alert"]') !== null, "the error");
+    expect(host.textContent).toContain("Still here");
+  });
+
   it("reads once more, not once per change, for a burst during a slow read", async () => {
     let release: (() => void) | null = null;
     let version = 0;
     const server = serve(async () => {
       version += 1;
-      if (version === 2) await new Promise<void>((r) => (release = r));
+      if (version === 3) await new Promise<void>((r) => (release = r));
       return artifact({ content: `version ${version}` });
     });
     const host = await mount();
-    await waitFor(() => host.textContent?.includes("version 1") ?? false, "the first read");
+    // The first read, then one more for the stream connecting.
+    await waitFor(() => host.textContent?.includes("version 2") ?? false, "the first reads");
 
     server.push("updated");
     await waitFor(() => release !== null, "the slow second read");
@@ -116,8 +145,8 @@ describe("ArtifactPane", () => {
     await new Promise((r) => setTimeout(r, 20));
     (release as (() => void) | null)?.();
 
-    await waitFor(() => host.textContent?.includes("version 3") ?? false, "the final read");
+    await waitFor(() => host.textContent?.includes("version 4") ?? false, "the final read");
     await new Promise((r) => setTimeout(r, 30));
-    expect(server.reads()).toBe(3);
+    expect(server.reads()).toBe(4);
   });
 });

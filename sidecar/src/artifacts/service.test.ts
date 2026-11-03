@@ -9,7 +9,6 @@ import * as schema from "../db/schema.ts";
 import { subscribeArtifact } from "./hub.ts";
 import {
   ArtifactAppendOnlyError,
-  ArtifactFormatError,
   ArtifactRunLimitError,
   ArtifactTooLargeError,
   CHAT_ARTIFACT_RUN_LIMIT,
@@ -21,6 +20,7 @@ import {
   listArtifacts,
   MAX_ARTIFACT_CHARS,
   NotADiagramError,
+  NotADocumentError,
   updateArtifact,
   updateDiagram,
 } from "./service.ts";
@@ -447,10 +447,10 @@ describe("diagrams", () => {
   it("won't edit a diagram's JSON as text, though it can rename it", async () => {
     const created = await createDiagram(db, { title: "Architecture", diagram });
     await expect(updateArtifact(db, created.id, { append: "x" })).rejects.toThrow(
-      ArtifactFormatError,
+      NotADocumentError,
     );
     await expect(updateArtifact(db, created.id, { content: "x" })).rejects.toThrow(
-      ArtifactFormatError,
+      NotADocumentError,
     );
     expect((await updateArtifact(db, created.id, { title: "Renamed" }))?.title).toBe("Renamed");
     expect(JSON.parse((await getArtifact(db, created.id))!.content)).toEqual(diagram);
@@ -474,11 +474,61 @@ describe("diagrams", () => {
         changes: { upsertNodes: [{ id: "api", label: "changed" }] },
       }),
     ).rejects.toThrow(ArtifactAppendOnlyError);
+    // A new node sent beside an overwrite doesn't make the overwrite an addition.
+    await expect(
+      updateDiagram(db, created.id, {
+        writer: "heads-down",
+        changes: { upsertNodes: [{ id: "queue" }, { id: "api", label: "changed" }] },
+      }),
+    ).rejects.toThrow(ArtifactAppendOnlyError);
+    expect(JSON.parse((await getArtifact(db, created.id))!.content)).toEqual(diagram);
     const added = await updateDiagram(db, created.id, {
       writer: "heads-down",
       changes: { upsertNodes: [{ id: "queue" }] },
     });
     expect(added?.untrusted).toBe(true);
+  });
+
+  it("refuses a pass's placed or sized node on a chat turn's diagram, so it can't cover one", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    for (const placed of [{ x: 0, y: 0 }, { width: 4_000 }, { height: 4_000 }]) {
+      await expect(
+        updateDiagram(db, created.id, {
+          writer: "specialist",
+          changes: { upsertNodes: [{ id: "cover", color: "red", ...placed }] },
+        }),
+      ).rejects.toThrow(ArtifactAppendOnlyError);
+    }
+    // The chat's own turns, and a pass on its own diagram, still place nodes.
+    await updateDiagram(db, created.id, { changes: { upsertNodes: [{ id: "mine", x: 0, y: 0 }] } });
+    const own = await createDiagram(db, { title: "Pass", diagram, writer: "heads-down" });
+    await updateDiagram(db, own.id, {
+      writer: "heads-down",
+      changes: { upsertNodes: [{ id: "placed", x: 0, y: 0 }] },
+    });
+  });
+
+  it("refuses an addOnly change that touches what is there, and keeps the diagram", async () => {
+    const created = await createDiagram(db, { title: "Architecture", diagram });
+    const touches = [
+      { changes: { upsertNodes: [{ id: "new" }, { id: "api", label: "changed" }] } },
+      { changes: { removeEdges: ["api-db"] } },
+      { title: "Renamed", changes: {} },
+    ];
+    for (const input of touches) {
+      await expect(updateDiagram(db, created.id, { ...input, addOnly: true })).rejects.toThrow(
+        /addOnly is set/,
+      );
+    }
+    expect(JSON.parse((await getArtifact(db, created.id))!.content)).toEqual(diagram);
+    const added = await updateDiagram(db, created.id, {
+      addOnly: true,
+      changes: {
+        upsertNodes: [{ id: "queue" }],
+        upsertEdges: [{ id: "api-queue", from: "api", to: "queue" }],
+      },
+    });
+    expect(JSON.parse(added!.content).nodes.map((n: { id: string }) => n.id)).toContain("queue");
   });
 
   it("refuses a pass's rename of a chat turn's diagram, and growth past the run limit", async () => {
@@ -559,5 +609,48 @@ describe("diagram tools", () => {
       opts,
     )) as { error: string };
     expect(asText.error).toMatch(/update_diagram/);
+  });
+
+  it("reports the diagram's size after a change, and tells the model what each refusal means", async () => {
+    const made = (await tools.create_diagram.execute!(
+      { title: "Flow", nodes: [{ id: "a" }, { id: "b" }], edges: [] },
+      opts,
+    )) as { id: string };
+    const updated = await tools.update_diagram.execute!(
+      { id: made.id, addOnly: true, upsertEdges: [{ id: "a-b", from: "a", to: "b" }] },
+      opts,
+    );
+    expect(updated).toEqual({
+      id: made.id,
+      nodes: 2,
+      edges: 1,
+      link: `yarvis://artifact/${made.id}`,
+    });
+
+    const brokenPromise = (await tools.update_diagram.execute!(
+      { id: made.id, addOnly: true, upsertNodes: [{ id: "a", label: "x" }] },
+      opts,
+    )) as { error: string };
+    expect(brokenPromise.error).toMatch(/Leave addOnly out/);
+
+    const dangling = (await tools.create_diagram.execute!(
+      { title: "Bad", nodes: [{ id: "a" }], edges: [{ id: "e", from: "a", to: "zzz" }] },
+      opts,
+    )) as { error: string };
+    expect(dangling.error).toMatch(/not a node/);
+
+    const doc = (await tools.create_artifact.execute!({ title: "Notes" }, opts)) as { id: string };
+    const onDoc = (await tools.update_diagram.execute!(
+      { id: doc.id, upsertNodes: [{ id: "a" }] },
+      opts,
+    )) as { error: string };
+    expect(onDoc.error).toMatch(/not a diagram/);
+
+    const passTools = buildArtifactTools(db, { writer: "heads-down" });
+    const fromPass = (await passTools.update_diagram.execute!(
+      { id: made.id, upsertNodes: [{ id: "a", label: "x" }] },
+      opts,
+    )) as { error: string };
+    expect(fromPass.error).toMatch(/only add new nodes and edges/);
   });
 });

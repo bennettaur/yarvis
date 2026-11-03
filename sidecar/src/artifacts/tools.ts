@@ -8,14 +8,13 @@ import {
   DiagramError,
   diagramChangesSchema,
   diagramSchema,
-  MAX_DIAGRAM_EDGES,
-  MAX_DIAGRAM_NODES,
+  MAX_ARTIFACT_DIAGRAM_EDGES,
+  MAX_ARTIFACT_DIAGRAM_NODES,
   parseDiagram,
 } from "./diagram.ts";
 import {
   ARTIFACT_LIST_LIMIT,
   ArtifactAppendOnlyError,
-  ArtifactFormatError,
   ArtifactRunLimitError,
   ArtifactTooLargeError,
   type ArtifactWriter,
@@ -27,6 +26,7 @@ import {
   listArtifacts,
   MAX_ARTIFACT_CHARS,
   NotADiagramError,
+  NotADocumentError,
   updateArtifact,
   updateDiagram,
 } from "./service.ts";
@@ -51,7 +51,7 @@ const CHAT_ARTIFACT_KEPT =
   "This artifact came from a chat with the user, so only the user can delete it.";
 
 const DIAGRAM_APPEND_ONLY =
-  "This diagram came from a chat with the user, so you can only add new nodes and edges to it. Start a new diagram to change or remove what is there.";
+  "This diagram came from a chat with the user, so you can only add new nodes and edges to it, without x, y, width or height: the app places them. Start a new diagram to change or remove what is there.";
 
 const DIAGRAM_NOT_TEXT =
   "That artifact is a diagram. Change it with update_diagram; update_artifact can't edit its content.";
@@ -182,7 +182,7 @@ export function buildArtifactTools(
             ? { id: artifact.id, length: artifact.content.length, link: artifactLink(artifact.id) }
             : { error: "no artifact with that id" };
         } catch (err) {
-          if (err instanceof ArtifactFormatError) return { error: DIAGRAM_NOT_TEXT };
+          if (err instanceof NotADocumentError) return { error: DIAGRAM_NOT_TEXT };
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: APPEND_ONLY };
           if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
@@ -192,7 +192,7 @@ export function buildArtifactTools(
     }),
 
     create_diagram: tool({
-      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_DIAGRAM_NODES} nodes and ${MAX_DIAGRAM_EDGES} edges, and ${MAX_ARTIFACT_CHARS} characters in all. ${LINK_HINT}`,
+      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_ARTIFACT_DIAGRAM_NODES} nodes and ${MAX_ARTIFACT_DIAGRAM_EDGES} edges, and ${MAX_ARTIFACT_CHARS} characters in all. ${LINK_HINT}`,
       inputSchema: z.object({
         title: title.describe("Short and specific, e.g. 'Checkout service architecture'"),
         nodes: diagramSchema.shape.nodes.describe(
@@ -220,17 +220,25 @@ export function buildArtifactTools(
     }),
 
     update_diagram: tool({
-      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids.${
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids. Set addOnly when every node and edge you send is new and you remove nothing: such a change never needs the user's approval, and it is refused if it would touch an existing element.${
         writer === "chat"
           ? ""
-          : " You can only add new nodes and edges to a diagram that came from a chat with the user."
+          : " You can only add new nodes and edges to a diagram that came from a chat with the user, without x, y, width or height."
       }`,
-      inputSchema: diagramChangesSchema.extend({ id: uuid, title: title.optional() }),
-      execute: async ({ id, title: t, ...changes }) => {
+      inputSchema: diagramChangesSchema.extend({
+        id: uuid,
+        title: title.optional(),
+        addOnly: z
+          .boolean()
+          .optional()
+          .describe("True when this change only adds new nodes and edges"),
+      }),
+      execute: async ({ id, title: t, addOnly, ...changes }) => {
         try {
           const artifact = await updateDiagram(db, id, {
             title: t,
             changes,
+            addOnly,
             writer,
             untrusted: tainted(),
           });

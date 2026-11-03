@@ -258,9 +258,13 @@ element by element, and the open pane redraws with each change. The view
 follows the drawing until you pan or zoom it yourself. Diagrams are view-only:
 you can pan, zoom and save one as an image, but only the assistant edits them.
 A heads-down pass or specialist can only add to a diagram you asked for in a
-chat. Changing a diagram asks for approval under the same conditions as
+chat, and the app places what it adds, so it can't cover your boxes with its
+own. Changing a diagram asks for approval under the same conditions as
 rewriting a document: on a spoken turn, and once a turn has read a web page or
-an untrusted artifact. In Memory → Artifacts a diagram shows only a note; use
+an untrusted artifact. A change that only adds new boxes and arrows doesn't
+ask, the way adding to the end of a document doesn't: the assistant marks it
+as adding only, and the change is refused if it would touch anything already
+drawn. In Memory → Artifacts a diagram shows only a note; use
 **Open beside chat** to see it. A diagram can have up to 300 boxes and
 600 arrows.
 

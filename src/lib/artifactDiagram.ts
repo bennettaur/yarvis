@@ -7,7 +7,14 @@
  */
 
 import type { ExcalidrawElementSkeleton } from "@excalidraw/excalidraw/data/transform";
-import { nodeColumns } from "./pr/flowDiagram";
+import {
+  ADAPTIVE_RADIUS,
+  ARROW_COLOR,
+  COLUMN_GAP,
+  LABEL_FONT_FAMILY,
+  nodeColumns,
+  ROW_GAP,
+} from "./pr/flowDiagram";
 
 /*
  * These mirror the sidecar's `Diagram` (`sidecar/src/artifacts/diagram.ts`),
@@ -56,8 +63,9 @@ const COLORS: Record<DiagramColor, { strokeColor: string; backgroundColor: strin
   red: { strokeColor: "#e03131", backgroundColor: "#ffc9c9" },
   purple: { strokeColor: "#6741d9", backgroundColor: "#d0bfff" },
 };
+/** Own keys only: an `in` check would also pass "toString" and the like. */
+const COLOR_NAMES = new Set<string>(Object.keys(COLORS));
 const PLAIN = { strokeColor: "#1e1e1e", backgroundColor: "transparent" } as const;
-const ARROW_COLOR = "#495057";
 
 const DEFAULT_SIZE: Record<DiagramShape, { width: number; height: number }> = {
   rectangle: { width: 200, height: 80 },
@@ -65,15 +73,8 @@ const DEFAULT_SIZE: Record<DiagramShape, { width: number; height: number }> = {
   diamond: { width: 180, height: 120 },
   text: { width: 200, height: 40 },
 };
-const COLUMN_GAP = 140;
-const ROW_GAP = 40;
 /** Widest and tallest default size, so auto-placed nodes of any shape share one grid. */
 const CELL = { width: 200, height: 120 };
-
-/** Excalidraw's Helvetica: its hand-drawn default comes from a CDN the app's CSP refuses. */
-const LABEL_FONT_FAMILY = 2;
-/** Excalidraw's `ROUNDNESS.ADAPTIVE_RADIUS`, written out so this file loads no Excalidraw code. */
-const ADAPTIVE_RADIUS = 3;
 
 const ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 
@@ -103,7 +104,7 @@ export function parseDiagram(content: string): Diagram {
       id: n.id,
       label: cleanLabel(n.label),
       shape: SHAPES.has(n.shape) ? n.shape : undefined,
-      color: n.color in COLORS ? n.color : undefined,
+      color: COLOR_NAMES.has(n.color) ? n.color : undefined,
       x: finiteOrUndefined(n.x),
       y: finiteOrUndefined(n.y),
       width: finiteOrUndefined(n.width),

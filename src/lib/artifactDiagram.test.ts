@@ -31,6 +31,15 @@ describe("parseDiagram", () => {
     expect(diagram.edges.map((e) => e.id)).toEqual(["a-a"]);
   });
 
+  it("drops a colour that is only an object's inherited key", () => {
+    const names = ["toString", "constructor", "__proto__", "hasOwnProperty"];
+    const diagram = parseDiagram(
+      JSON.stringify({ nodes: names.map((color, i) => ({ id: `n${i}`, color })), edges: [] }),
+    );
+    expect(diagram.nodes.map((n) => n.color)).toEqual(names.map(() => undefined));
+    expect(parseDiagram('{"nodes":[{"id":"a","color":"blue"}]}').nodes[0]?.color).toBe("blue");
+  });
+
   it("keeps a label's newlines but strips other control characters", () => {
     const diagram = parseDiagram(
       JSON.stringify({ nodes: [{ id: "a", label: "one\ntwo\u0007" }], edges: [] }),

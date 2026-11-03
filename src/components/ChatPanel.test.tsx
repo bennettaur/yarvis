@@ -7,7 +7,7 @@ import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { mountForInteraction, textOf } from "../test/render";
-import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
+import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
 /**
@@ -47,6 +47,18 @@ let sent: Array<Record<string, unknown>> = [];
 let health: HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
 let healthDelayMs = 0;
 
+const ARTIFACT_ID = "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b";
+const artifact = {
+  id: ARTIFACT_ID,
+  title: "Launch plan",
+  format: "markdown",
+  content: "Ship it on Thursday.",
+  createdBy: "chat",
+  untrusted: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+};
+
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
     status: 200,
@@ -74,8 +86,20 @@ stubSidecarApi({
     }
     if (path === "/api/chat/sessions") return json(sessions);
     if (path.endsWith("/messages")) return json([]);
+    if (path === `/api/artifacts/${ARTIFACT_ID}`) return json(artifact);
     // An unknown path fails loudly rather than reaching the real client.
     return new Response("unexpected request", { status: 404 });
+  },
+  // An open artifact's stream stays quiet until the pane closes.
+  streamSSE: async function* (path: string, init: RequestInit = {}) {
+    if (!path.startsWith("/api/artifacts/")) {
+      yield* realSidecarApi.streamSSE(path, init);
+      return;
+    }
+    yield JSON.stringify({ type: "ping" });
+    await new Promise<void>((resolve) =>
+      init.signal?.addEventListener("abort", () => resolve(), { once: true }),
+    );
   },
 });
 
@@ -269,6 +293,45 @@ describe("ChatPanel", () => {
     expect(text).toContain("found it");
     expect(text).toContain("search_pages");
     expect(text).toContain("on Notion");
+  });
+
+  it("opens an artifact the reply links to beside the conversation", async () => {
+    scripted = [
+      { type: "delta", text: `Wrote it up: [Launch plan](yarvis://artifact/${ARTIFACT_ID}).` },
+      { type: "done", finishReason: "stop" },
+    ];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await say(mounted.host, "write a launch plan");
+    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+
+    const link = Array.from(mounted.host.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
+    );
+    link?.click();
+    await settle();
+    const pane = mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
+    expect(pane?.textContent).toContain("Ship it on Thursday.");
+    // The conversation stays beside it.
+    expect(textOf(mounted.host.innerHTML)).toContain("Wrote it up");
+
+    pane?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')?.click();
+    await settle();
+    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+  });
+
+  it("opens an artifact the host asks for, and says once that it has", async () => {
+    const consumed = mock(() => {});
+    const mounted = await mountForInteraction(
+      createElement(ChatPanel, {
+        requestedArtifactId: ARTIFACT_ID,
+        onArtifactRequestConsumed: consumed,
+      }),
+    );
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).not.toBeNull();
+    expect(consumed).toHaveBeenCalledTimes(1);
   });
 
   // Nothing is persisted for a failed turn, so a partial reply left on screen is

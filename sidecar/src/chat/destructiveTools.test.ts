@@ -109,7 +109,7 @@ describe("conditionalConfirmations", () => {
     expect(spoken.get("update_artifact")?.({ id: "a", append: "more" })).toBe(false);
   });
 
-  it("asks before any diagram change where a delete would ask, since an upsert can overwrite", () => {
+  it("asks before a diagram change not marked add-only, where a delete would ask", () => {
     const reads = newUntrustedReads();
     const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
     const update = typed.get("update_diagram");
@@ -118,6 +118,10 @@ describe("conditionalConfirmations", () => {
     reads.hasReadUntrustedArtifact = true;
     expect(update?.({ id: "a", upsertNodes: [{ id: "x", label: "" }] })).toBe(true);
     expect(update?.({ id: "a", removeNodes: ["x"] })).toBe(true);
+    // updateDiagram refuses an addOnly call that touches an existing element.
+    expect(update?.({ id: "a", addOnly: true, upsertNodes: [{ id: "x" }] })).toBe(false);
+    expect(update?.({ id: "a", addOnly: true, title: "Renamed" })).toBe(true);
+    expect(update?.({ id: "a", addOnly: false, upsertNodes: [{ id: "x" }] })).toBe(true);
 
     const spoken = conditionalConfirmations({
       spoken: true,

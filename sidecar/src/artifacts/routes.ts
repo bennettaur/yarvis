@@ -53,9 +53,11 @@ export function createArtifactRoutes(config: Config): Hono {
    * pane re-reads the artifact on `updated`, so several writes in a row
    * collapse into one fetch and a slow reader never queues the document.
    */
-  router.get("/:id/stream", (c) => {
+  router.get("/:id/stream", async (c) => {
     const id = c.req.param("id");
     if (!UUID.test(id)) return c.json({ error: "not found" }, 404);
+    // Otherwise a pane following a deleted artifact would hold a stream open that nothing ever writes to.
+    if (!(await getArtifact(db(), id))) return c.json({ error: "not found" }, 404);
     return streamSSE(c, async (stream) => {
       let pending: ArtifactChange | null = null;
       let wake: (() => void) | null = null;

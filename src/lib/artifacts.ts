@@ -1,4 +1,4 @@
-import { sidecarFetch, streamSSE } from "./api";
+import { SidecarError, sidecarFetch, streamSSE } from "./api";
 
 /**
  * Client for the assistant's artifacts: documents it wrote, like a morning
@@ -36,7 +36,7 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
       ? { method }
       : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
   );
-  if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`);
+  if (!res.ok) throw new SidecarError(`${method} ${path} → ${res.status}`, res.status);
   return res.json();
 }
 
@@ -57,6 +57,8 @@ const RECONNECT_MS = 2_000;
  * when the stream drops. `onChange` fires on each write (and once on every
  * reconnect, since a write may have landed while it was down), so the caller
  * re-reads the artifact; `onDeleted` fires once and ends the subscription.
+ * `onChange` also fires once each time the stream connects, since a write may
+ * have landed before it did.
  */
 export function subscribeArtifact(
   id: string,
@@ -67,7 +69,9 @@ export function subscribeArtifact(
   const signal = controller.signal;
 
   void (async () => {
-    let reconnecting = false;
+    // True for the first connection too: a write can land between the caller's
+    // first read and the stream subscribing, and nothing else would show it.
+    let reconnecting = true;
     while (!signal.aborted) {
       try {
         for await (const data of streamSSE(`/api/artifacts/${id}/stream`, { signal })) {

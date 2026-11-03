@@ -13,8 +13,8 @@ import { z } from "zod";
  */
 
 /** Past these a diagram is too big to read on screen, and too big to send back to the model whole. */
-export const MAX_DIAGRAM_NODES = 300;
-export const MAX_DIAGRAM_EDGES = 600;
+export const MAX_ARTIFACT_DIAGRAM_NODES = 300;
+export const MAX_ARTIFACT_DIAGRAM_EDGES = 600;
 
 /** Colour names, not hex: the app maps them onto Excalidraw's palette so they read in both themes. */
 export const DIAGRAM_COLORS = [
@@ -57,8 +57,8 @@ export const diagramEdgeSchema = z.object({
 });
 
 export const diagramSchema = z.object({
-  nodes: z.array(diagramNodeSchema).max(MAX_DIAGRAM_NODES),
-  edges: z.array(diagramEdgeSchema).max(MAX_DIAGRAM_EDGES),
+  nodes: z.array(diagramNodeSchema).max(MAX_ARTIFACT_DIAGRAM_NODES),
+  edges: z.array(diagramEdgeSchema).max(MAX_ARTIFACT_DIAGRAM_EDGES),
 });
 
 export type DiagramNode = z.infer<typeof diagramNodeSchema>;
@@ -67,14 +67,14 @@ export type Diagram = z.infer<typeof diagramSchema>;
 
 /** A change to a diagram. Upserts merge into an element with the same id, or add one. */
 export const diagramChangesSchema = z.object({
-  upsertNodes: z.array(diagramNodeSchema).max(MAX_DIAGRAM_NODES).optional(),
+  upsertNodes: z.array(diagramNodeSchema).max(MAX_ARTIFACT_DIAGRAM_NODES).optional(),
   upsertEdges: z
     .array(diagramEdgeSchema.partial({ from: true, to: true }))
-    .max(MAX_DIAGRAM_EDGES)
+    .max(MAX_ARTIFACT_DIAGRAM_EDGES)
     .optional(),
   /** Removing a node removes the edges attached to it. */
-  removeNodes: z.array(elementId).max(MAX_DIAGRAM_NODES).optional(),
-  removeEdges: z.array(elementId).max(MAX_DIAGRAM_EDGES).optional(),
+  removeNodes: z.array(elementId).max(MAX_ARTIFACT_DIAGRAM_NODES).optional(),
+  removeEdges: z.array(elementId).max(MAX_ARTIFACT_DIAGRAM_EDGES).optional(),
 });
 
 export type DiagramChanges = z.infer<typeof diagramChangesSchema>;
@@ -89,6 +89,14 @@ export function onlyAdds(diagram: Diagram, changes: DiagramChanges): boolean {
   return (
     !(changes.upsertNodes ?? []).some((n) => nodeIds.has(n.id)) &&
     !(changes.upsertEdges ?? []).some((e) => edgeIds.has(e.id))
+  );
+}
+
+/** True when the changes set where a node sits or how big it is, rather than leaving that to the app's layout. */
+export function placesNodes(changes: DiagramChanges): boolean {
+  return (changes.upsertNodes ?? []).some(
+    (n) =>
+      n.x !== undefined || n.y !== undefined || n.width !== undefined || n.height !== undefined,
   );
 }
 
@@ -120,11 +128,11 @@ export function checkDiagram(diagram: Diagram): Diagram {
     }
   }
   // The schema caps what one call sends; this caps what a merge of several adds up to.
-  if (diagram.nodes.length > MAX_DIAGRAM_NODES) {
-    throw new DiagramError(`a diagram can have at most ${MAX_DIAGRAM_NODES} nodes`);
+  if (diagram.nodes.length > MAX_ARTIFACT_DIAGRAM_NODES) {
+    throw new DiagramError(`a diagram can have at most ${MAX_ARTIFACT_DIAGRAM_NODES} nodes`);
   }
-  if (diagram.edges.length > MAX_DIAGRAM_EDGES) {
-    throw new DiagramError(`a diagram can have at most ${MAX_DIAGRAM_EDGES} edges`);
+  if (diagram.edges.length > MAX_ARTIFACT_DIAGRAM_EDGES) {
+    throw new DiagramError(`a diagram can have at most ${MAX_ARTIFACT_DIAGRAM_EDGES} edges`);
   }
   return diagram;
 }

@@ -40,8 +40,8 @@ export interface PrGuideGraph {
 const BOX_WIDTH = 240;
 const BOX_HEIGHT = 80;
 /** Wide enough for an edge's label to sit on its arrow between two columns. */
-const COLUMN_GAP = 140;
-const ROW_GAP = 40;
+export const COLUMN_GAP = 140;
+export const ROW_GAP = 40;
 
 /*
  * The change's own code stands out; the code around it recedes. These are
@@ -51,16 +51,16 @@ const ROW_GAP = 40;
  */
 const CHANGED_STYLE = { strokeColor: "#1971c2", backgroundColor: "#a5d8ff" } as const;
 const CONTEXT_STYLE = { strokeColor: "#868e96", backgroundColor: "transparent" } as const;
-const ARROW_COLOR = "#495057";
+export const ARROW_COLOR = "#495057";
 
 /**
  * Excalidraw's Helvetica, which is a system font. Its hand-drawn default is
  * fetched from a CDN, which the app's content security policy refuses.
  */
-const LABEL_FONT_FAMILY = 2;
+export const LABEL_FONT_FAMILY = 2;
 
 /** Excalidraw's `ROUNDNESS.ADAPTIVE_RADIUS`, written out so this file loads no Excalidraw code. */
-const ADAPTIVE_RADIUS = 3;
+export const ADAPTIVE_RADIUS = 3;
 
 /**
  * Each node's column: how many hops it sits from the outermost code that calls

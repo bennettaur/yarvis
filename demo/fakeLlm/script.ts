@@ -133,6 +133,7 @@ export const REPLIES: Reply[] = [
       args: {
         id: "{{artifactId}}",
         callReason: "The user asked to add a receipts queue to the diagram.",
+        addOnly: true,
         upsertNodes: [{ id: "queue", label: "Receipts queue", shape: "diamond", color: "orange" }],
         upsertEdges: [{ id: "api-queue", from: "api", to: "queue", label: "paid", dashed: true }],
       },

@@ -7,8 +7,10 @@ import {
   checkDiagram,
   type Diagram,
   type DiagramChanges,
+  DiagramError,
   onlyAdds,
   parseDiagram,
+  placesNodes,
   serializeDiagram,
 } from "./diagram.ts";
 import { publishArtifactChange } from "./hub.ts";
@@ -58,9 +60,16 @@ export class ArtifactRunLimitError extends Error {
 }
 
 /** `update_artifact`'s content and append are text edits, which would corrupt a diagram's JSON. */
-export class ArtifactFormatError extends Error {
-  constructor(readonly format: Artifact["format"]) {
+export class NotADocumentError extends Error {
+  constructor(format: Artifact["format"]) {
     super(`the content of a ${format}-format artifact can't be edited as text`);
+  }
+}
+
+/** The artifact exists but isn't a diagram, so update_diagram can't change it. */
+export class NotADiagramError extends Error {
+  constructor() {
+    super("that artifact is not a diagram");
   }
 }
 
@@ -207,7 +216,7 @@ export async function updateArtifact(
     // No row: no such artifact, or one of the checks in the WHERE failed.
     const current = await getArtifact(db, id);
     if (!current) return null;
-    if (editsText && current.format !== "markdown") throw new ArtifactFormatError(current.format);
+    if (editsText && current.format !== "markdown") throw new NotADocumentError(current.format);
     if (writer !== "chat" && current.createdBy === "chat") {
       throw appendOnly ? new ArtifactAppendOnlyError() : new ArtifactRunLimitError();
     }
@@ -257,13 +266,6 @@ export async function deleteArtifacts(db: Db, ids: string[]): Promise<number> {
   return deleted.length;
 }
 
-/** The artifact exists but isn't a diagram, so update_diagram can't change it. */
-export class NotADiagramError extends Error {
-  constructor() {
-    super("that artifact is not a diagram");
-  }
-}
-
 export interface CreateDiagramInput {
   title: string;
   diagram: Diagram;
@@ -282,9 +284,15 @@ export async function createDiagram(db: Db, input: CreateDiagramInput): Promise<
   });
 }
 
+/** Worded for the model, which reads it back as the tool's error. */
+const ADD_ONLY_BROKEN =
+  "addOnly is set, but this change renames the diagram, removes something, or changes an element that already exists. Leave addOnly out to make that change.";
+
 export interface UpdateDiagramInput {
   title?: string;
   changes: DiagramChanges;
+  /** The caller promised the change only adds; refused if it touches anything already there. */
+  addOnly?: boolean;
   writer?: ArtifactWriter;
   untrusted?: boolean;
 }
@@ -295,7 +303,11 @@ export interface UpdateDiagramInput {
  *
  * A heads-down pass or specialist can only add elements to a diagram a chat
  * turn created, the diagram version of append-only, and only up to
- * CHAT_ARTIFACT_RUN_LIMIT characters.
+ * CHAT_ARTIFACT_RUN_LIMIT characters. It can't place or size the nodes it
+ * adds either, so it can't lay a filled box over one the chat drew.
+ *
+ * `addOnly` is checked here, under the lock, because the approval that
+ * `addOnly` skips is decided before the call can see which ids exist.
  */
 export async function updateDiagram(
   db: Db,
@@ -308,8 +320,10 @@ export async function updateDiagram(
     if (!current) return null;
     if (current.format !== "excalidraw") throw new NotADiagramError();
     const diagram = parseDiagram(current.content);
+    const adds = input.title === undefined && onlyAdds(diagram, input.changes);
+    if (input.addOnly && !adds) throw new DiagramError(ADD_ONLY_BROKEN);
     const editsChatDiagram = writer !== "chat" && current.createdBy === "chat";
-    if (editsChatDiagram && (input.title !== undefined || !onlyAdds(diagram, input.changes))) {
+    if (editsChatDiagram && (!adds || placesNodes(input.changes))) {
       throw new ArtifactAppendOnlyError();
     }
     const content = serializeDiagram(applyDiagramChanges(diagram, input.changes));
