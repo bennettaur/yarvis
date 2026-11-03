@@ -104,8 +104,8 @@ export async function openTurnStream(
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("this build has no microphone support");
   }
-  const stopped = () => new Error("stopped before the microphone opened");
-  if (signal?.aborted) throw stopped();
+  const stoppedError = () => new Error("stopped before the microphone opened");
+  if (signal?.aborted) throw stoppedError();
 
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
@@ -113,7 +113,7 @@ export async function openTurnStream(
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
       socket.onerror = () => reject(new Error("could not reach the turn detector"));
-      signal?.addEventListener("abort", () => reject(stopped()), { once: true });
+      signal?.addEventListener("abort", () => reject(stoppedError()), { once: true });
     });
   } catch (e) {
     socket.onclose = null;
@@ -138,11 +138,11 @@ export async function openTurnStream(
     handlers.onError("lost the connection to the turn detector");
   };
   signal?.addEventListener("abort", close, { once: true });
-  const gaveUp = () =>
-    signal?.aborted ? stopped() : new Error("lost the connection to the turn detector");
+  const closedError = () =>
+    signal?.aborted ? stoppedError() : new Error("lost the connection to the turn detector");
   if (signal?.aborted) {
     close();
-    throw stopped();
+    throw stoppedError();
   }
 
   let stream: MediaStream;
@@ -160,7 +160,7 @@ export async function openTurnStream(
   }
   if (closed) {
     for (const track of stream.getTracks()) track.stop();
-    throw gaveUp();
+    throw closedError();
   }
 
   let context: AudioContext | null = null;
@@ -188,10 +188,12 @@ export async function openTurnStream(
     source.connect(capture).connect(mute).connect(context.destination);
   } catch (e) {
     close();
+    // A stop closes the context under a pending await, which then rejects.
+    if (signal?.aborted) throw stoppedError();
     throw new Error(`could not start audio capture: ${e instanceof Error ? e.message : e}`);
   }
   // The awaits above leave the same window as the permission prompt.
-  if (closed) throw gaveUp();
+  if (closed) throw closedError();
 
   const resample = createResampler(context.sampleRate, SPEECH_SAMPLE_RATE);
   let levelSum = 0;

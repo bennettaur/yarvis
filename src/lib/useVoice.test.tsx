@@ -134,7 +134,7 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       spoken.push(request.text);
       return new Blob(["audio"]);
     },
-    // Plays until stopped, like a real sentence that hasn't finished yet.
+    // Plays until stopped or finished by the test, like a real sentence.
     playAudio: (_audio: Blob, signal: AbortSignal) => {
       playing.push(signal);
       return new Promise<void>((resolve) => {
@@ -599,12 +599,23 @@ describe("useVoice in continuous mode", () => {
     await settle();
     expect(active.sent).toEqual([]);
 
+    // A short answer to the reply's question is the user's, even in the tail.
+    detector?.onSpeechStart();
+    transcriptResult = "green";
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.sent.map((m) => m.text)).toEqual(["green"]);
+
     // Well after the reply, the same words are the user's.
     setSystemTime(new Date(Date.now() + 5_000));
     detector?.onSpeechStart();
+    transcriptResult = "the deploy finished a couple of minutes ago";
     detector?.onTurn(turnAudio());
     await settle();
-    expect(active.sent.map((m) => m.text)).toEqual(["the deploy finished a couple of minutes ago"]);
+    expect(active.sent.map((m) => m.text)).toEqual([
+      "green",
+      "the deploy finished a couple of minutes ago",
+    ]);
   });
 
   it("stops the last reply's unfinished speech when the next reply starts", async () => {

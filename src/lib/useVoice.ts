@@ -41,17 +41,24 @@ import {
  */
 
 /**
- * Everything the loop reaches outside itself. Collected behind one option so a
- * test can drive the hook without stubbing the modules other tests assert on —
- * the same seam `fetchImpl` gives the sidecar's speech clients.
- */
-/**
  * How long after a reply stops playing a new turn is still checked as its
  * echo. Covers the detector's own delay: it confirms speech only after
  * hearing some, and the audio reaches it over a websocket.
  */
 const ECHO_TAIL_MS = 1500;
 
+/**
+ * Fewest words a turn starting after the reply ended needs to be dropped as
+ * echo. That is when the user answers the reply's closing question, and a
+ * short answer like "yes" often repeats one of its words.
+ */
+const ECHO_TAIL_MIN_WORDS = 3;
+
+/**
+ * Everything the loop reaches outside itself. Collected behind one option so a
+ * test can drive the hook without stubbing the modules other tests assert on —
+ * the same seam `fetchImpl` gives the sidecar's speech clients.
+ */
 export interface VoiceIO extends ContinuousIO {
   transcribe: typeof transcribe;
   speak: typeof speak;
@@ -155,6 +162,8 @@ export function useVoice({
   const spokenTextRef = useRef("");
   /** The reply text queued for speech when the user's current turn started; "" when none was. */
   const echoReferenceRef = useRef("");
+  /** The user's current turn started after the reply ended, inside `ECHO_TAIL_MS`. */
+  const echoTailRef = useRef(false);
   /** When the last reply finished playing, as `Date.now()`. */
   const playbackEndedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const [levelMeter] = useState(createLevelMeter);
@@ -349,12 +358,15 @@ export function useVoice({
       // Taken and cleared here, so one speech start's reference never applies
       // to a later turn.
       const echoReference = echoReferenceRef.current;
+      const inTail = echoTailRef.current;
       echoReferenceRef.current = "";
+      echoTailRef.current = false;
       transcribeInOrderRef.current = transcribeInOrderRef.current
         .then(async () => {
           const text = await transcribeTurn(wav, generation);
           if (!text || generation !== turnGenerationRef.current) return;
-          if (echoReference && looksLikeEcho(text, echoReference)) return;
+          const tooShortForTail = inTail && text.split(/\s+/).length < ECHO_TAIL_MIN_WORDS;
+          if (echoReference && !tooShortForTail && looksLikeEcho(text, echoReference)) return;
           if (busyRef.current || sendingRef.current) holdTurn(text);
           else sendContinuous(text, generation, holdTurn);
         })
@@ -371,11 +383,11 @@ export function useVoice({
   // yet, or the streaming effect would start speaking over the user.
   const handleSpeechStart = useCallback(() => {
     const playing = queueRef.current !== null;
-    // Kept to recognise this turn as the reply's own echo once transcribed.
-    // The detector hears speech a little after it is played, so a turn that
-    // starts just after the reply ends can still be its echo.
+    // Kept to recognise this turn as the reply's own echo once transcribed,
+    // including a turn that starts just after the reply ends (`ECHO_TAIL_MS`).
     const justPlayed = Date.now() - playbackEndedAtRef.current < ECHO_TAIL_MS;
     echoReferenceRef.current = playing || justPlayed ? spokenTextRef.current : "";
+    echoTailRef.current = !playing && justPlayed;
     if (busyRef.current || sendingRef.current) silencedRef.current = true;
     if (!playing) return;
     endSpeech();

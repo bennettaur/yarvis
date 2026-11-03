@@ -26,10 +26,10 @@ function pairs(list: string[]): string[] {
 
 /**
  * True when most of `transcript`'s adjacent word pairs also appear somewhere in
- * `spokenReply`, the reply text queued for speech when the turn started. The
- * pairs may come in any order. Pairs rather than single words, so the
- * user's own words said over a long reply aren't dropped just because each
- * word appears in it somewhere. A one-word turn that is also a word of the
+ * `spokenReply`, the reply text queued for speech when the turn started. Pair
+ * order isn't checked. Compares pairs rather than single words, so the user's
+ * own words said over a long reply aren't dropped just because each word
+ * appears in it somewhere. A one-word turn that is also a word of the
  * reply, such as "yes", is still dropped.
  */
 export function looksLikeEcho(transcript: string, spokenReply: string): boolean {
