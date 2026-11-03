@@ -144,8 +144,9 @@ const overlaps = (a: Omit<Box, "elementId">, b: Box) =>
 /**
  * Where a node sits: its own x/y when it has both, otherwise a grid cell by
  * its column along the edges (see `nodeColumns`) and its order in that column.
- * A grid cell that would overlap a placed node is skipped, so a node left to
- * the layout never covers one placed by hand.
+ * A grid cell that would overlap a placed node is skipped. That checks the
+ * node's default size, so a label long enough to grow its box can still
+ * reach past the cell.
  */
 function layout(diagram: Diagram): Map<string, Box> {
   const columns = nodeColumns(diagram);
