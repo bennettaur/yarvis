@@ -11,6 +11,7 @@ import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge } from "./attention.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { decideCall, isMergeInstruction, mergeCallTarget, passApprovalHooks } from "./policy.ts";
+import { markMergedWatches, undeliveredMergedWatches } from "./prWatches.ts";
 import {
   addMessage,
   answeredSince,
@@ -660,6 +661,74 @@ describe("finish_pass", () => {
       sleepMinutes: null,
       reason: null,
       routinesDone: [],
+    });
+  });
+});
+
+describe("watch_pr_merge", () => {
+  /** A workspace whose repo `acme/api` has open PR #42 cached. */
+  async function trackedPr(prState = "open"): Promise<string> {
+    await sql`TRUNCATE repos RESTART IDENTITY CASCADE`;
+    const [repo] = await db
+      .insert(schema.repos)
+      .values({
+        name: "api",
+        owner: "acme",
+        repo: "api",
+        cloneUrl: "git@github.com:acme/api.git",
+        primaryClonePath: "/tmp/primary-api",
+      })
+      .returning();
+    const [ws] = await db
+      .insert(schema.workspaces)
+      .values({ name: "api", slug: "api", rootPath: "/tmp/api", status: "active" })
+      .returning();
+    const [wr] = await db
+      .insert(schema.workspaceRepos)
+      .values({
+        workspaceId: ws!.id,
+        repoId: repo!.id,
+        branch: "yarvis/api",
+        baseBranch: "main",
+        worktreePath: "/tmp/api/api",
+        status: "ready",
+      })
+      .returning();
+    await db
+      .insert(schema.workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 42, prState });
+    return ws!.id;
+  }
+
+  const call = (input: { workspaceId: string; repo: string; number: number; note?: string }) =>
+    buildPassTools(db, newPassOutcome(), () => {}, new Set(), []).watch_pr_merge.execute!(input, {
+      toolCallId: "t1",
+      messages: [],
+    } as never);
+
+  it("watches a tracked PR, and the watch fires when it merges", async () => {
+    const workspaceId = await trackedPr();
+    expect(await call({ workspaceId, repo: "api", number: 42, note: "watch it" })).toEqual({
+      ok: true,
+      message: expect.stringContaining("Watching"),
+    });
+    await sql`UPDATE workspace_repo_pr SET pr_state = 'merged'`;
+    expect(await markMergedWatches(db)).toBe(1);
+    expect((await undeliveredMergedWatches(db)).map((w) => w.note)).toEqual(["watch it"]);
+  });
+
+  it("tells the pass to act now when the PR has already merged", async () => {
+    const workspaceId = await trackedPr("merged");
+    expect(await call({ workspaceId, repo: "api", number: 42 })).toEqual({
+      ok: false,
+      message: expect.stringContaining("already merged"),
+    });
+  });
+
+  it("points the pass at get_workspace_status for a PR the workspace doesn't track", async () => {
+    const workspaceId = await trackedPr();
+    expect(await call({ workspaceId, repo: "api", number: 7 })).toEqual({
+      error: expect.stringContaining("get_workspace_status"),
     });
   });
 });

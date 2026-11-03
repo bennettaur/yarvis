@@ -78,8 +78,19 @@ most urgent first:
 Each pass ends by choosing how long to sleep. It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
 waiting on you or someone else, when you haven't replied for a while, and after
-a pass that failed. A message from you, an answer, or a workspace
-that needs attention wakes it early.
+a pass that failed. A message from you, an answer, a workspace
+that needs attention, or a merge of a PR it is watching wakes it early.
+
+### Woken by a merge
+
+Some work starts when a PR merges: watching its deploy, or unblocking a PR
+that waits on it. A pass can ask to be woken for a particular workspace PR
+with `watch_pr_merge`, leaving a note on what to do next. Only that PR
+wakes it, not every merge. The workspace poller notices the merge on its
+usual read, within about 15 minutes, and wakes heads-down mode. The next
+pass is told the PR merged, along with the note. A watch fires once. If
+heads-down mode is off when the PR merges, the first pass after you turn it
+on is told.
 
 ## Routines
 
@@ -93,7 +104,7 @@ again after an hour, or sooner if the routine runs more often than that. When
 a routine asks you something, your answer is acted on as soon as it arrives,
 not on the routine's next run.
 
-Yarvis ships with two:
+Yarvis ships with three:
 
 - **meeting-alarms**, every 3 hours: if Google Calendar is connected, it reads
   your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
@@ -110,6 +121,15 @@ Yarvis ships with two:
   using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
   record what every attendee said, and filing a ticket doesn't wait for your
   approval, so turn it on only if you're happy for tickets to come from them.
+- **pr-shepherd**, every 30 minutes, off by default: takes each workspace PR
+  on a stream through verification in staging and a rollout plan before it
+  merges, then through deploy monitoring after. It doesn't do this work
+  itself. It tells the workspace's Claude Code session to use the
+  feature-shipping skills (`verify-pr-in-staging`, `plan-feature-rollout`,
+  `watch-graphql-propagation`, `monitor-feature-rollout`), so turn it on only
+  where those skills are installed. Once a PR is verified it [watches the PR
+  for its merge](#woken-by-a-merge). Paging a team, rolling back, and
+  changing a flag always wait for your yes.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files.

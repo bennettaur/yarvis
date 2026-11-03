@@ -5,6 +5,7 @@ import { AzureDevOpsClient } from "../azure/client.ts";
 import { getDb } from "../db/client.ts";
 import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
+import { markMergedWatches, watchPrMerge } from "../headsDown/prWatches.ts";
 import {
   dueRefresh,
   isDueForRefresh,
@@ -88,7 +89,7 @@ async function seedReadyRepo(
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, tasks RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, heads_down_pr_watches, tasks RESTART IDENTITY CASCADE`;
   resetWorkspaceViews();
 });
 
@@ -227,6 +228,35 @@ describe("pollOnce", () => {
     expect(row?.prNumber).toBeNull();
     expect(row?.checkRollup).toBe("none");
     expect(row?.lastPolledAt).not.toBeNull();
+  });
+
+  it("fires a merge watch once the poller caches the PR as merged", async () => {
+    const wrId = await seedReadyRepo();
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 9, prState: "open" });
+    const [wr] = await db.select().from(workspaceRepos).where(eq(workspaceRepos.id, wrId));
+    expect(
+      (await watchPrMerge(db, { workspaceId: wr!.workspaceId, repo: "ox/rx", number: 9 })).ok,
+    ).toBe(true);
+    const gh = clientWith((path) => {
+      if (path.includes("head=")) return [pullItem(9, "closed")];
+      if (path.includes("/pulls/9")) {
+        return {
+          state: "closed",
+          merged: true,
+          mergeable: null,
+          mergeable_state: "clean",
+          head: { sha: "z" },
+        };
+      }
+      if (path.includes("/check-runs")) return CHECKS([]);
+      return {};
+    });
+
+    expect(await markMergedWatches(db)).toBe(0);
+    await pollOnce(db, { github: gh });
+    expect(await markMergedWatches(db)).toBe(1);
   });
 
   it("marks a merged PR's state as merged", async () => {

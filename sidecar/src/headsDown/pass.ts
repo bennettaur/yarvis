@@ -22,6 +22,7 @@ import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passR
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
+import { markWatchesDelivered, undeliveredMergedWatches } from "./prWatches.ts";
 import { dueRoutines, routineCatalog } from "./routines.ts";
 import {
   answeredSince,
@@ -190,7 +191,7 @@ export async function runPass(
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
-  const [messages, earlier, last, openQuestions, lastActivity, catalog, history] =
+  const [messages, earlier, last, openQuestions, lastActivity, catalog, history, mergedWatches] =
     await Promise.all([
       unseenMessages(db),
       earlierMessages(db, run.startedAt),
@@ -200,6 +201,7 @@ export async function runPass(
       lastUserActivityAt(db, run),
       routineCatalog(),
       routineHistory(db),
+      undeliveredMergedWatches(db),
     ]);
   const [answers, approvedCalls] = await Promise.all([
     answeredSince(db, last?.startedAt ?? run.startedAt),
@@ -352,6 +354,7 @@ export async function runPass(
       lastFailure,
       routines,
       routinesLastDone: history.lastDone,
+      mergedWatches,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];
@@ -403,13 +406,19 @@ export async function runPass(
     setPassAbort(null);
     setPassStopTimeHandler(null);
     unmountAll(session.id);
-    // Seen once a pass has had them in its prompt, even one that failed
-    // part-way: re-sending the same instruction every pass would loop on it.
+    // Messages and merge watches count as delivered once a pass has had them in
+    // its prompt, even one that failed part-way: re-sending the same instruction
+    // every pass would loop on it. A merge notice lost that way still shows as a
+    // merged PR in get_workspace_status.
     if (promptSent) {
       await markMessagesSeen(
         db,
         messages.map((m) => m.id),
       ).catch((e) => console.error("[heads-down] marking messages seen failed:", e));
+      await markWatchesDelivered(
+        db,
+        mergedWatches.map((w) => w.id),
+      ).catch((e) => console.error("[heads-down] marking merge watches delivered failed:", e));
     }
   }
 

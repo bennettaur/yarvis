@@ -1732,6 +1732,31 @@ export const headsDownMessages = pgTable(
 );
 
 /**
+ * A PR a heads-down pass asked to be woken for when it merges. Only PRs the
+ * workspace poller already caches can be watched, so the poller's own reads
+ * are what notice the merge. `mergedAt` is when that was noticed, and
+ * `deliveredAt` when a pass was told; a watch fires once.
+ */
+export const headsDownPrWatches = pgTable(
+  "heads_down_pr_watches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceRepoId: uuid("workspace_repo_id")
+      .notNull()
+      .references(() => workspaceRepos.id, { onDelete: "cascade" }),
+    prNumber: integer("pr_number").notNull(),
+    /** What the pass meant to do once it merged, in its own words. */
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("heads_down_pr_watches_pr_idx").on(t.workspaceRepoId, t.prNumber)],
+);
+
+export type HeadsDownPrWatch = typeof headsDownPrWatches.$inferSelect;
+
+/**
  * `question`: the loop needs the user to choose. `approval`: a tool call the
  * loop may not make on its own, waiting for the user to allow it.
  */
