@@ -60,13 +60,8 @@ export default function OmniChat({
   });
 
   const [input, setInput] = useState("");
-  const voice = useVoice({ send, streaming, busy });
-  // The overlay stays mounted while hidden, and a continuous mic left open
-  // would keep sending what it hears into a chat nobody can see.
-  const { cancel: cancelVoice } = voice;
-  useEffect(() => {
-    if (!open) cancelVoice();
-  }, [open, cancelVoice]);
+  // The overlay stays mounted while hidden, so `open` is what says it's on screen.
+  const voice = useVoice({ send, streaming, busy, visible: open });
   const panelRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 

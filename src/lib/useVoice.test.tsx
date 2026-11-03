@@ -109,7 +109,7 @@ const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 interface Harness {
   voice: ReturnType<typeof useVoice>;
   sent: { text: string; source: string }[];
-  rerender: (props: { streaming: string; busy: boolean }) => Promise<void>;
+  rerender: (props: { streaming: string; busy: boolean; visible?: boolean }) => Promise<void>;
   unmount: () => void;
 }
 
@@ -161,7 +161,15 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
     },
   } as unknown as Parameters<typeof useVoice>[0]["io"];
 
-  function Probe({ streaming, busy }: { streaming: string; busy: boolean }) {
+  function Probe({
+    streaming,
+    busy,
+    visible = true,
+  }: {
+    streaming: string;
+    busy: boolean;
+    visible?: boolean;
+  }) {
     harness.voice = useVoice({
       send: (text, options) => {
         if (sendError) {
@@ -174,6 +182,7 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       },
       streaming,
       busy,
+      visible,
       io,
     });
     return null;
@@ -363,6 +372,29 @@ describe("useVoice", () => {
     // Whatever was already handed over may finish; nothing new is queued.
     expect(spoken.length).toBe(spokenBefore);
   });
+
+  it("doesn't speak the reply again from the top when it keeps streaming after a cancel", async () => {
+    storedConfig = { ...configured };
+    active = await mountVoice();
+    const first = "First sentence here, comfortably long enough to be spoken on its own. ";
+    await active.rerender({ streaming: first, busy: true });
+    expect(spoken).toHaveLength(1);
+
+    active.voice.cancel();
+    await active.rerender({
+      streaming: `${first}And a second sentence that keeps the reply going for a while. `,
+      busy: true,
+    });
+    expect(spoken).toHaveLength(1);
+  });
+
+  it("shows the push-to-talk microphone's level", async () => {
+    storedConfig = { ...configured };
+    active = await mountVoice();
+    active.voice.startListening();
+    await settle(250);
+    expect(active.voice.level.get()).toBeGreaterThan(0);
+  });
 });
 
 describe("useVoice in continuous mode", () => {
@@ -502,6 +534,61 @@ describe("useVoice in continuous mode", () => {
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent.map((m) => m.text)).toEqual(["hold on, check the staging logs first"]);
+  });
+
+  it("doesn't speak over a user who starts talking before the surface reports itself busy", async () => {
+    active = await listening();
+    sendSettles = deferred<unknown>().promise;
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.sent).toHaveLength(1);
+
+    // Still sending: `busy` hasn't flipped yet.
+    detector?.onSpeechStart();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    expect(spoken).toEqual([]);
+  });
+
+  it("only treats a turn as echo when the reply was playing as it started", async () => {
+    active = await listening();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    // Cutting in stops the reply.
+    detector?.onSpeechStart();
+    transcriptResult = "hold on";
+    detector?.onTurn(turnAudio());
+    await settle();
+    // Nothing is playing now, so the reply's own words are the user's.
+    detector?.onSpeechStart();
+    transcriptResult = "the deploy finished a couple of minutes ago";
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    await active.rerender({ streaming: "", busy: false });
+    expect(active.sent.map((m) => m.text)).toEqual([
+      "hold on the deploy finished a couple of minutes ago",
+    ]);
+  });
+
+  it("closes the mic and drops held turns when the surface is hidden", async () => {
+    active = await listening();
+    await active.rerender({ streaming: "", busy: true });
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.voice.queued).toBe(1);
+
+    await active.rerender({ streaming: "", busy: true, visible: false });
+    expect(streamClosed).toBe(true);
+    expect(active.voice.recording).toBe(false);
+    expect(active.voice.queued).toBe(0);
+
+    await active.rerender({ streaming: "", busy: false, visible: false });
+    expect(active.sent).toEqual([]);
   });
 
   it("transcribes and holds turns while the last one's reply is still running", async () => {

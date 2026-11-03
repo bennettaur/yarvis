@@ -99,7 +99,7 @@ MAX_TURN_MS = 60_000
 # 32 ms posts.
 MAX_MESSAGE_BYTES = 256 * 1024
 
-# Smart-turn looks at the last 8 s of a turn, the window it was trained on, and
+# Smart-turn looks at the last 8 s of a turn, the most its input takes, and
 # calls the turn finished at or above the threshold.
 SMART_TURN_SECONDS = 8
 SMART_TURN_THRESHOLD = 0.5
@@ -176,8 +176,8 @@ class TurnTracker:
     PREROLL_MS of the audio before it. In a turn: PAUSE_MS of silence asks
     smart-turn once per pause, which either ends the turn ("complete") or
     reports a pause. MAX_SILENCE_MS of silence or MAX_TURN_MS of turn ends it
-    regardless. A frame between SPEECH_STOP_PROB and SPEECH_START_PROB neither
-    adds to the silence nor resets it.
+    regardless. In a turn, a frame between SPEECH_STOP_PROB and
+    SPEECH_START_PROB neither adds to the silence nor resets it.
     """
 
     def __init__(self, models: Models) -> None:

@@ -165,20 +165,20 @@ class TurnTrackerTest(unittest.TestCase):
         feed(tracker, models, [SPEECH] * 400 + [SILENCE] * PAUSE_FRAMES)
         self.assertEqual(models.asked, [ts.SMART_TURN_FRAMES * ts.FRAME_SAMPLES])
 
-    def test_reassembles_samples_split_across_messages(self):
-        models = FakeModels()
+    def test_audio_split_mid_sample_across_messages_comes_back_whole(self):
+        models = FakeModels(verdicts=[0.9])
         tracker = ts.TurnTracker(models)
-        models.silero.probabilities.extend([SILENCE, SILENCE])
-        pcm = np.arange(2 * ts.FRAME_SAMPLES, dtype="<i2").tobytes()
+        frames = 10 + PAUSE_FRAMES
+        models.silero.probabilities.extend([SPEECH] * 10 + [SILENCE] * PAUSE_FRAMES)
+        samples = np.arange(frames * ts.FRAME_SAMPLES, dtype="<i2")
+        pcm = samples.tobytes()
+        events = []
         # An odd split leaves half a sample behind in each message.
         for start in range(0, len(pcm), 333):
-            tracker.push_pcm(pcm[start : start + 333])
-        self.assertEqual(models.silero.probabilities, [])
-        self.assertEqual(len(tracker.pending), 0)
-        self.assertEqual(tracker.odd_byte, b"")
-        np.testing.assert_allclose(
-            tracker.preroll[1], np.arange(512, 1024, dtype=np.float32) / 32768.0
-        )
+            events.extend(tracker.push_pcm(pcm[start : start + 333]))
+
+        self.assertEqual(types(events), ["speech_start", "turn"])
+        np.testing.assert_array_equal(events[-1][1], samples.astype(np.float32) / 32768.0)
 
 
 class TokenTest(unittest.TestCase):

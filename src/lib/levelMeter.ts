@@ -29,6 +29,7 @@ export function createLevelMeter(initial = 0): LevelMeter {
   };
 }
 
+/** The meter's current level, re-rendering only the calling component when it changes. */
 export function useLevel(meter: LevelMeter): number {
   return useSyncExternalStore(meter.subscribe, meter.get);
 }

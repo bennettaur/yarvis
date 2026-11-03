@@ -78,6 +78,12 @@ export interface UseVoiceOptions {
   streaming: string;
   /** Whether a turn is in flight on the surface. */
   busy: boolean;
+  /**
+   * Whether the surface is on screen. Hiding it cancels everything in
+   * progress: a continuous mic left open would send what it hears into a chat
+   * nobody can see.
+   */
+  visible: boolean;
   io?: VoiceIO;
 }
 
@@ -112,7 +118,13 @@ export interface UseVoiceResult {
   cancel: () => void;
 }
 
-export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOptions): UseVoiceResult {
+export function useVoice({
+  send,
+  streaming,
+  busy,
+  visible,
+  io = REAL_IO,
+}: UseVoiceOptions): UseVoiceResult {
   const [config, setConfig] = useState<VoiceConfig>(DEFAULT_VOICE_CONFIG);
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -132,21 +144,23 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
   const spokenThroughRef = useRef(0);
   /** Set when the user cuts in, so the rest of that reply stays unspoken. */
   const silencedRef = useRef(false);
-  /** The text handed to the current speech queue, for spotting echo. */
+  /** The reply text queued for speech so far, for spotting echo. */
   const spokenTextRef = useRef("");
-  /** What was playing when the user's current turn started; "" when nothing was. */
+  /** The reply text queued for speech when the user's current turn started; "" when none was. */
   const echoReferenceRef = useRef("");
   const [levelMeter] = useState(createLevelMeter);
   /** The user has started continuous mode's microphone and not stopped it. */
   const [continuousArmed, setContinuousArmed] = useState(false);
 
   // A continuous turn goes through three steps:
-  //  1. `transcribeInOrder` transcribes turns one at a time, so a quick second
-  //     turn can't be sent ahead of the first.
+  //  1. `transcribeInOrderRef` chains transcriptions one at a time, so a quick
+  //     second turn can't be sent ahead of the first. A transcript that only
+  //     repeats the reply it was heard over is dropped here as echo.
   //  2. A transcript is sent at once if the surface is free, or held in
-  //     `heldTurns` while the agent replies or a send is still settling.
-  //  3. Once the surface is free, held turns go out joined as one message. A
-  //     refused send is held and retried once, then reported as dropped.
+  //     `heldTurns` while the agent replies or a send is still settling. A
+  //     refused send is held too.
+  //  3. Once the surface is free, held turns go out joined as one message, in
+  //     one attempt: a refusal then drops them and says so.
   const transcribeInOrderRef = useRef<Promise<void>>(Promise.resolve());
   const [heldTurns, setHeldTurns] = useState<string[]>([]);
   /** A continuous turn has been sent and its send hasn't settled yet. */
@@ -287,8 +301,8 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
   /**
    * Sends a continuous-mode transcript without waiting for the reply: the
    * surface's send settles only once its reply ends, and turns spoken meanwhile
-   * must be transcribed and held, not stuck behind it. `sending` covers the gap
-   * before the surface reports itself busy.
+   * must be transcribed and held, not stuck behind it. `sending` stays true
+   * until the send settles, which also covers the moment before `busy` flips.
    */
   const sendContinuous = useCallback(
     (text: string, generation: number, onRefused: (text: string) => void) => {
@@ -314,6 +328,8 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
   const handleContinuousTurn = useCallback(
     (wav: Blob) => {
       const generation = turnGenerationRef.current;
+      // Taken and cleared here, so one speech start's reference never applies
+      // to a later turn.
       const echoReference = echoReferenceRef.current;
       echoReferenceRef.current = "";
       transcribeInOrderRef.current = transcribeInOrderRef.current
@@ -332,14 +348,14 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
   );
 
   // Cutting in: the user talking over the reply means they want to be heard,
-  // and a reply left playing would be picked up as part of their turn. While
-  // the reply is still on its way, its later sentences are silenced too, or the
-  // streaming effect would start speaking over the user.
+  // and a reply left playing would be picked up as part of their turn. A reply
+  // still on its way is silenced too, even one that hasn't started speaking
+  // yet, or the streaming effect would start speaking over the user.
   const handleSpeechStart = useCallback(() => {
     const playing = queueRef.current !== null;
     // Kept to recognise this turn as the reply's own echo once transcribed.
     echoReferenceRef.current = playing ? spokenTextRef.current : "";
-    if (busyRef.current) silencedRef.current = true;
+    if (busyRef.current || sendingRef.current) silencedRef.current = true;
     if (!playing) return;
     endSpeech();
     setPhase("idle");
@@ -358,6 +374,8 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
     io,
   });
 
+  // Continuous mode feeds the meter through `onLevel`; push-to-talk's level is
+  // recorder state, mirrored in here.
   useEffect(() => {
     if (!continuousListening.listening) levelMeter.set(recorder.level);
   }, [levelMeter, recorder.level, continuousListening.listening]);
@@ -395,6 +413,9 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
 
   const cancel = useCallback(() => {
     turnGenerationRef.current++;
+    // Without this, the reply's next token would start a fresh speech queue
+    // and speak the whole reply again from the top.
+    if (busyRef.current) silencedRef.current = true;
     setContinuousArmed(false);
     // Left alone when already empty: the surfaces call this from effects.
     setHeldTurns((prev) => (prev.length ? [] : prev));
@@ -402,6 +423,10 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
     endSpeech();
     setPhase("idle");
   }, [stopRecording, endSpeech]);
+
+  useEffect(() => {
+    if (!visible) cancel();
+  }, [visible, cancel]);
 
   // Speech that outlives the surface would keep playing with nothing to stop it.
   useEffect(() => endSpeech, [endSpeech]);
