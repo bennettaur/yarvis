@@ -1,15 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { TurnEndReason, TurnStream, TurnStreamHandlers } from "./turnStream";
+import type { TurnStream, TurnStreamHandlers } from "./turnStream";
 import type { TurnDetectorStatus } from "./voice";
-
-/**
- * Keeps the microphone streaming to the turn detector while `active` is true,
- * and reports each turn the detector hands back.
- *
- * The detector is a Python process the sidecar starts on first use. That first
- * start installs its packages and downloads two small models, so it can take a
- * minute; `starting` covers that wait.
- */
 
 /** How often to ask whether a starting detector is ready yet. */
 const POLL_MS = 1000;
@@ -21,9 +12,14 @@ export interface ContinuousIO {
 }
 
 export interface ContinuousListeningOptions {
+  /** The microphone should be open. Turning it false closes it, even mid-start. */
   active: boolean;
+  /** The user started talking. Fires once per turn, before its `onTurn`. */
   onSpeechStart: () => void;
-  onTurn: (audio: Blob, reason: TurnEndReason) => void;
+  /** A finished turn, as 16 kHz WAV. */
+  onTurn: (audio: Blob) => void;
+  /** Microphone loudness, 0..1, about ten times a second; 0 once the mic closes. */
+  onLevel: (level: number) => void;
   io: ContinuousIO;
 }
 
@@ -34,20 +30,27 @@ export interface ContinuousListening {
   listening: boolean;
   /** The user is mid-turn, as the detector hears it. */
   hearing: boolean;
-  level: number;
   error: string | null;
 }
 
+/**
+ * Keeps the microphone streaming to the turn detector while `active` is true,
+ * and reports each turn the detector hands back.
+ *
+ * The detector is a Python process the sidecar starts on first use. That first
+ * start installs its packages and downloads two small models, so it can take a
+ * minute; `starting` covers that wait.
+ */
 export function useContinuousListening({
   active,
   onSpeechStart,
   onTurn,
+  onLevel,
   io,
 }: ContinuousListeningOptions): ContinuousListening {
   const [starting, setStarting] = useState(false);
   const [listening, setListening] = useState(false);
   const [hearing, setHearing] = useState(false);
-  const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   // Held in refs so the stream, opened once per activation, calls the current ones.
@@ -55,6 +58,8 @@ export function useContinuousListening({
   onSpeechStartRef.current = onSpeechStart;
   const onTurnRef = useRef(onTurn);
   onTurnRef.current = onTurn;
+  const onLevelRef = useRef(onLevel);
+  onLevelRef.current = onLevel;
   const ioRef = useRef(io);
   ioRef.current = io;
 
@@ -73,7 +78,7 @@ export function useContinuousListening({
       setStarting(false);
       setListening(false);
       setHearing(false);
-      setLevel(0);
+      onLevelRef.current(0);
     };
 
     void (async () => {
@@ -96,13 +101,11 @@ export function useContinuousListening({
             setHearing(true);
             onSpeechStartRef.current();
           },
-          onTurn: (audio, reason) => {
+          onTurn: (audio) => {
             setHearing(false);
-            onTurnRef.current(audio, reason);
+            onTurnRef.current(audio);
           },
-          // Rounded so a quiet room stops changing it: every change re-renders
-          // the whole chat surface, ten times a second.
-          onLevel: (rms) => setLevel(Math.round(rms * 50) / 50),
+          onLevel: (rms) => onLevelRef.current(rms),
           onError: fail,
         });
         if (cancelled) {
@@ -123,9 +126,9 @@ export function useContinuousListening({
       setStarting(false);
       setListening(false);
       setHearing(false);
-      setLevel(0);
+      onLevelRef.current(0);
     };
   }, [active]);
 
-  return { starting, listening, hearing, level, error };
+  return { starting, listening, hearing, error };
 }

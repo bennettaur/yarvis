@@ -36,6 +36,10 @@ Protocol, per connection:
                             {"type": "pause", "probability": p}
                             {"type": "turn", "reason": r, "probability": p|null}
                     binary: the turn's PCM, sent right after each "turn"
+
+  `reason` is "complete" (smart-turn judged it finished), "silence" or "cap";
+  `probability` is null for the last two. `pause` is for the server log and
+  debugging; the webview ignores it.
 """
 
 import asyncio
@@ -94,6 +98,9 @@ MAX_TURN_MS = 60_000
 # The most audio one message may carry: about 8 s, far more than the webview's
 # 32 ms posts.
 MAX_MESSAGE_BYTES = 256 * 1024
+
+# Smart-turn looks at the last 8 s of a turn, the window it was trained on, and
+# calls the turn finished at or above the threshold.
 SMART_TURN_SECONDS = 8
 SMART_TURN_THRESHOLD = 0.5
 # Frames that cover smart-turn's window, so a pause check copies only those.
@@ -163,7 +170,15 @@ class Vad:
 
 
 class TurnTracker:
-    """Turns a stream of frames into speech_start, pause and turn events."""
+    """Turns a stream of frames into speech_start, pause and turn events.
+
+    Waiting: MIN_SPEECH_MS of speech in a row opens a turn (speech_start), with
+    PREROLL_MS of the audio before it. In a turn: PAUSE_MS of silence asks
+    smart-turn once per pause, which either ends the turn ("complete") or
+    reports a pause. MAX_SILENCE_MS of silence or MAX_TURN_MS of turn ends it
+    regardless. A frame between SPEECH_STOP_PROB and SPEECH_START_PROB neither
+    adds to the silence nor resets it.
+    """
 
     def __init__(self, models: Models) -> None:
         self.models = models
@@ -172,9 +187,9 @@ class TurnTracker:
         # and a byte short of a whole sample.
         self.pending = np.zeros(0, dtype=np.float32)
         self.odd_byte = b""
-        self.start_listening()
+        self.reset_turn()
 
-    def start_listening(self) -> None:
+    def reset_turn(self) -> None:
         """Waits for the next turn. The stream and the VAD's state carry on."""
         self.preroll: deque[np.ndarray] = deque(maxlen=PREROLL_MS // FRAME_MS)
         self.speech_ms = 0
@@ -182,7 +197,7 @@ class TurnTracker:
         self.turn: list[np.ndarray] = []
         self.turn_ms = 0
         self.silence_ms = 0
-        # Set once smart-turn has called the current pause unfinished, so it
+        # Set once smart-turn has been asked about the current pause, so it
         # isn't asked again until the user speaks.
         self.checked_pause = False
 
@@ -241,8 +256,14 @@ class TurnTracker:
 
     def finish(self, reason: str, probability: float | None) -> Event:
         audio = np.concatenate(self.turn)
-        self.start_listening()
+        self.reset_turn()
         return {"type": "turn", "reason": reason, "probability": probability}, audio
+
+
+def token_matches(path: str, token: str) -> bool:
+    """Whether a request path carries `?token=` equal to `token`, compared in constant time."""
+    given = parse_qs(urlparse(path).query).get("token", [""])[0]
+    return hmac.compare_digest(given.encode(), token.encode())
 
 
 def to_pcm(audio: np.ndarray) -> bytes:
@@ -257,9 +278,7 @@ async def main() -> None:
     models = Models()
 
     def authorize(connection: ServerConnection, request: Request) -> Response | None:
-        query = parse_qs(urlparse(request.path).query)
-        given = query.get("token", [""])[0]
-        if not hmac.compare_digest(given.encode(), token.encode()):
+        if not token_matches(request.path, token):
             return connection.respond(401, "bad token\n")
         return None
 

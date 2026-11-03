@@ -1,3 +1,4 @@
+import { useLevel } from "../../lib/levelMeter";
 import type { UseVoiceResult } from "../../lib/useVoice";
 import MicButton from "./MicButton";
 
@@ -23,6 +24,7 @@ export default function VoiceControls({
 }) {
   const { config, updateConfig, ready, recording, phase } = voice;
   const status = listeningStatus(voice) ?? PHASE_LABEL[phase];
+  const level = useLevel(voice.level);
 
   if (!ready.stt && !ready.tts) {
     return (
@@ -36,7 +38,7 @@ export default function VoiceControls({
     <div className="flex items-center gap-3">
       <MicButton
         recording={recording}
-        level={voice.level}
+        level={level}
         // Continuous mode transcribes while the mic stays open, so only
         // push-to-talk waits for a transcription before recording again.
         disabled={!ready.stt || (phase === "transcribing" && !config.continuous)}

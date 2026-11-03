@@ -65,7 +65,14 @@ While the assistant is replying:
   **queued**, and is sent when the reply ends. Several queued turns go as one
   message.
 - Starting to talk stops the spoken reply, and the rest of that reply isn't
-  spoken. The text still arrives.
+  spoken. The text still arrives. That's true even before the reply starts
+  speaking, while the assistant is still thinking.
+- A turn that starts over the spoken reply and only repeats its words is
+  dropped: it's the reply leaking back into the microphone, not you. A short
+  word that also happens to be in the reply, like "yes", can be dropped too.
+
+Switching to another tab, closing Omni Chat, or opening Omni Chat over the Chat
+tab closes the microphone, and drops queued turns.
 
 Both models run on your Mac in a small Python process the app starts the first
 time you use continuous mode. It needs [uv](https://docs.astral.sh/uv/)

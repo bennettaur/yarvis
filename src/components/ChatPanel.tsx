@@ -101,12 +101,12 @@ export default function ChatPanel({
   // own, so ours must stop answering the keyboard while it is up.
   const overlayOpen = useOmniChatOverlayOpen();
 
-  // A continuous mic left open behind another tab would send what it hears into
-  // a chat nobody is looking at.
+  // A continuous mic left open behind another tab, or under the Omni Chat
+  // overlay, would send what it hears into a chat nobody is looking at.
   const { cancel: cancelVoice } = voice;
   useEffect(() => {
-    if (!active) cancelVoice();
-  }, [active, cancelVoice]);
+    if (!active || overlayOpen) cancelVoice();
+  }, [active, overlayOpen, cancelVoice]);
 
   // Focus via a ref rather than `autoFocus`, which Biome flags. Held back while
   // the overlay is up, since it has a composer of its own.

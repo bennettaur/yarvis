@@ -9,13 +9,11 @@ import { encodeWav, SPEECH_SAMPLE_RATE } from "./audioEncoding";
  * captures, resamples to 16 kHz int16, and turns the replies into callbacks.
  */
 
-/** Why the detector ended a turn: smart-turn judged it complete, a long silence, or the length cap. */
-export type TurnEndReason = "complete" | "silence" | "cap";
-
 export interface TurnStreamHandlers {
   /** The user started talking. Fires once per turn. */
   onSpeechStart: () => void;
-  onTurn: (audio: Blob, reason: TurnEndReason) => void;
+  /** A finished turn, as 16 kHz WAV. */
+  onTurn: (audio: Blob) => void;
   /** Microphone loudness, 0..1, about ten times a second. */
   onLevel: (level: number) => void;
   /** The stream failed and has closed itself. */
@@ -75,21 +73,21 @@ function int16ToWav(pcm: ArrayBuffer): Blob {
 export function createTurnMessageHandler(
   handlers: Pick<TurnStreamHandlers, "onSpeechStart" | "onTurn">,
 ): (data: string | ArrayBuffer) => void {
-  let pendingReason: TurnEndReason | null = null;
+  let turnAnnounced = false;
   return (data) => {
     if (typeof data !== "string") {
-      if (pendingReason) handlers.onTurn(int16ToWav(data), pendingReason);
-      pendingReason = null;
+      if (turnAnnounced) handlers.onTurn(int16ToWav(data));
+      turnAnnounced = false;
       return;
     }
-    let event: { type?: string; reason?: TurnEndReason };
+    let event: { type?: string };
     try {
       event = JSON.parse(data);
     } catch {
       return;
     }
     if (event.type === "speech_start") handlers.onSpeechStart();
-    else if (event.type === "turn") pendingReason = event.reason ?? "complete";
+    else if (event.type === "turn") turnAnnounced = true;
   };
 }
 
@@ -171,6 +169,8 @@ export async function openTurnStream(
     close();
     throw new Error(`could not start audio capture: ${e instanceof Error ? e.message : e}`);
   }
+  // The awaits above leave the same window as the permission prompt.
+  if (closed) throw new Error("lost the connection to the turn detector");
 
   const resample = createResampler(context.sampleRate, SPEECH_SAMPLE_RATE);
   let levelSum = 0;

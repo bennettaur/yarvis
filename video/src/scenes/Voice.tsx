@@ -1,5 +1,6 @@
 import { useCurrentFrame } from "remotion";
 import VoiceControls from "../../../src/components/voice/VoiceControls";
+import { createLevelMeter } from "../../../src/lib/levelMeter";
 import type { UseVoiceResult } from "../../../src/lib/useVoice";
 import { DEFAULT_VOICE_CONFIG } from "../../../src/lib/voiceConfig";
 import { AppScene } from "../components/AppScene";
@@ -69,7 +70,7 @@ function voiceAt(frame: number): UseVoiceResult {
     starting: false,
     hearing: listening,
     queued: 0,
-    level,
+    level: createLevelMeter(level),
     phase: speaking ? "speaking" : "idle",
     error: null,
     startListening: noop,

@@ -36,6 +36,11 @@ function deferred<T>() {
 let sendResult: unknown;
 /** Thrown by the next `send`, then cleared. */
 let sendError: Error | null = null;
+/**
+ * When set, `send` answers this instead, like the real surface's send, which
+ * only settles once the reply has finished.
+ */
+let sendSettles: Promise<unknown> | null = null;
 
 const RUNNING: TurnDetectorStatus = {
   state: "running",
@@ -44,6 +49,10 @@ const RUNNING: TurnDetectorStatus = {
   error: null,
 };
 let detectorStatus: TurnDetectorStatus = RUNNING;
+/** Thrown by `startDetector`, as when the sidecar can't be reached. */
+let detectorError: Error | null = null;
+/** When set, opening the stream waits for it, like a pending permission prompt. */
+let streamOpens: Promise<void> | null = null;
 /** The handlers of the turn stream the hook opened, standing in for the detector. */
 let detector: TurnStreamHandlers | null = null;
 let openedUrl: string | null = null;
@@ -126,9 +135,13 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       playing.push(signal);
       return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
     },
-    startDetector: async () => detectorStatus,
+    startDetector: async () => {
+      if (detectorError) throw detectorError;
+      return detectorStatus;
+    },
     detectorStatus: async () => detectorStatus,
     openStream: async (url: string, handlers: TurnStreamHandlers) => {
+      if (streamOpens) await streamOpens;
       openedUrl = url;
       detector = handlers;
       streamClosed = false;
@@ -157,7 +170,7 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
           throw error;
         }
         sent.push({ text, source: options.source });
-        return sendResult;
+        return sendSettles ?? sendResult;
       },
       streaming,
       busy,
@@ -194,7 +207,10 @@ afterEach(() => {
   deliverUtterance = null;
   sendResult = undefined;
   sendError = null;
+  sendSettles = null;
   detectorStatus = RUNNING;
+  detectorError = null;
+  streamOpens = null;
   detector = null;
   openedUrl = null;
   streamClosed = false;
@@ -366,7 +382,7 @@ describe("useVoice in continuous mode", () => {
     expect(openedUrl).toBe(RUNNING.url);
     expect(active.voice.recording).toBe(true);
 
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
 
     expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
@@ -379,10 +395,10 @@ describe("useVoice in continuous mode", () => {
     await active.rerender({ streaming: "", busy: true });
 
     transcriptResult = "and add a step";
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     transcriptResult = "for two factor auth";
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
 
     expect(active.sent).toEqual([]);
@@ -398,7 +414,7 @@ describe("useVoice in continuous mode", () => {
     // The surface refuses when a turn started between the check and the send.
     sendResult = false;
 
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
 
     expect(active.sent).toHaveLength(2);
@@ -425,12 +441,95 @@ describe("useVoice in continuous mode", () => {
       busy: true,
     });
     expect(spoken).toHaveLength(1);
+
+    // The next reply is spoken again.
+    await active.rerender({ streaming: "", busy: false });
+    await active.rerender({
+      streaming: "Done, the logs from the failed run are attached to the incident ticket. ",
+      busy: true,
+    });
+    expect(spoken).toEqual([
+      "The build is green and the deploy finished a couple of minutes ago.",
+      "Done, the logs from the failed run are attached to the incident ticket.",
+    ]);
+  });
+
+  it("doesn't start speaking a reply the user talked over before it began", async () => {
+    active = await listening();
+    // The agent is still thinking, so nothing is playing yet.
+    await active.rerender({ streaming: "", busy: true });
+    detector?.onSpeechStart();
+    await settle();
+
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    expect(spoken).toEqual([]);
+  });
+
+  it("stops the last reply's unfinished speech when the next reply starts", async () => {
+    active = await listening();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+    // The turn ends while its last sentence is still playing.
+    await active.rerender({ streaming: "", busy: false });
+    expect(playing[0]?.aborted).toBe(false);
+
+    await active.rerender({ streaming: "Here is the next answer, about the logs. ", busy: true });
+    expect(playing[0]?.aborted).toBe(true);
+  });
+
+  it("drops a turn that only repeats the reply it was heard over", async () => {
+    active = await listening();
+    await active.rerender({
+      streaming: "The build is green and the deploy finished a couple of minutes ago. ",
+      busy: true,
+    });
+
+    // The reply leaking past echo cancellation.
+    detector?.onSpeechStart();
+    transcriptResult = "the deploy finished a couple of minutes ago";
+    detector?.onTurn(turnAudio());
+    await settle();
+    // The user's own words, said over the reply.
+    detector?.onSpeechStart();
+    transcriptResult = "hold on, check the staging logs first";
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    await active.rerender({ streaming: "", busy: false });
+    expect(active.sent.map((m) => m.text)).toEqual(["hold on, check the staging logs first"]);
+  });
+
+  it("transcribes and holds turns while the last one's reply is still running", async () => {
+    active = await listening();
+    const reply = deferred<unknown>();
+    sendSettles = reply.promise;
+
+    transcriptResult = "summarise the incident";
+    detector?.onTurn(turnAudio());
+    await settle();
+    transcriptResult = "and who was paged";
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    // Held at once, not stuck behind the first turn's reply.
+    expect(active.sent.map((m) => m.text)).toEqual(["summarise the incident"]);
+    expect(active.voice.queued).toBe(1);
+
+    sendSettles = null;
+    reply.resolve(true);
+    await settle();
+    expect(active.sent.map((m) => m.text)).toEqual(["summarise the incident", "and who was paged"]);
   });
 
   it("drops held turns and closes the mic on cancel", async () => {
     active = await listening();
     await active.rerender({ streaming: "", busy: true });
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.voice.queued).toBe(1);
 
@@ -439,6 +538,69 @@ describe("useVoice in continuous mode", () => {
 
     expect(streamClosed).toBe(true);
     expect(active.sent).toEqual([]);
+  });
+
+  it("closes the mic on stop and still sends turns already held", async () => {
+    active = await listening();
+    await active.rerender({ streaming: "", busy: true });
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    active.voice.stopListening();
+    await settle();
+    expect(streamClosed).toBe(true);
+    expect(active.voice.recording).toBe(false);
+
+    await active.rerender({ streaming: "", busy: false });
+    expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
+  });
+
+  it("reports the microphone level while listening, and zero once closed", async () => {
+    active = await listening();
+    detector?.onLevel(0.3);
+    expect(active.voice.level.get()).toBe(0.3);
+
+    active.voice.stopListening();
+    await settle();
+    expect(active.voice.level.get()).toBe(0);
+  });
+
+  it("never opens the mic when cancelled while the detector is starting", async () => {
+    detectorStatus = { state: "starting", url: null, log: [], error: null };
+    active = await listening();
+    active.voice.cancel();
+    await settle();
+
+    detectorStatus = RUNNING;
+    await settle(1100);
+    expect(openedUrl).toBeNull();
+    expect(active.voice.starting).toBe(false);
+  });
+
+  it("closes a stream that finishes opening after cancel", async () => {
+    const permission = deferred<void>();
+    streamOpens = permission.promise;
+    active = await listening();
+    active.voice.cancel();
+
+    permission.resolve();
+    await settle();
+    expect(openedUrl).toBe(RUNNING.url);
+    expect(streamClosed).toBe(true);
+    expect(active.voice.recording).toBe(false);
+  });
+
+  it("explains a sidecar it can't reach, and tries again on the next click", async () => {
+    detectorError = new Error("sidecar unreachable");
+    active = await listening();
+    expect(active.voice.error).toMatch(/sidecar unreachable/);
+    expect(active.voice.starting).toBe(false);
+    expect(active.voice.recording).toBe(false);
+
+    detectorError = null;
+    active.voice.startListening();
+    await settle();
+    expect(openedUrl).toBe(RUNNING.url);
   });
 
   it("closes the mic when continuous mode is switched off", async () => {
@@ -510,8 +672,8 @@ describe("useVoice in continuous mode", () => {
     const first = deferred<string>();
     transcribeGates.push(first.promise, Promise.resolve("second"));
 
-    detector?.onTurn(turnAudio(), "complete");
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.sent).toEqual([]);
 
@@ -522,9 +684,10 @@ describe("useVoice in continuous mode", () => {
 
   it("drops a turn still being transcribed when the user cancels", async () => {
     active = await listening();
+    expect(detector).not.toBeNull();
     const pending = deferred<string>();
     transcribeGates.push(pending.promise);
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
 
     active.voice.cancel();
@@ -538,13 +701,13 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     transcriptResult = new Error("speech provider unavailable");
 
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.voice.error).toMatch(/speech provider unavailable/);
     expect(active.voice.recording).toBe(true);
 
     transcriptResult = "try again";
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.sent.map((m) => m.text)).toEqual(["try again"]);
   });
@@ -553,11 +716,11 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     sendError = new Error("session create failed");
 
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.voice.error).toMatch(/session create failed/);
 
-    detector?.onTurn(turnAudio(), "complete");
+    detector?.onTurn(turnAudio());
     await settle();
     expect(active.sent).toHaveLength(1);
   });

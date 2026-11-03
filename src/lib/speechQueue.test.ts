@@ -81,11 +81,13 @@ describe("createSpeechQueue", () => {
 
   it("stops the chunk playing now and drops the queued ones", async () => {
     const played: string[] = [];
+    const signals: AbortSignal[] = [];
     const firstStarted = deferred<void>();
     const queue = createSpeechQueue({
       synthesize: async (text) => audioFor(text),
       play: async (audio, signal) => {
         played.push(await audio.text());
+        signals.push(signal);
         if (played.length === 1) {
           firstStarted.resolve();
           // Plays until told to stop, like a real sentence would.
@@ -101,6 +103,8 @@ describe("createSpeechQueue", () => {
     await queue.drain();
 
     expect(played).toEqual(["one"]);
+    // Stopped mid-sentence, not left to finish it.
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it("ignores pushes after cancel", async () => {
