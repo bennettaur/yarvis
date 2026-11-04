@@ -57,6 +57,8 @@ let streamOpens: Promise<void> | null = null;
 let detector: TurnStreamHandlers | null = null;
 let openedUrl: string | null = null;
 let streamClosed = false;
+/** The signal the hook handed the last stream it opened. */
+let streamSignal: AbortSignal | null = null;
 /** Signals of replies playing now; a test aborts nothing itself, the hook does. */
 const playing: AbortSignal[] = [];
 /** Ends the sentence playing now, as if it had finished on its own. */
@@ -147,7 +149,8 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       return detectorStatus;
     },
     detectorStatus: async () => detectorStatus,
-    openStream: async (url: string, handlers: TurnStreamHandlers) => {
+    openStream: async (url: string, handlers: TurnStreamHandlers, signal?: AbortSignal) => {
+      streamSignal = signal ?? null;
       if (streamOpens) await streamOpens;
       openedUrl = url;
       detector = handlers;
@@ -233,6 +236,7 @@ afterEach(() => {
   detector = null;
   openedUrl = null;
   streamClosed = false;
+  streamSignal = null;
   playing.length = 0;
   finishPlayback.length = 0;
   wavError = null;
@@ -793,6 +797,16 @@ describe("useVoice in continuous mode", () => {
     expect(openedUrl).toBe(RUNNING.url);
     expect(streamClosed).toBe(true);
     expect(active.voice.recording).toBe(false);
+  });
+
+  it("stops a stream that is still opening when cancelled", async () => {
+    streamOpens = deferred<void>().promise;
+    active = await listening();
+    expect(streamSignal?.aborted).toBe(false);
+
+    active.voice.cancel();
+    await settle();
+    expect(streamSignal?.aborted).toBe(true);
   });
 
   it("explains a sidecar it can't reach, and tries again on the next click", async () => {

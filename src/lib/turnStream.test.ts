@@ -28,6 +28,16 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** Fails a promise that never settles, rather than leaving the test runner waiting on it. */
+function settlesSoon<T>(promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("still pending after 500 ms")), 500),
+    ),
+  ]);
+}
+
 async function wavSamples(wav: Blob): Promise<number[]> {
   const view = new DataView(await wav.arrayBuffer());
   const samples: number[] = [];
@@ -340,6 +350,16 @@ describe("openTurnStream", () => {
     expect(FakeSocket.last?.closeCalls).toBe(1);
   });
 
+  it("gives up on a detector that never answers once stopped", async () => {
+    const { h } = handlers();
+    const abort = new AbortController();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    abort.abort();
+
+    await expect(settlesSoon(opening)).rejects.toThrow(/stopped before the microphone opened/);
+    expect(FakeSocket.last?.closeCalls).toBe(1);
+  });
+
   it("releases a microphone granted after a stop", async () => {
     const { h, errors } = handlers();
     const abort = new AbortController();
@@ -348,8 +368,9 @@ describe("openTurnStream", () => {
     await settle();
     abort.abort();
     permission.resolve(micStream());
+    workletLoaded.resolve();
 
-    await expect(opening).rejects.toThrow(/stopped before the microphone opened/);
+    await expect(settlesSoon(opening)).rejects.toThrow(/stopped before the microphone opened/);
     expect(trackStops).toBe(1);
     expect(errors).toEqual([]);
   });
