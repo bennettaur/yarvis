@@ -3,194 +3,227 @@ import {
   applyDiagramChanges,
   checkDiagram,
   type Diagram,
+  DiagramError,
   diagramChangesSchema,
-  diagramSchema,
-  MAX_ARTIFACT_DIAGRAM_EDGES,
-  MAX_ARTIFACT_DIAGRAM_NODES,
+  type LinearElement,
+  MAX_DIAGRAM_ELEMENTS,
   onlyAdds,
+  outlinePoint,
   parseDiagram,
-  placesNodes,
+  parseElements,
 } from "./diagram.ts";
 
-const base: Diagram = {
-  nodes: [
-    { id: "api", label: "API" },
-    { id: "db", label: "Postgres", shape: "ellipse" },
+const box = (id: string, x: number, y: number, extra: object = {}) => ({
+  id,
+  type: "rectangle" as const,
+  x,
+  y,
+  width: 100,
+  height: 50,
+  ...extra,
+});
+
+const base: Diagram = checkDiagram({
+  elements: [
+    box("api", 0, 0, { label: { text: "API" } }),
+    box("db", 300, 0),
+    { id: "api-db", type: "arrow", start: { id: "api" }, end: { id: "db" } },
   ],
-  edges: [{ id: "api-db", from: "api", to: "db", label: "reads" }],
-};
+});
 
-describe("diagram changes", () => {
-  it("merges an upsert into the node with that id and keeps its other fields", () => {
-    const next = applyDiagramChanges(base, { upsertNodes: [{ id: "db", color: "blue" }] });
-    expect(next.nodes[1]).toEqual({ id: "db", label: "Postgres", shape: "ellipse", color: "blue" });
-  });
+const arrow = (d: Diagram, id: string) =>
+  d.elements.find((e) => e.id === id) as LinearElement | undefined;
 
-  it("adds a node and an edge to it in one call", () => {
-    const next = applyDiagramChanges(base, {
-      upsertNodes: [{ id: "cache", label: "Redis" }],
-      upsertEdges: [{ id: "api-cache", from: "api", to: "cache" }],
+describe("checking a diagram", () => {
+  it("draws an arrow bound at both ends straight between the shapes' outlines", () => {
+    expect(arrow(base, "api-db")).toMatchObject({
+      x: 100,
+      y: 25,
+      points: [
+        [0, 0],
+        [200, 0],
+      ],
     });
-    expect(next.nodes.map((n) => n.id)).toEqual(["api", "db", "cache"]);
-    expect(next.edges.map((e) => e.id)).toEqual(["api-db", "api-cache"]);
   });
 
-  it("removes a node's edges with it", () => {
-    const next = applyDiagramChanges(base, { removeNodes: ["db"] });
-    expect(next.nodes.map((n) => n.id)).toEqual(["api"]);
-    expect(next.edges).toEqual([]);
-  });
-
-  it("removes before it upserts, so a node can be replaced and re-pointed in one call", () => {
-    const next = applyDiagramChanges(base, {
-      removeNodes: ["db"],
-      upsertNodes: [{ id: "db", label: "MySQL" }],
-      upsertEdges: [{ id: "api-db", from: "api", to: "db" }],
+  it("keeps an unbound arrow where it was drawn", () => {
+    const d = checkDiagram({
+      elements: [
+        {
+          id: "free",
+          type: "line",
+          x: 5,
+          y: 6,
+          points: [
+            [0, 0],
+            [10, 20],
+            [30, 0],
+          ],
+        },
+      ],
     });
-    expect(next.nodes[1]).toEqual({ id: "db", label: "MySQL" });
-    expect(next.edges).toEqual([{ id: "api-db", from: "api", to: "db" }]);
+    expect(arrow(d, "free")).toMatchObject({
+      x: 5,
+      y: 6,
+      points: [
+        [0, 0],
+        [10, 20],
+        [30, 0],
+      ],
+    });
   });
 
-  it("refuses a new edge without both ends, or one to a missing node", () => {
-    expect(() => applyDiagramChanges(base, { upsertEdges: [{ id: "x", from: "api" }] })).toThrow(
-      /needs both from and to/,
-    );
-    expect(() => applyDiagramChanges(base, { upsertEdges: [{ id: "x", to: "api" }] })).toThrow(
-      /needs both from and to/,
+  it("refuses duplicate ids, a binding to something that isn't a shape, and an arrow with no position", () => {
+    expect(() => checkDiagram({ elements: [box("a", 0, 0), box("a", 1, 1)] })).toThrow(
+      /two elements/,
     );
     expect(() =>
-      applyDiagramChanges(base, { upsertEdges: [{ id: "x", from: "api", to: "nope" }] }),
-    ).toThrow(/not a node/);
-  });
-
-  it("keeps an existing edge's ends when an upsert only relabels it", () => {
-    const next = applyDiagramChanges(base, { upsertEdges: [{ id: "api-db", label: "writes" }] });
-    expect(next.edges[0]).toEqual({ id: "api-db", from: "api", to: "db", label: "writes" });
-  });
-
-  it("refuses to grow past the node cap", () => {
-    const many = Array.from({ length: MAX_ARTIFACT_DIAGRAM_NODES }, (_, i) => ({ id: `n${i}` }));
-    const full = checkDiagram({ nodes: many, edges: [] });
-    expect(() => applyDiagramChanges(full, { upsertNodes: [{ id: "one-more" }] })).toThrow(
-      /at most/,
-    );
-  });
-
-  it("tells additions apart from changes to what is there", () => {
-    expect(onlyAdds(base, { upsertNodes: [{ id: "new" }] })).toBe(true);
-    expect(onlyAdds(base, { upsertNodes: [{ id: "api", label: "x" }] })).toBe(false);
-    expect(onlyAdds(base, { upsertEdges: [{ id: "api-db", label: "x" }] })).toBe(false);
-    expect(onlyAdds(base, { removeEdges: ["api-db"] })).toBe(false);
-    // One new element beside one existing one is still a change to what is there.
-    expect(onlyAdds(base, { upsertNodes: [{ id: "new" }, { id: "api", label: "x" }] })).toBe(false);
-    expect(
-      onlyAdds(base, {
-        upsertEdges: [
-          { id: "new-edge", from: "api", to: "db" },
-          { id: "api-db", label: "x" },
+      checkDiagram({
+        elements: [
+          { id: "t", type: "text", x: 0, y: 0, text: "hi" },
+          box("b", 0, 0),
+          { id: "e", type: "arrow", start: { id: "t" }, end: { id: "b" } },
         ],
       }),
-    ).toBe(false);
+    ).toThrow(/not a rectangle, ellipse or diamond/);
+    expect(() =>
+      checkDiagram({ elements: [box("b", 0, 0), { id: "e", type: "arrow", start: { id: "b" } }] }),
+    ).toThrow(/needs start and end shapes, or x, y and points/);
   });
 
-  it("tells a placed or sized node from one left to the layout", () => {
-    expect(placesNodes({ upsertNodes: [{ id: "a", label: "A" }] })).toBe(false);
-    expect(placesNodes({ upsertEdges: [{ id: "e", from: "a", to: "b" }] })).toBe(false);
-    for (const field of ["x", "y", "width", "height"]) {
-      expect(placesNodes({ upsertNodes: [{ id: "b" }, { id: "a", [field]: 20 }] })).toBe(true);
-    }
+  it("refuses a frame holding something missing, a frame, or a child of another frame", () => {
+    const frame = (id: string, children: string[]) => ({ id, type: "frame" as const, children });
+    expect(() => checkDiagram({ elements: [frame("f", ["nope"])] })).toThrow(/not an element/);
+    expect(() => checkDiagram({ elements: [frame("f", []), frame("g", ["f"])] })).toThrow(
+      /not an element/,
+    );
+    expect(() =>
+      checkDiagram({ elements: [box("a", 0, 0), frame("f", ["a"]), frame("g", ["a"])] }),
+    ).toThrow(/two frames/);
+  });
+
+  it("caps the elements a diagram adds up to", () => {
+    const many = Array.from({ length: MAX_DIAGRAM_ELEMENTS + 1 }, (_, i) => box(`n${i}`, i, 0));
+    expect(() => checkDiagram({ elements: many })).toThrow(/at most/);
+  });
+
+  it("reads empty content as an empty diagram", () => {
+    expect(parseDiagram("")).toEqual({ elements: [] });
   });
 });
 
-describe("what a tool call may send", () => {
-  it("takes a normal change", () => {
-    const parsed = diagramChangesSchema.safeParse({
-      upsertNodes: [{ id: "queue", label: "Queue", shape: "diamond", color: "orange", x: 10 }],
-      upsertEdges: [{ id: "api-queue", from: "api", to: "queue", dashed: true }],
-      removeNodes: ["db"],
-    });
-    expect(parsed.success).toBe(true);
+describe("outline points", () => {
+  it("meets an ellipse and a diamond on their outlines, not their boxes", () => {
+    const shape = { x: 0, y: 0, width: 200, height: 100 };
+    // Toward a point up and to the right, so the box corner and outline differ.
+    const toward = { x: 200, y: -50 };
+    const ellipse = outlinePoint({ ...shape, type: "ellipse" }, toward);
+    expect(((ellipse.x - 100) / 100) ** 2 + ((ellipse.y - 50) / 50) ** 2).toBeCloseTo(1);
+    const diamond = outlinePoint({ ...shape, type: "diamond" }, toward);
+    expect(Math.abs(diamond.x - 100) / 100 + Math.abs(diamond.y - 50) / 50).toBeCloseTo(1);
+  });
+});
+
+describe("parsing what a tool call sent", () => {
+  it("drops properties it doesn't know, such as a link", () => {
+    const [el] = parseElements([{ ...box("a", 0, 0), link: "https://evil.example", seed: 4 }]);
+    expect(el).not.toHaveProperty("link");
+    expect(el).not.toHaveProperty("seed");
+  });
+
+  it("names the element and the property that is wrong", () => {
+    expect(() => parseElements([{ id: "a", type: "rectangle", x: 0, y: 0, width: 10 }])).toThrow(
+      /element "a": height/,
+    );
+    expect(() => parseElements([box("b", 0, 0, { backgroundColor: "blue" })])).toThrow(/hex code/);
   });
 
   it("refuses ids that aren't plain", () => {
     for (const id of ["a b", 'x"y', "api;", "", "a".repeat(65)]) {
-      expect(diagramSchema.safeParse({ nodes: [{ id }], edges: [] }).success).toBe(false);
+      expect(() => parseElements([box(id, 0, 0)])).toThrow(DiagramError);
     }
-    expect(diagramSchema.safeParse({ nodes: [{ id: "a".repeat(64) }], edges: [] }).success).toBe(
-      true,
-    );
   });
 
-  it("refuses oversized labels, far coordinates and tiny or huge sizes", () => {
-    const node = (extra: object) =>
-      diagramChangesSchema.safeParse({ upsertNodes: [{ id: "a", ...extra }] });
-    expect(node({ label: "x".repeat(500) }).success).toBe(true);
-    expect(node({ label: "x".repeat(501) }).success).toBe(false);
-    expect(node({ x: 100_000, y: -100_000 }).success).toBe(true);
-    expect(node({ x: 100_001 }).success).toBe(false);
-    expect(node({ y: -100_001 }).success).toBe(false);
-    expect(node({ width: 10, height: 5_000 }).success).toBe(true);
-    expect(node({ width: 9 }).success).toBe(false);
-    expect(node({ height: 5_001 }).success).toBe(false);
+  it("refuses oversized text, far coordinates and huge sizes", () => {
+    expect(() => parseElements([box("a", 0, 0, { label: { text: "x".repeat(501) } })])).toThrow();
+    expect(() => parseElements([box("a", 100_001, 0)])).toThrow();
+    expect(() => parseElements([box("a", 0, 0, { width: 5_001 })])).toThrow();
   });
 
-  it("caps how many elements one call sends", () => {
+  it("caps how many elements one change sends", () => {
     const ids = (n: number) => Array.from({ length: n }, (_, i) => `n${i}`);
-    const nodes = (n: number) => ids(n).map((id) => ({ id }));
     expect(
-      diagramChangesSchema.safeParse({ upsertNodes: nodes(MAX_ARTIFACT_DIAGRAM_NODES) }).success,
+      diagramChangesSchema.safeParse({ upsert: ids(MAX_DIAGRAM_ELEMENTS).map((id) => ({ id })) })
+        .success,
     ).toBe(true);
     expect(
-      diagramChangesSchema.safeParse({ upsertNodes: nodes(MAX_ARTIFACT_DIAGRAM_NODES + 1) })
-        .success,
-    ).toBe(false);
-    expect(
-      diagramChangesSchema.safeParse({ removeNodes: ids(MAX_ARTIFACT_DIAGRAM_NODES + 1) }).success,
-    ).toBe(false);
-    expect(
-      diagramChangesSchema.safeParse({ removeEdges: ids(MAX_ARTIFACT_DIAGRAM_EDGES + 1) }).success,
-    ).toBe(false);
-    expect(
       diagramChangesSchema.safeParse({
-        upsertEdges: ids(MAX_ARTIFACT_DIAGRAM_EDGES + 1).map((id) => ({ id })),
+        upsert: ids(MAX_DIAGRAM_ELEMENTS + 1).map((id) => ({ id })),
       }).success,
     ).toBe(false);
+    expect(diagramChangesSchema.safeParse({ remove: ids(MAX_DIAGRAM_ELEMENTS + 1) }).success).toBe(
+      false,
+    );
   });
 });
 
-describe("whole diagrams", () => {
-  it("refuses duplicate ids and dangling edges", () => {
-    expect(() => checkDiagram({ nodes: [{ id: "a" }, { id: "a" }], edges: [] })).toThrow(
-      /two nodes/,
-    );
-    expect(() =>
-      checkDiagram({ nodes: [{ id: "a" }], edges: [{ id: "e", from: "a", to: "b" }] }),
-    ).toThrow(/not a node/);
-    const ab = [{ id: "a" }, { id: "b" }];
-    expect(() =>
-      checkDiagram({
-        nodes: ab,
-        edges: [
-          { id: "e", from: "a", to: "b" },
-          { id: "e", from: "b", to: "a" },
-        ],
-      }),
-    ).toThrow(/two edges/);
+describe("diagram changes", () => {
+  it("merges an upsert into the element with that id and keeps its other properties", () => {
+    const next = applyDiagramChanges(base, { upsert: [{ id: "db", backgroundColor: "#a5d8ff" }] });
+    expect(next.elements[1]).toEqual({ ...box("db", 300, 0), backgroundColor: "#a5d8ff" });
   });
 
-  it("caps the edges a merge adds up to", () => {
-    const ab = [{ id: "a" }, { id: "b" }];
-    const edges = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ id: `e${i}`, from: "a", to: "b" }));
+  it("clears a property sent as null", () => {
+    const next = applyDiagramChanges(base, { upsert: [{ id: "api", label: null }] });
+    expect(next.elements[0]).not.toHaveProperty("label");
+  });
+
+  it("moves a bound arrow with the shape it is bound to", () => {
+    const next = applyDiagramChanges(base, { upsert: [{ id: "db", y: 200 }] });
+    expect(arrow(next, "api-db")?.points?.[1]?.[1]).toBeGreaterThan(0);
+  });
+
+  it("adds a new element, which needs a type and what that type requires", () => {
+    const next = applyDiagramChanges(base, {
+      upsert: [{ id: "note", type: "text", x: 0, y: 100, text: "Reads only" }],
+    });
+    expect(next.elements.map((e) => e.id)).toEqual(["api", "db", "api-db", "note"]);
+    expect(() => applyDiagramChanges(base, { upsert: [{ id: "new", x: 1 }] })).toThrow(
+      /needs a type/,
+    );
     expect(() =>
-      checkDiagram({ nodes: ab, edges: edges(MAX_ARTIFACT_DIAGRAM_EDGES) }),
-    ).not.toThrow();
-    expect(() => checkDiagram({ nodes: ab, edges: edges(MAX_ARTIFACT_DIAGRAM_EDGES + 1) })).toThrow(
-      /at most/,
+      applyDiagramChanges(base, { upsert: [{ id: "new", type: "rectangle", x: 1, y: 1 }] }),
+    ).toThrow(/element "new": width/);
+  });
+
+  it("won't change an element's type in place", () => {
+    expect(() => applyDiagramChanges(base, { upsert: [{ id: "db", type: "ellipse" }] })).toThrow(
+      /remove it and add it again/,
     );
   });
 
-  it("reads empty content as an empty diagram", () => {
-    expect(parseDiagram("")).toEqual({ nodes: [], edges: [] });
+  it("removes a shape's arrows with it, and drops it from its frame", () => {
+    const framed = applyDiagramChanges(base, {
+      upsert: [{ id: "f", type: "frame", children: ["api", "db"] }],
+    });
+    const next = applyDiagramChanges(framed, { remove: ["db"] });
+    expect(next.elements.map((e) => e.id)).toEqual(["api", "f"]);
+    expect(next.elements[1]).toMatchObject({ children: ["api"] });
+  });
+
+  it("removes before it upserts, so an element can be replaced in one call", () => {
+    const next = applyDiagramChanges(base, {
+      remove: ["db"],
+      upsert: [{ ...box("db", 0, 200), type: "ellipse" }],
+    });
+    expect(next.elements.find((e) => e.id === "db")).toMatchObject({ type: "ellipse", y: 200 });
+  });
+
+  it("tells additions apart from changes to what is there", () => {
+    expect(onlyAdds(base, { upsert: [{ id: "new" }] })).toBe(true);
+    expect(onlyAdds(base, { upsert: [{ id: "api", x: 4 }] })).toBe(false);
+    expect(onlyAdds(base, { remove: ["api-db"] })).toBe(false);
+    // One new element beside one existing one is still a change to what is there.
+    expect(onlyAdds(base, { upsert: [{ id: "new" }, { id: "api", x: 4 }] })).toBe(false);
   });
 });

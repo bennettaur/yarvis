@@ -68,6 +68,27 @@ function addElement(key: string, type: string, props: object, children: string[]
   return { op: "add", path: `/elements/${key}`, value: { type, props, children } };
 }
 
+/** A rounded box with a label, as a model would write one for `create_diagram`. */
+function box(id: string, text: string, x: number, y: number, backgroundColor: string) {
+  return {
+    id,
+    type: "rectangle",
+    x,
+    y,
+    width: 200,
+    height: 80,
+    backgroundColor,
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text },
+  };
+}
+
+/** An arrow bound to two shapes; the sidecar draws it between them. */
+function arrow(id: string, from: string, to: string, text: string) {
+  return { id, type: "arrow", start: { id: from }, end: { id: to }, label: { text, fontSize: 14 } };
+}
+
 export const REPLIES: Reply[] = [
   {
     when: /plate|this week|what.*(on|do) i/i,
@@ -110,16 +131,14 @@ export const REPLIES: Reply[] = [
       name: "create_diagram",
       args: {
         title: "Checkout architecture",
-        nodes: [
-          { id: "web", label: "Checkout web", color: "blue" },
-          { id: "api", label: "Payments API", color: "green" },
-          { id: "cache", label: "Session cache", shape: "ellipse", color: "yellow" },
-          { id: "db", label: "Orders DB", shape: "ellipse", color: "purple" },
-        ],
-        edges: [
-          { id: "web-api", from: "web", to: "api", label: "POST /pay" },
-          { id: "api-cache", from: "api", to: "cache", label: "session" },
-          { id: "api-db", from: "api", to: "db", label: "orders" },
+        elements: [
+          box("web", "Checkout web", 0, 0, "#a5d8ff"),
+          box("api", "Payments API", 320, 0, "#b2f2bb"),
+          { ...box("cache", "Session cache", 640, -110, "#ffec99"), type: "ellipse" },
+          { ...box("db", "Orders DB", 640, 110, "#d0bfff"), type: "ellipse" },
+          arrow("web-api", "web", "api", "POST /pay"),
+          arrow("api-cache", "api", "cache", "session"),
+          arrow("api-db", "api", "db", "orders"),
         ],
       },
     },
@@ -134,8 +153,15 @@ export const REPLIES: Reply[] = [
         id: "{{artifactId}}",
         callReason: "The user asked to add a receipts queue to the diagram.",
         addOnly: true,
-        upsertNodes: [{ id: "queue", label: "Receipts queue", shape: "diamond", color: "orange" }],
-        upsertEdges: [{ id: "api-queue", from: "api", to: "queue", label: "paid", dashed: true }],
+        upsert: [
+          {
+            ...box("queue", "Receipts queue", 300, 220, "#ffd8a8"),
+            type: "diamond",
+            width: 220,
+            height: 120,
+          },
+          { ...arrow("api-queue", "api", "queue", "paid"), strokeStyle: "dashed" },
+        ],
       },
     },
     after:

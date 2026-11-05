@@ -14,8 +14,6 @@
  * operation before it happens.
  */
 
-import { placesNodes } from "../artifacts/diagram.ts";
-
 /**
  * Built-in tools that need approval on *every* turn, typed or spoken.
  *
@@ -136,14 +134,12 @@ function rewritesArtifact(args: unknown): boolean {
 
 /**
  * An `update_diagram` call that may change what is already drawn. One marked
- * `addOnly` can't change an element (`updateDiagram` refuses it if any id it
- * sends exists), but a node it places or sizes itself could still be a filled
- * box laid over one, so that still asks.
+ * `addOnly` can't (`updateDiagram` refuses it if any id it sends exists), so
+ * it skips the prompt the way an append does.
  */
 function changesDiagram(args: unknown): boolean {
-  const a = args as { addOnly?: unknown; title?: unknown; upsertNodes?: unknown } | null;
-  if (a?.addOnly !== true || a.title !== undefined) return true;
-  return placesNodes(a);
+  const a = args as { addOnly?: unknown; title?: unknown } | null;
+  return a?.addOnly !== true || a.title !== undefined;
 }
 
 /**

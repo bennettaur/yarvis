@@ -2,11 +2,11 @@ import "@excalidraw/excalidraw/index.css";
 import { convertToExcalidrawElements, Excalidraw, MainMenu } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { diagramToSkeleton, parseDiagram } from "../../lib/artifactDiagram";
+import { diagramToSkeleton } from "../../lib/artifactDiagram";
 
 function toElements(content: string) {
   // Ids kept, so a redraw after the agent's edit updates elements rather than replacing them.
-  return convertToExcalidrawElements(diagramToSkeleton(parseDiagram(content)), {
+  return convertToExcalidrawElements(diagramToSkeleton(content), {
     regenerateIds: false,
   });
 }

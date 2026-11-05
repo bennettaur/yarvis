@@ -251,25 +251,29 @@ tab's conversation. An untrusted artifact's links open where they say rather
 than inside Yarvis.
 
 Ask for a diagram ("sketch how the checkout services talk to each other") and
-the assistant draws one in Excalidraw: boxes, ellipses, diamonds and free text,
-joined by arrows. It lays them out left to right along the arrows unless it
-places them itself. Ask it to change the diagram and it edits it in place,
-element by element, and the open pane redraws with each change. The view
-follows the drawing until you pan or zoom it yourself. Diagrams are view-only:
-you can pan, zoom and save one as an image, but only the assistant edits them.
+the assistant draws one in Excalidraw: boxes, ellipses, diamonds, free text,
+arrows, lines and frames, with Excalidraw's own styling. It writes Excalidraw
+elements directly and places them itself. An arrow joined to two boxes follows
+them when they move. Ask it to change the diagram and it edits it in place,
+element by element, and the open pane redraws with each change. After every
+change the assistant gets back where everything ended up and what looks wrong,
+such as boxes that overlap, labels that don't fit or arrows that cross a box,
+so it can tidy its own drawing. The view follows the drawing until you pan or
+zoom it yourself. Diagrams are view-only: you can pan, zoom and save one as an
+image, but only the assistant edits them. Text is drawn in Helvetica, since
+the app can't load Excalidraw's hand-drawn font.
+
 A heads-down pass or specialist can only add to a diagram you asked for in a
-chat, and the app places what it adds beside your boxes rather than on them. Changing a diagram asks for approval under the same conditions as
+chat. Changing a diagram asks for approval under the same conditions as
 rewriting a document: on a spoken turn, and once a turn has read a web page or
-an untrusted artifact. A change that only adds new boxes and arrows, leaving
-the app to place them, doesn't ask, the way adding to the end of a document
-doesn't: the assistant marks it as adding only, and the change is refused if it
-would touch anything already drawn. Adding can still make a diagram misleading
-without changing what is there: a box with a very long label grows past its
-spot and can sit over others, and a new arrow can join two of your boxes with
-a label of its own. Nothing already drawn is changed or lost, and what a pass
-or specialist adds marks the diagram as written by an agent. In Memory → Artifacts a diagram shows only a note; use
-**Open beside chat** to see it. A diagram can have up to 300 boxes and
-600 arrows.
+an untrusted artifact. A change that only adds new elements doesn't ask, the
+way adding to the end of a document doesn't: the assistant marks it as adding
+only, and the change is refused if it would touch anything already drawn.
+Adding can still make a diagram misleading without changing what is there: a
+new box can be drawn over yours, and a new arrow can join two of your boxes
+with a label of its own. Nothing already drawn is changed or lost, and what a
+pass or specialist adds marks the diagram as written by an agent. In Memory → Artifacts a diagram shows only a note; use
+**Open beside chat** to see it. A diagram can have up to 600 elements.
 
 Open **Memory → Artifacts** to find them later. Each one shows where it came
 from (a chat, heads-down mode, or a specialist or job) and whether it's

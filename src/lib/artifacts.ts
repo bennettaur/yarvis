@@ -6,7 +6,7 @@ import { SidecarError, sidecarFetch, streamSSE } from "./api";
  * only reads them and deletes the ones the user doesn't want kept.
  */
 
-/** An `excalidraw` artifact's content is a JSON `Diagram` (`./artifactDiagram`). */
+/** An `excalidraw` artifact's content is JSON `{ elements }` of Excalidraw element skeletons (`./artifactDiagram`). */
 export type ArtifactFormat = "markdown" | "excalidraw";
 
 /** Who created it: a chat with the user, a heads-down pass, or a specialist (which runs jobs). */

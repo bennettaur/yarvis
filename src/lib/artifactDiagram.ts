@@ -1,274 +1,186 @@
 /**
- * Draws a diagram artifact: turns its nodes and edges into Excalidraw element
- * skeletons for `convertToExcalidrawElements`.
+ * Reads a diagram artifact into Excalidraw element skeletons for
+ * `convertToExcalidrawElements`.
  *
- * Plain data here so the layout can be tested without loading Excalidraw,
- * which needs a canvas and is only fetched when a diagram is opened.
+ * The agent writes the skeletons itself and the sidecar validates them
+ * (`sidecar/src/artifacts/diagram.ts`), placing arrows bound at both ends.
+ * This file keeps only the same properties again, since the content is still
+ * model-written. Plain data here so it can be tested without loading
+ * Excalidraw, which needs a canvas and is only fetched when a diagram is opened.
  */
 
 import type { ExcalidrawElementSkeleton } from "@excalidraw/excalidraw/data/transform";
-import {
-  ADAPTIVE_RADIUS,
-  ARROW_COLOR,
-  COLUMN_GAP,
-  LABEL_FONT_FAMILY,
-  nodeColumns,
-  ROW_GAP,
-} from "./pr/flowDiagram";
+import { LABEL_FONT_FAMILY } from "./pr/flowDiagram";
 
-/*
- * These mirror the sidecar's `Diagram` (`sidecar/src/artifacts/diagram.ts`),
- * which validates what the agent writes.
- */
-
-export type DiagramShape = "rectangle" | "ellipse" | "diamond" | "text";
-export type DiagramColor = "gray" | "blue" | "green" | "yellow" | "orange" | "red" | "purple";
-
-export interface DiagramNode {
-  id: string;
-  label?: string;
-  shape?: DiagramShape;
-  color?: DiagramColor;
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-}
-
-export interface DiagramEdge {
-  id: string;
-  from: string;
-  to: string;
-  label?: string;
-  dashed?: boolean;
-}
-
-export interface Diagram {
-  nodes: DiagramNode[];
-  edges: DiagramEdge[];
-}
-
-const SHAPES = new Set<string>(["rectangle", "ellipse", "diamond", "text"]);
-
-/*
- * Light-theme colours from Excalidraw's palette. Its dark theme inverts the
- * whole canvas, so dark-tuned colours would come out flipped.
- */
-const COLORS: Record<DiagramColor, { strokeColor: string; backgroundColor: string }> = {
-  gray: { strokeColor: "#495057", backgroundColor: "#e9ecef" },
-  blue: { strokeColor: "#1971c2", backgroundColor: "#a5d8ff" },
-  green: { strokeColor: "#2f9e44", backgroundColor: "#b2f2bb" },
-  yellow: { strokeColor: "#f08c00", backgroundColor: "#ffec99" },
-  orange: { strokeColor: "#e8590c", backgroundColor: "#ffd8a8" },
-  red: { strokeColor: "#e03131", backgroundColor: "#ffc9c9" },
-  purple: { strokeColor: "#6741d9", backgroundColor: "#d0bfff" },
-};
-/** Own keys only: an `in` check would also pass "toString" and the like. */
-const COLOR_NAMES = new Set<string>(Object.keys(COLORS));
-const PLAIN = { strokeColor: "#1e1e1e", backgroundColor: "transparent" } as const;
-
-const DEFAULT_SIZE: Record<DiagramShape, { width: number; height: number }> = {
-  rectangle: { width: 200, height: 80 },
-  ellipse: { width: 180, height: 90 },
-  diamond: { width: 180, height: 120 },
-  text: { width: 200, height: 40 },
-};
-/** Widest and tallest default size, so auto-placed nodes of any shape share one grid. */
-const CELL = { width: 200, height: 120 };
+type Obj = Record<string, unknown>;
 
 const ID = /^[A-Za-z0-9_.:-]{1,64}$/;
+const COLOR = /^(transparent|#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8})$/;
+const SHAPES = new Set(["rectangle", "ellipse", "diamond"]);
+const FILL_STYLES = new Set(["hachure", "cross-hatch", "solid", "zigzag"]);
+const STROKE_STYLES = new Set(["solid", "dashed", "dotted"]);
+const TEXT_ALIGNS = new Set(["left", "center", "right"]);
+const VERTICAL_ALIGNS = new Set(["top", "middle", "bottom"]);
+const ARROWHEADS = new Set(["arrow", "bar", "dot", "circle", "triangle", "diamond"]);
 
-/** The sidecar's cap on a label, applied again here. */
-const MAX_LABEL = 500;
+/** The sidecar's caps, applied again here. */
+const MAX_TEXT = 500;
+const MAX_POINTS = 100;
 
-const finiteOrUndefined = (v: unknown): number | undefined =>
-  typeof v === "number" && Number.isFinite(v) ? v : undefined;
-const cleanLabel = (v: unknown): string | undefined =>
+const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+const num = (v: unknown, min: number, max: number): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : undefined;
+const coord = (v: unknown) => num(v, -100_000, 100_000);
+const oneOf = (v: unknown, set: Set<string>): string | undefined =>
+  typeof v === "string" && set.has(v) ? v : undefined;
+const color = (v: unknown): string | undefined =>
+  typeof v === "string" && COLOR.test(v) ? v : undefined;
+const cleanText = (v: unknown): string | undefined =>
   // Newlines stay, since a label may want two lines. Other control characters
   // and line or paragraph separators go, and so do format characters like a
   // right-to-left override, which can make a label read differently from what
   // it says.
   typeof v === "string"
-    ? v.replace(/(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").slice(0, MAX_LABEL)
+    ? v.replace(/(?!\n)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").slice(0, MAX_TEXT)
     : undefined;
 
+/** Drops the keys whose value didn't survive cleaning, so Excalidraw applies its own default. */
+const defined = (o: Obj): Obj =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+
+function style(e: Obj): Obj {
+  return defined({
+    strokeColor: color(e.strokeColor),
+    backgroundColor: color(e.backgroundColor),
+    fillStyle: oneOf(e.fillStyle, FILL_STYLES),
+    strokeWidth: num(e.strokeWidth, 0.5, 16),
+    strokeStyle: oneOf(e.strokeStyle, STROKE_STYLES),
+    roughness: num(e.roughness, 0, 2),
+    opacity: num(e.opacity, 0, 100),
+    angle: num(e.angle, -7, 7),
+    groupIds: Array.isArray(e.groupIds)
+      ? e.groupIds.filter((g): g is string => typeof g === "string" && ID.test(g)).slice(0, 8)
+      : undefined,
+  });
+}
+
+/** Text settings shared by a text element and a label. The font is always Helvetica: see `LABEL_FONT_FAMILY`. */
+function textStyle(e: Obj): Obj {
+  return defined({
+    fontSize: num(e.fontSize, 8, 200),
+    fontFamily: LABEL_FONT_FAMILY,
+    textAlign: oneOf(e.textAlign, TEXT_ALIGNS),
+    verticalAlign: oneOf(e.verticalAlign, VERTICAL_ALIGNS),
+  });
+}
+
+function label(v: unknown): Obj | undefined {
+  if (!isObj(v)) return undefined;
+  const text = cleanText(v.text);
+  if (!text) return undefined;
+  return { text, ...textStyle(v), ...defined({ strokeColor: color(v.strokeColor) }) };
+}
+
+function points(v: unknown): [number, number][] | undefined {
+  if (!Array.isArray(v) || v.length < 2 || v.length > MAX_POINTS) return undefined;
+  const out: [number, number][] = [];
+  for (const p of v) {
+    const x = Array.isArray(p) ? coord(p[0]) : undefined;
+    const y = Array.isArray(p) ? coord(p[1]) : undefined;
+    if (x === undefined || y === undefined) return undefined;
+    out.push([x, y]);
+  }
+  return out;
+}
+
 /**
- * Reads an artifact's stored content. The sidecar validated it on write, but
- * the content is still model-written text, so anything malformed is dropped
- * here rather than handed to Excalidraw.
+ * Reads an artifact's stored content into skeletons. The sidecar validated it
+ * on write, but anything malformed is dropped here rather than handed to
+ * Excalidraw.
  */
-export function parseDiagram(content: string): Diagram {
-  if (content.trim() === "") return { nodes: [], edges: [] };
-  const raw = JSON.parse(content) as { nodes?: unknown; edges?: unknown };
-  const nodes: DiagramNode[] = [];
-  for (const n of Array.isArray(raw.nodes) ? raw.nodes : []) {
-    if (typeof n?.id !== "string" || !ID.test(n.id)) continue;
-    nodes.push({
-      id: n.id,
-      label: cleanLabel(n.label),
-      shape: SHAPES.has(n.shape) ? n.shape : undefined,
-      color: COLOR_NAMES.has(n.color) ? n.color : undefined,
-      x: finiteOrUndefined(n.x),
-      y: finiteOrUndefined(n.y),
-      width: finiteOrUndefined(n.width),
-      height: finiteOrUndefined(n.height),
-    });
-  }
-  const ids = new Set(nodes.map((n) => n.id));
-  const edges: DiagramEdge[] = [];
-  for (const e of Array.isArray(raw.edges) ? raw.edges : []) {
-    if (typeof e?.id !== "string" || !ID.test(e.id)) continue;
-    if (!ids.has(e.from) || !ids.has(e.to)) continue;
-    edges.push({
-      id: e.id,
-      from: e.from,
-      to: e.to,
-      label: cleanLabel(e.label),
-      dashed: e.dashed === true,
-    });
-  }
-  return { nodes, edges };
-}
-
-interface Box {
-  elementId: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-const overlaps = (a: Omit<Box, "elementId">, b: Box) =>
-  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-
-/**
- * Where a node sits: its own x/y when it has both, otherwise a grid cell by
- * its column along the edges (see `nodeColumns`) and its order in that column.
- * A grid cell that would overlap a placed node is skipped. That checks the
- * node's default size, so a label long enough to grow its box can still
- * reach past the cell.
- */
-function layout(diagram: Diagram): Map<string, Box> {
-  const columns = nodeColumns(diagram);
-  const rowsUsed = new Map<number, number>();
-  const boxes = new Map<string, Box>();
-  const sizeOf = (node: DiagramNode) => {
-    const size = DEFAULT_SIZE[node.shape ?? "rectangle"];
-    return { width: node.width ?? size.width, height: node.height ?? size.height };
-  };
-  const placed: Box[] = [];
-  for (const node of diagram.nodes) {
-    if (node.x === undefined || node.y === undefined) continue;
-    const box = { elementId: `node:${node.id}`, x: node.x, y: node.y, ...sizeOf(node) };
-    placed.push(box);
-    boxes.set(node.id, box);
-  }
-  for (const node of diagram.nodes) {
-    if (boxes.has(node.id)) continue;
-    const { width, height } = sizeOf(node);
-    const column = columns.get(node.id) ?? 0;
-    const x = column * (CELL.width + COLUMN_GAP);
-    let row = rowsUsed.get(column) ?? 0;
-    // Placed boxes are finite in number and size, so a clear row is always found.
-    while (
-      placed.some((p) => overlaps({ x, y: row * (CELL.height + ROW_GAP), width, height }, p))
-    ) {
-      row += 1;
-    }
-    rowsUsed.set(column, row + 1);
-    boxes.set(node.id, {
-      elementId: `node:${node.id}`,
-      x,
-      y: row * (CELL.height + ROW_GAP),
-      width,
-      height,
-    });
-  }
-  return boxes;
-}
-
-/** Where the line from a box's centre toward `toward` crosses the box's edge. */
-function edgePoint(box: Box, toward: { x: number; y: number }): { x: number; y: number } {
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  const dx = toward.x - cx;
-  const dy = toward.y - cy;
-  if (dx === 0 && dy === 0) return { x: cx, y: cy };
-  const scale = Math.min(
-    dx === 0 ? Number.POSITIVE_INFINITY : box.width / 2 / Math.abs(dx),
-    dy === 0 ? Number.POSITIVE_INFINITY : box.height / 2 / Math.abs(dy),
+export function diagramToSkeleton(content: string): ExcalidrawElementSkeleton[] {
+  if (content.trim() === "") return [];
+  const raw = JSON.parse(content) as { elements?: unknown };
+  const all = (Array.isArray(raw.elements) ? raw.elements : []).filter(
+    (e): e is Obj => isObj(e) && typeof e.id === "string" && ID.test(e.id),
   );
-  return { x: cx + dx * scale, y: cy + dy * scale };
-}
+  const shapeIds = new Set(all.filter((e) => SHAPES.has(e.type as string)).map((e) => e.id));
+  const framable = new Set(all.filter((e) => e.type !== "frame").map((e) => e.id));
+  const bind = (v: unknown) =>
+    isObj(v) && typeof v.id === "string" && shapeIds.has(v.id) ? { id: v.id } : undefined;
 
-const center = (box: Box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
-
-/**
- * Excalidraw element skeletons for the diagram. Element ids come from the
- * diagram's own ids, so a redraw after an edit keeps each element's identity.
- * Arrows are bound to the shapes at either end, so dragging a shape drags its
- * arrows with it.
- */
-export function diagramToSkeleton(diagram: Diagram): ExcalidrawElementSkeleton[] {
-  const boxes = layout(diagram);
-  const elements: ExcalidrawElementSkeleton[] = [];
-
-  for (const node of diagram.nodes) {
-    const box = boxes.get(node.id);
-    if (!box) continue;
-    const shape = node.shape ?? "rectangle";
-    if (shape === "text") {
-      elements.push({
-        type: "text",
-        id: box.elementId,
-        x: box.x,
-        y: box.y,
-        text: node.label ?? "",
-        fontSize: 16,
-        fontFamily: LABEL_FONT_FAMILY,
-        strokeColor: node.color ? COLORS[node.color].strokeColor : PLAIN.strokeColor,
-      });
-      continue;
+  const out: Obj[] = [];
+  for (const e of all) {
+    const x = coord(e.x);
+    const y = coord(e.y);
+    if (SHAPES.has(e.type as string)) {
+      const width = num(e.width, 1, 5_000);
+      const height = num(e.height, 1, 5_000);
+      if (x === undefined || y === undefined || width === undefined || height === undefined) {
+        continue;
+      }
+      const roundness =
+        e.roundness === null
+          ? null
+          : isObj(e.roundness) && num(e.roundness.type, 1, 3) !== undefined
+            ? { type: e.roundness.type }
+            : undefined;
+      out.push(
+        defined({
+          type: e.type,
+          id: e.id,
+          x,
+          y,
+          width,
+          height,
+          roundness,
+          label: label(e.label),
+          ...style(e),
+        }),
+      );
+    } else if (e.type === "text") {
+      const text = cleanText(e.text);
+      if (x === undefined || y === undefined || !text) continue;
+      out.push({ type: "text", id: e.id, x, y, text, ...textStyle(e), ...style(e) });
+    } else if (e.type === "arrow" || e.type === "line") {
+      const pts = points(e.points);
+      if (x === undefined || y === undefined || !pts) continue;
+      const xs = pts.map(([px]) => px);
+      const ys = pts.map(([, py]) => py);
+      out.push(
+        defined({
+          type: e.type,
+          id: e.id,
+          x,
+          y,
+          points: pts,
+          width: Math.max(...xs) - Math.min(...xs),
+          height: Math.max(...ys) - Math.min(...ys),
+          start: bind(e.start),
+          end: bind(e.end),
+          startArrowhead: e.startArrowhead === null ? null : oneOf(e.startArrowhead, ARROWHEADS),
+          endArrowhead: e.endArrowhead === null ? null : oneOf(e.endArrowhead, ARROWHEADS),
+          label: label(e.label),
+          ...style(e),
+        }),
+      );
+    } else if (e.type === "frame") {
+      const children = Array.isArray(e.children)
+        ? e.children.filter((c): c is string => typeof c === "string" && framable.has(c))
+        : [];
+      out.push(
+        defined({
+          type: "frame",
+          id: e.id,
+          children,
+          name: cleanText(e.name)?.slice(0, 100),
+          x,
+          y,
+          width: num(e.width, 1, 5_000),
+          height: num(e.height, 1, 5_000),
+        }),
+      );
     }
-    elements.push({
-      type: shape,
-      id: box.elementId,
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
-      ...(shape === "rectangle" ? { roundness: { type: ADAPTIVE_RADIUS } } : {}),
-      ...(node.color ? COLORS[node.color] : PLAIN),
-      fillStyle: "solid",
-      ...(node.label
-        ? { label: { text: node.label, fontSize: 16, fontFamily: LABEL_FONT_FAMILY } }
-        : {}),
-    });
   }
-
-  for (const edge of diagram.edges) {
-    const start = boxes.get(edge.from);
-    const end = boxes.get(edge.to);
-    if (!start || !end) continue;
-    // Excalidraw binds the arrow's ends but keeps the points it is given, so
-    // the arrow is drawn from one shape's edge to the other's.
-    const from = edgePoint(start, center(end));
-    const to = edgePoint(end, center(start));
-    elements.push({
-      type: "arrow",
-      id: `edge:${edge.id}`,
-      x: from.x,
-      y: from.y,
-      width: to.x - from.x,
-      height: to.y - from.y,
-      strokeColor: ARROW_COLOR,
-      strokeStyle: edge.dashed ? "dashed" : "solid",
-      start: { id: start.elementId },
-      end: { id: end.elementId },
-      ...(edge.label
-        ? { label: { text: edge.label, fontSize: 13, fontFamily: LABEL_FONT_FAMILY } }
-        : {}),
-    });
-  }
-  return elements;
+  return out as unknown as ExcalidrawElementSkeleton[];
 }

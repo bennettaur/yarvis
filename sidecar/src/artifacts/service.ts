@@ -5,12 +5,11 @@ import { emitEvent } from "../events/service.ts";
 import {
   applyDiagramChanges,
   checkDiagram,
-  type Diagram,
   type DiagramChanges,
   DiagramError,
   onlyAdds,
   parseDiagram,
-  placesNodes,
+  parseElements,
   serializeDiagram,
 } from "./diagram.ts";
 import { publishArtifactChange } from "./hub.ts";
@@ -268,16 +267,17 @@ export async function deleteArtifacts(db: Db, ids: string[]): Promise<number> {
 
 export interface CreateDiagramInput {
   title: string;
-  diagram: Diagram;
+  /** Excalidraw element skeletons, checked against `diagramElementSchema`. */
+  elements: unknown[];
   writer?: ArtifactWriter;
   untrusted?: boolean;
 }
 
-/** Throws DiagramError when the diagram's edges or ids don't hold together. */
+/** Throws DiagramError naming the first element that is malformed or doesn't fit with the rest. */
 export async function createDiagram(db: Db, input: CreateDiagramInput): Promise<Artifact> {
   return createArtifact(db, {
     title: input.title,
-    content: serializeDiagram(checkDiagram(input.diagram)),
+    content: serializeDiagram(checkDiagram({ elements: parseElements(input.elements) })),
     format: "excalidraw",
     writer: input.writer,
     untrusted: input.untrusted,
@@ -303,8 +303,8 @@ export interface UpdateDiagramInput {
  *
  * A heads-down pass or specialist can only add elements to a diagram a chat
  * turn created, the diagram version of append-only, and only up to
- * CHAT_ARTIFACT_RUN_LIMIT characters. It can't place or size the nodes it
- * adds either, so it can't lay a filled box over one the chat drew.
+ * CHAT_ARTIFACT_RUN_LIMIT characters. What it adds can still be drawn over
+ * what the chat drew; the write marks the diagram untrusted.
  *
  * `addOnly` is checked here, under the lock, because the approval that
  * `addOnly` skips is decided before the call can see which ids exist.
@@ -323,9 +323,7 @@ export async function updateDiagram(
     const adds = input.title === undefined && onlyAdds(diagram, input.changes);
     if (input.addOnly && !adds) throw new DiagramError(ADD_ONLY_BROKEN);
     const editsChatDiagram = writer !== "chat" && current.createdBy === "chat";
-    if (editsChatDiagram && (!adds || placesNodes(input.changes))) {
-      throw new ArtifactAppendOnlyError();
-    }
+    if (editsChatDiagram && !adds) throw new ArtifactAppendOnlyError();
     const content = serializeDiagram(applyDiagramChanges(diagram, input.changes));
     if (content.length > MAX_ARTIFACT_CHARS) throw new ArtifactTooLargeError();
     if (editsChatDiagram && content.length > CHAT_ARTIFACT_RUN_LIMIT)

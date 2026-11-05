@@ -1,107 +1,83 @@
 import { describe, expect, it } from "bun:test";
-import { diagramToSkeleton, parseDiagram } from "./artifactDiagram";
+import { diagramToSkeleton } from "./artifactDiagram";
 
-type Positioned = {
-  id?: string;
-  type: string;
-  x: number;
-  y: number;
-  width?: number;
-  height?: number;
-};
+type Drawn = Record<string, unknown> & { id?: string; type: string };
 
-describe("parseDiagram", () => {
-  it("drops malformed nodes, and edges to nodes that aren't there", () => {
-    const diagram = parseDiagram(
-      JSON.stringify({
-        nodes: [
-          { id: "a", shape: "hexagon", color: "chartreuse" },
-          { id: "bad id!" },
-          { label: "no id" },
-        ],
-        edges: [
-          { id: "a-a", from: "a", to: "a" },
-          { id: "a-z", from: "a", to: "z" },
-        ],
-      }),
-    );
-    expect(diagram.nodes.map((n) => n.id)).toEqual(["a"]);
-    expect(diagram.nodes[0]?.shape).toBeUndefined();
-    expect(diagram.nodes[0]?.color).toBeUndefined();
-    expect(diagram.edges.map((e) => e.id)).toEqual(["a-a"]);
-  });
+const draw = (elements: unknown[]) =>
+  diagramToSkeleton(JSON.stringify({ elements })) as unknown as Drawn[];
 
-  it("drops a colour that is only an object's inherited key", () => {
-    const names = ["toString", "constructor", "__proto__", "hasOwnProperty"];
-    const diagram = parseDiagram(
-      JSON.stringify({ nodes: names.map((color, i) => ({ id: `n${i}`, color })), edges: [] }),
-    );
-    expect(diagram.nodes.map((n) => n.color)).toEqual(names.map(() => undefined));
-    expect(parseDiagram('{"nodes":[{"id":"a","color":"blue"}]}').nodes[0]?.color).toBe("blue");
-  });
-
-  it("keeps a label's newlines but strips other control characters", () => {
-    const diagram = parseDiagram(
-      JSON.stringify({ nodes: [{ id: "a", label: "one\ntwo\u0007\u2028\u2029" }], edges: [] }),
-    );
-    expect(diagram.nodes[0]?.label).toBe("one\ntwo");
-  });
-});
+const box = { id: "a", type: "rectangle", x: 0, y: 0, width: 100, height: 50 };
 
 describe("diagramToSkeleton", () => {
-  it("lays unplaced nodes out left to right along their edges", () => {
-    const elements = diagramToSkeleton({
-      nodes: [{ id: "db" }, { id: "api" }],
-      edges: [{ id: "api-db", from: "api", to: "db" }],
-    }) as Positioned[];
-    const api = elements.find((e) => e.id === "node:api");
-    const db = elements.find((e) => e.id === "node:db");
-    expect(api?.x).toBe(0);
-    expect(db?.x).toBeGreaterThan(api!.x);
-  });
-
-  it("puts a node with x and y where it says", () => {
-    const [box] = diagramToSkeleton({
-      nodes: [{ id: "a", x: 500, y: -20 }],
-      edges: [],
-    }) as Positioned[];
-    expect(box).toMatchObject({ x: 500, y: -20 });
-  });
-
-  it("never lays an unplaced node over a placed one, wherever it sits in the list", () => {
-    const elements = diagramToSkeleton({
-      nodes: [
-        { id: "free" },
-        { id: "pinned", x: 0, y: 0 },
-        { id: "big", x: 0, y: 200, height: 300 },
-      ],
-      edges: [],
-    }) as Positioned[];
-    const free = elements.find((e) => e.id === "node:free");
-    expect(free?.x).toBe(0);
-    // "big" ends at y 500, and the first row clear of both placed boxes starts below it.
-    expect(free?.y).toBeGreaterThanOrEqual(500);
-  });
-
-  it("draws an arrow between the facing edges of its two shapes, bound to both", () => {
-    const elements = diagramToSkeleton({
-      nodes: [
-        { id: "a", x: 0, y: 0, width: 100, height: 50 },
-        { id: "b", x: 300, y: 0, width: 100, height: 50 },
-      ],
-      edges: [{ id: "a-b", from: "a", to: "b", dashed: true }],
+  it("keeps a shape's geometry and style, and draws its label in Helvetica", () => {
+    const [el] = draw([
+      {
+        ...box,
+        backgroundColor: "#a5d8ff",
+        fillStyle: "solid",
+        roundness: { type: 3 },
+        label: { text: "API", fontSize: 16 },
+      },
+    ]);
+    expect(el).toEqual({
+      ...box,
+      backgroundColor: "#a5d8ff",
+      fillStyle: "solid",
+      roundness: { type: 3 },
+      label: { text: "API", fontSize: 16, fontFamily: 2 },
     });
-    const arrow = elements.find((e) => e.id === "edge:a-b") as Positioned & Record<string, unknown>;
-    expect(arrow).toMatchObject({ x: 100, y: 25, width: 200, height: 0, strokeStyle: "dashed" });
-    expect(arrow.start).toEqual({ id: "node:a" });
-    expect(arrow.end).toEqual({ id: "node:b" });
   });
 
-  it("draws a text node as free text, not a labelled box", () => {
-    const [el] = diagramToSkeleton({
-      nodes: [{ id: "t", shape: "text", label: "Note" }],
-      edges: [],
-    });
-    expect(el).toMatchObject({ type: "text", text: "Note" });
+  it("drops properties it doesn't keep, and values that aren't valid", () => {
+    const [el] = draw([
+      { ...box, link: "https://evil.example", customData: {}, strokeColor: "red", opacity: 900 },
+    ]);
+    expect(el).toEqual(box);
+  });
+
+  it("drops elements with no usable id, type or position", () => {
+    expect(
+      draw([
+        { ...box, id: "a b" },
+        { ...box, id: "img", type: "image" },
+        { ...box, id: "nowhere", x: "0" },
+        { id: "t", type: "text", x: 0, y: 0 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps a label's newlines but strips other control characters and separators", () => {
+    const [el] = draw([{ ...box, label: { text: "one\ntwo\u0007\u2028\u2029\u202e" } }]);
+    expect(el?.label).toMatchObject({ text: "one\ntwo" });
+  });
+
+  it("binds an arrow only to shapes that are there", () => {
+    const [, , arrow] = draw([
+      box,
+      { ...box, id: "b", x: 300 },
+      {
+        id: "a-b",
+        type: "arrow",
+        x: 100,
+        y: 25,
+        points: [
+          [0, 0],
+          [200, 10],
+        ],
+        start: { id: "a" },
+        end: { id: "gone" },
+      },
+    ]);
+    expect(arrow).toMatchObject({ x: 100, y: 25, width: 200, height: 10, start: { id: "a" } });
+    expect(arrow).not.toHaveProperty("end");
+  });
+
+  it("keeps only children a frame can hold", () => {
+    const [, frame] = draw([box, { id: "f", type: "frame", children: ["a", "f", "missing"] }]);
+    expect(frame).toEqual({ id: "f", type: "frame", children: ["a"] });
+  });
+
+  it("reads empty content as an empty diagram", () => {
+    expect(diagramToSkeleton("")).toEqual([]);
   });
 });

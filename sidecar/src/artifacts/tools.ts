@@ -2,16 +2,17 @@ import { tool } from "ai";
 import { z } from "zod";
 import { hasReadUntrusted, type UntrustedReads } from "../chat/destructiveTools.ts";
 import type { Db } from "../db/client.ts";
+import type { Artifact } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
-  DIAGRAM_COLORS,
   DiagramError,
   diagramChangesSchema,
-  diagramSchema,
-  MAX_ARTIFACT_DIAGRAM_EDGES,
-  MAX_ARTIFACT_DIAGRAM_NODES,
+  ELEMENT_TYPES,
+  elementPatchSchema,
+  MAX_DIAGRAM_ELEMENTS,
   parseDiagram,
 } from "./diagram.ts";
+import { describeScene } from "./scene.ts";
 import {
   ARTIFACT_LIST_LIMIT,
   ArtifactAppendOnlyError,
@@ -51,7 +52,18 @@ const CHAT_ARTIFACT_KEPT =
   "This artifact came from a chat with the user, so only the user can delete it.";
 
 const DIAGRAM_APPEND_ONLY =
-  "This diagram came from a chat with the user, so you can only add new nodes and edges to it, without x, y, width or height: the app places them. Start a new diagram to change or remove what is there.";
+  "This diagram came from a chat with the user, so you can only add new elements to it. Start a new diagram to change or remove what is there.";
+
+const DIAGRAM_FORMAT = `It is an Excalidraw scene, written as Excalidraw element skeletons (what convertToExcalidrawElements takes). Every element needs an id you pick, e.g. "api" or "api-db", which update_diagram uses to change it. Types:
+- rectangle, ellipse, diamond: x, y, width, height; label {text, fontSize, textAlign, verticalAlign} draws text inside, and the shape grows to fit it.
+- text: x, y, text, fontSize.
+- arrow, line: start {id} and end {id} bind it to two shapes, and it is drawn straight between their outlines, following them when they move. Unbound, give x, y and points ([[0, 0], [dx, dy], ...], relative to x and y). startArrowhead/endArrowhead, label.
+- frame: children (ids), name; sized to its children unless you give x, y, width and height.
+Style on any element: strokeColor, backgroundColor (hex like "#a5d8ff", or "transparent"), fillStyle (solid, hachure, cross-hatch, zigzag), strokeWidth, strokeStyle (solid, dashed, dotted), roughness (0 is clean, 1 the default sketchy look), opacity (0-100), roundness {type: 3} for rounded corners, angle (radians), groupIds. Other Excalidraw properties are dropped.
+Coordinates are pixels and y grows downward. Later elements are drawn on top of earlier ones. The pane shows the diagram in dark mode by inverting its colours, so pick colours for a white background. Up to ${MAX_DIAGRAM_ELEMENTS} elements.`;
+
+const SCENE_HINT =
+  "The result describes where every element ended up (text sizes are estimates) and lists problems: overlaps, labels that don't fit, arrows that cross a shape. Check it, and fix what you didn't mean with update_diagram.";
 
 const DIAGRAM_NOT_TEXT =
   "That artifact is a diagram. Change it with update_diagram; update_artifact can't edit its content.";
@@ -66,6 +78,23 @@ const DIAGRAM_TOO_LARGE = `That would make the diagram longer than ${MAX_ARTIFAC
  */
 function artifactLink(id: string): string {
   return `yarvis://artifact/${id}`;
+}
+
+/**
+ * What the model sees of a diagram after a change or read. The element lines
+ * quote labels, which may come from an unattended run, so they are fenced;
+ * the problems name ids only.
+ */
+function sceneOf(artifact: Artifact, reads: UntrustedReads | undefined) {
+  if (reads && artifact.untrusted) reads.hasReadUntrustedArtifact = true;
+  const scene = describeScene(parseDiagram(artifact.content));
+  const nonce = newNonce();
+  return {
+    warning: untrustedWarning(nonce),
+    bounds: scene.bounds,
+    scene: fence(scene.elements.join("\n"), nonce),
+    problems: scene.problems,
+  };
 }
 
 const LINK_HINT =
@@ -143,7 +172,7 @@ export function buildArtifactTools(
 
     get_artifact: tool({
       description:
-        "Read one of your artifacts in full. A diagram's content is its JSON nodes and edges; read it before update_diagram so you use the ids already there.",
+        "Read one of your artifacts in full. A diagram's content is its JSON elements, and the result also describes where each one is drawn and what looks wrong; read it before update_diagram so you use the ids already there.",
       inputSchema: z.object({ id: uuid }),
       execute: async ({ id }) => {
         const artifact = await getArtifact(db, id);
@@ -161,6 +190,11 @@ export function buildArtifactTools(
           untrusted: artifact.untrusted,
           content: fence(artifact.content, nonce),
           updatedAt: artifact.updatedAt.toISOString(),
+          ...(artifact.format === "excalidraw"
+            ? (({ bounds, problems }) => ({ bounds, problems }))(
+                describeScene(parseDiagram(artifact.content)),
+              )
+            : {}),
         };
       },
     }),
@@ -192,25 +226,27 @@ export function buildArtifactTools(
     }),
 
     create_diagram: tool({
-      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. It is drawn in Excalidraw. Nodes are boxes (or ellipses, diamonds, or free text); edges are arrows between two nodes. Pick short, meaningful ids (e.g. "api", "db", "api-db") so you can change one element later with update_diagram. Leave out x/y and the nodes are laid out left to right along the edges; give x/y (pixels, y grows downward) on every node to place them yourself. Up to ${MAX_ARTIFACT_DIAGRAM_NODES} nodes and ${MAX_ARTIFACT_DIAGRAM_EDGES} edges, and ${MAX_ARTIFACT_CHARS} characters in all. ${LINK_HINT}`,
+      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. ${DIAGRAM_FORMAT} ${SCENE_HINT} ${LINK_HINT}`,
       inputSchema: z.object({
         title: title.describe("Short and specific, e.g. 'Checkout service architecture'"),
-        nodes: diagramSchema.shape.nodes.describe(
-          `Each needs an id. label is the text shown; shape defaults to rectangle; color is one of ${DIAGRAM_COLORS.join(", ")}`,
-        ),
-        edges: diagramSchema.shape.edges
-          .default([])
-          .describe("Arrows from one node id to another, each with its own id"),
+        elements: z
+          .array(elementPatchSchema.extend({ type: z.enum(ELEMENT_TYPES) }))
+          .max(MAX_DIAGRAM_ELEMENTS),
       }),
-      execute: async ({ title: t, nodes, edges }) => {
+      execute: async ({ title: t, elements }) => {
         try {
           const artifact = await createDiagram(db, {
             title: t,
-            diagram: { nodes, edges },
+            elements,
             writer,
             untrusted: tainted(),
           });
-          return { id: artifact.id, title: artifact.title, link: artifactLink(artifact.id) };
+          return {
+            id: artifact.id,
+            title: artifact.title,
+            link: artifactLink(artifact.id),
+            ...sceneOf(artifact, reads),
+          };
         } catch (err) {
           if (err instanceof DiagramError) return { error: err.message };
           if (err instanceof ArtifactTooLargeError) return { error: DIAGRAM_TOO_LARGE };
@@ -220,10 +256,10 @@ export function buildArtifactTools(
     }),
 
     update_diagram: tool({
-      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsertNodes and upsertEdges add an element, or change the fields you give on the one with that id and keep the rest. A field you leave out keeps its value; to clear one, remove the element and add it again. A new edge needs from and to. removeNodes also removes the edges attached to those nodes. Removals run first, then node upserts, then edge upserts. Use get_artifact to see the current ids. Set addOnly when every node and edge you send is new and you remove nothing: such a change doesn't need the user's approval unless it gives a node x, y, width or height, and it is refused if it would touch an existing element.${
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsert takes elements by id: for an id that exists, the properties you send replace those on the element and the rest are kept (null clears one); a new id adds an element, which needs a type and what that type requires. remove deletes elements by id; removing a shape also removes the arrows and lines bound to it. Removals run first, then upserts in order. The format is the one create_diagram describes, and get_artifact shows the current elements. ${SCENE_HINT} Set addOnly when every id you upsert is new and you remove nothing: such a change doesn't need the user's approval, and it is refused if it would touch an existing element.${
         writer === "chat"
           ? ""
-          : " You can only add new nodes and edges to a diagram that came from a chat with the user, without x, y, width or height."
+          : " You can only add new elements to a diagram that came from a chat with the user."
       }`,
       inputSchema: diagramChangesSchema.extend({
         id: uuid,
@@ -243,13 +279,7 @@ export function buildArtifactTools(
             untrusted: tainted(),
           });
           if (!artifact) return { error: "no artifact with that id" };
-          const diagram = parseDiagram(artifact.content);
-          return {
-            id: artifact.id,
-            nodes: diagram.nodes.length,
-            edges: diagram.edges.length,
-            link: artifactLink(artifact.id),
-          };
+          return { id: artifact.id, link: artifactLink(artifact.id), ...sceneOf(artifact, reads) };
         } catch (err) {
           if (err instanceof DiagramError) return { error: err.message };
           if (err instanceof NotADiagramError) return { error: NOT_A_DIAGRAM };

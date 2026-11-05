@@ -40,8 +40,8 @@ export interface PrGuideGraph {
 const BOX_WIDTH = 240;
 const BOX_HEIGHT = 80;
 /** Wide enough for an edge's label to sit on its arrow between two columns. */
-export const COLUMN_GAP = 140;
-export const ROW_GAP = 40;
+const COLUMN_GAP = 140;
+const ROW_GAP = 40;
 
 /*
  * The change's own code stands out; the code around it recedes. These are
@@ -51,7 +51,7 @@ export const ROW_GAP = 40;
  */
 const CHANGED_STYLE = { strokeColor: "#1971c2", backgroundColor: "#a5d8ff" } as const;
 const CONTEXT_STYLE = { strokeColor: "#868e96", backgroundColor: "transparent" } as const;
-export const ARROW_COLOR = "#495057";
+const ARROW_COLOR = "#495057";
 
 /**
  * Excalidraw's Helvetica, which is a system font. Its hand-drawn default is
@@ -60,7 +60,7 @@ export const ARROW_COLOR = "#495057";
 export const LABEL_FONT_FAMILY = 2;
 
 /** Excalidraw's `ROUNDNESS.ADAPTIVE_RADIUS`, written out so this file loads no Excalidraw code. */
-export const ADAPTIVE_RADIUS = 3;
+const ADAPTIVE_RADIUS = 3;
 
 /**
  * Each node's column: how many hops it sits from the outermost code that calls
@@ -72,10 +72,7 @@ export const ADAPTIVE_RADIUS = 3;
  * every node of an acyclic graph, and in a cyclic one it leaves the cycle's
  * nodes in some column rather than pushing them ever further right.
  */
-export function nodeColumns(graph: {
-  nodes: readonly { id: string }[];
-  edges: readonly { from: string; to: string }[];
-}): Map<string, number> {
+export function nodeColumns(graph: PrGuideGraph): Map<string, number> {
   const column = new Map(graph.nodes.map((n) => [n.id, 0]));
   const lastColumn = graph.nodes.length - 1;
   const edges = graph.edges.filter((e) => column.has(e.from) && column.has(e.to));

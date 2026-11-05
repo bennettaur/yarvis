@@ -135,13 +135,13 @@ describe("/api/artifacts", () => {
   it("streams a change signal for one artifact, and ends after its delete", async () => {
     const artifact = await createDiagram(db, {
       title: "Flow",
-      diagram: { nodes: [{ id: "a" }], edges: [] },
+      elements: [{ id: "a", type: "rectangle", x: 0, y: 0, width: 100, height: 50 }],
     });
     const stream = await openStream(artifact.id);
     const { reader } = stream;
     const readUntil = (needle: string) => stream.readUntil(needle);
     await readUntil('"ping"');
-    await updateDiagram(db, artifact.id, { changes: { upsertNodes: [{ id: "b" }] } });
+    await updateDiagram(db, artifact.id, { changes: { upsert: [{ id: "a", x: 40 }] } });
     await readUntil('"updated"');
     await deleteArtifact(db, artifact.id);
     await readUntil('"deleted"');
