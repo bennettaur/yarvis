@@ -638,24 +638,25 @@ describe("diagram tools", () => {
     const made = (await tools.create_diagram.execute!(
       { title: "Flow", elements: [shape("a"), shape("b", 50, 25)] },
       opts,
-    )) as { id: string; link: string; scene: string; problems: string[]; bounds: string };
+    )) as { id: string; link: string; scene: string; problems: string; bounds: string };
     expect(made.link).toBe(`yarvis://artifact/${made.id}`);
     expect(made.scene).toContain("a: rectangle at (0, 0) 100x50");
     expect(made.scene).toMatch(/^<recalled-content-\w+>/);
-    expect(made.problems).toEqual(["a and b overlap"]);
+    expect(made.problems).toMatch(/^<recalled-content-\w+>\na and b overlap\n/);
 
     const moved = (await tools.update_diagram.execute!(
       { id: made.id, upsert: [{ id: "b", x: 300 }] },
       opts,
-    )) as { problems: string[]; scene: string };
-    expect(moved.problems).toEqual([]);
+    )) as { problems: string; scene: string };
+    expect(moved.problems).toContain("\nnone\n");
     expect(moved.scene).toContain("b: rectangle at (300, 25)");
 
     const read = (await tools.get_artifact.execute!({ id: made.id }, opts)) as {
       bounds: string;
-      problems: string[];
+      problems: string;
     };
-    expect(read).toMatchObject({ bounds: "(0, 0) to (400, 75)", problems: [] });
+    expect(read.bounds).toBe("(0, 0) to (400, 75)");
+    expect(read.problems).toContain("\nnone\n");
   });
 
   it("counts reading back an untrusted diagram as an untrusted read", async () => {

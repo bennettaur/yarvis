@@ -55,11 +55,12 @@ const DIAGRAM_APPEND_ONLY =
   "This diagram came from a chat with the user, so you can only add new elements to it. Start a new diagram to change or remove what is there.";
 
 const DIAGRAM_FORMAT = `It is an Excalidraw scene, written as Excalidraw element skeletons (what convertToExcalidrawElements takes). Every element needs an id you pick, e.g. "api" or "api-db", which update_diagram uses to change it. Types:
-- rectangle, ellipse, diamond: x, y, width, height; label {text, fontSize, textAlign, verticalAlign} draws text inside, and the shape grows to fit it.
-- text: x, y, text, fontSize.
-- arrow, line: start {id} and end {id} bind it to two shapes, and it is drawn straight between their outlines, following them when they move. Unbound, give x, y and points ([[0, 0], [dx, dy], ...], relative to x and y). startArrowhead/endArrowhead, label.
-- frame: children (ids), name; sized to its children unless you give x, y, width and height.
-Style on any element: strokeColor, backgroundColor (hex like "#a5d8ff", or "transparent"), fillStyle (solid, hachure, cross-hatch, zigzag), strokeWidth, strokeStyle (solid, dashed, dotted), roughness (0 is clean, 1 the default sketchy look), opacity (0-100), roundness {type: 3} for rounded corners, angle (radians), groupIds. Other Excalidraw properties are dropped.
+- rectangle, ellipse, diamond: x, y, width, height; label {text, fontSize, textAlign, verticalAlign, strokeColor} draws text inside, and the shape grows downward to fit it.
+- text: x, y, text, fontSize, textAlign.
+- arrow: start {id} and end {id} bind it to two different shapes, and it is drawn straight between their outlines, following them when they move. Unbound, give x, y and points ([[0, 0], [dx, dy], ...], relative to x and y). startArrowhead/endArrowhead: arrow (the default end), bar, dot, circle, triangle, diamond, or null for none. label {text, fontSize}.
+- line: x, y and points; it can't bind, carry a label or have arrowheads.
+- frame: children (ids), name. Each of x, y, width and height you leave out is fitted to the children, and arrows bound to a child are put in the frame too, so an arrow out of a frame stretches it.
+Style on every type but frame: strokeColor, backgroundColor (hex like "#a5d8ff", or "transparent"), fillStyle (solid, hachure, cross-hatch, zigzag), strokeWidth, strokeStyle (solid, dashed, dotted), roughness (0 is clean, 1 the default sketchy look), opacity (0-100), angle (radians), groupIds, and roundness: {type: 3} rounds a shape's corners, {type: 2} curves an arrow or line through its points. Text is always drawn in Helvetica, and other Excalidraw properties are dropped.
 Coordinates are pixels and y grows downward. Later elements are drawn on top of earlier ones. The pane shows the diagram in dark mode by inverting its colours, so pick colours for a white background. Up to ${MAX_DIAGRAM_ELEMENTS} elements.`;
 
 const SCENE_HINT =
@@ -81,9 +82,8 @@ function artifactLink(id: string): string {
 }
 
 /**
- * What the model sees of a diagram after a change or read. The element lines
- * quote labels, which may come from an unattended run, so they are fenced;
- * the problems name ids only.
+ * What the model sees of a diagram after a change or read. Labels and ids may
+ * come from an unattended run, so the scene and the problems are both fenced.
  */
 function sceneOf(artifact: Artifact, reads: UntrustedReads | undefined) {
   if (reads && artifact.untrusted) reads.hasReadUntrustedArtifact = true;
@@ -93,7 +93,7 @@ function sceneOf(artifact: Artifact, reads: UntrustedReads | undefined) {
     warning: untrustedWarning(nonce),
     bounds: scene.bounds,
     scene: fence(scene.elements.join("\n"), nonce),
-    problems: scene.problems,
+    problems: fence(scene.problems.join("\n") || "none", nonce),
   };
 }
 
@@ -191,9 +191,10 @@ export function buildArtifactTools(
           content: fence(artifact.content, nonce),
           updatedAt: artifact.updatedAt.toISOString(),
           ...(artifact.format === "excalidraw"
-            ? (({ bounds, problems }) => ({ bounds, problems }))(
-                describeScene(parseDiagram(artifact.content)),
-              )
+            ? (({ bounds, problems }) => ({
+                bounds,
+                problems: fence(problems.join("\n") || "none", nonce),
+              }))(describeScene(parseDiagram(artifact.content)))
             : {}),
         };
       },
@@ -256,7 +257,7 @@ export function buildArtifactTools(
     }),
 
     update_diagram: tool({
-      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsert takes elements by id: for an id that exists, the properties you send replace those on the element and the rest are kept (null clears one); a new id adds an element, which needs a type and what that type requires. remove deletes elements by id; removing a shape also removes the arrows and lines bound to it. Removals run first, then upserts in order. The format is the one create_diagram describes, and get_artifact shows the current elements. ${SCENE_HINT} Set addOnly when every id you upsert is new and you remove nothing: such a change doesn't need the user's approval, and it is refused if it would touch an existing element.${
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsert takes elements by id: for an id that exists, the properties you send replace those on the element and the rest are kept (null clears one, except an arrowhead or roundness, where null means none); a new id adds an element, which needs a type and what that type requires. remove deletes elements by id; removing a shape also removes the arrows bound to it. Removals run first, then upserts in order. The format is the one create_diagram describes, and get_artifact shows the current elements. ${SCENE_HINT} Set addOnly when every id you upsert is new and you remove nothing: such a change doesn't need the user's approval, and it is refused if it would touch an existing element.${
         writer === "chat"
           ? ""
           : " You can only add new elements to a diagram that came from a chat with the user."

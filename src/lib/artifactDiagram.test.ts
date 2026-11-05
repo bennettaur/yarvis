@@ -77,6 +77,46 @@ describe("diagramToSkeleton", () => {
     expect(frame).toEqual({ id: "f", type: "frame", children: ["a"] });
   });
 
+  it("leaves a frame child out when the child itself was dropped", () => {
+    const drawn = draw([
+      { ...box, width: -5 },
+      { id: "f", type: "frame", children: ["a"] },
+    ]);
+    expect(drawn).toEqual([{ id: "f", type: "frame", children: [] }]);
+  });
+
+  it("draws a line as a path only, and a curve when it has roundness", () => {
+    const [, line] = draw([
+      box,
+      {
+        id: "l",
+        type: "line",
+        x: 0,
+        y: 0,
+        points: [
+          [0, 0],
+          [10, 5],
+        ],
+        start: { id: "a" },
+        label: { text: "x" },
+        roundness: { type: 2 },
+      },
+    ]);
+    expect(line).toEqual({
+      id: "l",
+      type: "line",
+      x: 0,
+      y: 0,
+      points: [
+        [0, 0],
+        [10, 5],
+      ],
+      width: 10,
+      height: 5,
+      roundness: { type: 2 },
+    });
+  });
+
   it("reads empty content as an empty diagram", () => {
     expect(diagramToSkeleton("")).toEqual([]);
   });

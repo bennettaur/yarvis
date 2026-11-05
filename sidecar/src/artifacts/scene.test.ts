@@ -65,6 +65,27 @@ describe("what the agent sees of a diagram", () => {
     expect(s.elements[2]).toBe('f: frame "Backend" at (-10, -10) 320x170 holding a, b');
   });
 
+  it("grows an ellipse more than a rectangle for the same label, since less of it holds text", () => {
+    const text = "a label that needs a couple of lines";
+    const s = scene([
+      box("r", 0, 0, { width: 160, height: 60, label: { text } }),
+      box("e", 0, 300, { type: "ellipse", width: 160, height: 60, label: { text } }),
+    ]);
+    const height = (line: string) => Number(line.match(/ \d+x(\d+)/)?.[1]);
+    expect(height(s.elements[1]!)).toBeGreaterThan(height(s.elements[0]!));
+  });
+
+  it("fits a frame's unset fields to its children and the arrows bound to them", () => {
+    const s = scene([
+      box("a", 0, 0),
+      box("out", 400, 0),
+      { id: "a-out", type: "arrow", start: { id: "a" }, end: { id: "out" } },
+      { id: "f", type: "frame", children: ["a"], x: -20, y: -20 },
+    ]);
+    // Placed where it says, and sized to span "a" and the arrow's end at x 400, padded by 10.
+    expect(s.elements[3]).toBe("f: frame at (-20, -20) 420x70 holding a");
+  });
+
   it("counts the problems past the first 25 rather than listing them", () => {
     const stacked = Array.from({ length: 10 }, (_, i) => box(`n${i}`, i * 10, 0));
     const s = scene(stacked);

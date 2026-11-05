@@ -93,10 +93,92 @@ function points(v: unknown): [number, number][] | undefined {
   return out;
 }
 
+const roundnessOf = (v: unknown) =>
+  v === null ? null : isObj(v) && num(v.type, 1, 3) !== undefined ? { type: v.type } : undefined;
+
+function shape(e: Obj): Obj | undefined {
+  const x = coord(e.x);
+  const y = coord(e.y);
+  const width = num(e.width, 1, 5_000);
+  const height = num(e.height, 1, 5_000);
+  if (x === undefined || y === undefined || width === undefined || height === undefined) {
+    return undefined;
+  }
+  return defined({
+    type: e.type,
+    id: e.id,
+    x,
+    y,
+    width,
+    height,
+    roundness: roundnessOf(e.roundness),
+    label: label(e.label),
+    ...style(e),
+  });
+}
+
+function textElement(e: Obj): Obj | undefined {
+  const x = coord(e.x);
+  const y = coord(e.y);
+  const text = cleanText(e.text);
+  if (x === undefined || y === undefined || !text) return undefined;
+  return { type: "text", id: e.id, x, y, text, ...textStyle(e), ...style(e) };
+}
+
+/** An arrow binds to shapes that were kept; Excalidraw does nothing with a line's bindings or label. */
+function path(e: Obj, shapeIds: Set<unknown>): Obj | undefined {
+  const x = coord(e.x);
+  const y = coord(e.y);
+  const pts = points(e.points);
+  if (x === undefined || y === undefined || !pts) return undefined;
+  const xs = pts.map(([px]) => px);
+  const ys = pts.map(([, py]) => py);
+  const bind = (v: unknown) =>
+    isObj(v) && typeof v.id === "string" && shapeIds.has(v.id) ? { id: v.id } : undefined;
+  const arrowOnly =
+    e.type === "arrow"
+      ? {
+          start: bind(e.start),
+          end: bind(e.end),
+          startArrowhead: e.startArrowhead === null ? null : oneOf(e.startArrowhead, ARROWHEADS),
+          endArrowhead: e.endArrowhead === null ? null : oneOf(e.endArrowhead, ARROWHEADS),
+          label: label(e.label),
+        }
+      : {};
+  return defined({
+    type: e.type,
+    id: e.id,
+    x,
+    y,
+    points: pts,
+    width: Math.max(...xs) - Math.min(...xs),
+    height: Math.max(...ys) - Math.min(...ys),
+    roundness: roundnessOf(e.roundness),
+    ...arrowOnly,
+    ...style(e),
+  });
+}
+
+/** A frame holds only elements that were kept: Excalidraw throws on a child it can't find. */
+function frame(e: Obj, kept: Set<unknown>): Obj {
+  const children = Array.isArray(e.children) ? e.children.filter((c) => kept.has(c)) : [];
+  return defined({
+    type: "frame",
+    id: e.id,
+    children,
+    name: cleanText(e.name)?.slice(0, 100),
+    x: coord(e.x),
+    y: coord(e.y),
+    width: num(e.width, 1, 5_000),
+    height: num(e.height, 1, 5_000),
+  });
+}
+
 /**
  * Reads an artifact's stored content into skeletons. The sidecar validated it
  * on write, but anything malformed is dropped here rather than handed to
- * Excalidraw.
+ * Excalidraw. Shapes and text are read first, so arrows bind and frames hold
+ * only what survived.
  */
 export function diagramToSkeleton(content: string): ExcalidrawElementSkeleton[] {
   if (content.trim() === "") return [];
@@ -104,83 +186,21 @@ export function diagramToSkeleton(content: string): ExcalidrawElementSkeleton[] 
   const all = (Array.isArray(raw.elements) ? raw.elements : []).filter(
     (e): e is Obj => isObj(e) && typeof e.id === "string" && ID.test(e.id),
   );
-  const shapeIds = new Set(all.filter((e) => SHAPES.has(e.type as string)).map((e) => e.id));
-  const framable = new Set(all.filter((e) => e.type !== "frame").map((e) => e.id));
-  const bind = (v: unknown) =>
-    isObj(v) && typeof v.id === "string" && shapeIds.has(v.id) ? { id: v.id } : undefined;
-
-  const out: Obj[] = [];
+  const read = new Map<Obj, Obj | undefined>();
   for (const e of all) {
-    const x = coord(e.x);
-    const y = coord(e.y);
-    if (SHAPES.has(e.type as string)) {
-      const width = num(e.width, 1, 5_000);
-      const height = num(e.height, 1, 5_000);
-      if (x === undefined || y === undefined || width === undefined || height === undefined) {
-        continue;
-      }
-      const roundness =
-        e.roundness === null
-          ? null
-          : isObj(e.roundness) && num(e.roundness.type, 1, 3) !== undefined
-            ? { type: e.roundness.type }
-            : undefined;
-      out.push(
-        defined({
-          type: e.type,
-          id: e.id,
-          x,
-          y,
-          width,
-          height,
-          roundness,
-          label: label(e.label),
-          ...style(e),
-        }),
-      );
-    } else if (e.type === "text") {
-      const text = cleanText(e.text);
-      if (x === undefined || y === undefined || !text) continue;
-      out.push({ type: "text", id: e.id, x, y, text, ...textStyle(e), ...style(e) });
-    } else if (e.type === "arrow" || e.type === "line") {
-      const pts = points(e.points);
-      if (x === undefined || y === undefined || !pts) continue;
-      const xs = pts.map(([px]) => px);
-      const ys = pts.map(([, py]) => py);
-      out.push(
-        defined({
-          type: e.type,
-          id: e.id,
-          x,
-          y,
-          points: pts,
-          width: Math.max(...xs) - Math.min(...xs),
-          height: Math.max(...ys) - Math.min(...ys),
-          start: bind(e.start),
-          end: bind(e.end),
-          startArrowhead: e.startArrowhead === null ? null : oneOf(e.startArrowhead, ARROWHEADS),
-          endArrowhead: e.endArrowhead === null ? null : oneOf(e.endArrowhead, ARROWHEADS),
-          label: label(e.label),
-          ...style(e),
-        }),
-      );
-    } else if (e.type === "frame") {
-      const children = Array.isArray(e.children)
-        ? e.children.filter((c): c is string => typeof c === "string" && framable.has(c))
-        : [];
-      out.push(
-        defined({
-          type: "frame",
-          id: e.id,
-          children,
-          name: cleanText(e.name)?.slice(0, 100),
-          x,
-          y,
-          width: num(e.width, 1, 5_000),
-          height: num(e.height, 1, 5_000),
-        }),
-      );
-    }
+    if (SHAPES.has(e.type as string)) read.set(e, shape(e));
+    else if (e.type === "text") read.set(e, textElement(e));
   }
-  return out as unknown as ExcalidrawElementSkeleton[];
+  const shapeIds = new Set(
+    [...read.values()].filter((o) => o && SHAPES.has(o.type as string)).map((o) => o?.id),
+  );
+  for (const e of all) {
+    if (e.type === "arrow" || e.type === "line") read.set(e, path(e, shapeIds));
+  }
+  const kept = new Set([...read.values()].filter(Boolean).map((o) => o?.id));
+  for (const e of all) {
+    if (e.type === "frame") read.set(e, frame(e, kept));
+  }
+  // Drawn in the stored order, since later elements are drawn on top.
+  return all.flatMap((e) => read.get(e) ?? []) as unknown as ExcalidrawElementSkeleton[];
 }

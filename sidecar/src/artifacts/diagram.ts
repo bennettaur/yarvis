@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { shapeHeight } from "./textMetrics.ts";
 
 /**
  * The content of an `excalidraw` artifact: Excalidraw element skeletons, the
@@ -9,8 +10,8 @@ import { z } from "zod";
  * Only the properties below are kept. Everything else is dropped, so a stored
  * diagram can't carry a link, an image or custom data into the app.
  *
- * An arrow or line bound to a shape at both ends gets its position from those
- * shapes on every write, so moving a shape moves its arrows.
+ * An arrow bound to a shape at both ends gets its position from those shapes
+ * on every write, so moving a shape moves its arrows.
  */
 
 /** Past this a diagram is too big to read on screen, and too big to describe back to the model. */
@@ -19,7 +20,6 @@ export const MAX_DIAGRAM_ELEMENTS = 600;
 export const SHAPE_TYPES = ["rectangle", "ellipse", "diamond"] as const;
 export const ELEMENT_TYPES = [...SHAPE_TYPES, "text", "arrow", "line", "frame"] as const;
 export type ShapeType = (typeof SHAPE_TYPES)[number];
-export type ElementType = (typeof ELEMENT_TYPES)[number];
 
 /** Plain ids, so one can't break out of the element ids Excalidraw builds from it. */
 const elementId = z
@@ -38,6 +38,14 @@ const fontSize = z.number().finite().min(8).max(200);
 const textAlign = z.enum(["left", "center", "right"]);
 const verticalAlign = z.enum(["top", "middle", "bottom"]);
 const arrowhead = z.enum(["arrow", "bar", "dot", "circle", "triangle", "diamond"]).nullable();
+/** 3 rounds a shape's corners, 2 curves a line through its points; null keeps them sharp. */
+const roundness = z.object({ type: z.number().int().min(1).max(3) }).nullable();
+/** Relative to x and y. The first point is usually [0, 0]. */
+const points = z
+  .array(z.tuple([coordinate, coordinate]))
+  .min(2)
+  .max(100);
+const binding = z.object({ id: elementId });
 
 const label = z.object({
   text,
@@ -67,10 +75,7 @@ const shapeSchema = z.object({
   y: coordinate,
   width: size,
   height: size,
-  roundness: z
-    .object({ type: z.number().int().min(1).max(3) })
-    .nullable()
-    .optional(),
+  roundness: roundness.optional(),
   label: label.optional(),
   ...style,
 });
@@ -87,27 +92,33 @@ const textSchema = z.object({
   ...style,
 });
 
-const binding = z.object({ id: elementId });
-
-const linearSchema = z.object({
+const arrowSchema = z.object({
   id: elementId,
-  type: z.enum(["arrow", "line"]),
+  type: z.literal("arrow"),
   x: coordinate.optional(),
   y: coordinate.optional(),
-  /** Relative to x and y. The first point is usually [0, 0]. */
-  points: z
-    .array(z.tuple([coordinate, coordinate]))
-    .min(2)
-    .max(100)
-    .optional(),
+  points: points.optional(),
   start: binding.optional(),
   end: binding.optional(),
   startArrowhead: arrowhead.optional(),
   endArrowhead: arrowhead.optional(),
   label: label.optional(),
+  roundness: roundness.optional(),
   ...style,
 });
 
+/** Excalidraw binds, labels and puts heads on arrows only, so a line is just a path. */
+const lineSchema = z.object({
+  id: elementId,
+  type: z.literal("line"),
+  x: coordinate,
+  y: coordinate,
+  points,
+  roundness: roundness.optional(),
+  ...style,
+});
+
+/** Excalidraw gives a frame no style of its own. */
 const frameSchema = z.object({
   id: elementId,
   type: z.literal("frame"),
@@ -122,7 +133,8 @@ const frameSchema = z.object({
 export const diagramElementSchema = z.discriminatedUnion("type", [
   shapeSchema,
   textSchema,
-  linearSchema,
+  arrowSchema,
+  lineSchema,
   frameSchema,
 ]);
 
@@ -132,22 +144,20 @@ export const diagramSchema = z.object({
 
 export type DiagramElement = z.infer<typeof diagramElementSchema>;
 export type ShapeElement = z.infer<typeof shapeSchema>;
-export type TextElement = z.infer<typeof textSchema>;
-export type LinearElement = z.infer<typeof linearSchema>;
-export type FrameElement = z.infer<typeof frameSchema>;
+export type ArrowElement = z.infer<typeof arrowSchema>;
 export type Diagram = z.infer<typeof diagramSchema>;
 
 /*
  * An upsert names an element by id and sends only the properties it changes.
  * Every property an element can have is listed here, so the tool's schema
- * shows the model what it can set; null clears one.
+ * shows the model what it can set.
  */
 const patchable = {
   x: coordinate,
   y: coordinate,
   width: size,
   height: size,
-  points: linearSchema.shape.points.unwrap(),
+  points,
   start: binding,
   end: binding,
   startArrowhead: arrowhead,
@@ -157,7 +167,7 @@ const patchable = {
   fontSize,
   textAlign,
   verticalAlign,
-  roundness: z.object({ type: z.number().int().min(1).max(3) }).nullable(),
+  roundness,
   name: frameSchema.shape.name.unwrap(),
   children: frameSchema.shape.children,
   strokeColor: color,
@@ -179,12 +189,17 @@ export const elementPatchSchema = z.object({
   ) as { [K in keyof typeof patchable]: z.ZodOptional<z.ZodNullable<(typeof patchable)[K]>> }),
 });
 
-export type ElementPatch = z.infer<typeof elementPatchSchema>;
+/**
+ * Where null is a value of its own (no arrowhead, sharp corners) rather than
+ * "not set". Everywhere else a null clears the property, or on a new element
+ * leaves it unset, since some models fill every property they don't use with one.
+ */
+const NULL_IS_A_VALUE = new Set(["startArrowhead", "endArrowhead", "roundness"]);
 
 /** A change to a diagram: removals first, then upserts in order. */
 export const diagramChangesSchema = z.object({
   upsert: z.array(elementPatchSchema).max(MAX_DIAGRAM_ELEMENTS).optional(),
-  /** Removing a shape also removes the arrows and lines bound to it. */
+  /** Removing a shape also removes the arrows bound to it. */
   remove: z.array(elementId).max(MAX_DIAGRAM_ELEMENTS).optional(),
 });
 
@@ -192,11 +207,17 @@ export type DiagramChanges = z.infer<typeof diagramChangesSchema>;
 
 export class DiagramError extends Error {}
 
-/** True when the changes only add elements, never touching one already there. */
+/**
+ * True when the changes only add elements, never touching one already there.
+ * A new frame that holds an existing element counts as touching it, since the
+ * frame clips what it holds.
+ */
 export function onlyAdds(diagram: Diagram, changes: DiagramChanges): boolean {
   if (changes.remove?.length) return false;
   const ids = new Set(diagram.elements.map((e) => e.id));
-  return !(changes.upsert ?? []).some((e) => ids.has(e.id));
+  return !(changes.upsert ?? []).some(
+    (e) => ids.has(e.id) || (e.children ?? []).some((child) => ids.has(child)),
+  );
 }
 
 /** Reads stored content back. An empty string is an empty diagram, so a fresh row needs no seeding. */
@@ -212,10 +233,17 @@ function describeIssue(err: z.ZodError, id: string): string {
   return `element "${id}": ${path ? `${path}: ` : ""}${issue?.message ?? "invalid"}`;
 }
 
+const withoutUnsetNulls = (element: unknown) =>
+  element && typeof element === "object"
+    ? Object.fromEntries(
+        Object.entries(element).filter(([k, v]) => v !== null || NULL_IS_A_VALUE.has(k)),
+      )
+    : element;
+
 /** Parses elements a tool call sent, naming the first bad one. */
 export function parseElements(elements: unknown[]): DiagramElement[] {
   return elements.map((element) => {
-    const parsed = diagramElementSchema.safeParse(element);
+    const parsed = diagramElementSchema.safeParse(withoutUnsetNulls(element));
     if (parsed.success) return parsed.data;
     const id = (element as { id?: unknown } | null)?.id;
     throw new DiagramError(describeIssue(parsed.error, typeof id === "string" ? id : "?"));
@@ -227,8 +255,8 @@ const isShape = (e: DiagramElement | undefined): e is ShapeElement =>
 
 /**
  * Checks what a whole diagram must satisfy beyond its schema, and places the
- * arrows and lines bound at both ends. Throws DiagramError naming the first
- * problem, worded for the model to fix.
+ * arrows bound at both ends. Throws DiagramError naming the first problem,
+ * worded for the model to fix.
  */
 export function checkDiagram(diagram: Diagram): Diagram {
   if (diagram.elements.length > MAX_DIAGRAM_ELEMENTS) {
@@ -254,20 +282,23 @@ export function checkDiagram(diagram: Diagram): Diagram {
       }
       return element;
     }
-    if (element.type !== "arrow" && element.type !== "line") return element;
+    if (element.type !== "arrow") return element;
     for (const end of [element.start, element.end]) {
       if (end && !isShape(byId.get(end.id))) {
         throw new DiagramError(
-          `${element.type} "${element.id}" is bound to "${end.id}", which is not a rectangle, ellipse or diamond`,
+          `arrow "${element.id}" is bound to "${end.id}", which is not a rectangle, ellipse or diamond`,
         );
       }
+    }
+    if (element.start && element.start.id === element.end?.id) {
+      throw new DiagramError(`arrow "${element.id}" starts and ends on the same shape`);
     }
     const from = element.start && (byId.get(element.start.id) as ShapeElement);
     const to = element.end && (byId.get(element.end.id) as ShapeElement);
     if (from && to) return connect(element, from, to);
     if (element.x === undefined || element.y === undefined || !element.points) {
       throw new DiagramError(
-        `${element.type} "${element.id}" needs start and end shapes, or x, y and points`,
+        `arrow "${element.id}" needs start and end shapes, or x, y and points`,
       );
     }
     return element;
@@ -277,18 +308,17 @@ export function checkDiagram(diagram: Diagram): Diagram {
 
 /**
  * Applies removals, then upserts in order. An upsert merges into the element
- * with its id, a null clears a property, and the result must be a whole
- * element of its type, so a new one needs everything its type requires.
+ * with its id, a null clears a property (see `NULL_IS_A_VALUE`), and the
+ * result must be a whole element of its type, so a new one needs everything
+ * its type requires.
  */
 export function applyDiagramChanges(diagram: Diagram, changes: DiagramChanges): Diagram {
   const removed = new Set(changes.remove ?? []);
   const elements = new Map<string, Record<string, unknown>>();
   for (const element of diagram.elements) {
     if (removed.has(element.id)) continue;
-    const linear = element.type === "arrow" || element.type === "line";
-    if (linear && (removed.has(element.start?.id ?? "") || removed.has(element.end?.id ?? ""))) {
-      continue;
-    }
+    const bound = element.type === "arrow" ? [element.start?.id, element.end?.id] : [];
+    if (bound.some((id) => id !== undefined && removed.has(id))) continue;
     if (element.type === "frame") {
       elements.set(element.id, {
         ...element,
@@ -311,7 +341,7 @@ export function applyDiagramChanges(diagram: Diagram, changes: DiagramChanges): 
     }
     const merged: Record<string, unknown> = { ...current };
     for (const [key, value] of Object.entries(patch)) {
-      if (value === null) delete merged[key];
+      if (value === null && !NULL_IS_A_VALUE.has(key)) delete merged[key];
       else if (value !== undefined) merged[key] = value;
     }
     elements.set(patch.id, merged);
@@ -355,10 +385,12 @@ export function outlinePoint(
   return { x: c.x + dx * scale, y: c.y + dy * scale };
 }
 
-/** A straight line from one shape's outline to the other's. */
-function connect(element: LinearElement, from: ShapeElement, to: ShapeElement): LinearElement {
-  const start = outlinePoint(from, center(to));
-  const end = outlinePoint(to, center(from));
+/** A straight line from one shape's outline to the other's, at the height each is drawn. */
+function connect(element: ArrowElement, from: ShapeElement, to: ShapeElement): ArrowElement {
+  const a = { ...from, height: shapeHeight(from) };
+  const b = { ...to, height: shapeHeight(to) };
+  const start = outlinePoint(a, center(b));
+  const end = outlinePoint(b, center(a));
   return {
     ...element,
     x: round(start.x),

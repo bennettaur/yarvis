@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import {
+  type ArrowElement,
   applyDiagramChanges,
   checkDiagram,
   type Diagram,
   DiagramError,
   diagramChangesSchema,
-  type LinearElement,
   MAX_DIAGRAM_ELEMENTS,
   onlyAdds,
   outlinePoint,
@@ -32,7 +32,9 @@ const base: Diagram = checkDiagram({
 });
 
 const arrow = (d: Diagram, id: string) =>
-  d.elements.find((e) => e.id === id) as LinearElement | undefined;
+  d.elements.find((e) => e.id === id) as
+    | (ArrowElement & { points?: [number, number][] })
+    | undefined;
 
 describe("checking a diagram", () => {
   it("draws an arrow bound at both ends straight between the shapes' outlines", () => {
@@ -112,6 +114,60 @@ describe("checking a diagram", () => {
   });
 });
 
+describe("arrows and lines", () => {
+  it("aims a bound arrow at the height a shape grows to for its label", () => {
+    const d = checkDiagram({
+      elements: [
+        box("a", 0, 0, { label: { text: "a label long enough to wrap onto several lines" } }),
+        box("b", 0, 400),
+        { id: "a-b", type: "arrow", start: { id: "a" }, end: { id: "b" } },
+      ],
+    });
+    // "a" is drawn taller than its stored 50, so the arrow leaves its grown bottom edge.
+    expect(arrow(d, "a-b")?.y).toBeGreaterThan(50);
+  });
+
+  it("refuses an arrow bound to the same shape at both ends", () => {
+    expect(() =>
+      checkDiagram({
+        elements: [
+          box("a", 0, 0),
+          { id: "loop", type: "arrow", start: { id: "a" }, end: { id: "a" } },
+        ],
+      }),
+    ).toThrow(/same shape/);
+  });
+
+  it("keeps a line to a path: no bindings, label or arrowheads", () => {
+    const [line] = parseElements([
+      {
+        id: "l",
+        type: "line",
+        x: 0,
+        y: 0,
+        points: [
+          [0, 0],
+          [10, 0],
+        ],
+        start: { id: "a" },
+        label: { text: "x" },
+        endArrowhead: "arrow",
+      },
+    ]);
+    expect(line).toEqual({
+      id: "l",
+      type: "line",
+      x: 0,
+      y: 0,
+      points: [
+        [0, 0],
+        [10, 0],
+      ],
+    });
+    expect(() => parseElements([{ id: "l", type: "line", x: 0, y: 0 }])).toThrow(/points/);
+  });
+});
+
 describe("outline points", () => {
   it("meets an ellipse and a diamond on their outlines, not their boxes", () => {
     const shape = { x: 0, y: 0, width: 200, height: 100 };
@@ -173,9 +229,21 @@ describe("diagram changes", () => {
     expect(next.elements[1]).toEqual({ ...box("db", 300, 0), backgroundColor: "#a5d8ff" });
   });
 
-  it("clears a property sent as null", () => {
-    const next = applyDiagramChanges(base, { upsert: [{ id: "api", label: null }] });
+  it("clears a property sent as null, but keeps null where it means none", () => {
+    const next = applyDiagramChanges(base, {
+      upsert: [
+        { id: "api", label: null, roundness: null },
+        { id: "api-db", endArrowhead: null },
+      ],
+    });
     expect(next.elements[0]).not.toHaveProperty("label");
+    expect(next.elements[0]).toHaveProperty("roundness", null);
+    expect(next.elements[2]).toHaveProperty("endArrowhead", null);
+  });
+
+  it("reads a null on a new element as unset, as some models send for every unused property", () => {
+    const [el] = parseElements([{ ...box("a", 0, 0), label: null, endArrowhead: null }]);
+    expect(el).toEqual(box("a", 0, 0));
   });
 
   it("moves a bound arrow with the shape it is bound to", () => {
@@ -225,5 +293,7 @@ describe("diagram changes", () => {
     expect(onlyAdds(base, { remove: ["api-db"] })).toBe(false);
     // One new element beside one existing one is still a change to what is there.
     expect(onlyAdds(base, { upsert: [{ id: "new" }, { id: "api", x: 4 }] })).toBe(false);
+    // A new frame around existing elements clips them.
+    expect(onlyAdds(base, { upsert: [{ id: "f", type: "frame", children: ["api"] }] })).toBe(false);
   });
 });
