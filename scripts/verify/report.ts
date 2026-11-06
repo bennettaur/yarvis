@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
-import { stricterTier, type Tier } from "./tier.ts";
+import { floorTier, isDependencyFile, stricterTier, type Tier } from "./tier.ts";
 
 /** Marks a comment as a verification report. The gate looks for it. */
 export const REPORT_MARKER = "<!-- yarvis-verify -->";
@@ -50,9 +50,13 @@ function hasWeakMutationScore(facts: Facts): boolean {
 const Status = z.enum(["pass", "concern", "fail", "n/a"]);
 type Status = z.infer<typeof Status>;
 
-const Verdict = z.enum(["auto", "agent", "human"]);
+/**
+ * `visual` is a PR that is otherwise clean but changes what the app shows:
+ * the maintainer looks at its screenshots and merges it with `/approve`.
+ */
+const Verdict = z.enum(["auto", "visual", "agent", "human"]);
 type Verdict = z.infer<typeof Verdict>;
-const VERDICT_STRICTNESS: Verdict[] = ["auto", "agent", "human"];
+const VERDICT_STRICTNESS: Verdict[] = ["auto", "visual", "agent", "human"];
 
 const Dimension = z.object({ status: Status, note: z.string().max(140) });
 
@@ -71,6 +75,20 @@ export const Review = z.object({
     tier: z.enum(["low", "standard", "high"]),
     reasons: z.array(z.string().max(140)).min(1).max(4),
   }),
+  /**
+   * The skill's rating of each file the path floor sent for assessment
+   * (`facts.tier.assess`). One left out counts as high.
+   */
+  assessed: z
+    .array(
+      z.object({
+        path: z.string().max(200),
+        tier: z.enum(["standard", "high"]),
+        reason: z.string().max(140),
+      }),
+    )
+    .max(50)
+    .default([]),
   dimensions: z.object({
     goal: Dimension,
     tests: Dimension,
@@ -79,6 +97,8 @@ export const Review = z.object({
     complexity: Dimension,
     maintainability: Dimension,
     ui: Dimension,
+    /** The skill's analysis of added and bumped packages; `n/a` when no dependency changed. */
+    supplyChain: Dimension,
   }),
   findings: z
     .array(
@@ -126,10 +146,21 @@ const ReportData = z.object({
   verdict: Verdict,
   /** The stricter of the changed paths' tier and the assessed one. */
   riskTier: z.enum(["low", "standard", "high"]),
+  /**
+   * The files the skill assessed out of those the path floor flagged. The
+   * gate counts any flagged file missing here as high.
+   */
+  assessed: z.array(z.string()).optional(),
   blockers: z.number().int().nonnegative(),
   majors: z.number().int().nonnegative(),
   /** Dimensions, including coverage, whose status is `fail` or `concern`. */
   flagged: z.array(z.string()),
+  /**
+   * A person has to look at what the PR shows before it merges: the verdict
+   * is `visual`, or the UI check was flagged. The merge reviewer can't
+   * approve one, whatever the verdict.
+   */
+  needsVisual: z.boolean().optional(),
   /** The model that reviewed, so calibration can compare verdicts across models. */
   model: z.string().optional(),
 });
@@ -177,12 +208,18 @@ function code(text: string): string {
 
 /** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
 export function riskTier(review: Review, facts: Facts): Tier {
-  return stricterTier(facts.tier.tier, review.risk.tier);
+  const floor = floorTier(
+    facts.tier,
+    review.assessed.map((file) => file.path),
+  );
+  const assessedHigh = review.assessed.some((file) => file.tier === "high");
+  return stricterTier(stricterTier(floor, review.risk.tier), assessedHigh ? "high" : "low");
 }
 
 /**
  * The verdict a report may give, which is never looser than the risk tier
- * allows. Only a low-risk PR with nothing wrong is eligible to merge on its own.
+ * and the checks allow. A low- or standard-risk PR with no blocker, major or
+ * flagged check can merge on its own; minor findings don't hold it back.
  */
 export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; why: string[] } {
   const why: string[] = [];
@@ -194,19 +231,19 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
     }
   };
 
-  const tier = riskTier(review, facts);
-  if (tier === "high") requireAtLeast("human", "high-risk change");
-  if (tier === "standard") requireAtLeast("agent", "standard-risk change");
+  if (riskTier(review, facts) === "high") requireAtLeast("human", "high-risk change");
   if (review.findings.some((f) => f.severity === "blocker")) {
     requireAtLeast("human", "blocking finding");
   }
   if (review.findings.some((f) => f.severity === "major")) requireAtLeast("agent", "major finding");
-  // Minor findings are still meant to be fixed in the PR, so one left open
-  // keeps it from merging unread.
-  if (review.findings.some((f) => f.severity === "minor")) requireAtLeast("agent", "minor finding");
   if (facts.baseline.failingOnHead.length > 0) requireAtLeast("human", "tests fail on the PR");
   if (hasWeakMutationScore(facts)) {
     requireAtLeast("agent", "tests miss many mutations on changed lines");
+  }
+  const { ui, supplyChain } = review.dimensions;
+  // `n/a` is the skill's claim that no dependency changed; the paths check it.
+  if (supplyChain.status === "n/a" && facts.files.some((file) => isDependencyFile(file.path))) {
+    requireAtLeast("agent", "dependencies changed without a supply-chain check");
   }
   const statuses = [
     ...Object.values(review.dimensions).map((d) => d.status),
@@ -214,12 +251,20 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   ];
   if (statuses.includes("fail")) requireAtLeast("human", "a check failed");
   if (statuses.includes("concern")) requireAtLeast("agent", "a check has concerns");
+  // A UI change is judged by looking at it, so one with no screenshots can't
+  // merge on the report. Whether a person also looks is the review's call:
+  // `visual` for a new screen or a design change, not for a small one the
+  // screenshots already show working.
+  if (ui.status === "pass" && review.screenshots.length === 0) {
+    requireAtLeast("agent", "UI change without screenshots");
+  }
   return { verdict, why };
 }
 
 const STATUS_ICON: Record<Status, string> = { pass: "✅", concern: "⚠️", fail: "❌", "n/a": "➖" };
 const VERDICT_TITLE: Record<Verdict, string> = {
   auto: "✅ Can auto-merge",
+  visual: "👁️ Good to merge after a visual check",
   agent: "🤖 Needs an agent or human review",
   human: "👀 Needs a human review",
 };
@@ -237,6 +282,7 @@ const DIMENSION_LABELS: [keyof Review["dimensions"], string][] = [
   ["complexity", "Complexity is needed"],
   ["maintainability", "Maintainability"],
   ["ui", "UI"],
+  ["supplyChain", "Supply chain"],
 ];
 
 function percent(ratio: number): string {
@@ -347,6 +393,19 @@ export function renderReport(
     ...rows,
   ];
 
+  if (facts.tier.assess.length > 0) {
+    const rated = new Map(review.assessed.map((file) => [file.path, file]));
+    lines.push("", "### Sensitive files", "");
+    for (const { path, reason } of facts.tier.assess) {
+      const file = rated.get(path);
+      lines.push(
+        file
+          ? `- ${code(path)}: ${file.tier}. ${inline(file.reason)}`
+          : `- ${code(path)}: not assessed, so high. Flagged for ${inline(reason)}.`,
+      );
+    }
+  }
+
   if (headlineFindings.length > 0) {
     lines.push("", "### Findings", "");
     for (const f of headlineFindings) {
@@ -368,7 +427,7 @@ export function renderReport(
     details.push(
       "**Minor findings**",
       "",
-      "Small, but fix these in this PR. Any left open keeps the verdict off auto.",
+      "Small enough not to hold the merge back, but still worth fixing in this PR.",
       "",
       ...minorFindings.map((f) => `- ${inline(f.title)}${where(f.location)}: ${inline(f.detail)}`),
       "",
@@ -436,6 +495,7 @@ export function renderReport(
     issuedAt: now.toISOString(),
     verdict,
     riskTier: tier,
+    assessed: review.assessed.map((file) => file.path),
     blockers: review.findings.filter((f) => f.severity === "blocker").length,
     majors: review.findings.filter((f) => f.severity === "major").length,
     flagged: [
@@ -445,6 +505,7 @@ export function renderReport(
       ...(isFlagged(coverage) ? ["coverage"] : []),
       ...(hasWeakMutationScore(facts) ? ["mutation"] : []),
     ],
+    needsVisual: verdict === "visual" || isFlagged(review.dimensions.ui.status),
     model: review.model,
   };
 
