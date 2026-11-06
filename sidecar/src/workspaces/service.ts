@@ -1493,11 +1493,13 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "Don't create worktrees or clones anywhere else, such as a temp folder:",
       "nothing tracks those, and they stay on disk after the work is done.",
       "",
-      "The sandbox only lets you write this workspace's own branch and worktree",
-      "in the repo's git data. Adding a worktree, and committing or pushing in",
-      "it, writes outside that, so those commands ask the user for approval to",
-      "run outside the sandbox. That is expected: ask for it rather than",
-      "working around it or putting the worktree somewhere else.",
+      "Inside the sandbox, git can only change this workspace's own branch and",
+      "worktree. Git commands that add another worktree, or change that",
+      "worktree's branch (commit, push, rebase and so on), fail there. That is",
+      "expected: rerun the failing git command outside the sandbox, which asks",
+      "the user for approval. Run only that git command outside it, not chained",
+      "with installs, builds or tests, which stay inside the sandbox. Don't",
+      "dodge the prompt by putting the worktree somewhere else.",
     );
   }
 

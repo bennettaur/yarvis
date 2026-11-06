@@ -418,11 +418,6 @@ folder, wherever the agent put it: `<workspace>/widget-api`,
 column switches between them. With more than one repo, the picker groups them
 by repo. The line under it always names the branch you are looking at.
 
-The workspace's `AGENTS.md` tells the agent to put extra worktrees in the
-workspace folder. The agent's sandbox covers only the workspace's own branch
-and worktree, so adding another worktree, and committing or pushing in it,
-asks you for approval.
-
 - **Switching runs no `git checkout`.** Each worktree already has its branch
   checked out, and the agent may be working in any of them.
 - **All files**, **Changed**, **PR checks** and **Stack** read the picked
@@ -438,6 +433,14 @@ asks you for approval.
 - **A diff from another worktree takes no comments.** Comments are filed by
   repo and path, so one left there would show up on the workspace branch's copy
   of the file.
+
+The workspace's `AGENTS.md` tells the agent to put extra worktrees in the
+workspace folder. The agent's sandbox lets git change only the workspace's own
+branch and worktree, so adding another worktree, and committing, pushing or
+rebasing in it, asks for your approval to run outside the sandbox. Approving a
+commit or a checkout there also runs the repo's git hooks outside the sandbox,
+and the agent can edit their config (for example `lefthook.yml`). Check it
+hasn't changed before approving.
 - In the **Stack** tab, a layer checked out in another worktree has a **View**
   button that switches the column to it.
 
