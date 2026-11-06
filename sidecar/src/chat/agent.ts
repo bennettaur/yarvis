@@ -433,7 +433,7 @@ async function* runTurn(params: AgentTurnParams): AsyncGenerator<AgentEvent> {
   const startedRemotely = userMetadata?.source === "telegram" || unattended;
 
   // A spoken turn was never proof-read — speech recognition mishears, and a
-  // hands-free mic can pick up a sentence that was never addressed to the
+  // continuous-mode mic can pick up a sentence that was never addressed to the
   // assistant. The tools that can't be taken back therefore ask first.
   const spoken = userMetadata?.source === "voice";
   // A scheduled task's message was written by the model on an earlier turn,

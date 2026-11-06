@@ -104,3 +104,27 @@ export async function speak(request: SpeakRequest): Promise<Blob> {
   await ensureOk(res, "speak");
   return res.blob();
 }
+
+export type TurnDetectorState = "stopped" | "starting" | "running" | "failed";
+
+/** The sidecar's turn detector for continuous mode (`sidecar/src/voice/turnDetector.ts`). */
+export interface TurnDetectorStatus {
+  state: TurnDetectorState;
+  /** Websocket URL with its token; null until the detector is listening. */
+  url: string | null;
+  log: string[];
+  error: string | null;
+}
+
+export async function getTurnDetector(): Promise<TurnDetectorStatus> {
+  const res = await sidecarFetch("/api/voice/turn-detector");
+  await ensureOk(res, "turn detector");
+  return res.json();
+}
+
+/** Starts the detector if it isn't running. Answers before it is ready. */
+export async function startTurnDetector(): Promise<TurnDetectorStatus> {
+  const res = await sidecarFetch("/api/voice/turn-detector/start", { method: "POST" });
+  await ensureOk(res, "start turn detector");
+  return res.json();
+}

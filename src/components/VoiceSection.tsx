@@ -318,14 +318,14 @@ export default function VoiceSection() {
         </label>
         <label
           className="flex items-center gap-2 text-sm text-zinc-300"
-          title="Anything audible in the room can become a turn you never addressed to the assistant."
+          title="Keeps the mic open and sends each turn when you finish talking. Anything audible in the room can become a turn you never addressed to the assistant."
         >
           <input
             type="checkbox"
-            checked={config.handsFree}
-            onChange={(e) => void save({ handsFree: e.target.checked })}
+            checked={config.continuous}
+            onChange={(e) => void save({ continuous: e.target.checked })}
           />
-          Hands-free by default
+          Continuous by default
         </label>
         <button
           type="button"

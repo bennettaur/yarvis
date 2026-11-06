@@ -38,6 +38,7 @@ bun run demo                      # record screenshots and video of the UI (see 
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database
+bun run voice:test-turns          # continuous voice's Python turn logic; needs uv
 bun run typecheck                 # frontend tsc --noEmit
 bun run sidecar:typecheck         # sidecar tsc --noEmit
 bun run build                     # typecheck + vite build
@@ -460,7 +461,8 @@ sidecar/        Bun + TS service (Hono)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution, the model catalog (catalog.ts) and
                    the decision model (decision.ts)
-  src/voice/       speech to text and text to speech
+  src/voice/       speech to text, text to speech, and continuous mode's
+                   turn detector (turnDetector.ts, turn_server.py)
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
   src/tasks/       daily and weekly tasks, dedupe, "did I already finish this?"
