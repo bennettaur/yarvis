@@ -46,12 +46,35 @@ export interface AttentionItem {
 export type AttentionStreamEvent = { type: "item"; item: AttentionItem } | { type: "ping" };
 
 /**
+ * Session key prefix of the bell items heads-down mode raises for its questions
+ * and approvals (`sessionKeyFor` in the sidecar's `headsDown/attention.ts`).
+ */
+const HEADS_DOWN_QUESTION_PREFIX = "heads-down:";
+
+/**
+ * The heads-down question an item stands for, or null for any other item.
+ * A coding agent's `ask_user` can pick its own session key, so its `question`
+ * items never count, however their key reads.
+ */
+export function headsDownQuestionId(item: AttentionItem): string | null {
+  if (
+    item.source !== "system" ||
+    item.kind === "question" ||
+    !item.sessionKey?.startsWith(HEADS_DOWN_QUESTION_PREFIX)
+  ) {
+    return null;
+  }
+  return item.sessionKey.slice(HEADS_DOWN_QUESTION_PREFIX.length) || null;
+}
+
+/**
  * Whether the item is answered in a dialog over the current page rather than by
- * navigating to it: a Claude Code permission prompt for a known session, or a
- * coding agent's question.
+ * navigating to it: a Claude Code permission prompt for a known session, a
+ * coding agent's question, or a heads-down question or approval.
  */
 export function hasAnswerDialog(item: AttentionItem): boolean {
   if (item.kind === "question") return true;
+  if (headsDownQuestionId(item)) return true;
   return item.kind === "permission" && item.source === "claude-hook" && Boolean(item.sessionKey);
 }
 

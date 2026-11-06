@@ -634,6 +634,12 @@ be answered straight from the bell. Its row reads `AskUserQuestion:` and the
 first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
 
+When a workspace has several prompts or questions waiting, from different
+sessions, answering the last one in a window opens the next one in its place,
+oldest first. Like a window that opens on its own, it ignores clicks for just
+over a second. Closing a window with ✕ or Escape stops there; the rest wait on
+the bell.
+
 When the prompt or question comes from a session in the workspace you have
 open, its window opens on its own, so you don't have to reach for the bell. Its
 buttons ignore clicks for just over a second, so a click you'd already started

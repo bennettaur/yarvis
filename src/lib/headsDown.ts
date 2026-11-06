@@ -210,6 +210,23 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   return res.json() as Promise<T>;
 }
 
+/**
+ * Cache keys for the Heads down page's lists. They share a prefix so a dialog
+ * that answers a question can invalidate them all at once.
+ */
+export const HEADS_DOWN_CACHE_PREFIX = "heads-down:";
+export const HEADS_DOWN_CACHE_KEYS = {
+  state: `${HEADS_DOWN_CACHE_PREFIX}state`,
+  questions: `${HEADS_DOWN_CACHE_PREFIX}questions`,
+  streams: `${HEADS_DOWN_CACHE_PREFIX}streams`,
+  passes: `${HEADS_DOWN_CACHE_PREFIX}passes`,
+  messages: `${HEADS_DOWN_CACHE_PREFIX}messages`,
+  config: `${HEADS_DOWN_CACHE_PREFIX}config`,
+  allowedTools: `${HEADS_DOWN_CACHE_PREFIX}allowed-tools`,
+  autoApprovals: `${HEADS_DOWN_CACHE_PREFIX}auto-approvals`,
+  routines: `${HEADS_DOWN_CACHE_PREFIX}routines`,
+};
+
 export const getHeadsDownState = () => request<HeadsDownState>("/api/heads-down");
 
 /**

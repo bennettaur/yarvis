@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
@@ -15,6 +15,7 @@ import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
 import AgentFieldPanel from "./components/field/AgentFieldPanel";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
+import HeadsDownQuestionDialog from "./components/headsDown/HeadsDownQuestionDialog";
 import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
@@ -40,9 +41,10 @@ import VoicePanel from "./components/voice/VoicePanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
-import { type AttentionItem, hasAnswerDialog } from "./lib/attention";
+import { type AttentionItem, hasAnswerDialog, headsDownQuestionId } from "./lib/attention";
+import { nextAnswerable } from "./lib/attentionGroups";
 import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
-import { markAttention, onAttentionArrived } from "./lib/attentionStore";
+import { getAttentionSnapshot, markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
@@ -82,10 +84,12 @@ export default function App() {
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
   const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
+  const [headsDownItem, setHeadsDownItem] = useState<AttentionItem | null>(null);
   // A Claude session's permission prompt being answered from the modal.
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
-  // True when the modal opened by itself rather than from a click on the bell.
-  const [permissionAutoOpened, setPermissionAutoOpened] = useState(false);
+  // True when a prompt or question opened without a click on it (by itself, or
+  // after the last prompt was answered), so its buttons ignore clicks for longer.
+  const [openedWithoutClick, setOpenedWithoutClick] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -339,9 +343,10 @@ export default function App() {
       // The panel closes so Esc reaches only the dialog.
       if (hasAnswerDialog(item)) {
         setAttentionPanelOpen(false);
-        if (item.kind === "question") setQuestionItem(item);
+        if (headsDownQuestionId(item)) setHeadsDownItem(item);
+        else if (item.kind === "question") setQuestionItem(item);
         else setPermissionItem(item);
-        setPermissionAutoOpened(false);
+        setOpenedWithoutClick(false);
         return;
       }
       void markAttention(item.id, "read");
@@ -358,6 +363,7 @@ export default function App() {
     overlayOpenRef.current =
       permissionItem !== null ||
       questionItem !== null ||
+      headsDownItem !== null ||
       omniChatOpen ||
       attentionPanelOpen ||
       clipboardOpen ||
@@ -366,6 +372,7 @@ export default function App() {
   }, [
     permissionItem,
     questionItem,
+    headsDownItem,
     omniChatOpen,
     attentionPanelOpen,
     clipboardOpen,
@@ -381,7 +388,7 @@ export default function App() {
         // Claimed now: a second item can arrive before the state change commits.
         overlayOpenRef.current = true;
         openAttentionItem(item);
-        setPermissionAutoOpened(true);
+        setOpenedWithoutClick(true);
       }),
     [openAttentionItem],
   );
@@ -395,6 +402,47 @@ export default function App() {
   );
 
   const closeQuestion = useCallback(() => setQuestionItem(null), []);
+
+  // Once a dialog has nothing left to answer, the workspace's next prompt opens
+  // in its place, so a stack of them doesn't need a trip to the bell each.
+  const openNextAnswerable = useCallback(
+    (done: AttentionItem) => {
+      const next = nextAnswerable(getAttentionSnapshot(), done);
+      if (!next) return;
+      openAttentionItem(next);
+      // The pointer is still over the button that answered the last one.
+      setOpenedWithoutClick(true);
+    },
+    [openAttentionItem],
+  );
+
+  // What is on screen now. A reply can finish after the user closed its dialog
+  // or opened another, and must not close or chain from that one.
+  const questionItemRef = useRef(questionItem);
+  const permissionItemRef = useRef(permissionItem);
+  // Layout effect: synced before a late reply's promise can run against them.
+  useLayoutEffect(() => {
+    questionItemRef.current = questionItem;
+    permissionItemRef.current = permissionItem;
+  }, [questionItem, permissionItem]);
+
+  // Neither marks the item resolved: the sidecar does that once nothing from the
+  // session is waiting, which the client can't check without racing a new ask.
+  const finishQuestion = useCallback(() => {
+    const done = questionItem;
+    if (!done || questionItemRef.current?.id !== done.id) return;
+    setQuestionItem(null);
+    openNextAnswerable(done);
+  }, [questionItem, openNextAnswerable]);
+
+  const finishPermission = useCallback(() => {
+    const done = permissionItem;
+    if (!done || permissionItemRef.current?.id !== done.id) return;
+    setPermissionItem(null);
+    openNextAnswerable(done);
+  }, [permissionItem, openNextAnswerable]);
+
+  const closeHeadsDown = useCallback(() => setHeadsDownItem(null), []);
 
   const openWipItem = useCallback(
     (item: WipItem) => navigateTo(item.navTarget, item.title),
@@ -533,14 +581,26 @@ export default function App() {
       <QuestionDialog
         item={questionItem}
         onClose={closeQuestion}
+        onDone={finishQuestion}
         onOpenSession={openQuestionSession}
+        armingMs={openedWithoutClick ? AUTO_OPEN_ARMING_MS : undefined}
+      />
+
+      <HeadsDownQuestionDialog
+        item={headsDownItem}
+        onClose={closeHeadsDown}
+        onOpenPage={() => {
+          setHeadsDownItem(null);
+          navigateTo({ type: "heads-down" });
+        }}
       />
 
       <PermissionRequestModal
         sessionKey={permissionItem?.sessionKey ?? null}
         title={permissionItem?.title ?? ""}
         onClose={() => setPermissionItem(null)}
-        armingMs={permissionAutoOpened ? AUTO_OPEN_ARMING_MS : undefined}
+        onDone={finishPermission}
+        armingMs={openedWithoutClick ? AUTO_OPEN_ARMING_MS : undefined}
         onGoToSession={() => {
           if (!permissionItem) return;
           setPermissionItem(null);

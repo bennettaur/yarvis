@@ -1,4 +1,11 @@
-import type { AttentionItem, AttentionKind, AttentionScope } from "./attention";
+import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
+import {
+  type AttentionItem,
+  type AttentionKind,
+  type AttentionScope,
+  hasAnswerDialog,
+  headsDownQuestionId,
+} from "./attention";
 
 /**
  * Folds the pending stream into one entry per origin, so a workspace that asks
@@ -77,4 +84,32 @@ export function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
   }
 
   return [...groups.values()];
+}
+
+/**
+ * The next prompt to open once `done`'s dialog has nothing left: the oldest
+ * other item from a session in the same workspace that also opens a dialog.
+ *
+ * - `done`'s own session is skipped: its dialog already went through
+ *   everything that session had waiting, and its item may not have left the
+ *   stream yet.
+ * - Outside a workspace nothing follows: a session's dialog covers that
+ *   session, and the heads-down dialog covers every open heads-down question.
+ */
+export function nextAnswerable(items: AttentionItem[], done: AttentionItem): AttentionItem | null {
+  if (!done.workspaceId) return null;
+  const candidates = items.filter(
+    (i) =>
+      i.workspaceId === done.workspaceId &&
+      i.sessionKey !== done.sessionKey &&
+      // The session id, not the workspace an item reports, says where it runs:
+      // an ask_user caller picks both, and can't pose as another workspace's.
+      i.sessionKey !== null &&
+      sessionWorkspaceId(i.sessionKey) === done.workspaceId &&
+      // Heads-down items have no workspace, so one that names a workspace isn't heads-down's.
+      !headsDownQuestionId(i) &&
+      hasAnswerDialog(i),
+  );
+  if (candidates.length === 0) return null;
+  return candidates.reduce((oldest, i) => (i.seq < oldest.seq ? i : oldest));
 }

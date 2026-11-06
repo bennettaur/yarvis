@@ -185,6 +185,11 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/** The pending items as they stand now, newest-first, for reading outside React. */
+export function getAttentionSnapshot(): AttentionItem[] {
+  return snapshot;
+}
+
 /** The live list of pending attention items, newest-first. */
 export function useAttentionItems(): AttentionItem[] {
   return useSyncExternalStore(subscribe, () => snapshot);
