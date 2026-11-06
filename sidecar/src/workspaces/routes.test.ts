@@ -1807,6 +1807,7 @@ describe("provision + archive (injected git runner)", () => {
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("## Extra worktrees");
+    expect(agents).toContain("ask the user for approval");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");
   });
