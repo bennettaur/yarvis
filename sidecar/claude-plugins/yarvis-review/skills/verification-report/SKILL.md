@@ -39,7 +39,7 @@ whose field isn't listed.
 | `yarvis-review:approach-reviewer` | `approach` | one |
 | `yarvis-review:flow-diagram` | `flow` | one |
 
-Start each of those eight once for each group, 1 to READING_GROUPS, with that
+Start each agent marked "one per group" once for each group, 1 to READING_GROUPS, with that
 group's number as GROUP, even when there is only one group. When
 READING_GROUPS is 0, start each of them once, with no GROUP line. The change
 summary, the approach reviewer and the flow diagram always run once, with no
@@ -83,7 +83,7 @@ that one agent again once, with the same prompt. If it fails a second time,
 treat its answer as
 `{"status":"issues","findings":[{"title":"Check did not complete","detail":"This check failed to produce an answer; review this area by hand.","severity":"low"}]}`
 (for risk: level `medium` with that as its only concern; for the approach:
-`{"rating":"simpler","reason":"The approach agent failed to answer; judge the approach by hand.","alternative":""}`;
+`{"rating":"unrated","reason":"The approach agent failed to answer; judge the approach by hand.","alternative":""}`;
 for the summary:
 `"summary": "Summary unavailable."` and no must-reads; for the flow:
 `{"title":"Diagram unavailable","explanation":"The flow agent failed to answer.","mermaid":""}`).

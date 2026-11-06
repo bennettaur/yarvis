@@ -186,20 +186,21 @@ const flowSchema = z
 /**
  * Whether the PR as a whole has a materially simpler way to its goal. The
  * complexity check judges code line by line; this judges the design.
+ * `unrated` is the coordinator's answer when the agent failed.
  */
 const approachSchema = z
   .object({
-    rating: z.enum(["as-simple", "simpler", "much-simpler"]),
+    rating: z.enum(["no-simpler", "simpler", "much-simpler", "unrated"]),
     reason: boundedText(500),
-    alternative: boundedText(600),
+    alternative: boundedText(700),
     path: optionalPath,
     line: optionalLine,
   })
-  // With no simpler way there is nothing to point at.
+  // Without a simpler way there is nothing to point at.
   .transform((approach) =>
-    approach.rating === "as-simple"
-      ? { ...approach, alternative: "", path: undefined, line: undefined }
-      : approach,
+    approach.rating === "simpler" || approach.rating === "much-simpler"
+      ? approach
+      : { ...approach, alternative: "", path: undefined, line: undefined },
   );
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
@@ -547,8 +548,8 @@ const LARGE_PR = { changedLines: 4_000, files: 150 };
  * 62,000 and RESEND ≈ 15. In both runs every agent read every patch that
  * wasn't bulk, docs included, hence one reader per check agent for any file;
  * the code patches came to about 115 bytes per changed line. Those runs had
- * seven reading agents; the observability and quality checks are counted as
- * two more readers but BASE_TOKENS was not re-measured for them. Two points
+ * seven reading agents; the observability, quality and approach agents are
+ * counted as three more readers but BASE_TOKENS was not re-measured for them. Two points
  * fix two constants exactly and test nothing, and the other models are this
  * formula at their own rates, unmeasured: a warning's estimate, not a bill.
  */

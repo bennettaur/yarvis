@@ -389,7 +389,7 @@ describe("VerificationReportView", () => {
           report: {
             summary: "Adds a cache.",
             mustRead: [],
-            approach: { rating: "as-simple", reason: "Reuses the client cache.", alternative: "" },
+            approach: { rating: "no-simpler", reason: "Reuses the client cache.", alternative: "" },
           },
           onOpen: { open: () => {}, canOpen: () => true },
         }),
@@ -397,5 +397,26 @@ describe("VerificationReportView", () => {
     );
     expect(text).toContain("No simpler way found");
     expect(text).not.toContain("Simpler way:");
+  });
+
+  it("shows a failed rating as not rated, not as a verdict", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            approach: {
+              rating: "unrated",
+              reason: "The approach agent failed to answer; judge the approach by hand.",
+              alternative: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Not rated");
+    expect(text).not.toContain("simpler way exists");
   });
 });

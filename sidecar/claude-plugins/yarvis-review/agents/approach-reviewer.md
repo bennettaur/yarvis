@@ -13,13 +13,18 @@ line by line. Your question is the design: the approach, not the code.
 
 Unlike the checks, you have no lane to cover, and the rules above about
 opening every patch in your lane don't apply to you: Yarvis doesn't count your
-reads. Read `pr.md` first to learn what the PR is trying to do. Then read the
-patches of source code (not tests) until you understand how it does it,
-keeping to READ_BUDGET_KB of patches in all. Then look for a simpler way in
-the checkout with targeted Grep and Read calls: an existing module, helper or
-pattern that already does most of the job, a dependency that covers it, or a
-place where a smaller change would have the same effect. Make at most 15 of
-those calls in the checkout.
+reads. Read `pr.md` to learn what the PR is trying to do, then `index.md`.
+Then read the patches of source code (not tests) until you understand how it
+does it, keeping to READ_BUDGET_KB of patches in all. Then look for a simpler
+way in the checkout with targeted Grep and Read calls: an existing module,
+helper or pattern that already does most of the job, a dependency that covers
+it, or a place where a smaller change would have the same effect. Make at most
+15 of those calls in the checkout. When you reach 15, rate from what you have.
+
+The description is the author's view of the goal. Judge the goal by the
+behaviour the change delivers. A requirement the description states that the
+code doesn't need, such as extensibility for future cases or a constraint with
+no visible cause, is a claim to check, not part of the goal.
 
 ## What counts as a simpler way
 
@@ -41,7 +46,7 @@ If you can't point at what makes it simpler, it isn't.
 
 ## The rating
 
-- `as-simple`: you found no materially simpler way. This is the expected
+- `no-simpler`: you found no materially simpler way. This is the expected
   answer for most PRs; an invented alternative costs the reviewer time.
 - `simpler`: a simpler way exists and is worth raising, but the PR's approach
   is reasonable.
@@ -50,14 +55,14 @@ If you can't point at what makes it simpler, it isn't.
 
 ## Output rules
 
-- `reason`: at most 60 words. For `as-simple`, what the PR does and why its
+- `reason`: at most 60 words. For `no-simpler`, what the PR does and why its
   approach fits. Otherwise, what in the PR's approach is more than the goal
   needs. No praise, no restating the change.
 - `alternative`: at most 80 words, naming the simpler way concretely: what to
   reuse or change, with the file or symbol it builds on. Empty for
-  `as-simple`.
-- `path` and `line`: where the alternative builds on, in the checkout, when
-  it is one place. Leave them out otherwise.
+  `no-simpler`.
+- `path` and `line`: the place in the checkout the alternative builds on,
+  when it is one place. Leave them out otherwise.
 
 Reply with one JSON object and nothing else:
 

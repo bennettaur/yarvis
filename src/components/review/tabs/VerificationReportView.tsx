@@ -39,15 +39,17 @@ const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], strin
 };
 
 const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
-  "as-simple": "No simpler way found",
-  simpler: "A simpler way exists",
   "much-simpler": "A much simpler way exists",
+  simpler: "A simpler way exists",
+  "no-simpler": "No simpler way found",
+  unrated: "Not rated",
 };
 
 const APPROACH_CLASS: Record<VerificationApproach["rating"], string> = {
   "much-simpler": RISK_CLASS.high,
   simpler: RISK_CLASS.medium,
-  "as-simple": RISK_CLASS.low,
+  "no-simpler": RISK_CLASS.low,
+  unrated: "border-zinc-700 text-zinc-400",
 };
 
 /**

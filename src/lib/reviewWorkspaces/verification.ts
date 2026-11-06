@@ -79,10 +79,11 @@ export interface VerificationFlow {
 
 /**
  * Whether the PR as a whole has a materially simpler way to its goal.
- * `alternative` is empty, and there is no location, when the rating is `as-simple`.
+ * `alternative` is empty, and there is no location, unless a simpler way was
+ * found. `unrated` means the agent failed to answer.
  */
 export interface VerificationApproach {
-  rating: "as-simple" | "simpler" | "much-simpler";
+  rating: "no-simpler" | "simpler" | "much-simpler" | "unrated";
   reason: string;
   alternative: string;
   path?: string;
