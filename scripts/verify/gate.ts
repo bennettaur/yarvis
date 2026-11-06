@@ -35,7 +35,7 @@ import {
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { parseSignedReport, REPORT_MARKER, type ReportData, type SignedReport } from "./report.ts";
 import { AGENT_REVIEW_NAMESPACE, REPORT_NAMESPACE, verifiedSigner } from "./signing.ts";
-import { type ChangedFile, classify, stricterTier, type Tier } from "./tier.ts";
+import { type ChangedFile, classify, floorTier, stricterTier, type Tier } from "./tier.ts";
 
 /** The commit status the gate sets. Make it required in the ruleset once out of shadow mode. */
 const STATUS_CONTEXT = "Verification report";
@@ -134,12 +134,16 @@ export interface AutoMergeContext {
   tier: Tier;
 }
 
-/** Every reason the PR can't merge on its report alone. Empty means it can. */
+/**
+ * Every reason the PR can't merge on its report alone. Empty means it can.
+ * Standard risk can: high is kept for what a person has to check the
+ * safeguards on (secrets, what agents may do, the verifier and CI).
+ */
 export function autoMergeBlockers(ctx: AutoMergeContext): string[] {
   const reasons: string[] = [];
   if (!ctx.trusted.includes(ctx.prAuthor.id)) reasons.push("PR author is not a maintainer");
   if (ctx.draft) reasons.push("PR is a draft");
-  if (ctx.tier !== "low") reasons.push(`${ctx.tier}-risk change`);
+  if (ctx.tier === "high") reasons.push("high-risk change");
   if (ctx.report.verdict !== "auto") reasons.push(`verdict is ${ctx.report.verdict}`);
   if (ctx.report.blockers > 0 || ctx.report.majors > 0) {
     reasons.push("report has blocker or major findings");
@@ -150,11 +154,12 @@ export function autoMergeBlockers(ctx: AutoMergeContext): string[] {
 
 /**
  * The gate's own tier for the PR. A file list cut short at the API's limit
- * could be hiding a high-risk file, so it counts as high.
+ * could be hiding a high-risk file, so it counts as high, as does any file
+ * that needed assessing and isn't among the report's signed `assessed` paths.
  */
-export function gateTier(pr: PullRequest, files: ChangedFile[]): Tier {
+export function gateTier(pr: PullRequest, files: ChangedFile[], report: ReportData): Tier {
   if (files.length >= MAX_LISTED_FILES || files.length < pr.changed_files) return "high";
-  return classify(files).tier;
+  return floorTier(classify(files), report.assessed ?? []);
 }
 
 export interface ReportDecision {
@@ -261,8 +266,16 @@ export function decideReport(input: {
     trusted,
     // The report's tier rests on its assessment of what the change does; the
     // gate's own from the paths is a floor under it that the report can't lower.
-    tier: stricterTier(gateTier(pr, input.files), report.riskTier),
+    tier: stricterTier(gateTier(pr, input.files, report), report.riskTier),
   });
+  // A visual verdict is the maintainer's to merge once they've looked; say
+  // so rather than listing it as a failure, unless something else also blocks.
+  if (report.verdict === "visual" && reasons.length === 1 && reasons[0] === "verdict is visual") {
+    return {
+      status: "Report: visual. Check the screenshots, then comment /approve",
+      approve: false,
+    };
+  }
   if (reasons.length > 0) {
     return {
       status: `Report: ${report.verdict}. Not auto-merging: ${reasons.join("; ")}`,
@@ -348,10 +361,11 @@ export function decideAgentReview(input: {
   const reasons: string[] = [];
   if (!trusted.includes(pr.user.id)) reasons.push("PR author is not a maintainer");
   if (pr.draft) reasons.push("PR is a draft");
-  if (stricterTier(gateTier(pr, input.files), report.data.riskTier) === "high") {
+  if (stricterTier(gateTier(pr, input.files, report.data), report.data.riskTier) === "high") {
     reasons.push("high-risk change");
   }
   if (report.data.blockers > 0) reasons.push("report has blocker findings");
+  if (report.data.needsVisual) reasons.push("it changes what the app shows, so a person looks");
   if (reasons.length > 0) {
     return {
       status: `Report: agent, reviewed. Not auto-merging: ${reasons.join("; ")}`,

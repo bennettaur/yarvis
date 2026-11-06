@@ -22,6 +22,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
     verdict: "auto",
     verdictReason: "Small, tested, UI only.",
     risk: { tier: "low", reasons: ["Layout only; calls nothing new"] },
+    assessed: [],
     dimensions: {
       goal: pass,
       tests: pass,
@@ -29,7 +30,8 @@ function makeReview(overrides: Partial<Review> = {}): Review {
       security: pass,
       complexity: pass,
       maintainability: pass,
-      ui: pass,
+      ui: { status: "n/a", note: "Nothing renders differently" },
+      supplyChain: { status: "n/a", note: "No dependency changed" },
     },
     findings: [],
     screenshots: [],
@@ -44,7 +46,7 @@ function makeFacts(overrides: Partial<Facts> = {}): Facts {
     base: "a".repeat(40),
     head: "b".repeat(40),
     files: [{ path: "src/components/List.tsx", additions: 40, deletions: 2 }],
-    tier: { tier: "low", reasons: [] },
+    tier: { tier: "low", reasons: [], assess: [] },
     coverage: {
       changedLines: 20,
       coveredLines: 18,
@@ -65,15 +67,48 @@ describe("finalVerdict", () => {
     expect(finalVerdict(makeReview(), makeFacts()).verdict).toBe("auto");
   });
 
-  it("never lets the reviewer's verdict be looser than the risk tier", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+  it("needs a human for high risk and lets a clean standard-risk PR merge", () => {
+    const facts = makeFacts({ tier: { tier: "high", reasons: ["CI or repo config"], assess: [] } });
     expect(finalVerdict(makeReview(), facts)).toEqual({
       verdict: "human",
       why: ["high-risk change"],
     });
     expect(
-      finalVerdict(makeReview(), makeFacts({ tier: { tier: "standard", reasons: [] } })).verdict,
-    ).toBe("agent");
+      finalVerdict(makeReview(), makeFacts({ tier: { tier: "standard", reasons: [], assess: [] } }))
+        .verdict,
+    ).toBe("auto");
+  });
+
+  describe("files the path floor sent for assessment", () => {
+    const facts = makeFacts({
+      tier: {
+        tier: "standard",
+        reasons: [],
+        assess: [
+          { path: "package.json", reason: "a dependency file change beyond registry versions" },
+        ],
+      },
+    });
+    const rated = (tier: "standard" | "high") =>
+      makeReview({ assessed: [{ path: "package.json", tier, reason: "Adds a lint script" }] });
+
+    it("need a human when one wasn't assessed", () => {
+      expect(finalVerdict(makeReview(), facts).verdict).toBe("human");
+    });
+
+    it("follow the assessment", () => {
+      expect(finalVerdict(rated("standard"), facts).verdict).toBe("auto");
+      expect(finalVerdict(rated("high"), facts).verdict).toBe("human");
+    });
+
+    it("are listed with their rating and signed as assessed", () => {
+      const { body, data } = renderReport(rated("standard"), facts, TARGET);
+      expect(body).toContain("`package.json`: standard. Adds a lint script");
+      expect(data.assessed).toEqual(["package.json"]);
+      expect(renderReport(makeReview(), facts, TARGET).body).toContain(
+        "`package.json`: not assessed, so high.",
+      );
+    });
   });
 
   it("needs an agent for a major finding and a human for a blocker", () => {
@@ -83,14 +118,73 @@ describe("finalVerdict", () => {
     expect(finalVerdict(finding("blocker"), makeFacts()).verdict).toBe("human");
   });
 
-  it("keeps a PR with an open minor finding off auto", () => {
+  it("lets a PR with only minor findings merge", () => {
     const review = makeReview({
       findings: [{ severity: "minor", title: "Stale comment", detail: "…" }],
     });
-    expect(finalVerdict(review, makeFacts())).toEqual({
-      verdict: "agent",
-      why: ["minor finding"],
+    expect(finalVerdict(review, makeFacts())).toEqual({ verdict: "auto", why: [] });
+  });
+
+  it("lets a small UI change the screenshots show merge on its own", () => {
+    const review = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: [{ path: "/tmp/verify/7/after.png", caption: "Resized list" }],
     });
+    expect(finalVerdict(review, makeFacts())).toEqual({ verdict: "auto", why: [] });
+    expect(renderReport(review, makeFacts(), TARGET).data.needsVisual).toBe(false);
+  });
+
+  it("keeps a visual verdict the review gives, and signs that a person looks", () => {
+    const review = makeReview({
+      verdict: "visual",
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: [{ path: "/tmp/verify/7/after.png", caption: "New settings page" }],
+    });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("visual");
+    expect(renderReport(review, makeFacts(), TARGET).data.needsVisual).toBe(true);
+  });
+
+  it("lets a concern or a blocker outrank a visual check", () => {
+    const shots = [{ path: "/tmp/verify/7/after.png", caption: "Resized list" }];
+    const concern = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: { status: "concern", note: "Clipped" } },
+      screenshots: shots,
+    });
+    expect(finalVerdict(concern, makeFacts()).verdict).toBe("agent");
+    const blocked = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: pass },
+      screenshots: shots,
+      findings: [{ severity: "blocker", title: "Loses data", detail: "…" }],
+    });
+    expect(finalVerdict(blocked, makeFacts()).verdict).toBe("human");
+  });
+
+  it("signs that a person has to look when the UI check is flagged", () => {
+    expect(renderReport(makeReview(), makeFacts(), TARGET).data.needsVisual).toBe(false);
+    const concern = makeReview({
+      dimensions: { ...makeReview().dimensions, ui: { status: "concern", note: "Not captured" } },
+    });
+    expect(renderReport(concern, makeFacts(), TARGET).data.needsVisual).toBe(true);
+  });
+
+  it("needs an agent for a UI change with no screenshots to look at", () => {
+    const review = makeReview({ dimensions: { ...makeReview().dimensions, ui: pass } });
+    expect(finalVerdict(review, makeFacts()).verdict).toBe("agent");
+  });
+
+  it("needs an agent when dependencies changed and nobody checked the supply chain", () => {
+    const facts = makeFacts({ files: [{ path: "bun.lock", additions: 4, deletions: 4 }] });
+    expect(finalVerdict(makeReview(), facts)).toEqual({
+      verdict: "agent",
+      why: ["dependencies changed without a supply-chain check"],
+    });
+    const checked = makeReview({
+      dimensions: {
+        ...makeReview().dimensions,
+        supplyChain: { status: "pass", note: "zod 4.6.6 to 4.6.7: patch, no advisories" },
+      },
+    });
+    expect(finalVerdict(checked, facts).verdict).toBe("auto");
   });
 
   it("needs an agent for a concern and a human for a failed check", () => {
@@ -137,7 +231,7 @@ describe("finalVerdict", () => {
 
   it("only ever tightens when several limits apply", () => {
     const review = makeReview({ findings: [{ severity: "blocker", title: "x", detail: "…" }] });
-    const facts = makeFacts({ tier: { tier: "standard", reasons: [] } });
+    const facts = makeFacts({ tier: { tier: "standard", reasons: [], assess: [] } });
     expect(finalVerdict(review, facts).verdict).toBe("human");
   });
 
@@ -148,7 +242,9 @@ describe("finalVerdict", () => {
   });
 
   it("never lets an assessed low risk lower the paths' tier", () => {
-    const facts = makeFacts({ tier: { tier: "high", reasons: ["dependencies (bun.lock)"] } });
+    const facts = makeFacts({
+      tier: { tier: "high", reasons: ["dependencies (bun.lock)"], assess: [] },
+    });
     expect(renderReport(makeReview(), facts, TARGET).data.riskTier).toBe("high");
   });
 
@@ -244,7 +340,7 @@ describe("renderReport", () => {
     expect(headline).toContain("Races on unmount");
     expect(headline).not.toContain("Rename a variable");
     expect(details).toContain("Rename a variable");
-    expect(details).toContain("fix these in this PR");
+    expect(details).toContain("still worth fixing in this PR");
   });
 });
 

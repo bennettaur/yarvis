@@ -36,6 +36,9 @@ jobs:
     concurrency:
       group: verify-${{ github.event.issue.number }}-${{ startsWith(github.event.comment.body, '/approve') && 'approve' || contains(github.event.comment.body, '<!-- yarvis-agent-review -->') && 'agent-review' || 'report' }}
       cancel-in-progress: false
+    # The merge credential lives in this environment, which only main can
+    # use, so no other workflow or branch can read it.
+    environment: yarvis-bot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -66,4 +69,5 @@ jobs:
           VERIFY_TRUSTED_USER_IDS: ${{ vars.VERIFY_TRUSTED_USER_IDS || '2670128' }}
           # Public keys only. With none set, the gate accepts no report.
           VERIFY_ALLOWED_SIGNERS: ${{ vars.VERIFY_ALLOWED_SIGNERS }}
-        run: bun run scripts/verify/gate.ts
+        # No .env: a committed one would load into the process holding the token.
+        run: bun --no-env-file run scripts/verify/gate.ts

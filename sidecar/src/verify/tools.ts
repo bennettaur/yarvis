@@ -253,6 +253,12 @@ export function buildMergeReviewTools(config: Config, deps: MergeReviewDeps = {}
             error: `The report's verdict is ${report.data.verdict}, so it isn't the reviewer's to decide.`,
           };
         }
+        if (report.data.needsVisual && decision === "approve") {
+          return {
+            error:
+              "The PR changes what the app shows, so the user has to look at it before it merges.",
+          };
+        }
 
         const body = renderAgentReview(
           { repo, pr: target.number, headSha, reportPayload: report.payload, decision, reason },
