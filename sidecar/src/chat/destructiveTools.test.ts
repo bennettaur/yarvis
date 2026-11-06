@@ -15,6 +15,12 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(names).toContain("register_repo");
   });
 
+  // A skill the user allowed can push or open PRs, and a spoken name can be misheard.
+  it("asks before running a slash command in a workspace session", () => {
+    expect(Object.keys(builtinToolMetadata())).toContain("send_workspace_slash_command");
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("send_workspace_slash_command")).toBe(true);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });

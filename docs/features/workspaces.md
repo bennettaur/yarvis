@@ -57,8 +57,16 @@ the assistant may run in a workspace's session (see
 `/compact` is always allowed. Add others by name, separated by spaces, for
 example `/do-code-review`. A plugin skill takes its plugin prefix, as in
 `/code-review-team-core:do-code-review`. Only add commands that are safe to
-run without you watching. Never add ones that change what the session may do,
-such as `/permissions`, `/hooks`, `/mcp` or `/login`.
+run without you watching. Commands that change what the session may do or who
+it acts as (`/permissions`, `/allowed-tools`, `/hooks`, `/mcp`, `/add-dir`,
+`/config`, `/sandbox`, `/plugin`, `/terminal-setup`, `/login`, `/logout`) are
+refused, even if listed.
+
+Allowing a command lets the assistant choose the text after it. A skill acts on
+that text with its own tools, so only allow skills whose arguments you'd be
+happy for the assistant to write. A name runs whatever skill the workspace has
+under it, which can come from a repo, so prefer a plugin's full
+`plugin:skill` name where there is one.
 
 ## Use it
 
@@ -538,7 +546,8 @@ Safety rules:
   a session in the workspace, or when a send is refused for this reason, so
   restarting the session once after that fixes it.
 - **An instruction can't start with `!`, `/`, `#` or `@`.** The agent reads
-  those as commands, not requests.
+  those as commands, not requests. For a slash command, see
+  [Running a slash command in a session](#running-a-slash-command-in-a-session).
 - **A send confirms delivery only, never that the work was done.** Yarvis
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.

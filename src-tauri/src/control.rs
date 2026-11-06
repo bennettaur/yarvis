@@ -1,8 +1,8 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
-//! instruction into a Claude Code session in a workspace PTY, writing an MCP
-//! server's OAuth credentials or a signed-in GitHub token into the Keychain, and
-//! ringing an alarm the sidecar found due (`alarm.fire`) or stopping one
+//! instruction or an allowed slash command into a Claude Code session in a
+//! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
+//! GitHub token into the Keychain, and ringing an alarm the sidecar found due (`alarm.fire`) or stopping one
 //! (`alarm.release`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as

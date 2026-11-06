@@ -738,10 +738,26 @@ pub fn send_session_instruction(
 }
 
 /// Slash commands any workspace session may be sent without the user listing
-/// them. `/compact` only summarizes the session's own context. Commands that
-/// change what the session may do (`/permissions`, `/hooks`, `/mcp`, `/login`,
-/// `/add-dir`) must never be added here.
-pub const DEFAULT_ALLOWED_SLASH_COMMANDS: [&str; 1] = ["compact"];
+/// them. `/compact` only summarizes the session's own context.
+pub const DEFAULT_ALLOWED_SLASH_COMMANDS: &[&str] = &["compact"];
+
+/// Claude Code commands that change what a session may do or who it acts as.
+/// Refused even when listed in Settings: a model that read an injected "run
+/// /permissions" would otherwise only need the user to add it. `settings.json`
+/// is hand-editable, so this is checked on every send, not only on save.
+pub const REFUSED_SLASH_COMMANDS: &[&str] = &[
+    "add-dir",
+    "allowed-tools",
+    "config",
+    "hooks",
+    "login",
+    "logout",
+    "mcp",
+    "permissions",
+    "plugin",
+    "sandbox",
+    "terminal-setup",
+];
 
 /// Longest slash-command name accepted. Plugin skills are namespaced
 /// (`plugin:skill`), so this leaves room for both parts.
@@ -752,15 +768,23 @@ const MAX_SLASH_COMMAND_CHARS: usize = 100;
 /// plugin and its skill. Anything else (spaces, a second `/`, punctuation) is
 /// refused so no argument text can ride along with the name.
 pub fn is_valid_slash_command_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let starts_well = chars.next().is_some_and(|c| c.is_ascii_alphanumeric());
-    starts_well
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
         && name.chars().count() <= MAX_SLASH_COMMAND_CHARS
         && name.matches(':').count() <= 1
         && !name.ends_with(':')
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
+}
+
+/// The stored and compared form of a command name: trimmed, without its
+/// leading `/`, lower-case. Shared with `settings.rs` so what is saved is what
+/// a send is checked against.
+pub fn normalize_slash_command_name(name: &str) -> String {
+    let name = name.trim();
+    name.strip_prefix('/').unwrap_or(name).to_ascii_lowercase()
 }
 
 /// The line to type for slash command `name` with optional `arguments`, or why
@@ -774,10 +798,14 @@ fn prepare_slash_command(
     arguments: Option<&str>,
     allowed: &[String],
 ) -> Result<String, String> {
-    let name = name.trim();
-    let name = name.strip_prefix('/').unwrap_or(name).to_ascii_lowercase();
+    let name = normalize_slash_command_name(name);
     if !is_valid_slash_command_name(&name) {
         return Err("not a slash command name; send the command alone, with no arguments".into());
+    }
+    if REFUSED_SLASH_COMMANDS.contains(&name.as_str()) {
+        return Err(format!(
+            "/{name} changes what the session may do, so Yarvis never sends it"
+        ));
     }
     if !allowed.iter().any(|a| a.eq_ignore_ascii_case(&name)) {
         return Err(format!(
@@ -801,14 +829,17 @@ fn prepare_slash_command(
 /// The slash commands a session may be sent: the defaults plus the user's own
 /// list from Settings. Read on each send so a change applies right away.
 fn allowed_slash_commands(app: &AppHandle) -> Vec<String> {
-    let configured = app
-        .try_state::<SettingsState>()
-        .and_then(|state| state.snapshot().allowed_slash_commands)
-        .unwrap_or_default();
+    merge_allowed_slash_commands(
+        app.try_state::<SettingsState>()
+            .and_then(|state| state.snapshot().allowed_slash_commands),
+    )
+}
+
+fn merge_allowed_slash_commands(configured: Option<Vec<String>>) -> Vec<String> {
     DEFAULT_ALLOWED_SLASH_COMMANDS
         .iter()
         .map(|s| s.to_string())
-        .chain(configured)
+        .chain(configured.unwrap_or_default())
         .collect()
 }
 
@@ -1335,11 +1366,12 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, check_resume, hmac_sha256_hex,
-        is_unsafe_name_char, is_valid_resume_id, lock_scrollback, prepare_instruction,
-        prepare_slash_command, remote_control_command, resolve_agent_command, resolve_max_sessions,
-        runs_claude_code, session_env, session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND,
-        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
-        MAX_SESSION_NAME_CHARS,
+        is_unsafe_name_char, is_valid_resume_id, lock_scrollback, merge_allowed_slash_commands,
+        prepare_instruction, prepare_slash_command, remote_control_command, resolve_agent_command,
+        resolve_max_sessions, runs_claude_code, session_env, session_token, snapshot, Scrollback,
+        DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS, DEFAULT_MAX_SESSIONS,
+        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
+        REFUSED_SLASH_COMMANDS,
     };
     use std::sync::Mutex;
 
@@ -1467,9 +1499,26 @@ mod tests {
 
     #[test]
     fn prepare_slash_command_refuses_a_command_not_on_the_list() {
-        // `/permissions` would let the session widen what it may do unasked.
-        let err = prepare_slash_command("permissions", None, &allowed(&["compact"])).unwrap_err();
+        let err = prepare_slash_command("deploy", None, &allowed(&["compact"])).unwrap_err();
         assert!(err.contains("not an allowed slash command"), "{err}");
+    }
+
+    #[test]
+    fn the_defaults_and_the_user_list_are_both_allowed() {
+        assert_eq!(merge_allowed_slash_commands(None), allowed(&["compact"]));
+        assert_eq!(
+            merge_allowed_slash_commands(Some(allowed(&["do-code-review"]))),
+            allowed(&["compact", "do-code-review"])
+        );
+    }
+
+    #[test]
+    fn a_command_that_widens_the_session_is_refused_even_when_listed() {
+        for name in REFUSED_SLASH_COMMANDS {
+            assert!(!DEFAULT_ALLOWED_SLASH_COMMANDS.contains(name));
+            let err = prepare_slash_command(name, None, &allowed(&[name])).unwrap_err();
+            assert!(err.contains("never sends it"), "{err}");
+        }
     }
 
     #[test]

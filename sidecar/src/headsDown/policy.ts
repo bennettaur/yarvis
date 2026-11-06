@@ -297,11 +297,21 @@ export function isMergeInstruction(instruction: string | null): boolean {
   return /\b(squash[- ])?merge\b/i.test(text) && /\b(PR|pull request)\b|#\d+/i.test(text);
 }
 
+/**
+ * What a call types into a workspace's session, or undefined for a call that
+ * types nothing. A slash command's arguments can ask for a merge as plainly as
+ * an instruction can.
+ */
+function sessionText(tool: string, args: unknown): string | null | undefined {
+  if (tool === "send_workspace_instruction") return stringArg(args, "instruction");
+  if (tool === "send_workspace_slash_command") return stringArg(args, "arguments");
+  return undefined;
+}
+
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
 export function isMergeCall(tool: string, args: unknown): boolean {
-  if (tool === "send_workspace_instruction") {
-    return isMergeInstruction(stringArg(args, "instruction"));
-  }
+  const told = sessionText(tool, args);
+  if (told !== undefined) return isMergeInstruction(told);
   return mergeCallTarget(tool, args) !== null;
 }
 
@@ -319,8 +329,9 @@ async function alertUnannouncedMerge(
   args: unknown,
   announcedMerges: Set<string>,
 ): Promise<void> {
-  if (tool === "send_workspace_instruction") {
-    if (!isMergeInstruction(stringArg(args, "instruction"))) return;
+  const told = sessionText(tool, args);
+  if (told !== undefined) {
+    if (!isMergeInstruction(told)) return;
     // The session's PR isn't named, so any merge the pass announced covers it.
     if ([...announcedMerges].some((key) => !key.startsWith(BACKSTOP))) return;
     const workspaceId = stringArg(args, "workspaceId");

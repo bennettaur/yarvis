@@ -21,7 +21,7 @@ import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type {
   ClaudeSessionStarter,
   SendSessionInstructionInput,
-  SendSlashCommandInput,
+  SendSessionSlashCommandInput,
   StartClaudeSessionInput,
 } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -1970,10 +1970,10 @@ describe("workspace tools", () => {
 
   it("send_workspace_slash_command hands the command and arguments to the core", async () => {
     const created = await activeWorkspace("Compact me");
-    const sent: SendSlashCommandInput[] = [];
+    const sent: SendSessionSlashCommandInput[] = [];
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
-      sendSlashCommand: async (input) => {
+      sendSessionSlashCommand: async (input) => {
         sent.push(input);
       },
     });
@@ -2000,7 +2000,7 @@ describe("workspace tools", () => {
     const created = await activeWorkspace("Not allowed");
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
-      sendSlashCommand: async () => {
+      sendSessionSlashCommand: async () => {
         throw new Error("/permissions is not an allowed slash command");
       },
     });
@@ -2023,6 +2023,28 @@ describe("workspace tools", () => {
     expect(schema.safeParse({ workspaceId, command: "compact now" }).success).toBe(false);
     expect(schema.safeParse({ workspaceId, command: "compact\n/login" }).success).toBe(false);
     expect(schema.safeParse({ workspaceId, command: "plugin:skill" }).success).toBe(true);
+    for (const command of ["//compact", "plugin:", "a:b:c", "a".repeat(101)]) {
+      expect(schema.safeParse({ workspaceId, command }).success).toBe(false);
+    }
+  });
+
+  it("send_workspace_slash_command errors on an unknown workspace without sending", async () => {
+    let sends = 0;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async () => {
+        sends++;
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000", command: "compact" },
+      opts,
+    )) as { error?: string; delivered?: boolean };
+
+    expect(result.error).toBe("workspace not found");
+    expect(result.delivered).toBe(false);
+    expect(sends).toBe(0);
   });
 });
 

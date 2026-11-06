@@ -369,16 +369,17 @@ impl SettingsState {
     fn set_allowed_slash_commands(&self, commands: Vec<String>) -> Result<(), String> {
         let mut names: Vec<String> = Vec::new();
         for raw in commands {
-            let trimmed = raw.trim();
-            let name = trimmed
-                .strip_prefix('/')
-                .unwrap_or(trimmed)
-                .to_ascii_lowercase();
+            let name = crate::pty::normalize_slash_command_name(&raw);
             if name.is_empty() {
                 continue;
             }
             if !crate::pty::is_valid_slash_command_name(&name) {
-                return Err(format!("\"{trimmed}\" is not a slash command name"));
+                return Err(format!("\"{}\" is not a slash command name", raw.trim()));
+            }
+            if crate::pty::REFUSED_SLASH_COMMANDS.contains(&name.as_str()) {
+                return Err(format!(
+                    "/{name} changes what the session may do, so it can't be allowed"
+                ));
             }
             if !names.contains(&name) {
                 names.push(name);
@@ -684,7 +685,7 @@ impl From<Settings> for SettingsView {
             default_agent_command: crate::pty::DEFAULT_AGENT_COMMAND,
             agent_command_overridden_by_env: crate::pty::agent_command_env().is_some(),
             default_telegram_otp_window_minutes: DEFAULT_TELEGRAM_OTP_WINDOW_MINUTES,
-            default_allowed_slash_commands: &crate::pty::DEFAULT_ALLOWED_SLASH_COMMANDS,
+            default_allowed_slash_commands: crate::pty::DEFAULT_ALLOWED_SLASH_COMMANDS,
         }
     }
 }
@@ -1005,6 +1006,9 @@ mod tests {
             .is_err());
         assert!(store
             .set_allowed_slash_commands(vec!["review\n/login".to_string()])
+            .is_err());
+        assert!(store
+            .set_allowed_slash_commands(vec!["/permissions".to_string()])
             .is_err());
         assert_eq!(store.snapshot().allowed_slash_commands, None);
     }
