@@ -10,7 +10,7 @@ private temp directory for each run, removed when the run ends.
 The verification report is the `verification-report` skill, which runs the
 summary agent and whichever of the others the reviewer picked (risk,
 completeness, tests, complexity, performance, comments, observability,
-quality, and the flow diagram) in parallel and assembles their answers.
+quality, approach, and the flow diagram) in parallel and assembles their answers.
 Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context, an `index.md` of every changed file and one numbered
 patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a

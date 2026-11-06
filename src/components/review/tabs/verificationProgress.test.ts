@@ -9,7 +9,7 @@ const stateOf = (progress: ReturnType<typeof run>, agent: string) =>
 describe("reduceProgress", () => {
   it("starts with every check waiting", () => {
     expect(initialProgress().checks.every((c) => c.state === "waiting")).toBe(true);
-    expect(initialProgress().checks).toHaveLength(9);
+    expect(initialProgress().checks).toHaveLength(10);
     // Only the summary and the picked sections' agents run.
     expect(initialProgress(["tests", "flow"]).checks.map((c) => c.agent)).toEqual([
       "change-summary",

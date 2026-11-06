@@ -727,6 +727,7 @@ describe("verification report", () => {
     comments: pass,
     observability: pass,
     quality: pass,
+    approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
   };
   let budget: number;
   // Makes startClaudeRun throw before it records a run: it reads `program` first.

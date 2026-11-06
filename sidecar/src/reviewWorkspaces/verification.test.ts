@@ -48,6 +48,7 @@ function report(overrides: Record<string, unknown> = {}) {
     comments: pass,
     observability: pass,
     quality: pass,
+    approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
     ...overrides,
   };
 }
@@ -200,6 +201,45 @@ describe("the report schema", () => {
     // Only the summary and the picked sections are required of the answer.
     const required = JSON.parse(jsonSchemaArg(picked)).required;
     expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+  });
+
+  it("keeps the simpler way only when the rating says there is one", () => {
+    const schema = verificationReportSchema({
+      ...limits,
+      sections: ["approach"],
+      checkoutDir: "/tmp/co",
+    });
+    const simpler = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: {
+        rating: "simpler",
+        reason: "r",
+        alternative: "Reuse the upload queue.",
+        path: "/tmp/co/src/queue.ts",
+        line: 4,
+      },
+    });
+    expect(simpler.approach).toEqual({
+      rating: "simpler",
+      reason: "r",
+      alternative: "Reuse the upload queue.",
+      path: "src/queue.ts",
+      line: 4,
+    });
+    const asSimple = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: { rating: "no-simpler", reason: "r", alternative: "stray", path: "src/a.ts" },
+    });
+    expect(asSimple.approach).toMatchObject({ rating: "no-simpler", alternative: "" });
+    expect(asSimple.approach?.path).toBeUndefined();
+    const unrated = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: { rating: "unrated", reason: "failed", alternative: "stray" },
+    });
+    expect(unrated.approach).toMatchObject({ rating: "unrated", alternative: "" });
   });
 
   it("drops a diagram too long to render rather than cutting it", () => {
@@ -793,8 +833,8 @@ describe("the size a warning states", () => {
 
   it("lands near what the calibration runs cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
-    // Those runs had seven check agents and a report now has nine, so the code-heavy
-    // run is allowed above the measured cost by the two extra readers.
+    // Those runs had seven check agents and a report now has ten, so the code-heavy
+    // run is allowed above the measured cost by the three extra readers.
     const code = verificationSize(
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
@@ -802,7 +842,7 @@ describe("the size a warning states", () => {
       { model: "haiku", maxBudgetUsd: 1 },
     );
     expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
-    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25 * (9 / 7));
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25 * (10 / 7));
     const bulk = new Map(
       ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
         p,

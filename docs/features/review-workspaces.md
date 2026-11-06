@@ -167,8 +167,9 @@ marks its files viewed.
 running on your machine against the PR's checkout) read every changed file's
 diff and report: a summary, the files that must be read and why, the risk, and
 checks for completeness, tests, complexity, performance, comments,
-observability and code quality. Its progress shows check by check while it
-runs, and **Cancel** stops it. Every file and line in the report opens the diff
+observability and code quality, and whether there is a simpler way to do what
+the PR does. Its progress shows check by check while it runs, and **Cancel**
+stops it. Every file and line in the report opens the diff
 there.
 
 - **Observability** looks for errors that are swallowed, logging at the wrong
@@ -179,12 +180,19 @@ there.
 - **Code quality** looks for code that goes against the language's or the
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
-- A report made before these two checks existed shows only the checks it had.
+- **Simpler approach** rates the PR as a whole, where the complexity check
+  looks at its code line by line. One agent reads the description and the
+  code, then searches the checkout for something the PR could have reused or
+  a smaller change with the same effect. It rates the PR "No simpler way
+  found", "A simpler way exists" or "A much simpler way exists", says why, and
+  names the simpler way and the code it would build on. If the agent fails,
+  the section says "Not rated".
+- A report made before these checks existed shows only the checks it had.
 
 Above **Run verification** you pick which sections to run: risk, each check,
-and the **Flow diagram**. The summary and must-read files always run. The
-diagram is off unless you tick it; the others start ticked, and after a run
-the boxes start where that run's did. The cost estimate follows what you pick.
+**Simpler approach** and the **Flow diagram**. The summary and must-read files
+always run. The diagram is off unless you tick it; the others start ticked,
+and after a run the boxes start where that run's did. The cost estimate follows what you pick.
 If a report is already being written for the PR, starting another joins that
 run, with the sections it was started with.
 A report shows only the sections its run was asked for.
