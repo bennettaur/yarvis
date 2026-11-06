@@ -37,6 +37,8 @@ function defaultSettings(): Settings {
     colorTheme: null,
     terminalFontSize: null,
     attentionAnimation: null,
+    allowedSlashCommands: null,
+    defaultAllowedSlashCommands: ["compact"],
   };
 }
 
@@ -47,6 +49,15 @@ mock.module("@tauri-apps/api/core", () => ({
       if (rejectSaveWith) throw new Error(rejectSaveWith);
       const { name, command: cmd } = args as { name: string | null; command: string | null };
       stored = { ...stored, agentName: name, agentCommand: cmd };
+    }
+    if (command === "set_allowed_slash_commands") {
+      const { commands } = args as { commands: string[] };
+      stored = {
+        ...stored,
+        allowedSlashCommands:
+          commands.length > 0 ? commands.map((c) => c.replace(/^\//, "")) : null,
+      };
+      return stored;
     }
     if (command === "get_settings" || command === "set_agent") return stored;
     return nativeInvoke(command);
@@ -152,6 +163,30 @@ describe("AgentSection", () => {
     stored = { ...defaultSettings(), agentCommandOverriddenByEnv: true };
     const html = await renderToHtml(createElement(AgentSection));
     expect(html).toContain("takes precedence");
+  });
+
+  it("lists the always-allowed slash commands and the stored ones", async () => {
+    stored = { ...defaultSettings(), allowedSlashCommands: ["do-code-review"] };
+    const html = await renderToHtml(createElement(AgentSection));
+    expect(html).toContain("/compact");
+    expect(html).toContain('value="/do-code-review"');
+  });
+
+  it("sends the slash commands to the core as a list", async () => {
+    const { host, cleanup } = await mount();
+    type(host, 2, "/do-code-review,  /simplify");
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save commands",
+    );
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(invoked).toContainEqual({
+      command: "set_allowed_slash_commands",
+      args: { commands: ["/do-code-review", "/simplify"] },
+    });
+    expect(host.innerHTML).toContain("Saved.");
+    cleanup();
   });
 
   it("drops a stale save notice once a field is edited again", async () => {

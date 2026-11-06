@@ -91,6 +91,12 @@ pub struct Settings {
     /// pending: an amber band sweeps across it and the bell shakes. Unset means
     /// on; only `false` turns it off.
     pub attention_animation: Option<bool>,
+    /// Slash commands, beyond `pty::DEFAULT_ALLOWED_SLASH_COMMANDS`, that the
+    /// sidecar may send to a workspace's agent session (`claude.slash`). Names
+    /// only, without the leading `/`. Kept with the core's settings rather than
+    /// the sidecar's because no sidecar route or tool writes these, so the
+    /// assistant can't widen its own allowlist.
+    pub allowed_slash_commands: Option<Vec<String>>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -352,6 +358,36 @@ impl SettingsState {
             *settings = Self::read_from_disk(&self.path);
             settings.agent_name = name;
             settings.agent_command = command;
+        }
+        self.save()
+    }
+
+    /// Stores the user's extra allowed slash commands, or clears them with an
+    /// empty list. Names are stored lower-case without a leading `/`, and one
+    /// that isn't shaped like a command name is rejected rather than dropped,
+    /// so the user sees why it didn't save.
+    fn set_allowed_slash_commands(&self, commands: Vec<String>) -> Result<(), String> {
+        let mut names: Vec<String> = Vec::new();
+        for raw in commands {
+            let trimmed = raw.trim();
+            let name = trimmed
+                .strip_prefix('/')
+                .unwrap_or(trimmed)
+                .to_ascii_lowercase();
+            if name.is_empty() {
+                continue;
+            }
+            if !crate::pty::is_valid_slash_command_name(&name) {
+                return Err(format!("\"{trimmed}\" is not a slash command name"));
+            }
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.allowed_slash_commands = (!names.is_empty()).then_some(names);
         }
         self.save()
     }
@@ -630,6 +666,9 @@ pub struct SettingsView {
     /// Default Telegram OTP re-auth window applied when unset; mirrors
     /// `DEFAULT_OTP_WINDOW_MINUTES` in `sidecar/src/config.ts`.
     default_telegram_otp_window_minutes: u32,
+    /// Slash commands always allowed, so the UI can list them beside the
+    /// user's own without repeating `pty::DEFAULT_ALLOWED_SLASH_COMMANDS`.
+    default_allowed_slash_commands: &'static [&'static str],
 }
 
 /// Mirrors `DEFAULT_OTP_WINDOW_MINUTES` in `sidecar/src/config.ts`.
@@ -645,6 +684,7 @@ impl From<Settings> for SettingsView {
             default_agent_command: crate::pty::DEFAULT_AGENT_COMMAND,
             agent_command_overridden_by_env: crate::pty::agent_command_env().is_some(),
             default_telegram_otp_window_minutes: DEFAULT_TELEGRAM_OTP_WINDOW_MINUTES,
+            default_allowed_slash_commands: &crate::pty::DEFAULT_ALLOWED_SLASH_COMMANDS,
         }
     }
 }
@@ -675,6 +715,17 @@ pub fn set_agent(
     command: Option<String>,
 ) -> Result<SettingsView, String> {
     state.set_agent(name, command)?;
+    Ok(state.snapshot().into())
+}
+
+/// Sets the extra slash commands workspace sessions may be sent, replacing the
+/// stored list. See `SettingsState::set_allowed_slash_commands`.
+#[tauri::command]
+pub fn set_allowed_slash_commands(
+    state: tauri::State<'_, SettingsState>,
+    commands: Vec<String>,
+) -> Result<SettingsView, String> {
+    state.set_allowed_slash_commands(commands)?;
     Ok(state.snapshot().into())
 }
 
@@ -919,6 +970,43 @@ mod tests {
         assert!(json["colorTheme"].is_null());
         assert!(json["terminalFontSize"].is_null());
         assert!(json["attentionAnimation"].is_null());
+        assert!(json["allowedSlashCommands"].is_null());
+        assert_eq!(json["defaultAllowedSlashCommands"][0], "compact");
+    }
+
+    #[test]
+    fn allowed_slash_commands_are_normalized_and_survive_a_reload() {
+        let store = temp_store("slash-commands");
+        store
+            .set_allowed_slash_commands(vec![
+                "/Do-Code-Review".to_string(),
+                " ".to_string(),
+                "do-code-review".to_string(),
+                "code-review-team-core:do-code-review".to_string(),
+            ])
+            .unwrap();
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(
+            reloaded.snapshot().allowed_slash_commands,
+            Some(vec![
+                "do-code-review".to_string(),
+                "code-review-team-core:do-code-review".to_string(),
+            ])
+        );
+        store.set_allowed_slash_commands(vec![]).unwrap();
+        assert_eq!(store.snapshot().allowed_slash_commands, None);
+    }
+
+    #[test]
+    fn a_slash_command_with_arguments_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("slash-commands-rejected");
+        assert!(store
+            .set_allowed_slash_commands(vec!["compact focus on tests".to_string()])
+            .is_err());
+        assert!(store
+            .set_allowed_slash_commands(vec!["review\n/login".to_string()])
+            .is_err());
+        assert_eq!(store.snapshot().allowed_slash_commands, None);
     }
 
     #[test]

@@ -77,6 +77,8 @@ let settings: Settings = {
   colorTheme: null,
   terminalFontSize: null,
   attentionAnimation: null,
+  allowedSlashCommands: null,
+  defaultAllowedSlashCommands: ["compact"],
 };
 
 const presentSecrets = new Set(config.presentSecrets);
@@ -119,6 +121,10 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
         agentName: (args.name as string | null) || null,
         agentCommand: (args.command as string | null) || null,
       });
+    case "set_allowed_slash_commands": {
+      const commands = args.commands as string[];
+      return updateSettings({ allowedSlashCommands: commands.length > 0 ? commands : null });
+    }
     case "set_azure_devops_org_url":
       return updateSettings({ azureDevopsOrgUrl: args.value as string | null });
     case "set_jira_base_url":

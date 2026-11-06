@@ -22,6 +22,7 @@
 import {
   killClaudeSession,
   sendClaudeInstruction,
+  sendClaudeSlashCommand,
   spawnClaudeSession,
 } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
@@ -230,6 +231,29 @@ export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Pro
  */
 export async function sendSessionInstruction(input: SendSessionInstructionInput): Promise<void> {
   await sendClaudeInstruction(input);
+}
+
+export interface SendSlashCommandInput {
+  /** Workspace whose session receives the command. */
+  workspaceId: string;
+  /** The command's name, without its `/`, e.g. `compact`. */
+  command: string;
+  /** Text typed after the command, if any. */
+  arguments?: string;
+  /** As in {@link SendSessionInstructionInput}. */
+  agentPids: number[];
+}
+
+/** Injectable slash-command sender so the workspace tool is testable without the core. */
+export type ClaudeSlashCommandSender = (input: SendSlashCommandInput) => Promise<void>;
+
+/**
+ * Types an allowed slash command at a workspace session's prompt. Kept apart
+ * from {@link sendSessionInstruction}, which refuses a leading `/`, so the
+ * core can check the command against an allowlist only the user edits.
+ */
+export async function sendSessionSlashCommand(input: SendSlashCommandInput): Promise<void> {
+  await sendClaudeSlashCommand(input);
 }
 
 /** Pids of the Claude sessions registered in a workspace's agent tab, oldest first. */

@@ -125,6 +125,9 @@ The assistant can act on your workspaces in bulk:
   types that instruction into the workspace's running Claude Code session.
   Yarvis can only confirm the text was delivered, not that the work got done,
   and it says so.
+- **"Compact the billing-api session."** It runs `/compact` there. Other slash
+  commands and skills run only once you've allowed them in Settings (see
+  [Running a slash command in a session](workspaces.md#running-a-slash-command-in-a-session)).
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks, mergeability and review verdict from the last poll (refreshed every
   minute).

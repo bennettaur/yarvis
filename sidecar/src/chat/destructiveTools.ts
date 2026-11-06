@@ -80,6 +80,8 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Same delivery caveat, and a skill the user allowed can push or open PRs.
+  "send_workspace_slash_command",
   // Act inside the user's signed-in browser session. The extension keeps them on
   // the current site and off destructive controls, but a misheard "open the
   // billing page" is still an action nobody reviewed.

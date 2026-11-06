@@ -51,6 +51,15 @@ it runs. The defaults are `Claude` and `claude --permission-mode auto`. Add
 flags there, such as a model or a different permission mode. The
 `YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command.
 
+The same section lists the **allowed slash commands**: the commands and skills
+the assistant may run in a workspace's session (see
+[Running a slash command in a session](#running-a-slash-command-in-a-session)).
+`/compact` is always allowed. Add others by name, separated by spaces, for
+example `/do-code-review`. A plugin skill takes its plugin prefix, as in
+`/code-review-team-core:do-code-review`. Only add commands that are safe to
+run without you watching. Never add ones that change what the session may do,
+such as `/permissions`, `/hooks`, `/mcp` or `/login`.
+
 ## Use it
 
 ### Create a workspace
@@ -539,6 +548,22 @@ A PR's **Resolve conflicts** button uses the same path (see
 while a permission prompt is pending. When the workspace has no agent running,
 it writes the merge instructions to `.yarvis/resolve-conflicts.md`, leaving
 `.yarvis/brief.md` as it was, and starts an agent on them.
+
+### Running a slash command in a session
+
+The assistant can also run a slash command in a workspace's running session,
+for example "compact the billing-api session" or "run /do-code-review in the
+billing-api workspace". It can pass text after the command too, as in
+`/compact keep the test plan`.
+
+Only allowed commands run: `/compact`, plus the ones you list in
+**Settings → Repositories → Agent**. The app's core checks the list, not the
+assistant, and only the Settings screen can change it. Anything else is refused
+and the assistant tells you where to add it. The text after the command has
+newlines and control characters turned into spaces, so it can't submit a
+second command. The other rules for instructions apply as well: the agent must
+be what's reading the prompt, and a send confirms delivery only. A spoken turn
+asks before it sends one, and so does a heads-down pass.
 
 ### Asking what a workspace is up to
 

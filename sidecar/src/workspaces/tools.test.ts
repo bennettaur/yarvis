@@ -21,6 +21,7 @@ import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type {
   ClaudeSessionStarter,
   SendSessionInstructionInput,
+  SendSlashCommandInput,
   StartClaudeSessionInput,
 } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -1965,6 +1966,63 @@ describe("workspace tools", () => {
 
     expect(result.error).toBe("workspace not found");
     expect(sends).toBe(0);
+  });
+
+  it("send_workspace_slash_command hands the command and arguments to the core", async () => {
+    const created = await activeWorkspace("Compact me");
+    const sent: SendSlashCommandInput[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSlashCommand: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "/Compact", arguments: "keep the test plan" },
+      opts,
+    )) as { error?: string; delivered?: boolean; completionConfirmed?: boolean };
+
+    expect(result.error).toBeUndefined();
+    expect(result.delivered).toBe(true);
+    expect(result.completionConfirmed).toBe(false);
+    expect(sent).toEqual([
+      {
+        workspaceId: created.workspaceId,
+        command: "compact",
+        arguments: "keep the test plan",
+        agentPids: [],
+      },
+    ]);
+  });
+
+  it("send_workspace_slash_command passes on the core's refusal of a command not allowed", async () => {
+    const created = await activeWorkspace("Not allowed");
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSlashCommand: async () => {
+        throw new Error("/permissions is not an allowed slash command");
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "permissions" },
+      opts,
+    )) as { error?: string; delivered?: boolean };
+
+    expect(result.delivered).toBe(false);
+    expect(result.error).toContain("not an allowed slash command");
+  });
+
+  it("send_workspace_slash_command refuses a name carrying arguments", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.send_workspace_slash_command.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = "00000000-0000-0000-0000-000000000000";
+    expect(schema.safeParse({ workspaceId, command: "compact now" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, command: "compact\n/login" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, command: "plugin:skill" }).success).toBe(true);
   });
 });
 

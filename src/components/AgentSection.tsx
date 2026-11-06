@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getSettings, type Settings, setAgent } from "../lib/settings";
+import { getSettings, type Settings, setAgent, setAllowedSlashCommands } from "../lib/settings";
 
 /**
  * The agent every workspace opens with: its tab title and the command its
@@ -10,6 +10,7 @@ export default function AgentSection() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [commandDraft, setCommandDraft] = useState("");
+  const [slashDraft, setSlashDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -18,6 +19,7 @@ export default function AgentSection() {
     setSettings(next);
     setNameDraft(next.agentName ?? "");
     setCommandDraft(next.agentCommand ?? "");
+    setSlashDraft((next.allowedSlashCommands ?? []).map((c) => `/${c}`).join(" "));
   }, []);
 
   useEffect(() => {
@@ -62,6 +64,29 @@ export default function AgentSection() {
       setBusy(false);
     }
   }, [adopt, commandDraft, nameDraft]);
+
+  const editSlash = useCallback(
+    (value: string) => {
+      setSlashDraft(value);
+      clearNotices();
+    },
+    [clearNotices],
+  );
+
+  const saveSlash = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      const commands = slashDraft.split(/[\s,]+/).filter(Boolean);
+      adopt(await setAllowedSlashCommands(commands));
+      setNotice("Saved. Applies to the next slash command sent.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [adopt, slashDraft]);
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -118,6 +143,42 @@ export default function AgentSection() {
           <span className="font-mono">{settings.defaultAgentCommand}</span>.
         </p>
       )}
+
+      <div className="mt-5 flex flex-wrap items-start gap-2">
+        <label className="min-w-64 flex-1 text-xs text-zinc-400">
+          <span className="mb-1 block uppercase tracking-wide">Allowed slash commands</span>
+          <input
+            type="text"
+            value={slashDraft}
+            placeholder="/do-code-review"
+            onChange={(e) => editSlash(e.target.value)}
+            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-sm outline-none focus:border-zinc-500"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={saveSlash}
+          disabled={settings === null || busy}
+          className="mt-5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Save commands"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-zinc-500">
+        Commands and skills the assistant may run in a workspace's agent session, separated by
+        spaces.{" "}
+        {settings && (
+          <>
+            Always allowed:{" "}
+            <span className="font-mono">
+              {settings.defaultAllowedSlashCommands.map((c) => `/${c}`).join(" ")}
+            </span>
+            .{" "}
+          </>
+        )}
+        Only add ones that are safe to run unasked: never commands that change what the session may
+        do, like <code>/permissions</code> or <code>/hooks</code>.
+      </p>
     </section>
   );
 }
