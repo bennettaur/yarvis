@@ -520,6 +520,24 @@ describe("useVoice in continuous mode", () => {
     expect(active.sent.map((m) => m.text)).toEqual(["first", "second third"]);
   });
 
+  it("keeps a refused turn ahead of turns said after it", async () => {
+    active = await listening();
+    const firstSend = deferred<unknown>();
+    sendSettles = firstSend.promise;
+    transcriptResult = "first";
+    detector?.onTurn(turnAudio());
+    await settle();
+    transcriptResult = "second";
+    detector?.onTurn(turnAudio());
+    await settle();
+
+    sendSettles = null;
+    firstSend.resolve(false);
+    await settle();
+
+    expect(active.sent.map((m) => m.text)).toEqual(["first", "first second"]);
+  });
+
   it("retries a refused turn once, then says it was dropped", async () => {
     active = await listening();
     // The surface refuses when a turn started between the check and the send.

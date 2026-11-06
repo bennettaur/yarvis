@@ -181,8 +181,9 @@ export function useVoice({
   //     one attempt: a refusal then drops them and says so.
   const transcribeInOrderRef = useRef<Promise<void>>(Promise.resolve());
   const [heldTurns, setHeldTurns] = useState<string[]>([]);
-  // Read when a transcript lands, which can be before the flush effect below
-  // has run: a turn must not be sent ahead of ones already held.
+  // Mirrors `heldTurns`; update both together. Read when a transcript lands,
+  // which can be before the flush effect below has run: a turn must not be
+  // sent ahead of ones already held.
   const heldTurnsRef = useRef<string[]>([]);
   /** A continuous turn has been sent and its send hasn't settled yet. */
   const [sending, setSending] = useState(false);
@@ -358,6 +359,12 @@ export function useVoice({
     setHeldTurns(heldTurnsRef.current);
   }, []);
 
+  // A refused turn was said before anything held while its send was in flight.
+  const holdRefusedTurn = useCallback((text: string) => {
+    heldTurnsRef.current = [text, ...heldTurnsRef.current];
+    setHeldTurns(heldTurnsRef.current);
+  }, []);
+
   const handleContinuousTurn = useCallback(
     (wav: Blob) => {
       const generation = turnGenerationRef.current;
@@ -374,13 +381,13 @@ export function useVoice({
           const tooShortForTail = inTail && text.split(/\s+/).length < ECHO_TAIL_MIN_WORDS;
           if (echoReference && !tooShortForTail && looksLikeEcho(text, echoReference)) return;
           if (busyRef.current || sendingRef.current || heldTurnsRef.current.length) holdTurn(text);
-          else sendContinuous(text, generation, holdTurn);
+          else sendContinuous(text, generation, holdRefusedTurn);
         })
         // A turn that fails must not break the chain, or every later turn is
         // silently skipped.
         .catch((e) => setError(e instanceof Error ? e.message : String(e)));
     },
-    [transcribeTurn, sendContinuous, holdTurn],
+    [transcribeTurn, sendContinuous, holdTurn, holdRefusedTurn],
   );
 
   // Cutting in: the user talking over the reply means they want to be heard,
@@ -432,9 +439,12 @@ export function useVoice({
   // follow-up, split only by pauses. A second refusal drops them.
   useEffect(() => {
     if (busy || sending || heldTurns.length === 0) return;
+    // From the ref, not this render's state: a turn held since the render
+    // must go out too, not be cleared unsent.
+    const turns = heldTurnsRef.current;
     heldTurnsRef.current = [];
     setHeldTurns([]);
-    sendContinuous(heldTurns.join(" "), turnGenerationRef.current, () =>
+    sendContinuous(turns.join(" "), turnGenerationRef.current, () =>
       setError("couldn't send what you said; it's been dropped"),
     );
   }, [busy, sending, heldTurns, sendContinuous]);
@@ -446,7 +456,8 @@ export function useVoice({
     if (!busy && !sending) silencedRef.current = false;
   }, [busy, sending]);
 
-  // A minimised window closes the mic too: nobody is watching what it sends. Coming back waits for a click.
+  // A minimised window closes the mic too: nobody is watching what it sends.
+  // Coming back waits for a click.
   useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") setContinuousArmed(false);

@@ -25,6 +25,9 @@ import script from "./turn_server.py" with { type: "text" };
 /** Lines of the server's output kept for the status view. */
 const LOG_TAIL_LINES = 200;
 
+/** Lines of that log written to sidecar.log beside a failure. */
+const FAILURE_LOG_LINES = 5;
+
 const READY_LINE = /^YARVIS_TURN_READY (\d+)$/;
 
 /**
@@ -54,6 +57,26 @@ export interface TurnDetectorDeps {
   startTimeoutMs: number;
 }
 
+/**
+ * Writes the server script beside settings.json and returns its path.
+ *
+ * Instances share ~/.yarvis, so the file is named for its contents: two builds
+ * never run each other's script. Older builds' files are left in place, since
+ * one may still be running. Written to a temp file and renamed, so another
+ * instance's uv never reads half of it.
+ */
+export function writeTurnServerScript(source: string): string {
+  const dir = join(dirname(settingsPath()), "voice");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const hash = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  const file = join(dir, `turn_server.${hash}.py`);
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, source, { mode: 0o600, flag: "w" });
+  renameSync(temp, file);
+  return file;
+}
+
 const defaultTurnDetectorDeps: TurnDetectorDeps = {
   spawn: (program, args, env) =>
     spawn(program, args, {
@@ -64,20 +87,7 @@ const defaultTurnDetectorDeps: TurnDetectorDeps = {
       // stdin stays open for the server's lifetime; its closing is the exit signal.
       stdio: ["pipe", "pipe", "pipe"],
     }),
-  // Instances share ~/.yarvis, so the file is named for its contents: two
-  // builds never run each other's script. Written to a temp file and renamed,
-  // so another instance's uv never reads half of it.
-  writeScript: () => {
-    const dir = join(dirname(settingsPath()), "voice");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    chmodSync(dir, 0o700);
-    const hash = createHash("sha256").update(script).digest("hex").slice(0, 12);
-    const file = join(dir, `turn_server.${hash}.py`);
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, script, { mode: 0o600, flag: "w" });
-    renameSync(temp, file);
-    return file;
-  },
+  writeScript: () => writeTurnServerScript(script),
   newToken: () => randomBytes(32).toString("hex"),
   kill: (pid) => {
     try {
@@ -209,10 +219,10 @@ export class TurnDetector {
     if (child.pid !== undefined) this.deps.kill(child.pid);
   }
 
-  /** Records why the server stopped, in the status and in sidecar.log. */
+  /** Records why the server stopped or couldn't start, in the status and in sidecar.log. */
   private report(error: string): void {
     this.error = error;
-    console.warn(`[voice] ${error}`, this.log.slice(-5));
+    console.warn(`[voice] ${error}`, this.log.slice(-FAILURE_LOG_LINES));
   }
 
   private append(line: string): void {

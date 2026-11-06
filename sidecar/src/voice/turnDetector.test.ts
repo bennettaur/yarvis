@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
-import { TurnDetector, type TurnDetectorDeps } from "./turnDetector.ts";
+import { basename } from "node:path";
+import { TurnDetector, type TurnDetectorDeps, writeTurnServerScript } from "./turnDetector.ts";
 
 /** A child process that only exits or prints when the test says so. */
 let nextPid = 100;
@@ -17,13 +18,21 @@ function fakeChild(): ChildProcess {
 }
 
 let originalToken: string | undefined;
+/** What the detector wrote to the sidecar log, kept out of the test output. */
+let warnings: unknown[][];
+let warnSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
   originalToken = process.env.YARVIS_SIDECAR_TOKEN;
   process.env.YARVIS_SIDECAR_TOKEN = "sidecar-secret";
+  warnings = [];
+  warnSpy = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    warnings.push(args);
+  });
 });
 
 afterEach(() => {
+  warnSpy.mockRestore();
   if (originalToken === undefined) delete process.env.YARVIS_SIDECAR_TOKEN;
   else process.env.YARVIS_SIDECAR_TOKEN = originalToken;
 });
@@ -134,22 +143,18 @@ describe("TurnDetector", () => {
   });
 
   it("writes why the server stopped to the sidecar log, with its last lines", () => {
-    const warnings: unknown[][] = [];
-    const warn = spyOn(console, "warn").mockImplementation((...args) => {
-      warnings.push(args);
-    });
-    try {
-      const { detector: turns, spawned } = detector();
-      turns.start();
-      (spawned[0]!.child.stderr as EventEmitter).emit("data", "ModuleNotFoundError: numpy\n");
-      spawned[0]?.child.emit("exit", 1, null);
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]!.child.stderr as EventEmitter;
+    for (let i = 1; i <= 7; i++) stderr.emit("data", `line ${i}\n`);
+    spawned[0]?.child.emit("exit", 1, null);
 
-      expect(warnings).toEqual([
-        ["[voice] the turn detector exited (code 1); see its log", ["ModuleNotFoundError: numpy"]],
-      ]);
-    } finally {
-      warn.mockRestore();
-    }
+    expect(warnings).toEqual([
+      [
+        "[voice] the turn detector exited (code 1); see its log",
+        ["line 3", "line 4", "line 5", "line 6", "line 7"],
+      ],
+    ]);
   });
 
   it("uses a new token for each server", () => {
@@ -222,6 +227,18 @@ describe("TurnDetector", () => {
 
     turns.start();
     expect(spawned).toHaveLength(2);
+  });
+});
+
+describe("writeTurnServerScript", () => {
+  it("names the file for its contents, so builds never share one", async () => {
+    const one = writeTurnServerScript("print('one')\n");
+    const two = writeTurnServerScript("print('two')\n");
+
+    expect(basename(one)).toMatch(/^turn_server\.[0-9a-f]{12}\.py$/);
+    expect(two).not.toBe(one);
+    expect(writeTurnServerScript("print('one')\n")).toBe(one);
+    expect(await readFile(one, "utf8")).toBe("print('one')\n");
   });
 });
 
