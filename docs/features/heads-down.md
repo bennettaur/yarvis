@@ -211,6 +211,11 @@ Questions and approvals show under **Needs you** on the Heads down page and in
 the attention bell. Nothing waits on them: the stream they belong to waits,
 and the rest carry on. Your answer reaches the next pass.
 
+Opening one from the bell answers it in a window over the page you're on,
+rather than taking you to the Heads down page. The window then shows the next
+open question or approval, until none are left. **Open Heads down** goes to the
+page instead.
+
 - **A question** offers choices, plus a box for your own words. Your answer is
   saved as a decision, so the next time the same question comes up in the same
   situation, it goes with what you said. See

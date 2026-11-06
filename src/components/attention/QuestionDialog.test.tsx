@@ -180,6 +180,28 @@ describe("QuestionDialog", () => {
     expect(closed).toBe(1);
   });
 
+  it("reports finishing, not closing, once a reply leaves nothing waiting", async () => {
+    let done = 0;
+    waiting = [QUESTION];
+    const mounted = await mountForInteraction(
+      createElement(QuestionDialog, {
+        item: ITEM,
+        onClose: () => {
+          closed++;
+        },
+        onDone: () => {
+          done++;
+        },
+        onOpenSession: () => {},
+      }),
+    );
+    unmount = mounted.unmount;
+    button(mounted.host, "Skip").click();
+    await settle();
+    expect(done).toBe(1);
+    expect(closed).toBe(0);
+  });
+
   it("stays open with the error and keeps the user's draft when a send fails", async () => {
     const host = await mountDialog();
     button(host, "Token bucket").click();

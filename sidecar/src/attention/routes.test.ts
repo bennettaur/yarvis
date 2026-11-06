@@ -368,6 +368,22 @@ describe("permission requests", () => {
       expect(await pendingItems()).toHaveLength(0);
     });
 
+    it("clears the idle item Claude Code raised while the question waited", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask(questionInput);
+      await untilItemRaised();
+      await app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey, kind: "idle" }),
+      });
+      expect((await pendingItems()).map((i) => i.kind).sort()).toEqual(["idle", "permission"]);
+
+      await decide(id, { behavior: "answer", answers });
+      await response;
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
     it("answers a question longer than a typical one", async () => {
       await seedWorkspace(workspaceId, "WS");
       const question = `Does this plan look right?\n${"- a step\n".repeat(200)}`;

@@ -29,11 +29,14 @@ function toAnswers(drafts: Draft[]): QuestionAnswer[] {
 export default function QuestionDialog({
   item,
   onClose,
+  onDone = onClose,
   onOpenSession,
 }: {
   /** The attention row that was opened; null keeps the dialog closed. */
   item: AttentionItem | null;
   onClose: () => void;
+  /** Called instead of `onClose` once a reply leaves nothing waiting. */
+  onDone?: () => void;
   /** Jumps to the asking session, for a question that needs more than a reply. */
   onOpenSession: (item: AttentionItem) => void;
 }) {
@@ -92,7 +95,7 @@ export default function QuestionDialog({
   /**
    * Sends the reply, then reloads the session's questions: that picks up a set
    * asked while the dialog was open, and drops one answered elsewhere after a
-   * failed send. Closes once nothing is left.
+   * failed send. Finishes once nothing is left.
    */
   const reply = async (send: (id: string) => Promise<void>) => {
     if (!current) return;
@@ -108,7 +111,7 @@ export default function QuestionDialog({
     try {
       const remaining = await questionsForItem(item);
       if (sent && remaining.length === 0) {
-        onClose();
+        onDone();
         return;
       }
       show(remaining);

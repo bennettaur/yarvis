@@ -1,4 +1,9 @@
-import type { AttentionItem, AttentionKind, AttentionScope } from "./attention";
+import {
+  type AttentionItem,
+  type AttentionKind,
+  type AttentionScope,
+  hasAnswerDialog,
+} from "./attention";
 
 /**
  * Folds the pending stream into one entry per origin, so a workspace that asks
@@ -77,4 +82,22 @@ export function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
   }
 
   return [...groups.values()];
+}
+
+/**
+ * The next prompt to open after the user finished answering `done`'s: the
+ * oldest other item from the same workspace that also opens a dialog. Items
+ * from `done`'s own session are skipped, since its dialog already went through
+ * everything that session had waiting, and its item may not have left the
+ * stream yet. Outside a workspace nothing follows: a session's dialog covers
+ * that session, and the heads-down dialog covers every open heads-down question.
+ */
+export function nextAnswerable(items: AttentionItem[], done: AttentionItem): AttentionItem | null {
+  if (!done.workspaceId) return null;
+  const candidates = items.filter(
+    (i) =>
+      i.workspaceId === done.workspaceId && i.sessionKey !== done.sessionKey && hasAnswerDialog(i),
+  );
+  if (candidates.length === 0) return null;
+  return candidates.reduce((oldest, i) => (i.seq < oldest.seq ? i : oldest));
 }
