@@ -163,8 +163,8 @@ export async function recordReviewContributions(
 export const githubReviewSyncJob: JobDefinition = {
   name: "github-review-sync",
   description:
-    "Every 30 minutes, log the approvals and change requests you gave on github.com, so they count alongside the ones given in Yarvis.",
-  schedule: { kind: "interval", everyMs: 30 * 60 * 1000 },
+    "Every hour, log the approvals and change requests you gave on github.com, so they count alongside the ones given in Yarvis.",
+  schedule: { kind: "interval", everyMs: 60 * 60 * 1000 },
   run: async ({ db, config, cursor, now }) => {
     const token = config.secrets?.githubToken;
     if (!token) return { skipped: true, detail: "no GitHub token configured" };

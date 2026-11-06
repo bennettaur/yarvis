@@ -347,7 +347,7 @@ Yarvis records meaningful actions as events. Examples:
 Otherwise, clicking around the UI is not an event. Workspace views stay out of the
 4-hour and daily summaries. The log mostly records what you do *in Yarvis*. The
 one exception is review verdicts: approvals and change requests you give on
-github.com are copied in every 30 minutes by the GitHub review sync (source
+github.com are copied in every hour by the GitHub review sync (source
 `github-sync`). Comments you leave on github.com still don't show up.
 
 Browse and search it under **Memory → Activity**.
@@ -371,7 +371,7 @@ can read the end of that workspace's latest Claude Code transcript.
 
 **It sees after the background jobs run:**
 
-- approvals and change requests you gave on github.com (within 30 minutes),
+- approvals and change requests you gave on github.com (within an hour),
 - what happened inside a Claude Code session, if you turned on the
   transcript digest,
 - summaries of each 4-hour window and each day.
@@ -727,7 +727,7 @@ rather than followed, and listed under the problems with the reason.
 ## Background jobs
 
 Four jobs ship with the app and keep memory and the activity log up to date: a
-sync of the reviews you gave on github.com every 30 minutes, a summary of
+sync of the reviews you gave on github.com every hour, a summary of
 recent activity every 4 hours, the transcript digest at 02:00 (if on), and a
 daily rollup at 03:00. Their status and a **Run now** button are under
 **Settings → Assistant**. See [Scheduled jobs](scheduled-jobs.md#background-jobs-that-ship-with-the-app)
