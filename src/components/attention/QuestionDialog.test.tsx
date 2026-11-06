@@ -202,6 +202,27 @@ describe("QuestionDialog", () => {
     expect(closed).toBe(0);
   });
 
+  it("ignores clicks until armed when it opened without a click", async () => {
+    waiting = [QUESTION];
+    const mounted = await mountForInteraction(
+      createElement(QuestionDialog, {
+        item: ITEM,
+        onClose: () => {
+          closed++;
+        },
+        onOpenSession: () => {},
+        armingMs: 300,
+      }),
+      50,
+    );
+    unmount = mounted.unmount;
+    const skip = button(mounted.host, "Skip");
+    expect(skip.parentElement?.hasAttribute("inert")).toBe(true);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(skip.parentElement?.hasAttribute("inert")).toBe(false);
+  });
+
   it("stays open with the error and keeps the user's draft when a send fails", async () => {
     const host = await mountDialog();
     button(host, "Token bucket").click();

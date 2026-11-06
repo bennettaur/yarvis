@@ -34,6 +34,14 @@ const CLICKED: HeadsDownQuestion = {
   createdAt: "2026-10-19T10:00:00.000Z",
 };
 
+const NEWEST: HeadsDownQuestion = {
+  ...OLDER,
+  id: "q-newest",
+  question: "Should the search PR wait for the billing one?",
+  options: ["Wait", "Go ahead"],
+  createdAt: "2026-10-19T11:00:00.000Z",
+};
+
 const ITEM: AttentionItem = {
   id: "a1",
   seq: 1,
@@ -81,7 +89,6 @@ stubSidecarApi({
 
 let unmount: (() => void) | null = null;
 let closed = 0;
-let done = 0;
 
 afterEach(() => {
   unmount?.();
@@ -90,19 +97,17 @@ afterEach(() => {
   failList = false;
   writes.length = 0;
   closed = 0;
-  done = 0;
 });
 
 afterAll(() => resetSidecarApi());
 
-async function mount(): Promise<HTMLElement> {
+async function mount(armingMs = 0): Promise<HTMLElement> {
   const mounted = await mountForInteraction(
     createElement(HeadsDownQuestionDialog, {
       item: ITEM,
       onClose: () => closed++,
-      onDone: () => done++,
       onOpenPage: () => {},
-      armingMs: 0,
+      armingMs,
     }),
   );
   unmount = mounted.unmount;
@@ -117,19 +122,20 @@ function button(host: HTMLElement, label: string): HTMLButtonElement {
 
 describe("HeadsDownQuestionDialog", () => {
   it("shows the clicked question first, with a count of the rest", async () => {
-    open = [OLDER, CLICKED];
+    // Newest first, as the sidecar lists them.
+    open = [NEWEST, CLICKED, OLDER];
     const host = await mount();
     expect(host.textContent).toContain(CLICKED.question);
     expect(host.textContent).not.toContain(OLDER.question);
-    expect(host.textContent).toContain("2 waiting");
+    expect(host.textContent).toContain("3 waiting");
   });
 
-  it("walks through every open question, then reports it is done", async () => {
-    open = [OLDER, CLICKED];
+  it("walks through the rest oldest first, then closes", async () => {
+    open = [NEWEST, CLICKED, OLDER];
     const host = await mount();
 
     button(host, "Approve this call").click();
-    await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the next question");
+    await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the oldest question");
     expect(writes).toEqual([
       {
         method: "POST",
@@ -137,39 +143,57 @@ describe("HeadsDownQuestionDialog", () => {
         body: { choice: "approve" },
       },
     ]);
-    expect(done).toBe(0);
+    expect(closed).toBe(0);
 
     button(host, "Billing").click();
-    await waitFor(() => done === 1, "onDone");
-    expect(closed).toBe(0);
+    await waitFor(
+      () => host.textContent?.includes(NEWEST.question) ?? false,
+      "the newest question",
+    );
+    expect(host.textContent).not.toContain("waiting");
+    button(host, "Wait").click();
+    await waitFor(() => closed === 1, "the dialog to close");
   });
 
   it("allows the tool for good, then approves the call", async () => {
     open = [CLICKED];
     const host = await mount();
     button(host, "Always allow this tool in heads-down mode").click();
-    await waitFor(() => done === 1, "onDone");
+    await waitFor(() => closed === 1, "the dialog to close");
     expect(writes.map((w) => `${w.method} ${w.path}`)).toEqual([
       "PUT /api/heads-down/allowed-tools/mcp%3Aslack%3Apost_message",
       "POST /api/heads-down/questions/q-clicked/answer",
     ]);
   });
 
-  it("says so when nothing is open, without finishing on its own", async () => {
+  it("says so when nothing is open, without closing on its own", async () => {
     open = [];
     const host = await mount();
     expect(host.textContent).toContain("isn't waiting on you any more");
-    expect(done).toBe(0);
+    expect(closed).toBe(0);
   });
 
-  it("stops offering an answered question when the reload fails", async () => {
-    open = [CLICKED];
+  it("moves past an answered question when the reload fails", async () => {
+    open = [CLICKED, OLDER];
     const host = await mount();
     failList = true;
     button(host, "Approve this call").click();
     await waitFor(() => host.querySelector('[role="alert"]') !== null, "the error");
     expect(host.textContent).not.toContain(CLICKED.question);
-    expect(done).toBe(0);
+    expect(host.textContent).toContain(OLDER.question);
+    expect(closed).toBe(0);
+  });
+
+  it("ignores clicks on each question until it is armed", async () => {
+    open = [CLICKED, OLDER];
+    const host = await mount(150);
+    const card = () => host.querySelector('[data-testid="heads-down-card"]');
+    expect(card()?.hasAttribute("inert")).toBe(true);
+    await waitFor(() => card()?.hasAttribute("inert") === false, "the card to arm");
+
+    button(host, "Approve this call").click();
+    await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the next question");
+    expect(card()?.hasAttribute("inert")).toBe(true);
   });
 
   it("closes on Escape without reporting done", async () => {
@@ -177,6 +201,5 @@ describe("HeadsDownQuestionDialog", () => {
     await mount();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(closed).toBe(1);
-    expect(done).toBe(0);
   });
 });

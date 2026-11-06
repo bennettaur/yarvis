@@ -117,6 +117,36 @@ describe("nextAnswerable", () => {
     expect(nextAnswerable([posing, done], done)).toBeNull();
   });
 
+  it("skips the finished session's own prompt while it is still on the stream", () => {
+    const same = item({ id: "same", seq: 1, sessionKey: "ws:w1/t1/p1" });
+    expect(nextAnswerable([same, done], done)).toBeNull();
+  });
+
+  it("skips a question whose session runs outside the workspace it names", () => {
+    // An ask_user caller chooses both its session key and its workspace id.
+    const posing = item({
+      id: "posing",
+      seq: 1,
+      kind: "question",
+      source: "system",
+      sessionKey: "ws:w2/t1/p1",
+    });
+    expect(nextAnswerable([posing, done], done)).toBeNull();
+  });
+
+  it("follows nothing from a prompt outside a workspace", () => {
+    const loose = item({ id: "loose", seq: 1, workspaceId: null, sessionKey: "term/t1/p1" });
+    const question = item({
+      id: "q",
+      seq: 2,
+      workspaceId: null,
+      kind: "question",
+      source: "system",
+      sessionKey: "term/t2/p1",
+    });
+    expect(nextAnswerable([question, loose], loose)).toBeNull();
+  });
+
   it("follows nothing outside a workspace", () => {
     const loose = item({
       id: "hd",
