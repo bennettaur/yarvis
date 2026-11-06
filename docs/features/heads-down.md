@@ -206,13 +206,16 @@ ahead while the PR has feedback, even with a tool you allowed for heads-down
 mode or with auto mode on. It recognises merges by the tool's name and the
 instruction's wording, so it can miss one phrased some other way.
 
-- **A workspace has the PR:** the first try has Yarvis tell the workspace's
-  session to address the feedback. The session fixes what it agrees with,
+- **A workspace it is pushing has the PR:** within your working hours, the
+  first try has Yarvis tell the workspace's session to address the feedback.
+  That is a workspace you put on a work stream, or one it started this run,
+  the same ones it may steer without asking. The session fixes what it agrees with,
   replies on the threads it won't change, and resolves what it handled. Once
   the session has finished, a later pass tries the merge again. If every
   thread is resolved, the merge goes ahead as usual.
-- **Feedback still open, no workspace has the PR, or the session couldn't be
-  reached:** the merge waits for you. A modal pops up over whatever page you have open, with the PR and each
+- **Feedback still open, no workspace it is pushing has the PR, it is outside
+  your working hours, or the session couldn't be reached:** the merge waits
+  for you. A modal pops up over whatever page you have open, with the PR and each
   open thread: who left it, where, and what it says. Press **Approve merge**
   to let a later pass merge it, or **Review, don't merge** to stop the merge
   and open the PR. Escape puts the modal away for now; the approval still

@@ -191,8 +191,16 @@ describe("merging with open feedback", () => {
     );
   });
 
-  it("tells the workspace's session to address it first, then asks the user with it shown", async () => {
+  /** A workspace the user put on a stream, so a pass may steer its session. */
+  async function pushedWorkspace(): Promise<string> {
     const workspaceId = await workspaceWithPr();
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    return workspaceId;
+  }
+
+  it("tells the workspace's session to address it first, then asks the user with it shown", async () => {
+    const workspaceId = await pushedWorkspace();
     const run = await startRun(db, null);
     await allowUnattended(mergeTool);
     const hooks = passApprovalHooks(db, run, () => {}, {
@@ -241,9 +249,7 @@ describe("merging with open feedback", () => {
   });
 
   it("holds a merge told to the session too, even on a workspace it may steer", async () => {
-    const workspaceId = await workspaceWithPr();
-    const stream = await createStream(db, { title: "ship billing" });
-    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    const workspaceId = await pushedWorkspace();
     const run = await startRun(db, null);
     const hooks = passApprovalHooks(db, run, () => {}, {
       mergeFeedback: withFeedback(),
@@ -271,7 +277,7 @@ describe("merging with open feedback", () => {
   });
 
   it("hands off again in a new run, and goes to the user when the send fails", async () => {
-    await workspaceWithPr();
+    await pushedWorkspace();
     await allowUnattended(mergeTool);
     const first = await startRun(db, null);
     await passApprovalHooks(db, first, () => {}, {
@@ -291,6 +297,31 @@ describe("merging with open feedback", () => {
     expect(await waitForApproval("r2", { timeoutMs: 1000 })).toBe(false);
     const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
     expect(item!.payload.headsDownMergeReview.prs[0].handedOff).toBe(false);
+  });
+
+  it("doesn't steer a workspace it isn't pushing, or any outside working hours", async () => {
+    const workspaceId = await workspaceWithPr();
+    await allowUnattended(mergeTool);
+    const run = await startRun(db, null);
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    }).onRequest({ toolCallId: "w1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(0);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item!.payload.headsDownMergeReview.prs[0].handedOff).toBe(false);
+
+    // Pushed now, but outside working hours: still the user's call.
+    await sql`TRUNCATE attention_items, heads_down_questions`;
+    const stream = await createStream(db, { title: "billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+      withinWorkingHours: false,
+    }).onRequest({ toolCallId: "w2", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM heads_down_questions`).toHaveLength(1);
   });
 
   it("asks the user straight away when no workspace owns the PR, and stops at a no", async () => {

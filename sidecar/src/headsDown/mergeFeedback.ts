@@ -270,14 +270,21 @@ async function wasHandedOff(db: Db, runId: string, pr: PrFeedback): Promise<bool
 /**
  * Tells each held PR's workspace session to address its feedback, once per
  * run, and marks each PR with whether that has happened. Returns the PRs
- * handed off by this call. A send that fails isn't recorded, so that PR goes
- * to the user instead.
+ * handed off by this call. A workspace `maySteer` refuses, or a send that
+ * fails, isn't recorded, so that PR goes to the user instead.
  */
 export async function handOffFeedback(
   db: Db,
   runId: string,
   feedback: MergeFeedbackResult,
-  send: ClaudeSessionMessenger = sendSessionInstruction,
+  {
+    maySteer,
+    send = sendSessionInstruction,
+  }: {
+    /** Whether heads-down mode may type into this workspace's session without asking. */
+    maySteer: (workspaceId: string) => Promise<boolean>;
+    send?: ClaudeSessionMessenger;
+  },
 ): Promise<PrFeedback[]> {
   const handed: PrFeedback[] = [];
   for (const pr of feedback.prs) {
@@ -286,6 +293,7 @@ export async function handOffFeedback(
       pr.handedOff = true;
       continue;
     }
+    if (!(await maySteer(pr.workspaceId))) continue;
     const workspace = await getWorkspace(db, pr.workspaceId);
     if (workspace?.status !== "active") continue;
     const sent = await sendToWorkspaceAgent(db, workspace, feedbackInstruction(pr), {

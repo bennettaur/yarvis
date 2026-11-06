@@ -401,10 +401,15 @@ async function holdMerge(
   tool: string,
   args: unknown,
   feedback: MergeFeedbackResult,
-  send: ClaudeSessionMessenger | undefined,
+  { send, withinWorkingHours }: { send?: ClaudeSessionMessenger; withinWorkingHours: boolean },
 ): Promise<{ deniedMessage: string }> {
-  if (feedback.unchecked === null) {
-    const handed = await handOffFeedback(db, run.id, feedback, send);
+  // The handoff steers a session unasked, so only where a pass may already
+  // steer one: a workspace it is pushing, within working hours.
+  if (feedback.unchecked === null && withinWorkingHours) {
+    const handed = await handOffFeedback(db, run.id, feedback, {
+      send,
+      maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
+    });
     if (handed.length > 0) {
       return {
         deniedMessage: [
@@ -494,7 +499,10 @@ export function passApprovalHooks(
         if (decision === "stopped") return { deniedMessage: STOPPED };
         if (decision !== "ask") return undefined;
         if (held) {
-          const result = await holdMerge(db, run, id, args, feedback, sendInstruction);
+          const result = await holdMerge(db, run, id, args, feedback, {
+            send: sendInstruction,
+            withinWorkingHours,
+          });
           onChanged();
           return result;
         }
