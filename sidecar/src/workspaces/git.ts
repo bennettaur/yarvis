@@ -601,6 +601,82 @@ export async function removeWorktree(
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
+/**
+ * Whether a local branch's work has landed, so it is safe to delete: its PR
+ * merged (a squash merge leaves the branch's commits off the base), or
+ * `origin/<base>` as last fetched already contains its tip. A merged PR counts
+ * only while the remote branch, if it is still there, holds every local commit,
+ * so work added after the merge isn't deleted with the branch.
+ */
+export async function branchLanded(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  baseBranch: string,
+  prMerged: boolean,
+): Promise<boolean> {
+  if (!(await branchExists(runner, primaryClonePath, branch))) return false;
+  const contains = async (ref: string) =>
+    (
+      await runner(["merge-base", "--is-ancestor", `refs/heads/${branch}`, ref], {
+        cwd: primaryClonePath,
+      })
+    ).exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return true;
+  if (!prMerged) return false;
+  const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
+    cwd: primaryClonePath,
+  });
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
+}
+
+/**
+ * How many of a local branch's commits deleting it would lose: ones no
+ * remote-tracking ref has (any remote counts, a fork's included), and that
+ * aren't behind `mergedHead`, the head commit a merged PR took.
+ */
+export async function unpushedCommitCount(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  mergedHead: string | null = null,
+): Promise<number> {
+  const exclude = ["--remotes"];
+  if (mergedHead !== null) {
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(mergedHead)) {
+      throw new Error(`not a commit id: ${mergedHead}`);
+    }
+    exclude.push(mergedHead);
+  }
+  const out = await git(
+    runner,
+    ["rev-list", "--count", `refs/heads/${branch}`, "--not", ...exclude],
+    primaryClonePath,
+  );
+  // Thrown rather than read as 0, which would let the branch be deleted.
+  const count = Number.parseInt(out.trim(), 10);
+  if (!Number.isInteger(count)) throw new Error(`git rev-list gave no count: ${out.trim()}`);
+  return count;
+}
+
+/** Whether a worktree has changes `git worktree remove` would refuse to drop, untracked files included. */
+export async function hasUncommittedChanges(
+  runner: GitRunner,
+  worktreePath: string,
+): Promise<boolean> {
+  const out = await git(runner, ["status", "--porcelain", "--ignore-submodules=all"], worktreePath);
+  return out.trim() !== "";
+}
+
+/** Deletes a local branch. Git refuses while a worktree has it checked out. */
+export async function deleteBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+}
+
 async function removeLeftover(
   worktreePath: string,
   opts: { force: boolean; workspaceRoot: string },

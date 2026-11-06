@@ -433,6 +433,14 @@ by repo. The line under it always names the branch you are looking at.
 - **A diff from another worktree takes no comments.** Comments are filed by
   repo and path, so one left there would show up on the workspace branch's copy
   of the file.
+
+The workspace's `AGENTS.md` tells the agent to put extra worktrees in the
+workspace folder. The agent's sandbox lets git change only the workspace's own
+branch and worktree, so adding another worktree, and committing, pushing or
+rebasing in it, asks for your approval to run outside the sandbox. Approving a
+commit or a checkout there also runs the repo's git hooks outside the sandbox,
+and the agent can edit their config (for example `lefthook.yml`). Check it
+hasn't changed before approving.
 - In the **Stack** tab, a layer checked out in another worktree has a **View**
   button that switches the column to it.
 
@@ -571,11 +579,12 @@ The assistant can also tell you:
 
 Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
-saw. Archiving stops the session, removes the worktrees, and marks linked
-tasks complete. Every Claude Code session registered in the workspace is
-marked ended, so none is resumed after a restart. It runs in the background.
-While it runs, the right column is replaced by a "Removing worktrees…" note,
-since the worktrees it reads are being deleted. If the archive stops on a worktree, the right column comes back so you
+saw. Archiving stops the session, removes the worktrees, the workspace folder
+and any branch whose work has landed, and marks linked tasks complete. Every
+Claude Code session registered in the workspace is marked ended, so none is
+resumed after a restart. It runs in the background. While it runs, the right
+column is replaced by a "Removing worktrees…" note, since the worktrees it reads
+are being deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
 
 A worktree with uncommitted work won't remove. The workspace stays in
@@ -585,6 +594,34 @@ A worktree with uncommitted work won't remove. The workspace stays in
 A worktree whose folder is already gone counts as removed. If git has let go of
 a worktree but its folder still has files in it, the archive stops and names
 the folder. **Force remove** deletes it.
+
+The archive also removes any other worktree of the workspace's repos that sits
+inside the workspace folder, such as one an agent added for another branch of a
+stack. These follow the same rule: uncommitted work stops the archive until you
+force it.
+
+Once a repo's worktrees are gone, its local branch is deleted if the work has
+landed: the base branch already contains it, or its PR merged and the remote
+branch, if it's still there, has every local commit. Any other branch is kept
+in the shared clone. If a landed branch has commits past what its PR merged
+that no remote has, such as work added after the merge once the remote branch
+was deleted, the archive stops before removing the worktree and says how many,
+and whether the worktree also has uncommitted changes. Push them, or **Force
+remove** to delete them with the branch. A branch whose PR merged before Yarvis
+recorded the PR's head commit is kept unless you force the archive, since
+there's no telling which of its commits the merge took. Opening the workspace
+first records it.
+
+Last, the archive deletes the workspace folder. If anything other than the
+files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,
+and the settings and copied skills and agents in `.claude`) is left, such as
+notes, your own skills, or a checkout made outside Yarvis, the archive stops
+and lists them. Finder's `.DS_Store` doesn't count. **Force remove** deletes the folder with them.
+
+An active workspace that hasn't been opened, and whose agent session hasn't
+done anything, for 7 days is dimmed in the list with an "idle" label giving the
+number of days. It's a hint that the work may be done and the workspace can be
+archived to free its disk space.
 
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
