@@ -167,6 +167,26 @@ export async function sendClaudeInstruction(input: {
 }
 
 /**
+ * Asks the core to type slash command `command` (with any `arguments`) at a
+ * workspace's running agent session and submit it. The core refuses a command
+ * that isn't on its allowlist, as well as everything `sendClaudeInstruction`
+ * refuses — see `send_session_slash_command` in `src-tauri/src/pty.rs`.
+ */
+export async function sendClaudeSlashCommand(input: {
+  workspaceId: string;
+  command: string;
+  arguments?: string;
+  agentPids: number[];
+}): Promise<void> {
+  await rpc("claude.slash", {
+    workspaceId: input.workspaceId,
+    command: input.command,
+    arguments: input.arguments,
+    agentPids: input.agentPids,
+  });
+}
+
+/**
  * Asks the core to store an MCP server's OAuth credentials in the Keychain, or
  * to forget them when `credentials` is null. The sidecar can't reach the
  * Keychain itself, and a token refresh must not wait for an app restart to be

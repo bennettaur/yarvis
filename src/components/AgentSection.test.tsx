@@ -37,6 +37,8 @@ function defaultSettings(): Settings {
     colorTheme: null,
     terminalFontSize: null,
     attentionAnimation: null,
+    allowedSlashCommands: null,
+    defaultAllowedSlashCommands: ["compact"],
   };
 }
 
@@ -47,6 +49,16 @@ mock.module("@tauri-apps/api/core", () => ({
       if (rejectSaveWith) throw new Error(rejectSaveWith);
       const { name, command: cmd } = args as { name: string | null; command: string | null };
       stored = { ...stored, agentName: name, agentCommand: cmd };
+    }
+    if (command === "set_allowed_slash_commands") {
+      if (rejectSaveWith) throw new Error(rejectSaveWith);
+      const { commands } = args as { commands: string[] };
+      stored = {
+        ...stored,
+        allowedSlashCommands:
+          commands.length > 0 ? commands.map((c) => c.replace(/^\//, "")) : null,
+      };
+      return stored;
     }
     if (command === "get_settings" || command === "set_agent") return stored;
     return nativeInvoke(command);
@@ -152,6 +164,88 @@ describe("AgentSection", () => {
     stored = { ...defaultSettings(), agentCommandOverriddenByEnv: true };
     const html = await renderToHtml(createElement(AgentSection));
     expect(html).toContain("takes precedence");
+  });
+
+  it("lists the always-allowed slash commands and the stored ones", async () => {
+    stored = { ...defaultSettings(), allowedSlashCommands: ["do-code-review"] };
+    const html = await renderToHtml(createElement(AgentSection));
+    expect(html).toContain("/compact");
+    expect(html).toContain('value="/do-code-review"');
+  });
+
+  const typeSlash = (host: HTMLElement, value: string) => {
+    const index = Array.from(host.querySelectorAll("input")).findIndex(
+      (i) => i.placeholder === "/do-code-review",
+    );
+    type(host, index, value);
+  };
+
+  async function clickSaveCommands(host: HTMLElement): Promise<void> {
+    const button = Array.from(host.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save commands",
+    );
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  it("sends the slash commands to the core as a list", async () => {
+    const { host, cleanup } = await mount();
+    typeSlash(host, "/do-code-review,  /simplify");
+    await clickSaveCommands(host);
+
+    expect(invoked).toContainEqual({
+      command: "set_allowed_slash_commands",
+      args: { commands: ["/do-code-review", "/simplify"] },
+    });
+    expect(host.innerHTML).toContain("Saved.");
+    cleanup();
+  });
+
+  it("clears the slash commands with an empty list", async () => {
+    stored = { ...defaultSettings(), allowedSlashCommands: ["do-code-review"] };
+    const { host, cleanup } = await mount();
+    typeSlash(host, "  ");
+    await clickSaveCommands(host);
+
+    expect(invoked).toContainEqual({
+      command: "set_allowed_slash_commands",
+      args: { commands: [] },
+    });
+    cleanup();
+  });
+
+  it("surfaces the core's refusal of a slash command", async () => {
+    rejectSaveWith = "/permissions changes what the session may do, so it can't be allowed";
+    const { host, cleanup } = await mount();
+    typeSlash(host, "/permissions");
+    await clickSaveCommands(host);
+
+    expect(host.innerHTML).toContain("so it can't be allowed");
+    expect(host.innerHTML).not.toContain("Saved.");
+    cleanup();
+  });
+
+  it("keeps an unsaved agent command when the slash commands are saved", async () => {
+    const { host, cleanup } = await mount();
+    typeCommand(host, "codex --yolo");
+    typeSlash(host, "/do-code-review");
+    await clickSaveCommands(host);
+
+    expect((host.querySelectorAll("input")[1] as HTMLInputElement).value).toBe("codex --yolo");
+    cleanup();
+  });
+
+  it("keeps an unsaved slash list when the agent fields are saved", async () => {
+    const { host, cleanup } = await mount();
+    typeSlash(host, "/do-code-review");
+    typeName(host, "Codex");
+    await clickSave(host);
+
+    const slash = Array.from(host.querySelectorAll("input")).find(
+      (i) => i.placeholder === "/do-code-review",
+    );
+    expect(slash?.value).toBe("/do-code-review");
+    cleanup();
   });
 
   it("drops a stale save notice once a field is edited again", async () => {

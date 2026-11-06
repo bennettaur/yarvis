@@ -10,7 +10,13 @@ import { createStream, linkToStream, updateStream } from "../workStreams/service
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge } from "./attention.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
-import { decideCall, isMergeInstruction, mergeCallTarget, passApprovalHooks } from "./policy.ts";
+import {
+  decideCall,
+  isMergeCall,
+  isMergeInstruction,
+  mergeCallTarget,
+  passApprovalHooks,
+} from "./policy.ts";
 import {
   addMessage,
   answeredSince,
@@ -661,5 +667,16 @@ describe("finish_pass", () => {
       reason: null,
       routinesDone: [],
     });
+  });
+});
+
+describe("isMergeCall", () => {
+  // Out of hours a merge has to ask, however the session is told to do it.
+  it("reads a slash command's arguments as well as an instruction", () => {
+    expect(isMergeCall("send_workspace_instruction", { instruction: "merge PR #12" })).toBe(true);
+    expect(
+      isMergeCall("send_workspace_slash_command", { command: "ship", arguments: "merge PR #12" }),
+    ).toBe(true);
+    expect(isMergeCall("send_workspace_slash_command", { command: "compact" })).toBe(false);
   });
 });

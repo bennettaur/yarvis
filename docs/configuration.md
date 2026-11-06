@@ -181,6 +181,7 @@ has written your providers and MCP servers into it.
 | --- | --- | --- |
 | `agentName` | `"Claude"` | Title of a workspace's agent tab |
 | `agentCommand` | `"claude --permission-mode auto"` | The command a workspace's agent session runs. Add a model or permission flags here. `YARVIS_CLAUDE_COMMAND` overrides it. |
+| `allowedSlashCommands` | unset | Slash commands or skills, beyond `/compact`, that the assistant may run in a workspace's agent session. Names without the `/`, e.g. `["do-code-review"]`. Set from Settings → Repositories → Agent. |
 | `maxPtySessions` | `60` | Maximum number of open terminal sessions (1–1000) |
 | `secretBackend` | `"keychain"` | `"keychain"` or `"onepassword"` |
 | `onePasswordVault`, `onePasswordItem` | unset | Where the secrets item lives when using 1Password |
