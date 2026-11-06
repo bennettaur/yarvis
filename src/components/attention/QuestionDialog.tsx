@@ -71,6 +71,8 @@ export default function QuestionDialog({
     if (!item) return;
     let cancelled = false;
     setQuestionSets(null);
+    // A set seen before gets armed again, since the pointer may be over it now.
+    setArmedId(null);
     setError(null);
     shownId.current = undefined;
     questionsForItem(item)

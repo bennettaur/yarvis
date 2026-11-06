@@ -70,6 +70,7 @@ export default function HeadsDownQuestionDialog({
     setQuestions(null);
     setError(null);
     setReloading(false);
+    setArmedId(null);
     if (item) void load();
     return () => {
       loadSeq.current++;

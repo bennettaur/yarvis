@@ -102,8 +102,8 @@ export function nextAnswerable(items: AttentionItem[], done: AttentionItem): Att
     (i) =>
       i.workspaceId === done.workspaceId &&
       i.sessionKey !== done.sessionKey &&
-      // The session id, not the workspace an item reports, says where it runs:
-      // an ask_user caller picks both, and can't pose as another workspace's.
+      // Judged by the session id, as auto-open is, so a question whose session
+      // runs elsewhere can't join this workspace's stack by naming it.
       i.sessionKey !== null &&
       sessionWorkspaceId(i.sessionKey) === done.workspaceId &&
       // Heads-down items have no workspace, so one that names a workspace isn't heads-down's.

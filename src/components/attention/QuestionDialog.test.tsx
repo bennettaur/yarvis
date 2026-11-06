@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
+import { createRoot } from "react-dom/client";
 import type { AttentionItem } from "../../lib/attention";
 import type { AgentQuestion, QuestionAnswer } from "../../lib/questions";
 import { mountForInteraction } from "../../test/render";
@@ -221,6 +222,37 @@ describe("QuestionDialog", () => {
     await settle();
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(skip.parentElement?.hasAttribute("inert")).toBe(false);
+  });
+
+  it("arms a question set again when the dialog reopens on it", async () => {
+    waiting = [QUESTION];
+    let item: AttentionItem | null = ITEM;
+    const props = () => ({
+      item,
+      onClose: () => {
+        closed++;
+      },
+      onOpenSession: () => {},
+      armingMs: 300,
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    unmount = () => {
+      root.unmount();
+      host.remove();
+    };
+    root.render(createElement(QuestionDialog, props()));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(button(host, "Skip").parentElement?.hasAttribute("inert")).toBe(false);
+
+    item = null;
+    root.render(createElement(QuestionDialog, props()));
+    await settle();
+    item = { ...ITEM };
+    root.render(createElement(QuestionDialog, props()));
+    await settle();
+    expect(button(host, "Skip").parentElement?.hasAttribute("inert")).toBe(true);
   });
 
   it("stays open with the error and keeps the user's draft when a send fails", async () => {
