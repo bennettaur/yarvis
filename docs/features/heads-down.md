@@ -197,6 +197,32 @@ changes that deploy on merge count as risky, and so does anything it can't
 judge. For those it asks you first and waits for a yes. Mobile changes are
 lower risk, since nothing ships until a release.
 
+### Open review feedback
+
+Before a merge runs, it checks the PR for open review feedback: unresolved
+review threads, or a review asking for changes. A PR with feedback isn't
+merged on its own, even with a tool you allowed for heads-down mode or with
+auto mode on.
+
+- **A workspace has the PR:** the first try tells the workspace's session to
+  address the feedback. The session fixes what it agrees with, replies on the
+  threads it won't change, and resolves what it handled. Once the session has
+  finished, a later pass tries the merge again. If every thread is resolved,
+  the merge goes ahead as usual.
+- **Feedback still open, or no workspace has the PR:** the merge waits for
+  you. A modal pops up over whatever page you have open, with the PR and each
+  open thread: who left it, where, and what it says. Press **Approve merge**
+  to let a later pass merge it, or **Review, don't merge** to stop the merge
+  and open the PR. Escape puts the modal away for now; the approval still
+  waits under **Needs you**.
+
+If it can't read the PR to check, for example because no GitHub token is set,
+the merge waits for you the same way, and the modal says why. Only GitHub and
+Azure DevOps PRs can be checked. The workspace gets one chance per PR each time
+you turn heads-down mode on.
+
+### Merge alerts
+
 Every merge pops up an alert over whatever page you have open, with the PR,
 the PR's title, how risky heads-down mode judged it and why it is merging.
 The merge doesn't wait on the alert. Press **Got it** (or Escape) to put it

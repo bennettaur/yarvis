@@ -23,6 +23,14 @@ import {
   type PassReviewContext,
 } from "./autoApprove.ts";
 import {
+  feedbackInstruction,
+  feedbackSummary,
+  holdsMerge,
+  type MergeFeedbackLoader,
+  type MergeFeedbackResult,
+  recordHandoff,
+} from "./mergeFeedback.ts";
+import {
   deniedApprovalExists,
   isToolUnattended,
   mayRunPasses,
@@ -196,6 +204,11 @@ export interface DecideOptions {
    * let run unattended or a session the loop may steer. Defaults to true.
    */
   withinWorkingHours?: boolean;
+  /**
+   * True for a merge held back by open review feedback, or feedback that
+   * couldn't be checked: like a merge outside working hours, it needs the user.
+   */
+  mergeHeld?: boolean;
 }
 
 /** Whether a pass may make this call now. `tool` is a built-in's name or an MCP tool's registry id. */
@@ -204,7 +217,7 @@ export async function decideCall(
   run: HeadsDownRun,
   tool: string,
   args: unknown,
-  { withinWorkingHours = true }: DecideOptions = {},
+  { withinWorkingHours = true, mergeHeld = false }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
   // Stopped, paused or past its stop time, here or on another instance:
@@ -212,12 +225,12 @@ export async function decideCall(
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  const outOfHoursMerge = !withinWorkingHours && isMergeCall(tool, args);
-  if (WORKSPACE_TOOLS.has(tool) && !outOfHoursMerge) {
+  const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
+  if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
     const workspaceId = stringArg(args, "workspaceId");
     if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
   }
-  if (tool.startsWith("mcp:") && !outOfHoursMerge && (await isToolUnattended(db, tool))) {
+  if (tool.startsWith("mcp:") && !mergeNeedsUser && (await isToolUnattended(db, tool))) {
     return "run";
   }
   // Grants are good for this run only, and for a day: what was approved may
@@ -351,44 +364,107 @@ async function alertUnannouncedMerge(
   });
 }
 
+/**
+ * Hands each held PR that a workspace owns to that workspace, once per run.
+ * Returns what the pass is told when any were handed off, or null when the
+ * merge should go to the user.
+ */
+async function handOffFeedback(
+  db: Db,
+  run: HeadsDownRun,
+  feedback: MergeFeedbackResult,
+): Promise<string | null> {
+  if (feedback.unchecked !== null) return null;
+  const handed = [];
+  for (const pr of feedback.prs) {
+    if (pr.workspaceId && (await recordHandoff(db, run.id, pr))) handed.push(pr);
+  }
+  if (handed.length === 0) return null;
+  const steps = handed.map(
+    (pr) =>
+      `${feedbackSummary(pr)}. Call send_workspace_instruction with workspaceId ${pr.workspaceId} and exactly this instruction: "${feedbackInstruction(pr)}"`,
+  );
+  return [
+    "Not run: the PR has open review feedback, so its workspace addresses it first.",
+    ...steps,
+    "Don't merge on this pass. Once the session has finished, try the merge again on a later pass: if the threads are resolved it runs as usual, and if any are still open it waits for the user's approval with the feedback shown to them.",
+  ].join("\n");
+}
+
+function heldMergeQuestion(feedback: MergeFeedbackResult): string {
+  const prs = feedback.prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
+  return feedback.unchecked !== null
+    ? "Merge this PR? Heads down couldn't check it for open review feedback."
+    : `Merge ${prs}? It has open review feedback.`;
+}
+
+function heldMergeSituation(feedback: MergeFeedbackResult): string {
+  if (feedback.unchecked !== null) {
+    return `Couldn't check the PR for open review feedback: ${feedback.unchecked}.`;
+  }
+  return `${feedback.prs.map(feedbackSummary).join(". ")}.`;
+}
+
 export interface PassHookOptions {
   /** Absent when the user said nothing this run to judge a call against. */
   review?: PassReviewContext;
   /** The merges this pass announced (see `mergeKey`); the backstop adds its own. */
   announcedMerges?: Set<string>;
   withinWorkingHours?: boolean;
+  /** Reads a merge's open review feedback. Absent, merges aren't checked for it. */
+  mergeFeedback?: MergeFeedbackLoader;
 }
 
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
  * the decision model may settle it (`autoApprove.ts`). A merge outside working
- * hours always goes to the user. A merge that runs without the pass having
- * announced it still raises the merge alert.
+ * hours always goes to the user, and so does one with open review feedback
+ * once the PR's workspace has had its chance to address it (`mergeFeedback.ts`).
+ * A merge that runs without the pass having announced it still raises the
+ * merge alert.
  */
 export function passApprovalHooks(
   db: Db,
   run: HeadsDownRun,
   onChanged: () => void,
-  { review, announcedMerges = new Set(), withinWorkingHours = true }: PassHookOptions = {},
+  {
+    review,
+    announcedMerges = new Set(),
+    withinWorkingHours = true,
+    mergeFeedback,
+  }: PassHookOptions = {},
 ): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
-        const decision = await decideCall(db, run, id, args, { withinWorkingHours });
+        const feedback =
+          mergeFeedback && isMergeCall(id, args) ? await mergeFeedback(id, args) : null;
+        const held = holdsMerge(feedback);
+        const decision = await decideCall(db, run, id, args, {
+          withinWorkingHours,
+          mergeHeld: held,
+        });
         approved = decision === "run";
         if (decision === "refuse") return { deniedMessage: REFUSED };
         if (decision === "denied") return { deniedMessage: DENIED };
         if (decision === "stopped") return { deniedMessage: STOPPED };
         if (decision !== "ask") return undefined;
-        const question = approvalQuestion(id);
-        const situation = approvalSituation(id, args);
+        if (held) {
+          const handedOff = await handOffFeedback(db, run, feedback);
+          if (handedOff) return { deniedMessage: handedOff };
+        }
+        const question = held ? heldMergeQuestion(feedback) : approvalQuestion(id);
+        const situation = held
+          ? `${heldMergeSituation(feedback)} ${approvalSituation(id, args)}`
+          : approvalSituation(id, args);
         // A failed review is a no, never a reason to drop the question. A
-        // merge outside working hours is never the decision model's to allow.
+        // merge outside working hours, or one with open feedback, is never
+        // the decision model's to allow.
         const reason =
-          review && (withinWorkingHours || !isMergeCall(id, args))
+          review && !held && (withinWorkingHours || !isMergeCall(id, args))
             ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
                 (e) => {
                   console.error(
@@ -404,14 +480,25 @@ export function passApprovalHooks(
           await recordAutoApproval(db, { action: id, args, question, situation, reason });
           autoApproved = true;
         } else {
-          await askUser(db, {
-            kind: "approval",
-            question,
-            situation,
-            action: id,
-            toolArgs: args,
-            options: ["approve", "deny"],
-          });
+          await askUser(
+            db,
+            {
+              kind: "approval",
+              question,
+              situation,
+              action: id,
+              toolArgs: args,
+              options: ["approve", "deny"],
+            },
+            held
+              ? {
+                  prs: feedback.prs,
+                  unchecked: feedback.unchecked,
+                  workspaceId:
+                    id === "send_workspace_instruction" ? stringArg(args, "workspaceId") : null,
+                }
+              : undefined,
+          );
         }
         onChanged();
         // Set last, so a failure above can't settle the call as approved.

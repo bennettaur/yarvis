@@ -18,6 +18,7 @@ import {
   isWithinWorkingHours,
 } from "./config.ts";
 import { publish } from "./hub.ts";
+import { mergeFeedbackLoader } from "./mergeFeedback.ts";
 import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
@@ -312,6 +313,7 @@ export async function runPass(
             : undefined,
           announcedMerges,
           withinWorkingHours,
+          mergeFeedback: mergeFeedbackLoader(db, config),
         }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: PASS_INSTRUCTIONS,

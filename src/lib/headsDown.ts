@@ -121,6 +121,52 @@ export function mergeAnnouncementOf(item: {
   return typeof merge.number === "number" || merge.number === null ? merge : null;
 }
 
+/** An unresolved review thread on a PR heads-down mode wants to merge. Third-party text. */
+export interface FeedbackThread {
+  path: string | null;
+  line: number | null;
+  outdated: boolean;
+  author: string;
+  body: string;
+  replies: number;
+  url?: string;
+}
+
+export interface PrFeedback {
+  repo: string;
+  number: number;
+  title: string | null;
+  workspaceId: string | null;
+  threads: FeedbackThread[];
+  threadCount: number;
+  threadsTruncated: boolean;
+  changesRequestedBy: string[];
+}
+
+/** A merge held back for open review feedback, waiting on the user's approval. */
+export interface MergeReview {
+  questionId: string;
+  prs: PrFeedback[];
+  /** Why the feedback couldn't be checked, when it couldn't. */
+  unchecked: string | null;
+  workspaceId: string | null;
+}
+
+/** The held merge an attention item asks about, if it is one. */
+export function mergeReviewOf(item: {
+  source: string;
+  sessionKey: string | null;
+  kind: string;
+  payload?: unknown;
+}): MergeReview | null {
+  if (item.source !== "system" || item.kind !== "permission") return null;
+  if (!item.sessionKey?.startsWith("heads-down:")) return null;
+  const review = (item.payload as { headsDownMergeReview?: MergeReview } | null)
+    ?.headsDownMergeReview;
+  if (!review || typeof review.questionId !== "string" || !Array.isArray(review.prs)) return null;
+  return review;
+}
+
 export type WorkStreamStatus =
   | "active"
   | "waiting-on-user"

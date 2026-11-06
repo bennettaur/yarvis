@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AttentionItem } from "../../lib/attention";
 import { markAttention, useAttentionItems } from "../../lib/attentionStore";
-import { type MergeRisk, mergeAnnouncementOf } from "../../lib/headsDown";
+import { type MergeRisk, mergeAnnouncementOf, mergeReviewOf } from "../../lib/headsDown";
+import MergeReviewDialog from "./MergeReviewDialog";
 
 const RISK_STYLE: Record<MergeRisk, string> = {
   high: "border-red-500/60 bg-red-500/15 text-red-200",
@@ -22,9 +23,27 @@ const RISK_LABEL: Record<MergeRisk, string> = {
  * Pops up over any page when heads-down mode merges a PR. The merge doesn't
  * wait on the user; this makes sure they notice it. Dismissing it clears the
  * attention item behind it. The newest merge shows first.
+ *
+ * A merge held back for open review feedback shows ahead of those, since it
+ * waits on the user's answer (`MergeReviewDialog`).
  */
 export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) => void }) {
   const items = useAttentionItems();
+  // Held merges put away with Escape this session; they still wait under Needs you.
+  const [later, setLater] = useState<ReadonlySet<string>>(new Set());
+  const reviews = useMemo(
+    () =>
+      items.flatMap((item) => {
+        const review = later.has(item.id) ? null : mergeReviewOf(item);
+        return review ? [{ item, review }] : [];
+      }),
+    [items, later],
+  );
+  const currentReview = reviews[0];
+  const putAway = useCallback(() => {
+    const id = currentReview?.item.id;
+    if (id) setLater((prev) => new Set(prev).add(id));
+  }, [currentReview?.item.id]);
   const merges = useMemo(
     () =>
       items.flatMap((item) => {
@@ -37,21 +56,34 @@ export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) =
   const currentId = current?.item.id;
   const dismissRef = useRef<HTMLButtonElement>(null);
 
+  const announcementId = currentReview ? undefined : currentId;
   // Keyed on the id, so an unrelated bell update doesn't move focus.
   useEffect(() => {
-    if (!currentId) return;
+    if (!announcementId) return;
     dismissRef.current?.focus();
     // Captured and stopped here, so Escape doesn't also close a dialog underneath.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      void markAttention(currentId, "dismissed");
+      void markAttention(announcementId, "dismissed");
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [currentId]);
+  }, [announcementId]);
 
+  if (currentReview) {
+    return (
+      <MergeReviewDialog
+        key={currentReview.item.id}
+        item={currentReview.item}
+        review={currentReview.review}
+        more={reviews.length - 1}
+        onOpen={onOpen}
+        onLater={putAway}
+      />
+    );
+  }
   if (!current) return null;
   const { item, merge } = current;
   const pr =

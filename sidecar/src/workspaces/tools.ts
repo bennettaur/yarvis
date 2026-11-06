@@ -143,7 +143,7 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail) {
  * derivation the poller uses to find the PR in the first place. Null when the
  * clone URL names no provider we can read PRs from.
  */
-function workspacePrRef(repo: Repo, prNumber: number): PrRef | null {
+export function workspacePrRef(repo: Repo, prNumber: number): PrRef | null {
   const remote = parseRepoRemote(repo.cloneUrl);
   if (remote?.provider === "azure") {
     return {
