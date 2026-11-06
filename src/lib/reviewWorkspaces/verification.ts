@@ -78,6 +78,18 @@ export interface VerificationFlow {
 }
 
 /**
+ * Whether the PR as a whole has a materially simpler way to its goal.
+ * `alternative` is empty, and there is no location, when the rating is `as-simple`.
+ */
+export interface VerificationApproach {
+  rating: "as-simple" | "simpler" | "much-simpler";
+  reason: string;
+  alternative: string;
+  path?: string;
+  line?: number;
+}
+
+/**
  * Mirrors the sidecar's `CoveredReport` (`reviewWorkspaces/verification.ts`).
  * A section the run wasn't asked for is absent.
  */
@@ -97,6 +109,7 @@ export interface VerificationReport {
   comments?: VerificationCheck;
   observability?: VerificationCheck;
   quality?: VerificationCheck;
+  approach?: VerificationApproach;
   flow?: VerificationFlow;
   /** Absent on a report from before coverage was counted. */
   coverage?: VerificationCoverage | UnknownCoverage;
@@ -138,7 +151,7 @@ export const VERIFICATION_CHECKS = [
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
 /** The sections a reviewer can pick, in report order; mirrors the sidecar's `REPORT_SECTIONS`. */
-export const REPORT_SECTIONS = ["risk", ...VERIFICATION_CHECKS, "flow"] as const;
+export const REPORT_SECTIONS = ["risk", ...VERIFICATION_CHECKS, "approach", "flow"] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
 /** What the sidecar runs when no sections are picked: everything but the diagram. */

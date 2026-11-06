@@ -3,6 +3,7 @@ import {
   coverageKnown,
   type Severity,
   VERIFICATION_CHECKS,
+  type VerificationApproach,
   type VerificationCheck,
   type VerificationCheckKey,
   type VerificationCoverage,
@@ -35,6 +36,18 @@ const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], strin
   high: "border-red-700 bg-red-950/40 text-red-300",
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
+};
+
+const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
+  "as-simple": "No simpler way found",
+  simpler: "A simpler way exists",
+  "much-simpler": "A much simpler way exists",
+};
+
+const APPROACH_CLASS: Record<VerificationApproach["rating"], string> = {
+  "much-simpler": RISK_CLASS.high,
+  simpler: RISK_CLASS.medium,
+  "as-simple": RISK_CLASS.low,
 };
 
 /**
@@ -233,6 +246,29 @@ function CheckRow({
         ))}
       </ul>
     </details>
+  );
+}
+
+/** The whole-PR rating: whether there is a simpler way, why, and what it is. */
+function Approach({ approach, onOpen }: { approach: VerificationApproach; onOpen: OpenLocation }) {
+  return (
+    <div className="space-y-1.5 text-sm">
+      <div className="flex items-start gap-2">
+        <span
+          className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${APPROACH_CLASS[approach.rating]}`}
+        >
+          {APPROACH_LABEL[approach.rating]}
+        </span>
+        <span className="text-zinc-300">{approach.reason}</span>
+      </div>
+      {approach.alternative && (
+        <div className="text-xs text-zinc-400">
+          <span className="text-zinc-500">Simpler way: </span>
+          {approach.alternative}{" "}
+          <Location path={approach.path} line={approach.line} onOpen={onOpen} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -461,6 +497,12 @@ export default function VerificationReportView({
               </ul>
             )}
           </div>
+        </Section>
+      )}
+
+      {report.approach && (
+        <Section title="Simpler approach">
+          <Approach approach={report.approach} onOpen={onOpen} />
         </Section>
       )}
 

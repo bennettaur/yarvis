@@ -160,6 +160,7 @@ function SizeWarning({ size }: { size: VerificationSize }) {
 const SECTION_LABEL: Record<ReportSection, string> = {
   risk: "Risk",
   ...CHECK_LABEL,
+  approach: "Simpler approach",
   flow: "Flow diagram",
 };
 
@@ -432,9 +433,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           <p className="text-sm text-zinc-400">
             Agents read every changed file's diff and report what the change does, which files must
             be read, how risky it is, and whether it is complete, tested, simple, fast, well
-            commented, observable and well written. Checks that pass say so in a line, and the
-            report lists any file the checks didn't read. Pick the sections above; the flow diagram
-            traces the whole flow the change sits in and is off unless you ask for it.
+            commented, observable and well written, and whether there is a simpler way to do what
+            the PR does. Checks that pass say so in a line, and the report lists any file the checks
+            didn't read. Pick the sections above; the flow diagram traces the whole flow the change
+            sits in and is off unless you ask for it.
           </p>
         )}
 

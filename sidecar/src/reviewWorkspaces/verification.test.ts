@@ -48,6 +48,7 @@ function report(overrides: Record<string, unknown> = {}) {
     comments: pass,
     observability: pass,
     quality: pass,
+    approach: { rating: "as-simple", reason: "Fits.", alternative: "" },
     ...overrides,
   };
 }
@@ -200,6 +201,39 @@ describe("the report schema", () => {
     // Only the summary and the picked sections are required of the answer.
     const required = JSON.parse(jsonSchemaArg(picked)).required;
     expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+  });
+
+  it("keeps the simpler way only when the rating says there is one", () => {
+    const schema = verificationReportSchema({
+      ...limits,
+      sections: ["approach"],
+      checkoutDir: "/tmp/co",
+    });
+    const simpler = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: {
+        rating: "simpler",
+        reason: "r",
+        alternative: "Reuse the upload queue.",
+        path: "/tmp/co/src/queue.ts",
+        line: 4,
+      },
+    });
+    expect(simpler.approach).toEqual({
+      rating: "simpler",
+      reason: "r",
+      alternative: "Reuse the upload queue.",
+      path: "src/queue.ts",
+      line: 4,
+    });
+    const asSimple = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: { rating: "as-simple", reason: "r", alternative: "stray", path: "src/a.ts" },
+    });
+    expect(asSimple.approach).toMatchObject({ rating: "as-simple", alternative: "" });
+    expect(asSimple.approach?.path).toBeUndefined();
   });
 
   it("drops a diagram too long to render rather than cutting it", () => {
