@@ -8,6 +8,7 @@ import { type HeadsDownRun, issueLinks, workStreamLinks, workStreams } from "../
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
+import type { ClaudeSessionMessenger } from "../workspaces/claudeSession.ts";
 import { getRepo } from "../workspaces/service.ts";
 import {
   announceMerge,
@@ -22,6 +23,14 @@ import {
   autoApproveReason,
   type PassReviewContext,
 } from "./autoApprove.ts";
+import {
+  feedbackSummary,
+  handOffFeedback,
+  holdsMerge,
+  type MergeFeedbackLoader,
+  type MergeFeedbackResult,
+  type MergeSubject,
+} from "./mergeFeedback.ts";
 import {
   deniedApprovalExists,
   isToolUnattended,
@@ -196,6 +205,11 @@ export interface DecideOptions {
    * let run unattended or a session the loop may steer. Defaults to true.
    */
   withinWorkingHours?: boolean;
+  /**
+   * True for a merge held back by open review feedback, or feedback that
+   * couldn't be checked: like a merge outside working hours, it needs the user.
+   */
+  mergeHeld?: boolean;
 }
 
 /** Whether a pass may make this call now. `tool` is a built-in's name or an MCP tool's registry id. */
@@ -204,7 +218,7 @@ export async function decideCall(
   run: HeadsDownRun,
   tool: string,
   args: unknown,
-  { withinWorkingHours = true }: DecideOptions = {},
+  { withinWorkingHours = true, mergeHeld = false }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
   // Stopped, paused or past its stop time, here or on another instance:
@@ -212,12 +226,12 @@ export async function decideCall(
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  const outOfHoursMerge = !withinWorkingHours && isMergeCall(tool, args);
-  if (WORKSPACE_TOOLS.has(tool) && !outOfHoursMerge) {
+  const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
+  if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
     const workspaceId = stringArg(args, "workspaceId");
     if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
   }
-  if (tool.startsWith("mcp:") && !outOfHoursMerge && (await isToolUnattended(db, tool))) {
+  if (tool.startsWith("mcp:") && !mergeNeedsUser && (await isToolUnattended(db, tool))) {
     return "run";
   }
   // Grants are good for this run only, and for a day: what was approved may
@@ -351,38 +365,147 @@ async function alertUnannouncedMerge(
   });
 }
 
+/** Which PR a merge call is for, or null when the call doesn't say. */
+export function mergeSubject(tool: string, args: unknown): MergeSubject | null {
+  if (tool === "send_workspace_instruction") {
+    const workspaceId = stringArg(args, "workspaceId");
+    return workspaceId ? { workspaceId } : null;
+  }
+  const target = mergeCallTarget(tool, args);
+  if (!target) return null;
+  // `mcp:<server>:<tool>`: only a GitHub server's PR can be looked up on GitHub.
+  const server = tool.split(":")[1] ?? "";
+  return { ...target, githubOnly: /github/i.test(server) };
+}
+
+/** The open feedback on what a merge call merges. A call that doesn't say which PR is unchecked. */
+async function feedbackFor(
+  load: MergeFeedbackLoader,
+  tool: string,
+  args: unknown,
+): Promise<MergeFeedbackResult> {
+  const subject = mergeSubject(tool, args);
+  return subject
+    ? load(subject)
+    : { prs: [], unchecked: "the merge call doesn't say which PR it merges" };
+}
+
+/**
+ * A merge held for open feedback: hands the feedback to the PR's workspace
+ * the first time, and otherwise asks the user, with the feedback attached for
+ * the merge review modal. Never the decision model's to allow.
+ */
+async function holdMerge(
+  db: Db,
+  run: HeadsDownRun,
+  tool: string,
+  args: unknown,
+  feedback: MergeFeedbackResult,
+  { send, withinWorkingHours }: { send?: ClaudeSessionMessenger; withinWorkingHours: boolean },
+): Promise<{ deniedMessage: string }> {
+  // The handoff steers a session unasked, so only where a pass may already
+  // steer one: a workspace it is pushing, within working hours.
+  if (feedback.unchecked === null && withinWorkingHours) {
+    const handed = await handOffFeedback(db, run.id, feedback, {
+      send,
+      maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
+    });
+    if (handed.length > 0) {
+      return {
+        deniedMessage: [
+          "Not run: the PR has open review feedback, so Yarvis told its workspace's session to address it.",
+          ...handed.map((pr) => `${feedbackSummary(pr)}, handed to workspace ${pr.workspaceId}.`),
+          "Don't merge on this pass, and leave the feedback to the session. Once it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
+        ].join("\n"),
+      };
+    }
+  }
+  const prs = feedback.prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
+  const [question, why] =
+    feedback.unchecked !== null
+      ? [
+          "Merge this PR? Heads down couldn't check it for open review feedback.",
+          `Couldn't check the PR for open review feedback: ${feedback.unchecked}.`,
+        ]
+      : [
+          `Merge ${prs}? It has open review feedback.`,
+          `${feedback.prs.map(feedbackSummary).join(". ")}.`,
+        ];
+  await askUser(
+    db,
+    {
+      kind: "approval",
+      question,
+      situation: `${why} ${approvalSituation(tool, args)}`,
+      action: tool,
+      toolArgs: args,
+      options: ["approve", "deny"],
+    },
+    { prs: feedback.prs, unchecked: feedback.unchecked },
+  );
+  return { deniedMessage: QUEUED_FOR_APPROVAL };
+}
+
 export interface PassHookOptions {
   /** Absent when the user said nothing this run to judge a call against. */
   review?: PassReviewContext;
   /** The merges this pass announced (see `mergeKey`); the backstop adds its own. */
   announcedMerges?: Set<string>;
   withinWorkingHours?: boolean;
+  /** Reads a merge's open review feedback. Absent, merges aren't checked for it. */
+  mergeFeedback?: MergeFeedbackLoader;
+  /** Types the feedback handoff into a workspace's session; the real session by default. */
+  sendInstruction?: ClaudeSessionMessenger;
 }
 
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
  * the decision model may settle it (`autoApprove.ts`). A merge outside working
- * hours always goes to the user. A merge that runs without the pass having
- * announced it still raises the merge alert.
+ * hours always goes to the user, and so does one with open review feedback
+ * once the PR's workspace has had its chance to address it (`mergeFeedback.ts`).
+ * A merge that runs without the pass having announced it still raises the
+ * merge alert.
  */
 export function passApprovalHooks(
   db: Db,
   run: HeadsDownRun,
   onChanged: () => void,
-  { review, announcedMerges = new Set(), withinWorkingHours = true }: PassHookOptions = {},
+  {
+    review,
+    announcedMerges = new Set(),
+    withinWorkingHours = true,
+    mergeFeedback,
+    sendInstruction,
+  }: PassHookOptions = {},
 ): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
-        const decision = await decideCall(db, run, id, args, { withinWorkingHours });
+        const feedback =
+          mergeFeedback && isMergeCall(id, args)
+            ? await feedbackFor(mergeFeedback, id, args)
+            : null;
+        const held = holdsMerge(feedback);
+        const decision = await decideCall(db, run, id, args, {
+          withinWorkingHours,
+          mergeHeld: held,
+        });
         approved = decision === "run";
         if (decision === "refuse") return { deniedMessage: REFUSED };
         if (decision === "denied") return { deniedMessage: DENIED };
         if (decision === "stopped") return { deniedMessage: STOPPED };
         if (decision !== "ask") return undefined;
+        if (held) {
+          const result = await holdMerge(db, run, id, args, feedback, {
+            send: sendInstruction,
+            withinWorkingHours,
+          });
+          onChanged();
+          return result;
+        }
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
         // A failed review is a no, never a reason to drop the question. A

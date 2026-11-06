@@ -50,8 +50,49 @@ const OTHER: AttentionItem = {
   payload: null,
 };
 
+/** A merge held back for open review feedback, waiting on the user's answer. */
+const HELD: AttentionItem = {
+  ...MERGE,
+  id: "a4",
+  seq: 3,
+  sessionKey: "heads-down:q9",
+  kind: "permission",
+  title: "Heads down needs your approval",
+  body: "Merge acme/billing#12? It has open review feedback.",
+  navTarget: { type: "heads-down" },
+  payload: {
+    headsDownMergeReview: {
+      questionId: "q9",
+      unchecked: null,
+      prs: [
+        {
+          repo: "acme/billing",
+          number: 12,
+          title: "Bill monthly",
+          workspaceId: "w1",
+          handedOff: true,
+          threads: [
+            {
+              path: "src/billing.ts",
+              line: 10,
+              outdated: false,
+              author: "sam",
+              body: "This drops the retry.",
+              replies: 1,
+            },
+          ],
+          threadCount: 1,
+          threadsTruncated: false,
+          changesRequestedBy: ["sam"],
+        },
+      ],
+    },
+  },
+};
+
 let pending: AttentionItem[] = [];
 const patches: { path: string; body: unknown }[] = [];
+const posts: { path: string; body: unknown }[] = [];
 
 stubSidecarApi({
   // Held open until the store stops, so it doesn't loop on reconnects.
@@ -66,6 +107,10 @@ stubSidecarApi({
   sidecarFetch: async (path: string, init?: RequestInit) => {
     const json = (body: unknown) =>
       new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    if (init?.method === "POST") {
+      posts.push({ path, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
+      return json({});
+    }
     if (init?.method === "PATCH") {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
       patches.push({ path, body });
@@ -95,6 +140,7 @@ afterEach(() => {
   for (const unmount of mounted.splice(0)) unmount();
   pending = [];
   patches.length = 0;
+  posts.length = 0;
   opened.length = 0;
 });
 
@@ -176,6 +222,78 @@ describe("MergeAlert", () => {
     pending = [OTHER];
     const host = await mount();
     expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+  });
+});
+
+describe("MergeAlert with a merge held for review feedback", () => {
+  const button = (host: HTMLElement, text: string) =>
+    [...host.querySelectorAll("button")].find((b) => b.textContent === text);
+
+  it("shows the feedback ahead of merge announcements", async () => {
+    pending = [MERGE, HELD];
+    const host = await mount();
+
+    const dialog = host.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain("Heads down wants to merge a PR with open feedback");
+    expect(dialog?.textContent).toContain("acme/billing#12");
+    expect(dialog?.textContent).toContain("This drops the retry.");
+    expect(dialog?.textContent).toContain("src/billing.ts:10");
+    expect(dialog?.textContent).toContain("Changes requested by sam");
+    expect(dialog?.textContent).toContain("Its workspace was asked to address this");
+    expect(dialog?.textContent).not.toContain("Heads down is merging a PR");
+  });
+
+  it("says when the PR couldn't be checked, without claiming feedback", async () => {
+    pending = [
+      {
+        ...HELD,
+        payload: { headsDownMergeReview: { questionId: "q9", unchecked: "no token", prs: [] } },
+      },
+    ];
+    const host = await mount();
+    const dialog = host.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain("couldn't check for feedback");
+    expect(dialog?.textContent).toContain("no token");
+    expect(dialog?.textContent).not.toContain("with open feedback");
+  });
+
+  it("approves the merge", async () => {
+    pending = [HELD];
+    const host = await mount();
+    button(host, "Approve merge")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(posts).toEqual([
+      { path: "/api/heads-down/questions/q9/answer", body: { choice: "approve" } },
+    ]);
+    expect(opened).toEqual([]);
+  });
+
+  it("denies it and opens the PR to review", async () => {
+    pending = [HELD];
+    const host = await mount();
+    button(host, "Review, don't merge")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(posts).toEqual([
+      { path: "/api/heads-down/questions/q9/answer", body: { choice: "deny" } },
+    ]);
+    expect(opened.map((item) => item.navTarget)).toEqual([
+      { type: "pr", owner: "acme", repo: "billing", number: 12 },
+    ]);
+  });
+
+  it("puts it away on Escape without answering, and shows the next alert", async () => {
+    pending = [MERGE, HELD];
+    const host = await mount();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(posts).toEqual([]);
+    expect(patches).toEqual([]);
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain(
+      "Heads down is merging a PR",
+    );
   });
 });
 

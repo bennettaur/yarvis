@@ -48,11 +48,11 @@ import {
   listRepos,
   listWorkspaces,
   parseGitUrl,
-  parseRepoRemote,
   provisionWorkspace,
   syncWorkspaceWithBase,
   type WorkspaceDetail,
   type WorkspaceSyncResult,
+  workspacePrRef,
 } from "./service.ts";
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -136,30 +136,6 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail) {
       };
     }),
   };
-}
-
-/**
- * The provider identity of a workspace repo's PR, from its clone URL — the same
- * derivation the poller uses to find the PR in the first place. Null when the
- * clone URL names no provider we can read PRs from.
- */
-function workspacePrRef(repo: Repo, prNumber: number): PrRef | null {
-  const remote = parseRepoRemote(repo.cloneUrl);
-  if (remote?.provider === "azure") {
-    return {
-      provider: "azure",
-      org: remote.org,
-      project: remote.project,
-      repo: remote.repo,
-      prId: prNumber,
-    };
-  }
-  // GitHub owner/repo are stored on the row at registration; the poller falls
-  // back to them when the clone URL doesn't parse, so this does too.
-  const owner = remote?.provider === "github" ? remote.owner : repo.owner;
-  const name = remote?.provider === "github" ? remote.repo : repo.repo;
-  if (!owner || !name) return null;
-  return { provider: "github", owner, repo: name, number: prNumber };
 }
 
 /** Bounds a reviewer or check name; nothing upstream caps a CI job's name. */

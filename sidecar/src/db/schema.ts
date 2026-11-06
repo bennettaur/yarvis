@@ -1732,6 +1732,26 @@ export const headsDownMessages = pgTable(
 );
 
 /**
+ * A PR whose merge heads-down mode held back because it had open review
+ * feedback, and handed to the workspace that owns it to address. One per PR
+ * per run: the next merge attempt with feedback still open goes to the user.
+ */
+export const headsDownFeedbackHandoffs = pgTable(
+  "heads_down_feedback_handoffs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => headsDownRuns.id, { onDelete: "cascade" }),
+    /** `owner/repo#number`, lowercased, as `mergeKey` builds it. */
+    prKey: text("pr_key").notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("heads_down_feedback_handoffs_run_pr_idx").on(t.runId, t.prKey)],
+);
+
+/**
  * `question`: the loop needs the user to choose. `approval`: a tool call the
  * loop may not make on its own, waiting for the user to allow it.
  */
