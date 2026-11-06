@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
@@ -87,9 +87,9 @@ export default function App() {
   const [headsDownItem, setHeadsDownItem] = useState<AttentionItem | null>(null);
   // A Claude session's permission prompt being answered from the modal.
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
-  // True when the modal opened without a click on the bell (by itself, or after
-  // the last prompt was answered), so its buttons ignore clicks for longer.
-  const [permissionOpenedUnasked, setPermissionOpenedUnasked] = useState(false);
+  // True when a prompt or question opened without a click on it (by itself, or
+  // after the last prompt was answered), so its buttons ignore clicks for longer.
+  const [openedWithoutClick, setOpenedWithoutClick] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -346,7 +346,7 @@ export default function App() {
         if (headsDownQuestionId(item)) setHeadsDownItem(item);
         else if (item.kind === "question") setQuestionItem(item);
         else setPermissionItem(item);
-        setPermissionOpenedUnasked(false);
+        setOpenedWithoutClick(false);
         return;
       }
       void markAttention(item.id, "read");
@@ -388,7 +388,7 @@ export default function App() {
         // Claimed now: a second item can arrive before the state change commits.
         overlayOpenRef.current = true;
         openAttentionItem(item);
-        setPermissionOpenedUnasked(true);
+        setOpenedWithoutClick(true);
       }),
     [openAttentionItem],
   );
@@ -411,7 +411,7 @@ export default function App() {
       if (!next) return;
       openAttentionItem(next);
       // The pointer is still over the button that answered the last one.
-      setPermissionOpenedUnasked(true);
+      setOpenedWithoutClick(true);
     },
     [openAttentionItem],
   );
@@ -420,7 +420,8 @@ export default function App() {
   // or opened another, and must not close or chain from that one.
   const questionItemRef = useRef(questionItem);
   const permissionItemRef = useRef(permissionItem);
-  useEffect(() => {
+  // Layout effect: synced before a late reply's promise can run against them.
+  useLayoutEffect(() => {
     questionItemRef.current = questionItem;
     permissionItemRef.current = permissionItem;
   }, [questionItem, permissionItem]);
@@ -582,6 +583,7 @@ export default function App() {
         onClose={closeQuestion}
         onDone={finishQuestion}
         onOpenSession={openQuestionSession}
+        armingMs={openedWithoutClick ? AUTO_OPEN_ARMING_MS : undefined}
       />
 
       <HeadsDownQuestionDialog
@@ -598,7 +600,7 @@ export default function App() {
         title={permissionItem?.title ?? ""}
         onClose={() => setPermissionItem(null)}
         onDone={finishPermission}
-        armingMs={permissionOpenedUnasked ? AUTO_OPEN_ARMING_MS : undefined}
+        armingMs={openedWithoutClick ? AUTO_OPEN_ARMING_MS : undefined}
         onGoToSession={() => {
           if (!permissionItem) return;
           setPermissionItem(null);

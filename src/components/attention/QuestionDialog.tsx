@@ -31,6 +31,7 @@ export default function QuestionDialog({
   onClose,
   onDone = onClose,
   onOpenSession,
+  armingMs = 0,
 }: {
   /** The attention row that was opened; null keeps the dialog closed. */
   item: AttentionItem | null;
@@ -39,11 +40,19 @@ export default function QuestionDialog({
   onDone?: () => void;
   /** Jumps to the asking session, for a question that needs more than a reply. */
   onOpenSession: (item: AttentionItem) => void;
+  /**
+   * How long each question set ignores clicks after it is shown. Set when the
+   * dialog opens without a click on it, while the pointer may still be over
+   * whatever answered the last prompt.
+   */
+  armingMs?: number;
 }) {
   const [questionSets, setQuestionSets] = useState<AgentQuestion[] | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState<DisplayError | null>(null);
   const [sending, setSending] = useState(false);
+  // Keyed by question set, so a set is never armed on its first render.
+  const [armedId, setArmedId] = useState<string | null>(null);
 
   /**
    * Shows what the session has waiting now. Drafts reset only when the set on
@@ -76,6 +85,13 @@ export default function QuestionDialog({
     };
   }, [item, show]);
 
+  const currentId = questionSets?.[0]?.id ?? null;
+  useEffect(() => {
+    if (!currentId) return;
+    const timer = setTimeout(() => setArmedId(currentId), armingMs);
+    return () => clearTimeout(timer);
+  }, [currentId, armingMs]);
+
   useEffect(() => {
     if (!item) return;
     const onKey = (e: KeyboardEvent) => {
@@ -91,6 +107,7 @@ export default function QuestionDialog({
   if (!item) return null;
 
   const current = questionSets?.[0];
+  const armed = !current || armedId === current.id;
 
   /**
    * Sends the reply, then reloads the session's questions: that picks up a set
@@ -158,7 +175,7 @@ export default function QuestionDialog({
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
+        <div inert={!armed} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           {current?.context.reason && (
             <p className="whitespace-pre-wrap text-xs text-zinc-400">{current.context.reason}</p>
           )}
@@ -195,7 +212,7 @@ export default function QuestionDialog({
             Go to session
           </button>
           {current && (
-            <div className="flex items-center gap-2">
+            <div inert={!armed} className="flex items-center gap-2">
               <button
                 type="button"
                 disabled={sending}
