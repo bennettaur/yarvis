@@ -57,7 +57,7 @@ const ARROW_COLOR = "#495057";
  * Excalidraw's Helvetica, which is a system font. Its hand-drawn default is
  * fetched from a CDN, which the app's content security policy refuses.
  */
-const LABEL_FONT_FAMILY = 2;
+export const LABEL_FONT_FAMILY = 2;
 
 /** Excalidraw's `ROUNDNESS.ADAPTIVE_RADIUS`, written out so this file loads no Excalidraw code. */
 const ADAPTIVE_RADIUS = 3;

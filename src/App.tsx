@@ -50,6 +50,7 @@ import {
   type OpenReviewRequest,
   type OpenWorkspaceRequest,
   useNewWorkspaceListener,
+  useOpenArtifactListener,
   useOpenPlaceListener,
   useOpenPrListener,
   useOpenReviewListener,
@@ -97,6 +98,9 @@ export default function App() {
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
   const [requestedChatSession, setRequestedChatSession] = useState<string | null>(null);
   const clearRequestedChatSession = useCallback(() => setRequestedChatSession(null), []);
+  // An artifact a link outside any chat asked to show beside the Chat tab's conversation.
+  const [requestedArtifact, setRequestedArtifact] = useState<string | null>(null);
+  const clearRequestedArtifact = useCallback(() => setRequestedArtifact(null), []);
   // A request to open the New Workspace form pre-filled (Tasks "Create workspace" /
   // "Start work"). WorkspacesPanel consumes and clears it.
   const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
@@ -126,6 +130,12 @@ export default function App() {
     setOmniChatOpen(false);
   }, []);
   useOpenPrListener(handleOpenPr);
+
+  const handleOpenArtifact = useCallback((id: string) => {
+    setRequestedArtifact(id);
+    setTab("chat");
+  }, []);
+  useOpenArtifactListener(handleOpenArtifact);
 
   const handleOpenWorkspace = useCallback((request: OpenWorkspaceRequest) => {
     setRequestedWorkspace(request);
@@ -446,6 +456,8 @@ export default function App() {
             focusOnShow
             requestedSessionId={requestedChatSession}
             onRequestConsumed={clearRequestedChatSession}
+            requestedArtifactId={requestedArtifact}
+            onArtifactRequestConsumed={clearRequestedArtifact}
           />
         </div>
         {/* Omni fills the region and manages its own layout; page-like views

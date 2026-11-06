@@ -2,7 +2,17 @@ import { tool } from "ai";
 import { z } from "zod";
 import { hasReadUntrusted, type UntrustedReads } from "../chat/destructiveTools.ts";
 import type { Db } from "../db/client.ts";
+import type { Artifact } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
+import {
+  DiagramError,
+  diagramChangesSchema,
+  ELEMENT_TYPES,
+  elementPatchSchema,
+  MAX_DIAGRAM_ELEMENTS,
+  parseDiagram,
+} from "./diagram.ts";
+import { describeScene } from "./scene.ts";
 import {
   ARTIFACT_LIST_LIMIT,
   ArtifactAppendOnlyError,
@@ -11,11 +21,15 @@ import {
   type ArtifactWriter,
   CHAT_ARTIFACT_RUN_LIMIT,
   createArtifact,
+  createDiagram,
   deleteArtifact,
   getArtifact,
   listArtifacts,
   MAX_ARTIFACT_CHARS,
+  NotADiagramError,
+  NotADocumentError,
   updateArtifact,
+  updateDiagram,
 } from "./service.ts";
 
 /**
@@ -37,6 +51,55 @@ const RUN_LIMIT = `This artifact came from a chat with the user, and you can't g
 const CHAT_ARTIFACT_KEPT =
   "This artifact came from a chat with the user, so only the user can delete it.";
 
+const DIAGRAM_APPEND_ONLY =
+  "This diagram came from a chat with the user, so you can only add new elements to it. Start a new diagram to change or remove what is there.";
+
+const DIAGRAM_FORMAT = `It is an Excalidraw scene, written as Excalidraw element skeletons (what convertToExcalidrawElements takes). Every element needs an id you pick, e.g. "api" or "api-db", which update_diagram uses to change it. Types:
+- rectangle, ellipse, diamond: x, y, width, height; label {text, fontSize, textAlign, verticalAlign, strokeColor} draws text inside, and the shape grows downward to fit it.
+- text: x, y, text, fontSize, textAlign.
+- arrow: start {id} and end {id} bind it to two different shapes, and it is drawn straight between their outlines, following them when they move. Unbound, give x, y and points ([[0, 0], [dx, dy], ...], relative to x and y). startArrowhead/endArrowhead: arrow (the default end), bar, dot, circle, triangle, diamond, or null for none. label {text, fontSize}.
+- line: x, y and points; it can't bind, carry a label or have arrowheads.
+- frame: children (ids), name. Each of x, y, width and height you leave out is fitted to the children, and arrows bound to a child are put in the frame too, so an arrow out of a frame stretches it.
+Style on every type but frame: strokeColor, backgroundColor (hex like "#a5d8ff", or "transparent"), fillStyle (solid, hachure, cross-hatch, zigzag), strokeWidth, strokeStyle (solid, dashed, dotted), roughness (0 is clean, 1 the default sketchy look), opacity (0-100), angle (radians), groupIds, and roundness: {type: 3} rounds a shape's corners, {type: 2} curves an arrow or line through its points. Text is always drawn in Helvetica, and other Excalidraw properties are dropped.
+Coordinates are pixels and y grows downward. Later elements are drawn on top of earlier ones. The pane shows the diagram in dark mode by inverting its colours, so pick colours for a white background. Up to ${MAX_DIAGRAM_ELEMENTS} elements.`;
+
+const SCENE_HINT =
+  "The result describes where every element ended up (text sizes are estimates) and lists problems: overlaps, labels that don't fit, arrows that cross a shape. Check it, and fix what you didn't mean with update_diagram.";
+
+const DIAGRAM_NOT_TEXT =
+  "That artifact is a diagram. Change it with update_diagram; update_artifact can't edit its content.";
+
+const NOT_A_DIAGRAM = "That artifact is a document, not a diagram. Use update_artifact.";
+
+const DIAGRAM_TOO_LARGE = `That would make the diagram longer than ${MAX_ARTIFACT_CHARS} characters. Shorten labels, or split it into two diagrams.`;
+
+/**
+ * The address the chat renders as a link that opens the artifact beside the
+ * conversation. `src/lib/artifactLink.ts` parses it.
+ */
+function artifactLink(id: string): string {
+  return `yarvis://artifact/${id}`;
+}
+
+/**
+ * What the model sees of a diagram after a change or read. Labels and ids may
+ * come from an unattended run, so the scene and the problems are both fenced.
+ */
+function sceneOf(artifact: Artifact, reads: UntrustedReads | undefined) {
+  if (reads && artifact.untrusted) reads.hasReadUntrustedArtifact = true;
+  const scene = describeScene(parseDiagram(artifact.content));
+  const nonce = newNonce();
+  return {
+    warning: untrustedWarning(nonce),
+    bounds: scene.bounds,
+    scene: fence(scene.elements.join("\n"), nonce),
+    problems: fence(scene.problems.join("\n") || "none", nonce),
+  };
+}
+
+const LINK_HINT =
+  "Returns a link: put it in your reply as a markdown link, e.g. [Morning brief](yarvis://artifact/<id>), so the user can open it beside the chat.";
+
 /**
  * `writer` is who is calling; a heads-down pass or specialist run can only
  * append to an artifact a chat turn created. `reads` is the turn's record of
@@ -56,8 +119,7 @@ export function buildArtifactTools(
 
   return {
     create_artifact: tool({
-      description:
-        "Write a document you or the user will come back to: a morning brief, a report, a plan, or a scratchpad of your own notes. Content is markdown. Returns the id to read or update it later.",
+      description: `Write a document you or the user will come back to: a morning brief, a report, a plan, or a scratchpad of your own notes. Content is markdown. Returns the id to read or update it later. ${LINK_HINT}`,
       inputSchema: z.object({
         title: title.describe("Short and specific, e.g. 'Morning brief 2026-10-30'"),
         content: content.optional().describe("Markdown. Leave out to start an empty scratchpad"),
@@ -70,7 +132,12 @@ export function buildArtifactTools(
             writer,
             untrusted: tainted(),
           });
-          return { id: artifact.id, title: artifact.title, length: artifact.content.length };
+          return {
+            id: artifact.id,
+            title: artifact.title,
+            length: artifact.content.length,
+            link: artifactLink(artifact.id),
+          };
         } catch (err) {
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           throw err;
@@ -104,7 +171,8 @@ export function buildArtifactTools(
     }),
 
     get_artifact: tool({
-      description: "Read one of your artifacts in full.",
+      description:
+        "Read one of your artifacts in full. A diagram's content is its JSON elements, and the result also describes where each one is drawn and what looks wrong; read it before update_diagram so you use the ids already there.",
       inputSchema: z.object({ id: uuid }),
       execute: async ({ id }) => {
         const artifact = await getArtifact(db, id);
@@ -122,6 +190,12 @@ export function buildArtifactTools(
           untrusted: artifact.untrusted,
           content: fence(artifact.content, nonce),
           updatedAt: artifact.updatedAt.toISOString(),
+          ...(artifact.format === "excalidraw"
+            ? (({ bounds, problems }) => ({
+                bounds,
+                problems: fence(problems.join("\n") || "none", nonce),
+              }))(describeScene(parseDiagram(artifact.content)))
+            : {}),
         };
       },
     }),
@@ -140,11 +214,78 @@ export function buildArtifactTools(
         try {
           const artifact = await updateArtifact(db, id, { ...patch, writer, untrusted: tainted() });
           return artifact
-            ? { id: artifact.id, length: artifact.content.length }
+            ? { id: artifact.id, length: artifact.content.length, link: artifactLink(artifact.id) }
             : { error: "no artifact with that id" };
         } catch (err) {
+          if (err instanceof NotADocumentError) return { error: DIAGRAM_NOT_TEXT };
           if (err instanceof ArtifactTooLargeError) return { error: TOO_LARGE };
           if (err instanceof ArtifactAppendOnlyError) return { error: APPEND_ONLY };
+          if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
+          throw err;
+        }
+      },
+    }),
+
+    create_diagram: tool({
+      description: `Draw a diagram the user can watch and come back to: an architecture sketch, a flow, a plan of how pieces connect. ${DIAGRAM_FORMAT} ${SCENE_HINT} ${LINK_HINT}`,
+      inputSchema: z.object({
+        title: title.describe("Short and specific, e.g. 'Checkout service architecture'"),
+        elements: z
+          .array(elementPatchSchema.extend({ type: z.enum(ELEMENT_TYPES) }))
+          .max(MAX_DIAGRAM_ELEMENTS),
+      }),
+      execute: async ({ title: t, elements }) => {
+        try {
+          const artifact = await createDiagram(db, {
+            title: t,
+            elements,
+            writer,
+            untrusted: tainted(),
+          });
+          return {
+            id: artifact.id,
+            title: artifact.title,
+            link: artifactLink(artifact.id),
+            ...sceneOf(artifact, reads),
+          };
+        } catch (err) {
+          if (err instanceof DiagramError) return { error: err.message };
+          if (err instanceof ArtifactTooLargeError) return { error: DIAGRAM_TOO_LARGE };
+          throw err;
+        }
+      },
+    }),
+
+    update_diagram: tool({
+      description: `Change one of your diagrams in place; the user sees each change as it lands if they have it open. upsert takes elements by id: for an id that exists, the properties you send replace those on the element and the rest are kept (null clears one, except an arrowhead or roundness, where null means none); a new id adds an element, which needs a type and what that type requires. remove deletes elements by id; removing a shape also removes the arrows bound to it. Removals run first, then upserts in order. The format is the one create_diagram describes, and get_artifact shows the current elements. ${SCENE_HINT} Set addOnly when every id you upsert is new and you remove nothing: such a change doesn't need the user's approval, and it is refused if it would touch an existing element.${
+        writer === "chat"
+          ? ""
+          : " You can only add new elements to a diagram that came from a chat with the user."
+      }`,
+      inputSchema: diagramChangesSchema.extend({
+        id: uuid,
+        title: title.optional(),
+        addOnly: z
+          .boolean()
+          .optional()
+          .describe("True when this change only adds new nodes and edges"),
+      }),
+      execute: async ({ id, title: t, addOnly, ...changes }) => {
+        try {
+          const artifact = await updateDiagram(db, id, {
+            title: t,
+            changes,
+            addOnly,
+            writer,
+            untrusted: tainted(),
+          });
+          if (!artifact) return { error: "no artifact with that id" };
+          return { id: artifact.id, link: artifactLink(artifact.id), ...sceneOf(artifact, reads) };
+        } catch (err) {
+          if (err instanceof DiagramError) return { error: err.message };
+          if (err instanceof NotADiagramError) return { error: NOT_A_DIAGRAM };
+          if (err instanceof ArtifactTooLargeError) return { error: DIAGRAM_TOO_LARGE };
+          if (err instanceof ArtifactAppendOnlyError) return { error: DIAGRAM_APPEND_ONLY };
           if (err instanceof ArtifactRunLimitError) return { error: RUN_LIMIT };
           throw err;
         }

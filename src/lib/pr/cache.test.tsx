@@ -1,32 +1,39 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { clearResourceCache } from "../resourceCache";
+import * as api from "./api";
+import { invalidate, invalidatePrReview, prDetailKey, usePrDetail, usePrFileDiff } from "./cache";
+import type { PrFile, PrRef } from "./types";
 
-// The cache module reads these from ./api at import time; stub the detail
-// loader so we control what each (re)fetch resolves to without hitting a
-// provider transport. `loadMs` holds a fetch open so a case can look at what
-// the hook renders while one is in flight.
+// Stub the loaders so we control what each (re)fetch resolves to without
+// hitting a provider transport. Spies, not `mock.module`: that replaces the
+// module for the rest of the run, so later suites would get these partial
+// answers. `loadMs` holds a fetch open so a case can look at what the hook
+// renders while one is in flight.
 let draft = true;
 let fetchCount = 0;
 let diffFetchCount = 0;
 let loadMs = 0;
-mock.module("./api", () => ({
-  fetchPrDetail: async (ref: PrRef) => {
+const spies = [
+  spyOn(api, "fetchPrDetail").mockImplementation((async (ref: PrRef) => {
     fetchCount++;
     if (loadMs > 0) await new Promise((resolve) => setTimeout(resolve, loadMs));
     return { draft, number: ref.provider === "github" ? ref.number : ref.prId };
-  },
-  fetchPrFiles: async () => [],
-  fetchPrStatus: async () => ({}),
-  fetchPrFileDiff: async () => {
+  }) as unknown as typeof api.fetchPrDetail),
+  spyOn(api, "fetchPrFiles").mockImplementation(async () => []),
+  spyOn(api, "fetchPrStatus").mockImplementation(
+    (async () => ({})) as unknown as typeof api.fetchPrStatus,
+  ),
+  spyOn(api, "fetchPrFileDiff").mockImplementation((async () => {
     diffFetchCount++;
     return { filename: "a.ts" };
-  },
-}));
+  }) as unknown as typeof api.fetchPrFileDiff),
+];
 
-import { clearResourceCache } from "../resourceCache";
-import { invalidate, invalidatePrReview, prDetailKey, usePrDetail, usePrFileDiff } from "./cache";
-import type { PrFile, PrRef } from "./types";
+afterAll(() => {
+  for (const spy of spies) spy.mockRestore();
+});
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
 const ref70: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 70 };

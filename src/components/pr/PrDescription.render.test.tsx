@@ -4,7 +4,7 @@ import * as sidecar from "../../lib/api";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail, PrRef } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
-import { mountForInteraction } from "../../test/render";
+import { mountForInteraction, waitFor } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import PrDescription from "./PrDescription";
 
@@ -83,9 +83,8 @@ describe("PrDescription comments", () => {
     expect(host.textContent).toContain("outdated");
 
     button(host, "Resolve")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => button(host, "Unresolve") !== undefined, "the thread to show as resolved");
     expect(paths).toContain("/api/github/pr/octo/repo/3/threads/PRRT_9/resolve");
-    expect(button(host, "Unresolve")).toBeDefined();
   });
 
   it("says when not every thread could be loaded", async () => {
