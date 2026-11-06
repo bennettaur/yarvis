@@ -181,6 +181,9 @@ export function useVoice({
   //     one attempt: a refusal then drops them and says so.
   const transcribeInOrderRef = useRef<Promise<void>>(Promise.resolve());
   const [heldTurns, setHeldTurns] = useState<string[]>([]);
+  // Read when a transcript lands, which can be before the flush effect below
+  // has run: a turn must not be sent ahead of ones already held.
+  const heldTurnsRef = useRef<string[]>([]);
   /** A continuous turn has been sent and its send hasn't settled yet. */
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
@@ -350,7 +353,10 @@ export function useVoice({
     [],
   );
 
-  const holdTurn = useCallback((text: string) => setHeldTurns((prev) => [...prev, text]), []);
+  const holdTurn = useCallback((text: string) => {
+    heldTurnsRef.current = [...heldTurnsRef.current, text];
+    setHeldTurns(heldTurnsRef.current);
+  }, []);
 
   const handleContinuousTurn = useCallback(
     (wav: Blob) => {
@@ -367,7 +373,7 @@ export function useVoice({
           if (!text || generation !== turnGenerationRef.current) return;
           const tooShortForTail = inTail && text.split(/\s+/).length < ECHO_TAIL_MIN_WORDS;
           if (echoReference && !tooShortForTail && looksLikeEcho(text, echoReference)) return;
-          if (busyRef.current || sendingRef.current) holdTurn(text);
+          if (busyRef.current || sendingRef.current || heldTurnsRef.current.length) holdTurn(text);
           else sendContinuous(text, generation, holdTurn);
         })
         // A turn that fails must not break the chain, or every later turn is
@@ -414,15 +420,19 @@ export function useVoice({
   }, [levelMeter, recorder.level, continuousListening.listening]);
 
   // A failed start or a dropped connection disarms the mic, so the next click
-  // starts it again instead of re-setting a flag that is already on.
+  // starts it again instead of re-setting a flag that is already on. An older
+  // error of the hook's own is cleared, so it can't hide why the mic closed.
   useEffect(() => {
-    if (continuousListening.error) setContinuousArmed(false);
+    if (!continuousListening.error) return;
+    setContinuousArmed(false);
+    setError(null);
   }, [continuousListening.error]);
 
   // Held turns go out together once the surface is free: they were said as one
   // follow-up, split only by pauses. A second refusal drops them.
   useEffect(() => {
     if (busy || sending || heldTurns.length === 0) return;
+    heldTurnsRef.current = [];
     setHeldTurns([]);
     sendContinuous(heldTurns.join(" "), turnGenerationRef.current, () =>
       setError("couldn't send what you said; it's been dropped"),
@@ -435,6 +445,15 @@ export function useVoice({
   useEffect(() => {
     if (!busy && !sending) silencedRef.current = false;
   }, [busy, sending]);
+
+  // A minimised window closes the mic too: nobody is watching what it sends. Coming back waits for a click.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") setContinuousArmed(false);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   // Turning the mode off closes the mic, and turning it back on waits for a click.
   useEffect(() => {
@@ -458,7 +477,10 @@ export function useVoice({
     if (busyRef.current || sendingRef.current) silencedRef.current = true;
     setContinuousArmed(false);
     // Left alone when already empty: the surfaces call this from effects.
-    setHeldTurns((prev) => (prev.length ? [] : prev));
+    if (heldTurnsRef.current.length) {
+      heldTurnsRef.current = [];
+      setHeldTurns([]);
+    }
     stopRecording({ discard: true });
     endSpeech();
     setPhase("idle");

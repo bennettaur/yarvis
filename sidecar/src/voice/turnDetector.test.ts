@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
@@ -109,6 +109,47 @@ describe("TurnDetector", () => {
     );
 
     expect(turns.status().error).toMatch(/brew install uv/);
+  });
+
+  it("passes on any other spawn error as it is", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit(
+      "error",
+      Object.assign(new Error("spawn uv EACCES"), { code: "EACCES" }),
+    );
+
+    expect(turns.status().error).toBe("spawn uv EACCES");
+  });
+
+  it("ignores an error from a replaced server", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("exit", 1, null);
+    turns.start();
+
+    spawned[0]?.child.emit("error", new Error("late failure"));
+    expect(turns.status().state).toBe("starting");
+    expect(turns.status().error).toBeNull();
+  });
+
+  it("writes why the server stopped to the sidecar log, with its last lines", () => {
+    const warnings: unknown[][] = [];
+    const warn = spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args);
+    });
+    try {
+      const { detector: turns, spawned } = detector();
+      turns.start();
+      (spawned[0]!.child.stderr as EventEmitter).emit("data", "ModuleNotFoundError: numpy\n");
+      spawned[0]?.child.emit("exit", 1, null);
+
+      expect(warnings).toEqual([
+        ["[voice] the turn detector exited (code 1); see its log", ["ModuleNotFoundError: numpy"]],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("uses a new token for each server", () => {

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { settingsPath } from "../settings/store.ts";
@@ -31,7 +31,7 @@ const READY_LINE = /^YARVIS_TURN_READY (\d+)$/;
  * How long a start may take before it counts as hung. Generous, because the
  * first start installs the Python packages and downloads the models.
  */
-export const START_TIMEOUT_MS = 10 * 60_000;
+const START_TIMEOUT_MS = 10 * 60_000;
 
 export type TurnDetectorState = "stopped" | "starting" | "running" | "failed";
 
@@ -54,7 +54,7 @@ export interface TurnDetectorDeps {
   startTimeoutMs: number;
 }
 
-export const defaultTurnDetectorDeps: TurnDetectorDeps = {
+const defaultTurnDetectorDeps: TurnDetectorDeps = {
   spawn: (program, args, env) =>
     spawn(program, args, {
       env,
@@ -64,13 +64,15 @@ export const defaultTurnDetectorDeps: TurnDetectorDeps = {
       // stdin stays open for the server's lifetime; its closing is the exit signal.
       stdio: ["pipe", "pipe", "pipe"],
     }),
-  // Written to a temp file and renamed, because instances share ~/.yarvis and
-  // one rewriting the file must never let another's uv read half of it.
+  // Instances share ~/.yarvis, so the file is named for its contents: two
+  // builds never run each other's script. Written to a temp file and renamed,
+  // so another instance's uv never reads half of it.
   writeScript: () => {
     const dir = join(dirname(settingsPath()), "voice");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
-    const file = join(dir, "turn_server.py");
+    const hash = createHash("sha256").update(script).digest("hex").slice(0, 12);
+    const file = join(dir, `turn_server.${hash}.py`);
     const temp = `${file}.${process.pid}.tmp`;
     writeFileSync(temp, script, { mode: 0o600, flag: "w" });
     renameSync(temp, file);
@@ -140,7 +142,9 @@ export class TurnDetector {
     try {
       path = this.deps.writeScript();
     } catch (e) {
-      this.error = `could not write the turn detector script: ${e instanceof Error ? e.message : e}`;
+      this.report(
+        `could not write the turn detector script: ${e instanceof Error ? e.message : e}`,
+      );
       return this.status();
     }
 
@@ -181,17 +185,18 @@ export class TurnDetector {
       clearTimeout(startTimer);
       if (this.child !== child) return;
       this.child = null;
-      this.error =
+      this.report(
         (e as NodeJS.ErrnoException).code === "ENOENT"
           ? "uv is not installed. Install it with `brew install uv`."
-          : e.message;
+          : e.message,
+      );
     });
     child.on("exit", (code, signal) => {
       clearTimeout(startTimer);
       if (this.child !== child) return;
       this.child = null;
       this.port = null;
-      this.error = `the turn detector exited (${signal ?? `code ${code}`}); see its log`;
+      this.report(`the turn detector exited (${signal ?? `code ${code}`}); see its log`);
     });
     return this.status();
   }
@@ -200,8 +205,14 @@ export class TurnDetector {
   private fail(child: ChildProcess, error: string): void {
     this.child = null;
     this.port = null;
-    this.error = error;
+    this.report(error);
     if (child.pid !== undefined) this.deps.kill(child.pid);
+  }
+
+  /** Records why the server stopped, in the status and in sidecar.log. */
+  private report(error: string): void {
+    this.error = error;
+    console.warn(`[voice] ${error}`, this.log.slice(-5));
   }
 
   private append(line: string): void {

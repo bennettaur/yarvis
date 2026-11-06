@@ -69,12 +69,15 @@ While the assistant is replying:
   speaking, while the assistant is still thinking.
 - A turn that starts over the spoken reply, or within a second and a half of
   it ending, and mostly repeats its words is dropped: it's the reply leaking
-  back into the microphone, not you. A one-word turn that is also a word of the
-  reply, like "yes", is dropped too. This is a check on the transcript, so a
-  badly misheard echo can still get through as a turn.
+  back into the microphone, not you. Over the reply, a one-word turn that is
+  also a word of the reply, like "yes", is dropped too. After the reply ends,
+  a turn needs at least three words to be dropped, so a short answer to its
+  closing question goes through. This is a check on the transcript, so a badly
+  misheard echo can still get through as a turn.
 
 Switching to another tab, closing Omni Chat, or opening Omni Chat over the Chat
-tab closes the microphone, and drops queued turns.
+tab closes the microphone, and drops queued turns. Minimising Yarvis closes
+the microphone too, though turns already queued are still sent.
 
 Both models run on your Mac in a small Python process the app starts the first
 time you use continuous mode. It needs [uv](https://docs.astral.sh/uv/)

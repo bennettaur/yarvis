@@ -62,13 +62,17 @@ describe("createResampler", () => {
   it("gives the same output in chunks as in one piece", () => {
     // The worklet posts ~32 ms at a time; a seam between posts would be an
     // audible click every 32 ms, which the VAD could hear as noise. An
-    // alternating signal makes any misplaced sample at a seam show.
-    const input = alternating(4410);
+    // alternating signal makes any misplaced sample at a seam show. 1411
+    // samples is what the worklet posts at 44.1 kHz, and isn't a whole number
+    // of output steps, so output samples fall between chunks.
+    const input = alternating(1411 * 20);
     const whole = createResampler(44_100, 16_000)(input);
 
     const chunked = createResampler(44_100, 16_000);
     const parts: number[] = [];
-    for (let i = 0; i < input.length; i += 441) parts.push(...chunked(input.subarray(i, i + 441)));
+    for (let i = 0; i < input.length; i += 1411) {
+      parts.push(...chunked(input.subarray(i, i + 1411)));
+    }
 
     expect(parts.length).toBe(whole.length);
     for (let i = 0; i < whole.length; i++) expect(parts[i]).toBeCloseTo(whole[i]!, 5);

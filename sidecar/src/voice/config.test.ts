@@ -85,6 +85,7 @@ describe("voice config", () => {
     }));
 
     const config = await getVoiceConfig();
+    expect(config.continuous).toBe(false);
     expect(config).toEqual({ ...DEFAULT_VOICE_CONFIG, sttModel: "kept" });
 
     await saveVoiceConfig({ ttsModel: "next" });

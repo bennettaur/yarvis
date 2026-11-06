@@ -495,6 +495,31 @@ describe("useVoice in continuous mode", () => {
     expect(active.voice.queued).toBe(0);
   });
 
+  it("doesn't send a turn ahead of ones already held", async () => {
+    active = await listening();
+    const firstSend = deferred<unknown>();
+    sendSettles = firstSend.promise;
+    transcriptResult = "first";
+    detector?.onTurn(turnAudio());
+    await settle();
+    transcriptResult = "second";
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.voice.queued).toBe(1);
+
+    const third = deferred<string>();
+    transcribeGates.push(third.promise);
+    detector?.onTurn(turnAudio());
+    await settle();
+    // The third transcript lands once the send has settled, but before the
+    // held turn has gone out.
+    firstSend.resolve(undefined);
+    third.resolve("third");
+    await settle();
+
+    expect(active.sent.map((m) => m.text)).toEqual(["first", "second third"]);
+  });
+
   it("retries a refused turn once, then says it was dropped", async () => {
     active = await listening();
     // The surface refuses when a turn started between the check and the send.
@@ -857,6 +882,33 @@ describe("useVoice in continuous mode", () => {
     expect(openedUrl).toBe(RUNNING.url);
     expect(active.voice.recording).toBe(true);
     expect(active.voice.error).toBeNull();
+  });
+
+  it("shows why the mic closed over an older error", async () => {
+    active = await listening();
+    sendError = new Error("session create failed");
+    detector?.onTurn(turnAudio());
+    await settle();
+    expect(active.voice.error).toMatch(/session create failed/);
+
+    detector?.onError("lost the connection to the turn detector");
+    await settle();
+    expect(active.voice.error).toBe("lost the connection to the turn detector");
+  });
+
+  it("closes the mic when the window is hidden", async () => {
+    active = await listening();
+    const state = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    try {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(streamClosed).toBe(true);
+      expect(active.voice.recording).toBe(false);
+    } finally {
+      if (state) Object.defineProperty(document, "visibilityState", state);
+      else delete (document as { visibilityState?: string }).visibilityState;
+    }
   });
 
   it("starts again on the next click after the connection drops", async () => {
