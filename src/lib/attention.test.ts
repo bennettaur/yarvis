@@ -42,3 +42,12 @@ describe("hasAnswerDialog", () => {
     expect(hasAnswerDialog(item({ sessionKey: "heads-down-merge:o/r#1" }))).toBe(false);
   });
 });
+
+describe("an ask_user question with a heads-down session key", () => {
+  // A coding agent picks its own session key, so it could name one like this.
+  const spoofed = item({ kind: "question", sessionKey: "heads-down:q1" });
+
+  it("isn't taken for a heads-down item", () => {
+    expect(headsDownQuestionId(spoofed)).toBeNull();
+  });
+});

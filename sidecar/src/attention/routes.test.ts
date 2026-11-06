@@ -619,6 +619,52 @@ describe("permission requests", () => {
     });
   }
 
+  describe("the session's idle item", () => {
+    const raiseIdle = (key: string) =>
+      app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey: key, kind: "idle" }),
+      });
+    const pendingKinds = async () => (await pendingItems()).map((i) => i.kind).sort();
+
+    it("stays while another prompt from the session still waits", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const first = await ask();
+      const second = await ask({ ...hookInput, tool_input: { command: "bun test" } });
+      await untilItemRaised();
+      await raiseIdle(sessionKey);
+
+      await decide(first.id, { behavior: "allow" });
+      await first.response;
+      expect(await pendingKinds()).toEqual(["idle", "permission"]);
+
+      await decide(second.id, { behavior: "allow" });
+      await second.response;
+      expect(await pendingKinds()).toEqual([]);
+    });
+
+    it("stays when the prompt is handed back to the terminal", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask();
+      await untilItemRaised();
+      await raiseIdle(sessionKey);
+      await decide(id, { behavior: "terminal" });
+      await response;
+      expect(await pendingKinds()).toEqual(["idle", "permission"]);
+    });
+
+    it("leaves another session's idle item alone", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask();
+      await untilItemRaised();
+      await raiseIdle(`ws:${workspaceId}/t2/p1`);
+      await decide(id, { behavior: "allow" });
+      await response;
+      expect(await pendingKinds()).toEqual(["idle"]);
+    });
+  });
+
   it("refuses a decision for a request that is no longer waiting", async () => {
     const res = await decide("00000000-0000-0000-0000-000000000000", { behavior: "allow" });
     expect(res.status).toBe(410);

@@ -87,8 +87,9 @@ export default function App() {
   const [headsDownItem, setHeadsDownItem] = useState<AttentionItem | null>(null);
   // A Claude session's permission prompt being answered from the modal.
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
-  // True when the modal opened by itself rather than from a click on the bell.
-  const [permissionAutoOpened, setPermissionAutoOpened] = useState(false);
+  // True when the modal opened without a click on the bell (by itself, or after
+  // the last prompt was answered), so its buttons ignore clicks for longer.
+  const [permissionOpenedUnasked, setPermissionOpenedUnasked] = useState(false);
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -345,7 +346,7 @@ export default function App() {
         if (headsDownQuestionId(item)) setHeadsDownItem(item);
         else if (item.kind === "question") setQuestionItem(item);
         else setPermissionItem(item);
-        setPermissionAutoOpened(false);
+        setPermissionOpenedUnasked(false);
         return;
       }
       void markAttention(item.id, "read");
@@ -387,7 +388,7 @@ export default function App() {
         // Claimed now: a second item can arrive before the state change commits.
         overlayOpenRef.current = true;
         openAttentionItem(item);
-        setPermissionAutoOpened(true);
+        setPermissionOpenedUnasked(true);
       }),
     [openAttentionItem],
   );
@@ -410,24 +411,34 @@ export default function App() {
       if (!next) return;
       openAttentionItem(next);
       // The pointer is still over the button that answered the last one.
-      setPermissionAutoOpened(true);
+      setPermissionOpenedUnasked(true);
     },
     [openAttentionItem],
   );
 
+  // What is on screen now. A reply can finish after the user closed its dialog
+  // or opened another, and must not close or chain from that one.
+  const questionItemRef = useRef(questionItem);
+  const permissionItemRef = useRef(permissionItem);
+  useEffect(() => {
+    questionItemRef.current = questionItem;
+    permissionItemRef.current = permissionItem;
+  }, [questionItem, permissionItem]);
+
+  // Neither marks the item resolved: the sidecar does that once nothing from the
+  // session is waiting, which the client can't check without racing a new ask.
   const finishQuestion = useCallback(() => {
     const done = questionItem;
+    if (!done || questionItemRef.current?.id !== done.id) return;
     setQuestionItem(null);
-    if (!done) return;
-    // The sidecar resolves it too; this drops it now, and covers a resolve that failed.
-    void markAttention(done.id, "resolved");
     openNextAnswerable(done);
   }, [questionItem, openNextAnswerable]);
 
   const finishPermission = useCallback(() => {
     const done = permissionItem;
+    if (!done || permissionItemRef.current?.id !== done.id) return;
     setPermissionItem(null);
-    if (done) openNextAnswerable(done);
+    openNextAnswerable(done);
   }, [permissionItem, openNextAnswerable]);
 
   const closeHeadsDown = useCallback(() => setHeadsDownItem(null), []);
@@ -576,7 +587,6 @@ export default function App() {
       <HeadsDownQuestionDialog
         item={headsDownItem}
         onClose={closeHeadsDown}
-        onDone={closeHeadsDown}
         onOpenPage={() => {
           setHeadsDownItem(null);
           navigateTo({ type: "heads-down" });
@@ -588,7 +598,7 @@ export default function App() {
         title={permissionItem?.title ?? ""}
         onClose={() => setPermissionItem(null)}
         onDone={finishPermission}
-        armingMs={permissionAutoOpened ? AUTO_OPEN_ARMING_MS : undefined}
+        armingMs={permissionOpenedUnasked ? AUTO_OPEN_ARMING_MS : undefined}
         onGoToSession={() => {
           if (!permissionItem) return;
           setPermissionItem(null);

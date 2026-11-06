@@ -45,12 +45,23 @@ export interface AttentionItem {
 /** A frame on the live stream: a changed item, or a keep-alive ping. */
 export type AttentionStreamEvent = { type: "item"; item: AttentionItem } | { type: "ping" };
 
-/** Session keys of the bell items heads-down mode raises for its questions and approvals. */
+/**
+ * Session key prefix of the bell items heads-down mode raises for its questions
+ * and approvals (`sessionKeyFor` in the sidecar's `headsDown/attention.ts`).
+ */
 const HEADS_DOWN_QUESTION_PREFIX = "heads-down:";
 
-/** The heads-down question an item stands for, or null for any other item. */
+/**
+ * The heads-down question an item stands for, or null for any other item.
+ * A coding agent's `ask_user` can pick its own session key, so its `question`
+ * items never count, however their key reads.
+ */
 export function headsDownQuestionId(item: AttentionItem): string | null {
-  if (item.source !== "system" || !item.sessionKey?.startsWith(HEADS_DOWN_QUESTION_PREFIX)) {
+  if (
+    item.source !== "system" ||
+    item.kind === "question" ||
+    !item.sessionKey?.startsWith(HEADS_DOWN_QUESTION_PREFIX)
+  ) {
     return null;
   }
   return item.sessionKey.slice(HEADS_DOWN_QUESTION_PREFIX.length) || null;

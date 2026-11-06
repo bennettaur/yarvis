@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type AttentionItem, headsDownQuestionId } from "../../lib/attention";
-import { type HeadsDownQuestion, listOpenQuestions, setToolAllowed } from "../../lib/headsDown";
+import {
+  HEADS_DOWN_CACHE_PREFIX,
+  type HeadsDownQuestion,
+  listOpenQuestions,
+  setToolAllowed,
+} from "../../lib/headsDown";
 import { invalidatePrefix } from "../../lib/resourceCache";
 import LoadingIndicator from "../LoadingIndicator";
 import QuestionCard from "./QuestionCard";
 
-/** Prefix of the Heads down page's cache keys, so it shows the answers given here. */
-const HEADS_DOWN_CACHE_PREFIX = "heads-down:";
+/** How long each question ignores clicks after it is shown, so a double click can't approve the next. */
+export const HEADS_DOWN_ARMING_MS = 400;
 
 /**
  * Answers heads-down mode's questions and approvals without leaving the
@@ -17,35 +22,42 @@ const HEADS_DOWN_CACHE_PREFIX = "heads-down:";
 export default function HeadsDownQuestionDialog({
   item,
   onClose,
-  onDone,
+  onDone = onClose,
   onOpenPage,
+  armingMs = HEADS_DOWN_ARMING_MS,
 }: {
   /** The attention row that was opened; null keeps the dialog closed. */
   item: AttentionItem | null;
   onClose: () => void;
-  /** Every open question has been answered or dismissed. */
-  onDone: () => void;
+  /** Called instead of `onClose` once every open question is answered or dismissed. */
+  onDone?: () => void;
   /** Opens the Heads down page, for a question that needs more context. */
   onOpenPage: () => void;
+  armingMs?: number;
 }) {
   const [questions, setQuestions] = useState<HeadsDownQuestion[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [armed, setArmed] = useState(false);
   const firstId = item ? headsDownQuestionId(item) : null;
+  // Only the newest load may land, and none after the dialog closes or moves to another item.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const open = await listOpenQuestions();
-      // The one the user clicked goes first; the rest keep the order they were asked in.
-      const ordered = [...open].sort(
-        (a, b) =>
-          Number(b.id === firstId) - Number(a.id === firstId) ||
-          a.createdAt.localeCompare(b.createdAt),
-      );
+      if (seq !== loadSeq.current) return null;
+      // The one the user clicked goes first; the rest go oldest first.
+      const oldestFirst = [...open].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const ordered = [
+        ...oldestFirst.filter((q) => q.id === firstId),
+        ...oldestFirst.filter((q) => q.id !== firstId),
+      ];
       setQuestions(ordered);
       setError(null);
       return ordered;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (seq === loadSeq.current) setError(e instanceof Error ? e.message : String(e));
       return null;
     }
   }, [firstId]);
@@ -54,7 +66,18 @@ export default function HeadsDownQuestionDialog({
     setQuestions(null);
     setError(null);
     if (item) void load();
+    return () => {
+      loadSeq.current++;
+    };
   }, [item, load]);
+
+  const currentId = questions?.[0]?.id;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-arm per question
+  useEffect(() => {
+    setArmed(false);
+    const timer = setTimeout(() => setArmed(true), armingMs);
+    return () => clearTimeout(timer);
+  }, [currentId]);
 
   useEffect(() => {
     if (!item) return;
@@ -72,14 +95,18 @@ export default function HeadsDownQuestionDialog({
 
   const current = questions?.[0];
 
-  const answered = async () => {
+  const showNextQuestion = async () => {
+    const seq = loadSeq.current;
     invalidatePrefix(HEADS_DOWN_CACHE_PREFIX);
     const remaining = await load();
-    if (remaining?.length === 0) onDone();
-  };
-
-  const allowTool = async (toolId: string) => {
-    await setToolAllowed(toolId, true);
+    // Closed or moved on while the reload ran.
+    if (loadSeq.current !== seq + 1) return;
+    if (remaining === null) {
+      // The reload failed: at least stop offering the question just answered.
+      setQuestions((prev) => prev?.slice(1) ?? null);
+      return;
+    }
+    if (remaining.length === 0) onDone();
   };
 
   return (
@@ -124,13 +151,18 @@ export default function HeadsDownQuestionDialog({
             <p className="text-xs text-zinc-500">Heads-down mode isn't waiting on you any more.</p>
           )}
           {current && (
-            <QuestionCard
-              // A fresh card per question, so a typed answer never carries over.
-              key={current.id}
-              question={current}
-              onAnswered={() => void answered()}
-              onAllowTool={allowTool}
-            />
+            // Inert until armed, so a click aimed at the last prompt can't answer this one.
+            <div inert={!armed} aria-busy={!armed}>
+              <QuestionCard
+                // A fresh card per question, so a typed answer never carries over.
+                key={current.id}
+                question={current}
+                onAnswered={() => void showNextQuestion()}
+                onAllowTool={async (toolId) => {
+                  await setToolAllowed(toolId, true);
+                }}
+              />
+            </div>
           )}
         </div>
 

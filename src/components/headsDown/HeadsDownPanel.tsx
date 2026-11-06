@@ -4,6 +4,7 @@ import {
   clearHeadsDown,
   getHeadsDownConfig,
   getHeadsDownState,
+  HEADS_DOWN_CACHE_KEYS,
   type HeadsDownConfig,
   type HeadsDownMessage,
   type HeadsDownPass,
@@ -39,18 +40,6 @@ import QuestionCard from "./QuestionCard";
 import RoutineList from "./RoutineList";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
-
-const CACHE_KEYS = {
-  state: "heads-down:state",
-  questions: "heads-down:questions",
-  streams: "heads-down:streams",
-  passes: "heads-down:passes",
-  messages: "heads-down:messages",
-  config: "heads-down:config",
-  allowedTools: "heads-down:allowed-tools",
-  autoApprovals: "heads-down:auto-approvals",
-  routines: "heads-down:routines",
-};
 
 const NO_QUESTIONS: HeadsDownQuestion[] = [];
 const NO_STREAMS: WorkStream[] = [];
@@ -383,21 +372,33 @@ function MessageBox({ messages, onSent }: { messages: HeadsDownMessage[]; onSent
  * chatting with the assistant elsewhere while this runs.
  */
 export default function HeadsDownPanel() {
-  const state = useCachedResource<HeadsDownState>(CACHE_KEYS.state, getHeadsDownState);
-  const questions = useCachedResource<HeadsDownQuestion[]>(CACHE_KEYS.questions, listOpenQuestions);
-  const streams = useCachedResource<WorkStream[]>(CACHE_KEYS.streams, listWorkStreams);
-  const passes = useCachedResource<HeadsDownPass[]>(CACHE_KEYS.passes, listPasses);
+  const state = useCachedResource<HeadsDownState>(HEADS_DOWN_CACHE_KEYS.state, getHeadsDownState);
+  const questions = useCachedResource<HeadsDownQuestion[]>(
+    HEADS_DOWN_CACHE_KEYS.questions,
+    listOpenQuestions,
+  );
+  const streams = useCachedResource<WorkStream[]>(HEADS_DOWN_CACHE_KEYS.streams, listWorkStreams);
+  const passes = useCachedResource<HeadsDownPass[]>(HEADS_DOWN_CACHE_KEYS.passes, listPasses);
   const messages = useCachedResource<HeadsDownMessage[]>(
-    CACHE_KEYS.messages,
+    HEADS_DOWN_CACHE_KEYS.messages,
     listHeadsDownMessages,
   );
-  const config = useCachedResource<HeadsDownConfig>(CACHE_KEYS.config, getHeadsDownConfig);
-  const allowedTools = useCachedResource<AllowedTool[]>(CACHE_KEYS.allowedTools, listAllowedTools);
+  const config = useCachedResource<HeadsDownConfig>(
+    HEADS_DOWN_CACHE_KEYS.config,
+    getHeadsDownConfig,
+  );
+  const allowedTools = useCachedResource<AllowedTool[]>(
+    HEADS_DOWN_CACHE_KEYS.allowedTools,
+    listAllowedTools,
+  );
   const autoApprovals = useCachedResource<HeadsDownQuestion[]>(
-    CACHE_KEYS.autoApprovals,
+    HEADS_DOWN_CACHE_KEYS.autoApprovals,
     listAutoApprovals,
   );
-  const routines = useCachedResource<RoutinesResponse>(CACHE_KEYS.routines, listRoutines);
+  const routines = useCachedResource<RoutinesResponse>(
+    HEADS_DOWN_CACHE_KEYS.routines,
+    listRoutines,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -491,7 +492,9 @@ export default function HeadsDownPanel() {
           <RoutineList
             data={routines.data}
             loadError={routines.error}
-            onReload={async () => primeCache(CACHE_KEYS.routines, await reloadRoutines())}
+            onReload={async () =>
+              primeCache(HEADS_DOWN_CACHE_KEYS.routines, await reloadRoutines())
+            }
           />
         </Section>
 

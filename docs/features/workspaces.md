@@ -636,7 +636,8 @@ first question. See
 
 When a workspace has several prompts or questions waiting, from different
 sessions, answering the last one in a window opens the next one in its place,
-oldest first. Closing a window with ✕ or Escape stops there; the rest wait on
+oldest first. Like a window that opens on its own, it ignores clicks for just
+over a second. Closing a window with ✕ or Escape stops there; the rest wait on
 the bell.
 
 When the prompt or question comes from a session in the workspace you have

@@ -133,7 +133,9 @@ Some details:
 - **Looking at the session doesn't clear the item.** It clears once you answer
   it here, once Claude runs a call you approved in the terminal, when the turn
   ends or you send your next prompt, or when the session finishes. A prompt you
-  deny in the terminal clears at one of the last three.
+  deny in the terminal clears at one of the last three. Answering it here also
+  clears the session's "Waiting for your input" item, which Claude Code raises
+  when a prompt sits unanswered for a while.
 - **Several prompts from one session queue up.** The window shows the oldest
   first with a count of the rest.
 - **Only the app instance that launched the session can answer it.** Another

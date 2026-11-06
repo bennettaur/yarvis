@@ -172,7 +172,7 @@ export async function clearAttentionScope(
  * a prompt sits unanswered for a while, and the session is no longer idle once
  * the prompt is answered. Returns the updated rows so the caller can publish them.
  */
-export async function resolvePermissionItems(
+export async function resolveAnsweredPromptItems(
   db: Db,
   sessionKey: string,
 ): Promise<AttentionItemRow[]> {

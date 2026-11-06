@@ -106,6 +106,17 @@ describe("nextAnswerable", () => {
     expect(next).toBeNull();
   });
 
+  it("never chains into a heads-down item that names a workspace", () => {
+    const posing = item({
+      id: "hd",
+      seq: 1,
+      source: "system",
+      kind: "info",
+      sessionKey: "heads-down:q1",
+    });
+    expect(nextAnswerable([posing, done], done)).toBeNull();
+  });
+
   it("follows nothing outside a workspace", () => {
     const loose = item({
       id: "hd",
