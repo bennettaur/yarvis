@@ -13,19 +13,19 @@ export default function MergeReviewDialog({
   review,
   more,
   onOpen,
-  onLater,
+  onDefer,
 }: {
   item: AttentionItem;
   review: MergeReview;
   /** How many other held merges are waiting behind this one. */
   more: number;
   onOpen: (item: AttentionItem) => void;
-  onLater: () => void;
+  onDefer: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const reviewRef = useRef<HTMLButtonElement>(null);
-  const first = review.prs[0];
+  const firstPr = review.prs[0];
 
   // Focus starts on Review, so Enter can't approve a merge by accident.
   useEffect(() => {
@@ -34,21 +34,21 @@ export default function MergeReviewDialog({
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      onLater();
+      onDefer();
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [onLater]);
+  }, [onDefer]);
 
   const answer = async (choice: "approve" | "deny") => {
     setBusy(true);
     setError(null);
     try {
       await answerQuestion(review.questionId, { choice });
-      if (choice === "deny" && first) {
-        const [owner, repo] = first.repo.split("/");
+      if (choice === "deny" && firstPr) {
+        const [owner, repo] = firstPr.repo.split("/");
         if (owner && repo) {
-          onOpen({ ...item, navTarget: { type: "pr", owner, repo, number: first.number } });
+          onOpen({ ...item, navTarget: { type: "pr", owner, repo, number: firstPr.number } });
         }
       }
     } catch (e) {
@@ -57,7 +57,11 @@ export default function MergeReviewDialog({
     }
   };
 
-  const label = first ? `${first.repo}#${first.number}` : "a PR";
+  const label = firstPr ? `${firstPr.repo}#${firstPr.number}` : "a PR";
+  const heading =
+    review.unchecked !== null
+      ? "Heads down wants to merge a PR it couldn't check for feedback"
+      : "Heads down wants to merge a PR with open feedback";
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -65,12 +69,12 @@ export default function MergeReviewDialog({
       <div
         role="alertdialog"
         aria-modal="true"
-        aria-label={`Heads down wants to merge ${label}, which has open feedback`}
+        aria-label={`Heads down wants to merge ${label}`}
         className="relative flex max-h-[85vh] w-[600px] max-w-full flex-col rounded-lg border-2 border-amber-500/70 bg-zinc-900 shadow-2xl"
       >
         <div className="space-y-3 overflow-y-auto px-5 py-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-amber-300">
-            Heads down wants to merge a PR with open feedback
+            {heading}
           </div>
           {review.unchecked !== null && (
             <p className="text-sm text-zinc-300">
@@ -126,9 +130,11 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
           </div>
         )}
         <p className="mt-1 text-xs text-zinc-400">
-          {pr.workspaceId
+          {pr.handedOff
             ? "Its workspace was asked to address this and left it open."
-            : "No workspace has this PR, so nobody was asked to address it."}
+            : pr.workspaceId
+              ? "Its workspace couldn't be asked to address this."
+              : "No workspace has this PR, so nobody was asked to address it."}
         </p>
       </div>
       {pr.changesRequestedBy.length > 0 && (
@@ -139,13 +145,12 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
       <ul className="space-y-2">
         {pr.threads.map((t, i) => (
           <li
-            // Threads have no stable id in the payload; their order doesn't change.
-            // biome-ignore lint/suspicious/noArrayIndexKey: see above
+            // biome-ignore lint/suspicious/noArrayIndexKey: threads have no id in the payload, and their order doesn't change
             key={i}
             className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2"
           >
             <div className="text-xs text-zinc-500">
-              {t.author}
+              <span className="text-zinc-400">Reviewer comment</span> from {t.author}
               {t.path && (
                 <>
                   {" on "}
@@ -164,8 +169,9 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
       </ul>
       {(hidden > 0 || pr.threadsTruncated) && (
         <p className="text-xs text-zinc-500">
-          {hidden > 0 ? `${hidden} more unresolved thread${hidden > 1 ? "s" : ""}` : "More threads"}{" "}
-          on the PR.
+          {hidden > 0
+            ? `${hidden} more unresolved thread${hidden > 1 ? "s" : ""} on the PR.`
+            : "The PR may have more threads that couldn't be loaded."}
         </p>
       )}
     </section>

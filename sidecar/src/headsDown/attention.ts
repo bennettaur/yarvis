@@ -25,8 +25,6 @@ export interface MergeReview {
   prs: PrFeedback[];
   /** Why the feedback couldn't be checked, when it couldn't. */
   unchecked: string | null;
-  /** The workspace the merge was told to, for a merge through a session. */
-  workspaceId: string | null;
 }
 
 /** Asks the user, and makes sure the question is in the bell. */

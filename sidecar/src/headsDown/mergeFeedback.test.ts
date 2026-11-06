@@ -7,8 +7,11 @@ import { HashEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
-import { feedbackIn, mergeFeedbackLoader } from "./mergeFeedback.ts";
-import { passApprovalHooks } from "./policy.ts";
+import { createStream, linkToStream } from "../workStreams/service.ts";
+import type { SendSessionInstructionInput } from "../workspaces/claudeSession.ts";
+import { feedbackIn, feedbackInstruction, mergeFeedbackLoader } from "./mergeFeedback.ts";
+import { buildPassTools, newPassOutcome } from "./passTools.ts";
+import { isMergeInstruction, passApprovalHooks } from "./policy.ts";
 import { answerQuestion, startRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -17,7 +20,7 @@ const db = drizzle(sql, { schema });
 const memory = new PgVectorMemoryStore(db, new HashEmbedder());
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_questions, workspaces, repos, agent_tools, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_questions, work_streams, workspaces, repos, agent_tools, attention_items, memories, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -115,6 +118,8 @@ describe("feedbackIn", () => {
 });
 
 describe("mergeFeedbackLoader", () => {
+  const subject = { repo: "acme/billing", number: 12, githubOnly: true };
+
   it("finds the feedback and the workspace that owns the PR", async () => {
     const workspaceId = await workspaceWithPr();
     const asked: PrRef[] = [];
@@ -123,44 +128,77 @@ describe("mergeFeedbackLoader", () => {
       {} as never,
       fakeSources(detail({ reviewThreads: [thread()] }), asked),
     );
-    const result = await load(mergeTool, mergeArgs);
+    const result = await load({ ...subject, repo: "ACME/Billing" });
     expect(result.unchecked).toBeNull();
-    expect(result.prs).toEqual([expect.objectContaining({ repo: "acme/billing", workspaceId })]);
+    expect(result.prs).toEqual([
+      expect.objectContaining({ repo: "acme/billing", workspaceId, handedOff: false }),
+    ]);
     expect(asked).toEqual([{ provider: "github", owner: "acme", repo: "billing", number: 12 }]);
 
-    // Told to a session, the PR is the workspace's own.
-    const viaSession = await load("send_workspace_instruction", {
-      workspaceId,
-      instruction: "merge the PR",
-    });
-    expect(viaSession.prs.map((p) => p.number)).toEqual([12]);
+    // Through a session, the PR is the workspace's own.
+    expect((await load({ workspaceId })).prs.map((p) => p.number)).toEqual([12]);
   });
 
   it("reports nothing for a PR with no open feedback", async () => {
     const load = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
-    expect(await load(mergeTool, mergeArgs)).toEqual({ prs: [], unchecked: null });
+    expect(await load(subject)).toEqual({ prs: [], unchecked: null });
   });
 
-  it("leaves the merge unchecked when the PR can't be read", async () => {
-    const load = mergeFeedbackLoader(db, {} as never, () => ({
-      error: "github token not configured",
-    }));
-    expect(await load(mergeTool, mergeArgs)).toEqual({
-      prs: [],
-      unchecked: "github token not configured",
+  it("counts threads it couldn't load as feedback", async () => {
+    const load = mergeFeedbackLoader(
+      db,
+      {} as never,
+      fakeSources(detail({ reviewThreadsTruncated: true })),
+    );
+    expect((await load(subject)).prs).toHaveLength(1);
+  });
+
+  it("leaves the merge unchecked when it can't tell or read the PR", async () => {
+    const failing = mergeFeedbackLoader(db, {} as never, () => ({ error: "no token" }));
+    expect(await failing(subject)).toEqual({ prs: [], unchecked: "no token" });
+
+    const throwing = mergeFeedbackLoader(db, {} as never, (ref) => {
+      return { ref, detail: async () => Promise.reject(new Error("boom")) } as never;
     });
+    expect((await throwing(subject)).unchecked).toBe("reading the PR failed: boom");
+
+    const any = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
+    // A number alone could be another repo's PR.
+    expect((await any({ ...subject, repo: "" })).unchecked).toContain("doesn't name");
+    expect((await any({ ...subject, repo: "acme/billing/x" })).unchecked).toContain("doesn't name");
+    // No workspace has it, and the tool may not be GitHub's.
+    expect((await any({ ...subject, githubOnly: false })).unchecked).toContain(
+      "may not be GitHub's",
+    );
   });
 });
 
 describe("merging with open feedback", () => {
   const withFeedback = () =>
     mergeFeedbackLoader(db, {} as never, fakeSources(detail({ reviewThreads: [thread()] })));
+  const sent: SendSessionInstructionInput[] = [];
+  const send = async (input: SendSessionInstructionInput) => {
+    sent.push(input);
+  };
 
-  it("hands the feedback to the workspace first, then asks the user with it shown", async () => {
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  it("isn't fooled into seeing the handoff as a merge", () => {
+    expect(isMergeInstruction(feedbackInstruction({ repo: "acme/billing", number: 12 }))).toBe(
+      false,
+    );
+  });
+
+  it("tells the workspace's session to address it first, then asks the user with it shown", async () => {
     const workspaceId = await workspaceWithPr();
     const run = await startRun(db, null);
     await allowUnattended(mergeTool);
-    const hooks = passApprovalHooks(db, run, () => {}, { mergeFeedback: withFeedback() });
+    const hooks = passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    });
 
     const first = await hooks.onRequest({
       toolCallId: "m1",
@@ -169,14 +207,20 @@ describe("merging with open feedback", () => {
       reason: null,
     });
     expect(await waitForApproval("m1", { timeoutMs: 1000 })).toBe(false);
-    expect(first?.deniedMessage).toContain(`workspaceId ${workspaceId}`);
-    expect(first?.deniedMessage).toContain("There is open review feedback on PR acme/billing#12");
+    expect(sent).toEqual([
+      expect.objectContaining({
+        workspaceId,
+        instruction: feedbackInstruction({ repo: "acme/billing", number: 12 }),
+      }),
+    ]);
+    expect(first?.deniedMessage).toContain(`handed to workspace ${workspaceId}`);
     expect(first?.deniedMessage).not.toContain("drops the retry");
     expect(await sql`SELECT 1 FROM heads_down_questions`).toHaveLength(0);
 
     // Still open on the next try: the user decides, with the feedback in the modal.
     await hooks.onRequest({ toolCallId: "m2", id: mergeTool, args: mergeArgs, reason: null });
     expect(await waitForApproval("m2", { timeoutMs: 1000 })).toBe(false);
+    expect(sent).toHaveLength(1);
     const [question] = await sql`SELECT id, question FROM heads_down_questions`;
     expect(question!.question).toBe("Merge acme/billing#12? It has open review feedback.");
     const [item] = await sql`SELECT kind, payload FROM attention_items`;
@@ -186,7 +230,7 @@ describe("merging with open feedback", () => {
         headsDownMergeReview: {
           questionId: question!.id,
           unchecked: null,
-          prs: [expect.objectContaining({ number: 12, threadCount: 1 })],
+          prs: [expect.objectContaining({ number: 12, threadCount: 1, handedOff: true })],
         },
       },
     });
@@ -194,6 +238,59 @@ describe("merging with open feedback", () => {
     await answerQuestion(db, memory, question!.id, { choice: "approve" });
     await hooks.onRequest({ toolCallId: "m3", id: mergeTool, args: mergeArgs, reason: null });
     expect(await waitForApproval("m3", { timeoutMs: 1000 })).toBe(true);
+  });
+
+  it("holds a merge told to the session too, even on a workspace it may steer", async () => {
+    const workspaceId = await workspaceWithPr();
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    const run = await startRun(db, null);
+    const hooks = passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    });
+    const args = { workspaceId, instruction: "Merge the PR now." };
+
+    await hooks.onRequest({
+      toolCallId: "s1",
+      id: "send_workspace_instruction",
+      args,
+      reason: null,
+    });
+    expect(await waitForApproval("s1", { timeoutMs: 1000 })).toBe(false);
+    expect(sent).toHaveLength(1);
+
+    // Other steering still runs while the merge is held.
+    await hooks.onRequest({
+      toolCallId: "s2",
+      id: "send_workspace_instruction",
+      args: { workspaceId, instruction: "fix CI" },
+      reason: null,
+    });
+    expect(await waitForApproval("s2", { timeoutMs: 1000 })).toBe(true);
+  });
+
+  it("hands off again in a new run, and goes to the user when the send fails", async () => {
+    await workspaceWithPr();
+    await allowUnattended(mergeTool);
+    const first = await startRun(db, null);
+    await passApprovalHooks(db, first, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    }).onRequest({ toolCallId: "r1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(1);
+    await sql`UPDATE heads_down_runs SET status = 'stopped'`;
+
+    const second = await startRun(db, null);
+    await passApprovalHooks(db, second, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: async () => {
+        throw new Error("no agent session");
+      },
+    }).onRequest({ toolCallId: "r2", id: mergeTool, args: mergeArgs, reason: null });
+    expect(await waitForApproval("r2", { timeoutMs: 1000 })).toBe(false);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item!.payload.headsDownMergeReview.prs[0].handedOff).toBe(false);
   });
 
   it("asks the user straight away when no workspace owns the PR, and stops at a no", async () => {
@@ -237,5 +334,15 @@ describe("merging with open feedback", () => {
     });
     await hooks.onRequest({ toolCallId: "m7", id: mergeTool, args: mergeArgs, reason: null });
     expect(await waitForApproval("m7", { timeoutMs: 1000 })).toBe(true);
+  });
+
+  it("won't announce a merge that is held", async () => {
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), [], withFeedback());
+    const result = await tools.announce_merge.execute!(
+      { repo: "acme/billing", number: 12, risk: "low", why: "Docs only." },
+      { toolCallId: "a1", messages: [] } as never,
+    );
+    expect(result).toMatchObject({ ok: false });
+    expect(await sql`SELECT 1 FROM attention_items`).toHaveLength(0);
   });
 });

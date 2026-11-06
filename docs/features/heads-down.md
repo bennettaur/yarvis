@@ -200,26 +200,29 @@ lower risk, since nothing ships until a release.
 ### Open review feedback
 
 Before a merge runs, it checks the PR for open review feedback: unresolved
-review threads, or a review asking for changes. A PR with feedback isn't
-merged on its own, even with a tool you allowed for heads-down mode or with
-auto mode on.
+review threads, or a review asking for changes. A merge it recognises, through
+an MCP merge tool or by telling a workspace's session to merge, doesn't go
+ahead while the PR has feedback, even with a tool you allowed for heads-down
+mode or with auto mode on. It recognises merges by the tool's name and the
+instruction's wording, so it can miss one phrased some other way.
 
-- **A workspace has the PR:** the first try tells the workspace's session to
-  address the feedback. The session fixes what it agrees with, replies on the
-  threads it won't change, and resolves what it handled. Once the session has
-  finished, a later pass tries the merge again. If every thread is resolved,
-  the merge goes ahead as usual.
-- **Feedback still open, or no workspace has the PR:** the merge waits for
-  you. A modal pops up over whatever page you have open, with the PR and each
+- **A workspace has the PR:** the first try has Yarvis tell the workspace's
+  session to address the feedback. The session fixes what it agrees with,
+  replies on the threads it won't change, and resolves what it handled. Once
+  the session has finished, a later pass tries the merge again. If every
+  thread is resolved, the merge goes ahead as usual.
+- **Feedback still open, no workspace has the PR, or the session couldn't be
+  reached:** the merge waits for you. A modal pops up over whatever page you have open, with the PR and each
   open thread: who left it, where, and what it says. Press **Approve merge**
   to let a later pass merge it, or **Review, don't merge** to stop the merge
   and open the PR. Escape puts the modal away for now; the approval still
   waits under **Needs you**.
 
-If it can't read the PR to check, for example because no GitHub token is set,
-the merge waits for you the same way, and the modal says why. Only GitHub and
-Azure DevOps PRs can be checked. The workspace gets one chance per PR each time
-you turn heads-down mode on.
+If it can't check the PR, the merge waits for you the same way, and the modal
+says why. That happens when no GitHub or Azure DevOps token is set, when the
+merge call doesn't name the PR's repo, or when no workspace has the PR and the
+merge tool isn't GitHub's. The workspace gets one chance per PR each heads-down
+run.
 
 ### Merge alerts
 

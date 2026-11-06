@@ -4,6 +4,7 @@ import type { Db } from "../db/client.ts";
 import { getStream, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
+import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -29,6 +30,8 @@ export function newPassOutcome(): PassOutcome {
  * `announcedMerges` collects the PRs this pass announced (see `mergeKey`), so
  * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
  * names the routines this pass was given; `finish_pass` records only those.
+ * `mergeFeedback` keeps a merge held for open review feedback from being
+ * announced as happening.
  */
 export function buildPassTools(
   db: Db,
@@ -36,6 +39,7 @@ export function buildPassTools(
   onAsked: () => void,
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
+  mergeFeedback?: MergeFeedbackLoader,
 ) {
   return {
     announce_merge: tool({
@@ -56,6 +60,17 @@ export function buildPassTools(
           .describe("Why you are merging it now, and why that risk level"),
       }),
       execute: async (merge) => {
+        // The merge tools can't tell which server the pass will use, so look it up on GitHub.
+        const feedback = mergeFeedback
+          ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: true })
+          : null;
+        if (holdsMerge(feedback)) {
+          return {
+            ok: false,
+            message:
+              "Not announced: the PR has open review feedback, or it couldn't be checked, so the merge won't run yet. Make the merge call anyway: it goes to the PR's workspace or the user as the rules say.",
+          };
+        }
         // Added before the alert is written, so a merge call made in the same
         // step finds it and the backstop doesn't raise a second alert.
         announcedMerges.add(mergeKey(merge.repo, merge.number));

@@ -30,19 +30,19 @@ const RISK_LABEL: Record<MergeRisk, string> = {
 export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) => void }) {
   const items = useAttentionItems();
   // Held merges put away with Escape this session; they still wait under Needs you.
-  const [later, setLater] = useState<ReadonlySet<string>>(new Set());
+  const [deferred, setDeferred] = useState<ReadonlySet<string>>(new Set());
   const reviews = useMemo(
     () =>
       items.flatMap((item) => {
-        const review = later.has(item.id) ? null : mergeReviewOf(item);
+        const review = deferred.has(item.id) ? null : mergeReviewOf(item);
         return review ? [{ item, review }] : [];
       }),
-    [items, later],
+    [items, deferred],
   );
   const currentReview = reviews[0];
-  const putAway = useCallback(() => {
+  const deferReview = useCallback(() => {
     const id = currentReview?.item.id;
-    if (id) setLater((prev) => new Set(prev).add(id));
+    if (id) setDeferred((prev) => new Set(prev).add(id));
   }, [currentReview?.item.id]);
   const merges = useMemo(
     () =>
@@ -56,6 +56,7 @@ export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) =
   const currentId = current?.item.id;
   const dismissRef = useRef<HTMLButtonElement>(null);
 
+  // While a review is up, it owns focus and Escape.
   const announcementId = currentReview ? undefined : currentId;
   // Keyed on the id, so an unrelated bell update doesn't move focus.
   useEffect(() => {
@@ -80,7 +81,7 @@ export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) =
         review={currentReview.review}
         more={reviews.length - 1}
         onOpen={onOpen}
-        onLater={putAway}
+        onDefer={deferReview}
       />
     );
   }

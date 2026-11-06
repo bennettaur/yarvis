@@ -381,7 +381,10 @@ describe("a heads-down pass", () => {
       [finish("stop")],
     );
 
-    await runPass(config, db, run, { model });
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async () => ({ prs: [], unchecked: null }),
+    });
 
     expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(
       "Merging docs PRs in acme/docs is fine any time.",

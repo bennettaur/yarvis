@@ -121,15 +121,20 @@ export function mergeAnnouncementOf(item: {
   return typeof merge.number === "number" || merge.number === null ? merge : null;
 }
 
-/** An unresolved review thread on a PR heads-down mode wants to merge. Third-party text. */
+/**
+ * An unresolved review thread on a PR heads-down mode wants to merge, as
+ * `sidecar/src/headsDown/mergeFeedback.ts` sends it. Author and body are
+ * third-party text.
+ */
 export interface FeedbackThread {
   path: string | null;
   line: number | null;
+  /** True when the code the thread was left on has since changed. */
   outdated: boolean;
   author: string;
   body: string;
+  /** How many replies follow the first comment. */
   replies: number;
-  url?: string;
 }
 
 export interface PrFeedback {
@@ -137,8 +142,12 @@ export interface PrFeedback {
   number: number;
   title: string | null;
   workspaceId: string | null;
+  /** True once heads-down mode told the workspace's session to address the feedback. */
+  handedOff: boolean;
+  /** The first few unresolved threads; `threadCount` counts them all. */
   threads: FeedbackThread[];
   threadCount: number;
+  /** True when the provider couldn't return every thread. */
   threadsTruncated: boolean;
   changesRequestedBy: string[];
 }
@@ -149,7 +158,6 @@ export interface MergeReview {
   prs: PrFeedback[];
   /** Why the feedback couldn't be checked, when it couldn't. */
   unchecked: string | null;
-  workspaceId: string | null;
 }
 
 /** The held merge an attention item asks about, if it is one. */
@@ -164,7 +172,10 @@ export function mergeReviewOf(item: {
   const review = (item.payload as { headsDownMergeReview?: MergeReview } | null)
     ?.headsDownMergeReview;
   if (!review || typeof review.questionId !== "string" || !Array.isArray(review.prs)) return null;
-  return review;
+  const wellFormed = review.prs.every(
+    (pr) => Array.isArray(pr?.threads) && Array.isArray(pr?.changesRequestedBy),
+  );
+  return wellFormed ? review : null;
 }
 
 export type WorkStreamStatus =

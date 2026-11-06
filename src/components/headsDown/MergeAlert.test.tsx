@@ -64,13 +64,13 @@ const HELD: AttentionItem = {
     headsDownMergeReview: {
       questionId: "q9",
       unchecked: null,
-      workspaceId: null,
       prs: [
         {
           repo: "acme/billing",
           number: 12,
           title: "Bill monthly",
           workspaceId: "w1",
+          handedOff: true,
           threads: [
             {
               path: "src/billing.ts",
@@ -241,6 +241,20 @@ describe("MergeAlert with a merge held for review feedback", () => {
     expect(dialog?.textContent).toContain("Changes requested by sam");
     expect(dialog?.textContent).toContain("Its workspace was asked to address this");
     expect(dialog?.textContent).not.toContain("Heads down is merging a PR");
+  });
+
+  it("says when the PR couldn't be checked, without claiming feedback", async () => {
+    pending = [
+      {
+        ...HELD,
+        payload: { headsDownMergeReview: { questionId: "q9", unchecked: "no token", prs: [] } },
+      },
+    ];
+    const host = await mount();
+    const dialog = host.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain("couldn't check for feedback");
+    expect(dialog?.textContent).toContain("no token");
+    expect(dialog?.textContent).not.toContain("with open feedback");
   });
 
   it("approves the merge", async () => {
