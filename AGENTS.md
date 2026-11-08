@@ -184,10 +184,16 @@ report there and leaves the fixes to the author.
   (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
   clear it with `resetSidecarApi` in `afterAll`, never with their own
   `mock.module` of it: that replaces the module for the whole run, so a
-  partial stub breaks whichever file loads next. The same goes for
-  `src/lib/pr/api` (`src/test/prApi.ts`'s `stubPrApi`) and `src/lib/pr/cache`
-  (`src/test/prFiles.ts`). A `spyOn` restored in `afterAll` is fine too, since
-  it ends with the file. This is the most common cause of a test that fails on
+  partial stub breaks whichever file loads next. Every module more than one
+  suite stubs works the same way, registered once in `src/test/` with
+  `passThrough.ts`: `lib/pr/api` (`prApi.ts`), `lib/pr/cache` (`prFiles.ts`),
+  `lib/workspaces` (`workspacesApi.ts`), `lib/pty` (`ptyApi.ts`), `lib/repos`
+  (`reposApi.ts`) and `lib/alarms` (`alarmFixture.ts`). Each has a `stub…`
+  function and a `reset…` for the suite's `afterAll`, and
+  `src/test/passThrough.test.ts` fails when a suite mocks one of them itself or
+  never resets. A module a second suite starts stubbing gets the same
+  treatment. A `spyOn` restored in `afterAll` is fine too, since it ends with
+  the file. This is the most common cause of a test that fails on
   CI and passes locally: CI lists the test files in a different order than a
   Mac does, so a leaked stub reaches different files there. To reproduce, run
   `bun test` with the files in the order the CI log's groups show. They render with
