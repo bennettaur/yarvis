@@ -13,7 +13,7 @@ export default function MergeReviewDialog({
   item,
   review,
   more,
-  onReview,
+  onNavigate,
   onDefer,
   armingMs = AUTO_OPEN_ARMING_MS,
 }: {
@@ -21,8 +21,8 @@ export default function MergeReviewDialog({
   review: MergeReview;
   /** How many other held merges are waiting behind this one. */
   more: number;
-  /** Opens the PR after the user chose to review it. The answer already settled the item. */
-  onReview: (target: AttentionNavTarget, title: string) => void;
+  /** Goes to the PR after the user chose to review it. The answer already settled the item. */
+  onNavigate: (target: AttentionNavTarget, title: string) => void;
   onDefer: () => void;
   /**
    * How long both buttons stay disabled after the dialog appears. It pops up
@@ -36,6 +36,7 @@ export default function MergeReviewDialog({
   const [error, setError] = useState<string | null>(null);
   const reviewRef = useRef<HTMLButtonElement>(null);
   const firstPr = review.prs[0];
+  const label = firstPr ? `${firstPr.repo}#${firstPr.number}` : "a PR";
 
   useEffect(() => {
     if (armingMs <= 0) return;
@@ -64,10 +65,13 @@ export default function MergeReviewDialog({
     setError(null);
     try {
       await answerQuestion(review.questionId, { choice });
-      if (choice === "deny" && firstPr) {
-        const [owner, repo] = firstPr.repo.split("/");
-        if (owner && repo) {
-          onReview({ type: "pr", owner, repo, number: firstPr.number }, item.title);
+      if (choice === "deny") {
+        const [owner, repo] = firstPr?.repo.split("/") ?? [];
+        // With no PR to open (one it couldn't check), the Heads down page has the merge.
+        if (firstPr && owner && repo) {
+          onNavigate({ type: "pr", owner, repo, number: firstPr.number }, label);
+        } else {
+          onNavigate({ type: "heads-down" }, item.title);
         }
       }
     } catch (e) {
@@ -76,7 +80,6 @@ export default function MergeReviewDialog({
     }
   };
 
-  const label = firstPr ? `${firstPr.repo}#${firstPr.number}` : "a PR";
   const heading =
     review.unchecked !== null
       ? "Heads down wants to merge a PR it couldn't check for feedback"

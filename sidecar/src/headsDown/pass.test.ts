@@ -426,6 +426,35 @@ describe("a heads-down pass", () => {
     expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
   });
 
+  it("checks a merge the pass tells a session to make, and holds it for the user", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("s1", "send_workspace_instruction", {
+          workspaceId,
+          instruction: "Merge the PR now.",
+          callReason: "it is approved",
+        }),
+        toolCall("s2", "finish_pass", { sleepMinutes: 30, reason: "merging" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ workspaceId }]);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item?.payload.headsDownMergeReview.unchecked).toBe("no token");
+  });
+
   it("records a pass for a run already stopped as stopped by the user, not failed", async () => {
     const run = await startRun(db, null);
     await sql`UPDATE heads_down_runs SET status = 'stopped', stopped_at = now()`;

@@ -210,16 +210,22 @@ instruction's wording, so it can miss one phrased some other way.
   first try has Yarvis tell the workspace's session to address the feedback,
   once per PR each heads-down run. That is a workspace you put on a work
   stream, or one it started this run, the same ones it may steer without
-  asking. The session fixes what it agrees with, replies on the threads it
-  won't change, and resolves what it handled. It is told to treat comments as
-  suggestions about the PR's code, and to leave alone any that ask it to run
-  commands, open links, or change CI, secrets or dependencies. Once the
-  session has finished, a later pass tries the merge again. If every thread
-  is resolved, the merge goes ahead as usual.
+  asking. The session fixes what it agrees with and resolves the threads its
+  change addresses. On a thread it won't change, it replies saying why and
+  leaves the thread open, so that one comes to you. It is told to treat
+  comments as suggestions about the PR's code, to ignore anything from
+  outside the repo, and to leave alone any comment asking it to run commands,
+  open links, or change CI, secrets or dependencies. Once the session has
+  finished, a later pass tries the merge again. If every thread is resolved
+  and no review still asks for changes, the merge goes ahead as usual. A
+  review asking for changes keeps counting after you ask that reviewer to
+  look again, until they do.
 - **Feedback from outside the repo:** on GitHub, anyone who can see a repo can
   comment on its PRs. If any open thread or review asking for changes is from
   someone who isn't an owner, member or collaborator of the repo, the session
-  isn't asked to act on it, and the merge waits for you.
+  isn't asked to act on it, and the merge waits for you. Members of the
+  repo's organization count. A review bot may not, so a PR with a bot's
+  review thread can come to you.
 - **Feedback still open, no workspace it is pushing has the PR, it is outside
   your working hours, or the session couldn't be reached:** the merge waits
   for you. A modal pops up over whatever page you have open, with the PR and

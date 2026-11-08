@@ -44,7 +44,9 @@ function thread(overrides: Partial<ReviewThread> = {}): ReviewThread {
     canReply: true,
     canResolve: true,
     canUnresolve: false,
-    comments: [{ id: "c1", author: "sam", body: "This drops the retry.", createdAt: "" }],
+    comments: [
+      { id: "c1", author: "sam", body: "This drops the retry.", createdAt: "", trusted: true },
+    ],
     ...overrides,
   };
 }
@@ -119,13 +121,38 @@ describe("feedbackIn", () => {
       detail({
         reviewThreads: [thread(), thread({ id: "t2", isResolved: true })],
         reviewers: [
-          { login: "sam", state: "changes_requested", isRequested: false, isTeam: false },
+          {
+            login: "sam",
+            state: "changes_requested",
+            isRequested: false,
+            isTeam: false,
+            trusted: true,
+          },
           { login: "kim", state: "approved", isRequested: false, isTeam: false },
         ],
       }),
     );
     expect(found.threadCount).toBe(1);
     expect(found.threads[0]).toMatchObject({ author: "sam", body: "This drops the retry." });
+    expect(found.changesRequestedBy).toEqual(["sam"]);
+    expect(found.fromOutsiders).toBe(false);
+  });
+
+  it("still counts a review asking for changes after the reviewer is asked to look again", () => {
+    const found = feedbackIn(
+      detail({
+        reviewers: [
+          {
+            login: "sam",
+            state: "pending",
+            isRequested: true,
+            isTeam: false,
+            trusted: true,
+            previousState: "changes_requested",
+          },
+        ],
+      }),
+    );
     expect(found.changesRequestedBy).toEqual(["sam"]);
     expect(found.fromOutsiders).toBe(false);
   });
@@ -143,6 +170,18 @@ describe("feedbackIn", () => {
     });
     const found = feedbackIn(detail({ title: "", reviewThreads: many }));
     expect(found.title).toBeNull();
+    const named = feedbackIn(
+      detail({
+        title: "Bill\u202emonthly",
+        reviewThreads: [thread({ path: "src/\u202ebilling.ts" })],
+        reviewers: [
+          { login: "s\u200bam", state: "changes_requested", isRequested: false, isTeam: false },
+        ],
+      }),
+    );
+    expect(named.title).toBe("Billmonthly");
+    expect(named.threads[0]!.path).toBe("src/billing.ts");
+    expect(named.changesRequestedBy).toEqual(["sam"]);
     expect(found.threadCount).toBe(25);
     expect(found.threads).toHaveLength(20);
     expect(found.threads[0]).toMatchObject({ author: "sam", outdated: true, replies: 2 });
@@ -181,6 +220,10 @@ describe("feedbackIn", () => {
       }),
     ).toBe(true);
     expect(from({ reviewThreadsTruncated: true })).toBe(true);
+    // A thread with replies that didn't load, or an author nobody vouched for.
+    expect(from({ reviewThreads: [thread({ commentsTruncated: true })] })).toBe(true);
+    const { trusted: _trusted, ...unknown } = opener;
+    expect(from({ reviewThreads: [thread({ comments: [unknown] })] })).toBe(true);
   });
 });
 
@@ -191,7 +234,13 @@ describe("feedbackSummary", () => {
         detail({
           reviewThreadsTruncated: true,
           reviewers: [
-            { login: "sam", state: "changes_requested", isRequested: false, isTeam: false },
+            {
+              login: "sam",
+              state: "changes_requested",
+              isRequested: false,
+              isTeam: false,
+              trusted: true,
+            },
           ],
         }),
       ),
@@ -243,7 +292,13 @@ describe("mergeFeedbackLoader", () => {
       fakeSources(
         detail({
           reviewers: [
-            { login: "sam", state: "changes_requested", isRequested: false, isTeam: false },
+            {
+              login: "sam",
+              state: "changes_requested",
+              isRequested: false,
+              isTeam: false,
+              trusted: true,
+            },
           ],
         }),
       ),
@@ -329,6 +384,13 @@ describe("merging with open feedback", () => {
 
   beforeEach(() => {
     sent.length = 0;
+  });
+
+  it("tells the session to leave a thread it won't change open for the user", () => {
+    const instruction = feedbackInstruction({ repo: "acme/billing", number: 12 });
+    expect(instruction).toContain("Resolve only the threads your pushed change addresses.");
+    expect(instruction).toContain("leave it open for the user");
+    expect(instruction).not.toContain("Resolve the threads you've handled");
   });
 
   it("isn't fooled into seeing the handoff as a merge", () => {
@@ -617,6 +679,29 @@ describe("merging with open feedback", () => {
     ]);
   });
 
+  it("checks a merge told to a session against the PR it names", async () => {
+    const workspaceId = await pushedWorkspace();
+    const run = await startRun(db, null);
+    const asked: MergeSubject[] = [];
+    const load = withFeedback();
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: (subject) => {
+        asked.push(subject);
+        return load(subject);
+      },
+      sendInstruction: send,
+    }).onRequest({
+      toolCallId: "n1",
+      id: "send_workspace_instruction",
+      args: { workspaceId, instruction: "Merge acme/web#5 now." },
+      reason: null,
+    });
+    expect(await waitForApproval("n1", { timeoutMs: 1000 })).toBe(false);
+    expect(asked).toEqual([{ repo: "acme/web", number: 5, githubOnly: false }]);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item!.payload.headsDownMergeReview.unchecked).toContain("may not be GitHub's");
+  });
+
   it("doesn't read the PR for a merge the run won't make anyway", async () => {
     const run = await startRun(db, null);
     const asked: MergeSubject[] = [];
@@ -632,6 +717,7 @@ describe("merging with open feedback", () => {
   });
 
   it("won't announce a merge that is held", async () => {
+    await workspaceWithPr();
     const announced = new Set<string>();
     const tools = buildPassTools(db, newPassOutcome(), () => {}, announced, [], withFeedback());
     const result = await tools.announce_merge.execute!(

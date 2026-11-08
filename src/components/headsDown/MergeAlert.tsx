@@ -91,7 +91,7 @@ export default function MergeAlert({
         item={currentReview.item}
         review={currentReview.review}
         more={reviews.length - 1}
-        onReview={onNavigate}
+        onNavigate={onNavigate}
         onDefer={deferReview}
         armingMs={armingMs}
       />

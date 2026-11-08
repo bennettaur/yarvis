@@ -532,7 +532,15 @@ describe("github client", () => {
         isTeam: false,
         trusted: true,
       },
-      { login: "alice", state: "pending", isRequested: true, isTeam: false },
+      // The earlier review is kept, so a standing request for changes isn't lost.
+      {
+        login: "alice",
+        state: "pending",
+        isRequested: true,
+        isTeam: false,
+        previousState: "commented",
+        trusted: false,
+      },
       { login: "org/frontend", state: "pending", isRequested: true, isTeam: true },
     ]);
   });

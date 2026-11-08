@@ -204,6 +204,11 @@ function sumCheckSummaries(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
  */
 const DECIDING_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
+/** Whether an author is one of the repo's own people, by GitHub's `authorAssociation`. */
+function isRepoMember(association: unknown): boolean {
+  return DECIDING_ASSOCIATIONS.has(String(association ?? ""));
+}
+
 /**
  * Collapses a PR's review list into one verdict. GitHub returns every review
  * ever submitted, in submission order, so only each reviewer's latest verdict
@@ -297,7 +302,7 @@ function toReviewers(pr: any): Reviewer[] {
       state: mapReviewState(node.state),
       isRequested: false,
       isTeam: false,
-      trusted: DECIDING_ASSOCIATIONS.has(String(node.authorAssociation ?? "")),
+      trusted: isRepoMember(node.authorAssociation),
     });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
@@ -309,11 +314,18 @@ function toReviewers(pr: any): Reviewer[] {
     // GraphQL union: User/Mannequin/Bot carry `login`, Team carries `combinedSlug`.
     const login = reviewer?.login ?? reviewer?.combinedSlug;
     if (!login) continue;
+    const earlier = byLogin.get(login);
     byLogin.set(login, {
       login,
       state: "pending",
       isRequested: true,
       isTeam: reviewer?.__typename === "Team",
+      ...(earlier
+        ? {
+            previousState: earlier.state,
+            ...(earlier.trusted === undefined ? {} : { trusted: earlier.trusted }),
+          }
+        : {}),
     });
   }
   return Array.from(byLogin.values());
@@ -412,10 +424,13 @@ export function toReviewThread(thread: any): ReviewThread {
     canReply: addressable && Boolean(thread.viewerCanReply),
     canResolve: addressable && Boolean(thread.viewerCanResolve),
     canUnresolve: addressable && Boolean(thread.viewerCanUnresolve),
+    ...((thread.comments?.totalCount ?? 0) > (thread.comments?.nodes?.length ?? 0)
+      ? { commentsTruncated: true }
+      : {}),
     comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
-      trusted: DECIDING_ASSOCIATIONS.has(String(comment.authorAssociation ?? "")),
+      trusted: isRepoMember(comment.authorAssociation),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -800,7 +815,7 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ nodes{ id author{login} authorAssociation body createdAt url } }`;
+  comments(first:100){ totalCount nodes{ id author{login} authorAssociation body createdAt url } }`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){

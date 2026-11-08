@@ -30,7 +30,6 @@ import {
   type MergeFeedbackLoader,
   type MergeFeedbackResult,
   type MergeSubject,
-  type PrFeedback,
   withHandoffs,
 } from "./mergeFeedback.ts";
 import {
@@ -370,6 +369,11 @@ async function alertUnannouncedMerge(
 /** Which PR a merge call is for, or null when the call doesn't say. */
 function mergeSubject(tool: string, args: unknown): MergeSubject | null {
   if (tool === "send_workspace_instruction") {
+    // An instruction that names a PR is checked against that PR, which may
+    // not be the workspace's own. Not looked up on GitHub unless a workspace
+    // owns it, since the session may merge it anywhere.
+    const named = namedPr(stringArg(args, "instruction") ?? "");
+    if (named) return { ...named, githubOnly: false };
     const workspaceId = stringArg(args, "workspaceId");
     return workspaceId ? { workspaceId } : null;
   }
@@ -378,6 +382,14 @@ function mergeSubject(tool: string, args: unknown): MergeSubject | null {
   // `mcp:<server>:<tool>`: only a GitHub server's PR can be looked up on GitHub.
   const server = tool.split(":")[1] ?? "";
   return { ...target, githubOnly: /github/i.test(server) };
+}
+
+/** The PR an instruction names as `owner/repo#N` or by its URL, if any. */
+function namedPr(text: string): { repo: string; number: number } | null {
+  const url = text.match(PR_URL);
+  if (url) return { repo: `${url[1]}/${url[2]}`, number: Number(url[3]) };
+  const ref = text.match(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/);
+  return ref ? { repo: ref[1] ?? "", number: Number(ref[2]) } : null;
 }
 
 /** The open feedback on what a merge call merges. A call that doesn't say which PR is unchecked. */
@@ -407,24 +419,21 @@ async function holdMerge(
 ): Promise<{ deniedMessage: string }> {
   // The handoff steers a session unasked, so only where a pass may already
   // steer one: a workspace it is pushing, within working hours.
-  let prs: PrFeedback[];
-  if (feedback.unchecked === null && withinWorkingHours) {
-    const { prs: marked, handed } = await handOffFeedback(db, run.id, feedback, {
-      send,
-      maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
-    });
-    prs = marked;
-    if (handed.length > 0) {
-      return {
-        deniedMessage: [
-          "Not run: the PR has open review feedback, so Yarvis told its workspace's session to address it.",
-          ...handed.map((pr) => `${feedbackSummary(pr)}, handed to workspace ${pr.workspaceId}.`),
-          "Don't merge on this pass, and leave the feedback to the session. Once get_workspace_activity shows it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
-        ].join("\n"),
-      };
-    }
-  } else {
-    prs = await withHandoffs(db, run.id, feedback.prs);
+  const mayHandOff = feedback.unchecked === null && withinWorkingHours;
+  const { prs, handed } = mayHandOff
+    ? await handOffFeedback(db, run.id, feedback, {
+        send,
+        maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
+      })
+    : { prs: await withHandoffs(db, run.id, feedback.prs), handed: [] };
+  if (handed.length > 0) {
+    return {
+      deniedMessage: [
+        "Not run: the PR has open review feedback, so Yarvis told its workspace's session to address it.",
+        ...handed.map((pr) => `${feedbackSummary(pr)}, handed to workspace ${pr.workspaceId}.`),
+        "Don't merge on this pass, and leave the feedback to the session. Once get_workspace_activity shows it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
+      ].join("\n"),
+    };
   }
   const prLabels = prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
   const [question, why] =
@@ -490,7 +499,8 @@ export function passApprovalHooks(
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
-        // Read live from the provider, so not for a call that won't run anyway.
+        // Read live from the provider, so skipped for a call decideCall's
+        // first checks will refuse or stop anyway.
         const feedback =
           mergeFeedback &&
           isMergeCall(id, args) &&

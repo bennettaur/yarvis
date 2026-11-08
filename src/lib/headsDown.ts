@@ -175,7 +175,11 @@ export function mergeReviewOf(item: {
     ?.headsDownMergeReview;
   if (!review || typeof review.questionId !== "string" || !Array.isArray(review.prs)) return null;
   const wellFormed = review.prs.every(
-    (pr) => Array.isArray(pr?.threads) && Array.isArray(pr?.changesRequestedBy),
+    (pr) =>
+      typeof pr?.repo === "string" &&
+      typeof pr.number === "number" &&
+      Array.isArray(pr.threads) &&
+      Array.isArray(pr.changesRequestedBy),
   );
   return wellFormed ? review : null;
 }

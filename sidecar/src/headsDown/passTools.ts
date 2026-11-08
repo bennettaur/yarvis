@@ -60,17 +60,20 @@ export function buildPassTools(
           .describe("Why you are merging it now, and why that risk level"),
       }),
       execute: async (merge) => {
-        // announce_merge can't tell which merge tool the pass will call, so a PR
-        // no workspace owns isn't looked up on GitHub here and comes back
-        // unchecked. The merge call itself is checked again when it's made.
+        // `githubOnly: false` because announce_merge can't tell which merge tool
+        // the pass will call: a PR no workspace owns comes back unchecked here.
+        // The merge call itself is checked again when it's made.
         const feedback = mergeFeedback
           ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: false })
           : null;
         if (holdsMerge(feedback)) {
+          const why =
+            feedback.unchecked !== null
+              ? "Not announced: Yarvis can't check this PR for open review feedback before the merge call."
+              : "Not announced: the PR has open review feedback, so the merge won't run yet.";
           return {
             ok: false,
-            message:
-              "Not announced: the PR has open review feedback, or it couldn't be checked, so the merge won't run yet. Make the merge call anyway: it goes to the PR's workspace or the user as the rules say.",
+            message: `${why} If the merging rules let the merge go ahead, make the merge call: it is checked then, and goes to the PR's workspace or the user.`,
           };
         }
         // Added before the alert is written, so a merge call made in the same

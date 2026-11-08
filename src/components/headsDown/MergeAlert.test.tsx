@@ -317,14 +317,29 @@ describe("MergeAlert with a merge held for review feedback", () => {
     expect(opened).toEqual([]);
   });
 
-  it("can't be answered by a click that lands as it appears", async () => {
+  it("can't be answered by a click that lands as it appears, then arms with focus on Review", async () => {
     pending = [HELD];
-    const host = await mount(60_000);
+    const host = await mount(150);
     expect(button(host, "Approve merge")?.disabled).toBe(true);
     expect(button(host, "Review, don't merge")?.disabled).toBe(true);
     button(host, "Approve merge")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await waitFor(() => button(host, "Approve merge")?.disabled === false, "the buttons to arm");
     expect(posts).toEqual([]);
+    expect(document.activeElement).toBe(button(host, "Review, don't merge") ?? null);
+    button(host, "Approve merge")?.click();
+    await waitFor(() => posts.length === 1, "the answer");
+  });
+
+  it("goes to the Heads down page on Review when there's no PR to open", async () => {
+    pending = [held("q18", {}, { unchecked: "no token", prs: [] })];
+    const host = await mount();
+    button(host, "Review, don't merge")?.click();
+    await waitFor(() => navigated.length === 1, "the page to open");
+    expect(posts).toEqual([
+      { path: "/api/heads-down/questions/q18/answer", body: { choice: "deny" } },
+    ]);
+    expect(navigated).toEqual([{ type: "heads-down" }]);
   });
 
   it("shows why an answer failed and lets the user try again", async () => {
@@ -408,6 +423,7 @@ describe("MergeAlert with a merge held for review feedback", () => {
       held("q15", {}, { prs: "acme/billing#12" }),
       held("q16", { threads: undefined }),
       held("q17", { changesRequestedBy: undefined }),
+      held("q19", { number: "12" }),
     ];
     for (const item of bad) {
       pending = [item];
