@@ -408,6 +408,60 @@ describe("openTurnStream", () => {
     expect(FakeSocket.last?.closeCalls).toBe(1);
   });
 
+  it("never asks for the microphone when stopped just as the detector answers", async () => {
+    let asked = 0;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: () => {
+          asked++;
+          return permission.promise;
+        },
+      },
+    });
+    const { h } = handlers();
+    const abort = new AbortController();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    FakeSocket.last?.accept();
+    abort.abort();
+
+    await expect(opening).rejects.toThrow(/stopped before the microphone opened/);
+    expect(asked).toBe(0);
+    expect(FakeSocket.last?.closeCalls).toBe(1);
+  });
+
+  it("says why audio capture couldn't start, and releases everything", async () => {
+    const { h, errors } = handlers();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    FakeSocket.last?.accept();
+    await settle();
+    permission.resolve(micStream());
+    workletLoaded.reject(new Error("refused by the content security policy"));
+
+    await expect(opening).rejects.toThrow(
+      /could not start audio capture: refused by the content security policy/,
+    );
+    expect(trackStops).toBe(1);
+    expect(contextsClosed).toBe(1);
+    expect(FakeSocket.last?.closeCalls).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("reports a stop, not a capture failure, when stopped while capture starts", async () => {
+    const { h, errors } = handlers();
+    const abort = new AbortController();
+    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    FakeSocket.last?.accept();
+    await settle();
+    permission.resolve(micStream());
+    await settle();
+    abort.abort();
+    workletLoaded.reject(new Error("the context was closed"));
+
+    await expect(opening).rejects.toThrow(/stopped before the microphone opened/);
+    expect(errors).toEqual([]);
+  });
+
   it("gives up on a detector that never answers once stopped", async () => {
     const { h } = handlers();
     const abort = new AbortController();

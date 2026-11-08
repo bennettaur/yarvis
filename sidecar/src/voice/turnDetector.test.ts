@@ -108,7 +108,7 @@ describe("TurnDetector", () => {
   it("reports a server that exits, and starts a fresh one on the next request", () => {
     const { detector: turns, spawned } = detector();
     turns.start();
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
 
     const failed = turns.status();
     expect(failed.state).toBe("failed");
@@ -144,7 +144,7 @@ describe("TurnDetector", () => {
   it("ignores an error from a replaced server", () => {
     const { detector: turns, spawned } = detector();
     turns.start();
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
     turns.start();
 
     spawned[0]?.child.emit("error", new Error("late failure"));
@@ -157,7 +157,7 @@ describe("TurnDetector", () => {
     turns.start();
     const stderr = spawned[0]!.child.stderr as EventEmitter;
     for (let i = 1; i <= 7; i++) stderr.emit("data", `line ${i}\n`);
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
 
     expect(warnings).toEqual([
       [
@@ -167,11 +167,70 @@ describe("TurnDetector", () => {
     ]);
   });
 
+  it("waits for the server's output to end before writing why it stopped", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("exit", 1, null);
+    (spawned[0]!.child.stderr as EventEmitter).emit("data", "RuntimeError: model load failed\n");
+    spawned[0]?.child.emit("close", 1, null);
+
+    expect(warnings).toEqual([
+      [
+        "[voice] the turn detector exited (code 1); see its log",
+        ["RuntimeError: model load failed"],
+      ],
+    ]);
+  });
+
+  it("only takes a whole line as the ready signal", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stdout = spawned[0]!.child.stdout as EventEmitter;
+    stdout.emit("data", "echo YARVIS_TURN_READY 1\nYARVIS_TURN_READY 2 done\n");
+
+    expect(turns.status().state).toBe("starting");
+    expect(turns.status().log).toEqual(["echo YARVIS_TURN_READY 1", "YARVIS_TURN_READY 2 done"]);
+  });
+
+  describe("when the sidecar exits", () => {
+    let before: ReturnType<typeof process.listeners>;
+    beforeEach(() => {
+      before = process.listeners("exit");
+    });
+    afterEach(() => {
+      for (const listener of process.listeners("exit")) {
+        if (!before.includes(listener)) process.off("exit", listener as () => void);
+      }
+    });
+    const addedHooks = () => process.listeners("exit").filter((l) => !before.includes(l));
+
+    it("kills a running server, with one hook however often it restarts", () => {
+      const { detector: turns, spawned, killed } = detector();
+      turns.start();
+      spawned[0]?.child.emit("close", 1, null);
+      turns.start();
+
+      const hooks = addedHooks();
+      expect(hooks).toHaveLength(1);
+      hooks[0]?.(0);
+      expect(killed).toEqual([spawned[1]?.child.pid as number]);
+    });
+
+    it("kills nothing once the server has stopped", () => {
+      const { detector: turns, spawned, killed } = detector();
+      turns.start();
+      spawned[0]?.child.emit("close", 0, null);
+
+      addedHooks()[0]?.(0);
+      expect(killed).toEqual([]);
+    });
+  });
+
   it("uses a new token for each server", () => {
     let n = 0;
     const { detector: turns, spawned } = detector({ newToken: () => `token-${++n}` });
     turns.start();
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
     turns.start();
     expect(spawned.map((s) => s.env.YARVIS_TURN_TOKEN)).toEqual(["token-1", "token-2"]);
   });
@@ -179,10 +238,10 @@ describe("TurnDetector", () => {
   it("ignores a replaced server's exit and ready line", () => {
     const { detector: turns, spawned } = detector();
     turns.start();
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
     turns.start();
 
-    spawned[0]?.child.emit("exit", 0, null);
+    spawned[0]?.child.emit("close", 0, null);
     const replaced = spawned[0]?.child.stdout as EventEmitter;
     replaced.emit("data", "YARVIS_TURN_READY 9999\n");
 
@@ -228,7 +287,7 @@ describe("TurnDetector", () => {
     const { detector: turns, spawned } = detector();
     turns.start();
     const first = spawned[0]?.child.stderr as EventEmitter;
-    spawned[0]?.child.emit("exit", 1, null);
+    spawned[0]?.child.emit("close", 1, null);
     first.emit("data", "ModuleNotFoundError: onnxruntime\n");
     expect(turns.status().log).toEqual(["ModuleNotFoundError: onnxruntime"]);
 

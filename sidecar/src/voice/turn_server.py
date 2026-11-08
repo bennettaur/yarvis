@@ -47,6 +47,7 @@ import hmac
 import json
 import os
 import sys
+import threading
 from collections import deque
 from urllib.parse import parse_qs, urlparse
 
@@ -270,11 +271,19 @@ def to_pcm(audio: np.ndarray) -> bytes:
     return (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
+def exit_when_stdin_closes() -> None:
+    sys.stdin.read()
+    os._exit(0)
+
+
 async def main() -> None:
     token = os.environ.get("YARVIS_TURN_TOKEN", "")
     if not token:
         sys.exit("YARVIS_TURN_TOKEN is not set")
 
+    # Watched before the models load, which takes minutes on a first start: a
+    # sidecar killed meanwhile shouldn't leave this downloading.
+    threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
     models = Models()
 
     def authorize(connection: ServerConnection, request: Request) -> Response | None:
@@ -300,7 +309,7 @@ async def main() -> None:
     ) as server:
         port = server.sockets[0].getsockname()[1]
         print(f"YARVIS_TURN_READY {port}", flush=True)
-        await asyncio.get_running_loop().run_in_executor(None, sys.stdin.read)
+        await asyncio.Future()
 
 
 if __name__ == "__main__":

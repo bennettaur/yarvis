@@ -13,6 +13,8 @@ export interface ContinuousIO {
     handlers: TurnStreamHandlers,
     signal?: AbortSignal,
   ) => Promise<TurnStream>;
+  /** Overrides `POLL_MS`, so a test needn't wait a real second per poll. */
+  detectorPollMs?: number;
 }
 
 export interface ContinuousListeningOptions {
@@ -91,7 +93,9 @@ export function useContinuousListening({
       try {
         let status = await ioRef.current.startDetector();
         while (!cancelled && status.state === "starting") {
-          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+          await new Promise((resolve) =>
+            setTimeout(resolve, ioRef.current.detectorPollMs ?? POLL_MS),
+          );
           if (cancelled) return;
           status = await ioRef.current.detectorStatus();
         }

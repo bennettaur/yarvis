@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { waitFor } from "../test/render";
 import type { TurnStreamHandlers } from "./turnStream";
 import type { TurnDetectorStatus } from "./voice";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "./voiceConfig";
@@ -23,6 +24,11 @@ let deliverUtterance: (() => void) | null = null;
 
 /** Transcriptions a test answers by hand, consumed one per call, in order. */
 const transcribeGates: Promise<string>[] = [];
+let transcribeCalls = 0;
+/** Transcriptions that have answered or thrown; the hook acts on each right after. */
+let transcriptionsDone = 0;
+/** The config `loadConfig` last answered. */
+let loadedConfig: VoiceConfig | null = null;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -51,6 +57,10 @@ const RUNNING: TurnDetectorStatus = {
 let detectorStatus: TurnDetectorStatus = RUNNING;
 /** Thrown by `startDetector`, as when the sidecar can't be reached. */
 let detectorError: Error | null = null;
+/** When set, each status poll answers with this once it resolves, like a slow sidecar. */
+let statusGate: Promise<TurnDetectorStatus> | null = null;
+let statusPolls = 0;
+let statusAnswers = 0;
 /** When set, opening the stream waits for it, like a pending permission prompt. */
 let streamOpens: Promise<void> | null = null;
 /** The handlers of the turn stream the hook opened, standing in for the detector. */
@@ -79,6 +89,7 @@ function installRecorderFakes(): void {
       this.state = "recording";
       this.ondataavailable?.({ data: new Blob(["audio"]) });
       deliverUtterance = () => {
+        deliverUtterance = null;
         this.state = "inactive";
         this.onstop?.();
       };
@@ -110,11 +121,18 @@ function installRecorderFakes(): void {
 
 const { useVoice } = await import("./useVoice");
 
-const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+type Voice = ReturnType<typeof useVoice>;
 
 interface Harness {
-  voice: ReturnType<typeof useVoice>;
+  /** The hook's result as of the latest render. */
+  voice: Voice;
+  /**
+   * Every render whose effects have run, oldest first. `id` names the props it
+   * rendered with; the hook's own effects run before the entry is added.
+   */
+  commits: { id: number; voice: Voice }[];
   sent: { text: string; source: string }[];
+  /** Renders with new props and waits for that render's effects to run. */
   rerender: (props: { streaming: string; busy: boolean; visible?: boolean }) => Promise<void>;
   unmount: () => void;
 }
@@ -123,14 +141,19 @@ interface Harness {
 async function mountVoice(initial = { streaming: "", busy: false }): Promise<Harness> {
   installRecorderFakes();
   const sent: { text: string; source: string }[] = [];
-  const harness = { sent } as Harness;
+  const harness = { sent, commits: [] as Harness["commits"] } as Harness;
 
   const io = {
     transcribe: async () => {
-      const gate = transcribeGates.shift();
-      if (gate) return gate;
-      if (transcriptResult instanceof Error) throw transcriptResult;
-      return transcriptResult;
+      transcribeCalls++;
+      try {
+        const gate = transcribeGates.shift();
+        if (gate) return await gate;
+        if (transcriptResult instanceof Error) throw transcriptResult;
+        return transcriptResult;
+      } finally {
+        transcriptionsDone++;
+      }
     },
     speak: async (request: { text: string }) => {
       spoken.push(request.text);
@@ -148,7 +171,13 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       if (detectorError) throw detectorError;
       return detectorStatus;
     },
-    detectorStatus: async () => detectorStatus,
+    detectorStatus: async () => {
+      statusPolls++;
+      const status = statusGate ? await statusGate : detectorStatus;
+      statusAnswers++;
+      return status;
+    },
+    detectorPollMs: 1,
     openStream: async (url: string, handlers: TurnStreamHandlers, signal?: AbortSignal) => {
       streamSignal = signal ?? null;
       if (streamOpens) await streamOpens;
@@ -166,7 +195,10 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       if (wavError) throw wavError;
       return recording;
     },
-    loadConfig: async () => storedConfig,
+    loadConfig: async () => {
+      loadedConfig = storedConfig;
+      return storedConfig;
+    },
     saveConfig: async (patch: Partial<VoiceConfig>) => {
       savedPatches.push(patch);
       storedConfig = { ...storedConfig, ...patch };
@@ -175,15 +207,17 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
   } as unknown as Parameters<typeof useVoice>[0]["io"];
 
   function Probe({
+    id,
     streaming,
     busy,
     visible = true,
   }: {
+    id: number;
     streaming: string;
     busy: boolean;
     visible?: boolean;
   }) {
-    harness.voice = useVoice({
+    const voice = useVoice({
       send: (text, options) => {
         if (sendError) {
           const error = sendError;
@@ -198,23 +232,53 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       visible,
       io,
     });
+    harness.voice = voice;
+    // Declared after `useVoice`, so its effects have run by the time this one does.
+    useEffect(() => {
+      harness.commits.push({ id, voice });
+    });
     return null;
   }
 
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root: Root = createRoot(host);
-  root.render(createElement(Probe, initial));
+  let renderId = 0;
+  root.render(createElement(Probe, { ...initial, id: renderId }));
   harness.rerender = async (props) => {
-    root.render(createElement(Probe, props));
-    await settle();
+    const id = ++renderId;
+    root.render(createElement(Probe, { ...props, id }));
+    await waitFor(() => (lastCommit(harness)?.id ?? -1) >= id, "the new props to render");
   };
   harness.unmount = () => {
     root.unmount();
     host.remove();
   };
-  await settle();
+  await waitFor(
+    () => loadedConfig !== null && lastCommit(harness)?.voice.config === loadedConfig,
+    "the stored config to load",
+  );
   return harness;
+}
+
+function lastCommit(harness: Harness): Harness["commits"][number] | undefined {
+  return harness.commits[harness.commits.length - 1];
+}
+
+/**
+ * Waits for the render after the first one whose effects saw `condition`. A
+ * failed start disarms the mic from an effect, and a click made before that
+ * render lands is merged into it and lost.
+ */
+async function waitForRenderAfter(
+  harness: Harness,
+  condition: (voice: Voice) => boolean,
+  what: string,
+): Promise<void> {
+  await waitFor(() => {
+    const first = harness.commits.findIndex((commit) => condition(commit.voice));
+    return first !== -1 && harness.commits.length > first + 1;
+  }, `a render after ${what}`);
 }
 
 let active: Harness | null = null;
@@ -241,6 +305,12 @@ afterEach(() => {
   finishPlayback.length = 0;
   wavError = null;
   transcribeGates.length = 0;
+  transcribeCalls = 0;
+  transcriptionsDone = 0;
+  loadedConfig = null;
+  statusGate = null;
+  statusPolls = 0;
+  statusAnswers = 0;
   setSystemTime();
 });
 
@@ -253,6 +323,13 @@ const configured: VoiceConfig = {
 };
 
 describe("useVoice", () => {
+  /** Starts push-to-talk and ends the utterance once the recorder is running. */
+  async function speakUtterance(harness: Harness): Promise<void> {
+    harness.voice.startListening();
+    await waitFor(() => deliverUtterance !== null, "the recorder to start");
+    deliverUtterance?.();
+  }
+
   it("picks up a voice activated elsewhere when the next turn starts", async () => {
     storedConfig = { ...configured };
     active = await mountVoice();
@@ -260,7 +337,10 @@ describe("useVoice", () => {
     storedConfig = { ...configured, activeVoiceId: "saved-voice" };
 
     await active.rerender({ streaming: "", busy: true });
-    expect(active.voice.config.activeVoiceId).toBe("saved-voice");
+    await waitFor(
+      () => active?.voice.config.activeVoiceId === "saved-voice",
+      "the config to reload",
+    );
   });
 
   it("reports which halves are configured", async () => {
@@ -273,10 +353,8 @@ describe("useVoice", () => {
     storedConfig = { ...configured };
     active = await mountVoice();
 
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
+    await speakUtterance(active);
+    await waitFor(() => active?.sent.length === 1, "the transcript to be sent");
 
     // The turn goes to whatever model that surface uses; the hook only supplies
     // the words and the provenance.
@@ -288,19 +366,16 @@ describe("useVoice", () => {
     active = await mountVoice();
     wavError = new Error("could not decode the recording");
 
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
-    expect(active.voice.error).toMatch(/could not decode the recording/);
+    await speakUtterance(active);
+    await waitFor(
+      () => /could not decode the recording/.test(active?.voice.error ?? ""),
+      "the decode error",
+    );
 
     wavError = null;
     sendError = new Error("session create failed");
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
-    expect(active.voice.error).toMatch(/session create failed/);
+    await speakUtterance(active);
+    await waitFor(() => /session create failed/.test(active?.voice.error ?? ""), "the send error");
   });
 
   it("doesn't send a recording cancelled while it was being transcribed", async () => {
@@ -309,13 +384,11 @@ describe("useVoice", () => {
     const pending = deferred<string>();
     transcribeGates.push(pending.promise);
 
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
+    await speakUtterance(active);
+    await waitFor(() => transcribeCalls === 1, "transcription to start");
     active.voice.cancel();
     pending.resolve("delete the branch");
-    await settle();
+    await waitFor(() => transcriptionsDone === 1, "transcription to finish");
 
     expect(active.sent).toEqual([]);
   });
@@ -325,10 +398,8 @@ describe("useVoice", () => {
     transcriptResult = "   ";
     active = await mountVoice();
 
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
+    await speakUtterance(active);
+    await waitFor(() => transcriptionsDone === 1, "transcription to finish");
 
     expect(active.sent).toEqual([]);
   });
@@ -337,12 +408,9 @@ describe("useVoice", () => {
     storedConfig = { ...DEFAULT_VOICE_CONFIG };
     active = await mountVoice();
 
-    active.voice.startListening();
-    await settle();
-    deliverUtterance?.();
-    await settle();
+    await speakUtterance(active);
+    await waitFor(() => /Settings → Voice/.test(active?.voice.error ?? ""), "the setup hint");
 
-    expect(active.voice.error).toMatch(/Settings → Voice/);
     expect(active.sent).toEqual([]);
   });
 
@@ -408,10 +476,9 @@ describe("useVoice", () => {
     active = await mountVoice();
 
     await active.voice.updateConfig({ continuous: true });
-    await settle();
+    await waitFor(() => active?.voice.config.continuous === true, "the toggle to apply");
 
     expect(savedPatches).toEqual([{ continuous: true }]);
-    expect(active.voice.config.continuous).toBe(true);
   });
 
   it("drops queued speech when the turn is cancelled", async () => {
@@ -446,22 +513,28 @@ describe("useVoice", () => {
     storedConfig = { ...configured };
     active = await mountVoice();
     active.voice.startListening();
-    await settle(250);
-    expect(active.voice.level.get()).toBeGreaterThan(0);
+    await waitFor(() => (active?.voice.level.get() ?? 0) > 0, "the level to rise");
   });
 });
 
 describe("useVoice in continuous mode", () => {
   const continuous: VoiceConfig = { ...configured, continuous: true };
   const turnAudio = () => new Blob(["pcm"], { type: "audio/wav" });
+  const STARTING: TurnDetectorStatus = { state: "starting", url: null, log: [], error: null };
 
-  async function listening(): Promise<Harness> {
+  /** Mounts in continuous mode and clicks the mic, then waits for `until`. */
+  async function listening(
+    until: (harness: Harness) => boolean = (harness) => harness.voice.recording,
+    what = "the mic to open",
+  ): Promise<Harness> {
     storedConfig = { ...continuous };
     const harness = await mountVoice();
     harness.voice.startListening();
-    await settle();
+    await waitFor(() => until(harness), what);
     return harness;
   }
+
+  const failed = (harness: Harness) => harness.voice.error !== null;
 
   it("streams to the turn detector and sends each finished turn", async () => {
     active = await listening();
@@ -469,7 +542,7 @@ describe("useVoice in continuous mode", () => {
     expect(active.voice.recording).toBe(true);
 
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the turn to be sent");
 
     expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
     // Still listening for the next turn without a click.
@@ -482,17 +555,16 @@ describe("useVoice in continuous mode", () => {
 
     transcriptResult = "and add a step";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 1, "the first turn to be held");
     transcriptResult = "for two factor auth";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 2, "the second turn to be held");
 
     expect(active.sent).toEqual([]);
-    expect(active.voice.queued).toBe(2);
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent).toEqual([{ text: "and add a step for two factor auth", source: "voice" }]);
-    expect(active.voice.queued).toBe(0);
+    await waitFor(() => active?.voice.queued === 0, "the held turns to clear");
   });
 
   it("doesn't send a turn ahead of ones already held", async () => {
@@ -501,21 +573,23 @@ describe("useVoice in continuous mode", () => {
     sendSettles = firstSend.promise;
     transcriptResult = "first";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the first turn to be sent");
     transcriptResult = "second";
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.queued).toBe(1);
+    await waitFor(() => active?.voice.queued === 1, "the second turn to be held");
 
     const third = deferred<string>();
     transcribeGates.push(third.promise);
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => transcribeCalls === 3, "the third turn to start transcribing");
     // The third transcript lands once the send has settled, but before the
     // held turn has gone out.
     firstSend.resolve(undefined);
     third.resolve("third");
-    await settle();
+    await waitFor(
+      () => active?.sent.length === 2 && active.voice.queued === 0,
+      "the held turns to go out",
+    );
 
     expect(active.sent.map((m) => m.text)).toEqual(["first", "second third"]);
   });
@@ -526,14 +600,17 @@ describe("useVoice in continuous mode", () => {
     sendSettles = firstSend.promise;
     transcriptResult = "first";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the first turn to be sent");
     transcriptResult = "second";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 1, "the second turn to be held");
 
     sendSettles = null;
     firstSend.resolve(false);
-    await settle();
+    await waitFor(
+      () => active?.sent.length === 2 && active.voice.queued === 0,
+      "the held turns to go out",
+    );
 
     expect(active.sent.map((m) => m.text)).toEqual(["first", "first second"]);
   });
@@ -544,11 +621,10 @@ describe("useVoice in continuous mode", () => {
     sendResult = false;
 
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => /dropped/.test(active?.voice.error ?? ""), "the dropped notice");
 
     expect(active.sent).toHaveLength(2);
     expect(active.voice.queued).toBe(0);
-    expect(active.voice.error).toMatch(/dropped/);
   });
 
   it("stops the spoken reply when the user starts talking, and keeps it stopped", async () => {
@@ -557,10 +633,9 @@ describe("useVoice in continuous mode", () => {
       streaming: "The build is green and the deploy finished a couple of minutes ago. ",
       busy: true,
     });
-    expect(playing).toHaveLength(1);
+    await waitFor(() => playing.length === 1, "the reply to start playing");
 
     detector?.onSpeechStart();
-    await settle();
     expect(playing[0]?.aborted).toBe(true);
 
     // The rest of the reply that was cut off isn't spoken either.
@@ -588,7 +663,6 @@ describe("useVoice in continuous mode", () => {
     // The agent is still thinking, so nothing is playing yet.
     await active.rerender({ streaming: "", busy: true });
     detector?.onSpeechStart();
-    await settle();
 
     await active.rerender({
       streaming: "The build is green and the deploy finished a couple of minutes ago. ",
@@ -599,10 +673,9 @@ describe("useVoice in continuous mode", () => {
 
   it("speaks the next reply after cutting in on a turn that ended with no text", async () => {
     active = await listening();
-    expect(active.voice.recording).toBe(true);
+    expect(detector).not.toBeNull();
     await active.rerender({ streaming: "", busy: true });
-    detector?.onSpeechStart();
-    await settle();
+    (detector as TurnStreamHandlers).onSpeechStart();
     // The turn errors or is stopped before any reply text arrives.
     await active.rerender({ streaming: "", busy: false });
 
@@ -620,7 +693,7 @@ describe("useVoice in continuous mode", () => {
     const reply = deferred<unknown>();
     sendSettles = reply.promise;
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the turn to be sent");
 
     // Hidden before the surface reports itself busy.
     active.voice.cancel();
@@ -636,22 +709,25 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     await active.rerender({ streaming: reply, busy: true });
     await active.rerender({ streaming: "", busy: false });
+    await waitFor(
+      () => active?.voice.phase === "speaking" && finishPlayback.length === 1,
+      "the reply to start playing",
+    );
     finishPlayback[0]?.();
-    await settle();
-    expect(active.voice.phase).toBe("idle");
+    await waitFor(() => active?.voice.phase === "idle", "the reply to finish");
 
     // The tail of the reply, reaching the detector after playback ended.
     detector?.onSpeechStart();
     transcriptResult = "the deploy finished a couple of minutes ago";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => transcriptionsDone === 1, "the echo to be transcribed");
     expect(active.sent).toEqual([]);
 
     // A short turn is the user's, even in the tail. Punctuation isn't a word.
     detector?.onSpeechStart();
     transcriptResult = "deploy — finished";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the short turn to be sent");
     expect(active.sent.map((m) => m.text)).toEqual(["deploy — finished"]);
 
     // Well after the reply, the same words are the user's.
@@ -659,7 +735,7 @@ describe("useVoice in continuous mode", () => {
     detector?.onSpeechStart();
     transcriptResult = "the deploy finished a couple of minutes ago";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 2, "the later turn to be sent");
     expect(active.sent.map((m) => m.text)).toEqual([
       "deploy — finished",
       "the deploy finished a couple of minutes ago",
@@ -674,6 +750,7 @@ describe("useVoice in continuous mode", () => {
     });
     // The turn ends while its last sentence is still playing.
     await active.rerender({ streaming: "", busy: false });
+    await waitFor(() => playing.length === 1, "the reply to start playing");
     expect(playing[0]?.aborted).toBe(false);
 
     await active.rerender({ streaming: "Here is the next answer, about the logs. ", busy: true });
@@ -691,12 +768,12 @@ describe("useVoice in continuous mode", () => {
     detector?.onSpeechStart();
     transcriptResult = "the deploy finished a couple of minutes ago";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => transcriptionsDone === 1, "the echo to be transcribed");
     // The user's own words, said over the reply.
     detector?.onSpeechStart();
     transcriptResult = "hold on, check the staging logs first";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 1, "the user's turn to be held");
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent.map((m) => m.text)).toEqual(["hold on, check the staging logs first"]);
@@ -706,8 +783,7 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     sendSettles = deferred<unknown>().promise;
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.sent).toHaveLength(1);
+    await waitFor(() => active?.sent.length === 1, "the turn to be sent");
 
     // Still sending: `busy` hasn't flipped yet.
     detector?.onSpeechStart();
@@ -728,12 +804,12 @@ describe("useVoice in continuous mode", () => {
     detector?.onSpeechStart();
     transcriptResult = "hold on";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 1, "the first turn to be held");
     // Nothing is playing now, so the reply's own words are the user's.
     detector?.onSpeechStart();
     transcriptResult = "the deploy finished a couple of minutes ago";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 2, "the second turn to be held");
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent.map((m) => m.text)).toEqual([
@@ -745,13 +821,13 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     await active.rerender({ streaming: "", busy: true });
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.queued).toBe(1);
+    await waitFor(() => active?.voice.queued === 1, "the turn to be held");
 
     await active.rerender({ streaming: "", busy: true, visible: false });
-    expect(streamClosed).toBe(true);
-    expect(active.voice.recording).toBe(false);
-    expect(active.voice.queued).toBe(0);
+    await waitFor(
+      () => streamClosed && active?.voice.recording === false && active.voice.queued === 0,
+      "the mic to close and the held turn to drop",
+    );
 
     await active.rerender({ streaming: "", busy: false, visible: false });
     expect(active.sent).toEqual([]);
@@ -764,18 +840,16 @@ describe("useVoice in continuous mode", () => {
 
     transcriptResult = "summarise the incident";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the first turn to be sent");
     transcriptResult = "and who was paged";
     detector?.onTurn(turnAudio());
-    await settle();
-
     // Held at once, not stuck behind the first turn's reply.
+    await waitFor(() => active?.voice.queued === 1, "the second turn to be held");
     expect(active.sent.map((m) => m.text)).toEqual(["summarise the incident"]);
-    expect(active.voice.queued).toBe(1);
 
     sendSettles = null;
     reply.resolve(true);
-    await settle();
+    await waitFor(() => active?.sent.length === 2, "the held turn to go out");
     expect(active.sent.map((m) => m.text)).toEqual(["summarise the incident", "and who was paged"]);
   });
 
@@ -783,13 +857,12 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     await active.rerender({ streaming: "", busy: true });
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.queued).toBe(1);
+    await waitFor(() => active?.voice.queued === 1, "the turn to be held");
 
     active.voice.cancel();
     await active.rerender({ streaming: "", busy: false });
+    await waitFor(() => streamClosed, "the mic to close");
 
-    expect(streamClosed).toBe(true);
     expect(active.sent).toEqual([]);
   });
 
@@ -797,12 +870,10 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     await active.rerender({ streaming: "", busy: true });
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.voice.queued === 1, "the turn to be held");
 
     active.voice.stopListening();
-    await settle();
-    expect(streamClosed).toBe(true);
-    expect(active.voice.recording).toBe(false);
+    await waitFor(() => streamClosed && active?.voice.recording === false, "the mic to close");
 
     await active.rerender({ streaming: "", busy: false });
     expect(active.sent).toEqual([{ text: "turn the build green", source: "voice" }]);
@@ -814,30 +885,34 @@ describe("useVoice in continuous mode", () => {
     expect(active.voice.level.get()).toBe(0.3);
 
     active.voice.stopListening();
-    await settle();
-    expect(active.voice.level.get()).toBe(0);
+    await waitFor(() => active?.voice.level.get() === 0, "the level to drop");
   });
 
   it("never opens the mic when cancelled while the detector is starting", async () => {
-    detectorStatus = { state: "starting", url: null, log: [], error: null };
-    active = await listening();
-    active.voice.cancel();
-    await settle();
+    detectorStatus = STARTING;
+    const poll = deferred<TurnDetectorStatus>();
+    statusGate = poll.promise;
+    active = await listening(() => statusPolls === 1, "the first status poll");
 
-    detectorStatus = RUNNING;
-    await settle(1100);
+    active.voice.cancel();
+    await waitFor(() => active?.voice.starting === false, "the cancel to tear down");
+    // The poll that was in flight comes back ready.
+    poll.resolve(RUNNING);
+    await waitFor(() => statusAnswers === 1, "the poll to answer");
+
     expect(openedUrl).toBeNull();
-    expect(active.voice.starting).toBe(false);
   });
 
   it("closes a stream that finishes opening after cancel", async () => {
     const permission = deferred<void>();
     streamOpens = permission.promise;
-    active = await listening();
-    active.voice.cancel();
+    active = await listening(() => streamSignal !== null, "the stream to start opening");
 
+    active.voice.cancel();
+    await waitFor(() => streamSignal?.aborted === true, "the cancel to tear down");
     permission.resolve();
-    await settle();
+    await waitFor(() => openedUrl !== null, "the stream to finish opening");
+
     expect(openedUrl).toBe(RUNNING.url);
     expect(streamClosed).toBe(true);
     expect(active.voice.recording).toBe(false);
@@ -845,34 +920,30 @@ describe("useVoice in continuous mode", () => {
 
   it("stops a stream that is still opening when cancelled", async () => {
     streamOpens = deferred<void>().promise;
-    active = await listening();
+    active = await listening(() => streamSignal !== null, "the stream to start opening");
     expect(streamSignal?.aborted).toBe(false);
 
     active.voice.cancel();
-    await settle();
-    expect(streamSignal?.aborted).toBe(true);
+    await waitFor(() => streamSignal?.aborted === true, "the open to be aborted");
   });
 
   it("explains a sidecar it can't reach, and tries again on the next click", async () => {
     detectorError = new Error("sidecar unreachable");
-    active = await listening();
+    active = await listening(failed, "the start to fail");
     expect(active.voice.error).toMatch(/sidecar unreachable/);
     expect(active.voice.starting).toBe(false);
     expect(active.voice.recording).toBe(false);
 
+    await waitForRenderAfter(active, (v) => v.error !== null, "the failure");
     detectorError = null;
     active.voice.startListening();
-    await settle();
-    expect(openedUrl).toBe(RUNNING.url);
+    await waitFor(() => openedUrl === RUNNING.url, "the mic to open");
   });
 
   it("closes the mic when continuous mode is switched off", async () => {
     active = await listening();
     await active.voice.updateConfig({ continuous: false });
-    await settle();
-
-    expect(streamClosed).toBe(true);
-    expect(active.voice.recording).toBe(false);
+    await waitFor(() => streamClosed && active?.voice.recording === false, "the mic to close");
   });
 
   it("explains a detector that failed to start", async () => {
@@ -882,7 +953,7 @@ describe("useVoice in continuous mode", () => {
       log: [],
       error: "uv is not installed. Install it with `brew install uv`.",
     };
-    active = await listening();
+    active = await listening(failed, "the start to fail");
 
     expect(openedUrl).toBeNull();
     expect(active.voice.error).toMatch(/uv is not installed/);
@@ -891,15 +962,15 @@ describe("useVoice in continuous mode", () => {
 
   it("starts again on the next click after a failed start", async () => {
     detectorStatus = { state: "failed", url: null, log: [], error: "no uv" };
-    active = await listening();
+    active = await listening(failed, "the start to fail");
     expect(active.voice.error).toMatch(/no uv/);
 
+    await waitForRenderAfter(active, (v) => v.error !== null, "the failure");
     detectorStatus = RUNNING;
     active.voice.startListening();
-    await settle();
+    await waitFor(() => active?.voice.recording === true, "the mic to open");
 
     expect(openedUrl).toBe(RUNNING.url);
-    expect(active.voice.recording).toBe(true);
     expect(active.voice.error).toBeNull();
   });
 
@@ -907,12 +978,13 @@ describe("useVoice in continuous mode", () => {
     active = await listening();
     sendError = new Error("session create failed");
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.error).toMatch(/session create failed/);
+    await waitFor(() => /session create failed/.test(active?.voice.error ?? ""), "the send error");
 
     detector?.onError("lost the connection to the turn detector");
-    await settle();
-    expect(active.voice.error).toBe("lost the connection to the turn detector");
+    await waitFor(
+      () => active?.voice.error === "lost the connection to the turn detector",
+      "the connection error",
+    );
   });
 
   it("closes the mic when the window is hidden", async () => {
@@ -921,9 +993,7 @@ describe("useVoice in continuous mode", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     try {
       document.dispatchEvent(new Event("visibilitychange"));
-      await settle();
-      expect(streamClosed).toBe(true);
-      expect(active.voice.recording).toBe(false);
+      await waitFor(() => streamClosed && active?.voice.recording === false, "the mic to close");
     } finally {
       if (state) Object.defineProperty(document, "visibilityState", state);
       else delete (document as { visibilityState?: string }).visibilityState;
@@ -933,28 +1003,26 @@ describe("useVoice in continuous mode", () => {
   it("starts again on the next click after the connection drops", async () => {
     active = await listening();
     detector?.onError("lost the connection to the turn detector");
-    await settle();
+    await waitForRenderAfter(active, (v) => v.error !== null, "the dropped connection");
     expect(active.voice.recording).toBe(false);
 
     openedUrl = null;
     active.voice.startListening();
-    await settle();
+    await waitFor(() => active?.voice.recording === true, "the mic to reopen");
 
     expect(openedUrl as string | null).toBe(RUNNING.url);
-    expect(active.voice.recording).toBe(true);
   });
 
   it("waits for a detector that is still starting", async () => {
-    detectorStatus = { state: "starting", url: null, log: [], error: null };
-    active = await listening();
+    detectorStatus = STARTING;
+    active = await listening(() => statusPolls > 0, "the detector to be polled");
     expect(active.voice.starting).toBe(true);
     expect(openedUrl).toBeNull();
 
     detectorStatus = RUNNING;
-    await settle(1100);
+    await waitFor(() => active?.voice.starting === false, "the detector to be ready");
 
     expect(openedUrl).toBe(RUNNING.url);
-    expect(active.voice.starting).toBe(false);
   });
 
   it("sends turns in the order spoken, even when the first transcribes slower", async () => {
@@ -964,11 +1032,11 @@ describe("useVoice in continuous mode", () => {
 
     detector?.onTurn(turnAudio());
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => transcribeCalls === 1, "the first turn to start transcribing");
     expect(active.sent).toEqual([]);
 
     first.resolve("first");
-    await settle();
+    await waitFor(() => active?.sent.length === 2, "both turns to be sent");
     expect(active.sent.map((m) => m.text)).toEqual(["first", "second"]);
   });
 
@@ -978,11 +1046,11 @@ describe("useVoice in continuous mode", () => {
     const pending = deferred<string>();
     transcribeGates.push(pending.promise);
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => transcribeCalls === 1, "transcription to start");
 
     active.voice.cancel();
     pending.resolve("stop that");
-    await settle();
+    await waitFor(() => transcriptionsDone === 1, "transcription to finish");
 
     expect(active.sent).toEqual([]);
   });
@@ -992,13 +1060,15 @@ describe("useVoice in continuous mode", () => {
     transcriptResult = new Error("speech provider unavailable");
 
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.error).toMatch(/speech provider unavailable/);
+    await waitFor(
+      () => /speech provider unavailable/.test(active?.voice.error ?? ""),
+      "the transcription error",
+    );
     expect(active.voice.recording).toBe(true);
 
     transcriptResult = "try again";
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the next turn to be sent");
     expect(active.sent.map((m) => m.text)).toEqual(["try again"]);
   });
 
@@ -1007,11 +1077,10 @@ describe("useVoice in continuous mode", () => {
     sendError = new Error("session create failed");
 
     detector?.onTurn(turnAudio());
-    await settle();
-    expect(active.voice.error).toMatch(/session create failed/);
+    await waitFor(() => /session create failed/.test(active?.voice.error ?? ""), "the send error");
 
     detector?.onTurn(turnAudio());
-    await settle();
+    await waitFor(() => active?.sent.length === 1, "the next turn to be sent");
     expect(active.sent).toHaveLength(1);
   });
 });

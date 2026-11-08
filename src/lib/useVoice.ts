@@ -48,9 +48,10 @@ import {
 const ECHO_TAIL_MS = 1500;
 
 /**
- * Fewest words a turn starting after the reply ended needs to be dropped as
- * echo. That is when the user answers the reply's closing question, and a
- * short answer like "yes" often repeats one of its words.
+ * A turn that starts just after the reply ended (within `ECHO_TAIL_MS`) is only
+ * checked for echo when it has at least this many words. That is when the user
+ * answers the reply's closing question, and a short answer like "yes" often
+ * repeats one of its words.
  */
 const ECHO_TAIL_MIN_WORDS = 3;
 
@@ -83,8 +84,8 @@ const REAL_IO: VoiceIO = {
 export interface UseVoiceOptions {
   /**
    * The surface's own send. Marked as spoken so the agent gates its writes.
-   * Returning `false` means the surface refused the turn, so it is held and
-   * retried once when the surface is free. A surface's send may only settle
+   * In continuous mode, returning `false` means the surface refused the turn,
+   * so it is held and retried once when the surface is free. A surface's send may only settle
    * once the reply has finished, so continuous mode doesn't wait on it.
    */
   send: (text: string, options: { source: "voice" }) => unknown;
@@ -395,14 +396,14 @@ export function useVoice({
   // still on its way is silenced too, even one that hasn't started speaking
   // yet, or the streaming effect would start speaking over the user.
   const handleSpeechStart = useCallback(() => {
-    const playing = queueRef.current !== null;
+    const replyQueued = queueRef.current !== null;
     // Kept to recognise this turn as the reply's own echo once transcribed,
     // including a turn that starts just after the reply ends (`ECHO_TAIL_MS`).
     const justPlayed = Date.now() - playbackEndedAtRef.current < ECHO_TAIL_MS;
-    echoReferenceRef.current = playing || justPlayed ? spokenTextRef.current : "";
-    echoTailRef.current = !playing && justPlayed;
+    echoReferenceRef.current = replyQueued || justPlayed ? spokenTextRef.current : "";
+    echoTailRef.current = !replyQueued && justPlayed;
     if (busyRef.current || sendingRef.current) silencedRef.current = true;
-    if (!playing) return;
+    if (!replyQueued) return;
     endSpeech();
     setPhase("idle");
   }, [endSpeech]);

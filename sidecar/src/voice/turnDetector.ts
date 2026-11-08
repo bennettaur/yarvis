@@ -201,7 +201,9 @@ export class TurnDetector {
           : e.message,
       );
     });
-    child.on("exit", (code, signal) => {
+    // "close", not "exit": it waits for stdout and stderr to end, so the log
+    // written beside the failure has the traceback's last lines.
+    child.on("close", (code, signal) => {
       clearTimeout(startTimer);
       if (this.child !== child) return;
       this.child = null;

@@ -12,11 +12,15 @@ needs only numpy: Silero's speech probabilities and smart-turn's verdicts are
 scripted per test instead of computed from real audio.
 """
 
+import asyncio
 import importlib.util
+import io
+import os
 import sys
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -189,6 +193,26 @@ class TokenTest(unittest.TestCase):
         self.assertFalse(ts.token_matches("/?token=abd", "abc"))
         self.assertFalse(ts.token_matches("/", "abc"))
         self.assertFalse(ts.token_matches("/?token=", "abc"))
+
+
+class StdinWatchTest(unittest.TestCase):
+    def test_exits_when_stdin_closes_while_the_models_load(self) -> None:
+        exited = threading.Event()
+
+        def slow_first_load() -> None:
+            # Stands in for a first start's download, until the server exits.
+            exited.wait(timeout=5)
+            raise SystemExit
+
+        with (
+            patch.dict(os.environ, {"YARVIS_TURN_TOKEN": "token"}),
+            patch.object(ts, "Models", side_effect=slow_first_load),
+            patch.object(sys, "stdin", io.StringIO("")),
+            patch.object(os, "_exit", side_effect=lambda _code: exited.set()),
+        ):
+            with self.assertRaises(SystemExit):
+                asyncio.run(ts.main())
+        self.assertTrue(exited.is_set())
 
 
 if __name__ == "__main__":
