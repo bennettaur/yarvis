@@ -134,8 +134,9 @@ report there and leaves the fixes to the author.
    - Caused by the PR: fix it, push, and go back to step 2.
    - A test unrelated to the PR's change: check whether it also fails on
      `main` (`gh run list --workflow ci.yml --branch main`) and run that file
-     locally. A test that passes locally but fails on CI is almost always a
-     timing assumption (see the testing conventions below). Fix the race in
+     locally, both on its own and in the file order the CI log shows. A test
+     that passes locally but fails on CI is usually a stub leaking from an
+     earlier file or a fixed delay (see the testing conventions below). Fix it in
      its own commit, so a reviewer can tell it apart from the feature. The
      fix keeps the test checking what it checked: never skip it, delete or
      loosen an assertion, raise a timeout to cover it, or edit CI config. If
@@ -182,9 +183,12 @@ report there and leaves the fixes to the author.
   clear it with `resetSidecarApi` in `afterAll`, never with their own
   `mock.module` of it: that replaces the module for the whole run, so a
   partial stub breaks whichever file loads next. The same goes for
-  `src/lib/pr/api` and `src/lib/pr/cache`, stubbed through
-  `src/test/prCommentsApi.ts` and `src/test/prFiles.ts`. A `spyOn` restored in
-  `afterAll` is fine too, since it ends with the file. They render with
+  `src/lib/pr/api` (`src/test/prApi.ts`'s `stubPrApi`) and `src/lib/pr/cache`
+  (`src/test/prFiles.ts`). A `spyOn` restored in `afterAll` is fine too, since
+  it ends with the file. This is the most common cause of a test that fails on
+  CI and passes locally: CI lists the test files in a different order than a
+  Mac does, so a leaked stub reaches different files there. To reproduce, run
+  `bun test` with the files in the order the CI log's groups show. They render with
   `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
@@ -195,8 +199,8 @@ report there and leaves the fixes to the author.
   `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
   that forgets never writes the user's real one.
 - Tests wait on the thing they assert, never on a fixed delay. CI runners are
-  several times slower than a dev Mac, so a `setTimeout(r, 20)` that always
-  passes locally fails on CI. After a click or a fetch, use `waitFor` from
+  slower than a dev Mac, so a delay that is long enough locally can be too
+  short there. After a click or a fetch, use `waitFor` from
   `src/test/render.tsx` (frontend) or an `until` polling loop like the one in
   `sidecar/src/reviewWorkspaces/routes.test.ts` (sidecar), with a condition
   naming what should have happened. Before a test ends, also wait for any
