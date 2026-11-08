@@ -28,6 +28,7 @@ let fileContent: string | null = null;
  * head commit gets.
  */
 export function setPrFileContent(text: string | null): void {
+  stubPrFiles();
   fileContent = text;
 }
 
@@ -39,6 +40,7 @@ export function setPrFiles(
   data: PrFile[] | null,
   over: Partial<Omit<FilesResource, "data">> = {},
 ): void {
+  stubPrFiles();
   filesResource = {
     data,
     error: over.error ?? null,
@@ -64,8 +66,9 @@ mock.module("../lib/pr/insights", () => insights.module);
 /**
  * Answers `usePrFiles` and `usePrFileContent` from `setPrFiles` and
  * `setPrFileContent`, and gives `PrFileDiffs`' `usePrInsights` an empty list so
- * a diff render never reaches the sidecar client. Call it at the top of a
- * suite that renders PR components, and `resetPrCache` in its `afterAll`.
+ * a diff render never reaches the sidecar client. `setPrFiles` and
+ * `setPrFileContent` call it too. Call it at the top of a suite that renders
+ * PR components, and `resetPrCache` in its `afterAll`.
  */
 export function stubPrFiles(): void {
   cache.stub({
@@ -88,6 +91,12 @@ export const stubPrCache = cache.stub;
 export function resetPrCache(): void {
   cache.reset();
   insights.reset();
-  setPrFiles(null);
+  filesResource = {
+    data: null,
+    error: null,
+    loading: false,
+    refreshing: false,
+    refresh: inertRefresh,
+  };
   fileContent = null;
 }

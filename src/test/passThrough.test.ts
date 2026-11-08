@@ -17,6 +17,12 @@ describe("passThrough", () => {
     expect(stand.module.add(1, 2)).toBe(3);
   });
 
+  it("adds a later override to the ones already set", () => {
+    stand.stub({ add: () => 10 });
+    stand.stub({ Thing: class Other {} });
+    expect(stand.module.add(1, 2)).toBe(10);
+  });
+
   it("leaves classes and values as they are", () => {
     expect(stand.module.Thing).toBe(Thing);
     expect(new stand.module.Thing()).toBeInstanceOf(Thing);
@@ -28,7 +34,7 @@ describe("passThrough", () => {
 // registration for every file after it, and one that never resets leaks its
 // overrides into them. Both fail only under some file orders, so they are
 // checked here.
-const SHARED: { module: string; helper: string; stub: RegExp; reset: string }[] = [
+const SHARED: { module: string; helper: string; stub?: RegExp; reset?: string }[] = [
   { module: "lib/pr/api", helper: "prApi.ts", stub: /stubPrApi\(/, reset: "resetPrApi" },
   {
     module: "lib/workspaces",
@@ -47,10 +53,11 @@ const SHARED: { module: string; helper: string; stub: RegExp; reset: string }[] 
   {
     module: "lib/pr/cache",
     helper: "prFiles.ts",
-    stub: /stub(PrFiles|PrCache)\(/,
+    stub: /stubPrFiles\(|stubPrCache\(|setPrFiles\(|setPrFileContent\(/,
     reset: "resetPrCache",
   },
-  { module: "lib/pr/insights", helper: "prFiles.ts", stub: /$^/, reset: "" },
+  // Stubbed only through `stubPrFiles`, so `resetPrCache` above clears it.
+  { module: "lib/pr/insights", helper: "prFiles.ts" },
 ];
 
 describe("suites stubbing a shared module", () => {
@@ -74,11 +81,14 @@ describe("suites stubbing a shared module", () => {
       expect(offenders).toEqual([]);
     });
 
-    if (shared.reset) {
+    const { stub, reset } = shared;
+    if (stub && reset) {
+      // Importing the reset isn't enough: it has to be handed to a hook or called.
+      const resetRuns = new RegExp(`after(All|Each)\\(\\s*${reset}\\b|\\b${reset}\\(\\)`);
       it(`clear their ${shared.module} overrides`, () => {
         const leaking = sources
           .filter(({ path }) => path !== join(srcDir, "test", shared.helper))
-          .filter(({ source }) => shared.stub.test(source) && !source.includes(shared.reset))
+          .filter(({ source }) => stub.test(source) && !resetRuns.test(source))
           .map(({ path }) => path);
         expect(leaking).toEqual([]);
       });
