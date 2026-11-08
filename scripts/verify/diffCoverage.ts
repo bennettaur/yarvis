@@ -10,6 +10,9 @@ import { isTestFile } from "./tier.ts";
 /** Line numbers each file gained, keyed by repo-relative path. */
 export type AddedLines = Map<string, Set<number>>;
 
+/** An inclusive range of line numbers. */
+export type LineRange = [number, number];
+
 /** Hit count per executable line, keyed by repo-relative path. */
 export type LineHits = Map<string, Map<number, number>>;
 
@@ -33,10 +36,16 @@ export type Measurement = "measured" | "not-run" | "no-tests";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".rs"];
 
-/** Reads `git diff -U0` output into the line numbers each file gained. */
-export function parseAddedLines(diff: string): AddedLines {
-  const added: AddedLines = new Map();
-  let current: Set<number> | null = null;
+/**
+ * Calls `onHunk` for each hunk of `git diff -U0` output, with the file's
+ * new-side path and the hunk's new-side start and line count. A hunk that only
+ * deletes has a count of 0 and starts at the line before the deletion.
+ */
+function forEachHunk(
+  diff: string,
+  onHunk: (path: string, start: number, count: number) => void,
+): void {
+  let current: string | null = null;
   let previous = "";
   for (const line of diff.split("\n")) {
     const afterOldHeader = previous.startsWith("--- ");
@@ -50,18 +59,41 @@ export function parseAddedLines(diff: string): AddedLines {
     if (afterOldHeader && line.startsWith("+++ ")) {
       const path = line.slice(4);
       // A deleted file's new side is /dev/null and gains nothing.
-      current = path === "/dev/null" ? null : new Set();
-      if (current) added.set(path.replace(/^b\//, ""), current);
+      current = path === "/dev/null" ? null : path.replace(/^b\//, "");
       continue;
     }
     const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-    if (hunk && current) {
-      const start = Number(hunk[1]);
-      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      for (let n = start; n < start + count; n++) current.add(n);
+    if (hunk && current !== null) {
+      onHunk(current, Number(hunk[1]), hunk[2] === undefined ? 1 : Number(hunk[2]));
     }
   }
+}
+
+/** Reads `git diff -U0` output into the line numbers each file gained. */
+export function parseAddedLines(diff: string): AddedLines {
+  const added: AddedLines = new Map();
+  forEachHunk(diff, (path, start, count) => {
+    const lines = added.get(path) ?? new Set();
+    added.set(path, lines);
+    for (let n = start; n < start + count; n++) lines.add(n);
+  });
   return added;
+}
+
+/**
+ * Where each file changed, as inclusive new-side line ranges. An added or
+ * edited line is its own range. A deletion becomes the line before it and
+ * the line after it, so it counts as inside a block only when both are.
+ */
+export function parseChangedRanges(diff: string): Map<string, LineRange[]> {
+  const changed = new Map<string, LineRange[]>();
+  forEachHunk(diff, (path, start, count) => {
+    const ranges = changed.get(path) ?? [];
+    changed.set(path, ranges);
+    if (count === 0) ranges.push([start, start + 1]);
+    for (let n = start; n < start + count; n++) ranges.push([n, n]);
+  });
+  return changed;
 }
 
 /** Reads `git diff -U0` output into each file's added lines, joined, for the tripwires. */

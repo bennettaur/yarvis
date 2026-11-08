@@ -191,7 +191,13 @@ export function buildPrCodeTools(source: PrCodeSource, graph: CodeGraph) {
         id: z.string().min(1).max(200).describe("Stable identifier, e.g. 'POST /api/orders'"),
         kind: z.string().min(1).max(60).describe("endpoint, function, table, component, …"),
         file: z.string().max(1024).optional(),
-        line: z.number().int().min(1).optional(),
+        line: z.number().int().min(1).optional().describe("First line of the code"),
+        endLine: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Last line, for code that spans several, such as a function"),
         summary: z.string().max(500).optional().describe("One sentence on what it does"),
         changed: z.boolean().optional().describe("True when this pull request changes it"),
       }),

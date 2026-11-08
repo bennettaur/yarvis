@@ -351,6 +351,13 @@
       "when": 1793575903221,
       "tag": "0049_yielding_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1793626679476,
+      "tag": "0050_volatile_black_tom",
+      "breakpoints": true
     }
   ]
 }

@@ -108,6 +108,33 @@ function isLoopbackAddress(addr: string): boolean {
   return false;
 }
 
+/** Names that always resolve to this machine. */
+function isLoopbackHostname(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host === "ip6-localhost" ||
+    host === "ip6-loopback" ||
+    // `.localhost` is guaranteed to resolve to loopback (RFC 6761).
+    host.endsWith(".localhost")
+  );
+}
+
+/**
+ * True when a URL's host is this machine, judged without DNS: a loopback
+ * literal or a name that always resolves to one. Any other name counts as
+ * remote, even one that happens to resolve to 127.0.0.1.
+ */
+export function isLoopbackUrl(input: string): boolean {
+  let host: string;
+  try {
+    host = new URL(input).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const bareHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isLoopbackAddress(bareHost) || isLoopbackHostname(host);
+}
+
 export interface OutboundUrlOptions {
   /**
    * Permit loopback destinations (127.0.0.0/8, ::1, localhost, *.localhost).
@@ -154,13 +181,7 @@ export function validateOutboundUrl(input: string, options: OutboundUrlOptions =
   }
 
   // Hostname denylist for the common non-IP forms that resolve to loopback.
-  const loopbackHost =
-    host === "localhost" ||
-    host === "ip6-localhost" ||
-    host === "ip6-loopback" ||
-    // `.localhost` is guaranteed to resolve to loopback (RFC 6761).
-    host.endsWith(".localhost");
-  if (loopbackHost && !allowLoopback) {
+  if (isLoopbackHostname(host) && !allowLoopback) {
     throw new UrlSafetyError("refusing to reach a private address");
   }
   // `.local` is mDNS / link-local discovery — another machine, not loopback —

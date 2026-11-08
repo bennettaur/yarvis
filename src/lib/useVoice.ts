@@ -103,7 +103,12 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
    */
   const armedRef = useRef(false);
 
+  // Re-read as each turn starts, not only on mount: the Chat tab stays mounted,
+  // and a voice activated or deleted on the Voice page must reach the next reply.
+  const loadedRef = useRef(false);
   useEffect(() => {
+    if (loadedRef.current && !busy) return;
+    loadedRef.current = true;
     void (async () => {
       try {
         setConfig(await ioRef.current.loadConfig());
@@ -111,7 +116,7 @@ export function useVoice({ send, streaming, busy, io = REAL_IO }: UseVoiceOption
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, []);
+  }, [busy]);
 
   const updateConfig = useCallback(async (patch: Partial<VoiceConfig>) => {
     // Applied locally first: a toggle that waits for a round trip feels broken.

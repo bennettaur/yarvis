@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch } from "./api";
+import type { SpeakRequest } from "./voice";
 
 /**
  * The speech settings, read from and written to the sidecar.
@@ -22,6 +23,11 @@ export interface VoiceConfig {
   ttsExtras: Record<string, string | number | boolean>;
   speakReplies: boolean;
   handsFree: boolean;
+  /** Saved voice replies are spoken in; blank uses the `tts*` fields. */
+  activeVoiceId: string;
+  /** Chat model the Voice Studio translates with. */
+  translationProvider: string;
+  translationModel: string;
 }
 
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
@@ -35,6 +41,9 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   ttsExtras: {},
   speakReplies: true,
   handsFree: false,
+  activeVoiceId: "",
+  translationProvider: "",
+  translationModel: "",
 };
 
 export async function getVoiceConfig(): Promise<VoiceConfig> {
@@ -58,12 +67,13 @@ export async function saveVoiceConfig(patch: Partial<VoiceConfig>): Promise<Voic
 export function voiceReadiness(config: VoiceConfig): { stt: boolean; tts: boolean } {
   return {
     stt: Boolean(config.sttProvider && config.sttModel),
-    tts: Boolean(config.ttsProvider && config.ttsModel),
+    tts: Boolean(config.activeVoiceId || (config.ttsProvider && config.ttsModel)),
   };
 }
 
 /** The synthesis arguments implied by the config, for one piece of text. */
-export function speechRequestFor(config: VoiceConfig, text: string) {
+export function speechRequestFor(config: VoiceConfig, text: string): SpeakRequest {
+  if (config.activeVoiceId) return { voiceId: config.activeVoiceId, text };
   return {
     provider: config.ttsProvider,
     model: config.ttsModel,

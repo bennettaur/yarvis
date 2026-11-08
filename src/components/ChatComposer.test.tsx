@@ -52,6 +52,38 @@ describe("ChatComposer", () => {
     expect(host.querySelector("textarea")?.disabled).toBe(true);
   });
 
+  it("stays usable while busy on a surface that queues, and Enter queues", async () => {
+    let queued = 0;
+    let sent = 0;
+    const host = await mount({
+      busy: true,
+      onStop: () => {},
+      onQueue: () => queued++,
+      onSubmit: () => sent++,
+    });
+    expect(buttons(host).map((b) => b.textContent)).toEqual(["Queue", "Stop"]);
+    const box = host.querySelector("textarea");
+    expect(box?.disabled).toBe(false);
+    box?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    buttons(host)[0]?.click();
+    expect(queued).toBe(2);
+    expect(sent).toBe(0);
+  });
+
+  it("doesn't send on Enter while busy on a surface that can't queue", async () => {
+    let sent = 0;
+    const host = await mount({ busy: true, onStop: () => {}, onSubmit: () => sent++ });
+    host
+      .querySelector("textarea")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(sent).toBe(0);
+  });
+
+  it("can't queue an empty message", async () => {
+    const host = await mount({ value: "  ", busy: true, onStop: () => {}, onQueue: () => {} });
+    expect(buttons(host)[0]?.disabled).toBe(true);
+  });
+
   it("sends on Enter, but not on another key or Shift+Enter", async () => {
     let sent = 0;
     const host = await mount({ onSubmit: () => sent++ });
