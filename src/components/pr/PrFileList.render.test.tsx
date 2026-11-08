@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
-import { prFile as file, setPrFiles } from "../../test/prFiles";
+import { prFile as file, resetPrCache, setPrFiles, stubPrFiles } from "../../test/prFiles";
 import { mountForInteraction, renderToHtml } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import { JUMP_TO_FILE_EVENT, prFileAnchorId } from "./shared";
+
+stubPrFiles();
+afterAll(resetPrCache);
 
 // Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileList } = await import("./PrFileList");

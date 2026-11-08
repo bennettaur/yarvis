@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { PtyOutput } from "../lib/pty";
+import { resetPtyApi, stubPtyApi } from "../test/ptyApi";
 import { renderToHtml } from "../test/render";
 
 const encoder = new TextEncoder();
@@ -11,8 +12,8 @@ const encoder = new TextEncoder();
 // — which is exactly what the bug leaked into the PTY on reattach.
 const QUERY_BYTES = "\x1b[c\x1b]11;?\x1b\\";
 
-// mock.module must register at top level, so the stubs record into module-scoped
-// state that beforeEach resets between tests.
+// The stubs are set once for the file, so they record into module-scoped state
+// that beforeEach resets between tests.
 let scrollbackToReturn: number[] = [];
 /** Stream offset the stubbed snapshot ends at. Defaults to covering exactly the
  * bytes it carries; set it higher to model a capture the core has trimmed. */
@@ -24,14 +25,7 @@ let ptyOutput: ((chunk: PtyOutput) => void) | null = null;
  * captured after the snapshot was cloned but before the frontend flushed. */
 let emitDuringAttach: (() => void) | null = null;
 
-// A module mock replaces `lib/pty` for the whole test run, including files that
-// only reach it transitively (e.g. the terminal tabs under WorkspacesPanel), so
-// the real exports are spread back in — a partial stub makes those files fail to
-// link on an export this file doesn't need.
-const realPty = await import("../lib/pty");
-
-mock.module("../lib/pty", () => ({
-  ...realPty,
+stubPtyApi({
   attachPty: async () => {
     emitDuringAttach?.();
     return {
@@ -51,9 +45,9 @@ mock.module("../lib/pty", () => ({
     return () => {};
   },
   onPtyExit: async () => () => {},
-}));
+});
+afterAll(resetPtyApi);
 
-// Imported after the mock is registered so the component binds to the stubs.
 const { default: TerminalPanel } = await import("./TerminalPanel");
 
 /** Mounts and lets effects/async settle, but stays mounted so a test can drive
