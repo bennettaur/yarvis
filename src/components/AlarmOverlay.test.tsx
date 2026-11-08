@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import { fakeAlarms } from "../test/alarmFixture";
+import { resetAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { mountForInteraction, renderToHtml } from "../test/render";
 
 /**
@@ -21,13 +21,14 @@ mock.module("@tauri-apps/plugin-opener", () => ({
   },
 }));
 
-mock.module("../lib/alarms", () => ({
-  ...fakeAlarms,
+stubAlarmsApi({
   acknowledgeAlarm: async (id: string) => {
     if (sidecarDown) throw new Error("sidecar unreachable");
     acknowledged.push(id);
+    return { ...baseAlarm, id, status: "acknowledged" };
   },
-}));
+});
+afterAll(resetAlarms);
 
 const AlarmOverlay = (await import("./AlarmOverlay")).default;
 
