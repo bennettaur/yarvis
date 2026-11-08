@@ -17,6 +17,7 @@ import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
+import QueuedMessages from "./QueuedMessages";
 import ToolApprovalBar from "./ToolApprovalBar";
 import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
@@ -80,6 +81,11 @@ export default function ChatPanel({
     respondApproval,
     alwaysAllow,
     send,
+    queued,
+    queueHeld,
+    enqueue,
+    removeQueued,
+    sendNextQueued,
     retry,
     rewind,
     stop,
@@ -127,12 +133,21 @@ export default function ChatPanel({
     })();
   }, [active]);
 
-  // Clear only once the turn is under way: `send` declines while the provider
-  // list is still loading, and a message that vanished without being sent is
-  // worse than a button that briefly does nothing.
+  const queue = () => {
+    if (enqueue(input)) setInput("");
+  };
+  // Cleared straight away, since the box stays usable while the reply runs and
+  // `send` only settles when it ends. The text comes back if `send` declines
+  // (the provider list may still be loading): a message that vanished without
+  // being sent is worse than a button that briefly does nothing.
+  // While anything is queued, a new message joins the back of the queue rather
+  // than jumping ahead of it.
   const submit = () => {
-    void send(input).then((sent) => {
-      if (sent) setInput("");
+    if (queued.length > 0) return queue();
+    const text = input;
+    setInput("");
+    void send(text).then((sent) => {
+      if (!sent) setInput((current) => current || text);
     });
   };
 
@@ -201,6 +216,13 @@ export default function ChatPanel({
 
       <McpConnectionBar />
 
+      <QueuedMessages
+        queued={queued.map((q) => q.text)}
+        held={queueHeld}
+        onRemove={removeQueued}
+        onSendNext={sendNextQueued}
+      />
+
       <ChatComposer
         value={input}
         onChange={setInput}
@@ -210,6 +232,7 @@ export default function ChatPanel({
         submitLabel="Send"
         maxHeight={360}
         onStop={stop}
+        onQueue={queue}
         inputRef={composerRef}
         tools={
           <>

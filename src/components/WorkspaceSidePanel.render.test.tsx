@@ -1,7 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import type { ChangedFile, WorkspaceRepoDetail, WorkspaceRepoWorktrees } from "../lib/workspaces";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import type {
+  ChangedFile,
+  WorkspaceRepoDetail,
+  WorkspaceRepoWorktrees,
+  worktreePr,
+} from "../lib/workspaces";
 import { clipboardWrites, resetClipboardWrites } from "../test/clipboard";
 import { mountForInteraction, textOf } from "../test/render";
+import { resetWorkspacesApi, stubWorkspacesApi } from "../test/workspacesApi";
 // The comments tab reads its list through this, never through the `lib/api`
 // stubs other suites leave behind.
 import "../test/reviewCommentsApi";
@@ -13,13 +19,10 @@ let worktrees: WorkspaceRepoWorktrees[] = [];
 let changesReadFrom: (string | undefined)[] = [];
 /** The worktrees a live PR lookup was asked for, and what it answers. */
 let prLookups: string[] = [];
-let prLookup: () => Promise<unknown> = async () => ({ branch: null, pr: null });
+let prLookup: () => ReturnType<typeof worktreePr> = async () => ({ branch: null, pr: null });
 
-// Only the worktree readers are stubbed; the rest of the module stays real so
-// sibling tests of `lib/workspaces` still see the actual implementations.
-const actual = await import("../lib/workspaces");
-mock.module("../lib/workspaces", () => ({
-  ...actual,
+// Only the worktree readers are stubbed; the rest of the module stays real.
+stubWorkspacesApi({
   workspaceRepoFiles: async () => files,
   workspaceRepoChanges: async (_workspaceId: string, _repoId: string, worktree?: string) => {
     changesReadFrom.push(worktree);
@@ -30,7 +33,8 @@ mock.module("../lib/workspaces", () => ({
     prLookups.push(worktree);
     return prLookup();
   },
-}));
+});
+afterAll(resetWorkspacesApi);
 
 const { default: WorkspaceSidePanel } = await import("./WorkspaceSidePanel");
 type OpenFile = import("./shell/terminalTabs/TerminalTabs").OpenFileDiff;

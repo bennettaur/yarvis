@@ -1,7 +1,7 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../../lib/alarms";
-import { fakeAlarms, resetAlarms, setAlarms } from "../../test/alarmFixture";
+import { resetAlarms, setAlarms, stubAlarmsApi } from "../../test/alarmFixture";
 import { mountForInteraction } from "../../test/render";
 
 /**
@@ -11,7 +11,7 @@ import { mountForInteraction } from "../../test/render";
  * that it lists every unhandled alarm and dismisses them one at a time.
  */
 
-mock.module("../../lib/alarms", () => fakeAlarms);
+stubAlarmsApi();
 
 const AttentionPanel = (await import("./AttentionPanel")).default;
 
