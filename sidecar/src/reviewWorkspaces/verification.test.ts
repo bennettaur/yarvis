@@ -240,6 +240,12 @@ describe("the report schema", () => {
       approach: { rating: "unrated", reason: "failed", alternative: "stray" },
     });
     expect(unrated.approach).toMatchObject({ rating: "unrated", alternative: "" });
+    const much = schema.parse({
+      summary: "s",
+      mustRead: [],
+      approach: { rating: "much-simpler", reason: "r", alternative: "Reuse it.", line: 2 },
+    });
+    expect(much.approach).toMatchObject({ alternative: "Reuse it.", line: 2 });
   });
 
   it("drops a diagram too long to render rather than cutting it", () => {

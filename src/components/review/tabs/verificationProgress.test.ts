@@ -16,9 +16,9 @@ describe("reduceProgress", () => {
       "test-reviewer",
       "flow-diagram",
     ]);
-    expect(initialProgress(["approach"]).checks.map((c) => [c.agent, c.label])).toEqual([
-      ["change-summary", "Summary and must-read files"],
-      ["approach-reviewer", "Simpler approach"],
+    expect(initialProgress(["approach"]).checks.map((c) => [c.agent, c.label, c.section])).toEqual([
+      ["change-summary", "Summary and must-read files", null],
+      ["approach-reviewer", "Simpler approach", "approach"],
     ]);
   });
 

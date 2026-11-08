@@ -25,8 +25,9 @@ The description is the author's view of the goal. Judge the goal by the
 behaviour the change delivers. A requirement the description states that the
 code doesn't need, such as extensibility for future cases or a constraint with
 no visible cause, is a claim to check, not part of the goal. So is a reason
-the description gives for rejecting an alternative: check it in the checkout
-before you let it rule that alternative out.
+for rejecting an alternative, whether the description, a review comment or
+the code gives it: check it in the checkout before you let it rule that
+alternative out.
 
 ## What counts as a simpler way
 
