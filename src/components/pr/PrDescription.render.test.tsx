@@ -10,10 +10,10 @@ import PrDescription from "./PrDescription";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 3 };
 
-/** Writes the page sent; reads of the detail are answered from `current`. */
+/** Writes the page sent; reads of the detail are answered from `current` and counted. */
 const paths: string[] = [];
-let detailReads = 0;
 let current: PrDetail;
+let detailReads = 0;
 
 // A spy, not `mock.module`, so the stub doesn't outlive this file.
 const sidecarFetch = spyOn(sidecar, "sidecarFetch").mockImplementation(async (path: string) => {
@@ -89,8 +89,8 @@ describe("PrDescription comments", () => {
     const readsBefore = detailReads;
     button(host, "Resolve")?.click();
     await waitFor(() => button(host, "Unresolve") !== undefined, "the Unresolve button");
-    // Resolving refetches the detail. Left in flight, it lands after the spy is
-    // restored and renders whatever the real client answers.
+    // Resolving refetches the detail. A refetch not yet sent when the file ends
+    // goes to the real client once the spy is restored.
     await waitFor(() => detailReads > readsBefore, "the detail refetch");
     expect(paths).toContain("/api/github/pr/octo/repo/3/threads/PRRT_9/resolve");
   });

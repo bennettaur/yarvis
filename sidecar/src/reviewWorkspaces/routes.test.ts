@@ -1141,6 +1141,7 @@ describe("re-review summary", () => {
         ],
       },
     });
+    // Records are moved into place whole, as in the verification fake.
     const program = fakeClaude(
       fakeDir,
       "claude",
