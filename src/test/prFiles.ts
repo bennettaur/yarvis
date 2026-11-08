@@ -1,5 +1,6 @@
 import { mock } from "bun:test";
 import type { PrFile } from "../lib/pr/types";
+import { passThrough } from "./passThrough";
 
 interface FilesResource {
   data: PrFile[] | null;
@@ -27,6 +28,7 @@ let fileContent: string | null = null;
  * head commit gets.
  */
 export function setPrFileContent(text: string | null): void {
+  stubPrFiles();
   fileContent = text;
 }
 
@@ -38,6 +40,7 @@ export function setPrFiles(
   data: PrFile[] | null,
   over: Partial<Omit<FilesResource, "data">> = {},
 ): void {
+  stubPrFiles();
   filesResource = {
     data,
     error: over.error ?? null,
@@ -52,32 +55,48 @@ export function prFile(filename: string, over: Partial<PrFile> = {}): PrFile {
   return { filename, status: "modified", additions: 1, deletions: 0, patch: null, ...over };
 }
 
-// `mock.module` is process-global in bun, so the stub for `lib/pr/cache` has to
-// be registered exactly once for the whole run — two test files each installing
-// their own would race, and the loser would read the winner's file set. Every
-// test that renders a PR component imports this module instead. The rest of the
-// cache's exports pass through untouched so tests of those still see the real
-// implementations.
-const actualCache = await import("../lib/pr/cache");
-mock.module("../lib/pr/cache", () => ({
-  ...actualCache,
-  usePrFiles: () => filesResource,
-  usePrFileContent: (_ref: unknown, _path: string, sha: string, enabled: boolean) => ({
-    data: enabled && sha ? fileContent : null,
+// `lib/pr/cache` and `lib/pr/insights` are registered once here, passing
+// through to the real modules (see `passThrough.ts`), so other files see the
+// real cache unless they ask for these stubs.
+const cache = passThrough({ ...(await import("../lib/pr/cache")) });
+mock.module("../lib/pr/cache", () => cache.module);
+const insights = passThrough({ ...(await import("../lib/pr/insights")) });
+mock.module("../lib/pr/insights", () => insights.module);
+
+/**
+ * Answers `usePrFiles` and `usePrFileContent` from `setPrFiles` and
+ * `setPrFileContent`, and gives `PrFileDiffs`' `usePrInsights` an empty list so
+ * a diff render never reaches the sidecar client. `setPrFiles` and
+ * `setPrFileContent` call it too. Call it at the top of a suite that renders
+ * PR components, and `resetPrCache` in its `afterAll`.
+ */
+export function stubPrFiles(): void {
+  cache.stub({
+    usePrFiles: () => filesResource,
+    usePrFileContent: (_ref, _path, sha, enabled) => ({
+      data: enabled && sha ? fileContent : null,
+      error: null,
+      loading: false,
+      refreshing: false,
+      refresh: inertRefresh,
+    }),
+  });
+  insights.stub({ fetchPrInsights: async () => [] });
+}
+
+/** Overrides for other `lib/pr/cache` exports; they last until `resetPrCache`. */
+export const stubPrCache = cache.stub;
+
+/** Clears every override and the file set and content `stubPrFiles` serves. */
+export function resetPrCache(): void {
+  cache.reset();
+  insights.reset();
+  filesResource = {
+    data: null,
     error: null,
     loading: false,
-  }),
-}));
-
-// `PrFileDiffs` mounts `usePrInsights`, which loads through `lib/pr/insights`.
-// Stub the one call so a diff render never reaches the sidecar client.
-//
-// This registration is process-global like the one above, so a future test of
-// the real `fetchPrInsights` would be stubbed out merely by sharing a process
-// with something that imports this helper. Nothing exercises it today; if that
-// changes, the stub belongs behind an opt-in rather than at import time.
-const actualInsights = await import("../lib/pr/insights");
-mock.module("../lib/pr/insights", () => ({
-  ...actualInsights,
-  fetchPrInsights: async () => [],
-}));
+    refreshing: false,
+    refresh: inertRefresh,
+  };
+  fileContent = null;
+}

@@ -6,6 +6,7 @@ import {
   mergeLineHits,
   parseAddedLines,
   parseAddedText,
+  parseChangedRanges,
   parseLcov,
 } from "./diffCoverage.ts";
 
@@ -38,6 +39,18 @@ describe("parseAddedLines", () => {
 
   it("skips deleted files", () => {
     expect(parseAddedLines(DIFF).has("src/gone.ts")).toBe(false);
+  });
+});
+
+describe("parseChangedRanges", () => {
+  it("gives each added line and the two lines around a deletion", () => {
+    const diff =
+      "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -3,0 +4,2 @@\n+a\n+b\n@@ -9,2 +10,0 @@\n-c\n-d\n";
+    expect(parseChangedRanges(diff).get("x.ts")).toEqual([
+      [4, 4],
+      [5, 5],
+      [10, 11],
+    ]);
   });
 });
 
