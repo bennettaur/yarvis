@@ -1,11 +1,11 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
 import type { HealthResponse } from "../lib/api";
-import * as realChat from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
+import { resetChatApi, stubChatApi } from "../test/chatApi";
 import { mountForInteraction, textOf } from "../test/render";
 import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
@@ -107,11 +107,9 @@ mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, tok
 
 /**
  * The turn itself is faked at `streamChat` rather than at the socket, so the
- * test scripts chat events instead of SSE frames. `OmniChat.test.tsx` stubs it
- * the same way; each file sets its stub as it loads, so neither runs on the other's.
+ * test scripts chat events instead of SSE frames.
  */
-mock.module("../lib/chat", () => ({
-  ...realChat,
+stubChatApi({
   streamChat: async function* (req: Record<string, unknown>, init: { signal?: AbortSignal } = {}) {
     sent.push(req);
     for (const event of scripted) {
@@ -133,14 +131,12 @@ mock.module("../lib/chat", () => ({
       }
       yield event;
     }
-  },
-}));
+  } as unknown as typeof import("../lib/chat").streamChat,
+});
 
 /**
  * The turn machine on its own, for what the Chat tab has no affordance to
- * drive — a spoken turn. `lib/chat` is already stubbed for this file. The hook
- * has no test file of its own: a file that loads it without stubbing `lib/chat`
- * gets whichever stub an earlier file left behind.
+ * drive — a spoken turn, over the `streamChat` stub above.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
 /** What the harness reports as on screen, as Omni Chat would. */
@@ -188,7 +184,7 @@ let unmount: (() => void) | null = null;
 
 afterAll(() => {
   resetSidecarApi();
-  mock.module("../lib/chat", () => realChat);
+  resetChatApi();
 });
 
 afterEach(() => {

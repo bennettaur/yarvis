@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
-import * as realChat from "../../lib/chat";
-import { mountForInteraction, textOf } from "../../test/render";
+import { resetChatApi, stubChatApi } from "../../test/chatApi";
+import { mountForInteraction, textOf, waitFor } from "../../test/render";
 import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import OmniChat from "./OmniChat";
 
@@ -70,28 +70,32 @@ stubSidecarApi({
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, token: "t" }) }));
 
-mock.module("../../lib/chat", () => ({
-  ...realChat,
+stubChatApi({
   streamChat: async function* () {
     for (const event of scripted) yield event;
-  },
-}));
+  } as typeof import("../../lib/chat").streamChat,
+});
 
-const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
+const sendButton = (host: HTMLElement) =>
+  Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Send");
 
 async function say(host: HTMLElement, text: string) {
+  await waitFor(() => host.querySelector("textarea") !== null, "the composer");
   const box = host.querySelector("textarea")!;
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set as (
     v: string,
   ) => void;
   setter.call(box, text);
   box.dispatchEvent(new Event("input", { bubbles: true }));
-  await settle(20);
-  Array.from(host.querySelectorAll("button"))
-    .find((b) => b.textContent === "Send")
-    ?.click();
-  await settle();
+  await waitFor(() => sendButton(host)?.disabled === false, "Send to be enabled");
+  sendButton(host)?.click();
 }
+
+const artifactLink = (host: HTMLElement) =>
+  Array.from(host.querySelectorAll("a")).find(
+    (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
+  );
+const paneOf = (host: HTMLElement) => host.querySelector('[aria-label="Artifact: Launch plan"]');
 
 let unmount: (() => void) | null = null;
 
@@ -104,7 +108,7 @@ afterEach(() => {
 
 afterAll(() => {
   resetSidecarApi();
-  mock.module("../../lib/chat", () => realChat);
+  resetChatApi();
 });
 
 describe("OmniChat", () => {
@@ -117,19 +121,19 @@ describe("OmniChat", () => {
       createElement(OmniChat, { open: true, onClose: () => {}, onAttention: () => {} }),
     );
     unmount = mounted.unmount;
-    await settle();
     await say(mounted.host, "write a launch plan");
 
-    Array.from(mounted.host.querySelectorAll("a"))
-      .find((a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`)
-      ?.click();
-    await settle();
-    const pane = mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
-    expect(pane?.textContent).toContain("Ship it on Thursday.");
+    await waitFor(() => artifactLink(mounted.host) !== undefined, "the reply's artifact link");
+    artifactLink(mounted.host)?.click();
+    await waitFor(
+      () => paneOf(mounted.host)?.textContent?.includes("Ship it on Thursday.") === true,
+      "the artifact in the pane",
+    );
     expect(textOf(mounted.host.innerHTML)).toContain("Wrote it up");
 
-    pane?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')?.click();
-    await settle();
-    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+    paneOf(mounted.host)
+      ?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')
+      ?.click();
+    await waitFor(() => paneOf(mounted.host) === null, "the pane to close");
   });
 });
