@@ -1,6 +1,6 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { fakeAlarms, fireAlarm, resetAlarms, setAlarms } from "../test/alarmFixture";
+import { fakeAlarms, fireAlarm, resetAlarms, setAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { mountForInteraction } from "../test/render";
 import type { Alarm } from "./alarms";
 
@@ -16,8 +16,7 @@ let failNextList = false;
 /** Holds the next `listAlarms` open so a later read can overtake it. */
 let delayNextListMs = 0;
 
-mock.module("./alarms", () => ({
-  ...fakeAlarms,
+stubAlarmsApi({
   listAlarms: async () => {
     if (failNextList) {
       failNextList = false;
@@ -33,7 +32,7 @@ mock.module("./alarms", () => ({
     }
     return result;
   },
-}));
+});
 
 const { acknowledgeAlarm, refreshAlarms, snoozeAlarm, useAlarmTakeoverQueue, useRingingAlarms } =
   await import("./alarmStore");
