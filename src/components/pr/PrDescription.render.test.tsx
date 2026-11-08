@@ -4,7 +4,7 @@ import * as sidecar from "../../lib/api";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail, PrRef } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
-import { mountForInteraction } from "../../test/render";
+import { mountForInteraction, waitFor } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import PrDescription from "./PrDescription";
 
@@ -12,11 +12,15 @@ const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 
 
 /** Writes the page sent; reads of the detail are answered from `current`. */
 const paths: string[] = [];
+let detailReads = 0;
 let current: PrDetail;
 
 // A spy, not `mock.module`, so the stub doesn't outlive this file.
 const sidecarFetch = spyOn(sidecar, "sidecarFetch").mockImplementation(async (path: string) => {
-  if (path.endsWith("/detail")) return new Response(JSON.stringify(current), { status: 200 });
+  if (path.endsWith("/detail")) {
+    detailReads++;
+    return new Response(JSON.stringify(current), { status: 200 });
+  }
   paths.push(path);
   return new Response(JSON.stringify({ ok: true }), { status: 200 });
 });
@@ -82,10 +86,13 @@ describe("PrDescription comments", () => {
     expect(host.textContent).toContain("this moved");
     expect(host.textContent).toContain("outdated");
 
+    const readsBefore = detailReads;
     button(host, "Resolve")?.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => button(host, "Unresolve") !== undefined, "the Unresolve button");
+    // Resolving refetches the detail. Left in flight, it lands after the spy is
+    // restored and renders whatever the real client answers.
+    await waitFor(() => detailReads > readsBefore, "the detail refetch");
     expect(paths).toContain("/api/github/pr/octo/repo/3/threads/PRRT_9/resolve");
-    expect(button(host, "Unresolve")).toBeDefined();
   });
 
   it("says when not every thread could be loaded", async () => {

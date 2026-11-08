@@ -116,6 +116,41 @@ bundle is unsigned or its seal is broken, and `spctl --assess` additionally
 fails the build when a Developer ID was expected but the signature silently fell
 back to ad-hoc.
 
+## Finishing a pull request
+
+A feature isn't done when the code is written. It's done when its PR has
+green CI and a verification report with no unaddressed major findings. Carry
+it that far without waiting to be asked:
+
+1. Before pushing, run the checks for what you touched: `bun run check`,
+   the typechecks, and the frontend and/or sidecar tests (the sidecar ones
+   need `TEST_DATABASE_URL`; see Commands).
+2. Push and open the PR, then wait for CI with `gh pr checks <N> --watch`.
+3. If a check fails, read the failure before changing anything:
+   `gh run view <run-id> --log-failed`. Then work out whose failure it is:
+   - Caused by the PR: fix it, push, and go back to step 2.
+   - A test unrelated to the PR's change: check whether it also fails on
+     `main` (`gh run list --workflow ci.yml --branch main`) and run that file
+     locally. A test that passes locally but fails on CI is almost always a
+     timing assumption (see the testing conventions below). Fix the test
+     rather than re-running CI until it passes. Keep the fix in its own commit
+     so a reviewer can tell it apart from the feature. If you can't find the
+     cause, re-run the job once with `gh run rerun <run-id> --failed`, and say
+     in the PR which test failed and that it passed on a re-run.
+   - `bun audit` or `cargo audit` reporting a newly published advisory: these
+     fail every open PR at once, not only yours. Bump the package in a
+     separate PR rather than in the feature's, unless the feature already
+     touches that dependency.
+4. Once every check is green, run `/verify-pr <N>`. On your own PR its step 10
+   fixes what it found and rechecks, up to two rounds. Those fixes are new
+   commits, so CI runs again, and the recheck only refuses a check that has
+   already failed, not one still running. Watch the checks on the final head
+   too, and go back to step 3 if one fails.
+5. Stop and ask only for what the skill itself says to ask about: a fix that
+   needs a design decision, weakens a safeguard, touches CI or `.claude/`, or
+   adds a dependency. Otherwise report the PR link, the CI state and the
+   report's verdict.
+
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
@@ -153,6 +188,21 @@ back to ad-hoc.
   `sidecar/src/customProviders/routes.test.ts`). The preload in
   `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
   that forgets never writes the user's real one.
+- Tests wait on the thing they assert, never on a fixed delay. CI runners are
+  several times slower than a dev Mac, so a `setTimeout(r, 20)` that always
+  passes locally fails on CI; most of the flaky failures in this repo came
+  from exactly that. After a click or a fetch, use `waitFor` from
+  `src/test/render.tsx` (frontend) or the suite's `until` helper (sidecar) with
+  a condition naming what should have happened. Before a test ends, also wait
+  for any request it started (a refetch after a mutation, say): one that lands
+  after `afterAll` restores a spy reaches the real client and fails a test that
+  has nothing to do with it. A fake process that writes a file a test waits
+  on writes it under a temp name and moves it into place, since the shell
+  creates the file before it writes to it.
+- A shared module (`lib/api`, `lib/pr/api`, `lib/pr/cache`) is stubbed through
+  its one helper in `src/test/` or a `spyOn` restored in `afterAll`, not a new
+  `mock.module` in a test file. Two files that each `mock.module` the same path
+  pass or fail depending on which loads first.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
