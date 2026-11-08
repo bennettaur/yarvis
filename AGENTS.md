@@ -147,9 +147,11 @@ report there and leaves the fixes to the author.
      fail every open PR at once, not only yours. Tell the user which advisory
      and package, and ask before bumping it. The bump belongs in a PR of its
      own unless the feature already touches that dependency.
-4. Once every check is green, run `/verify-pr <N>`. On your own PR, the
-   skill's step 10 fixes what it found and rechecks, up to two rounds. Those
-   fixes are new commits, so CI runs again, and `/verify-pr` only stops on a
+4. Once every check is green on your own PR, mark it ready with
+   `gh pr ready <N>`, then run `/verify-pr <N>`. Ready comes first because
+   the CI gate never auto-merges a draft on a report alone. The skill's
+   step 10 fixes what it found and rechecks, up to two rounds. Those fixes
+   are new commits, so CI runs again, and `/verify-pr` only stops on a
    check that has already failed, not one still running. Watch the checks on
    the final head too, and go back to step 3 if one fails.
 5. Ask wherever `/verify-pr` says to ask; nothing here overrides it.
