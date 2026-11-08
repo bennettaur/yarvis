@@ -26,8 +26,14 @@ import { agentCommandLoadsChannel, CHANNEL_SERVER_NAME } from "./send.ts";
 /** The argument that makes the sidecar's entry point run this instead of the server. */
 export const CHANNEL_RELAY_ARG = "channel-relay";
 
-/** Wait after a failed or refused poll, so the relay never spins against the sidecar. */
+/** Wait after a failed poll, so the relay never spins against the sidecar. */
 const RETRY_MS = 3_000;
+
+/**
+ * Wait after a refused poll. A refusal (another relay owns the channel, or the
+ * token is wrong) rarely changes soon, so it is retried slowly and logged once.
+ */
+const REFUSED_RETRY_MS = 30_000;
 
 const INSTRUCTIONS =
   `Messages from the user's Yarvis assistant arrive as <channel source="${CHANNEL_SERVER_NAME}" message_id="..."> events. ` +
@@ -98,10 +104,19 @@ export function neutralizeChannelTags(text: string): string {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function pollForever(server: Server, env: RelayEnv): Promise<never> {
+  let lastRefusal: number | null = null;
   for (;;) {
     try {
       const res = await fetch(`${env.baseUrl}/next`, { headers: env.headers });
+      if (res.status >= 400 && res.status < 500) {
+        // stderr is Claude Code's MCP log for this server; stdout is the protocol.
+        if (res.status !== lastRefusal) console.error(`[channel] poll refused: ${res.status}`);
+        lastRefusal = res.status;
+        await sleep(REFUSED_RETRY_MS);
+        continue;
+      }
       if (!res.ok) throw new Error(`poll answered ${res.status}`);
+      lastRefusal = null;
       const { messages } = pollResponseSchema.parse(await res.json());
       for (const message of messages) {
         await server.notification({
@@ -113,7 +128,6 @@ async function pollForever(server: Server, env: RelayEnv): Promise<never> {
         });
       }
     } catch (e) {
-      // stderr is Claude Code's MCP log for this server; stdout is the protocol.
       console.error(`[channel] ${e instanceof Error ? e.message : String(e)}`);
       await sleep(RETRY_MS);
     }

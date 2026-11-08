@@ -56,6 +56,31 @@ describe("ChannelHub", () => {
     expect(hub.send(KEY, "anyone there?")).toBeNull();
   });
 
+  it("counts a relay as live for the whole of a long poll, past the grace window", async () => {
+    let now = 1_000_000;
+    const hub = new ChannelHub(() => now);
+    const who = relay();
+    const poll = hub.next(KEY, who);
+
+    now += 20_000;
+    expect(hub.listener(KEY)).toEqual(who);
+    const sent = hub.send(KEY, "how far along are you?");
+    expect(await poll).toEqual([sent!]);
+  });
+
+  it("doesn't hold a poll whose request already ended, so a send isn't lost to it", async () => {
+    let now = 1_000_000;
+    const hub = new ChannelHub(() => now);
+    const who = relay();
+    const controller = new AbortController();
+    controller.abort();
+    expect(await hub.next(KEY, who, controller.signal)).toEqual([]);
+
+    now += 1_000;
+    const sent = hub.send(KEY, "still there?");
+    expect(await hub.next(KEY, who)).toEqual([sent!]);
+  });
+
   it("refuses a second relay while the first is live, so it can't take the messages", async () => {
     const hub = new ChannelHub();
     const first = relay();

@@ -142,6 +142,8 @@ export class ChannelHub {
     const fresh = channel.queue.filter((m) => this.now() - Date.parse(m.sentAt) < QUEUED_TTL_MS);
     channel.queue = [];
     if (fresh.length > 0) return Promise.resolve(fresh);
+    // A waiter on a request that already ended would swallow the next send.
+    if (signal?.aborted) return Promise.resolve([]);
 
     return new Promise((resolve) => {
       const finish = (messages: ChannelMessage[]) => {

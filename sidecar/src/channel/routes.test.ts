@@ -277,6 +277,24 @@ describe("channel relay process", () => {
     expect(rejected.isError).toBe(true);
   });
 
+  it("exits when Claude Code closes its stdin, so it can't keep holding the channel", async () => {
+    const relay = Bun.spawn(
+      [process.execPath, resolve(import.meta.dir, "../main.ts"), CHANNEL_RELAY_ARG],
+      {
+        stdin: "pipe",
+        stdout: "ignore",
+        stderr: "ignore",
+        env: {
+          PATH: process.env.PATH ?? "",
+          YARVIS_SETTINGS_PATH: join(import.meta.dir, "no-such-settings.json"),
+          ...terminalEnv(),
+        },
+      },
+    );
+    relay.stdin.end();
+    expect(await relay.exited).toBe(0);
+  });
+
   it("offers no tools to a Claude Code started outside a Yarvis terminal", async () => {
     const { client } = await startRelay({});
     expect((await client.listTools()).tools).toEqual([]);

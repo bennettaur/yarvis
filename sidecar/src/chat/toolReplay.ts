@@ -58,7 +58,8 @@ function stripAll(text: string, needle: string): string {
  * without that flag, so the page's text stays in its own turn. The browser's
  * page reads are left out for the same reason, and their element refs don't
  * outlive the page anyway. So are artifact reads: one a heads-down pass or
- * specialist wrote sets the same flag.
+ * specialist wrote sets the same flag. So are a workspace session's replies,
+ * which it may have written from a file or PR it read.
  */
 const RESULT_NOT_REPLAYED = new Set([
   "read_web_page",
@@ -67,6 +68,7 @@ const RESULT_NOT_REPLAYED = new Set([
   "list_browser_elements",
   "get_artifact",
   "list_artifacts",
+  "read_workspace_replies",
 ]);
 
 /**
