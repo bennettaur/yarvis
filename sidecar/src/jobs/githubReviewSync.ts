@@ -3,6 +3,7 @@ import type { EventRow } from "../db/schema.ts";
 import { type EventType, listEvents, recordEventOnce } from "../events/service.ts";
 import { createGitHubClient, type ReviewContribution, reviewExternalId } from "../github/client.ts";
 import { refKey } from "../pr/types.ts";
+import { everyHours } from "./schedule.ts";
 import type { JobDefinition } from "./scheduler.ts";
 
 /**
@@ -164,7 +165,7 @@ export const githubReviewSyncJob: JobDefinition = {
   name: "github-review-sync",
   description:
     "Every hour, log the approvals and change requests you gave on github.com, so they count alongside the ones given in Yarvis.",
-  schedule: { kind: "interval", everyMs: 60 * 60 * 1000 },
+  schedule: everyHours(1),
   run: async ({ db, config, cursor, now }) => {
     const token = config.secrets?.githubToken;
     if (!token) return { skipped: true, detail: "no GitHub token configured" };
