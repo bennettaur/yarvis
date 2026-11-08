@@ -459,7 +459,8 @@ report there and leaves the fixes to the author.
     there is no prompt line to submit early and no command prefix to read.
   - The listener is checked rather than assumed. A relay polls with its
     terminal's `YARVIS_SESSION_TOKEN`, its parent's pid, and whether that
-    Claude Code was launched with the channel flag (read once, at startup).
+    Claude Code was launched with the channel flag (read from its command
+    line once, at startup).
     A send goes over the channel only when that pid is one the workspace's
     SessionStart hook registered and the flag was there. Otherwise it is
     typed, since a session without the flag drops channel events. The first

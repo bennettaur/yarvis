@@ -564,8 +564,8 @@ How it works:
 - The assistant sends over the channel only when the session was launched with
   the flag, and its relay belongs to the Claude Code that registered itself in
   the agent tab. Otherwise it types the instruction as before. The relay
-  checks the flag when it starts, against `YARVIS_CLAUDE_COMMAND` if that is
-  set and the saved agent command otherwise.
+  checks the flag when it starts, in the command line of the Claude Code that
+  started it.
 - If no answer comes back, the session may not have seen the message. The
   assistant can only confirm the message was handed to the relay.
 - Replies are kept in memory until Yarvis restarts or the session is stopped.

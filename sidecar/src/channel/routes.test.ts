@@ -8,13 +8,14 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "../workspaces/agentSessions.ts";
 import { ChannelHub, type RelayIdentity } from "./hub.ts";
-import { CHANNEL_RELAY_ARG, neutralizeChannelTags, relayEnv } from "./relay.ts";
 import {
   CHANNEL_ENABLED_HEADER,
-  createChannelRoutes,
+  CHANNEL_RELAY_ARG,
   RELAY_ID_HEADER,
   RELAY_PID_HEADER,
-} from "./routes.ts";
+} from "./protocol.ts";
+import { neutralizeChannelTags, relayEnv } from "./relay.ts";
+import { createChannelRoutes } from "./routes.ts";
 import { agentCommandLoadsChannel, sendOverChannel } from "./send.ts";
 
 const config = {
@@ -209,7 +210,29 @@ describe("channel relay process", () => {
     server.stop(true);
   });
 
-  async function startRelay(env: Record<string, string>) {
+  const RELAY = [process.execPath, resolve(import.meta.dir, "../main.ts"), CHANNEL_RELAY_ARG];
+
+  /**
+   * Starts the relay under a shell whose command line carries the channel flag,
+   * standing in for a Claude Code launched with it. The shell stays the
+   * relay's parent because it has more to run after it.
+   */
+  const UNDER_FLAGGED_PARENT = {
+    command: "/bin/sh",
+    args: [
+      "-c",
+      'shift 2; "$@"; exit $?',
+      "claude",
+      "--dangerously-load-development-channels",
+      "server:yarvis-channel",
+      ...RELAY,
+    ],
+  };
+
+  async function startRelay(
+    env: Record<string, string>,
+    spawn: { command: string; args: string[] } = { command: RELAY[0]!, args: RELAY.slice(1) },
+  ) {
     const client = new Client({ name: "fake-claude-code", version: "0" });
     clients.push(client);
     const events: { content: string; meta?: Record<string, string> }[] = [];
@@ -227,8 +250,8 @@ describe("channel relay process", () => {
     );
     await client.connect(
       new StdioClientTransport({
-        command: process.execPath,
-        args: [resolve(import.meta.dir, "../main.ts"), CHANNEL_RELAY_ARG],
+        command: spawn.command,
+        args: spawn.args,
         env: {
           PATH: process.env.PATH ?? "",
           // Never the user's real settings file.
@@ -240,24 +263,23 @@ describe("channel relay process", () => {
     return { client, events };
   }
 
-  const terminalEnv = () => ({
+  const terminalEnv = (sessionKey = KEY) => ({
     YARVIS_SIDECAR_PORT: String(server.port),
     YARVIS_ATTENTION_TOKEN: config.attentionToken,
-    YARVIS_SESSION_KEY: KEY,
-    YARVIS_SESSION_TOKEN: tokenFor(KEY),
+    YARVIS_SESSION_KEY: sessionKey,
+    YARVIS_SESSION_TOKEN: tokenFor(sessionKey),
   });
 
   it("pushes a message into the session as a channel event and posts its reply", async () => {
-    const { client, events } = await startRelay({
-      ...terminalEnv(),
-      YARVIS_CLAUDE_COMMAND: CHANNEL_COMMAND,
-    });
+    const { client, events } = await startRelay(terminalEnv(), UNDER_FLAGGED_PARENT);
     expect(client.getServerCapabilities()?.experimental).toEqual({ "claude/channel": {} });
 
     await until(() => hub.listener(KEY) !== null, "the relay to poll");
-    // The relay's parent is this test process, standing in for Claude Code.
-    expect(hub.listener(KEY)).toMatchObject({ pid: process.pid, channelEnabled: true });
-    const sent = sendOverChannel(KEY, "summarize what you changed", [process.pid], { hub })!;
+    const listener = hub.listener(KEY)!;
+    expect(listener.channelEnabled).toBe(true);
+    // The shell, not this test, is the relay's parent.
+    expect(listener.pid).not.toBe(process.pid);
+    const sent = sendOverChannel(KEY, "summarize what you changed", [listener.pid], { hub })!;
     await until(() => events.length > 0, "the channel event");
     expect(events).toEqual([
       { content: "summarize what you changed", meta: { message_id: sent.id } },
@@ -277,20 +299,25 @@ describe("channel relay process", () => {
     expect(rejected.isError).toBe(true);
   });
 
+  it("reports no channel flag when its parent's command line doesn't carry one", async () => {
+    const key = "ws-claude:22222222-2222-4222-8222-222222222222";
+    // Launched straight from this test, whose command line has no flag.
+    await startRelay(terminalEnv(key));
+    await until(() => hub.listener(key) !== null, "the relay to poll");
+    expect(hub.listener(key)).toMatchObject({ pid: process.pid, channelEnabled: false });
+  });
+
   it("exits when Claude Code closes its stdin, so it can't keep holding the channel", async () => {
-    const relay = Bun.spawn(
-      [process.execPath, resolve(import.meta.dir, "../main.ts"), CHANNEL_RELAY_ARG],
-      {
-        stdin: "pipe",
-        stdout: "ignore",
-        stderr: "ignore",
-        env: {
-          PATH: process.env.PATH ?? "",
-          YARVIS_SETTINGS_PATH: join(import.meta.dir, "no-such-settings.json"),
-          ...terminalEnv(),
-        },
+    const relay = Bun.spawn(RELAY, {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "ignore",
+      env: {
+        PATH: process.env.PATH ?? "",
+        YARVIS_SETTINGS_PATH: join(import.meta.dir, "no-such-settings.json"),
+        ...terminalEnv(),
       },
-    );
+    });
     relay.stdin.end();
     expect(await relay.exited).toBe(0);
   });

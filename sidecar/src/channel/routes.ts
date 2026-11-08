@@ -10,16 +10,14 @@ import {
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
 import { type ChannelHub, channelHub, type RelayIdentity } from "./hub.ts";
+import { CHANNEL_ENABLED_HEADER, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
 
 /** Longest reply a session can post; the agent reads it back into a prompt. */
-export const MAX_REPLY_CHARS = 8_000;
-
-export const RELAY_ID_HEADER = "X-Yarvis-Relay-Id";
-export const RELAY_PID_HEADER = "X-Yarvis-Relay-Pid";
-export const CHANNEL_ENABLED_HEADER = "X-Yarvis-Channel-Enabled";
+const MAX_REPLY_CHARS = 8_000;
 
 const relaySchema = z.object({
   relayId: z.string().uuid(),
+  // A pid is a 32-bit signed integer.
   pid: z.coerce.number().int().positive().max(2_147_483_647),
   channelEnabled: z.enum(["0", "1"]).transform((v) => v === "1"),
 });

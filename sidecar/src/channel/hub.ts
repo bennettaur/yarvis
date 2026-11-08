@@ -15,7 +15,7 @@
  */
 
 /** How long one long-poll is held open before it returns empty. */
-export const POLL_HOLD_MS = 25_000;
+const POLL_HOLD_MS = 25_000;
 
 /**
  * A relay counts as live this long after its last poll ended. A live relay

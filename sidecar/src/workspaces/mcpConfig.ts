@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { CHANNEL_RELAY_ARG } from "../channel/relay.ts";
+import { CHANNEL_RELAY_ARG } from "../channel/protocol.ts";
 import { CHANNEL_SERVER_NAME } from "../channel/send.ts";
 import { MCP_SERVER_NAME, WORKSPACE_HEADER } from "../mcpServer/server.ts";
 

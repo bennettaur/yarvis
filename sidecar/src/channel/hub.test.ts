@@ -142,6 +142,41 @@ describe("ChannelHub", () => {
     expect(hub.replies(KEY, crypto.randomUUID())).toEqual([]);
   });
 
+  it("matches replies only to the last 50 messages it sent", async () => {
+    const hub = new ChannelHub();
+    const who = relay();
+    const ids: string[] = [];
+    for (let i = 0; i < 51; i++) {
+      const poll = hub.next(KEY, who);
+      ids.push(hub.send(KEY, `m${i}`)!.id);
+      await poll;
+    }
+    expect(hub.recordReply(KEY, who.relayId, ids[0]!, "too late")).toBe(false);
+    expect(hub.recordReply(KEY, who.relayId, ids[1]!, "still known")).toBe(true);
+    expect(hub.recordReply(KEY, who.relayId, ids[50]!, "newest")).toBe(true);
+  });
+
+  it("keeps only the latest 50 replies", async () => {
+    const hub = new ChannelHub();
+    const who = relay();
+    const poll = hub.next(KEY, who);
+    const sent = hub.send(KEY, "progress?")!;
+    await poll;
+    for (let i = 0; i < 51; i++) hub.recordReply(KEY, who.relayId, sent.id, `r${i}`);
+    const texts = hub.replies(KEY).map((r) => r.text);
+    expect(texts).toHaveLength(50);
+    expect(texts[0]).toBe("r1");
+    expect(texts.at(-1)).toBe("r50");
+  });
+
+  it("releases a waiting poll when it forgets the terminal", async () => {
+    const hub = new ChannelHub();
+    const poll = hub.next(KEY, relay());
+    hub.forget(KEY);
+    expect(await poll).toEqual([]);
+    expect(() => hub.forget("ws-claude:never-seen")).not.toThrow();
+  });
+
   it("forgets a terminal entirely", async () => {
     const hub = new ChannelHub();
     const who = relay();
