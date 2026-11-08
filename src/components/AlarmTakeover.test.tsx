@@ -1,7 +1,7 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import { fakeAlarms, fireAlarm, resetAlarms, setAlarms } from "../test/alarmFixture";
+import { fireAlarm, resetAlarms, setAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { mountForInteraction } from "../test/render";
 
 /**
@@ -12,7 +12,7 @@ import { mountForInteraction } from "../test/render";
  * remount-per-alarm key, and the waiting count in one pass.
  */
 
-mock.module("../lib/alarms", () => fakeAlarms);
+stubAlarmsApi();
 
 const AlarmTakeover = (await import("./AlarmTakeover")).default;
 

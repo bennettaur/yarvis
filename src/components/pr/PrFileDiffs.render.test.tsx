@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { parsePatch } from "../../lib/pr/diff";
 import { expandAllGaps } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
-import { setPrFileContent } from "../../test/prFiles";
+import { resetPrCache, setPrFileContent, stubPrFiles } from "../../test/prFiles";
 import { renderToHtml, textOf } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import { DiffBody } from "./PrFileDiffs";
+
+stubPrFiles();
+afterAll(resetPrCache);
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
 

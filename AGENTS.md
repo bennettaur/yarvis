@@ -116,6 +116,47 @@ bundle is unsigned or its seal is broken, and `spctl --assess` additionally
 fails the build when a Developer ID was expected but the signature silently fell
 back to ad-hoc.
 
+## Finishing a pull request
+
+A feature isn't done when the code is written. It's done when its PR has
+green CI and a verification report with no unaddressed major findings. On a
+PR you opened from this workspace, carry it that far without waiting to be
+asked. On anyone else's PR, run `/verify-pr` only when asked; it posts a
+report there and leaves the fixes to the author.
+
+1. Before pushing, run the checks for what you touched: `bun run check`,
+   `bun run typecheck` and `bun run sidecar:typecheck`, and the frontend
+   and/or sidecar tests (the sidecar ones need `TEST_DATABASE_URL`; see
+   Commands).
+2. Push and open the PR, then wait for CI with `gh pr checks <N> --watch`.
+3. If a check fails, read the failure before changing anything:
+   `gh run view <run-id> --log-failed`. Then work out whose failure it is:
+   - Caused by the PR: fix it, push, and go back to step 2.
+   - A test unrelated to the PR's change: check whether it also fails on
+     `main` (`gh run list --workflow ci.yml --branch main`) and run that file
+     locally, both on its own and in the file order the CI log shows. A test
+     that passes locally but fails on CI is usually a stub leaking from an
+     earlier file or a fixed delay (see the testing conventions below). Fix it in
+     its own commit, so a reviewer can tell it apart from the feature. The
+     fix keeps the test checking what it checked: never skip it, delete or
+     loosen an assertion, raise a timeout to cover it, or edit CI config. If
+     that seems to be the only way, ask. If you can't find the cause, re-run
+     the job once with `gh run rerun <run-id> --failed`, and say in the PR's
+     description which test failed and that it passed on a re-run.
+   - `bun audit` or `cargo audit` reporting a newly published advisory: these
+     fail every open PR at once, not only yours. Tell the user which advisory
+     and package, and ask before bumping it. The bump belongs in a PR of its
+     own unless the feature already touches that dependency.
+4. Once every check is green on your own PR, mark it ready with
+   `gh pr ready <N>`, then run `/verify-pr <N>`. Ready comes first because
+   the CI gate never auto-merges a draft on a report alone. The skill's
+   step 10 fixes what it found and rechecks, up to two rounds. Those fixes
+   are new commits, so CI runs again, and `/verify-pr` only stops on a
+   check that has already failed, not one still running. Watch the checks on
+   the final head too, and go back to step 3 if one fails.
+5. Ask wherever `/verify-pr` says to ask; nothing here overrides it.
+   Otherwise report the PR link, the CI state and the report's verdict.
+
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
@@ -143,7 +184,19 @@ back to ad-hoc.
   (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
   clear it with `resetSidecarApi` in `afterAll`, never with their own
   `mock.module` of it: that replaces the module for the whole run, so a
-  partial stub breaks whichever file loads next. They render with
+  partial stub breaks whichever file loads next. Every module more than one
+  suite stubs works the same way, registered once in `src/test/` with
+  `passThrough.ts`: `lib/pr/api` (`prApi.ts`), `lib/pr/cache` (`prFiles.ts`),
+  `lib/workspaces` (`workspacesApi.ts`), `lib/pty` (`ptyApi.ts`), `lib/repos`
+  (`reposApi.ts`) and `lib/alarms` (`alarmFixture.ts`). Each has a `stub…`
+  function and a `reset…` for the suite's `afterAll`, and
+  `src/test/passThrough.test.ts` fails when a suite mocks one of them itself or
+  never resets. A module a second suite starts stubbing gets the same
+  treatment. A `spyOn` restored in `afterAll` is fine too, since it ends with
+  the file. This is the most common cause of a test that fails on
+  CI and passes locally: CI lists the test files in a different order than a
+  Mac does, so a leaked stub reaches different files there. To reproduce, run
+  `bun test` with the files in the order the CI log's groups show. They render with
   `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
@@ -153,6 +206,18 @@ back to ad-hoc.
   `sidecar/src/customProviders/routes.test.ts`). The preload in
   `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
   that forgets never writes the user's real one.
+- Tests wait on the thing they assert, never on a fixed delay. CI runners are
+  slower than a dev Mac, so a delay that is long enough locally can be too
+  short there. After a click or a fetch, use `waitFor` from
+  `src/test/render.tsx` (frontend) or an `until` polling loop like the one in
+  `sidecar/src/reviewWorkspaces/routes.test.ts` (sidecar), with a condition
+  naming what should have happened. Before a test ends, also wait for any
+  request it started, such as the refetch after a mutation: one that lands
+  after `afterAll` restores a spy reaches the real client and fails a test
+  that has nothing to do with it.
+- A fake process writes any file a test polls for under a temp name, then
+  `mv`s it into place. The shell creates the file before writing to it, so a
+  test that waits only for the file to exist can read it empty.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a

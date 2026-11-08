@@ -159,7 +159,9 @@ with a leading `/head/` (for example `/head/app`).
 [guided review](pr-review.md#take-a-guided-review) as a tab: the tour down
 the side and the current step beside it. Next, Back, a step, a flagged finding
 or a covered file each open that place in a diff tab, and moving past a step
-marks its files viewed.
+marks its files viewed. When the guide has one, the
+[flow diagram](pr-review.md#see-the-flow-diagram) is a folded section below
+the current step.
 
 ### Verification report
 

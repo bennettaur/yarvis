@@ -1,13 +1,14 @@
+import { mock } from "bun:test";
 import type { Alarm } from "../lib/alarms";
+import { passThrough } from "./passThrough";
 
 /**
  * A stand-in for `src/lib/alarms`: the list the sidecar answers, the calls
  * that change it, and the `alarm-fired` event the core emits.
  *
- * `mock.module` swaps a module for the whole run, so whichever alarm suite
- * installs its stub last answers for every suite that runs after it. Keeping
- * the state here means all of those stubs read and write the same list, so
- * the surviving one still behaves correctly for all of them.
+ * A suite puts it in place with `stubAlarmsApi`, and `resetAlarms` clears it,
+ * so `lib/alarms` is registered once here (see `passThrough.ts`) and every
+ * other file sees the real module.
  */
 
 let alarms: Alarm[] = [];
@@ -18,14 +19,15 @@ export function setAlarms(next: Alarm[]): void {
 }
 
 /**
- * Clears the fake. Call from an `afterAll` in every suite that writes to it:
- * this module and the `mock.module` stub reading it both live for the whole
- * run, so leftovers answer `listAlarms` for unrelated files that render alarm
- * or calendar components afterwards.
+ * Clears the fake and takes it out of `lib/alarms`. Call from an `afterAll` in
+ * every suite that stubs it: this module lives for the whole run, so leftovers
+ * would answer for unrelated files that render alarm or calendar components
+ * afterwards.
  */
 export function resetAlarms(): void {
   alarms = [];
   firedListeners.clear();
+  alarmsModule.reset();
 }
 
 function setStatus(id: string, status: string): Alarm {
@@ -35,7 +37,7 @@ function setStatus(id: string, status: string): Alarm {
   return alarm;
 }
 
-/** The fake module, for `mock.module("…/lib/alarms", () => fakeAlarms)`. */
+/** The fake `lib/alarms`, which `stubAlarmsApi` puts in place. */
 export const fakeAlarms = {
   listAlarms: async (): Promise<Alarm[]> => alarms,
   createAlarm: async (
@@ -72,4 +74,12 @@ export const fakeAlarms = {
 export function fireAlarm(id: string): void {
   const alarm = setStatus(id, "fired");
   for (const listener of firedListeners) listener(alarm);
+}
+
+const alarmsModule = passThrough({ ...(await import("../lib/alarms")) });
+mock.module("../lib/alarms", () => alarmsModule.module);
+
+/** Answers `lib/alarms` from the fake, with `extra` replacing parts of it. */
+export function stubAlarmsApi(extra: Partial<typeof alarmsModule.module> = {}): void {
+  alarmsModule.stub({ ...fakeAlarms, ...extra });
 }
