@@ -382,6 +382,34 @@ describe("VerificationReportView", () => {
     }
   });
 
+  it("tells a simpler way apart from a much simpler one, by label and colour", async () => {
+    const badgeFor = async (rating: "simpler" | "much-simpler") => {
+      const { host, unmount } = await mountForInteraction(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            approach: { rating, reason: "Two caches.", alternative: "Reuse the client cache." },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      );
+      try {
+        const badge = [...host.querySelectorAll("span")].find((s) =>
+          s.textContent?.endsWith("simpler way exists"),
+        );
+        return { label: badge?.textContent, className: badge?.className };
+      } finally {
+        unmount();
+      }
+    };
+    const simpler = await badgeFor("simpler");
+    const much = await badgeFor("much-simpler");
+    expect(simpler.label).toBe("A simpler way exists");
+    expect(much.label).toBe("A much simpler way exists");
+    expect(simpler.className).not.toBe(much.className);
+  });
+
   it("says in a line when there is no simpler way", async () => {
     const text = textOf(
       await renderToHtml(

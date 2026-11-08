@@ -227,13 +227,13 @@ describe("the report schema", () => {
       path: "src/queue.ts",
       line: 4,
     });
-    const asSimple = schema.parse({
+    const noSimpler = schema.parse({
       summary: "s",
       mustRead: [],
       approach: { rating: "no-simpler", reason: "r", alternative: "stray", path: "src/a.ts" },
     });
-    expect(asSimple.approach).toMatchObject({ rating: "no-simpler", alternative: "" });
-    expect(asSimple.approach?.path).toBeUndefined();
+    expect(noSimpler.approach).toMatchObject({ rating: "no-simpler", alternative: "" });
+    expect(noSimpler.approach?.path).toBeUndefined();
     const unrated = schema.parse({
       summary: "s",
       mustRead: [],

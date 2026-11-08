@@ -39,8 +39,9 @@ whose field isn't listed.
 | `yarvis-review:approach-reviewer` | `approach` | one |
 | `yarvis-review:flow-diagram` | `flow` | one |
 
-Start each agent marked "one per group" once for each group, 1 to READING_GROUPS, with that
-group's number as GROUP, even when there is only one group. When
+Start each agent marked "one per group" once for each group, 1 to
+READING_GROUPS, with that group's number as GROUP, even when there is only
+one group. When
 READING_GROUPS is 0, start each of them once, with no GROUP line. The change
 summary, the approach reviewer and the flow diagram always run once, with no
 GROUP line.

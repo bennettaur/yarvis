@@ -227,6 +227,7 @@ describe("VerificationTab", () => {
     // The diagram is off by default.
     expect(box("Flow diagram").checked).toBe(false);
     expect(box("Risk").checked).toBe(true);
+    expect(box("Simpler approach").checked).toBe(true);
     box("Flow diagram").click();
     await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
     box("Risk").click();
@@ -242,6 +243,7 @@ describe("VerificationTab", () => {
     expect(startedSections[0]).not.toContain("performance");
     expect(startedSections[0]).toContain("flow");
     expect(startedSections[0]).toContain("tests");
+    expect(startedSections[0]).toContain("approach");
   });
 
   it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {

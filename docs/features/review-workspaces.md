@@ -171,8 +171,7 @@ diff and report: a summary, the files that must be read and why, the risk, and
 checks for completeness, tests, complexity, performance, comments,
 observability and code quality, and whether there is a simpler way to do what
 the PR does. Its progress shows check by check while it runs, and **Cancel**
-stops it. Every file and line in the report opens the diff
-there.
+stops it. Every file and line in the report opens the diff there.
 
 - **Observability** looks for errors that are swallowed, logging at the wrong
   level (errors for failures someone must look at, warnings for things that
@@ -194,7 +193,8 @@ there.
 Above **Run verification** you pick which sections to run: risk, each check,
 **Simpler approach** and the **Flow diagram**. The summary and must-read files
 always run. The diagram is off unless you tick it; the others start ticked,
-and after a run the boxes start where that run's did. The cost estimate follows what you pick.
+and after a run the boxes start where that run's did, so a section added
+since the last run starts unticked. The cost estimate follows what you pick.
 If a report is already being written for the PR, starting another joins that
 run, with the sections it was started with.
 A report shows only the sections its run was asked for.

@@ -16,6 +16,10 @@ describe("reduceProgress", () => {
       "test-reviewer",
       "flow-diagram",
     ]);
+    expect(initialProgress(["approach"]).checks.map((c) => [c.agent, c.label])).toEqual([
+      ["change-summary", "Summary and must-read files"],
+      ["approach-reviewer", "Simpler approach"],
+    ]);
   });
 
   it("follows each check from its subagent's start and stop", () => {

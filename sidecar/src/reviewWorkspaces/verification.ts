@@ -549,9 +549,11 @@ const LARGE_PR = { changedLines: 4_000, files: 150 };
  * wasn't bulk, docs included, hence one reader per check agent for any file;
  * the code patches came to about 115 bytes per changed line. Those runs had
  * seven reading agents; the observability, quality and approach agents are
- * counted as three more readers but BASE_TOKENS was not re-measured for them. Two points
- * fix two constants exactly and test nothing, and the other models are this
- * formula at their own rates, unmeasured: a warning's estimate, not a bill.
+ * counted as three more readers but BASE_TOKENS was not re-measured for them,
+ * and the flow and approach agents' searches of the checkout aren't counted.
+ * Two points fix two constants exactly and test nothing, and the other models
+ * are this formula at their own rates, unmeasured: a warning's estimate, not a
+ * bill.
  */
 const BASE_TOKENS = 62_000;
 const RESEND = 15;
@@ -1111,7 +1113,8 @@ export interface VerificationSize {
    * About what one section adds: one more agent reading every file. The
    * estimate moves by this much per section added to or taken from the
    * defaults. It leaves out the agent's own fixed overhead and, for the flow
-   * diagram, its reads of the checkout, so it runs low.
+   * diagram and the approach rating, their reads of the checkout, so it runs
+   * low.
    */
   sectionCostUsd: number;
   /** The sections {@link estimatedCostUsd} assumes. */
