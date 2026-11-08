@@ -131,6 +131,29 @@ describe("buildPassPrompt", () => {
     );
   });
 
+  it("tells a pass which watched PRs merged, fencing the note a pass wrote", () => {
+    const prompt = buildPassPrompt({
+      ...base,
+      mergedWatches: [
+        {
+          id: "w1",
+          workspaceId: "ws-1",
+          repo: "acme/api",
+          prNumber: 42,
+          note: "Run monitor-feature-rollout for BILL-7",
+          mergedAt: new Date("2026-10-19T09:30:00Z"),
+        },
+      ],
+    });
+    expect(prompt).toContain(
+      "- acme/api#42 in workspace ws-1, merge seen 2026-10-19T09:30:00.000Z",
+    );
+    expect(prompt).toMatch(
+      /<recalled-content-[^>]+>\s*Run monitor-feature-rollout for BILL-7\s*<\/recalled-content-/,
+    );
+    expect(buildPassPrompt(base)).not.toContain("PRs you asked to hear about");
+  });
+
   it("keeps earlier messages in front of every pass, since standing instructions still hold", () => {
     const prompt = buildPassPrompt({
       ...base,
