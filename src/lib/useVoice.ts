@@ -85,8 +85,9 @@ export interface UseVoiceOptions {
   /**
    * The surface's own send. Marked as spoken so the agent gates its writes.
    * In continuous mode, returning `false` means the surface refused the turn,
-   * so it is held and retried once when the surface is free. A surface's send may only settle
-   * once the reply has finished, so continuous mode doesn't wait on it.
+   * so it is held and retried once when the surface is free. A surface's send
+   * may only settle once the reply has finished, so continuous mode doesn't
+   * wait on it.
    */
   send: (text: string, options: { source: "voice" }) => unknown;
   /** Reply text accumulating for the current turn; "" between turns. */

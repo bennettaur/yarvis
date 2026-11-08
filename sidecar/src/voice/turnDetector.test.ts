@@ -221,7 +221,9 @@ describe("TurnDetector", () => {
       turns.start();
       spawned[0]?.child.emit("close", 0, null);
 
-      addedHooks()[0]?.(0);
+      const hooks = addedHooks();
+      expect(hooks).toHaveLength(1);
+      hooks[0]?.(0);
       expect(killed).toEqual([]);
     });
   });
