@@ -556,6 +556,7 @@ export default function App() {
           void markAttention(item.id, "read");
           navigateTo(item.navTarget, item.title);
         }}
+        onNavigate={navigateTo}
       />
 
       <AlarmTakeover />

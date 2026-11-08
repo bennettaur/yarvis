@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AttentionItem } from "../../lib/attention";
+import type { AttentionItem, AttentionNavTarget } from "../../lib/attention";
 import { markAttention, useAttentionItems } from "../../lib/attentionStore";
 import { type MergeRisk, mergeAnnouncementOf, mergeReviewOf } from "../../lib/headsDown";
 import MergeReviewDialog from "./MergeReviewDialog";
@@ -27,7 +27,18 @@ const RISK_LABEL: Record<MergeRisk, string> = {
  * A merge held back for open review feedback shows ahead of those, since it
  * waits on the user's answer (`MergeReviewDialog`).
  */
-export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) => void }) {
+export default function MergeAlert({
+  onOpen,
+  onNavigate,
+  armingMs,
+}: {
+  /** Opens a merge announcement's PR. */
+  onOpen: (item: AttentionItem) => void;
+  /** Goes to a held merge's PR once the user has answered it. */
+  onNavigate: (target: AttentionNavTarget, title: string) => void;
+  /** How long a held merge's buttons stay disabled; see `MergeReviewDialog`. */
+  armingMs?: number;
+}) {
   const items = useAttentionItems();
   // Held merges put away with Escape this session; they still wait under Needs you.
   const [deferred, setDeferred] = useState<ReadonlySet<string>>(new Set());
@@ -80,8 +91,9 @@ export default function MergeAlert({ onOpen }: { onOpen: (item: AttentionItem) =
         item={currentReview.item}
         review={currentReview.review}
         more={reviews.length - 1}
-        onOpen={onOpen}
+        onReview={onNavigate}
         onDefer={deferReview}
+        armingMs={armingMs}
       />
     );
   }

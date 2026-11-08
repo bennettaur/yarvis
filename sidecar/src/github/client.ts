@@ -297,6 +297,7 @@ function toReviewers(pr: any): Reviewer[] {
       state: mapReviewState(node.state),
       isRequested: false,
       isTeam: false,
+      trusted: DECIDING_ASSOCIATIONS.has(String(node.authorAssociation ?? "")),
     });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
@@ -414,6 +415,7 @@ export function toReviewThread(thread: any): ReviewThread {
     comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
+      trusted: DECIDING_ASSOCIATIONS.has(String(comment.authorAssociation ?? "")),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -798,7 +800,7 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ nodes{ id author{login} body createdAt url } }`;
+  comments(first:100){ nodes{ id author{login} authorAssociation body createdAt url } }`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
@@ -841,7 +843,7 @@ query($owner:String!,$repo:String!,$number:Int!){
         }
       }
       latestReviews(first:50){
-        nodes{ author{login} state }
+        nodes{ author{login} state authorAssociation }
       }
       latestOpinionatedReviews(first:50){
         nodes{ author{login} state }

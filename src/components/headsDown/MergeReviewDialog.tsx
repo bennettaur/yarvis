@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { AttentionItem } from "../../lib/attention";
+import type { AttentionItem, AttentionNavTarget } from "../../lib/attention";
 import { answerQuestion, type MergeReview, type PrFeedback } from "../../lib/headsDown";
+import { AUTO_OPEN_ARMING_MS } from "../attention/PermissionRequestModal";
 
 /**
  * Asks the user about a merge heads-down mode held back because the PR has
@@ -12,24 +13,42 @@ export default function MergeReviewDialog({
   item,
   review,
   more,
-  onOpen,
+  onReview,
   onDefer,
+  armingMs = AUTO_OPEN_ARMING_MS,
 }: {
   item: AttentionItem;
   review: MergeReview;
   /** How many other held merges are waiting behind this one. */
   more: number;
-  onOpen: (item: AttentionItem) => void;
+  /** Opens the PR after the user chose to review it. The answer already settled the item. */
+  onReview: (target: AttentionNavTarget, title: string) => void;
   onDefer: () => void;
+  /**
+   * How long both buttons stay disabled after the dialog appears. It pops up
+   * over whatever the user is doing, so a click already on its way mustn't
+   * approve a merge.
+   */
+  armingMs?: number;
 }) {
   const [busy, setBusy] = useState(false);
+  const [armed, setArmed] = useState(armingMs <= 0);
   const [error, setError] = useState<string | null>(null);
   const reviewRef = useRef<HTMLButtonElement>(null);
   const firstPr = review.prs[0];
 
+  useEffect(() => {
+    if (armingMs <= 0) return;
+    const timer = setTimeout(() => setArmed(true), armingMs);
+    return () => clearTimeout(timer);
+  }, [armingMs]);
+
   // Focus starts on Review, so Enter can't approve a merge by accident.
   useEffect(() => {
-    reviewRef.current?.focus();
+    if (armed) reviewRef.current?.focus();
+  }, [armed]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -48,7 +67,7 @@ export default function MergeReviewDialog({
       if (choice === "deny" && firstPr) {
         const [owner, repo] = firstPr.repo.split("/");
         if (owner && repo) {
-          onOpen({ ...item, navTarget: { type: "pr", owner, repo, number: firstPr.number } });
+          onReview({ type: "pr", owner, repo, number: firstPr.number }, item.title);
         }
       }
     } catch (e) {
@@ -62,6 +81,7 @@ export default function MergeReviewDialog({
     review.unchecked !== null
       ? "Heads down wants to merge a PR it couldn't check for feedback"
       : "Heads down wants to merge a PR with open feedback";
+  const disabled = busy || !armed;
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -95,7 +115,7 @@ export default function MergeReviewDialog({
           <button
             ref={reviewRef}
             type="button"
-            disabled={busy}
+            disabled={disabled}
             onClick={() => void answer("deny")}
             className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
           >
@@ -103,7 +123,7 @@ export default function MergeReviewDialog({
           </button>
           <button
             type="button"
-            disabled={busy}
+            disabled={disabled}
             onClick={() => void answer("approve")}
             className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
           >
@@ -115,6 +135,17 @@ export default function MergeReviewDialog({
   );
 }
 
+/** Why the PR's workspace did or didn't act on the feedback. */
+function handoffNote(pr: PrFeedback): string {
+  if (pr.handedOff)
+    return "Its workspace was asked to address this feedback, and some is still open.";
+  if (!pr.workspaceId) return "No workspace has this PR, so nobody was asked to address it.";
+  if (pr.fromOutsiders) {
+    return "Some of it may be from people outside the repo, so its workspace wasn't asked to act on it.";
+  }
+  return "Its workspace couldn't be asked to address this.";
+}
+
 function PrFeedbackView({ pr }: { pr: PrFeedback }) {
   const hidden = pr.threadCount - pr.threads.length;
   return (
@@ -124,21 +155,15 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
           {pr.repo}#{pr.number}
         </div>
         {pr.title && (
-          <div className="text-sm text-zinc-300">
+          <div className="break-words text-sm text-zinc-300">
             <span className="text-zinc-500">PR title: </span>
             {pr.title}
           </div>
         )}
-        <p className="mt-1 text-xs text-zinc-400">
-          {pr.handedOff
-            ? "Its workspace was asked to address this and left it open."
-            : pr.workspaceId
-              ? "Its workspace couldn't be asked to address this."
-              : "No workspace has this PR, so nobody was asked to address it."}
-        </p>
+        <p className="mt-1 text-xs text-zinc-400">{handoffNote(pr)}</p>
       </div>
       {pr.changesRequestedBy.length > 0 && (
-        <p className="text-sm text-red-200">
+        <p className="break-words text-sm text-red-200">
           Changes requested by {pr.changesRequestedBy.join(", ")}
         </p>
       )}
@@ -149,7 +174,7 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
             key={i}
             className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2"
           >
-            <div className="text-xs text-zinc-500">
+            <div className="break-words text-xs text-zinc-500">
               <span className="text-zinc-400">Reviewer comment</span> from {t.author}
               {t.path && (
                 <>
@@ -163,7 +188,9 @@ function PrFeedbackView({ pr }: { pr: PrFeedback }) {
               {t.outdated && " (outdated)"}
               {t.replies > 0 && ` · ${t.replies} repl${t.replies === 1 ? "y" : "ies"}`}
             </div>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-200">{t.body}</p>
+            <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-200 [overflow-wrap:anywhere]">
+              {t.body}
+            </p>
           </li>
         ))}
       </ul>

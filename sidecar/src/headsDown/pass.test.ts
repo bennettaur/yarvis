@@ -396,6 +396,36 @@ describe("a heads-down pass", () => {
     });
   });
 
+  it("checks a merge it announces for open review feedback, and holds it", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("m1", "announce_merge", {
+          repo: "acme/docs",
+          number: 4,
+          risk: "low",
+          why: "Docs only",
+        }),
+        toolCall("m2", "finish_pass", { sleepMinutes: 30, reason: "held" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ repo: "acme/docs", number: 4, githubOnly: false }]);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("Not announced");
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+  });
+
   it("records a pass for a run already stopped as stopped by the user, not failed", async () => {
     const run = await startRun(db, null);
     await sql`UPDATE heads_down_runs SET status = 'stopped', stopped_at = now()`;

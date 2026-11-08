@@ -510,8 +510,12 @@ describe("github client", () => {
       },
       latestReviews: {
         nodes: [
-          { author: { login: "bob" }, state: "APPROVED" },
-          { author: { login: "carol" }, state: "CHANGES_REQUESTED" },
+          { author: { login: "bob" }, state: "APPROVED", authorAssociation: "NONE" },
+          {
+            author: { login: "carol" },
+            state: "CHANGES_REQUESTED",
+            authorAssociation: "COLLABORATOR",
+          },
           // A re-requested user who previously commented should surface as
           // pending — the outstanding request wins over the historical review.
           { author: { login: "alice" }, state: "COMMENTED" },
@@ -520,8 +524,14 @@ describe("github client", () => {
     });
 
     expect(detail.reviewers).toEqual([
-      { login: "bob", state: "approved", isRequested: false, isTeam: false },
-      { login: "carol", state: "changes_requested", isRequested: false, isTeam: false },
+      { login: "bob", state: "approved", isRequested: false, isTeam: false, trusted: false },
+      {
+        login: "carol",
+        state: "changes_requested",
+        isRequested: false,
+        isTeam: false,
+        trusted: true,
+      },
       { login: "alice", state: "pending", isRequested: true, isTeam: false },
       { login: "org/frontend", state: "pending", isRequested: true, isTeam: true },
     ]);
@@ -1429,12 +1439,27 @@ describe("github review threads", () => {
         {
           id: "T1-c",
           author: "rev",
+          trusted: false,
           body: "nit",
           createdAt: "",
           url: "https://github.com/o/r/pull/4#discussion_r1",
         },
       ],
     });
+  });
+
+  it("trusts a comment only from the repo's owners, members and collaborators", () => {
+    const trustedFor = (authorAssociation: string | undefined) => {
+      const node = threadNode("T1");
+      const comments = node.comments.nodes.map((c) => ({ ...c, authorAssociation }));
+      return toReviewThread({ ...node, comments: { nodes: comments } }).comments[0]?.trusted;
+    };
+    expect(trustedFor("OWNER")).toBe(true);
+    expect(trustedFor("MEMBER")).toBe(true);
+    expect(trustedFor("COLLABORATOR")).toBe(true);
+    expect(trustedFor("CONTRIBUTOR")).toBe(false);
+    expect(trustedFor("NONE")).toBe(false);
+    expect(trustedFor(undefined)).toBe(false);
   });
 
   it("drops a start line that only repeats the line", () => {

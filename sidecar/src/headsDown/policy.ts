@@ -30,6 +30,8 @@ import {
   type MergeFeedbackLoader,
   type MergeFeedbackResult,
   type MergeSubject,
+  type PrFeedback,
+  withHandoffs,
 } from "./mergeFeedback.ts";
 import {
   deniedApprovalExists,
@@ -366,7 +368,7 @@ async function alertUnannouncedMerge(
 }
 
 /** Which PR a merge call is for, or null when the call doesn't say. */
-export function mergeSubject(tool: string, args: unknown): MergeSubject | null {
+function mergeSubject(tool: string, args: unknown): MergeSubject | null {
   if (tool === "send_workspace_instruction") {
     const workspaceId = stringArg(args, "workspaceId");
     return workspaceId ? { workspaceId } : null;
@@ -405,22 +407,26 @@ async function holdMerge(
 ): Promise<{ deniedMessage: string }> {
   // The handoff steers a session unasked, so only where a pass may already
   // steer one: a workspace it is pushing, within working hours.
+  let prs: PrFeedback[];
   if (feedback.unchecked === null && withinWorkingHours) {
-    const handed = await handOffFeedback(db, run.id, feedback, {
+    const { prs: marked, handed } = await handOffFeedback(db, run.id, feedback, {
       send,
       maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
     });
+    prs = marked;
     if (handed.length > 0) {
       return {
         deniedMessage: [
           "Not run: the PR has open review feedback, so Yarvis told its workspace's session to address it.",
           ...handed.map((pr) => `${feedbackSummary(pr)}, handed to workspace ${pr.workspaceId}.`),
-          "Don't merge on this pass, and leave the feedback to the session. Once it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
+          "Don't merge on this pass, and leave the feedback to the session. Once get_workspace_activity shows it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
         ].join("\n"),
       };
     }
+  } else {
+    prs = await withHandoffs(db, run.id, feedback.prs);
   }
-  const prs = feedback.prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
+  const prLabels = prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
   const [question, why] =
     feedback.unchecked !== null
       ? [
@@ -428,8 +434,8 @@ async function holdMerge(
           `Couldn't check the PR for open review feedback: ${feedback.unchecked}.`,
         ]
       : [
-          `Merge ${prs}? It has open review feedback.`,
-          `${feedback.prs.map(feedbackSummary).join(". ")}.`,
+          `Merge ${prLabels}? It has open review feedback.`,
+          `${prs.map(feedbackSummary).join(". ")}.`,
         ];
   await askUser(
     db,
@@ -441,7 +447,7 @@ async function holdMerge(
       toolArgs: args,
       options: ["approve", "deny"],
     },
-    { prs: feedback.prs, unchecked: feedback.unchecked },
+    { prs, unchecked: feedback.unchecked },
   );
   return { deniedMessage: QUEUED_FOR_APPROVAL };
 }
@@ -484,8 +490,12 @@ export function passApprovalHooks(
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
+        // Read live from the provider, so not for a call that won't run anyway.
         const feedback =
-          mergeFeedback && isMergeCall(id, args)
+          mergeFeedback &&
+          isMergeCall(id, args) &&
+          !PASS_REFUSED_TOOLS.has(id) &&
+          (await mayRunPasses(db, run.id))
             ? await feedbackFor(mergeFeedback, id, args)
             : null;
         const held = holdsMerge(feedback);

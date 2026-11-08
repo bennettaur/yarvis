@@ -144,6 +144,12 @@ export interface ReviewComment {
    * that two people can share (Azure). Absent on GitHub, whose login is unique.
    */
   authorId?: string;
+  /**
+   * Whether the author is an owner, member or collaborator of the repo. GitHub
+   * lets anyone who can see a repo comment on its PRs. Absent where the
+   * provider doesn't say (Azure, whose repos only the organization can see).
+   */
+  trusted?: boolean;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */
@@ -213,6 +219,8 @@ export interface Reviewer {
    * asking the team, not the name on the request.
    */
   isTeam: boolean;
+  /** Whether the reviewer is an owner, member or collaborator of the repo; as on `ReviewComment`. */
+  trusted?: boolean;
 }
 
 /** A normalized CI check (CheckRun, commit status, or policy evaluation). */

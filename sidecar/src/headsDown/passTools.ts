@@ -60,9 +60,11 @@ export function buildPassTools(
           .describe("Why you are merging it now, and why that risk level"),
       }),
       execute: async (merge) => {
-        // The merge tools can't tell which server the pass will use, so look it up on GitHub.
+        // announce_merge can't tell which merge tool the pass will call, so a PR
+        // no workspace owns isn't looked up on GitHub here and comes back
+        // unchecked. The merge call itself is checked again when it's made.
         const feedback = mergeFeedback
-          ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: true })
+          ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: false })
           : null;
         if (holdsMerge(feedback)) {
           return {

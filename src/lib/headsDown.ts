@@ -150,6 +150,8 @@ export interface PrFeedback {
   /** True when the provider couldn't return every thread. */
   threadsTruncated: boolean;
   changesRequestedBy: string[];
+  /** True when some of the feedback may be from outside the repo, so it wasn't handed to the workspace. */
+  fromOutsiders: boolean;
 }
 
 /** A merge held back for open review feedback, waiting on the user's approval. */

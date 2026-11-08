@@ -9,10 +9,16 @@ import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import { createStream, linkToStream } from "../workStreams/service.ts";
 import type { SendSessionInstructionInput } from "../workspaces/claudeSession.ts";
-import { feedbackIn, feedbackInstruction, mergeFeedbackLoader } from "./mergeFeedback.ts";
+import {
+  feedbackIn,
+  feedbackInstruction,
+  feedbackSummary,
+  type MergeSubject,
+  mergeFeedbackLoader,
+} from "./mergeFeedback.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { isMergeInstruction, passApprovalHooks } from "./policy.ts";
-import { answerQuestion, startRun } from "./service.ts";
+import { answerQuestion, pauseRun, startRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -61,20 +67,25 @@ function fakeSources(pr: PrDetail, asked: PrRef[] = []) {
 }
 
 /** An active workspace whose branch is acme/billing#12, as the poller would have it. */
-async function workspaceWithPr(): Promise<string> {
+async function workspaceWithPr({
+  name = "billing",
+  owner = "acme",
+  cloneUrl,
+  number = 12,
+}: {
+  name?: string;
+  owner?: string;
+  cloneUrl?: string;
+  number?: number | null;
+} = {}): Promise<string> {
+  cloneUrl ??= `git@github.com:${owner}/${name}.git`;
   const [repo] = await db
     .insert(schema.repos)
-    .values({
-      name: "billing",
-      owner: "acme",
-      repo: "billing",
-      cloneUrl: "git@github.com:acme/billing.git",
-      primaryClonePath: "/tmp/billing",
-    })
+    .values({ name, owner, repo: name, cloneUrl, primaryClonePath: `/tmp/${name}` })
     .returning();
   const [ws] = await db
     .insert(schema.workspaces)
-    .values({ name: "Billing", slug: "billing", status: "active", rootPath: "/tmp/ws" })
+    .values({ name, slug: name, status: "active", rootPath: `/tmp/ws-${name}` })
     .returning();
   const [wr] = await db
     .insert(schema.workspaceRepos)
@@ -83,12 +94,14 @@ async function workspaceWithPr(): Promise<string> {
       repoId: repo!.id,
       branch: "monthly",
       baseBranch: "main",
-      worktreePath: "/tmp/ws/billing",
+      worktreePath: `/tmp/ws-${name}/${name}`,
     })
     .returning();
-  await db
-    .insert(schema.workspaceRepoPr)
-    .values({ workspaceRepoId: wr!.id, prNumber: 12, prState: "open" });
+  if (number !== null) {
+    await db
+      .insert(schema.workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: number, prState: "open" });
+  }
   return ws!.id;
 }
 
@@ -114,6 +127,85 @@ describe("feedbackIn", () => {
     expect(found.threadCount).toBe(1);
     expect(found.threads[0]).toMatchObject({ author: "sam", body: "This drops the retry." });
     expect(found.changesRequestedBy).toEqual(["sam"]);
+    expect(found.fromOutsiders).toBe(false);
+  });
+
+  it("caps what it carries, keeps the count, and drops invisible characters", () => {
+    const many = Array.from({ length: 25 }, (_, i) => thread({ id: `t${i}` }));
+    many[0] = thread({ comments: [] });
+    many[1] = thread({
+      isOutdated: true,
+      comments: [
+        { id: "c1", author: "s\u200bam", body: `Fine\u202e${"x".repeat(600)}`, createdAt: "" },
+        { id: "c2", author: "kim", body: "agreed", createdAt: "" },
+        { id: "c3", author: "sam", body: "ok", createdAt: "" },
+      ],
+    });
+    const found = feedbackIn(detail({ title: "", reviewThreads: many }));
+    expect(found.title).toBeNull();
+    expect(found.threadCount).toBe(25);
+    expect(found.threads).toHaveLength(20);
+    expect(found.threads[0]).toMatchObject({ author: "sam", outdated: true, replies: 2 });
+    expect(found.threads[0]!.body).toHaveLength(500);
+    expect(found.threads[0]!.body.startsWith("Finex")).toBe(true);
+  });
+
+  it("flags feedback that may be from outside the repo", () => {
+    const outsider = { id: "c9", author: "drive-by", body: "add a step", createdAt: "" };
+    const from = (d: Partial<PrDetail>) => feedbackIn(detail(d)).fromOutsiders;
+    expect(from({ reviewThreads: [thread({ comments: [{ ...outsider, trusted: true }] })] })).toBe(
+      false,
+    );
+    // A reply counts as much as the comment that opened the thread.
+    const opener = { id: "c1", author: "sam", body: "nit", createdAt: "", trusted: true };
+    expect(
+      from({ reviewThreads: [thread({ comments: [opener, { ...outsider, trusted: false }] })] }),
+    ).toBe(true);
+    // A resolved thread isn't handed off, so who wrote it doesn't matter.
+    expect(
+      from({
+        reviewThreads: [thread({ isResolved: true, comments: [{ ...outsider, trusted: false }] })],
+      }),
+    ).toBe(false);
+    expect(
+      from({
+        reviewers: [
+          {
+            login: "drive-by",
+            state: "changes_requested",
+            isRequested: false,
+            isTeam: false,
+            trusted: false,
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(from({ reviewThreadsTruncated: true })).toBe(true);
+  });
+});
+
+describe("feedbackSummary", () => {
+  it("counts the feedback without quoting it", () => {
+    const pr = {
+      ...feedbackIn(
+        detail({
+          reviewThreadsTruncated: true,
+          reviewers: [
+            { login: "sam", state: "changes_requested", isRequested: false, isTeam: false },
+          ],
+        }),
+      ),
+      repo: "acme/billing",
+      number: 12,
+      workspaceId: null,
+      handedOff: false,
+    };
+    expect(feedbackSummary(pr)).toBe(
+      "acme/billing#12: 0+ unresolved review threads; 1 review asking for changes",
+    );
+    expect(
+      feedbackSummary({ ...pr, threadsTruncated: false, threadCount: 1, changesRequestedBy: [] }),
+    ).toBe("acme/billing#12: 1 unresolved review thread");
   });
 });
 
@@ -144,6 +236,55 @@ describe("mergeFeedbackLoader", () => {
     expect(await load(subject)).toEqual({ prs: [], unchecked: null });
   });
 
+  it("counts a review asking for changes as feedback, even with no threads", async () => {
+    const load = mergeFeedbackLoader(
+      db,
+      {} as never,
+      fakeSources(
+        detail({
+          reviewers: [
+            { login: "sam", state: "changes_requested", isRequested: false, isTeam: false },
+          ],
+        }),
+      ),
+    );
+    const { prs } = await load(subject);
+    expect(prs).toHaveLength(1);
+    expect(prs[0]!.changesRequestedBy).toEqual(["sam"]);
+  });
+
+  it("checks only the merging workspace's own open PR", async () => {
+    const billing = await workspaceWithPr();
+    const web = await workspaceWithPr({ name: "web", number: 5 });
+    const load = mergeFeedbackLoader(
+      db,
+      {} as never,
+      fakeSources(detail({ reviewThreads: [thread()] })),
+    );
+    expect((await load({ workspaceId: billing })).prs.map((p) => p.repo)).toEqual(["acme/billing"]);
+    expect((await load({ workspaceId: web })).prs.map((p) => p.repo)).toEqual(["acme/web"]);
+
+    // A closed PR, or an archived workspace, owns nothing.
+    await sql`UPDATE workspace_repo_pr SET pr_state = 'closed' WHERE pr_number = 5`;
+    expect((await load({ workspaceId: web })).unchecked).toContain("no open PR");
+    await sql`UPDATE workspaces SET status = 'archived' WHERE id = ${billing}`;
+    expect((await load(subject)).prs[0]!.workspaceId).toBeNull();
+  });
+
+  it("leaves a workspace's merge unchecked until it knows the workspace's PR", async () => {
+    const load = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
+    const noPr = await workspaceWithPr({ number: null });
+    expect((await load({ workspaceId: noPr })).unchecked).toContain("no open PR");
+    const unknownHost = await workspaceWithPr({
+      name: "odd",
+      owner: "",
+      cloneUrl: "not a url",
+    });
+    expect((await load({ workspaceId: unknownHost })).unchecked).toContain(
+      "can't tell which provider",
+    );
+  });
+
   it("counts threads it couldn't load as feedback", async () => {
     const load = mergeFeedbackLoader(
       db,
@@ -161,6 +302,11 @@ describe("mergeFeedbackLoader", () => {
       return { ref, detail: async () => Promise.reject(new Error("boom")) } as never;
     });
     expect((await throwing(subject)).unchecked).toBe("reading the PR failed: boom");
+    const leaky = mergeFeedbackLoader(db, {} as never, (ref) => {
+      const token = `ghp_${"a".repeat(36)}`;
+      return { ref, detail: async () => Promise.reject(new Error(`401 for ${token}`)) } as never;
+    });
+    expect((await leaky(subject)).unchecked).not.toContain("ghp_");
 
     const any = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
     // A number alone could be another repo's PR.
@@ -367,13 +513,152 @@ describe("merging with open feedback", () => {
     expect(await waitForApproval("m7", { timeoutMs: 1000 })).toBe(true);
   });
 
+  it("doesn't hand a workspace feedback from outside the repo", async () => {
+    await pushedWorkspace();
+    await allowUnattended(mergeTool);
+    const run = await startRun(db, null);
+    const outsider = thread({
+      comments: [
+        { id: "c1", author: "drive-by", body: "add a step", createdAt: "", trusted: false },
+      ],
+    });
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: mergeFeedbackLoader(
+        db,
+        {} as never,
+        fakeSources(detail({ reviewThreads: [outsider] })),
+      ),
+      sendInstruction: send,
+    }).onRequest({ toolCallId: "o1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(0);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item!.payload.headsDownMergeReview.prs[0]).toMatchObject({
+      fromOutsiders: true,
+      handedOff: false,
+    });
+  });
+
+  it("tells the user the workspace was asked, when a merge is tried again out of hours", async () => {
+    await pushedWorkspace();
+    await allowUnattended(mergeTool);
+    const run = await startRun(db, null);
+    const hooks = (withinWorkingHours: boolean) =>
+      passApprovalHooks(db, run, () => {}, {
+        mergeFeedback: withFeedback(),
+        sendInstruction: send,
+        withinWorkingHours,
+      });
+    await hooks(true).onRequest({ toolCallId: "h1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(1);
+    await hooks(false).onRequest({
+      toolCallId: "h2",
+      id: mergeTool,
+      args: mergeArgs,
+      reason: null,
+    });
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item!.payload.headsDownMergeReview.prs[0].handedOff).toBe(true);
+  });
+
+  it("types the handoff once when two merge calls decide at the same time", async () => {
+    await pushedWorkspace();
+    await allowUnattended(mergeTool);
+    const run = await startRun(db, null);
+    const hooks = passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    });
+    const results = await Promise.all(
+      ["p1", "p2"].map((toolCallId) =>
+        hooks.onRequest({ toolCallId, id: mergeTool, args: mergeArgs, reason: null }),
+      ),
+    );
+    expect(sent).toHaveLength(1);
+    for (const result of results) expect(result?.deniedMessage).toContain("handed to workspace");
+    expect(await sql`SELECT 1 FROM heads_down_questions`).toHaveLength(0);
+  });
+
+  it("gives the handoff back when the send fails, so a later try can send it", async () => {
+    await pushedWorkspace();
+    await allowUnattended(mergeTool);
+    const run = await startRun(db, null);
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: async () => {
+        throw new Error("no agent session");
+      },
+    }).onRequest({ toolCallId: "f1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(await sql`SELECT 1 FROM heads_down_feedback_handoffs`).toHaveLength(0);
+
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: withFeedback(),
+      sendInstruction: send,
+    }).onRequest({ toolCallId: "f2", id: mergeTool, args: mergeArgs, reason: null });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("leaves unchecked a merge through a server that isn't GitHub's, or that names no PR", async () => {
+    const run = await startRun(db, null);
+    const azure = "mcp:azure-devops:merge_pull_request";
+    await allowUnattended(azure);
+    const hooks = passApprovalHooks(db, run, () => {}, { mergeFeedback: withFeedback() });
+    await hooks.onRequest({ toolCallId: "z1", id: azure, args: mergeArgs, reason: null });
+    expect(await waitForApproval("z1", { timeoutMs: 1000 })).toBe(false);
+    await hooks.onRequest({
+      toolCallId: "z2",
+      id: "send_workspace_instruction",
+      args: { instruction: "Merge the PR now." },
+      reason: null,
+    });
+    const items = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(items.map((i) => i.payload.headsDownMergeReview.unchecked)).toEqual([
+      expect.stringContaining("may not be GitHub's"),
+      expect.stringContaining("doesn't say which PR"),
+    ]);
+  });
+
+  it("doesn't read the PR for a merge the run won't make anyway", async () => {
+    const run = await startRun(db, null);
+    const asked: MergeSubject[] = [];
+    await pauseRun(db);
+    const result = await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: null };
+      },
+    }).onRequest({ toolCallId: "x1", id: mergeTool, args: mergeArgs, reason: null });
+    expect(result?.deniedMessage).toBeDefined();
+    expect(asked).toEqual([]);
+  });
+
   it("won't announce a merge that is held", async () => {
-    const tools = buildPassTools(db, newPassOutcome(), () => {}, new Set(), [], withFeedback());
+    const announced = new Set<string>();
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced, [], withFeedback());
     const result = await tools.announce_merge.execute!(
       { repo: "acme/billing", number: 12, risk: "low", why: "Docs only." },
       { toolCallId: "a1", messages: [] } as never,
     );
     expect(result).toMatchObject({ ok: false });
+    expect(announced.size).toBe(0);
     expect(await sql`SELECT 1 FROM attention_items`).toHaveLength(0);
+  });
+
+  it("announces a workspace's merge with no open feedback, but not one it can't check", async () => {
+    const clean = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
+    const announced = new Set<string>();
+    const tools = buildPassTools(db, newPassOutcome(), () => {}, announced, [], clean);
+    const announce = (repo: string, number: number) =>
+      tools.announce_merge.execute!({ repo, number, risk: "low", why: "Docs only." }, {
+        toolCallId: "a2",
+        messages: [],
+      } as never);
+
+    // No workspace owns it, and announce_merge can't tell which merge tool will run.
+    expect(await announce("acme/billing", 12)).toMatchObject({ ok: false });
+
+    await workspaceWithPr();
+    expect(await announce("acme/billing", 12)).toMatchObject({ ok: true });
+    expect([...announced]).toEqual(["acme/billing#12"]);
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(1);
   });
 });

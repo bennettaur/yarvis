@@ -207,25 +207,32 @@ mode or with auto mode on. It recognises merges by the tool's name and the
 instruction's wording, so it can miss one phrased some other way.
 
 - **A workspace it is pushing has the PR:** within your working hours, the
-  first try has Yarvis tell the workspace's session to address the feedback.
-  That is a workspace you put on a work stream, or one it started this run,
-  the same ones it may steer without asking. The session fixes what it agrees with,
-  replies on the threads it won't change, and resolves what it handled. Once
-  the session has finished, a later pass tries the merge again. If every
-  thread is resolved, the merge goes ahead as usual.
+  first try has Yarvis tell the workspace's session to address the feedback,
+  once per PR each heads-down run. That is a workspace you put on a work
+  stream, or one it started this run, the same ones it may steer without
+  asking. The session fixes what it agrees with, replies on the threads it
+  won't change, and resolves what it handled. It is told to treat comments as
+  suggestions about the PR's code, and to leave alone any that ask it to run
+  commands, open links, or change CI, secrets or dependencies. Once the
+  session has finished, a later pass tries the merge again. If every thread
+  is resolved, the merge goes ahead as usual.
+- **Feedback from outside the repo:** on GitHub, anyone who can see a repo can
+  comment on its PRs. If any open thread or review asking for changes is from
+  someone who isn't an owner, member or collaborator of the repo, the session
+  isn't asked to act on it, and the merge waits for you.
 - **Feedback still open, no workspace it is pushing has the PR, it is outside
   your working hours, or the session couldn't be reached:** the merge waits
-  for you. A modal pops up over whatever page you have open, with the PR and each
-  open thread: who left it, where, and what it says. Press **Approve merge**
-  to let a later pass merge it, or **Review, don't merge** to stop the merge
-  and open the PR. Escape puts the modal away for now; the approval still
-  waits under **Needs you**.
+  for you. A modal pops up over whatever page you have open, with the PR and
+  each open thread: who left it, where, and what it says. Its buttons wake up
+  a moment after it appears, so a click meant for the page underneath can't
+  answer it. Press **Approve merge** to let a later pass merge it, or
+  **Review, don't merge** to stop the merge and open the PR. Escape puts the
+  modal away for now; the approval still waits under **Needs you**.
 
 If it can't check the PR, the merge waits for you the same way, and the modal
 says why. That happens when no GitHub or Azure DevOps token is set, when the
 merge call doesn't name the PR's repo, or when no workspace has the PR and the
-merge tool isn't GitHub's. The workspace gets one chance per PR each heads-down
-run.
+merge tool isn't GitHub's.
 
 ### Merge alerts
 
