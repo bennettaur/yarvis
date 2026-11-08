@@ -9,6 +9,9 @@ import { mock } from "bun:test";
  * actions had no function to call. Registering one stub here keeps every
  * export, passes each call through to the real client unless a test has set an
  * override, and `resetPrApi` clears them.
+ *
+ * An override changes what code outside `lib/pr/api` sees. A real function
+ * there calling another one in the same module still calls the real one.
  */
 
 type PrApi = typeof import("../lib/pr/api");
@@ -37,7 +40,8 @@ const through =
     ((overrides[name] ?? actual[name]) as any)(...args);
 
 // Every function is wrapped, so one added to `lib/pr/api` can be stubbed
-// without touching this file.
+// without touching this file. A class export would need leaving out, as
+// `sidecarApi.ts` does for `SidecarError`, or `instanceof` stops working.
 const overridable = (Object.keys(actual) as (keyof PrApi)[]).filter(
   (name) => typeof actual[name] === "function",
 );
