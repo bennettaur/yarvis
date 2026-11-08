@@ -58,9 +58,9 @@ the assistant may run in a workspace's session (see
 example `/do-code-review`. A plugin skill takes its plugin prefix, as in
 `/code-review-team-core:do-code-review`. Only add commands that are safe to
 run without you watching. Commands that change what the session may do or who
-it acts as (`/permissions`, `/allowed-tools`, `/hooks`, `/mcp`, `/add-dir`,
-`/config`, `/sandbox`, `/plugin`, `/terminal-setup`, `/login`, `/logout`) are
-refused, even if listed.
+it acts as, such as `/permissions`, `/hooks`, `/mcp`, `/plugin` or `/login`, are
+refused even if listed, and so are ones that send the transcript away, like
+`/bug`.
 
 Allowing a command lets the assistant choose the text after it. A skill acts on
 that text with its own tools, so only allow skills whose arguments you'd be
@@ -568,7 +568,10 @@ billing-api workspace". It can pass text after the command too, as in
 Only allowed commands run: `/compact`, plus the ones you list in
 **Settings → Repositories → Agent**. The app's core checks the list, not the
 assistant, and only the Settings screen can change it. Anything else is refused
-and the assistant tells you where to add it. The text after the command has
+and the assistant tells you where to add it. The list covers what Yarvis types
+as a slash command. A session can still call a skill on its own when asked in
+words, so what it may do there is bounded by its own permissions, not by this
+list. The text after the command has
 newlines and control characters turned into spaces, so it can't submit a
 second command. The other rules for instructions apply as well: the agent must
 be what's reading the prompt, and a send confirms delivery only. A spoken turn

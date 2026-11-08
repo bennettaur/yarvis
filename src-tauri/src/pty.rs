@@ -724,7 +724,7 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 ///
 /// The text and the Enter are separate writes, `INSTRUCTION_SUBMIT_DELAY`
 /// apart, and the checks above run before each. An error that says the
-/// instruction was "typed but not submitted" means the text is sitting in the
+/// text was "typed but not submitted" means the text is sitting in the
 /// prompt unsent.
 pub fn send_session_instruction(
     app: &AppHandle,
@@ -741,22 +741,35 @@ pub fn send_session_instruction(
 /// them. `/compact` only summarizes the session's own context.
 pub const DEFAULT_ALLOWED_SLASH_COMMANDS: &[&str] = &["compact"];
 
-/// Claude Code commands that change what a session may do or who it acts as.
-/// Refused even when listed in Settings: a model that read an injected "run
-/// /permissions" would otherwise only need the user to add it. `settings.json`
-/// is hand-editable, so this is checked on every send, not only on save.
+/// Commands and skills that change what a session may do or who it acts as, or
+/// send its transcript off the machine. Refused even when listed in Settings: a
+/// model that read an injected "run /permissions" would otherwise only need the
+/// user to add it. `settings.json` is hand-editable, so this is checked on every
+/// send, not only on save. Some names are aliases or skills that may not exist
+/// in a given Claude Code version; refusing a name nobody uses costs nothing.
 pub const REFUSED_SLASH_COMMANDS: &[&str] = &[
     "add-dir",
+    "agents",
     "allowed-tools",
+    "bug",
     "config",
+    "feedback",
+    "fewer-permission-prompts",
     "hooks",
+    "install-github-app",
     "login",
     "logout",
+    "marketplace",
     "mcp",
     "permissions",
     "plugin",
+    "plugins",
+    "privacy-settings",
     "sandbox",
+    "settings",
+    "statusline",
     "terminal-setup",
+    "update-config",
 ];
 
 /// Longest slash-command name accepted. Plugin skills are namespaced
@@ -836,10 +849,15 @@ fn allowed_slash_commands(app: &AppHandle) -> Vec<String> {
 }
 
 fn merge_allowed_slash_commands(configured: Option<Vec<String>>) -> Vec<String> {
+    // A hand-edited entry like "/Do-Code-Review" still means that command.
+    let configured = configured
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| normalize_slash_command_name(&name));
     DEFAULT_ALLOWED_SLASH_COMMANDS
         .iter()
         .map(|s| s.to_string())
-        .chain(configured.unwrap_or_default())
+        .chain(configured)
         .collect()
 }
 
@@ -883,7 +901,7 @@ fn submit_at_agent_prompt(
         (session.child.process_id(), foreground_pid(session))
     };
     std::thread::sleep(INSTRUCTION_SUBMIT_DELAY);
-    let not_submitted = |e: String| format!("the instruction was typed but not submitted: {e}");
+    let not_submitted = |e: String| format!("the text was typed but not submitted: {e}");
     // Checked again before the Enter: if the agent exited or was replaced during
     // the pause, the Enter would run the typed text in whatever reads it now.
     // Comparing pids also catches a different agent process that would still
@@ -1371,7 +1389,7 @@ mod tests {
         resolve_max_sessions, runs_claude_code, session_env, session_token, snapshot, Scrollback,
         DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS, DEFAULT_MAX_SESSIONS,
         MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
-        REFUSED_SLASH_COMMANDS,
+        MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
     };
     use std::sync::Mutex;
 
@@ -1510,6 +1528,10 @@ mod tests {
             merge_allowed_slash_commands(Some(allowed(&["do-code-review"]))),
             allowed(&["compact", "do-code-review"])
         );
+        assert_eq!(
+            merge_allowed_slash_commands(Some(allowed(&[" /Do-Code-Review "]))),
+            allowed(&["compact", "do-code-review"])
+        );
     }
 
     #[test]
@@ -1517,6 +1539,9 @@ mod tests {
         for name in REFUSED_SLASH_COMMANDS {
             assert!(!DEFAULT_ALLOWED_SLASH_COMMANDS.contains(name));
             let err = prepare_slash_command(name, None, &allowed(&[name])).unwrap_err();
+            assert!(err.contains("never sends it"), "{err}");
+            let upper = name.to_uppercase();
+            let err = prepare_slash_command(&upper, None, &allowed(&[&upper])).unwrap_err();
             assert!(err.contains("never sends it"), "{err}");
         }
     }
@@ -1543,6 +1568,7 @@ mod tests {
         // Arguments go in their own field, so a name with text after it is
         // refused rather than split.
         let list = allowed(&["compact"]);
+        let too_long = "a".repeat(MAX_SLASH_COMMAND_CHARS + 1);
         for text in [
             "compact focus on the tests",
             "compact\r/login",
@@ -1552,6 +1578,7 @@ mod tests {
             "plugin:",
             "a:b:c",
             "",
+            too_long.as_str(),
         ] {
             assert!(
                 prepare_slash_command(text, None, &list).is_err(),

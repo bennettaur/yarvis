@@ -679,4 +679,11 @@ describe("isMergeCall", () => {
     ).toBe(true);
     expect(isMergeCall("send_workspace_slash_command", { command: "compact" })).toBe(false);
   });
+
+  it("reads a slash command's name, which can ask for a merge on its own", () => {
+    expect(isMergeCall("send_workspace_slash_command", { command: "merge-pr" })).toBe(true);
+    expect(
+      isMergeCall("send_workspace_slash_command", { command: "/merge-pr", arguments: "12" }),
+    ).toBe(true);
+  });
 });

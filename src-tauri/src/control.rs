@@ -2,8 +2,8 @@
 //! the core to do things it can't do itself — spawning, killing, and typing an
 //! instruction or an allowed slash command into a Claude Code session in a
 //! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
-//! GitHub token into the Keychain, and ringing an alarm the sidecar found due (`alarm.fire`) or stopping one
-//! (`alarm.release`).
+//! GitHub token into the Keychain, and ringing an alarm the sidecar found due
+//! (`alarm.fire`) or stopping one (`alarm.release`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -19,13 +19,13 @@
 //! outright when it opens with a character the agent reads as a command rather
 //! than a request. `claude.slash` is how a slash command reaches a session: the
 //! sidecar names a command, and `pty::send_session_slash_command` types it only
-//! when it is on an allowlist that, like the agent command, comes from settings
-//! only the webview writes (built-in defaults plus a list the user keeps in
-//! Settings). Its arguments are cleaned like an instruction. `mcp.saveOAuth` and `github.saveToken` are the two methods
-//! that write a secret. `mcp.saveOAuth` can only reach the `oauth` subtree of one
-//! MCP server's entry, and `github.saveToken` only the `github_token` key — never
-//! a provider key, the database URL, or another server's headers. Requests and
-//! responses are newline-delimited JSON.
+//! when it is on the allowlist (built-in defaults plus a list the user keeps in
+//! Settings, which no sidecar route or tool writes). Its arguments are cleaned
+//! like an instruction. `mcp.saveOAuth` and `github.saveToken` are the two
+//! methods that write a secret. `mcp.saveOAuth` can only reach the `oauth`
+//! subtree of one MCP server's entry, and `github.saveToken` only the
+//! `github_token` key — never a provider key, the database URL, or another
+//! server's headers. Requests and responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -461,6 +461,27 @@ mod unix_impl {
                 p.resume.as_deref(),
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
             );
+        }
+
+        #[test]
+        fn reads_the_slash_command_the_sidecar_sends() {
+            let p: SlashParams = serde_json::from_value(json!({
+                "workspaceId": "w1",
+                "command": "compact",
+                "arguments": "focus on the tests",
+                "agentPids": [42],
+            }))
+            .expect("sidecar payload");
+            assert_eq!(p.workspace_id, "w1");
+            assert_eq!(p.command, "compact");
+            assert_eq!(p.arguments.as_deref(), Some("focus on the tests"));
+            assert_eq!(p.agent_pids, vec![42]);
+
+            let bare: SlashParams =
+                serde_json::from_value(json!({ "workspaceId": "w1", "command": "compact" }))
+                    .expect("payload without arguments");
+            assert_eq!(bare.arguments, None);
+            assert!(bare.agent_pids.is_empty());
         }
 
         #[test]

@@ -259,4 +259,30 @@ describe("AgentSection", () => {
     expect(host.innerHTML).not.toContain("Saved.");
     cleanup();
   });
+
+  it("drops a stale slash-command notice once that field is edited again", async () => {
+    const { host, cleanup } = await mount();
+    typeSlash(host, "/do-code-review");
+    await clickSaveCommands(host);
+    expect(host.innerHTML).toContain("Saved.");
+
+    typeSlash(host, "/do-code-review /simplify");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.innerHTML).not.toContain("Saved.");
+    cleanup();
+  });
+
+  it("clears a slash-command refusal once a later save succeeds", async () => {
+    rejectSaveWith = "/permissions changes what the session may do, so it can't be allowed";
+    const { host, cleanup } = await mount();
+    typeSlash(host, "/permissions");
+    await clickSaveCommands(host);
+    expect(host.innerHTML).toContain("so it can't be allowed");
+
+    rejectSaveWith = null;
+    await clickSaveCommands(host);
+    expect(host.innerHTML).not.toContain("so it can't be allowed");
+    expect(host.innerHTML).toContain("Saved.");
+    cleanup();
+  });
 });

@@ -298,13 +298,19 @@ export function isMergeInstruction(instruction: string | null): boolean {
 }
 
 /**
- * What a call types into a workspace's session, or undefined for a call that
- * types nothing. A slash command's arguments can ask for a merge as plainly as
- * an instruction can.
+ * What a call types into a workspace's session: undefined for a call that types
+ * nothing, null when its text argument is missing. A slash command is checked
+ * as the whole line, since a skill's name (`/merge-pr`) can ask for a merge as
+ * plainly as its arguments can.
  */
 function sessionText(tool: string, args: unknown): string | null | undefined {
   if (tool === "send_workspace_instruction") return stringArg(args, "instruction");
-  if (tool === "send_workspace_slash_command") return stringArg(args, "arguments");
+  if (tool === "send_workspace_slash_command") {
+    const command = stringArg(args, "command");
+    if (!command) return null;
+    const rest = stringArg(args, "arguments");
+    return rest ? `${command} ${rest}` : command;
+  }
   return undefined;
 }
 
