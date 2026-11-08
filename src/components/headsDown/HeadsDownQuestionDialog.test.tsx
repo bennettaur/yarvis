@@ -1,7 +1,9 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { createRoot } from "react-dom/client";
 import type { AttentionItem } from "../../lib/attention";
-import type { HeadsDownQuestion } from "../../lib/headsDown";
+import { HEADS_DOWN_CACHE_KEYS, type HeadsDownQuestion } from "../../lib/headsDown";
+import { cachedFetch, primeCache } from "../../lib/resourceCache";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import HeadsDownQuestionDialog from "./HeadsDownQuestionDialog";
@@ -59,6 +61,10 @@ const ITEM: AttentionItem = {
 
 let open: HeadsDownQuestion[] = [];
 let failList = false;
+// When set, the next list request waits for it before answering.
+let nextListGate: Promise<void> | null = null;
+let listsRequested = 0;
+let listsAnswered = 0;
 const writes: { method: string; path: string; body: unknown }[] = [];
 
 stubSidecarApi({
@@ -72,6 +78,11 @@ stubSidecarApi({
     // QuestionCard names workspaces mentioned in the text.
     if (method === "GET" && path.startsWith("/api/workspaces")) return json([]);
     if (method === "GET" && path === "/api/heads-down/questions") {
+      listsRequested++;
+      const gate = nextListGate;
+      nextListGate = null;
+      if (gate) await gate;
+      listsAnswered++;
       return failList ? json({ error: "sidecar down" }, 500) : json(open);
     }
     const body = init?.body ? JSON.parse(String(init.body)) : null;
@@ -95,6 +106,9 @@ afterEach(() => {
   unmount = null;
   open = [];
   failList = false;
+  nextListGate = null;
+  listsRequested = 0;
+  listsAnswered = 0;
   writes.length = 0;
   closed = 0;
 });
@@ -112,6 +126,15 @@ async function mount(armingMs = 0): Promise<HTMLElement> {
   );
   unmount = mounted.unmount;
   return mounted.host;
+}
+
+/** Holds the next list request until the returned function is called. */
+function holdNextList(): () => void {
+  let release = () => {};
+  nextListGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return () => release();
 }
 
 function button(host: HTMLElement, label: string): HTMLButtonElement {
@@ -196,9 +219,82 @@ describe("HeadsDownQuestionDialog", () => {
     expect(card()?.hasAttribute("inert")).toBe(true);
   });
 
-  it("closes on Escape without reporting done", async () => {
+  it("keeps the answered card inert while the list reloads", async () => {
+    open = [CLICKED, OLDER];
+    const host = await mount();
+    const card = () => host.querySelector('[data-testid="heads-down-card"]');
+    const release = holdNextList();
+
+    button(host, "Approve this call").click();
+    await waitFor(() => card()?.hasAttribute("inert") === true, "the card to go inert");
+    expect(host.textContent).toContain(CLICKED.question);
+
+    release();
+    await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the next question");
+    await waitFor(() => card()?.hasAttribute("inert") === false, "the next card to arm");
+  });
+
+  it("tells the Heads down page to reload once a question is answered", async () => {
+    open = [CLICKED, OLDER];
+    primeCache(HEADS_DOWN_CACHE_KEYS.questions, "before the answer");
+    const host = await mount();
+    button(host, "Approve this call").click();
+    await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the next question");
+    expect(await cachedFetch(HEADS_DOWN_CACHE_KEYS.questions, async () => "reloaded")).toBe(
+      "reloaded",
+    );
+  });
+
+  describe("a load that finishes after the dialog moved to another item", () => {
+    const OLDER_ITEM: AttentionItem = { ...ITEM, id: "a2", sessionKey: "heads-down:q-older" };
+
+    async function moveWhileFirstLoadWaits(): Promise<{ host: HTMLElement; release: () => void }> {
+      open = [CLICKED, OLDER];
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = createRoot(host);
+      unmount = () => {
+        root.unmount();
+        host.remove();
+      };
+      const props = { onClose: () => closed++, onOpenPage: () => {}, armingMs: 0 };
+      const release = holdNextList();
+      root.render(createElement(HeadsDownQuestionDialog, { ...props, item: ITEM }));
+      await waitFor(() => listsRequested === 1, "the first load to start");
+      root.render(createElement(HeadsDownQuestionDialog, { ...props, item: OLDER_ITEM }));
+      await waitFor(() => host.textContent?.includes(OLDER.question) ?? false, "the newer load");
+      return { host, release };
+    }
+
+    // The stale response has no later event to wait on, so give it a moment to land.
+    async function letStaleLoadLand(): Promise<void> {
+      await waitFor(() => listsAnswered === 2, "the stale load");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    it("doesn't replace the newer list", async () => {
+      const { host, release } = await moveWhileFirstLoadWaits();
+      release();
+      await letStaleLoadLand();
+      expect(host.textContent).toContain(OLDER.question);
+      expect(host.textContent).not.toContain(CLICKED.question);
+    });
+
+    it("doesn't show its error", async () => {
+      const { host, release } = await moveWhileFirstLoadWaits();
+      failList = true;
+      release();
+      await letStaleLoadLand();
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      expect(host.textContent).toContain(OLDER.question);
+    });
+  });
+
+  it("closes on Escape without reporting done, and on no other key", async () => {
     open = [CLICKED];
     await mount();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(closed).toBe(0);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(closed).toBe(1);
   });
