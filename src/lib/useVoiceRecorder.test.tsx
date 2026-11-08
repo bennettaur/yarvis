@@ -172,7 +172,8 @@ describe("useVoiceRecorder", () => {
     await settle();
 
     await tick(3, SPEAKING);
-    await tick(10, SILENT);
+    // Longer than a pause that would end a continuous-mode turn.
+    await tick(15, SILENT);
     expect(active.utterances).toHaveLength(0);
 
     active.recorder.stop();

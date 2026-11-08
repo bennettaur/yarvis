@@ -59,6 +59,14 @@ describe("createResampler", () => {
     expect(Array.from(createResampler(32_000, 16_000)(input))).toEqual([0, 2, 4, 6]);
   });
 
+  it("stops at the last sample it can interpolate to, and resumes from it", () => {
+    const resample = createResampler(32_000, 16_000);
+    expect(Array.from(resample(Float32Array.from([0, 1, 2, 3, 4, 5, 6])))).toEqual([0, 2, 4]);
+    // An empty post from the worklet changes nothing.
+    expect(Array.from(resample(new Float32Array(0)))).toEqual([]);
+    expect(Array.from(resample(Float32Array.from([7, 8, 9])))).toEqual([6, 8]);
+  });
+
   it("gives the same output in chunks as in one piece", () => {
     // The worklet posts ~32 ms at a time; a seam between posts would be an
     // audible click every 32 ms, which the VAD could hear as noise. An
@@ -112,6 +120,20 @@ describe("createTurnMessageHandler", () => {
     [16384, -16384, 0, 32767].forEach((expected, i) => {
       expect(Math.abs(samples[i]! - expected)).toBeLessThanOrEqual(1);
     });
+  });
+
+  it("hands over one turn per turn event, and none for a pause", () => {
+    let turns = 0;
+    const handle = createTurnMessageHandler({ onSpeechStart: () => {}, onTurn: () => turns++ });
+
+    handle(JSON.stringify({ type: "turn", reason: "silence", probability: null }));
+    handle(new Int16Array(4).buffer);
+    handle(new Int16Array(4).buffer);
+    expect(turns).toBe(1);
+
+    handle(JSON.stringify({ type: "pause", probability: 0.1 }));
+    handle(new Int16Array(4).buffer);
+    expect(turns).toBe(1);
   });
 
   it("ignores audio that no turn event announced", () => {
@@ -171,6 +193,7 @@ describe("openTurnStream", () => {
   }
 
   let trackStops = 0;
+  let track = new EventTarget();
   let contextsClosed = 0;
   let permission = deferred<MediaStream>();
   let workletLoaded = deferred<void>();
@@ -181,6 +204,7 @@ describe("openTurnStream", () => {
 
   beforeEach(() => {
     trackStops = 0;
+    track = new EventTarget();
     contextsClosed = 0;
     permission = deferred<MediaStream>();
     workletLoaded = deferred<void>();
@@ -226,11 +250,11 @@ describe("openTurnStream", () => {
   const micStream = () =>
     ({
       getTracks: () => [
-        {
+        Object.assign(track, {
           stop: () => {
             trackStops++;
           },
-        },
+        }),
       ],
     }) as unknown as MediaStream;
 
@@ -288,6 +312,36 @@ describe("openTurnStream", () => {
     expect(errors).toEqual(["lost the connection to the turn detector"]);
     expect(trackStops).toBe(1);
     expect(contextsClosed).toBe(1);
+  });
+
+  it("reports a microphone that stops on its own, and closes the connection", async () => {
+    const { h, errors } = handlers();
+    const { socket } = await opened(h);
+
+    track.dispatchEvent(new Event("ended"));
+
+    expect(errors).toEqual(["the microphone stopped"]);
+    expect(socket.closeCalls).toBe(1);
+    expect(contextsClosed).toBe(1);
+  });
+
+  it("rejects without a microphone API, before connecting", async () => {
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+    const { h } = handlers();
+    await expect(openTurnStream("ws://127.0.0.1:1/?token=t", h)).rejects.toThrow(
+      /no microphone support/,
+    );
+    expect(FakeSocket.last).toBeNull();
+  });
+
+  it("doesn't connect when already stopped", async () => {
+    const { h } = handlers();
+    const abort = new AbortController();
+    abort.abort();
+    await expect(openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal)).rejects.toThrow(
+      /stopped before the microphone opened/,
+    );
+    expect(FakeSocket.last).toBeNull();
   });
 
   it("doesn't report its own close as a lost connection, and closes once", async () => {

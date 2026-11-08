@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { createLevelMeter } from "../../lib/levelMeter";
 import type { UseVoiceResult } from "../../lib/useVoice";
 import { DEFAULT_VOICE_CONFIG } from "../../lib/voiceConfig";
-import { renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
 import VoiceControls from "./VoiceControls";
 
 function voice(overrides: Partial<UseVoiceResult> = {}): UseVoiceResult {
@@ -48,6 +48,35 @@ describe("VoiceControls", () => {
     expect(stop).toBeUndefined();
   });
 
+  it("offers Stop while recording or speaking", async () => {
+    expect((await render(voice({ recording: true }))).stop).toBeDefined();
+    expect((await render(voice({ phase: "speaking" }))).stop).toBeDefined();
+  });
+
+  it("enables the mic only once speech-to-text is set up", async () => {
+    expect((await render(voice())).mic.disabled).toBe(false);
+    expect((await render(voice({ ready: { stt: false, tts: true } }))).mic.disabled).toBe(true);
+  });
+
+  it("saves the Continuous toggle", async () => {
+    const saved: unknown[] = [];
+    const mounted = await mountForInteraction(
+      createElement(VoiceControls, {
+        voice: voice({ updateConfig: async (patch) => void saved.push(patch) }),
+      }),
+      10,
+    );
+    try {
+      const continuous = [...mounted.host.querySelectorAll("label")].find((l) =>
+        l.textContent?.includes("Continuous"),
+      );
+      continuous?.querySelector("input")?.click();
+      expect(saved).toEqual([{ continuous: true }]);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it("shows how many turns are waiting for the reply to end", async () => {
     expect((await render(voice({ queued: 2 }))).text).toContain("2 queued");
     expect((await render(voice({ queued: 0 }))).text).not.toContain("queued");
@@ -73,5 +102,6 @@ describe("VoiceControls", () => {
       "Hearing you…",
     );
     expect((await render(voice({ recording: true }))).text).toContain("Listening…");
+    expect((await render(voice())).text).not.toContain("Listening…");
   });
 });

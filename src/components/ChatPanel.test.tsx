@@ -7,7 +7,7 @@ import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "../lib/voiceConfig";
-import { mountForInteraction, textOf } from "../test/render";
+import { mountForInteraction, textOf, waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
@@ -528,12 +528,16 @@ describe("ChatPanel", () => {
     unmount = mounted.unmount;
 
     mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
-    await settle();
-    expect(mounted.host.textContent).toContain("Starting turn detection");
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
 
     setHostActive(false);
-    await settle();
-    expect(mounted.host.textContent).not.toContain("Starting turn detection");
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 
   it("closes continuous voice when the Omni Chat overlay covers it", async () => {
@@ -553,12 +557,16 @@ describe("ChatPanel", () => {
     unmount = mounted.unmount;
 
     mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
-    await settle();
-    expect(mounted.host.textContent).toContain("Starting turn detection");
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
 
     setOverlayOpen(true);
-    await settle();
-    expect(mounted.host.textContent).not.toContain("Starting turn detection");
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 
   it("picks up sessions created elsewhere when it comes back into view", async () => {

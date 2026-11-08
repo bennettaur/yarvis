@@ -162,6 +162,19 @@ export async function openTurnStream(
     for (const track of stream.getTracks()) track.stop();
     throw closedError();
   }
+  // An unplugged mic or a revoked permission ends the track without an error,
+  // which would leave the surface showing "Listening…" while hearing nothing.
+  for (const track of stream.getTracks()) {
+    track.addEventListener(
+      "ended",
+      () => {
+        if (closed) return;
+        close();
+        handlers.onError("the microphone stopped");
+      },
+      { once: true },
+    );
+  }
 
   let context: AudioContext | null = null;
   let capture: AudioWorkletNode | null = null;

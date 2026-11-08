@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { chmodSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 import { TurnDetector, type TurnDetectorDeps, writeTurnServerScript } from "./turnDetector.ts";
 
 /** A child process that only exits or prints when the test says so. */
@@ -37,6 +38,14 @@ afterEach(() => {
   else process.env.YARVIS_SIDECAR_TOKEN = originalToken;
 });
 
+async function until(check: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 function detector(overrides: Partial<TurnDetectorDeps> = {}) {
   const killed: number[] = [];
   const spawned: {
@@ -70,6 +79,7 @@ describe("TurnDetector", () => {
     expect(spawned[0]?.env.YARVIS_TURN_TOKEN).toBe("tok en");
     // The sidecar's own bearer would open the whole loopback API to the child.
     expect(spawned[0]?.env.YARVIS_SIDECAR_TOKEN).toBeUndefined();
+    expect(spawned[0]?.env.HF_HUB_DISABLE_TELEMETRY).toBe("1");
   });
 
   it("reports the websocket URL once the server says it is listening", () => {
@@ -200,6 +210,20 @@ describe("TurnDetector", () => {
     expect(turns.status().log).toEqual(["Traceback (most recent call last):"]);
   });
 
+  it("keeps the last 200 lines and skips blank ones", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]?.child.stderr as EventEmitter;
+    stderr.emit("data", "\n  \n");
+    expect(turns.status().log).toEqual([]);
+
+    for (let i = 1; i <= 250; i++) stderr.emit("data", `line ${i}\n`);
+    const log = turns.status().log;
+    expect(log).toHaveLength(200);
+    expect(log[0]).toBe("line 51");
+    expect(log.at(-1)).toBe("line 250");
+  });
+
   it("keeps an exited server's last lines, but not a replaced one's", () => {
     const { detector: turns, spawned } = detector();
     turns.start();
@@ -218,7 +242,7 @@ describe("TurnDetector", () => {
   it("kills a start that never becomes ready and lets the next request retry", async () => {
     const { detector: turns, spawned, killed } = detector({ startTimeoutMs: 20 });
     turns.start();
-    await Bun.sleep(40);
+    await until(() => turns.status().state === "failed", "the start to time out");
 
     const status = turns.status();
     expect(status.state).toBe("failed");
@@ -239,6 +263,16 @@ describe("writeTurnServerScript", () => {
     expect(two).not.toBe(one);
     expect(writeTurnServerScript("print('one')\n")).toBe(one);
     expect(await readFile(one, "utf8")).toBe("print('one')\n");
+  });
+
+  it("keeps the script private to the user, even in a folder made too open", () => {
+    const dir = dirname(writeTurnServerScript("print('mode')\n"));
+    expect(basename(dir)).toBe("voice");
+    chmodSync(dir, 0o755);
+
+    const file = writeTurnServerScript("print('mode')\n");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 });
 

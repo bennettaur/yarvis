@@ -599,6 +599,7 @@ describe("useVoice in continuous mode", () => {
 
   it("speaks the next reply after cutting in on a turn that ended with no text", async () => {
     active = await listening();
+    expect(active.voice.recording).toBe(true);
     await active.rerender({ streaming: "", busy: true });
     detector?.onSpeechStart();
     await settle();
@@ -646,12 +647,12 @@ describe("useVoice in continuous mode", () => {
     await settle();
     expect(active.sent).toEqual([]);
 
-    // A short answer to the reply's question is the user's, even in the tail.
+    // A short turn is the user's, even in the tail. Punctuation isn't a word.
     detector?.onSpeechStart();
-    transcriptResult = "green";
+    transcriptResult = "deploy — finished";
     detector?.onTurn(turnAudio());
     await settle();
-    expect(active.sent.map((m) => m.text)).toEqual(["green"]);
+    expect(active.sent.map((m) => m.text)).toEqual(["deploy — finished"]);
 
     // Well after the reply, the same words are the user's.
     setSystemTime(new Date(Date.now() + 5_000));
@@ -660,7 +661,7 @@ describe("useVoice in continuous mode", () => {
     detector?.onTurn(turnAudio());
     await settle();
     expect(active.sent.map((m) => m.text)).toEqual([
-      "green",
+      "deploy — finished",
       "the deploy finished a couple of minutes ago",
     ]);
   });

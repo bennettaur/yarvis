@@ -19,6 +19,11 @@ function words(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Words in `text`, counted the way the echo check counts them. */
+export function wordCount(text: string): number {
+  return words(text).length;
+}
+
 /** Adjacent word pairs: "a b c" gives "a b" and "b c". */
 function pairs(list: string[]): string[] {
   return list.slice(1).map((word, i) => `${list[i]} ${word}`);

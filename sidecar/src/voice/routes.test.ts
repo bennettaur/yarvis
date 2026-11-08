@@ -255,19 +255,25 @@ describe("the turn detector routes", () => {
     expect((await app().request("/api/voice/turn-detector/start", { method: "POST" })).status).toBe(
       401,
     );
+    const status = await app().request("/api/voice/turn-detector", { headers: auth });
+    expect(((await status.json()) as { state: string }).state).toBe("stopped");
   });
 
   it("start the detector and report its status", async () => {
     const { EventEmitter } = await import("node:events");
     const { createVoiceRoutes } = await import("./routes.ts");
     const { TurnDetector } = await import("./turnDetector.ts");
+    const stdout = new EventEmitter();
+    let spawns = 0;
     const turnDetector = new TurnDetector({
-      spawn: () =>
-        Object.assign(new EventEmitter(), {
+      spawn: () => {
+        spawns++;
+        return Object.assign(new EventEmitter(), {
           pid: 1,
-          stdout: new EventEmitter(),
+          stdout,
           stderr: new EventEmitter(),
-        }) as never,
+        }) as never;
+      },
       writeScript: () => "/tmp/turn_server.py",
       newToken: () => "token",
       kill: () => {},
@@ -277,7 +283,13 @@ describe("the turn detector routes", () => {
 
     const started = await routes.request("/turn-detector/start", { method: "POST" });
     expect(((await started.json()) as { state: string }).state).toBe("starting");
+    expect(spawns).toBe(1);
+
+    stdout.emit("data", "YARVIS_TURN_READY 5123\n");
     const status = await routes.request("/turn-detector");
-    expect(((await status.json()) as { state: string }).state).toBe("starting");
+    expect(await status.json()).toMatchObject({
+      state: "running",
+      url: "ws://127.0.0.1:5123/?token=token",
+    });
   });
 });

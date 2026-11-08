@@ -1,7 +1,7 @@
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, it } from "bun:test";
 import { createElement, useState } from "react";
 import { DEFAULT_VOICE_CONFIG } from "../../lib/voiceConfig";
-import { mountForInteraction } from "../../test/render";
+import { mountForInteraction, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import OmniChat from "./OmniChat";
 
@@ -30,8 +30,6 @@ stubSidecarApi({
   },
 });
 
-const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
-
 let setOpen: (open: boolean) => void = () => {};
 function Host() {
   const [open, setOpenState] = useState(true);
@@ -57,11 +55,15 @@ describe("OmniChat", () => {
     unmount = mounted.unmount;
 
     mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
-    await settle();
-    expect(mounted.host.textContent).toContain("Starting turn detection");
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
 
     setOpen(false);
-    await settle();
-    expect(mounted.host.textContent).not.toContain("Starting turn detection");
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 });

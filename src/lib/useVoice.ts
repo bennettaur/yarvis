@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toSpeechWav } from "./audioEncoding";
 import { playAudioBlob } from "./audioPlayback";
-import { looksLikeEcho } from "./echoFilter";
+import { looksLikeEcho, wordCount } from "./echoFilter";
 import { createLevelMeter, type LevelMeter } from "./levelMeter";
 import { createSentenceSplitter, type SentenceSplitter } from "./speechChunks";
 import { createSpeechQueue, type SpeechQueue } from "./speechQueue";
@@ -378,7 +378,7 @@ export function useVoice({
         .then(async () => {
           const text = await transcribeTurn(wav, generation);
           if (!text || generation !== turnGenerationRef.current) return;
-          const tooShortForTail = inTail && text.split(/\s+/).length < ECHO_TAIL_MIN_WORDS;
+          const tooShortForTail = inTail && wordCount(text) < ECHO_TAIL_MIN_WORDS;
           if (echoReference && !tooShortForTail && looksLikeEcho(text, echoReference)) return;
           if (busyRef.current || sendingRef.current || heldTurnsRef.current.length) holdTurn(text);
           else sendContinuous(text, generation, holdRefusedTurn);
