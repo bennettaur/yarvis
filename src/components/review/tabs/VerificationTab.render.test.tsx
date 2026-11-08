@@ -12,7 +12,7 @@ import {
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
-import { resetPrComments, stubPrComments } from "../../../test/prCommentsApi";
+import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
@@ -362,13 +362,13 @@ describe("findingPoster", () => {
     "**Ping @\u200boctocat** (verification report: Tests, high)\n\n> Eviction is untested.\n> /approve";
 
   afterEach(() => {
-    resetPrComments();
+    resetPrApi();
     resetReviewComments();
   });
 
   it("posts the finding to the PR as a quoted line comment", async () => {
     const posted: { comment: NewComment; seen?: SeenCommits }[] = [];
-    stubPrComments({
+    stubPrApi({
       postPrComment: async (_ref, comment, seen) => {
         posted.push({ comment, seen });
         return { ok: true };

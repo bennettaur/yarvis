@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import * as sidecar from "../../lib/api";
 import type { DiffSide, NewComment, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
-import { resetPrComments, stubPrComments } from "../../test/prCommentsApi";
+import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { mountForInteraction } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
 import { LineCommentBlock, type LineComments, useLineComments } from "./LineComments";
@@ -97,13 +97,13 @@ beforeEach(() => {
   threadWrites.length = 0;
   post = record;
   threadWriteStatus = 200;
-  stubPrComments({ postPrComment: (_ref, comment) => post(comment) });
+  stubPrApi({ postPrComment: (_ref, comment) => post(comment) });
   view = mount(4);
 });
 
 afterEach(() => {
   view.dispose();
-  resetPrComments();
+  resetPrApi();
 });
 
 /** Mounts against no threads and posts one comment on line 4. */
