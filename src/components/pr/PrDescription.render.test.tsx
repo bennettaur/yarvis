@@ -10,13 +10,17 @@ import PrDescription from "./PrDescription";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 3 };
 
-/** Writes the page sent; reads of the detail are answered from `current`. */
+/** Writes the page sent; reads of the detail are answered from `current` and counted. */
 const paths: string[] = [];
 let current: PrDetail;
+let detailReads = 0;
 
 // A spy, not `mock.module`, so the stub doesn't outlive this file.
 const sidecarFetch = spyOn(sidecar, "sidecarFetch").mockImplementation(async (path: string) => {
-  if (path.endsWith("/detail")) return new Response(JSON.stringify(current), { status: 200 });
+  if (path.endsWith("/detail")) {
+    detailReads++;
+    return new Response(JSON.stringify(current), { status: 200 });
+  }
   paths.push(path);
   return new Response(JSON.stringify({ ok: true }), { status: 200 });
 });
@@ -82,8 +86,12 @@ describe("PrDescription comments", () => {
     expect(host.textContent).toContain("this moved");
     expect(host.textContent).toContain("outdated");
 
+    const readsBefore = detailReads;
     button(host, "Resolve")?.click();
-    await waitFor(() => button(host, "Unresolve") !== undefined, "the thread to show as resolved");
+    await waitFor(() => button(host, "Unresolve") !== undefined, "the Unresolve button");
+    // Resolving refetches the detail. A refetch not yet sent when the file ends
+    // goes to the real client once the spy is restored.
+    await waitFor(() => detailReads > readsBefore, "the detail refetch");
     expect(paths).toContain("/api/github/pr/octo/repo/3/threads/PRRT_9/resolve");
   });
 

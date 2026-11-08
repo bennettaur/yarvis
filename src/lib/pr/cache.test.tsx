@@ -1,38 +1,34 @@
-import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { clearResourceCache } from "../resourceCache";
-import * as api from "./api";
 import { invalidate, invalidatePrReview, prDetailKey, usePrDetail, usePrFileDiff } from "./cache";
-import type { PrFile, PrRef } from "./types";
+import type { PrDetail, PrFile, PrRef, PrStatus } from "./types";
 
 // Stub the loaders so we control what each (re)fetch resolves to without
-// hitting a provider transport. Spies, not `mock.module`: that replaces the
-// module for the rest of the run, so later suites would get these partial
-// answers. `loadMs` holds a fetch open so a case can look at what the hook
-// renders while one is in flight.
+// hitting a provider transport. `loadMs` holds a fetch open so a case can look
+// at what the hook renders while one is in flight.
 let draft = true;
 let fetchCount = 0;
 let diffFetchCount = 0;
 let loadMs = 0;
-const spies = [
-  spyOn(api, "fetchPrDetail").mockImplementation((async (ref: PrRef) => {
+stubPrApi({
+  fetchPrDetail: async (ref: PrRef) => {
     fetchCount++;
     if (loadMs > 0) await new Promise((resolve) => setTimeout(resolve, loadMs));
-    return { draft, number: ref.provider === "github" ? ref.number : ref.prId };
-  }) as unknown as typeof api.fetchPrDetail),
-  spyOn(api, "fetchPrFiles").mockImplementation(async () => []),
-  spyOn(api, "fetchPrStatus").mockImplementation(
-    (async () => ({})) as unknown as typeof api.fetchPrStatus,
-  ),
-  spyOn(api, "fetchPrFileDiff").mockImplementation((async () => {
+    return { draft, number: ref.provider === "github" ? ref.number : ref.prId } as PrDetail;
+  },
+  fetchPrFiles: async () => [],
+  fetchPrStatus: async () => ({}) as PrStatus,
+  fetchPrFileDiff: async () => {
     diffFetchCount++;
-    return { filename: "a.ts" };
-  }) as unknown as typeof api.fetchPrFileDiff),
-];
+    return { filename: "a.ts" } as PrFile;
+  },
+});
 
 afterAll(() => {
-  for (const spy of spies) spy.mockRestore();
+  resetPrApi();
 });
 
 const ref: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 7 };
