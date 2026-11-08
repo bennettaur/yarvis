@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, useEffect, useRef } from "react";
-import { fakeAlarms } from "../test/alarmFixture";
+import { resetAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { renderToHtml } from "../test/render";
 import type { CalendarEvent } from "./calendar";
 
@@ -14,13 +14,18 @@ import type { CalendarEvent } from "./calendar";
 
 const created: Array<Record<string, unknown>> = [];
 
-mock.module("./alarms", () => ({
-  ...fakeAlarms,
-  createAlarm: async (label: string, fireAtMs: number, sound: boolean, meetLink: string | null) => {
+stubAlarmsApi({
+  createAlarm: async (
+    label: string,
+    fireAtMs: number,
+    sound = true,
+    meetLink: string | null = null,
+  ) => {
     created.push({ label, fireAtMs, sound, meetLink });
     return { id: "generated", status: "scheduled", label, fireAtMs, sound, meetLink };
   },
-}));
+});
+afterAll(resetAlarms);
 
 const { useEventAlarms } = await import("./calendarAlarms");
 
