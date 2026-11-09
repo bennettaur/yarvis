@@ -61,6 +61,32 @@ function toRestIssue(issue: FakeIssue) {
   };
 }
 
+/** An issue as `REPO_ISSUES_QUERY`'s nodes carry it. */
+function toGraphqlIssue(issue: FakeIssue) {
+  return {
+    number: issue.number,
+    title: issue.title,
+    url: `${REPO_HTML_URL}/issues/${issue.number}`,
+    state: "OPEN",
+    createdAt: issue.createdAt,
+    updatedAt: issue.createdAt,
+    author: { login: issue.author },
+    assignees: { nodes: issue.assignees.map((login) => ({ login })) },
+    labels: { nodes: issue.labels },
+    comments: { totalCount: issue.comments.length },
+  };
+}
+
+/** GitHub's `filterBy`: an assignee must match, and any one listed label is enough. */
+function issuesMatching(filterBy: unknown): FakeIssue[] {
+  const { assignee, labels } = (filterBy ?? {}) as { assignee?: string; labels?: string[] };
+  return ISSUES.filter(
+    (i) =>
+      (!assignee || i.assignees.includes(assignee)) &&
+      (!labels?.length || i.labels.some((l) => labels.includes(l.name))),
+  );
+}
+
 /** The combined check state, as GitHub reports it: any failure wins over anything still running. */
 function rollupState(pr: FakePull): "SUCCESS" | "FAILURE" | "PENDING" {
   if (pr.checks.some((c) => c.conclusion === "FAILURE")) return "FAILURE";
@@ -240,6 +266,7 @@ function handleGraphql(body: unknown): FakeResponse {
   //   search                   PRs the viewer is involved in (the Reviewing tab)
   //   repository.pullRequest   PR detail, viewed files and the stack's first layer ($number)
   //   repository.pullRequests  the stack's layers above and below (none: nothing is stacked)
+  //   repository.issues        the Issues tab's lists ($filterBy)
   //   pr0, pr1, …              batched lookups by PR, from their n0, n1, … variables
   // The stack's c0, c1, … behind-base comparisons are left out, so every layer
   // reads as up to date.
@@ -257,6 +284,7 @@ function handleGraphql(body: unknown): FakeResponse {
     pullRequest: pr ? toGraphqlPull(pr) : null,
     // Stack lookups: no PR is stacked on another.
     pullRequests: { nodes: [] },
+    issues: { nodes: issuesMatching(variables.filterBy).map(toGraphqlIssue) },
   };
   for (let i = 0; `n${i}` in variables; i++) {
     const aliased = findPull(variables[`n${i}`]);

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { AppPlace } from "../lib/appPlace";
-import { onOpenPlace, onOpenWorkspace } from "../lib/nav";
+import { ArtifactPaneContext } from "../lib/artifactPane";
+import { onOpenArtifact, onOpenPlace, onOpenWorkspace } from "../lib/nav";
 import { mountForInteraction, renderToHtml } from "../test/render";
 import Markdown from "./Markdown";
 
@@ -92,6 +93,54 @@ describe("Markdown yarvis:// links", () => {
   it("is dropped by the default URL filter unless the caller opts in", async () => {
     const html = await renderToHtml(<Markdown>{LINK}</Markdown>);
     expect(html).not.toContain("yarvis://");
+  });
+});
+
+describe("Markdown artifact links", () => {
+  const ID = "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b";
+  const LINK = `[Architecture](yarvis://artifact/${ID})`;
+  let cleanup: (() => void) | null = null;
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+  });
+
+  it("opens the artifact in the chat's own pane when one is provided", async () => {
+    const opened: string[] = [];
+    const elsewhere: string[] = [];
+    const stop = onOpenArtifact((id) => elsewhere.push(id));
+    const { host, unmount } = await mountForInteraction(
+      <ArtifactPaneContext.Provider value={(id) => opened.push(id)}>
+        <Markdown allowAppLinks>{LINK}</Markdown>
+      </ArtifactPaneContext.Provider>,
+    );
+    cleanup = () => {
+      stop();
+      unmount();
+    };
+    host.querySelector("a")?.click();
+    expect(opened).toEqual([ID]);
+    expect(elsewhere).toEqual([]);
+  });
+
+  it("asks the app to open it beside the Chat tab when it is outside any chat", async () => {
+    const asked: string[] = [];
+    const stop = onOpenArtifact((id) => asked.push(id));
+    const { host, unmount } = await mountForInteraction(<Markdown allowAppLinks>{LINK}</Markdown>);
+    cleanup = () => {
+      stop();
+      unmount();
+    };
+    host.querySelector("a")?.click();
+    expect(asked).toEqual([ID]);
+  });
+
+  it("is dropped by the default URL filter, and a malformed id stays inert", async () => {
+    expect(await renderToHtml(<Markdown>{LINK}</Markdown>)).not.toContain("yarvis://");
+    const bad = await renderToHtml(
+      <Markdown allowAppLinks>{"[x](yarvis://artifact/nope)"}</Markdown>,
+    );
+    expect(bad).not.toContain("yarvis://");
   });
 });
 

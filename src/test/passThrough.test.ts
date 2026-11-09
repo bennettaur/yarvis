@@ -36,6 +36,7 @@ describe("passThrough", () => {
 // checked here.
 const SHARED: { module: string; helper: string; stub?: RegExp; reset?: string }[] = [
   { module: "lib/pr/api", helper: "prApi.ts", stub: /stubPrApi\(/, reset: "resetPrApi" },
+  { module: "lib/chat", helper: "chatApi.ts", stub: /stubChatApi\(/, reset: "resetChatApi" },
   {
     module: "lib/workspaces",
     helper: "workspacesApi.ts",

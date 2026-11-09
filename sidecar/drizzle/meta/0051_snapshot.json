@@ -1,5 +1,5 @@
 {
-  "id": "eb34bf10-69b9-435c-9a3e-b85d26ebe2fe",
+  "id": "7b71ce7c-8940-4940-b0b8-5c88d5506f4d",
   "prevId": "8c662584-150b-43bf-840b-3cf2ba2e6ec6",
   "version": "7",
   "dialect": "postgresql",
@@ -1908,100 +1908,6 @@
       },
       "indexes": {},
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.heads_down_feedback_handoffs": {
-      "name": "heads_down_feedback_handoffs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pr_key": {
-          "name": "pr_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "heads_down_feedback_handoffs_run_pr_idx": {
-          "name": "heads_down_feedback_handoffs_run_pr_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "pr_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "heads_down_feedback_handoffs_run_id_heads_down_runs_id_fk": {
-          "name": "heads_down_feedback_handoffs_run_id_heads_down_runs_id_fk",
-          "tableFrom": "heads_down_feedback_handoffs",
-          "tableTo": "heads_down_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "heads_down_feedback_handoffs_workspace_id_workspaces_id_fk": {
-          "name": "heads_down_feedback_handoffs_workspace_id_workspaces_id_fk",
-          "tableFrom": "heads_down_feedback_handoffs",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -5822,7 +5728,8 @@
       "name": "artifact_format",
       "schema": "public",
       "values": [
-        "markdown"
+        "markdown",
+        "excalidraw"
       ]
     },
     "public.artifact_writer": {

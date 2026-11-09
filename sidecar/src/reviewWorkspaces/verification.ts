@@ -2,8 +2,9 @@
  * The verification report: a headless Claude Code run over a review PR's
  * checkout that summarises the change, picks the files that must be read, and
  * runs the risk, completeness, test, complexity, performance, comment,
- * observability and quality checks — each a subagent of the `yarvis-review`
- * plugin, fanned out by its `verification-report` skill.
+ * observability and quality checks, plus a whole-PR rating of whether a
+ * simpler approach exists — each a subagent of the `yarvis-review` plugin,
+ * fanned out by its `verification-report` skill.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a
@@ -182,6 +183,26 @@ const flowSchema = z
       : { ...flow, mermaid: flow.mermaid.trim() },
   );
 
+/**
+ * Whether the PR as a whole has a materially simpler way to its goal. The
+ * complexity check judges code line by line; this judges the design.
+ * `unrated` is the coordinator's answer when the agent failed.
+ */
+const approachSchema = z
+  .object({
+    rating: z.enum(["no-simpler", "simpler", "much-simpler", "unrated"]),
+    reason: boundedText(500),
+    alternative: boundedText(700),
+    path: optionalPath,
+    line: optionalLine,
+  })
+  // Without a simpler way there is nothing to point at.
+  .transform((approach) =>
+    approach.rating === "simpler" || approach.rating === "much-simpler"
+      ? approach
+      : { ...approach, alternative: "", path: undefined, line: undefined },
+  );
+
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
   "tests",
@@ -198,7 +219,7 @@ export const CHECK_SECTIONS = [
 type CheckSection = (typeof CHECK_SECTIONS)[number];
 
 /** The sections a reviewer can pick. The summary and must-reads always run. */
-export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "flow"] as const;
+export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "approach", "flow"] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
 /** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
@@ -216,6 +237,7 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   comments: "yarvis-review:comment-reviewer",
   observability: "yarvis-review:observability-reviewer",
   quality: "yarvis-review:quality-reviewer",
+  approach: "yarvis-review:approach-reviewer",
   flow: "yarvis-review:flow-diagram",
 };
 
@@ -409,6 +431,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     comments: checkSchema,
     observability: checkSchema,
     quality: checkSchema,
+    approach: approachSchema,
     flow: flowSchema,
   };
   // Only the asked-for sections are in the shape, all required: Claude Code is
@@ -443,7 +466,9 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
   });
   return fixed.extend(askedSchemas).transform((report) => {
     // The shape is built per run, so its type can't say which sections it has.
-    const { summary, mustRead, risk, flow, ...answered } = report as z.output<typeof fixed> &
+    const { summary, mustRead, risk, approach, flow, ...answered } = report as z.output<
+      typeof fixed
+    > &
       Answered;
     const checks: Partial<Record<CheckSection, Check>> = {};
     for (const name of CHECK_SECTIONS) {
@@ -465,6 +490,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       mustRead: dropCoveredFlags(mustRead, cited, audit),
       ...(risk && { risk: { ...risk, concerns } }),
       ...deduped,
+      ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
       ...(flow && { flow }),
     };
   });
@@ -522,10 +548,12 @@ const LARGE_PR = { changedLines: 4_000, files: 150 };
  * 62,000 and RESEND ≈ 15. In both runs every agent read every patch that
  * wasn't bulk, docs included, hence one reader per check agent for any file;
  * the code patches came to about 115 bytes per changed line. Those runs had
- * seven reading agents; the observability and quality checks are counted as
- * two more readers but BASE_TOKENS was not re-measured for them. Two points
- * fix two constants exactly and test nothing, and the other models are this
- * formula at their own rates, unmeasured: a warning's estimate, not a bill.
+ * seven reading agents; the observability, quality and approach agents are
+ * counted as three more readers but BASE_TOKENS was not re-measured for them,
+ * and the flow and approach agents' searches of the checkout aren't counted.
+ * Two points fix two constants exactly and test nothing, and the other models
+ * are this formula at their own rates, unmeasured: a warning's estimate, not a
+ * bill.
  */
 const BASE_TOKENS = 62_000;
 const RESEND = 15;
@@ -1085,7 +1113,8 @@ export interface VerificationSize {
    * About what one section adds: one more agent reading every file. The
    * estimate moves by this much per section added to or taken from the
    * defaults. It leaves out the agent's own fixed overhead and, for the flow
-   * diagram, its reads of the checkout, so it runs low.
+   * diagram and the approach rating, their reads of the checkout, so it runs
+   * low.
    */
   sectionCostUsd: number;
   /** The sections {@link estimatedCostUsd} assumes. */
