@@ -703,7 +703,9 @@ export async function addExtraWorktree(
     const current = await getWorkspace(db, workspaceId);
     if (!current) throw new WorktreeRefusal("workspace not found");
     assertOpenForWorktrees(current);
-    if (current.repos.find((r) => r.id === workspaceRepo.id)?.status !== "ready") {
+    // An archive or a failed provision run moves the repo off `ready`.
+    const repoStatus = current.repos.find((r) => r.id === workspaceRepo.id)?.status;
+    if (repoStatus !== "ready") {
       throw new WorktreeRefusal(`${basename(workspaceRepo.worktreePath)} is no longer ready`);
     }
     const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
@@ -729,15 +731,16 @@ export async function addExtraWorktree(
     if (onRemote !== undefined && onRemote !== branch) {
       throw new WorktreeRefusal(`the remote has ${onRemote}; use that exact name to check it out`);
     }
-    // A new branch nesting with a remote one (`stack` and `stack/two`) would
-    // make the remote-tracking ref's grant cover a folder.
-    const nested = branchCollision(
+    // `stack` beside a remote `stack/two` makes `refs/remotes/origin/stack` a
+    // folder, and the sandbox grant for that path would then cover every ref
+    // in it. The exact name is left out: checking it out is allowed.
+    const collidingRemote = branchCollision(
       branch,
       remote.filter((r) => r !== branch),
     );
-    if (nested) {
+    if (collidingRemote) {
       throw new WorktreeRefusal(
-        `${branch} collides with the remote branch ${nested}; pick a new name`,
+        `${branch} collides with the remote branch ${collidingRemote}; pick a new name`,
       );
     }
     if (onRemote !== undefined && base !== undefined) {
@@ -818,10 +821,11 @@ async function moveStagedWorktree(clone: string, stagedPath: string, path: strin
 
 /**
  * Best-effort removal of a worktree that was added but couldn't be recorded.
- * Before the move it is removed through git, at the staging path the agent
- * can't write. After the move the agent can have swapped the final path for a
- * symlink to another worktree of the clone, which `git worktree remove` would
- * follow; deleting the folder directly removes a symlink itself, not its
+ *
+ * Before the move, git removes it at the staging path, which the agent can't
+ * write. After the move, the agent may have replaced `path` with a symlink to
+ * another worktree of the clone, and `git worktree remove` would follow it. So
+ * the folder is deleted directly, which removes a symlink rather than its
  * target, and the stale registration is pruned.
  */
 async function undoWorktree(
@@ -830,6 +834,7 @@ async function undoWorktree(
   branch: string,
   { stagedPath, path }: { stagedPath: string; path: string },
 ): Promise<void> {
+  // The staged path exists until `moveStagedWorktree` renames it.
   if (existsSync(stagedPath)) {
     await runner(["worktree", "remove", "--force", stagedPath], { cwd: clone }).catch(
       () => undefined,

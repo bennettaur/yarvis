@@ -436,10 +436,58 @@ describe("workspace worktrees", () => {
       expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
     });
 
+    it("removes the moved worktree when recording it fails after the move", async () => {
+      const { workspaceId, root, wr, clone, runner } = await withRealClone();
+      const failAfterRename: GitRunner = async (args, opts) => {
+        const result = await runner(args, opts);
+        // A read-only admin `gitdir` file still matches the staged worktree, but
+        // the write after the rename fails.
+        if (args.includes("worktree") && args.includes("add")) {
+          chmodSync(join(clone, ".git", "worktrees", "widget-fresh", "gitdir"), 0o444);
+        }
+        return result;
+      };
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, failAfterRename),
+      ).rejects.toThrow();
+
+      expect(existsSync(join(root, "widget-fresh"))).toBe(false);
+      expect(existsSync(join(wr.worktreePath, "base.ts"))).toBe(true);
+      expect(
+        await runner(["rev-parse", "--verify", "--quiet", "refs/heads/fresh"], { cwd: clone }),
+      ).toMatchObject({ exitCode: 1 });
+      expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
+
+    it("runs no LFS filter on the checkout", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const marker = join(clone, "smudge-ran");
+      writeFileSync(join(clone, ".gitattributes"), "*.ts filter=lfs\n");
+      await git(clone, "add", ".gitattributes");
+      await git(clone, "commit", "-m", "attributes");
+      await git(clone, "update-ref", "refs/remotes/origin/main", "main");
+      await git(clone, "config", "filter.lfs.smudge", `sh -c 'touch "${marker}"; cat'`);
+      await git(clone, "config", "filter.lfs.required", "true");
+
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "fresh" },
+        runner,
+      );
+
+      expect(existsSync(join(added.path, "base.ts"))).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+    });
+
     it("refuses a branch that would nest with a remote one", async () => {
       const { workspaceId, runner } = await withRealClone();
       await expect(
         addExtraWorktree(db, workspaceId, { repo: "widget", branch: "pushed" }, runner),
+      ).rejects.toThrow("collides with the remote branch pushed/feature");
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "pushed/feature/x" }, runner),
       ).rejects.toThrow("collides with the remote branch pushed/feature");
     });
 

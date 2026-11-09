@@ -601,7 +601,9 @@ export async function addWorktreeWithoutHooks(
       "-c",
       "core.hooksPath=/dev/null",
       // A branch's .gitattributes picks the filters, and git-lfs would fetch
-      // from a URL the branch's .lfsconfig names, outside the sandbox's network.
+      // from a host the branch's .lfsconfig names, past the sandbox's network
+      // allowlist. Blank commands turn the filter off; `required=false` keeps
+      // the checkout from failing without it.
       "-c",
       "filter.lfs.process=",
       "-c",
