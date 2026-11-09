@@ -1006,6 +1006,211 @@ describe("workspace tools", () => {
     expect(result.repos[0]!.pr?.reviewDecision).toBe("changes_requested");
   });
 
+  describe("get_workspace_status refresh", () => {
+    type Refresher = (ids: string[], freshSince: Date) => Promise<void>;
+    type Row = Partial<typeof schema.workspaceRepoPr.$inferInsert>;
+
+    let repoCount = 0;
+
+    /** A workspace on a repo of its own whose cached PR row is `row`, or that has none when it is null. */
+    async function cachedWorkspace(refreshPrs: Refresher, row: Row | null, name = "Refresh WS") {
+      repoCount++;
+      const repo = await createRepo(db, config, {
+        cloneUrl: `https://github.com/acme/widget${repoCount}.git`,
+      });
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        startClaudeSession: async (input) => ({ sessionKey: `ws-claude:${input.workspaceId}` }),
+        refreshPrs,
+      });
+      const created = (await tools.create_workspace_session.execute!(
+        { name, repoIds: [repo.id], startWork: true },
+        opts,
+      )) as { workspaceId: string };
+      const [wr] = await db
+        .select()
+        .from(schema.workspaceRepos)
+        .where(eq(schema.workspaceRepos.workspaceId, created.workspaceId));
+      if (row) await db.insert(schema.workspaceRepoPr).values({ workspaceRepoId: wr!.id, ...row });
+      return { tools, workspaceId: created.workspaceId, workspaceRepoId: wr!.id };
+    }
+
+    /** A refresh that writes `values` onto every cached PR row, as a poll would. */
+    const writes =
+      (values: Row): Refresher =>
+      async () => {
+        await db.update(schema.workspaceRepoPr).set(values);
+      };
+    const knownPr = (polledAgoMs: number): Row => ({
+      prNumber: 42,
+      prState: "open",
+      checkRollup: "pending",
+      lastPolledAt: new Date(Date.now() - polledAgoMs),
+    });
+
+    type RepoStatus = {
+      refreshFailed?: boolean;
+      refreshNote?: string;
+      lastPolledAt?: Date | null;
+      pr: { number: number; checks: string } | null;
+    };
+    type StatusResult = { repos: RepoStatus[] };
+
+    it("answers from the cache without calling the provider when not asked to refresh", async () => {
+      let refreshed = false;
+      const { tools, workspaceId } = await cachedWorkspace(async () => {
+        refreshed = true;
+      }, knownPr(60_000));
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId },
+        opts,
+      )) as StatusResult;
+
+      expect(refreshed).toBe(false);
+      expect(result.repos[0]).toMatchObject({ pr: { number: 42, checks: "pending" } });
+      expect(result.repos[0]!.refreshFailed).toBeUndefined();
+    });
+
+    it("reads the provider into the cache first when asked to refresh", async () => {
+      const asked: string[][] = [];
+      const write = writes({ checkRollup: "success", lastPolledAt: new Date(), lastError: null });
+      const { tools, workspaceId } = await cachedWorkspace(
+        async (ids, freshSince) => {
+          asked.push(ids);
+          await write(ids, freshSince);
+        },
+        knownPr(20 * 60_000),
+      );
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(asked).toEqual([[workspaceId]]);
+      expect(result.repos[0]).toMatchObject({ pr: { number: 42, checks: "success" } });
+      expect(result.repos[0]!.refreshFailed).toBeUndefined();
+    });
+
+    it("flags a repo the refresh couldn't reach rather than passing off the cache as fresh", async () => {
+      // A refresh stopped by the rate limit writes nothing.
+      const { tools, workspaceId } = await cachedWorkspace(async () => {}, knownPr(20 * 60_000));
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(result.repos[0]).toMatchObject({
+        refreshFailed: true,
+        pr: { number: 42, checks: "pending" },
+      });
+      expect(result.repos[0]!.refreshNote).toContain("cached state");
+    });
+
+    it("flags a repo whose refresh recorded an error, though it stamped a fresh poll time", async () => {
+      const { tools, workspaceId } = await cachedWorkspace(
+        writes({ lastPolledAt: new Date(), lastError: "GitHub refused the request" }),
+        knownPr(20 * 60_000),
+      );
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(result.repos[0]!.refreshFailed).toBe(true);
+    });
+
+    it("counts a poll from the last few seconds as fresh without reading again", async () => {
+      const { tools, workspaceId } = await cachedWorkspace(async () => {}, knownPr(5_000));
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(result.repos[0]!.refreshFailed).toBeUndefined();
+    });
+
+    it("reports when a branch with no PR was last looked at, and whether a refresh reached it", async () => {
+      const polledAt = new Date();
+      const reached = await cachedWorkspace(writes({ lastPolledAt: polledAt, lastError: null }), {
+        prNumber: null,
+        lastPolledAt: new Date(Date.now() - 20 * 60_000),
+      });
+      const neverPolled = await cachedWorkspace(async () => {}, null, "Never polled");
+
+      const fresh = (await reached.tools.get_workspace_status.execute!(
+        { workspaceId: reached.workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+      const unread = (await neverPolled.tools.get_workspace_status.execute!(
+        { workspaceId: neverPolled.workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(fresh.repos[0]).toMatchObject({ pr: null, lastPolledAt: polledAt });
+      expect(fresh.repos[0]!.refreshFailed).toBeUndefined();
+      expect(unread.repos[0]).toMatchObject({ pr: null, lastPolledAt: null, refreshFailed: true });
+    });
+
+    it("refreshes every non-archived workspace when none is named", async () => {
+      const asked: string[][] = [];
+      const record: Refresher = async (ids) => {
+        asked.push(ids);
+      };
+      const live = await cachedWorkspace(record, knownPr(60_000), "Live");
+      const archived = await cachedWorkspace(record, knownPr(60_000), "Gone");
+      await db
+        .update(schema.workspaces)
+        .set({ status: "archived" })
+        .where(eq(schema.workspaces.id, archived.workspaceId));
+
+      const result = (await live.tools.get_workspace_status.execute!(
+        { refresh: true },
+        opts,
+      )) as Array<{ id: string }>;
+
+      expect(asked).toEqual([[live.workspaceId]]);
+      expect(result.map((w) => w.id)).toEqual([live.workspaceId]);
+    });
+
+    it("doesn't flag a workspace that isn't active, which no poll reads", async () => {
+      const { tools, workspaceId } = await cachedWorkspace(async () => {}, knownPr(20 * 60_000));
+      await db
+        .update(schema.workspaces)
+        .set({ status: "archiving" })
+        .where(eq(schema.workspaces.id, workspaceId));
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId, refresh: true },
+        opts,
+      )) as StatusResult;
+
+      expect(result.repos[0]!.refreshFailed).toBeUndefined();
+    });
+
+    it("reports an unknown workspace without reading any provider", async () => {
+      let refreshed = false;
+      const tools = buildWorkspaceTools(db, config, {
+        gitRunner: okRunner,
+        refreshPrs: async () => {
+          refreshed = true;
+        },
+      });
+
+      const result = (await tools.get_workspace_status.execute!(
+        { workspaceId: "00000000-0000-0000-0000-000000000000", refresh: true },
+        opts,
+      )) as { error?: string };
+
+      expect(result.error).toBe("workspace not found");
+      expect(refreshed).toBe(false);
+    });
+  });
+
   it("get_workspace_status marks an unpolled repo as not polled yet", async () => {
     const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
     const tools = buildWorkspaceTools(db, config, {

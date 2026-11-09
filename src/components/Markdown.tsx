@@ -1,9 +1,16 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 import ReactMarkdown, { type Components, defaultUrlTransform, type Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { parseAppPlace } from "../lib/appPlace";
-import { requestOpenPlace, requestOpenPr, requestOpenWorkspace } from "../lib/nav";
+import { parseArtifactLink } from "../lib/artifactLink";
+import { ArtifactPaneContext } from "../lib/artifactPane";
+import {
+  requestOpenArtifact,
+  requestOpenPlace,
+  requestOpenPr,
+  requestOpenWorkspace,
+} from "../lib/nav";
 import { parsePrLink } from "../lib/prLink";
 import { openExternal } from "../lib/url";
 import {
@@ -112,13 +119,40 @@ function textOfChildren(children: ReactNode): string {
   return "";
 }
 
+/** Opens the artifact beside the chat the link is in, or beside the Chat tab's when it is in none. */
+function ArtifactLink({ id, href, children }: { id: string; href: string; children?: ReactNode }) {
+  const openInPane = useContext(ArtifactPaneContext);
+  return (
+    <a
+      href={href}
+      title={`Open artifact beside the chat: ${href}`}
+      onClick={(e) => {
+        e.preventDefault();
+        (openInPane ?? requestOpenArtifact)(id);
+      }}
+      className="text-sky-400 hover:underline"
+    >
+      {children}
+    </a>
+  );
+}
+
 /**
+ * A link to an artifact (`yarvis://artifact/<id>`) opens it beside the chat.
  * A link to a place in Yarvis (`yarvis://settings/credentials`) navigates there.
  * A link to a PR opens it inside Yarvis, with a small control (shown on hover)
  * to open it in the browser instead. Any other link keeps the default `a`.
  */
 const appLink = (props: LinkProps): ReactNode => {
   const { href, children } = props;
+  const artifactId = parseArtifactLink(href);
+  if (artifactId && href) {
+    return (
+      <ArtifactLink id={artifactId} href={href}>
+        {children}
+      </ArtifactLink>
+    );
+  }
   const place = parseAppPlace(href);
   if (place) {
     return (
@@ -169,7 +203,7 @@ const appLink = (props: LinkProps): ReactNode => {
 
 /** The default transform drops unknown schemes, which would blank a `yarvis://` link. */
 function keepAppLinks(url: string): string {
-  return parseAppPlace(url) ? url : defaultUrlTransform(url);
+  return parseAppPlace(url) || parseArtifactLink(url) ? url : defaultUrlTransform(url);
 }
 
 /** Keeps `yarvis://workspace/` links; `remarkWorkspaceMentions` has already dropped any to an unknown workspace. */

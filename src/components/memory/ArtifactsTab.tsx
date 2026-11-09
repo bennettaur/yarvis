@@ -9,6 +9,7 @@ import {
   listArtifacts,
 } from "../../lib/artifacts";
 import { formatError } from "../../lib/errors";
+import { requestOpenArtifact } from "../../lib/nav";
 import { useCachedResource } from "../../lib/resourceCache";
 import LoadingIndicator from "../LoadingIndicator";
 import Markdown from "../Markdown";
@@ -54,10 +55,14 @@ export default function ArtifactsTab() {
   );
   // Ticking boxes re-renders the tab; don't re-parse a long document each time.
   const content = artifactRes.data?.content;
-  const markdownBody = useMemo(
-    () => (content === undefined ? null : <Markdown>{content}</Markdown>),
-    [content],
-  );
+  const isDiagram = artifactRes.data?.format === "excalidraw";
+  const markdownBody = useMemo(() => {
+    if (content === undefined) return null;
+    if (isDiagram) {
+      return <p className="text-sm text-zinc-500">A diagram. Open it beside the chat to see it.</p>;
+    }
+    return <Markdown>{content}</Markdown>;
+  }, [content, isDiagram]);
 
   // Keyboard focus would otherwise drop to the page when the confirm buttons replace the one clicked.
   useEffect(() => {
@@ -222,7 +227,18 @@ export default function ArtifactsTab() {
               <LoadingIndicator label="Loading…" />
             ) : artifactRes.data ? (
               <>
-                <h2 className="text-base font-semibold text-zinc-100">{artifactRes.data.title}</h2>
+                <div className="flex items-start gap-2">
+                  <h2 className="mr-auto text-base font-semibold text-zinc-100">
+                    {artifactRes.data.title}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => requestOpenArtifact(selected.id)}
+                    className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                  >
+                    Open beside chat
+                  </button>
+                </div>
                 <p className="mb-2 text-xs text-zinc-500">
                   Source: {WRITER_LABELS[artifactRes.data.createdBy]}
                 </p>

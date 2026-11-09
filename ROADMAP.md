@@ -365,7 +365,7 @@ The reconciliation pass itself is shipped — four-hourly window summaries, an
 overnight day rollup, the nightly transcript digest, and the GitHub review
 sync, all under `sidecar/src/jobs/`. What remains is around the edges:
 - **More activity from outside the app.** Approvals and change requests given
-  on github.com are synced into the activity log every 30 minutes
+  on github.com are synced into the activity log every hour
   (`github-review-sync`, deduped on `events.external_id`). Still missing:
   comments left on github.com, PRs opened outside Yarvis, and anything done on
   dev.azure.com.
