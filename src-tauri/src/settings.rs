@@ -376,7 +376,7 @@ impl SettingsState {
             if !crate::pty::is_valid_slash_command_name(&name) {
                 return Err(format!("\"{}\" is not a slash command name", raw.trim()));
             }
-            if crate::pty::REFUSED_SLASH_COMMANDS.contains(&name.as_str()) {
+            if crate::pty::is_refused_slash_command(&name) {
                 return Err(format!(
                     "/{name} changes what the session may do, so it can't be allowed"
                 ));

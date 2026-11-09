@@ -772,6 +772,13 @@ pub const REFUSED_SLASH_COMMANDS: &[&str] = &[
     "update-config",
 ];
 
+/// Whether normalized `name` is refused, either itself or as a plugin's skill
+/// (`someplugin:update-config` widens a session as much as `update-config`).
+pub fn is_refused_slash_command(name: &str) -> bool {
+    let skill = name.rsplit(':').next().unwrap_or(name);
+    REFUSED_SLASH_COMMANDS.contains(&name) || REFUSED_SLASH_COMMANDS.contains(&skill)
+}
+
 /// Longest slash-command name accepted. Plugin skills are namespaced
 /// (`plugin:skill`), so this leaves room for both parts.
 const MAX_SLASH_COMMAND_CHARS: usize = 100;
@@ -815,7 +822,7 @@ fn prepare_slash_command(
     if !is_valid_slash_command_name(&name) {
         return Err("not a slash command name; send the command alone, with no arguments".into());
     }
-    if REFUSED_SLASH_COMMANDS.contains(&name.as_str()) {
+    if is_refused_slash_command(&name) {
         return Err(format!(
             "/{name} changes what the session may do, so Yarvis never sends it"
         ));
@@ -1539,6 +1546,10 @@ mod tests {
         for name in REFUSED_SLASH_COMMANDS {
             assert!(!DEFAULT_ALLOWED_SLASH_COMMANDS.contains(name));
             let err = prepare_slash_command(name, None, &allowed(&[name])).unwrap_err();
+            assert!(err.contains("never sends it"), "{err}");
+            let namespaced = format!("someplugin:{name}");
+            let err =
+                prepare_slash_command(&namespaced, None, &allowed(&[&namespaced])).unwrap_err();
             assert!(err.contains("never sends it"), "{err}");
             let upper = name.to_uppercase();
             let err = prepare_slash_command(&upper, None, &allowed(&[&upper])).unwrap_err();
