@@ -15,6 +15,12 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(names).toContain("register_repo");
   });
 
+  // A skill the user allowed can push or open PRs, and a spoken name can be misheard.
+  it("asks before running a slash command in a workspace session", () => {
+    expect(Object.keys(builtinToolMetadata())).toContain("send_workspace_slash_command");
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("send_workspace_slash_command")).toBe(true);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
@@ -83,6 +89,19 @@ describe("conditionalConfirmations", () => {
     expect(deleteTask?.({})).toBe(true);
   });
 
+  it("asks before any slash command on a typed turn except a bare /compact", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const slash = conditions.get("send_workspace_slash_command");
+    expect(slash?.({ command: "compact" })).toBe(false);
+    expect(slash?.({ command: " /Compact ", arguments: "  " })).toBe(false);
+    expect(slash?.({ command: "compact", arguments: "keep the plan" })).toBe(true);
+    expect(slash?.({ command: "do-code-review" })).toBe(true);
+    expect(slash?.({})).toBe(true);
+    reads.hasReadWebPage = true;
+    expect(slash?.({ command: "compact" })).toBe(true);
+  });
+
   it("asks before destructive tools once a typed turn has read an agent-written artifact", () => {
     const reads = newUntrustedReads();
     const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
@@ -107,6 +126,28 @@ describe("conditionalConfirmations", () => {
     });
     expect(spoken.get("update_artifact")?.({ id: "a", content: "new" })).toBe(true);
     expect(spoken.get("update_artifact")?.({ id: "a", append: "more" })).toBe(false);
+  });
+
+  it("asks before a diagram change not marked add-only, where a delete would ask", () => {
+    const reads = newUntrustedReads();
+    const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const update = typed.get("update_diagram");
+    expect(update?.({ id: "a", upsert: [{ id: "x", x: 1 }] })).toBe(false);
+    expect(update?.({ id: "a", remove: ["x"] })).toBe(false);
+    reads.hasReadUntrustedArtifact = true;
+    expect(update?.({ id: "a", upsert: [{ id: "x", x: 1 }] })).toBe(true);
+    expect(update?.({ id: "a", remove: ["x"] })).toBe(true);
+    // updateDiagram refuses an addOnly call that touches an existing element.
+    expect(update?.({ id: "a", addOnly: true, upsert: [{ id: "x", x: 1 }] })).toBe(false);
+    expect(update?.({ id: "a", addOnly: true, title: "Renamed" })).toBe(true);
+    expect(update?.({ id: "a", addOnly: false, upsert: [{ id: "x" }] })).toBe(true);
+
+    const spoken = conditionalConfirmations({
+      spoken: true,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: given,
+    });
+    expect(spoken.get("update_diagram")?.({ id: "a", upsert: [{ id: "x" }] })).toBe(true);
   });
 
   it("leaves destructive tools to the always-ask set on a spoken turn", () => {

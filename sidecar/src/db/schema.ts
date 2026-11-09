@@ -921,9 +921,9 @@ export const voiceConfig = pgTable("voice_config", {
   /** Speak replies aloud by default on a surface that can. */
   speakReplies: boolean("speak_replies").notNull().default(true),
   /**
-   * End a turn on silence and re-open the mic after the reply. Off by default:
-   * with it on, anything audible in the room can become a turn the user never
-   * addressed to the assistant.
+   * The retired hands-free toggle. Nothing reads it: continuous mode replaced
+   * it, and the old value is deliberately not carried over (see
+   * `withoutRetiredKeys` in `voice/config.ts`).
    */
   handsFree: boolean("hands_free").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1510,10 +1510,12 @@ export const agentTodos = pgTable(
 );
 
 /**
- * How an artifact's content is meant to be read. Only markdown for now; a
- * format goes here once the models in use can write it reliably.
+ * How an artifact's content is meant to be read. A format goes here once the
+ * models in use can write it reliably. An `excalidraw` artifact's content is
+ * JSON Excalidraw element skeletons (`artifacts/diagram.ts`), not a full
+ * Excalidraw scene file: the app draws it into Excalidraw when it is opened.
  */
-export const artifactFormat = pgEnum("artifact_format", ["markdown"]);
+export const artifactFormat = pgEnum("artifact_format", ["markdown", "excalidraw"]);
 
 /**
  * Who wrote an artifact. Only a chat turn is the user asking; a heads-down pass

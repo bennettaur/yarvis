@@ -347,5 +347,104 @@ describe("VerificationReportView", () => {
     expect(text).toContain("Test quality");
     expect(text).not.toContain("Risk");
     expect(text).not.toContain("Performance");
+    expect(text).not.toContain("Simpler approach");
+  });
+
+  it("rates the approach as a whole, with the simpler way and where it builds on", async () => {
+    const opened: [string, number | undefined][] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          summary: "Adds a cache.",
+          mustRead: [],
+          approach: {
+            rating: "much-simpler",
+            reason: "A second cache beside the one the client already has.",
+            alternative: "Set a TTL on the existing request cache.",
+            path: "src/client.ts",
+            line: 12,
+          },
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      expect(text).toContain("A much simpler way exists");
+      expect(text).toContain("Set a TTL on the existing request cache.");
+      const link = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "src/client.ts:12",
+      );
+      link?.click();
+      expect(opened).toEqual([["src/client.ts", 12]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("tells a simpler way apart from a much simpler one, by label and colour", async () => {
+    const badgeFor = async (rating: "simpler" | "much-simpler") => {
+      const { host, unmount } = await mountForInteraction(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            approach: { rating, reason: "Two caches.", alternative: "Reuse the client cache." },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      );
+      try {
+        const badge = [...host.querySelectorAll("span")].find((s) =>
+          s.textContent?.endsWith("simpler way exists"),
+        );
+        return { label: badge?.textContent, className: badge?.className };
+      } finally {
+        unmount();
+      }
+    };
+    const simpler = await badgeFor("simpler");
+    const much = await badgeFor("much-simpler");
+    expect(simpler.label).toBe("A simpler way exists");
+    expect(much.label).toBe("A much simpler way exists");
+    expect(simpler.className).not.toBe(much.className);
+  });
+
+  it("says in a line when there is no simpler way", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            approach: { rating: "no-simpler", reason: "Reuses the client cache.", alternative: "" },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("No simpler way found");
+    expect(text).not.toContain("Simpler way:");
+  });
+
+  it("shows a failed rating as not rated, not as a verdict", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            summary: "Adds a cache.",
+            mustRead: [],
+            approach: {
+              rating: "unrated",
+              reason: "The approach agent failed to answer; judge the approach by hand.",
+              alternative: "",
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Not rated");
+    expect(text).not.toContain("simpler way exists");
   });
 });

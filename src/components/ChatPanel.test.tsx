@@ -1,13 +1,14 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
 import type { HealthResponse } from "../lib/api";
-import * as realChat from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
-import { mountForInteraction, textOf } from "../test/render";
-import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
+import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "../lib/voiceConfig";
+import { resetChatApi, stubChatApi } from "../test/chatApi";
+import { mountForInteraction, textOf, waitFor } from "../test/render";
+import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
 /**
@@ -46,6 +47,20 @@ let sent: Array<Record<string, unknown>> = [];
 /** What `/health` answers after a dropped stream, and how long it takes. */
 let health: HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
 let healthDelayMs = 0;
+/** What `/api/voice/config` answers; unset leaves voice unconfigured. */
+let voiceConfig: VoiceConfig | null = null;
+
+const ARTIFACT_ID = "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b";
+const artifact = {
+  id: ARTIFACT_ID,
+  title: "Launch plan",
+  format: "markdown",
+  content: "Ship it on Thursday.",
+  createdBy: "chat",
+  untrusted: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+};
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -74,8 +89,25 @@ stubSidecarApi({
     }
     if (path === "/api/chat/sessions") return json(sessions);
     if (path.endsWith("/messages")) return json([]);
+    if (path === "/api/voice/config" && voiceConfig) return json(voiceConfig);
+    // A detector that never finishes starting, so the mic stays at "Starting".
+    if (path.startsWith("/api/voice/turn-detector")) {
+      return json({ state: "starting", url: null, log: [], error: null });
+    }
+    if (path === `/api/artifacts/${ARTIFACT_ID}`) return json(artifact);
     // An unknown path fails loudly rather than reaching the real client.
     return new Response("unexpected request", { status: 404 });
+  },
+  // An open artifact's stream stays quiet until the pane closes.
+  streamSSE: async function* (path: string, init: RequestInit = {}) {
+    if (!path.startsWith("/api/artifacts/")) {
+      yield* realSidecarApi.streamSSE(path, init);
+      return;
+    }
+    yield JSON.stringify({ type: "ping" });
+    await new Promise<void>((resolve) =>
+      init.signal?.addEventListener("abort", () => resolve(), { once: true }),
+    );
   },
 });
 
@@ -83,10 +115,9 @@ mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, tok
 
 /**
  * The turn itself is faked at `streamChat` rather than at the socket, so the
- * test scripts chat events instead of SSE frames. Nothing else stubs `lib/chat`.
+ * test scripts chat events instead of SSE frames.
  */
-mock.module("../lib/chat", () => ({
-  ...realChat,
+stubChatApi({
   streamChat: async function* (req: Record<string, unknown>, init: { signal?: AbortSignal } = {}) {
     sent.push(req);
     for (const event of scripted) {
@@ -108,14 +139,12 @@ mock.module("../lib/chat", () => ({
       }
       yield event;
     }
-  },
-}));
+  } as unknown as typeof import("../lib/chat").streamChat,
+});
 
 /**
  * The turn machine on its own, for what the Chat tab has no affordance to
- * drive — a spoken turn. `lib/chat` is already stubbed for this file, and the
- * hook has no test file of its own because a second `mock.module` on the same
- * module elsewhere would make both order-dependent.
+ * drive — a spoken turn, over the `streamChat` stub above.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
 /** What the harness reports as on screen, as Omni Chat would. */
@@ -163,7 +192,7 @@ let unmount: (() => void) | null = null;
 
 afterAll(() => {
   resetSidecarApi();
-  mock.module("../lib/chat", () => realChat);
+  resetChatApi();
 });
 
 afterEach(() => {
@@ -177,6 +206,7 @@ afterEach(() => {
   sent = [];
   health = { status: "ok", service: "s", uptimeMs: 3_600_000 };
   healthDelayMs = 0;
+  voiceConfig = null;
   localStorage.clear();
 });
 
@@ -269,6 +299,49 @@ describe("ChatPanel", () => {
     expect(text).toContain("found it");
     expect(text).toContain("search_pages");
     expect(text).toContain("on Notion");
+  });
+
+  it("opens an artifact the reply links to beside the conversation", async () => {
+    scripted = [
+      { type: "delta", text: `Wrote it up: [Launch plan](yarvis://artifact/${ARTIFACT_ID}).` },
+      { type: "done", finishReason: "stop" },
+    ];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await say(mounted.host, "write a launch plan");
+    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+
+    const link = Array.from(mounted.host.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
+    );
+    link?.click();
+    const paneOf = () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
+    await waitFor(
+      () => paneOf()?.textContent?.includes("Ship it on Thursday.") ?? false,
+      "the artifact beside the chat",
+    );
+    const pane = paneOf();
+    // The conversation stays beside it.
+    expect(textOf(mounted.host.innerHTML)).toContain("Wrote it up");
+
+    pane?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')?.click();
+    await waitFor(() => paneOf() === null, "the pane closing");
+  });
+
+  it("opens an artifact the host asks for, and says once that it has", async () => {
+    const consumed = mock(() => {});
+    const mounted = await mountForInteraction(
+      createElement(ChatPanel, {
+        requestedArtifactId: ARTIFACT_ID,
+        onArtifactRequestConsumed: consumed,
+      }),
+    );
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]') !== null,
+      "the requested artifact",
+    );
+    expect(consumed).toHaveBeenCalledTimes(1);
   });
 
   // Nothing is persisted for a failed turn, so a partial reply left on screen is
@@ -504,6 +577,60 @@ describe("ChatPanel", () => {
     await settle();
 
     expect(mounted.host.textContent).toContain("before and after");
+  });
+
+  // A continuous mic left open behind another tab would send what it hears
+  // into a chat nobody can see.
+  it("closes continuous voice when the host takes it off screen", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setHostActive(false);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
+  });
+
+  it("closes continuous voice when the Omni Chat overlay covers it", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    let setOverlayOpen: (open: boolean) => void = () => {};
+    function OverlayHost() {
+      const [open, setOpen] = useState(false);
+      setOverlayOpen = setOpen;
+      return createElement(OmniChatOverlayProvider, { value: open }, createElement(ChatPanel));
+    }
+    const mounted = await mountForInteraction(createElement(OverlayHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setOverlayOpen(true);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 
   it("picks up sessions created elsewhere when it comes back into view", async () => {

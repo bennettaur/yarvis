@@ -31,15 +31,65 @@ The controls beside the microphone:
 - **Speak replies** reads the answer aloud as it streams, one sentence at a
   time. Speech starts about a sentence behind the model, not a whole answer
   behind. Code blocks are skipped.
-- **Hands-free** ends your turn after a stretch of silence, and opens the
-  microphone again when the reply finishes. It is **off by default** on
-  purpose: with it on, anything said in the room can become a message.
+- **Continuous** keeps the microphone open and sends each turn when you
+  finish talking, so you don't press anything between turns. See
+  [Continuous mode](#continuous-mode). It is **off by default** on purpose:
+  with it on, anything said in the room can become a message.
 - **Stop** ends the turn: it silences speech, drops the recording, and cancels
   the reply.
 
-A recording is capped at 60 seconds. When a recording ends on its own (the
-cap, or Hands-free's silence timer) and no speech was heard, it is thrown away
-rather than sent. A recording you stop yourself is always sent.
+A push-to-talk recording is capped at 60 seconds. When the cap ends a
+recording and no speech was heard, it is thrown away rather than sent. A
+recording you stop yourself is always sent.
+
+## Continuous mode
+
+Tick **Continuous**, then press the microphone once. It stays open until you
+press it again or press **Stop**.
+
+Yarvis decides when you've finished a turn in two steps:
+
+1. [Silero VAD](https://github.com/snakers4/silero-vad) listens for speech and
+   for pauses in it.
+2. At each pause, [Smart Turn](https://github.com/pipecat-ai/smart-turn) judges
+   from your tone and phrasing whether you're done or only thinking. "Can you
+   draw the login flow?" ends a turn about a third of a second after you stop.
+   "I want to add, um…" doesn't.
+
+If Smart Turn keeps saying you aren't done, 3 seconds of silence ends the turn
+anyway. A turn is capped at 60 seconds.
+
+While the assistant is replying:
+
+- What you say is still heard. A turn you finish mid-reply shows as
+  **queued**, and is sent when the reply ends. Several queued turns go as one
+  message.
+- Starting to talk stops the spoken reply, and the rest of that reply isn't
+  spoken. The text still arrives. That's true even before the reply starts
+  speaking, while the assistant is still thinking.
+- A turn that starts over the spoken reply, or within a second and a half of
+  it ending, and mostly repeats its words is dropped: it's the reply leaking
+  back into the microphone, not you. Over the reply, a one-word turn that is
+  also a word of the reply, like "yes", is dropped too. After the reply ends,
+  a turn needs at least three words to be dropped, so a short answer to its
+  closing question goes through. This is a check on the transcript, so a badly
+  misheard echo can still get through as a turn.
+
+Switching to another tab, closing Omni Chat, or opening Omni Chat over the Chat
+tab closes the microphone, and drops queued turns. Minimising Yarvis closes
+the microphone too, though turns already queued are still sent.
+
+Both models run on your Mac in a small Python process the app starts the first
+time you use continuous mode. It needs [uv](https://docs.astral.sh/uv/)
+(`brew install uv`). The first start installs its Python packages (a few
+hundred MB, once) and downloads both models (about 10 MB) into the Hugging Face
+cache, so it can take a few minutes. The status beside the microphone says **Starting turn detection…**
+until it's ready. The process listens only on `127.0.0.1`, needs a token the
+app gives it, and stops when Yarvis quits. Only the finished turn's audio
+goes on to your speech-to-text provider.
+
+If a spoken reply keeps cutting itself off, the microphone is hearing the
+speakers. Use headphones.
 
 ## The Voice page
 
@@ -120,7 +170,7 @@ Settings → Voice:
 
 - **Speech to text:** provider, model, and an optional language.
 - **Text to speech:** provider, model and voice.
-- **Speak replies** and **Hands-free** defaults.
+- **Speak replies** and **Continuous** defaults.
 - **Voice cloning & server-specific fields**: a **Reference clip** and **Extra
   request fields**. See
   [Cloning a voice](../voice-server.md#cloning-a-voice-with-moss-tts-nano).

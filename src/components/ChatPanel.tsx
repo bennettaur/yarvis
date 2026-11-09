@@ -1,5 +1,6 @@
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArtifactPaneContext, useArtifactPane } from "../lib/artifactPane";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { type DisplayError, formatError } from "../lib/errors";
@@ -13,11 +14,13 @@ import {
   ConversationScrollButton,
 } from "./ai-elements/conversation";
 import { PromptInputSelect } from "./ai-elements/prompt-input";
+import ArtifactPane from "./artifacts/ArtifactPane";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
 import QueuedMessages from "./QueuedMessages";
+import SplitPane, { usePersistedRatio } from "./SplitPane";
 import ToolApprovalBar from "./ToolApprovalBar";
 import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
@@ -38,7 +41,9 @@ const EMPTY_HINT =
  * that appears beside other inputs, such as an Omni widget.
  * `requestedSessionId` opens that chat, re-reading it even when it is already
  * open, since a scheduled task may have added to it in the background; the
- * panel calls `onRequestConsumed` once it has.
+ * panel calls `onRequestConsumed` once it has. `requestedArtifactId` opens that
+ * artifact beside the conversation, for a link clicked outside any chat; links
+ * in this panel's own thread open there directly.
  */
 export default function ChatPanel({
   active = true,
@@ -46,18 +51,24 @@ export default function ChatPanel({
   focusOnShow = false,
   requestedSessionId = null,
   onRequestConsumed,
+  requestedArtifactId = null,
+  onArtifactRequestConsumed,
 }: {
   active?: boolean;
   sessionStorageKey?: string;
   focusOnShow?: boolean;
   requestedSessionId?: string | null;
   onRequestConsumed?: () => void;
+  requestedArtifactId?: string | null;
+  onArtifactRequestConsumed?: () => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
   const [reasoning, setReasoning] = useReasoningPreference();
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const artifactPane = useArtifactPane();
+  const [splitRatio, setSplitRatio] = usePersistedRatio("yarvis.chat.artifactSplit", 0.55);
 
   const addSession = useCallback((session: ChatSession) => {
     setSessions((prev) => [session, ...prev]);
@@ -93,7 +104,12 @@ export default function ChatPanel({
     loadSession,
   } = useChatThread({ onSessionCreated: addSession, reasoning, sessionStorageKey });
 
-  const voice = useVoice({ send, streaming, busy });
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own, so ours must stop answering the keyboard while it is up.
+  const overlayOpen = useOmniChatOverlayOpen();
+
+  // Off screen behind another tab, or under the overlay.
+  const voice = useVoice({ send, streaming, busy, visible: active && !overlayOpen });
 
   useEffect(() => {
     if (!requestedSessionId) return;
@@ -103,16 +119,12 @@ export default function ChatPanel({
     onRequestConsumed?.();
   }, [requestedSessionId, sessionId, busy, loadSession, onRequestConsumed]);
 
-  // The Omni Chat overlay covers this panel and carries an approval bar of its
-  // own, so ours must stop answering the keyboard while it is up.
-  const overlayOpen = useOmniChatOverlayOpen();
-
-  // A hands-free mic left open behind another tab would send what it hears into
-  // a chat nobody is looking at.
-  const { cancel: cancelVoice } = voice;
+  const { open: openArtifact } = artifactPane;
   useEffect(() => {
-    if (!active) cancelVoice();
-  }, [active, cancelVoice]);
+    if (!requestedArtifactId) return;
+    openArtifact(requestedArtifactId);
+    onArtifactRequestConsumed?.();
+  }, [requestedArtifactId, openArtifact, onArtifactRequestConsumed]);
 
   // Focus via a ref rather than `autoFocus`, which Biome flags. Held back while
   // the overlay is up, since it has a composer of its own.
@@ -157,7 +169,7 @@ export default function ChatPanel({
     });
   };
 
-  return (
+  const chat = (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
         <Button
@@ -287,5 +299,25 @@ export default function ChatPanel({
 
       <VoiceControls voice={voice} />
     </div>
+  );
+
+  return (
+    <ArtifactPaneContext.Provider value={artifactPane.open}>
+      <SplitPane
+        orientation="horizontal"
+        ratio={splitRatio}
+        onRatioChange={setSplitRatio}
+        minRatio={0.25}
+        className="h-full"
+        first={chat}
+        second={
+          artifactPane.openId && (
+            <div className="h-full py-6 pr-6 pl-4">
+              <ArtifactPane id={artifactPane.openId} onClose={artifactPane.close} />
+            </div>
+          )
+        }
+      />
+    </ArtifactPaneContext.Provider>
   );
 }

@@ -16,7 +16,11 @@ export interface VoiceConfigInput {
   ttsRefAudio: string;
   ttsExtras: SynthesisExtras;
   speakReplies: boolean;
-  handsFree: boolean;
+  /**
+   * Keep the microphone open and send each turn when the turn detector judges
+   * it finished (`voice/turnDetector.ts`).
+   */
+  continuous: boolean;
   /**
    * A saved voice (`voice/profiles.ts`) that replies are spoken in. Blank uses
    * the `tts*` fields above, so a setup from before saved voices keeps working.
@@ -41,7 +45,7 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfigInput = {
   ttsRefAudio: "",
   ttsExtras: {},
   speakReplies: true,
-  handsFree: false,
+  continuous: false,
   activeVoiceId: "",
   translationProvider: "",
   translationModel: "",
@@ -52,13 +56,23 @@ const SETTINGS_KEY = "voiceConfig";
 /** Returns the stored settings merged onto the defaults, or the defaults verbatim when none have been saved. */
 export async function getVoiceConfig(): Promise<VoiceConfigInput> {
   const stored = await readSection<Partial<VoiceConfigInput>>(SETTINGS_KEY);
-  return { ...DEFAULT_VOICE_CONFIG, ...stored };
+  return withoutRetiredKeys({ ...DEFAULT_VOICE_CONFIG, ...stored });
+}
+
+/**
+ * Drops `handsFree`, which continuous mode replaced. Its value isn't carried
+ * over: continuous mode listens while the reply plays too, which is more than
+ * anyone who turned hands-free on agreed to.
+ */
+function withoutRetiredKeys(config: VoiceConfigInput & { handsFree?: unknown }): VoiceConfigInput {
+  const { handsFree: _, ...rest } = config;
+  return rest;
 }
 
 /** Merges `input` onto the existing stored config (or the defaults) and writes the whole result back. */
 export async function saveVoiceConfig(input: Partial<VoiceConfigInput>): Promise<VoiceConfigInput> {
   return withSection<Partial<VoiceConfigInput>, VoiceConfigInput>(SETTINGS_KEY, (current) => {
-    const next = { ...DEFAULT_VOICE_CONFIG, ...current, ...input };
+    const next = withoutRetiredKeys({ ...DEFAULT_VOICE_CONFIG, ...current, ...input });
     return { next, result: next };
   });
 }

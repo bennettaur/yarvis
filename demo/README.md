@@ -28,8 +28,8 @@ Mac.
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
 creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,
-the Calendar, the Terminal tab, a workspace's Claude Code session, and a short
-tour.
+the Calendar, the Terminal tab, a workspace's Claude Code session, artifacts
+(a diagram and a document) opened beside the chat, and a short tour.
 
 Output lands in `demo/output/<flow-title>/`, with the test's title lowercased
 and hyphenated ("Memory library" becomes `memory-library/`). It holds numbered

@@ -125,7 +125,6 @@ export async function migrateStructuralConfig(db: Db): Promise<void> {
         ttsRefAudio: voiceRow.ttsRefAudio,
         ttsExtras: voiceRow.ttsExtras,
         speakReplies: voiceRow.speakReplies,
-        handsFree: voiceRow.handsFree,
       },
       result: undefined,
     }));

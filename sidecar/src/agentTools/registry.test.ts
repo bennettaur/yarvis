@@ -21,6 +21,7 @@ describe("built-in tool registry", () => {
       "upsert_project",
       "create_todo",
       "create_artifact",
+      "create_diagram",
       "search_events",
       "search_yarvis_docs",
       "post_merge_review",

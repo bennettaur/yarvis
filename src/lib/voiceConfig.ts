@@ -22,7 +22,8 @@ export interface VoiceConfig {
   /** Extra body fields for the synthesis request. */
   ttsExtras: Record<string, string | number | boolean>;
   speakReplies: boolean;
-  handsFree: boolean;
+  /** Keep the mic open and let the turn detector decide when each turn ends. */
+  continuous: boolean;
   /** Saved voice replies are spoken in; blank uses the `tts*` fields. */
   activeVoiceId: string;
   /** Chat model the Voice Studio translates with. */
@@ -40,7 +41,7 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   ttsRefAudio: "",
   ttsExtras: {},
   speakReplies: true,
-  handsFree: false,
+  continuous: false,
   activeVoiceId: "",
   translationProvider: "",
   translationModel: "",

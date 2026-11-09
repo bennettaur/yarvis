@@ -1,6 +1,6 @@
 {
-  "id": "f6de3bc5-a65a-4cb7-871e-b52622cda893",
-  "prevId": "075f854d-00a4-47d5-a27a-be295a44270d",
+  "id": "418f8375-42ec-4919-b942-b23f3569b638",
+  "prevId": "7b71ce7c-8940-4940-b0b8-5c88d5506f4d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5815,7 +5815,8 @@
       "name": "artifact_format",
       "schema": "public",
       "values": [
-        "markdown"
+        "markdown",
+        "excalidraw"
       ]
     },
     "public.artifact_writer": {

@@ -2,6 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/plugin.json";
+import approachReviewer from "../../claude-plugins/yarvis-review/agents/approach-reviewer.md" with {
+  type: "text",
+};
 import changeSummary from "../../claude-plugins/yarvis-review/agents/change-summary.md" with {
   type: "text",
 };
@@ -101,6 +104,7 @@ const PLUGINS = {
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
     "agents/observability-reviewer.md": withInputsAndTrust(observabilityReviewer),
     "agents/quality-reviewer.md": withInputsAndTrust(qualityReviewer),
+    "agents/approach-reviewer.md": withInputsAndTrust(approachReviewer),
     "agents/flow-diagram.md": withInputsAndTrust(flowDiagram),
     "agents/rereviewer.md": withInputsAndTrust(
       rereviewer,

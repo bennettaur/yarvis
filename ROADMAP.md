@@ -56,15 +56,16 @@ Status of the build against the original vision. The full V1 plan lives at
   Azure DevOps, which share one provider-agnostic UI (PRs tab).
 - **Voice** — speak to the chat agent and hear it answer, from the Chat tab and
   Omni Chat rather than a tab of its own: each carries a mic button plus
-  speak-replies and hands-free toggles, and a spoken turn uses that chat's own
+  speak-replies and continuous toggles, and a spoken turn uses that chat's own
   model and session. Speech to text and text to speech run on Hugging Face
   Inference or any OpenAI-audio endpoint (a local whisper/Kokoro server reuses
   its custom-provider entry), configured once under Settings → Voice and stored
   in Postgres so every surface — including the Telegram bot, once it grows voice
   notes (#226) — shares one setup. Replies are synthesized a sentence at a time
   as they stream, so speech starts a sentence behind the model rather than a
-  whole answer behind it. Push-to-talk by default, with an opt-in hands-free
-  mode that ends a turn on silence and re-opens the mic after the reply. Because
+  whole answer behind it. Push-to-talk by default, with an opt-in continuous
+  mode: the mic stays open, a local Silero VAD + Smart Turn detector ends each
+  turn, turns finished mid-reply are queued, and talking stops the reply. Because
   a transcript is never proof-read, the agent's irreversible tools ask for
   confirmation on a spoken turn.
 - **Alarms** — full-screen takeover + escalating sound/notification, with
@@ -364,7 +365,7 @@ The reconciliation pass itself is shipped — four-hourly window summaries, an
 overnight day rollup, the nightly transcript digest, and the GitHub review
 sync, all under `sidecar/src/jobs/`. What remains is around the edges:
 - **More activity from outside the app.** Approvals and change requests given
-  on github.com are synced into the activity log every 30 minutes
+  on github.com are synced into the activity log every hour
   (`github-review-sync`, deduped on `events.external_id`). Still missing:
   comments left on github.com, PRs opened outside Yarvis, and anything done on
   dev.azure.com.
