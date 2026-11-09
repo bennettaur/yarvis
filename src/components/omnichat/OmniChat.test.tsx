@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
+import { DEFAULT_VOICE_CONFIG } from "../../lib/voiceConfig";
 import { resetChatApi, stubChatApi } from "../../test/chatApi";
 import { mountForInteraction, textOf, waitFor } from "../../test/render";
 import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
@@ -53,6 +54,18 @@ stubSidecarApi({
     }
     if (path.endsWith("/messages")) return json([]);
     if (path === `/api/artifacts/${ARTIFACT_ID}`) return json(artifact);
+    if (path === "/api/voice/config") {
+      return json({
+        ...DEFAULT_VOICE_CONFIG,
+        sttProvider: "custom:local",
+        sttModel: "whisper",
+        continuous: true,
+      });
+    }
+    // A detector that never finishes starting, so the mic stays at "Starting".
+    if (path.startsWith("/api/voice/turn-detector")) {
+      return json({ state: "starting", url: null, log: [], error: null });
+    }
     return new Response("unexpected request", { status: 404 });
   },
   // An open artifact's stream stays quiet until the pane closes.
@@ -75,6 +88,13 @@ stubChatApi({
     for (const event of scripted) yield event;
   } as typeof import("../../lib/chat").streamChat,
 });
+
+let setOpen: (open: boolean) => void = () => {};
+function Host() {
+  const [open, setOpenState] = useState(true);
+  setOpen = setOpenState;
+  return createElement(OmniChat, { open, onClose: () => {}, onAttention: () => {} });
+}
 
 const sendButton = (host: HTMLElement) =>
   Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Send");
@@ -135,5 +155,24 @@ describe("OmniChat", () => {
       ?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')
       ?.click();
     await waitFor(() => paneOf(mounted.host) === null, "the pane to close");
+  });
+
+  // The overlay stays mounted while hidden; a continuous mic left open would
+  // send what it hears into a chat nobody can see.
+  it("closes continuous voice when the overlay is hidden", async () => {
+    const mounted = await mountForInteraction(createElement(Host));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setOpen(false);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 });
