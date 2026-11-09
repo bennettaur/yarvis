@@ -574,8 +574,10 @@ words, so what it may do there is bounded by its own permissions, not by this
 list. The text after the command has
 newlines and control characters turned into spaces, so it can't submit a
 second command. The other rules for instructions apply as well: the agent must
-be what's reading the prompt, and a send confirms delivery only. A spoken turn
-asks before it sends one, and so does a heads-down pass.
+be what's reading the prompt, and a send confirms delivery only. The assistant
+asks you before it runs anything but a bare `/compact`, and a spoken turn or a
+heads-down pass asks before that too. Where the assistant can't ask, it
+refuses the rest and tells you to make the request from the Yarvis app.
 
 ### Asking what a workspace is up to
 

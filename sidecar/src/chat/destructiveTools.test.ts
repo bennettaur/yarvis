@@ -89,6 +89,19 @@ describe("conditionalConfirmations", () => {
     expect(deleteTask?.({})).toBe(true);
   });
 
+  it("asks before any slash command on a typed turn except a bare /compact", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    const slash = conditions.get("send_workspace_slash_command");
+    expect(slash?.({ command: "compact" })).toBe(false);
+    expect(slash?.({ command: " /Compact ", arguments: "  " })).toBe(false);
+    expect(slash?.({ command: "compact", arguments: "keep the plan" })).toBe(true);
+    expect(slash?.({ command: "do-code-review" })).toBe(true);
+    expect(slash?.({})).toBe(true);
+    reads.hasReadWebPage = true;
+    expect(slash?.({ command: "compact" })).toBe(true);
+  });
+
   it("asks before destructive tools once a typed turn has read an agent-written artifact", () => {
     const reads = newUntrustedReads();
     const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
