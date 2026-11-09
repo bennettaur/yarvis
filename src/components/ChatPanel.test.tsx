@@ -5,6 +5,7 @@ import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
+import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "../lib/voiceConfig";
 import { resetChatApi, stubChatApi } from "../test/chatApi";
 import { mountForInteraction, textOf, waitFor } from "../test/render";
 import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
@@ -46,6 +47,8 @@ let sent: Array<Record<string, unknown>> = [];
 /** What `/health` answers after a dropped stream, and how long it takes. */
 let health: HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
 let healthDelayMs = 0;
+/** What `/api/voice/config` answers; unset leaves voice unconfigured. */
+let voiceConfig: VoiceConfig | null = null;
 
 const ARTIFACT_ID = "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b";
 const artifact = {
@@ -86,6 +89,11 @@ stubSidecarApi({
     }
     if (path === "/api/chat/sessions") return json(sessions);
     if (path.endsWith("/messages")) return json([]);
+    if (path === "/api/voice/config" && voiceConfig) return json(voiceConfig);
+    // A detector that never finishes starting, so the mic stays at "Starting".
+    if (path.startsWith("/api/voice/turn-detector")) {
+      return json({ state: "starting", url: null, log: [], error: null });
+    }
     if (path === `/api/artifacts/${ARTIFACT_ID}`) return json(artifact);
     // An unknown path fails loudly rather than reaching the real client.
     return new Response("unexpected request", { status: 404 });
@@ -198,6 +206,7 @@ afterEach(() => {
   sent = [];
   health = { status: "ok", service: "s", uptimeMs: 3_600_000 };
   healthDelayMs = 0;
+  voiceConfig = null;
   localStorage.clear();
 });
 
@@ -568,6 +577,60 @@ describe("ChatPanel", () => {
     await settle();
 
     expect(mounted.host.textContent).toContain("before and after");
+  });
+
+  // A continuous mic left open behind another tab would send what it hears
+  // into a chat nobody can see.
+  it("closes continuous voice when the host takes it off screen", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setHostActive(false);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
+  });
+
+  it("closes continuous voice when the Omni Chat overlay covers it", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    let setOverlayOpen: (open: boolean) => void = () => {};
+    function OverlayHost() {
+      const [open, setOpen] = useState(false);
+      setOverlayOpen = setOpen;
+      return createElement(OmniChatOverlayProvider, { value: open }, createElement(ChatPanel));
+    }
+    const mounted = await mountForInteraction(createElement(OverlayHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setOverlayOpen(true);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
   });
 
   it("picks up sessions created elsewhere when it comes back into view", async () => {

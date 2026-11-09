@@ -897,9 +897,9 @@ export const voiceConfig = pgTable("voice_config", {
   /** Speak replies aloud by default on a surface that can. */
   speakReplies: boolean("speak_replies").notNull().default(true),
   /**
-   * End a turn on silence and re-open the mic after the reply. Off by default:
-   * with it on, anything audible in the room can become a turn the user never
-   * addressed to the assistant.
+   * The retired hands-free toggle. Nothing reads it: continuous mode replaced
+   * it, and the old value is deliberately not carried over (see
+   * `withoutRetiredKeys` in `voice/config.ts`).
    */
   handsFree: boolean("hands_free").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1731,6 +1731,26 @@ export const headsDownMessages = pgTable(
     seenAt: timestamp("seen_at", { withTimezone: true }),
   },
   (t) => [index("heads_down_messages_unseen_idx").on(t.createdAt).where(sql`${t.seenAt} is null`)],
+);
+
+/**
+ * A PR whose merge heads-down mode held back because it had open review
+ * feedback, and handed to the workspace that owns it to address. One per PR
+ * per run: the next merge attempt with feedback still open goes to the user.
+ */
+export const headsDownFeedbackHandoffs = pgTable(
+  "heads_down_feedback_handoffs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => headsDownRuns.id, { onDelete: "cascade" }),
+    /** `owner/repo#number`, lowercased, as `mergeKey` builds it. */
+    prKey: text("pr_key").notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("heads_down_feedback_handoffs_run_pr_idx").on(t.runId, t.prKey)],
 );
 
 /**

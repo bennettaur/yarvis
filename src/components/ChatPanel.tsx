@@ -104,7 +104,12 @@ export default function ChatPanel({
     loadSession,
   } = useChatThread({ onSessionCreated: addSession, reasoning, sessionStorageKey });
 
-  const voice = useVoice({ send, streaming, busy });
+  // The Omni Chat overlay covers this panel and carries an approval bar of its
+  // own, so ours must stop answering the keyboard while it is up.
+  const overlayOpen = useOmniChatOverlayOpen();
+
+  // Off screen behind another tab, or under the overlay.
+  const voice = useVoice({ send, streaming, busy, visible: active && !overlayOpen });
 
   useEffect(() => {
     if (!requestedSessionId) return;
@@ -120,17 +125,6 @@ export default function ChatPanel({
     openArtifact(requestedArtifactId);
     onArtifactRequestConsumed?.();
   }, [requestedArtifactId, openArtifact, onArtifactRequestConsumed]);
-
-  // The Omni Chat overlay covers this panel and carries an approval bar of its
-  // own, so ours must stop answering the keyboard while it is up.
-  const overlayOpen = useOmniChatOverlayOpen();
-
-  // A hands-free mic left open behind another tab would send what it hears into
-  // a chat nobody is looking at.
-  const { cancel: cancelVoice } = voice;
-  useEffect(() => {
-    if (!active) cancelVoice();
-  }, [active, cancelVoice]);
 
   // Focus via a ref rather than `autoFocus`, which Biome flags. Held back while
   // the overlay is up, since it has a composer of its own.

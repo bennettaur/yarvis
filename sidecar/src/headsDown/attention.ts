@@ -3,6 +3,7 @@ import { publish as publishAttention } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Db } from "../db/client.ts";
 import { type AttentionNavTarget, attentionItems, type HeadsDownQuestion } from "../db/schema.ts";
+import type { PrFeedback } from "./mergeFeedback.ts";
 import { askQuestion, dismissQuestion, listQuestions, type QuestionInput } from "./service.ts";
 
 /**
@@ -15,8 +16,23 @@ function sessionKeyFor(questionId: string): string {
   return `heads-down:${questionId}`;
 }
 
+/**
+ * A merge held back for open review feedback, carried on its approval's bell
+ * item. That payload is what makes the app pop up the merge review modal.
+ */
+export interface MergeReview {
+  questionId: string;
+  prs: PrFeedback[];
+  /** Why the feedback couldn't be checked, when it couldn't. */
+  unchecked: string | null;
+}
+
 /** Asks the user, and makes sure the question is in the bell. */
-export async function askUser(db: Db, input: QuestionInput): Promise<HeadsDownQuestion> {
+export async function askUser(
+  db: Db,
+  input: QuestionInput,
+  mergeReview?: Omit<MergeReview, "questionId">,
+): Promise<HeadsDownQuestion> {
   const question = await askQuestion(db, input);
   // Raised again for a question already open: the bell keeps one pending item per question.
   const item = await createAttention(db, {
@@ -27,6 +43,9 @@ export async function askUser(db: Db, input: QuestionInput): Promise<HeadsDownQu
       question.kind === "approval" ? "Heads down needs your approval" : "Heads down has a question",
     body: question.question,
     navTarget: { type: "heads-down" },
+    ...(mergeReview
+      ? { payload: { headsDownMergeReview: { ...mergeReview, questionId: question.id } } }
+      : {}),
   });
   publishAttention(item);
   return question;

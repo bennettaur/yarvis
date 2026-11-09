@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { CHANNEL_RELAY_ARG } from "../channel/protocol.ts";
 import { CHANNEL_SERVER_NAME } from "../channel/send.ts";
 import { MCP_SERVER_NAME, WORKSPACE_HEADER } from "../mcpServer/server.ts";
+import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
 /**
  * Generates the `.mcp.json` that points a Yarvis-launched Claude Code session at
@@ -28,10 +29,13 @@ function yarvisServerEntry(workspaceId: string): Record<string, unknown> {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       Authorization: "Bearer ${YARVIS_MCP_TOKEN}",
       [WORKSPACE_HEADER]: workspaceId,
-      // Tells `ask_user` which terminal a question comes from. The empty default
-      // keeps a shell that isn't one of Yarvis's PTYs from failing to expand.
+      // Tells `ask_user` which terminal a question comes from, and the token
+      // proves it. The empty defaults keep a shell that isn't one of Yarvis's
+      // PTYs from failing to expand.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
-      "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
+      [SESSION_KEY_HEADER]: "${YARVIS_SESSION_KEY:-}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      [SESSION_TOKEN_HEADER]: "${YARVIS_SESSION_TOKEN:-}",
     },
   };
 }

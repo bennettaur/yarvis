@@ -170,7 +170,7 @@ export interface SpeechServerDeps {
  * every provider key and the loopback API's bearer. The Hugging Face cache
  * variables are added so downloads land where the user already keeps them.
  */
-function speechChildEnv(): NodeJS.ProcessEnv {
+export function speechChildEnv(): NodeJS.ProcessEnv {
   const env = claudeChildEnv();
   for (const key of ["HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME"]) {
     const value = process.env[key];

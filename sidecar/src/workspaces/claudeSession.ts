@@ -24,6 +24,7 @@ import { type ChannelSendOptions, sendOverChannel } from "../channel/send.ts";
 import {
   killClaudeSession,
   sendClaudeInstruction,
+  sendClaudeSlashCommand,
   spawnClaudeSession,
 } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
@@ -205,7 +206,8 @@ export interface SendSessionInstructionInput {
 /**
  * The start of the core's refusal when neither a registered pid nor the
  * agent's executable name identifies what holds the prompt. Must match the
- * message in `send_session_instruction` in `src-tauri/src/pty.rs`.
+ * message in `agent_session_for_input` in `src-tauri/src/pty.rs`, which both
+ * send paths share.
  */
 export const AGENT_NOT_RECOGNISED_ERROR =
   "the configured agent is not what is reading that session's prompt";
@@ -213,14 +215,14 @@ export const AGENT_NOT_RECOGNISED_ERROR =
 /**
  * The core's refusal when the workspace has no agent tab at all — nothing a
  * fresh spawn would collide with. Must match the message in
- * `send_session_instruction` in `src-tauri/src/pty.rs`.
+ * `agent_session_for_input` in `src-tauri/src/pty.rs`.
  */
 export const NO_AGENT_SESSION_ERROR = "no agent session is running for that workspace";
 
 /**
  * The core's refusal when the agent tab's shell has itself exited. The dead
  * session still holds the tab's id, so a spawn is discarded until it is
- * killed. Must match `send_session_instruction` in `src-tauri/src/pty.rs`.
+ * killed. Must match `agent_session_for_input` in `src-tauri/src/pty.rs`.
  */
 export const AGENT_SESSION_EXITED_ERROR = "the agent session has exited";
 
@@ -239,6 +241,31 @@ export type ClaudeSessionMessenger = (input: SendSessionInstructionInput) => Pro
  */
 export async function sendSessionInstruction(input: SendSessionInstructionInput): Promise<void> {
   await sendClaudeInstruction(input);
+}
+
+export interface SendSessionSlashCommandInput {
+  /** Workspace whose session receives the command. */
+  workspaceId: string;
+  /** The command's name, without its `/`, e.g. `compact`. */
+  command: string;
+  /** Text typed after the command, if any. */
+  arguments?: string;
+  /** As in {@link SendSessionInstructionInput}. */
+  agentPids: number[];
+}
+
+/** Injectable slash-command sender so the workspace tool is testable without the core. */
+export type ClaudeSessionSlashCommandSender = (
+  input: SendSessionSlashCommandInput,
+) => Promise<void>;
+
+/**
+ * Types an allowed slash command at a workspace session's prompt. Kept apart
+ * from {@link sendSessionInstruction}, which refuses a leading `/`, so the
+ * core can check the command against an allowlist only the user edits.
+ */
+export async function sendSessionSlashCommand(input: SendSessionSlashCommandInput): Promise<void> {
+  await sendClaudeSlashCommand(input);
 }
 
 /** Pids of the Claude sessions registered in a workspace's agent tab, oldest first. */
@@ -285,6 +312,7 @@ export async function sendToWorkspaceAgent(
     agentPids,
     send = sendSessionInstruction,
     channel,
+    typedOnly = false,
     eventSource,
     eventPayload = {},
   }: {
@@ -292,6 +320,8 @@ export async function sendToWorkspaceAgent(
     agentPids: number[];
     send?: ClaudeSessionMessenger;
     channel?: ChannelSendOptions;
+    /** Skips the channel, for text that has to be typed (a slash command). */
+    typedOnly?: boolean;
     eventSource: string;
     eventPayload?: Record<string, unknown>;
   },
@@ -311,12 +341,12 @@ export async function sendToWorkspaceAgent(
     return result;
   };
 
-  const message = sendOverChannel(
-    agentTabSessionKey(workspace.id),
-    instruction,
-    agentPids,
-    channel,
-  );
+  // Text the prompt would read as a command stays on the typed path, where the
+  // core refuses it, so the channel can't be used to get one run in words.
+  const mustBeTyped = typedOnly || /^[!#/]/.test(instruction.trimStart());
+  const message = mustBeTyped
+    ? null
+    : sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel);
   if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
 
   try {

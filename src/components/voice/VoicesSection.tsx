@@ -91,7 +91,6 @@ export default function VoicesSection({
       setRecordingFor(null);
       if (id) void storeClip(id, audio);
     },
-    autoStopSilenceMs: null,
     maxUtteranceMs: MAX_CLIP_MS,
   });
 

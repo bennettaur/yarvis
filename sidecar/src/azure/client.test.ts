@@ -69,6 +69,10 @@ describe("mapReviewer teams", () => {
     expect(mapReviewer({ displayName: "[Shop]\\Web Team", isContainer: true }).isTeam).toBe(true);
     expect(mapReviewer({ displayName: "Alex" }).isTeam).toBe(false);
   });
+
+  it("trusts every reviewer, since only project members can review", () => {
+    expect(mapReviewer({ displayName: "Alex", vote: -10 }).trusted).toBe(true);
+  });
 });
 
 describe("prCiChecks", () => {
@@ -892,6 +896,7 @@ describe("azure client", () => {
           {
             id: "1",
             author: "Rev",
+            trusted: true,
             body: "removed here",
             createdAt: "",
             url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/30?discussionId=3",

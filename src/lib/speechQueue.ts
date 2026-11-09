@@ -10,7 +10,8 @@
 
 export interface SpeechQueueOptions {
   synthesize: (text: string) => Promise<Blob>;
-  play: (audio: Blob) => Promise<void>;
+  /** Must stop and resolve once `signal` aborts. */
+  play: (audio: Blob, signal: AbortSignal) => Promise<void>;
   /** Called once per failed chunk; the queue continues with the next one. */
   onError?: (error: unknown) => void;
 }
@@ -19,13 +20,14 @@ export interface SpeechQueue {
   push(text: string): void;
   /** Resolves once everything queued so far has finished playing. */
   drain(): Promise<void>;
-  /** Stops after the chunk currently playing; queued chunks are dropped. */
+  /** Stops the chunk playing now and drops the rest. */
   cancel(): void;
 }
 
 export function createSpeechQueue({ synthesize, play, onError }: SpeechQueueOptions): SpeechQueue {
   let tail: Promise<void> = Promise.resolve();
   let cancelled = false;
+  const stop = new AbortController();
 
   return {
     push(text: string): void {
@@ -37,7 +39,7 @@ export function createSpeechQueue({ synthesize, play, onError }: SpeechQueueOpti
       tail = tail
         .then(async () => {
           if (cancelled) return;
-          await play(await audio);
+          await play(await audio, stop.signal);
         })
         .catch((error) => {
           onError?.(error);
@@ -50,6 +52,7 @@ export function createSpeechQueue({ synthesize, play, onError }: SpeechQueueOpti
 
     cancel(): void {
       cancelled = true;
+      stop.abort();
     },
   };
 }

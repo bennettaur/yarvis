@@ -77,6 +77,8 @@ let settings: Settings = {
   colorTheme: null,
   terminalFontSize: null,
   attentionAnimation: null,
+  allowedSlashCommands: null,
+  defaultAllowedSlashCommands: ["compact"],
 };
 
 const presentSecrets = new Set(config.presentSecrets);
@@ -119,6 +121,21 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
         agentName: (args.name as string | null) || null,
         agentCommand: (args.command as string | null) || null,
       });
+    case "set_allowed_slash_commands": {
+      // Stored the way the core stores them: no leading '/', lower-case, deduped.
+      const names = [
+        ...new Set(
+          (args.commands as string[])
+            .map((c) => c.trim().replace(/^\//, "").toLowerCase())
+            .filter(Boolean),
+        ),
+      ];
+      const refused = names.find((n) => ["permissions", "hooks", "mcp", "login"].includes(n));
+      if (refused) {
+        throw new Error(`/${refused} changes what the session may do, so it can't be allowed`);
+      }
+      return updateSettings({ allowedSlashCommands: names.length > 0 ? names : null });
+    }
     case "set_azure_devops_org_url":
       return updateSettings({ azureDevopsOrgUrl: args.value as string | null });
     case "set_jira_base_url":

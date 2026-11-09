@@ -7,7 +7,9 @@ import type { Db } from "../db/client.ts";
 import { type HeadsDownRun, issueLinks, workStreamLinks, workStreams } from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
+import { stripInvisible } from "../web/extract.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
+import type { ClaudeSessionMessenger } from "../workspaces/claudeSession.ts";
 import { getRepo } from "../workspaces/service.ts";
 import {
   announceMerge,
@@ -22,6 +24,16 @@ import {
   autoApproveReason,
   type PassReviewContext,
 } from "./autoApprove.ts";
+import {
+  feedbackSummary,
+  handOffFeedback,
+  holdsMerge,
+  type MergeFeedbackLoader,
+  type MergeFeedbackResult,
+  type MergeSubject,
+  type PrFeedback,
+  withHandoffs,
+} from "./mergeFeedback.ts";
 import {
   deniedApprovalExists,
   isToolUnattended,
@@ -196,6 +208,11 @@ export interface DecideOptions {
    * let run unattended or a session the loop may steer. Defaults to true.
    */
   withinWorkingHours?: boolean;
+  /**
+   * True for a merge held back by open review feedback, or feedback that
+   * couldn't be checked: like a merge outside working hours, it needs the user.
+   */
+  mergeHeld?: boolean;
 }
 
 /** Whether a pass may make this call now. `tool` is a built-in's name or an MCP tool's registry id. */
@@ -204,7 +221,7 @@ export async function decideCall(
   run: HeadsDownRun,
   tool: string,
   args: unknown,
-  { withinWorkingHours = true }: DecideOptions = {},
+  { withinWorkingHours = true, mergeHeld = false }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
   // Stopped, paused or past its stop time, here or on another instance:
@@ -212,12 +229,12 @@ export async function decideCall(
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  const outOfHoursMerge = !withinWorkingHours && isMergeCall(tool, args);
-  if (WORKSPACE_TOOLS.has(tool) && !outOfHoursMerge) {
+  const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
+  if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
     const workspaceId = stringArg(args, "workspaceId");
     if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
   }
-  if (tool.startsWith("mcp:") && !outOfHoursMerge && (await isToolUnattended(db, tool))) {
+  if (tool.startsWith("mcp:") && !mergeNeedsUser && (await isToolUnattended(db, tool))) {
     return "run";
   }
   // Grants are good for this run only, and for a day: what was approved may
@@ -294,14 +311,30 @@ export function isMergeInstruction(instruction: string | null): boolean {
     /merge conflicts?|merge (in )?(the )?(main|master|base|origin)\b/gi,
     "",
   );
-  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PR|pull request)\b|#\d+/i.test(text);
+  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
+}
+
+/**
+ * What a call types into a workspace's session: undefined for a call that types
+ * nothing, null when its text argument is missing. A slash command is checked
+ * as the whole line, since a skill's name (`/merge-pr`) can ask for a merge as
+ * plainly as its arguments can.
+ */
+function sessionText(tool: string, args: unknown): string | null | undefined {
+  if (tool === "send_workspace_instruction") return stringArg(args, "instruction");
+  if (tool === "send_workspace_slash_command") {
+    const command = stringArg(args, "command");
+    if (!command) return null;
+    const rest = stringArg(args, "arguments");
+    return rest ? `${command} ${rest}` : command;
+  }
+  return undefined;
 }
 
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
 export function isMergeCall(tool: string, args: unknown): boolean {
-  if (tool === "send_workspace_instruction") {
-    return isMergeInstruction(stringArg(args, "instruction"));
-  }
+  const told = sessionText(tool, args);
+  if (told !== undefined) return isMergeInstruction(told);
   return mergeCallTarget(tool, args) !== null;
 }
 
@@ -319,8 +352,9 @@ async function alertUnannouncedMerge(
   args: unknown,
   announcedMerges: Set<string>,
 ): Promise<void> {
-  if (tool === "send_workspace_instruction") {
-    if (!isMergeInstruction(stringArg(args, "instruction"))) return;
+  const told = sessionText(tool, args);
+  if (told !== undefined) {
+    if (!isMergeInstruction(told)) return;
     // The session's PR isn't named, so any merge the pass announced covers it.
     if ([...announcedMerges].some((key) => !key.startsWith(BACKSTOP))) return;
     const workspaceId = stringArg(args, "workspaceId");
@@ -351,38 +385,247 @@ async function alertUnannouncedMerge(
   });
 }
 
+/**
+ * Which PRs a merge call is for: `subjects` to read, and `bareNumbers`, PR
+ * numbers an instruction gives without a repo. Both empty when the call
+ * doesn't say.
+ */
+function mergeSubjects(
+  tool: string,
+  args: unknown,
+): { subjects: MergeSubject[]; bareNumbers: number[] } {
+  if (tool === "send_workspace_instruction") {
+    // The session may merge its own PR or any PR the instruction names, so
+    // all of them are checked. A named PR is looked up on GitHub only when a
+    // workspace owns it, since the session may merge it anywhere.
+    const refs = prRefsIn(stringArg(args, "instruction") ?? "");
+    const named = refs.named.map((pr): MergeSubject => ({ ...pr, githubOnly: false }));
+    const workspaceId = stringArg(args, "workspaceId");
+    const namesOtherPrs = named.length > 0;
+    const subjects: MergeSubject[] = workspaceId
+      ? [{ workspaceId, ...(namesOtherPrs ? { namesOtherPrs } : {}) }, ...named]
+      : named;
+    return { subjects, bareNumbers: refs.bareNumbers };
+  }
+  const target = mergeCallTarget(tool, args);
+  if (!target) return { subjects: [], bareNumbers: [] };
+  // `mcp:<server>:<tool>`: only a GitHub server's PR can be looked up on GitHub.
+  const server = tool.split(":")[1] ?? "";
+  return { subjects: [{ ...target, githubOnly: /github/i.test(server) }], bareNumbers: [] };
+}
+
+/** `owner/repo#N`. A GitHub owner has no dots, and a slash before it means a longer path. */
+const PR_REF = /(?<![\w./-])([\w-]+)\/([\w.-]+)#(\d+)\b/g;
+
+/**
+ * A "repo" that is really a document, as in `docs/setup.md#3`, which links a
+ * heading. Only document extensions: repos like `next.js` or `tool.py` are real.
+ */
+const DOC_LIKE = /\.(md|mdx|markdown|txt|rst|adoc|html?)$/i;
+
+/**
+ * A PR number with no repo: any `#57` left once the full refs are taken out
+ * (`api#57`, `org/acme/api#57`), `PR 57`, `PRs 57 and 58`, `PR-57`, or a pull
+ * request link on another host. `&#39;` is an HTML entity, not a PR.
+ */
+const BARE_PR = [
+  /(?<!&)#(\d+)\b/g,
+  /\b(?:PRs?|pull requests?)[\s-]*(?:number\s*|no\.\s*)?#?\s*(\d+(?:\s*(?:,|and|or|&)\s*#?\s*\d+)*)/gi,
+  /\/(?:pull|pulls|pullrequest|merge_requests)\/(\d+)\b/gi,
+];
+
+/**
+ * The PRs an instruction names: as `owner/repo#N` or by GitHub URL, and by
+ * number alone. Invisible characters are dropped and lookalikes folded first,
+ * so a zero-width space or a fullwidth `＃` inside `acme/api#57` can't hide it.
+ */
+function prRefsIn(instruction: string): {
+  named: { repo: string; number: number }[];
+  bareNumbers: number[];
+} {
+  const found = new Map<string, { repo: string; number: number }>();
+  const add = (repo: string, number: number) => found.set(mergeKey(repo, number), { repo, number });
+  let text = stripInvisible(instruction).text.normalize("NFKC");
+  text = text.replace(new RegExp(PR_URL, "g"), (_m, owner: string, repo: string, n: string) => {
+    add(`${owner}/${repo}`, Number(n));
+    return " ";
+  });
+  text = text.replace(PR_REF, (_m, owner: string, repo: string, n: string) => {
+    if (DOC_LIKE.test(repo)) return " ";
+    add(`${owner}/${repo}`, Number(n));
+    return " ";
+  });
+  const bare = new Set<number>();
+  for (const pattern of BARE_PR) {
+    for (const m of text.matchAll(pattern)) {
+      for (const n of (m[1] ?? "").matchAll(/\d+/g)) bare.add(Number(n[0]));
+    }
+  }
+  return { named: [...found.values()], bareNumbers: [...bare] };
+}
+
+/**
+ * The open feedback on everything a merge call may merge. One PR that
+ * couldn't be checked leaves the whole call unchecked, and so does a call
+ * that doesn't say which PR, or a PR number with no repo that isn't the
+ * workspace's own.
+ */
+async function feedbackFor(
+  load: MergeFeedbackLoader,
+  tool: string,
+  args: unknown,
+): Promise<MergeFeedbackResult> {
+  const { subjects, bareNumbers } = mergeSubjects(tool, args);
+  if (subjects.length === 0 && bareNumbers.length === 0) {
+    return { prs: [], unchecked: "the merge call doesn't say which PR it merges" };
+  }
+  const prs = new Map<string, PrFeedback>();
+  const checked = new Set<string>();
+  const ownNumbers = new Set<number>();
+  for (const subject of subjects) {
+    // The workspace's own PR, named again, was already read.
+    if (!("workspaceId" in subject) && checked.has(mergeKey(subject.repo, subject.number))) {
+      continue;
+    }
+    const result = await load(subject);
+    if (result.unchecked !== null) return { prs: [], unchecked: result.unchecked };
+    for (const pr of result.prs) prs.set(mergeKey(pr.repo, pr.number), pr);
+    for (const pr of result.checked ?? []) {
+      checked.add(mergeKey(pr.repo, pr.number));
+      // A number with no repo can only mean the workspace's own PR: a named
+      // PR in another repo may share the number.
+      if ("workspaceId" in subject) ownNumbers.add(pr.number);
+    }
+  }
+  const unknown = bareNumbers.find((n) => !ownNumbers.has(n));
+  if (unknown !== undefined) {
+    return { prs: [], unchecked: `the instruction names PR #${unknown} without saying which repo` };
+  }
+  return { prs: [...prs.values()], unchecked: null };
+}
+
+/**
+ * A merge held for open feedback: hands the feedback to the PR's workspace
+ * the first time, and otherwise asks the user, with the feedback attached for
+ * the merge review modal. Never the decision model's to allow.
+ */
+async function holdMerge(
+  db: Db,
+  run: HeadsDownRun,
+  tool: string,
+  args: unknown,
+  feedback: MergeFeedbackResult,
+  { send, withinWorkingHours }: { send?: ClaudeSessionMessenger; withinWorkingHours: boolean },
+): Promise<{ deniedMessage: string }> {
+  // The handoff steers a session unasked, so only where a pass may already
+  // steer one: a workspace it is pushing, within working hours.
+  const mayHandOff = feedback.unchecked === null && withinWorkingHours;
+  const { prs, handed } = mayHandOff
+    ? await handOffFeedback(db, run.id, feedback, {
+        send,
+        maySteer: (workspaceId) => isPushedWorkspace(db, workspaceId),
+      })
+    : { prs: await withHandoffs(db, run.id, feedback.prs), handed: [] };
+  if (handed.length > 0) {
+    return {
+      deniedMessage: [
+        "Not run: the PR has open review feedback, so Yarvis told its workspace's session to address it.",
+        ...handed.map((pr) => `${feedbackSummary(pr)}, handed to workspace ${pr.workspaceId}.`),
+        "Don't merge on this pass, and leave the feedback to the session. Once get_workspace_activity shows it has finished, try the merge again on a later pass: if the feedback is resolved it runs as usual, and if not it waits for the user's approval with the feedback shown to them.",
+      ].join("\n"),
+    };
+  }
+  const prLabels = prs.map((pr) => `${pr.repo}#${pr.number}`).join(", ");
+  const [question, why] =
+    feedback.unchecked !== null
+      ? [
+          "Merge this PR? Heads down couldn't check it for open review feedback.",
+          `Couldn't check the PR for open review feedback: ${feedback.unchecked}.`,
+        ]
+      : [
+          `Merge ${prLabels}? It has open review feedback.`,
+          `${prs.map(feedbackSummary).join(". ")}.`,
+        ];
+  await askUser(
+    db,
+    {
+      kind: "approval",
+      question,
+      situation: `${why} ${approvalSituation(tool, args)}`,
+      action: tool,
+      toolArgs: args,
+      options: ["approve", "deny"],
+    },
+    { prs, unchecked: feedback.unchecked },
+  );
+  return { deniedMessage: QUEUED_FOR_APPROVAL };
+}
+
 export interface PassHookOptions {
   /** Absent when the user said nothing this run to judge a call against. */
   review?: PassReviewContext;
   /** The merges this pass announced (see `mergeKey`); the backstop adds its own. */
   announcedMerges?: Set<string>;
   withinWorkingHours?: boolean;
+  /** Reads a merge's open review feedback. Absent, merges aren't checked for it. */
+  mergeFeedback?: MergeFeedbackLoader;
+  /** Types the feedback handoff into a workspace's session; the real session by default. */
+  sendInstruction?: ClaudeSessionMessenger;
 }
 
 /**
  * Approval hooks for a pass: each call is decided at once, and one that needs
  * the user becomes a question for them instead of a prompt to wait on, unless
  * the decision model may settle it (`autoApprove.ts`). A merge outside working
- * hours always goes to the user. A merge that runs without the pass having
- * announced it still raises the merge alert.
+ * hours always goes to the user, and so does one with open review feedback
+ * once the PR's workspace has had its chance to address it (`mergeFeedback.ts`).
+ * A merge that runs without the pass having announced it still raises the
+ * merge alert.
  */
 export function passApprovalHooks(
   db: Db,
   run: HeadsDownRun,
   onChanged: () => void,
-  { review, announcedMerges = new Set(), withinWorkingHours = true }: PassHookOptions = {},
+  {
+    review,
+    announcedMerges = new Set(),
+    withinWorkingHours = true,
+    mergeFeedback,
+    sendInstruction,
+  }: PassHookOptions = {},
 ): ApprovalHooks {
   return {
     deniedMessage: QUEUED_FOR_APPROVAL,
     onRequest: async ({ toolCallId, id, args, description, messages }) => {
       let approved = false;
       try {
-        const decision = await decideCall(db, run, id, args, { withinWorkingHours });
+        // Read live from the provider, so skipped for a call decideCall's
+        // first checks will refuse or stop anyway.
+        const feedback =
+          mergeFeedback &&
+          isMergeCall(id, args) &&
+          !PASS_REFUSED_TOOLS.has(id) &&
+          (await mayRunPasses(db, run.id))
+            ? await feedbackFor(mergeFeedback, id, args)
+            : null;
+        const held = holdsMerge(feedback);
+        const decision = await decideCall(db, run, id, args, {
+          withinWorkingHours,
+          mergeHeld: held,
+        });
         approved = decision === "run";
         if (decision === "refuse") return { deniedMessage: REFUSED };
         if (decision === "denied") return { deniedMessage: DENIED };
         if (decision === "stopped") return { deniedMessage: STOPPED };
         if (decision !== "ask") return undefined;
+        if (held) {
+          const result = await holdMerge(db, run, id, args, feedback, {
+            send: sendInstruction,
+            withinWorkingHours,
+          });
+          onChanged();
+          return result;
+        }
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
         // A failed review is a no, never a reason to drop the question. A

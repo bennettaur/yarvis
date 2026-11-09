@@ -1,9 +1,9 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
-//! instruction into a Claude Code session in a workspace PTY, writing an MCP
-//! server's OAuth credentials or a signed-in GitHub token into the Keychain, and
-//! ringing an alarm the sidecar found due (`alarm.fire`) or stopping one
-//! (`alarm.release`).
+//! instruction or an allowed slash command into a Claude Code session in a
+//! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
+//! GitHub token into the Keychain, and ringing an alarm the sidecar found due
+//! (`alarm.fire`) or stopping one (`alarm.release`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -17,11 +17,15 @@
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
 //! unless the configured agent itself is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
-//! than a request. `mcp.saveOAuth` and `github.saveToken` are the two methods
-//! that write a secret. `mcp.saveOAuth` can only reach the `oauth` subtree of one
-//! MCP server's entry, and `github.saveToken` only the `github_token` key — never
-//! a provider key, the database URL, or another server's headers. Requests and
-//! responses are newline-delimited JSON.
+//! than a request. `claude.slash` is how a slash command reaches a session: the
+//! sidecar names a command, and `pty::send_session_slash_command` types it only
+//! when it is on the allowlist (built-in defaults plus a list the user keeps in
+//! Settings, which no sidecar route or tool writes). Its arguments are cleaned
+//! like an instruction. `mcp.saveOAuth` and `github.saveToken` are the two
+//! methods that write a secret. `mcp.saveOAuth` can only reach the `oauth`
+//! subtree of one MCP server's entry, and `github.saveToken` only the
+//! `github_token` key — never a provider key, the database URL, or another
+//! server's headers. Requests and responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -46,7 +50,10 @@ mod unix_impl {
     use tokio::net::{UnixListener, UnixStream};
 
     use super::ControlSocketPath;
-    use crate::pty::{kill_session, send_session_instruction, spawn_claude_session, PtyState};
+    use crate::pty::{
+        kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
+        PtyState,
+    };
 
     /// Cap on a single request line, bounding what one message can buffer.
     const MAX_LINE: usize = 64 * 1024;
@@ -104,6 +111,21 @@ mod unix_impl {
         instruction: String,
         /// Agent processes registered for the session by its SessionStart hook.
         /// Defaults to empty, which leaves only the executable-name check.
+        #[serde(default, rename = "agentPids")]
+        agent_pids: Vec<u32>,
+    }
+
+    #[derive(Deserialize)]
+    struct SlashParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        /// The command's name, with or without its `/`. Checked against the
+        /// allowlist in `pty::send_session_slash_command`.
+        command: String,
+        /// Text after the command. Composed by the chat model, so it is cleaned
+        /// like an instruction before it is typed.
+        #[serde(default)]
+        arguments: Option<String>,
         #[serde(default, rename = "agentPids")]
         agent_pids: Vec<u32>,
     }
@@ -288,6 +310,18 @@ mod unix_impl {
                     &p.agent_pids,
                 )
             }
+            "claude.slash" => {
+                let p: SlashParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                send_session_slash_command(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    &p.command,
+                    p.arguments.as_deref(),
+                    &p.agent_pids,
+                )
+            }
             "mcp.saveOAuth" => {
                 let p: SaveOAuthParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -427,6 +461,27 @@ mod unix_impl {
                 p.resume.as_deref(),
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
             );
+        }
+
+        #[test]
+        fn reads_the_slash_command_the_sidecar_sends() {
+            let p: SlashParams = serde_json::from_value(json!({
+                "workspaceId": "w1",
+                "command": "compact",
+                "arguments": "focus on the tests",
+                "agentPids": [42],
+            }))
+            .expect("sidecar payload");
+            assert_eq!(p.workspace_id, "w1");
+            assert_eq!(p.command, "compact");
+            assert_eq!(p.arguments.as_deref(), Some("focus on the tests"));
+            assert_eq!(p.agent_pids, vec![42]);
+
+            let bare: SlashParams =
+                serde_json::from_value(json!({ "workspaceId": "w1", "command": "compact" }))
+                    .expect("payload without arguments");
+            assert_eq!(bare.arguments, None);
+            assert!(bare.agent_pids.is_empty());
         }
 
         #[test]
