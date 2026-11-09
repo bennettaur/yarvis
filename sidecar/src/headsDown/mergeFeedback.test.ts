@@ -830,6 +830,25 @@ describe("merging with open feedback", () => {
     expect(await heldReason()).toBeNull();
   });
 
+  it("holds on a PR number its refs don't account for", async () => {
+    const workspaceId = await pushedWorkspace();
+    const held = async (instruction: string, id: string) => {
+      await sql`TRUNCATE attention_items CASCADE`;
+      expect(await instructMerge(workspaceId, instruction, clean(), id)).toBe(false);
+      return heldReason();
+    };
+    // A ref with no owner, or inside a longer path, still names a PR.
+    expect(await held("Merge PR api#57.", "c1")).toContain("#57");
+    expect(await held("Merge PR org/acme/api#57.", "c2")).toContain("#57");
+    // A fullwidth lookalike folds to ASCII, so the ref is read (and no workspace has it).
+    expect(await held("Merge PR acme/billing\uff0357 too.", "c3")).toContain("may not be GitHub's");
+    expect(await held("Merge PRs 12 and 58.", "c4")).toContain("#58");
+    expect(await held("Merge PR-58.", "c5")).toContain("#58");
+    // Another named PR sharing the number doesn't account for a bare one.
+    await workspaceWithPr({ name: "web", number: 58 });
+    expect(await held("Merge acme/web#58, then PR #58.", "c6")).toContain("#58");
+  });
+
   it("reads a PR ref past invisible characters, and not a file's heading link", async () => {
     const workspaceId = await pushedWorkspace();
     const asked: MergeSubject[] = [];

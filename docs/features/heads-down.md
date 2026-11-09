@@ -223,7 +223,7 @@ instruction's wording, so it can miss one phrased some other way.
   review is dismissed. A merge told to a workspace's session is checked
   against the workspace's own PR and every PR the instruction names as
   `owner/repo#N` or by its GitHub link. A PR number given without its repo,
-  like `#57`, has to be one of those PRs, or the merge waits for you.
+  like `#57`, has to be the workspace's own PR, or the merge waits for you.
 - **Feedback from outside the repo:** on GitHub, anyone who can see a repo can
   comment on its PRs. If any open thread or review asking for changes is from
   someone who isn't an owner, member or collaborator of the repo, the session

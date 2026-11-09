@@ -311,7 +311,7 @@ export function isMergeInstruction(instruction: string | null): boolean {
     /merge conflicts?|merge (in )?(the )?(main|master|base|origin)\b/gi,
     "",
   );
-  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PR|pull request)\b|#\d+/i.test(text);
+  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
 }
 
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
@@ -400,21 +400,27 @@ function mergeSubjects(
 /** `owner/repo#N`. A GitHub owner has no dots, and a slash before it means a longer path. */
 const PR_REF = /(?<![\w./-])([\w-]+)\/([\w.-]+)#(\d+)\b/g;
 
-/** A "repo" that is really a file, as in `docs/setup.md#3`, which links a heading. */
-const FILE_LIKE =
-  /\.(md|mdx|txt|rst|html?|json|ya?ml|toml|[cm]?[jt]sx?|rs|py|go|rb|java|kt|swift|css|scss|sh)$/i;
+/**
+ * A "repo" that is really a document, as in `docs/setup.md#3`, which links a
+ * heading. Only document extensions: repos like `next.js` or `tool.py` are real.
+ */
+const DOC_LIKE = /\.(md|mdx|markdown|txt|rst|adoc|html?)$/i;
 
-/** A PR number with no repo: `#57`, `PR 57`, or a pull request URL on another host. */
+/**
+ * A PR number with no repo: any `#57` left once the full refs are taken out
+ * (`api#57`, `org/acme/api#57`), `PR 57`, `PRs 57 and 58`, `PR-57`, or a pull
+ * request link on another host. `&#39;` is an HTML entity, not a PR.
+ */
 const BARE_PR = [
-  /(?<![\w/&])#(\d+)\b/g,
-  /\b(?:PR|pull request)\s*#?(\d+)\b/gi,
+  /(?<!&)#(\d+)\b/g,
+  /\b(?:PRs?|pull requests?)[\s-]*(?:number\s*|no\.\s*)?#?\s*(\d+(?:\s*(?:,|and|or|&)\s*#?\s*\d+)*)/gi,
   /\/(?:pull|pulls|pullrequest|merge_requests)\/(\d+)\b/gi,
 ];
 
 /**
  * The PRs an instruction names: as `owner/repo#N` or by GitHub URL, and by
- * number alone. Invisible characters are dropped first, so a zero-width space
- * inside `acme/api#57` can't hide it.
+ * number alone. Invisible characters are dropped and lookalikes folded first,
+ * so a zero-width space or a fullwidth `＃` inside `acme/api#57` can't hide it.
  */
 function prRefsIn(instruction: string): {
   named: { repo: string; number: number }[];
@@ -422,19 +428,21 @@ function prRefsIn(instruction: string): {
 } {
   const found = new Map<string, { repo: string; number: number }>();
   const add = (repo: string, number: number) => found.set(mergeKey(repo, number), { repo, number });
-  let text = stripInvisible(instruction).text;
+  let text = stripInvisible(instruction).text.normalize("NFKC");
   text = text.replace(new RegExp(PR_URL, "g"), (_m, owner: string, repo: string, n: string) => {
     add(`${owner}/${repo}`, Number(n));
     return " ";
   });
-  text = text.replace(PR_REF, (m, owner: string, repo: string, n: string) => {
-    if (FILE_LIKE.test(repo)) return m;
+  text = text.replace(PR_REF, (_m, owner: string, repo: string, n: string) => {
+    if (DOC_LIKE.test(repo)) return " ";
     add(`${owner}/${repo}`, Number(n));
     return " ";
   });
   const bare = new Set<number>();
   for (const pattern of BARE_PR) {
-    for (const m of text.matchAll(pattern)) bare.add(Number(m[1]));
+    for (const m of text.matchAll(pattern)) {
+      for (const n of (m[1] ?? "").matchAll(/\d+/g)) bare.add(Number(n[0]));
+    }
   }
   return { named: [...found.values()], bareNumbers: [...bare] };
 }
@@ -442,8 +450,8 @@ function prRefsIn(instruction: string): {
 /**
  * The open feedback on everything a merge call may merge. One PR that
  * couldn't be checked leaves the whole call unchecked, and so does a call
- * that doesn't say which PR, or a PR number with no repo that isn't one of
- * the PRs read.
+ * that doesn't say which PR, or a PR number with no repo that isn't the
+ * workspace's own.
  */
 async function feedbackFor(
   load: MergeFeedbackLoader,
@@ -456,7 +464,7 @@ async function feedbackFor(
   }
   const prs = new Map<string, PrFeedback>();
   const checked = new Set<string>();
-  const checkedNumbers = new Set<number>();
+  const ownNumbers = new Set<number>();
   for (const subject of subjects) {
     // The workspace's own PR, named again, was already read.
     if (!("workspaceId" in subject) && checked.has(mergeKey(subject.repo, subject.number))) {
@@ -467,10 +475,12 @@ async function feedbackFor(
     for (const pr of result.prs) prs.set(mergeKey(pr.repo, pr.number), pr);
     for (const pr of result.checked ?? []) {
       checked.add(mergeKey(pr.repo, pr.number));
-      checkedNumbers.add(pr.number);
+      // A number with no repo can only mean the workspace's own PR: a named
+      // PR in another repo may share the number.
+      if ("workspaceId" in subject) ownNumbers.add(pr.number);
     }
   }
-  const unknown = bareNumbers.find((n) => !checkedNumbers.has(n));
+  const unknown = bareNumbers.find((n) => !ownNumbers.has(n));
   if (unknown !== undefined) {
     return { prs: [], unchecked: `the instruction names PR #${unknown} without saying which repo` };
   }
