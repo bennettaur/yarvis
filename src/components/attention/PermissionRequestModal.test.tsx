@@ -94,6 +94,26 @@ describe("PermissionRequestModal", () => {
     expect(closed).toBe(1);
   });
 
+  it("reports finishing, not closing, once nothing else waits", async () => {
+    queue = [REQUEST];
+    let done = 0;
+    const mounted = await mountForInteraction(
+      createElement(PermissionRequestModal, {
+        sessionKey: REQUEST.sessionKey,
+        title: "Fix the API",
+        onClose: () => closed++,
+        onDone: () => done++,
+        onGoToSession: () => wentToSession++,
+      }),
+    );
+    unmount = mounted.unmount;
+    await armed();
+    button(mounted.host, "Approve").click();
+    await armed();
+    expect(done).toBe(1);
+    expect(closed).toBe(0);
+  });
+
   it("hands the prompt to the terminal and opens the session", async () => {
     queue = [REQUEST];
     const host = await mount();

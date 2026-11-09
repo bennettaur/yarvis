@@ -89,7 +89,7 @@ variables:
 | `YARVIS_SESSION_KEY` | Names this exact terminal, so an attention item or an `ask_user` question jumps back to it |
 | `YARVIS_WORKSPACE_ID` | The workspace it belongs to (workspace terminals only) |
 | `YARVIS_ATTENTION_TOKEN` | Lets hooks in this terminal raise attention items, pass permission prompts to the app and register a Claude Code session, and nothing else |
-| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations and permission prompts, so one terminal can't send either under another's name |
+| `YARVIS_SESSION_TOKEN` | Signs this terminal's session registrations, permission prompts and `ask_user` questions, so one terminal can't send them under another's name |
 | `YARVIS_SIDECAR_PORT`, `YARVIS_MCP_TOKEN` | Let a Claude Code session here reach Yarvis's MCP endpoint, its memory and question tools and, in a workspace, its review comment tools |
 
 What this gives you:
@@ -133,7 +133,9 @@ Some details:
 - **Looking at the session doesn't clear the item.** It clears once you answer
   it here, once Claude runs a call you approved in the terminal, when the turn
   ends or you send your next prompt, or when the session finishes. A prompt you
-  deny in the terminal clears at one of the last three.
+  deny in the terminal clears at one of the last three. Answering it here also
+  clears the session's "Waiting for your input" item, which Claude Code raises
+  when a prompt sits unanswered for a while.
 - **Several prompts from one session queue up.** The window shows the oldest
   first with a count of the rest.
 - **Only the app instance that launched the session can answer it.** Another

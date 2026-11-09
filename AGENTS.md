@@ -459,7 +459,8 @@ report there and leaves the fixes to the author.
   A registered pid counts only while it leads the PTY's foreground process
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
   so registration (and a permission prompt sent to `/ingest/permission`, or the
-  hook that settles one at `/ingest/permission/settled`) also
+  hook that settles one at `/ingest/permission/settled`, and an `ask_user`
+  question's session key on the MCP endpoint) also
   needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
   its session key under the sidecar's full-access bearer, which no PTY holds.
   The sidecar recomputes it, so a process can't mint a token for a terminal it

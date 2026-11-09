@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { createHmac } from "node:crypto";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
@@ -43,7 +44,13 @@ afterAll(async () => {
 interface Origin {
   sessionKey?: string;
   workspaceId?: string;
+  /** The PTY's session token; the real one for `sessionKey` unless given. */
+  sessionToken?: string;
 }
+
+/** The token the core puts in a PTY's environment for `key`. */
+const sessionTokenFor = (key: string) =>
+  createHmac("sha256", config.token).update(`session:${key}`).digest("hex");
 
 /** The request a workspace's Claude session sends to call `name`; `meta` rides as `_meta`. */
 function mcpCall(
@@ -59,7 +66,12 @@ function mcpCall(
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       Host: "127.0.0.1:8765",
-      ...(origin.sessionKey ? { "X-Yarvis-Session-Key": origin.sessionKey } : {}),
+      ...(origin.sessionKey
+        ? {
+            "X-Yarvis-Session-Key": origin.sessionKey,
+            "X-Yarvis-Session-Token": origin.sessionToken ?? sessionTokenFor(origin.sessionKey),
+          }
+        : {}),
       ...(origin.workspaceId ? { "X-Yarvis-Workspace": origin.workspaceId } : {}),
     } as Record<string, string>,
     body: JSON.stringify({
@@ -300,6 +312,23 @@ describe("ask_user over MCP", () => {
     expect((await call).value.status).toBe("declined");
     const [after] = await sql`SELECT status FROM attention_items`;
     expect(after?.status).toBe("resolved");
+  });
+
+  it("ignores a session key its token doesn't prove", async () => {
+    // A process in another terminal holds that terminal's token, not this one's.
+    const call = callTool("ask_user", ASK, {
+      sessionKey,
+      workspaceId,
+      sessionToken: sessionTokenFor("ws:22222222-2222-2222-2222-222222222222/t1/p1"),
+    });
+    const id = await pendingQuestionId();
+    const [question] = await sql`SELECT session_key FROM agent_questions`;
+    const [item] = await sql`SELECT session_key FROM attention_items`;
+    expect(question?.session_key).toBeNull();
+    expect(item?.session_key).toBeNull();
+
+    await decline(id);
+    await call;
   });
 
   it("drops a workspace header that names no workspace", async () => {

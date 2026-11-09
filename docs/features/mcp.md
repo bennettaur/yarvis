@@ -224,9 +224,13 @@ returned straight away.
 
 The question is shown against the workspace and terminal it came from. The
 session tells Yarvis which ones through the `X-Yarvis-Workspace` and
-`X-Yarvis-Session-Key` headers in the workspace's `.mcp.json`. A client Yarvis
-didn't launch sends neither, so its questions show as "Claude session" with no
-workspace.
+`X-Yarvis-Session-Key` headers in the workspace's `.mcp.json`. The session key
+counts only alongside that terminal's own `X-Yarvis-Session-Token`, so a
+question can't pose as another terminal's. A client Yarvis didn't launch sends
+neither, so its questions show as "Claude session" with no workspace. A
+workspace whose `.mcp.json` predates the token header gets it the next time
+Yarvis provisions it, such as when a repo is added. Until then its questions
+show without a terminal, and don't open on their own.
 
 ### Workspace review comments
 
@@ -263,8 +267,9 @@ root. That file points at `${YARVIS_SIDECAR_PORT}` with an
 variables into the session's shell, so the file on disk holds no secret. It
 also sends an `X-Yarvis-Workspace` header with the workspace id, which isn't a
 secret and is written as-is, and an `X-Yarvis-Session-Key` header filled in
-from the terminal's `YARVIS_SESSION_KEY`, so a question shows up against the
-right terminal.
+from the terminal's `YARVIS_SESSION_KEY`, with an `X-Yarvis-Session-Token` from
+`YARVIS_SESSION_TOKEN` to prove it, so a question shows up against the right
+terminal.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
