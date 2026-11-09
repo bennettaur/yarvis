@@ -6,7 +6,7 @@ import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
 import { resetChatApi, stubChatApi } from "../test/chatApi";
-import { mountForInteraction, textOf } from "../test/render";
+import { mountForInteraction, textOf, waitFor } from "../test/render";
 import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
@@ -306,15 +306,17 @@ describe("ChatPanel", () => {
       (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
     );
     link?.click();
-    await settle();
-    const pane = mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
-    expect(pane?.textContent).toContain("Ship it on Thursday.");
+    const paneOf = () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
+    await waitFor(
+      () => paneOf()?.textContent?.includes("Ship it on Thursday.") ?? false,
+      "the artifact beside the chat",
+    );
+    const pane = paneOf();
     // The conversation stays beside it.
     expect(textOf(mounted.host.innerHTML)).toContain("Wrote it up");
 
     pane?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')?.click();
-    await settle();
-    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+    await waitFor(() => paneOf() === null, "the pane closing");
   });
 
   it("opens an artifact the host asks for, and says once that it has", async () => {
@@ -326,8 +328,10 @@ describe("ChatPanel", () => {
       }),
     );
     unmount = mounted.unmount;
-    await settle();
-    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).not.toBeNull();
+    await waitFor(
+      () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]') !== null,
+      "the requested artifact",
+    );
     expect(consumed).toHaveBeenCalledTimes(1);
   });
 

@@ -57,8 +57,9 @@ function stripAll(text: string, needle: string): string {
  * before destructive or auto-approved tools run, and a later turn starts
  * without that flag, so the page's text stays in its own turn. The browser's
  * page reads are left out for the same reason, and their element refs don't
- * outlive the page anyway. So are artifact reads: one a heads-down pass or
- * specialist wrote sets the same flag.
+ * outlive the page anyway. So are artifact reads, and the diagram tools, which
+ * return the whole scene: one a heads-down pass or specialist wrote sets the
+ * same flag.
  */
 const RESULT_NOT_REPLAYED = new Set([
   "read_web_page",
@@ -67,6 +68,8 @@ const RESULT_NOT_REPLAYED = new Set([
   "list_browser_elements",
   "get_artifact",
   "list_artifacts",
+  "create_diagram",
+  "update_diagram",
 ]);
 
 /**

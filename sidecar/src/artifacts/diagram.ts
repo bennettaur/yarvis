@@ -314,11 +314,15 @@ export function checkDiagram(diagram: Diagram): Diagram {
  */
 export function applyDiagramChanges(diagram: Diagram, changes: DiagramChanges): Diagram {
   const removed = new Set(changes.remove ?? []);
+  // An arrow goes with a shape it is bound to, and leaves any frame listing it.
+  for (const element of diagram.elements) {
+    if (element.type !== "arrow") continue;
+    const bound = [element.start?.id, element.end?.id];
+    if (bound.some((id) => id !== undefined && removed.has(id))) removed.add(element.id);
+  }
   const elements = new Map<string, Record<string, unknown>>();
   for (const element of diagram.elements) {
     if (removed.has(element.id)) continue;
-    const bound = element.type === "arrow" ? [element.start?.id, element.end?.id] : [];
-    if (bound.some((id) => id !== undefined && removed.has(id))) continue;
     if (element.type === "frame") {
       elements.set(element.id, {
         ...element,

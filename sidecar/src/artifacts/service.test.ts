@@ -522,6 +522,16 @@ describe("diagrams", () => {
     await updateDiagram(db, own.id, { writer: "heads-down", changes: { remove: ["db"] } });
   });
 
+  it("leaves a diagram as it was when a change has nothing in it", async () => {
+    const created = await createDiagram(db, { title: "Architecture", elements });
+    const same = await updateDiagram(db, created.id, {
+      writer: "heads-down",
+      changes: { upsert: [], remove: [] },
+    });
+    expect(same?.untrusted).toBe(false);
+    expect(same?.updatedAt).toEqual(created.updatedAt);
+  });
+
   it("refuses an addOnly change that touches what is there, and keeps the diagram", async () => {
     const created = await createDiagram(db, { title: "Architecture", elements });
     const touches = [

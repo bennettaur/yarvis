@@ -268,7 +268,7 @@ export function buildArtifactTools(
         addOnly: z
           .boolean()
           .optional()
-          .describe("True when this change only adds new nodes and edges"),
+          .describe("True when every id you upsert is new and you remove nothing"),
       }),
       execute: async ({ id, title: t, addOnly, ...changes }) => {
         try {

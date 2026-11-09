@@ -315,10 +315,14 @@ export async function updateDiagram(
   input: UpdateDiagramInput,
 ): Promise<Artifact | null> {
   const writer = input.writer ?? "chat";
+  const { title, changes } = input;
+  const nothingToChange = title === undefined && !changes.upsert?.length && !changes.remove?.length;
   const row = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(artifacts).where(eq(artifacts.id, id)).for("update");
     if (!current) return null;
     if (current.format !== "excalidraw") throw new NotADiagramError();
+    // Don't bump it to the top of the list, log an edit or mark it untrusted.
+    if (nothingToChange) return current;
     const diagram = parseDiagram(current.content);
     const adds = input.title === undefined && onlyAdds(diagram, input.changes);
     if (input.addOnly && !adds) throw new DiagramError(ADD_ONLY_BROKEN);
@@ -340,7 +344,7 @@ export async function updateDiagram(
       .returning();
     return updated ?? null;
   });
-  if (!row) return null;
+  if (!row || nothingToChange) return row;
   await emitEvent(db, {
     type: "artifact.updated",
     source: "artifacts",

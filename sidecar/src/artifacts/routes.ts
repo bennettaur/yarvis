@@ -87,6 +87,8 @@ export function createArtifactRoutes(config: Config): Hono {
           wake = finish;
         });
       try {
+        // A delete between the check above and subscribing reached no listener.
+        if (!(await getArtifact(db(), id))) pending = "deleted";
         // The pane counts the stream as live from its first frame.
         await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
         while (!signal.aborted) {

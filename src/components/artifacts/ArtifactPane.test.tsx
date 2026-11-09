@@ -25,9 +25,11 @@ function artifact(overrides: Record<string, unknown> = {}) {
 /**
  * Serves the artifact from `read` on each GET, and pushes stream frames the
  * test sends with `push`. Counts the reads so a test can see them coalesce.
+ * `delivered` is true once the pane has taken every pushed frame.
  */
 function serve(read: () => Promise<unknown>) {
   let reads = 0;
+  let delivered = false;
   let push: ((frame: string) => void) | null = null;
   stubSidecarApi({
     sidecarFetch: async (path: string) => {
@@ -40,11 +42,13 @@ function serve(read: () => Promise<unknown>) {
       const queue: string[] = [JSON.stringify({ type: "ping" })];
       let wake: (() => void) | null = null;
       push = (frame) => {
+        delivered = false;
         queue.push(frame);
         wake?.();
       };
       while (!init.signal?.aborted) {
         while (queue.length > 0) yield queue.shift() as string;
+        delivered = true;
         await new Promise<void>((resolve) => {
           wake = resolve;
           init.signal?.addEventListener("abort", () => resolve(), { once: true });
@@ -54,6 +58,7 @@ function serve(read: () => Promise<unknown>) {
   });
   return {
     reads: () => reads,
+    delivered: () => delivered,
     push: (type: string) => push?.(JSON.stringify({ type })),
   };
 }
@@ -142,7 +147,7 @@ describe("ArtifactPane", () => {
     server.push("updated");
     server.push("updated");
     server.push("updated");
-    await new Promise((r) => setTimeout(r, 20));
+    await waitFor(server.delivered, "the burst reaching the pane");
     (release as (() => void) | null)?.();
 
     await waitFor(() => host.textContent?.includes("version 4") ?? false, "the final read");

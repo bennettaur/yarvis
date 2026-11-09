@@ -1,5 +1,5 @@
 import { XIcon } from "lucide-react";
-import { Component, lazy, type ReactNode, Suspense, useEffect, useState } from "react";
+import { Component, lazy, memo, type ReactNode, Suspense, useEffect, useState } from "react";
 import { SidecarError } from "../../lib/api";
 import { type Artifact, getArtifact, subscribeArtifact } from "../../lib/artifacts";
 import { type DisplayError, formatError } from "../../lib/errors";
@@ -108,9 +108,10 @@ function useLiveArtifact(id: string) {
 /**
  * An artifact shown beside a chat, so the user can read what the agent wrote
  * (or watch a diagram change) while still talking to it. Markdown renders as
- * the chat does; a diagram is drawn in Excalidraw.
+ * the chat does; a diagram is drawn in Excalidraw. Memoized because the chat
+ * around it re-renders on every streamed token and keystroke.
  */
-export default function ArtifactPane({ id, onClose }: { id: string; onClose: () => void }) {
+export default memo(function ArtifactPane({ id, onClose }: { id: string; onClose: () => void }) {
   const { artifact, error, deleted } = useLiveArtifact(id);
 
   let body: ReactNode;
@@ -178,4 +179,4 @@ export default function ArtifactPane({ id, onClose }: { id: string; onClose: () 
       <div className="min-h-0 flex-1">{body}</div>
     </section>
   );
-}
+});

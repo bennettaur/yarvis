@@ -91,6 +91,9 @@ describe("checking a diagram", () => {
     expect(() =>
       checkDiagram({ elements: [box("b", 0, 0), { id: "e", type: "arrow", start: { id: "b" } }] }),
     ).toThrow(/needs start and end shapes, or x, y and points/);
+    expect(() => checkDiagram({ elements: [{ id: "e", type: "arrow", x: 0, y: 0 }] })).toThrow(
+      /needs start and end shapes, or x, y and points/,
+    );
   });
 
   it("refuses a frame holding something missing, a frame, or a child of another frame", () => {
@@ -107,6 +110,7 @@ describe("checking a diagram", () => {
   it("caps the elements a diagram adds up to", () => {
     const many = Array.from({ length: MAX_DIAGRAM_ELEMENTS + 1 }, (_, i) => box(`n${i}`, i, 0));
     expect(() => checkDiagram({ elements: many })).toThrow(/at most/);
+    expect(checkDiagram({ elements: many.slice(1) }).elements).toHaveLength(MAX_DIAGRAM_ELEMENTS);
   });
 
   it("reads empty content as an empty diagram", () => {
@@ -270,13 +274,16 @@ describe("diagram changes", () => {
     );
   });
 
-  it("removes a shape's arrows with it, and drops it from its frame", () => {
+  it("removes a shape's arrows with it, and drops both from their frame", () => {
     const framed = applyDiagramChanges(base, {
-      upsert: [{ id: "f", type: "frame", children: ["api", "db"] }],
+      upsert: [{ id: "f", type: "frame", children: ["api", "db", "api-db"] }],
     });
-    const next = applyDiagramChanges(framed, { remove: ["db"] });
-    expect(next.elements.map((e) => e.id)).toEqual(["api", "f"]);
-    expect(next.elements[1]).toMatchObject({ children: ["api"] });
+    const withoutEnd = applyDiagramChanges(framed, { remove: ["db"] });
+    expect(withoutEnd.elements.map((e) => e.id)).toEqual(["api", "f"]);
+    expect(withoutEnd.elements[1]).toMatchObject({ children: ["api"] });
+    const withoutStart = applyDiagramChanges(framed, { remove: ["api"] });
+    expect(withoutStart.elements.map((e) => e.id)).toEqual(["db", "f"]);
+    expect(withoutStart.elements[1]).toMatchObject({ children: ["db"] });
   });
 
   it("removes before it upserts, so an element can be replaced in one call", () => {
