@@ -56,6 +56,11 @@ export interface Settings {
   /** Whether the top bar's sweep and the bell's shake run while the bell has
    *  something pending (`lib/attentionAnimation`); null means on. */
   attentionAnimation: boolean | null;
+  /** Slash commands, beyond the defaults, that Yarvis may send to a workspace's
+   *  agent session. Names without the `/`; null means none added. */
+  allowedSlashCommands: string[] | null;
+  /** Slash commands always allowed, whatever `allowedSlashCommands` holds. */
+  defaultAllowedSlashCommands: string[];
 }
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
@@ -73,6 +78,12 @@ export const setMaxPtySessions = (value: number | null) =>
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
+
+/** Replaces the extra slash commands Yarvis may send to workspace sessions; an
+ * empty list clears them. Takes effect on the next send. Rejects a name with
+ * spaces or punctuation, since arguments are never part of the allowlist. */
+export const setAllowedSlashCommands = (commands: string[]) =>
+  invoke<Settings>("set_allowed_slash_commands", { commands });
 
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */

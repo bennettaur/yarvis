@@ -81,6 +81,8 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Same delivery caveat, and a skill the user allowed can push or open PRs.
+  "send_workspace_slash_command",
   // Act inside the user's signed-in browser session. The extension keeps them on
   // the current site and off destructive controls, but a misheard "open the
   // billing page" is still an action nobody reviewed.
@@ -132,6 +134,14 @@ function rewritesArtifact(args: unknown): boolean {
   return a?.content !== undefined || a?.title !== undefined;
 }
 
+/** A bare `/compact`, which only summarizes the session's own context. */
+function isBareCompact(args: unknown): boolean {
+  const a = args as { command?: unknown; arguments?: unknown } | null;
+  const command = typeof a?.command === "string" ? a.command.trim().replace(/^\//, "") : "";
+  const rest = typeof a?.arguments === "string" ? a.arguments.trim() : "";
+  return command.toLowerCase() === "compact" && rest === "";
+}
+
 /**
  * An `update_diagram` call that may change what is already drawn. One marked
  * `addOnly` can't (`updateDiagram` refuses it if any id it sends exists), so
@@ -151,6 +161,11 @@ function changesDiagram(args: unknown): boolean {
  * may now be the page's rather than the user's. (On a spoken turn they already
  * always ask.) An untrusted artifact counts the same, since a heads-down pass or
  * specialist may have copied a page or message into it.
+ *
+ * A slash command other than a bare `/compact` asks on a typed turn too. An
+ * allowed skill acts on its arguments with its own tools, and issue, PR and MCP
+ * text a turn reads doesn't count as untrusted above, so the user confirms
+ * which skill runs and with what.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
  * it asks under the same conditions; an append does not. So does an
@@ -173,6 +188,10 @@ export function conditionalConfirmations(options: {
     for (const name of DESTRUCTIVE_BUILTIN_TOOLS) {
       conditions.set(name, () => hasReadUntrusted(reads));
     }
+    conditions.set(
+      "send_workspace_slash_command",
+      (args) => !isBareCompact(args) || hasReadUntrusted(reads),
+    );
   }
   conditions.set(
     "update_artifact",

@@ -21,6 +21,7 @@ import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
 import type {
   ClaudeSessionStarter,
   SendSessionInstructionInput,
+  SendSessionSlashCommandInput,
   StartClaudeSessionInput,
 } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
@@ -2169,6 +2170,149 @@ describe("workspace tools", () => {
     )) as { error?: string };
 
     expect(result.error).toBe("workspace not found");
+    expect(sends).toBe(0);
+  });
+
+  it("send_workspace_slash_command hands the command and arguments to the core", async () => {
+    const created = await activeWorkspace("Compact me");
+    const sent: SendSessionSlashCommandInput[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "/Compact", arguments: "keep the test plan" },
+      opts,
+    )) as { error?: string; delivered?: boolean; completionConfirmed?: boolean };
+
+    expect(result.error).toBeUndefined();
+    expect(result.delivered).toBe(true);
+    expect(result.completionConfirmed).toBe(false);
+    expect(sent).toEqual([
+      {
+        workspaceId: created.workspaceId,
+        command: "compact",
+        arguments: "keep the test plan",
+        agentPids: [],
+      },
+    ]);
+  });
+
+  it("send_workspace_slash_command passes on the core's refusal of a command not allowed", async () => {
+    const created = await activeWorkspace("Not allowed");
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async () => {
+        throw new Error("/permissions is not an allowed slash command");
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "permissions" },
+      opts,
+    )) as { error?: string; delivered?: boolean };
+
+    expect(result.delivered).toBe(false);
+    expect(result.error).toContain("not an allowed slash command");
+  });
+
+  it("send_workspace_slash_command refuses a name carrying arguments", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.send_workspace_slash_command.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = "00000000-0000-0000-0000-000000000000";
+    expect(schema.safeParse({ workspaceId, command: "compact now" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, command: "compact\n/login" }).success).toBe(false);
+    for (const command of ["compact", "/compact", "do-code-review", "plugin:skill"]) {
+      expect(schema.safeParse({ workspaceId, command }).success).toBe(true);
+    }
+    for (const command of ["//compact", "plugin:", "a:b:c", "a".repeat(101)]) {
+      expect(schema.safeParse({ workspaceId, command }).success).toBe(false);
+    }
+  });
+
+  it("send_workspace_slash_command trims its arguments and records which command ran", async () => {
+    const created = await activeWorkspace("Trim me");
+    const sent: SendSessionSlashCommandInput[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async (input) => {
+        sent.push(input);
+      },
+    });
+
+    await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "compact", arguments: "  keep the plan  " },
+      opts,
+    );
+    await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "compact", arguments: "   " },
+      opts,
+    );
+
+    expect(sent.map((s) => s.arguments)).toEqual(["keep the plan", undefined]);
+    // The event is written after the tool returns, so wait for it.
+    let payloads: unknown[] = [];
+    for (let i = 0; i < 50 && payloads.length < 2; i++) {
+      const rows = await db
+        .select({ payload: schema.events.payload })
+        .from(schema.events)
+        .where(eq(schema.events.type, "workspace.instruction_sent"));
+      payloads = rows
+        .map((r) => r.payload as { workspaceId?: string })
+        .filter((p) => p.workspaceId === created.workspaceId);
+      if (payloads.length < 2) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(payloads).toHaveLength(2);
+    for (const payload of payloads) {
+      expect(payload).toMatchObject({ workspaceId: created.workspaceId, slashCommand: "compact" });
+    }
+  });
+
+  it("send_workspace_slash_command refuses a workspace that isn't active without sending", async () => {
+    const created = await activeWorkspace("Going away");
+    await db
+      .update(schema.workspaces)
+      .set({ status: "archiving" })
+      .where(eq(schema.workspaces.id, created.workspaceId));
+    let sends = 0;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async () => {
+        sends++;
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: created.workspaceId, command: "compact" },
+      opts,
+    )) as { error?: string; delivered?: boolean };
+
+    expect(result.delivered).toBe(false);
+    expect(result.error).toContain("not active");
+    expect(sends).toBe(0);
+  });
+
+  it("send_workspace_slash_command errors on an unknown workspace without sending", async () => {
+    let sends = 0;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      sendSessionSlashCommand: async () => {
+        sends++;
+      },
+    });
+
+    const result = (await tools.send_workspace_slash_command.execute!(
+      { workspaceId: "00000000-0000-0000-0000-000000000000", command: "compact" },
+      opts,
+    )) as { error?: string; delivered?: boolean };
+
+    expect(result.error).toBe("workspace not found");
+    expect(result.delivered).toBe(false);
     expect(sends).toBe(0);
   });
 });

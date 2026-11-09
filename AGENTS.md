@@ -21,8 +21,8 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
-  `github.saveToken`, `alarm.fire`, `alarm.release`)
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `claude.slash`,
+  `mcp.saveOAuth`, `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -429,18 +429,27 @@ report there and leaves the fixes to the author.
     and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
-  permissions. `claude.send` is the only such path and it is guarded on both
-  sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
-  submit early into spaces and rejects an instruction opening with a character
-  the agent reads as a command (`!` is bash mode, `/` a slash command, `#` a
-  memory write), `foreground_is_agent` refuses to type at all unless the
-  configured agent is what's reading the prompt, and the chat agent's system
-  prompt forbids relaying third-party text as an instruction. What no layer can
-  establish is *what the agent is showing*, so a send is reported as delivered,
-  never as done. Anything new that forwards text into a session owes the same
-  three. Which process is the agent comes from the pids Claude Code's
-  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
-  executable's file name as the fallback for an agent that registers nothing.
+  permissions. `claude.send` and `claude.slash` are the only such paths.
+  `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
+  turns the control characters that would submit early into spaces and rejects
+  an instruction opening with a character the agent reads as a command (`!` is
+  bash mode, `/` a slash command, `#` a memory write), `foreground_is_agent`
+  refuses to type at all unless the configured agent is what's reading the
+  prompt, and the chat agent's system prompt forbids relaying third-party text
+  as an instruction. `claude.slash` is the one way a line opening with `/` gets
+  in: the core types it only when the command is on an allowlist no sidecar
+  route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
+  `allowedSlashCommands` in `settings.json`, saved from the webview like the
+  agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
+  foreground check, and cleans its arguments like an instruction. A command
+  that changes what the session may do never belongs in the defaults. The list
+  bounds what Yarvis types as a slash command, not which skills a session can be
+  asked in words to run. What no layer can establish is *what the agent is
+  showing*, so a send is reported as delivered, never as done. Anything new that
+  forwards text into a session owes the same three. Which process is the agent
+  comes from the pids Claude Code's SessionStart hook registered
+  (`workspaces/agentSessions.ts`), with the executable's file name as the
+  fallback for an agent that registers nothing.
   A registered pid counts only while it leads the PTY's foreground process
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
   so registration (and a permission prompt sent to `/ingest/permission`, or the
