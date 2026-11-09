@@ -80,7 +80,8 @@ together, still without rewording anything:
   `concerns`, the first five, from the highest-level group first.
 
 The one exception: if an agent's reply isn't valid JSON of its shape, start
-that one agent again once, with the same prompt. If it fails a second time,
+that one agent again once, with the same prompt. An approach reply whose
+`rating` isn't `no-simpler`, `simpler` or `much-simpler` isn't of its shape. If it fails a second time,
 treat its answer as
 `{"status":"issues","findings":[{"title":"Check did not complete","detail":"This check failed to produce an answer; review this area by hand.","severity":"low"}]}`
 (for risk: level `medium` with that as its only concern; for the approach:
