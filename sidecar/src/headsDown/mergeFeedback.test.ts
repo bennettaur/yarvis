@@ -15,6 +15,7 @@ import {
   feedbackSummary,
   type MergeSubject,
   mergeFeedbackLoader,
+  type PrFeedback,
 } from "./mergeFeedback.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { isMergeInstruction, passApprovalHooks } from "./policy.ts";
@@ -759,6 +760,29 @@ describe("merging with open feedback", () => {
     expect(await waitForApproval("n2", { timeoutMs: 1000 })).toBe(false);
     expect(sent.map((s) => s.workspaceId)).toEqual([workspaceId]);
     expect(sent[0]?.instruction).toContain("acme/billing#12");
+  });
+
+  it("holds a merge told to a session when a PR it names has feedback, even with its own PR clean", async () => {
+    const workspaceId = await pushedWorkspace();
+    const webWorkspace = await workspaceWithPr({ name: "web", number: 5 });
+    const run = await startRun(db, null);
+    const load = withFeedback();
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: (subject) =>
+        "workspaceId" in subject ? Promise.resolve({ prs: [], unchecked: null }) : load(subject),
+      sendInstruction: send,
+    }).onRequest({
+      toolCallId: "n4",
+      id: "send_workspace_instruction",
+      args: { workspaceId, instruction: "Merge acme/web#5 now." },
+      reason: null,
+    });
+    expect(await waitForApproval("n4", { timeoutMs: 1000 })).toBe(false);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    const prs = item!.payload.headsDownMergeReview.prs;
+    expect(prs.map((p: PrFeedback) => [`${p.repo}#${p.number}`, p.workspaceId])).toEqual([
+      ["acme/web#5", webWorkspace],
+    ]);
   });
 
   it("doesn't read the PR for a merge the run won't make anyway", async () => {

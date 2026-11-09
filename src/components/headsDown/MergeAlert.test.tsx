@@ -317,20 +317,21 @@ describe("MergeAlert with a merge held for review feedback", () => {
     expect(opened).toEqual([]);
   });
 
-  it("can't be answered by a click that lands as it appears, then arms with focus on Review", async () => {
+  it("can't be answered by a click that lands as it appears", async () => {
     pending = [HELD];
-    // Long enough that a slow runner still checks the buttons before they arm.
-    const host = await mount(1_000);
+    // Never arms during the test, so how long mounting takes doesn't matter.
+    const host = await mount(60_000);
     expect(button(host, "Approve merge")?.disabled).toBe(true);
     expect(button(host, "Review, don't merge")?.disabled).toBe(true);
     button(host, "Approve merge")?.click();
-
-    await waitFor(
-      () => button(host, "Approve merge")?.disabled === false,
-      "the buttons to arm",
-      5_000,
-    );
+    button(host, "Review, don't merge")?.click();
     expect(posts).toEqual([]);
+  });
+
+  it("arms after a moment with focus on Review", async () => {
+    pending = [HELD];
+    const host = await mount(50);
+    await waitFor(() => button(host, "Approve merge")?.disabled === false, "the buttons to arm");
     expect(document.activeElement).toBe(button(host, "Review, don't merge") ?? null);
     button(host, "Approve merge")?.click();
     await waitFor(() => posts.length === 1, "the answer");
