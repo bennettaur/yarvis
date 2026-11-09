@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { SECTION_AGENTS } from "../reviewWorkspaces/verification.ts";
 import {
   INPUTS_AND_TRUST_MARKER,
   REREVIEW_INPUTS_AND_TRUST_MARKER,
@@ -40,7 +41,7 @@ describe("writing out a shipped plugin", () => {
         .sort();
       expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
-      expect(agents).toHaveLength(11);
+      expect(agents).toHaveLength(12);
       for (const path of sourceFiles) {
         const shipped = readFileSync(join(copy.dir, path), "utf8");
         const original = readFileSync(join(source, path), "utf8");
@@ -57,6 +58,20 @@ describe("writing out a shipped plugin", () => {
         }
       }
       expect(existsSync(join(copy.dir, "shared"))).toBe(false);
+    } finally {
+      copy.remove();
+    }
+  });
+
+  it("ships an agent for every verification section", () => {
+    // Coverage counts reads by these names, so a typo would drop a section's reads silently.
+    const copy = writePluginCopy("yarvis-review");
+    try {
+      for (const name of Object.values(SECTION_AGENTS)) {
+        expect(name.startsWith("yarvis-review:")).toBe(true);
+        const file = join(copy.dir, "agents", `${name.slice("yarvis-review:".length)}.md`);
+        expect(existsSync(file)).toBe(true);
+      }
     } finally {
       copy.remove();
     }
