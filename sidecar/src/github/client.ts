@@ -285,15 +285,23 @@ function mapReviewState(state: string | undefined | null): ReviewerState {
 }
 
 /**
- * Merges GitHub's two reviewer sources — `reviewRequests` (still-outstanding
- * requests) and `latestReviews` (the latest review per person that already
- * submitted one) — into a single provider-neutral list. When both name the
- * same login (a re-request after a previous review), the request wins: the
- * viewer needs to know a fresh look is expected.
+ * Merges GitHub's reviewer sources — `reviewRequests` (still-outstanding
+ * requests), `latestReviews` (the latest review per person that already
+ * submitted one) and `latestOpinionatedReviews` (their latest approval or
+ * changes request) — into a single provider-neutral list. A standing verdict
+ * wins over a later comment-only review, so a reply in a thread doesn't hide
+ * a changes request. When a request names the same login (a re-request after
+ * a previous review), the request wins: the viewer needs to know a fresh look
+ * is expected.
  */
 function toReviewers(pr: any): Reviewer[] {
   const byLogin = new Map<string, Reviewer>();
-  const reviewNodes = pr.latestReviews?.nodes ?? [];
+  const reviewNodes = [
+    ...(pr.latestReviews?.nodes ?? []),
+    ...(pr.latestOpinionatedReviews?.nodes ?? []).filter(
+      (node: any) => mapReviewState(node?.state) !== "commented",
+    ),
+  ];
   for (const node of reviewNodes) {
     const login = node?.author?.login;
     if (!login) continue;
@@ -306,7 +314,7 @@ function toReviewers(pr: any): Reviewer[] {
     });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
-  // Runs after `latestReviews` so a re-request overwrites the historical review
+  // Runs after the reviews so a re-request overwrites the historical review
   // — a fresh look is expected, and the viewer should see "pending" rather than
   // the stale earlier verdict.
   for (const node of requestNodes) {
@@ -861,7 +869,7 @@ query($owner:String!,$repo:String!,$number:Int!){
         nodes{ author{login} state authorAssociation }
       }
       latestOpinionatedReviews(first:50){
-        nodes{ author{login} state }
+        nodes{ author{login} state authorAssociation }
       }
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }

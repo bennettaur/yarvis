@@ -224,6 +224,13 @@ describe("feedbackIn", () => {
     expect(from({ reviewThreads: [thread({ commentsTruncated: true })] })).toBe(true);
     const { trusted: _trusted, ...unknown } = opener;
     expect(from({ reviewThreads: [thread({ comments: [unknown] })] })).toBe(true);
+    expect(
+      from({
+        reviewers: [
+          { login: "unvouched", state: "changes_requested", isRequested: false, isTeam: false },
+        ],
+      }),
+    ).toBe(true);
   });
 });
 
@@ -679,27 +686,79 @@ describe("merging with open feedback", () => {
     ]);
   });
 
-  it("checks a merge told to a session against the PR it names", async () => {
+  it("checks a merge told to a session against its own PR and every PR it names", async () => {
     const workspaceId = await pushedWorkspace();
     const run = await startRun(db, null);
     const asked: MergeSubject[] = [];
     const load = withFeedback();
-    await passApprovalHooks(db, run, () => {}, {
+    const hooks = passApprovalHooks(db, run, () => {}, {
       mergeFeedback: (subject) => {
         asked.push(subject);
-        return load(subject);
+        // The workspace's own PR is clean, so the named PRs get read.
+        return "workspaceId" in subject
+          ? Promise.resolve({ prs: [], unchecked: null })
+          : load(subject);
       },
       sendInstruction: send,
-    }).onRequest({
+    });
+    await hooks.onRequest({
       toolCallId: "n1",
       id: "send_workspace_instruction",
-      args: { workspaceId, instruction: "Merge acme/web#5 now." },
+      args: {
+        workspaceId,
+        instruction: "Merge acme/web#5, then https://github.com/acme/api/pull/7 and acme/web#5.",
+      },
       reason: null,
     });
     expect(await waitForApproval("n1", { timeoutMs: 1000 })).toBe(false);
-    expect(asked).toEqual([{ repo: "acme/web", number: 5, githubOnly: false }]);
+    // The first PR no workspace owns leaves the merge unchecked, so nothing after it is read.
+    expect(asked).toEqual([{ workspaceId }, { repo: "acme/api", number: 7, githubOnly: false }]);
     const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
     expect(item!.payload.headsDownMergeReview.unchecked).toContain("may not be GitHub's");
+
+    // With every PR clean, each one is read once, URLs first.
+    asked.length = 0;
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: (subject) => {
+        asked.push(subject);
+        return Promise.resolve({ prs: [], unchecked: null });
+      },
+      sendInstruction: send,
+    }).onRequest({
+      toolCallId: "n3",
+      id: "send_workspace_instruction",
+      args: {
+        workspaceId,
+        instruction: "Merge acme/web#5, then https://github.com/acme/api/pull/7 and acme/web#5.",
+      },
+      reason: null,
+    });
+    expect(asked).toEqual([
+      { workspaceId },
+      { repo: "acme/api", number: 7, githubOnly: false },
+      { repo: "acme/web", number: 5, githubOnly: false },
+    ]);
+  });
+
+  it("holds a merge told to a session for its own PR's feedback, even when the named PR is clean", async () => {
+    const workspaceId = await pushedWorkspace();
+    const run = await startRun(db, null);
+    const ownFeedback = withFeedback();
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: (subject) =>
+        "workspaceId" in subject
+          ? ownFeedback(subject)
+          : Promise.resolve({ prs: [], unchecked: null }),
+      sendInstruction: send,
+    }).onRequest({
+      toolCallId: "n2",
+      id: "send_workspace_instruction",
+      args: { workspaceId, instruction: "Merge acme/web#5 and your own PR." },
+      reason: null,
+    });
+    expect(await waitForApproval("n2", { timeoutMs: 1000 })).toBe(false);
+    expect(sent.map((s) => s.workspaceId)).toEqual([workspaceId]);
+    expect(sent[0]?.instruction).toContain("acme/billing#12");
   });
 
   it("doesn't read the PR for a merge the run won't make anyway", async () => {

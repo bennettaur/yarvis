@@ -219,7 +219,9 @@ instruction's wording, so it can miss one phrased some other way.
   finished, a later pass tries the merge again. If every thread is resolved
   and no review still asks for changes, the merge goes ahead as usual. A
   review asking for changes keeps counting after you ask that reviewer to
-  look again, until they do.
+  look again, or after they only leave a comment, until they approve or the
+  review is dismissed. A merge told to a workspace's session is checked
+  against the workspace's own PR and every PR the instruction names.
 - **Feedback from outside the repo:** on GitHub, anyone who can see a repo can
   comment on its PRs. If any open thread or review asking for changes is from
   someone who isn't an owner, member or collaborator of the repo, the session

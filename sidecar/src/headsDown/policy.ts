@@ -30,6 +30,7 @@ import {
   type MergeFeedbackLoader,
   type MergeFeedbackResult,
   type MergeSubject,
+  type PrFeedback,
   withHandoffs,
 } from "./mergeFeedback.ts";
 import {
@@ -366,42 +367,55 @@ async function alertUnannouncedMerge(
   });
 }
 
-/** Which PR a merge call is for, or null when the call doesn't say. */
-function mergeSubject(tool: string, args: unknown): MergeSubject | null {
+/** Which PRs a merge call is for. Empty when the call doesn't say. */
+function mergeSubjects(tool: string, args: unknown): MergeSubject[] {
   if (tool === "send_workspace_instruction") {
-    // An instruction that names a PR is checked against that PR, which may
-    // not be the workspace's own. Not looked up on GitHub unless a workspace
-    // owns it, since the session may merge it anywhere.
-    const named = namedPr(stringArg(args, "instruction") ?? "");
-    if (named) return { ...named, githubOnly: false };
+    // The session may merge its own PR or any PR the instruction names, so
+    // all of them are checked. A named PR is looked up on GitHub only when a
+    // workspace owns it, since the session may merge it anywhere.
+    const named = namedPrs(stringArg(args, "instruction") ?? "").map(
+      (pr): MergeSubject => ({ ...pr, githubOnly: false }),
+    );
     const workspaceId = stringArg(args, "workspaceId");
-    return workspaceId ? { workspaceId } : null;
+    return workspaceId ? [{ workspaceId }, ...named] : named;
   }
   const target = mergeCallTarget(tool, args);
-  if (!target) return null;
+  if (!target) return [];
   // `mcp:<server>:<tool>`: only a GitHub server's PR can be looked up on GitHub.
   const server = tool.split(":")[1] ?? "";
-  return { ...target, githubOnly: /github/i.test(server) };
+  return [{ ...target, githubOnly: /github/i.test(server) }];
 }
 
-/** The PR an instruction names as `owner/repo#N` or by its URL, if any. */
-function namedPr(text: string): { repo: string; number: number } | null {
-  const url = text.match(PR_URL);
-  if (url) return { repo: `${url[1]}/${url[2]}`, number: Number(url[3]) };
-  const ref = text.match(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/);
-  return ref ? { repo: ref[1] ?? "", number: Number(ref[2]) } : null;
+/** Every PR an instruction names as `owner/repo#N` or by its URL. */
+function namedPrs(text: string): { repo: string; number: number }[] {
+  const found = new Map<string, { repo: string; number: number }>();
+  const add = (repo: string, number: number) => found.set(mergeKey(repo, number), { repo, number });
+  for (const m of text.matchAll(new RegExp(PR_URL, "g"))) add(`${m[1]}/${m[2]}`, Number(m[3]));
+  for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) add(m[1] ?? "", Number(m[2]));
+  return [...found.values()];
 }
 
-/** The open feedback on what a merge call merges. A call that doesn't say which PR is unchecked. */
+/**
+ * The open feedback on everything a merge call may merge. One PR that
+ * couldn't be checked leaves the whole call unchecked, and a call that
+ * doesn't say which PR is unchecked too.
+ */
 async function feedbackFor(
   load: MergeFeedbackLoader,
   tool: string,
   args: unknown,
 ): Promise<MergeFeedbackResult> {
-  const subject = mergeSubject(tool, args);
-  return subject
-    ? load(subject)
-    : { prs: [], unchecked: "the merge call doesn't say which PR it merges" };
+  const subjects = mergeSubjects(tool, args);
+  if (subjects.length === 0) {
+    return { prs: [], unchecked: "the merge call doesn't say which PR it merges" };
+  }
+  const prs = new Map<string, PrFeedback>();
+  for (const subject of subjects) {
+    const result = await load(subject);
+    if (result.unchecked !== null) return { prs: [], unchecked: result.unchecked };
+    for (const pr of result.prs) prs.set(mergeKey(pr.repo, pr.number), pr);
+  }
+  return { prs: [...prs.values()], unchecked: null };
 }
 
 /**

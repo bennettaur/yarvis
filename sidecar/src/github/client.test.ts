@@ -545,6 +545,38 @@ describe("github client", () => {
     ]);
   });
 
+  it("keeps a reviewer's changes request when their latest review is only a comment", () => {
+    const detail = toPrDetail({
+      number: 1,
+      state: "OPEN",
+      author: { login: "me" },
+      reviewThreads: { nodes: [] },
+      commits: { nodes: [] },
+      // Carol asked for changes, then replied in a thread; Bob only commented.
+      latestReviews: {
+        nodes: [
+          { author: { login: "carol" }, state: "COMMENTED", authorAssociation: "MEMBER" },
+          { author: { login: "bob" }, state: "COMMENTED", authorAssociation: "NONE" },
+        ],
+      },
+      latestOpinionatedReviews: {
+        nodes: [
+          { author: { login: "carol" }, state: "CHANGES_REQUESTED", authorAssociation: "MEMBER" },
+        ],
+      },
+    });
+    expect(detail.reviewers).toEqual([
+      {
+        login: "carol",
+        state: "changes_requested",
+        isRequested: false,
+        isTeam: false,
+        trusted: true,
+      },
+      { login: "bob", state: "commented", isRequested: false, isTeam: false, trusted: false },
+    ]);
+  });
+
   it("reads the viewer's own standing verdict", () => {
     const pr = {
       number: 1,
@@ -1468,6 +1500,15 @@ describe("github review threads", () => {
     expect(trustedFor("CONTRIBUTOR")).toBe(false);
     expect(trustedFor("NONE")).toBe(false);
     expect(trustedFor(undefined)).toBe(false);
+  });
+
+  it("says when a thread has more comments than were loaded", () => {
+    const node = threadNode("T1");
+    const count = node.comments.nodes.length;
+    const truncated = (totalCount: number) =>
+      toReviewThread({ ...node, comments: { ...node.comments, totalCount } }).commentsTruncated;
+    expect(truncated(count + 1)).toBe(true);
+    expect(truncated(count)).toBeUndefined();
   });
 
   it("drops a start line that only repeats the line", () => {

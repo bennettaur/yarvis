@@ -69,6 +69,10 @@ describe("mapReviewer teams", () => {
     expect(mapReviewer({ displayName: "[Shop]\\Web Team", isContainer: true }).isTeam).toBe(true);
     expect(mapReviewer({ displayName: "Alex" }).isTeam).toBe(false);
   });
+
+  it("trusts every reviewer, since only project members can review", () => {
+    expect(mapReviewer({ displayName: "Alex", vote: -10 }).trusted).toBe(true);
+  });
 });
 
 describe("prCiChecks", () => {
