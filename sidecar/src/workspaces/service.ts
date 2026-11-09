@@ -751,7 +751,8 @@ export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
   /**
    * The last time the user opened the workspace in Yarvis or its agent session
    * wrote to its transcript, falling back to when it was created. Null for an
-   * archived workspace, whose activity isn't looked up.
+   * archived workspace, whose activity isn't looked up, and unless the list
+   * was asked for `withActivity`.
    */
   lastActiveAt: Date | null;
 }
@@ -767,7 +768,14 @@ export interface WorkspaceSummaryPr {
   reviewDecision: WorkspaceRepoPr["reviewDecision"];
 }
 
-export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
+/**
+ * Every workspace, oldest first. `withActivity` fills `lastActiveAt`, which
+ * reads each agent transcript folder, so only the list the user sees asks for it.
+ */
+export async function listWorkspaces(
+  db: Db,
+  { withActivity = false }: { withActivity?: boolean } = {},
+): Promise<WorkspaceSummary[]> {
   const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
@@ -813,10 +821,12 @@ export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
     prsByWorkspace.set(m.workspaceId, prs);
   }
 
-  const lastActive = await lastActivity(
-    db,
-    wsRows.filter((w) => w.status !== "archived"),
-  );
+  const lastActive = withActivity
+    ? await lastActivity(
+        db,
+        wsRows.filter((w) => w.status !== "archived"),
+      )
+    : new Map<string, Date>();
 
   return wsRows.map((w) => ({
     ...w,
@@ -2243,10 +2253,10 @@ async function beginArchive(
 
 /**
  * Tears down a workspace's worktrees, its landed branches and its folder, and
- * marks it archived. Idempotent and
- * partial-failure safe: a repo whose worktree won't remove (e.g. uncommitted
- * changes without `force`) keeps the workspace in `archiving` with the error
- * recorded, so the operation can be retried.
+ * marks it archived. Idempotent and partial-failure safe: a repo whose
+ * worktree won't remove (e.g. uncommitted changes without `force`) keeps the
+ * workspace in `archiving` with the error recorded, so the operation can be
+ * retried.
  */
 export async function archiveWorkspace(
   db: Db,
@@ -2303,14 +2313,14 @@ function trackArchive(
 }
 
 /**
- * Whether to delete a repo's local branch once its worktree is gone, so archived
+ * Returns whether to delete a repo's local branch once its worktree is gone, so archived
  * workspaces don't pile up branches in the shared clone. Only a landed branch
  * goes. Throws when a landed branch has commits that neither a remote nor its
  * merged PR has (work added after the merge) and `force` isn't set, so the user
  * hears about them while the worktree is still there to push from. Otherwise
  * best-effort: a branch left behind costs nothing, so a git failure keeps it.
  */
-async function shouldDeleteBranchOnArchive(
+async function checkBranchForArchive(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
@@ -2344,6 +2354,8 @@ async function shouldDeleteBranchOnArchive(
     } — Force remove deletes them`,
   );
 }
+
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
   try {
@@ -2387,6 +2399,18 @@ async function removeWorktreesAndFinish(
     try {
       await withRepoLock(wr.repoId, async () => {
         const primaryClonePath = wr.repo.primaryClonePath;
+        // Checked before anything is removed. An extra worktree that stops this
+        // attempt would otherwise hide the unpushed commits, and the Force
+        // retry that follows skips the check and deletes them unwarned.
+        let deleteLandedBranch = false;
+        let unpushed: unknown = null;
+        if (wr.status !== "removed") {
+          try {
+            deleteLandedBranch = await checkBranchForArchive(runner, wr, force);
+          } catch (e) {
+            unpushed = e;
+          }
+        }
         // Swept for a repo already torn down too: an agent can add a worktree
         // after that repo's turn, and the folder can't go while git holds one.
         const extras = await extraWorktrees(
@@ -2395,19 +2419,23 @@ async function removeWorktreesAndFinish(
           detail.rootPath,
           wr.worktreePath,
         );
-        for (const extra of extras) {
-          await removeWorktree(runner, primaryClonePath, extra, {
-            force,
-            workspaceRoot: detail.rootPath,
-          });
+        try {
+          for (const extra of extras) {
+            await removeWorktree(runner, primaryClonePath, extra, {
+              force,
+              workspaceRoot: detail.rootPath,
+            });
+          }
+        } catch (e) {
+          throw unpushed ? new Error(`${errorMessage(e)}; ${errorMessage(unpushed)}`) : e;
         }
+        if (unpushed) throw unpushed;
         if (wr.status === "removed") return;
-        const shouldDeleteBranch = await shouldDeleteBranchOnArchive(runner, wr, force);
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
+        if (deleteLandedBranch) await deleteBranchBestEffort(runner, wr);
       });
       if (wr.status === "removed") continue;
       await db

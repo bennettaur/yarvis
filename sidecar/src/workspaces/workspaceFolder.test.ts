@@ -60,6 +60,23 @@ describe("removeWorkspaceFolder", () => {
     );
   });
 
+  it("deletes Finder's .DS_Store and a folder with no .claude", async () => {
+    const root = workspaceFolder();
+    writeFileSync(join(root, ".DS_Store"), "");
+    rmSync(join(root, ".claude"), { recursive: true });
+    await removeWorkspaceFolder(root, "my-work", { force: false });
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("counts a .claude/skills that isn't a folder as the user's", async () => {
+    const root = workspaceFolder();
+    rmSync(join(root, ".claude", "skills"), { recursive: true });
+    writeFileSync(join(root, ".claude", "skills"), "");
+    await expect(removeWorkspaceFolder(root, "my-work", { force: false })).rejects.toThrow(
+      "(.claude/skills)",
+    );
+  });
+
   it("does nothing when the folder is already gone", async () => {
     const root = workspaceFolder();
     rmSync(root, { recursive: true });

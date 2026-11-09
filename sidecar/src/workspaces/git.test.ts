@@ -687,9 +687,12 @@ describe("archive cleanup helpers", () => {
 
   it("refuses a merged head that isn't a commit id before it reaches git", async () => {
     const { clone } = cloneWithOrigin();
-    await expect(unpushedCommitCount(defaultGitRunner, clone, "task", "--all")).rejects.toThrow(
-      "not a commit id",
-    );
+    const sha = "a".repeat(40);
+    for (const bad of ["--all", `${sha} --all`, `--all ${sha}`, sha.slice(1), `${sha}b`]) {
+      await expect(unpushedCommitCount(defaultGitRunner, clone, "task", bad)).rejects.toThrow(
+        "not a commit id",
+      );
+    }
   });
 
   it("sees untracked files as changes a worktree removal would refuse to drop", async () => {

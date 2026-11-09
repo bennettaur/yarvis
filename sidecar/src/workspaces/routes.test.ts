@@ -2361,13 +2361,18 @@ describe("provision + archive (injected git runner)", () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "branch-stuck", repoIds: [repo.id] });
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const tried: string[][] = [];
     const stuckBranchGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
-      if (args[0] === "branch") return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+      if (args[0] === "branch") {
+        tried.push(args);
+        return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+      }
       return fakeGit(args, opts);
     };
     const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
     expect(result.status).toBe("archived");
+    expect(tried).toEqual([["branch", "-D", "--", `yarvis/${ws.slug}`]]);
   });
 
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
@@ -2472,6 +2477,56 @@ describe("provision + archive (injected git runner)", () => {
     const forced = await archiveWorkspace(db, ws.id, { force: true }, unpushedGit);
     expect(forced.status).toBe("archived");
     expect(deleted).toEqual([wr!.branch]);
+  });
+
+  it("names unpushed commits even when a dirty extra worktree stops the archive", async () => {
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "dirty-and-ahead", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wr!.id, prNumber: 4, prState: "merged", headSha: PR_HEAD });
+    const extra = join(ws.rootPath, "widget-layer-2");
+    mkdirSync(extra);
+    const extraReal = canonicalPath(extra);
+
+    const deleted: string[] = [];
+    const runner: GitRunner = async (args, opts) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return existsSync(extra)
+          ? { stdout: `worktree ${extra}\0\0`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        args[args.length - 1] === extraReal &&
+        !args.includes("--force")
+      ) {
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+      }
+      if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "rev-list") return squashedCount(args, 2);
+      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      return fakeGit(args, opts);
+    };
+
+    // The forced retry skips the commit check, so this attempt has to name both.
+    const blocked = await archiveWorkspace(db, ws.id, {}, runner);
+    expect(blocked.status).toBe("archiving");
+    expect(blocked.errors[0]?.message).toContain("modified files");
+    expect(blocked.errors[0]?.message).toContain("2 commit(s) that no remote has");
+    expect(blocked.errors[0]?.message).not.toContain("uncommitted changes");
+    expect(existsSync(extra)).toBe(true);
+    expect(deleted).toEqual([]);
   });
 
   it("keeps a merged branch without stopping when its PR's head commit is unknown", async () => {

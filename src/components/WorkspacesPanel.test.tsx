@@ -31,6 +31,16 @@ const EXISTING = {
   ],
 };
 
+// An active workspace nobody has opened, and no agent has worked in, for ten days.
+const IDLE = {
+  ...EXISTING,
+  id: "ws-idle",
+  name: "Forgotten spike",
+  slug: "forgotten-spike",
+  prs: [],
+  lastActiveAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+};
+
 // A workspace created after the panel last fetched its list: reachable by id but
 // absent from `/api/workspaces` until the next refresh.
 const JUST_CREATED = {
@@ -122,7 +132,8 @@ stubSidecarApi({
     // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
     // which doesn't change what they return.
     const path = url.split("?")[0]!;
-    if (path === "/api/workspaces") return json([EXISTING]);
+    if (path === "/api/workspaces")
+      return json([{ ...EXISTING, lastActiveAt: new Date().toISOString() }, IDLE]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
     if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
     if (path === `/api/workspaces/${ARCHIVE_STOPPED.id}`) return json(ARCHIVE_STOPPED);
@@ -182,6 +193,17 @@ describe("WorkspacesPanel", () => {
     const html = await renderToHtml(<WorkspacesPanel />);
 
     expect(html).toContain("web #12 checks failing");
+  });
+
+  it("marks a workspace idle for a week or more, and dims its name", async () => {
+    const html = await renderToHtml(<WorkspacesPanel />);
+
+    expect(html).toContain("idle 10d");
+    expect(html).toMatch(/class="truncate opacity-60">Forgotten spike</);
+    // The recently used one is neither.
+    expect(html).toContain("Rename the API");
+    expect(html).not.toMatch(/opacity-60">Rename the API</);
+    expect(html.match(/idle \d+d/g)).toEqual(["idle 10d"]);
   });
 
   it("hides the right column while an archive is deleting the worktrees", async () => {
