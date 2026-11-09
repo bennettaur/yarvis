@@ -4,7 +4,8 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
-import { createArtifact } from "./service.ts";
+import { artifactListenerCount, publishArtifactChange } from "./hub.ts";
+import { createArtifact, createDiagram, deleteArtifact, updateDiagram } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -105,5 +106,87 @@ describe("/api/artifacts", () => {
     const noDb = createApp({ ...config, databaseUrl: undefined });
     const res = await noDb.request("/api/artifacts", { headers: auth });
     expect(res.status).toBe(503);
+  });
+
+  /** Opens an artifact's stream, with a bounded read so a missing frame fails the test rather than hanging it. */
+  async function openStream(id: string) {
+    const res = await app.request(`/api/artifacts/${id}/stream`, { headers: auth });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const stream = {
+      reader,
+      text: "",
+      async readUntil(needle: string) {
+        const deadline = Date.now() + 2_000;
+        while (!stream.text.includes(needle)) {
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`no ${needle} frame`)), deadline - Date.now()),
+          );
+          const { value, done } = await Promise.race([reader.read(), timeout]);
+          if (done) break;
+          stream.text += decoder.decode(value);
+        }
+      },
+    };
+    return stream;
+  }
+
+  it("streams a change signal for one artifact, and ends after its delete", async () => {
+    const artifact = await createDiagram(db, {
+      title: "Flow",
+      elements: [{ id: "a", type: "rectangle", x: 0, y: 0, width: 100, height: 50 }],
+    });
+    const stream = await openStream(artifact.id);
+    const { reader } = stream;
+    const readUntil = (needle: string) => stream.readUntil(needle);
+    await readUntil('"ping"');
+    await updateDiagram(db, artifact.id, { changes: { upsert: [{ id: "a", x: 40 }] } });
+    await readUntil('"updated"');
+    await deleteArtifact(db, artifact.id);
+    await readUntil('"deleted"');
+    // The stream closes itself once the artifact is gone.
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("sends a delete that lands before a pending update, then ends", async () => {
+    const artifact = await createArtifact(db, { title: "Notes" });
+    const stream = await openStream(artifact.id);
+    await stream.readUntil('"ping"');
+    // Both before the stream can send either, so the update is still pending when the delete lands.
+    publishArtifactChange(artifact.id, "updated");
+    publishArtifactChange(artifact.id, "deleted");
+    publishArtifactChange(artifact.id, "updated");
+    await stream.readUntil('"deleted"');
+    expect(stream.text).not.toContain('"updated"');
+    expect((await stream.reader.read()).done).toBe(true);
+  });
+
+  it("stops following the artifact once the pane disconnects", async () => {
+    const artifact = await createArtifact(db, { title: "Notes" });
+    const controller = new AbortController();
+    const res = await app.request(`/api/artifacts/${artifact.id}/stream`, {
+      headers: auth,
+      signal: controller.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(artifactListenerCount(artifact.id)).toBe(1);
+    controller.abort();
+    const deadline = Date.now() + 2_000;
+    while (artifactListenerCount(artifact.id) > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(artifactListenerCount(artifact.id)).toBe(0);
+  });
+
+  it("refuses a stream for a malformed id, or an artifact that doesn't exist", async () => {
+    const malformed = await app.request("/api/artifacts/nope/stream", { headers: auth });
+    expect(malformed.status).toBe(404);
+    const missing = await app.request(
+      "/api/artifacts/00000000-0000-4000-8000-000000000000/stream",
+      { headers: auth },
+    );
+    expect(missing.status).toBe(404);
   });
 });

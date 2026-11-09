@@ -14,6 +14,10 @@ export type SplitOrientation = "horizontal" | "vertical";
  * persists it however it likes via `onRatioChange`. The second pane always
  * fills the remainder, so the two stay flush regardless of container size.
  *
+ * With `second` null the first pane fills the container on its own. It stays
+ * the same element either way, so opening a second pane beside it doesn't
+ * remount it (a chat keeps its scroll position and focus).
+ *
  * Dragging uses pointer capture on the divider, so the drag keeps tracking even
  * as the pointer passes over a child that would otherwise swallow the events
  * (an xterm canvas, an iframe) — no global listeners or overlay needed.
@@ -31,6 +35,7 @@ export default function SplitPane({
   ratio: number;
   onRatioChange: (ratio: number) => void;
   first: ReactNode;
+  /** Null, undefined or false shows `first` alone. */
   second: ReactNode;
   /** Smallest fraction either pane may shrink to, clamping the drag. */
   minRatio?: number;
@@ -39,6 +44,7 @@ export default function SplitPane({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const horizontal = orientation === "horizontal";
+  const hasSecond = second !== null && second !== undefined && second !== false;
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
@@ -61,34 +67,39 @@ export default function SplitPane({
       ref={containerRef}
       className={`flex min-h-0 min-w-0 ${horizontal ? "flex-row" : "flex-col"} ${className}`}
     >
-      <div className="min-h-0 min-w-0 shrink-0 grow-0" style={{ flexBasis: `${clamped * 100}%` }}>
+      <div
+        className="min-h-0 min-w-0 shrink-0 grow-0"
+        style={{ flexBasis: hasSecond ? `${clamped * 100}%` : "100%" }}
+      >
         {first}
       </div>
-      <div
-        onPointerDown={(e) => {
-          e.preventDefault();
-          e.currentTarget.setPointerCapture(e.pointerId);
-          setDragging(true);
-        }}
-        onPointerMove={onPointerMove}
-        onPointerUp={(e) => {
-          e.currentTarget.releasePointerCapture(e.pointerId);
-          setDragging(false);
-        }}
-        onPointerCancel={() => setDragging(false)}
-        aria-hidden="true"
-        className={`group relative shrink-0 ${
-          horizontal ? "w-px cursor-col-resize" : "h-px cursor-row-resize"
-        } ${dragging ? "bg-indigo-500" : "bg-zinc-800 hover:bg-zinc-600"}`}
-      >
-        {/* Invisible hit area wider than the 1px seam so the divider is easy to grab. */}
+      {hasSecond && (
         <div
-          className={`absolute ${
-            horizontal ? "inset-y-0 -left-1 -right-1" : "inset-x-0 -top-1 -bottom-1"
-          }`}
-        />
-      </div>
-      <div className="min-h-0 min-w-0 flex-1">{second}</div>
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setDragging(true);
+          }}
+          onPointerMove={onPointerMove}
+          onPointerUp={(e) => {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+            setDragging(false);
+          }}
+          onPointerCancel={() => setDragging(false)}
+          aria-hidden="true"
+          className={`group relative shrink-0 ${
+            horizontal ? "w-px cursor-col-resize" : "h-px cursor-row-resize"
+          } ${dragging ? "bg-indigo-500" : "bg-zinc-800 hover:bg-zinc-600"}`}
+        >
+          {/* Invisible hit area wider than the 1px seam so the divider is easy to grab. */}
+          <div
+            className={`absolute ${
+              horizontal ? "inset-y-0 -left-1 -right-1" : "inset-x-0 -top-1 -bottom-1"
+            }`}
+          />
+        </div>
+      )}
+      {hasSecond && <div className="min-h-0 min-w-0 flex-1">{second}</div>}
     </div>
   );
 }

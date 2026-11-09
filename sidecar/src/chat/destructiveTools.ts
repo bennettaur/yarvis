@@ -13,6 +13,7 @@
  * same approval prompt that MCP tools already use, so the user sees the exact
  * operation before it happens.
  */
+
 /**
  * Built-in tools that need approval on *every* turn, typed or spoken.
  *
@@ -132,6 +133,16 @@ function rewritesArtifact(args: unknown): boolean {
 }
 
 /**
+ * An `update_diagram` call that may change what is already drawn. One marked
+ * `addOnly` can't (`updateDiagram` refuses it if any id it sends exists), so
+ * it skips the prompt the way an append does.
+ */
+function changesDiagram(args: unknown): boolean {
+  const a = args as { addOnly?: unknown; title?: unknown } | null;
+  return a?.addOnly !== true || a.title !== undefined;
+}
+
+/**
  * Built-ins that ask only under a condition checked when they are called.
  *
  * A web page is written by whoever runs the site, and the user never saw it
@@ -142,7 +153,10 @@ function rewritesArtifact(args: unknown): boolean {
  * specialist may have copied a page or message into it.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
- * it asks under the same conditions; an append does not.
+ * it asks under the same conditions; an append does not. So does an
+ * `update_diagram` call unless it is marked `addOnly`: an upsert onto an
+ * existing id overwrites that element, which is as lossy as removing it, and
+ * which ids exist isn't known until the call runs.
  *
  * `read_web_page` itself asks for any URL the user didn't type in this
  * conversation, because the URL is also a way out: a page can ask for a fetch
@@ -163,6 +177,10 @@ export function conditionalConfirmations(options: {
   conditions.set(
     "update_artifact",
     (args) => rewritesArtifact(args) && (spoken || hasReadUntrusted(reads)),
+  );
+  conditions.set(
+    "update_diagram",
+    (args) => changesDiagram(args) && (spoken || hasReadUntrusted(reads)),
   );
   conditions.set("read_web_page", (args) => {
     const url = (args as { url?: unknown } | null)?.url;
