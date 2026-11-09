@@ -140,9 +140,9 @@ Some details:
   remote-tracking ref. A worktree added with `add_worktree` gets the same
   (see [Other worktrees](#other-worktrees-in-the-workspace)). Commits, rebases
   and pushes on those branches then run inside the sandbox instead of asking
-  you each time. Paths you added
-  yourself stay. Yarvis also turns off fetching tags on each clone
-  (`remote.origin.tagOpt`), since nothing in Yarvis uses them.
+  you each time. Paths you added yourself stay. Yarvis also turns off fetching
+  tags on each clone (`remote.origin.tagOpt`), since nothing in Yarvis uses
+  them.
 - **What still asks.** The clone is shared by every workspace on that repo, and
   parts of its `.git` decide what git runs, so these stay out of the sandbox's
   reach (`sandbox.filesystem.denyWrite`): the git config, hooks, submodule git
@@ -152,8 +152,9 @@ Some details:
   command that writes any of these, like `git push -u` (which records the
   upstream in the config), creating or deleting a branch or a tag, a fetch that
   updates other branches' remote-tracking refs (a plain `git fetch` usually
-  does), or adding a worktree (including the ones Claude Code makes for
-  subagents), asks as before. Git packs refs on its own
+  does), or running `git worktree add` (including the worktrees Claude Code
+  makes for subagents), asks as before. The agent adds a worktree with
+  `add_worktree` instead, which doesn't ask. Git packs refs on its own
   after some commits; inside the sandbox that step fails with a warning, and
   the commit itself still goes through.
 - **No symlinks in a clone's git data.** Yarvis's own git runs outside the
@@ -435,7 +436,6 @@ by repo. The line under it always names the branch you are looking at.
 - **A diff from another worktree takes no comments.** Comments are filed by
   repo and path, so one left there would show up on the workspace branch's copy
   of the file.
-
 - In the **Stack** tab, a layer checked out in another worktree has a **View**
   button that switches the column to it.
 
@@ -448,13 +448,24 @@ without leaving the sandbox.
 
 - **The branch must be new to the clone.** One that already exists locally
   could be another workspace's branch, or the base branch you merge into, and
-  the sandbox would get write access to it. The branch is checked out from the
-  remote if it's there, and otherwise cut from the workspace's base branch.
-- **No setup script runs** in the new worktree. The agent installs what it
-  needs there.
+  the sandbox would get write access to it. Names are compared without letter
+  case, since the clone's ref files usually sit on a case-insensitive disk,
+  where `MAIN` is the same file as `main`. A branch any active workspace on the
+  repo works on or stacks on is refused too, even when it's only on the remote.
+- The branch is checked out from the remote if it's there, and otherwise cut
+  from the workspace's base branch.
+- **No hooks or setup script run** in the new worktree. The checkout can be a
+  branch the agent pushed, so a post-checkout hook would run its code outside
+  the sandbox. The agent installs what it needs there.
+- **It is checked out beside the workspace folders, then moved in.** The agent
+  can write the workspace folder, so a checkout straight into it could follow
+  a symlink the agent put there. The move is a single rename, which refuses
+  anything but an empty folder in its way.
+- **At most 10 extra worktrees per repo.**
 - **The grant follows the worktree.** Once the worktree is removed, the next
-  rewrite of `.claude/settings.json` drops its branch too. Archiving removes it
-  with the rest of the workspace.
+  write of `.claude/settings.json` drops its branch too. Yarvis writes it when
+  it provisions the workspace, starts its agent, or adds a worktree. Archiving
+  removes the worktree with the rest of the workspace.
 - **A worktree made any other way** still shows in the column, but git there
   asks you to approve leaving the sandbox. Approving a commit or a checkout
   there also runs the repo's git hooks outside the sandbox, and the agent can
@@ -614,16 +625,18 @@ the folder. **Force remove** deletes it.
 The archive also removes any other worktree of the workspace's repos that sits
 inside the workspace folder, such as one an agent added for another branch of a
 stack. These follow the same rule: uncommitted work stops the archive until you
-force it.
+force it. Their branches are kept.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
 landed: the base branch already contains it, or its PR merged and the remote
 branch, if it's still there, has every local commit. Any other branch is kept
 in the shared clone. If a landed branch has commits past what its PR merged
 that no remote has, such as work added after the merge once the remote branch
-was deleted, the archive stops before removing the worktree and says how many,
-and whether the worktree also has uncommitted changes. Push them, or **Force
-remove** to delete them with the branch. A branch whose PR merged before Yarvis
+was deleted, the archive stops before removing any worktree and says how many,
+and whether the worktree also has uncommitted changes. It says so even when
+another worktree's uncommitted changes stop the archive too, since **Force
+remove** doesn't check again. Push them, or **Force remove** to delete them
+with the branch. A branch whose PR merged before Yarvis
 recorded the PR's head commit is kept unless you force the archive, since
 there's no telling which of its commits the merge took. Opening the workspace
 first records it.

@@ -12,8 +12,8 @@ import type {
   MemoryWriteInput,
 } from "../memory/index.ts";
 import { ANSWER_WAIT_MS } from "../questions/contract.ts";
+import { WorktreeRefusal } from "../workspaces/extraWorktree.ts";
 import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
-import { WorktreeRefusal } from "../workspaces/service.ts";
 import { LONG_ANSWER_WAIT_MS, type QuestionToolDeps } from "./questionTools.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
 import { createYarvisMcpServer, type WorkspaceContext } from "./server.ts";

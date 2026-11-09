@@ -4,8 +4,16 @@
  * this module owns the database state and orchestration.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, relative } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
@@ -47,6 +55,14 @@ import {
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { runSetupScript } from "./exec.ts";
 import {
+  type AddExtraWorktreeInput,
+  type AddExtraWorktreeResult,
+  branchCollision,
+  isReservedBranchName,
+  MAX_EXTRA_WORKTREES,
+  WorktreeRefusal,
+} from "./extraWorktree.ts";
+import {
   readWorktreeFile,
   type WorktreeFile,
   type WriteResult,
@@ -54,6 +70,7 @@ import {
 } from "./files.ts";
 import {
   addExistingBranchWorktree,
+  addWorktreeWithoutHooks,
   type BranchSync,
   branchExists,
   branchLanded,
@@ -73,6 +90,7 @@ import {
   hasUncommittedChanges,
   listChangedFiles,
   listFiles,
+  listLocalBranches,
   listRemoteBranches,
   type MergeOutcome,
   mergeBaseIntoWorktree,
@@ -90,7 +108,7 @@ import {
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
-import { isSafeBranch } from "./sandboxPaths.ts";
+import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
 import type { RepoTracker } from "./tracker.ts";
 import { removeWorkspaceFolder } from "./workspaceFolder.ts";
@@ -627,50 +645,40 @@ export async function addRepoToWorkspace(
   return row!;
 }
 
-/** A request to add a worktree that the caller can fix; its message is safe to show them. */
-export class WorktreeRefusal extends Error {}
-
-export interface AddExtraWorktreeInput {
-  /** The repo's folder in the workspace, or its name. */
-  repo: string;
-  /** The branch to check out. It must not exist locally yet. */
-  branch: string;
-  /**
-   * The remote branch a new branch starts from. Without it, `branch` is checked
-   * out from the remote when it is there, and otherwise cut from the
-   * workspace's base branch.
-   */
-  base?: string;
-}
-
 /**
  * Adds a worktree for another branch of one of the workspace's repos, at
  * `<workspace>/<folder>-<branch>`, and grants the workspace's sandbox that
  * worktree and branch. Agents ask for this over MCP: inside the sandbox they
  * can't create a worktree, since that writes to the clone's shared `.git`.
  *
- * The branch must be new to the clone. Checking out a branch that already
- * exists locally would grant the sandbox a branch that may be another
- * workspace's, or the base branch the user merges into.
+ * The branch must not be in the clone yet, in any case. Checking out one that
+ * is would grant the sandbox a branch that may be another workspace's, or the
+ * base branch the user merges into. A remote branch is fine, unless an active
+ * workspace on the repo works on it or stacks on it.
+ *
+ * The worktree is checked out in a staging folder the sandbox can't write,
+ * then renamed into the workspace. The agent can write the workspace folder,
+ * so a checkout straight into it could follow a symlink the agent planted
+ * there; a rename refuses a symlink, or anything but an empty folder, in its
+ * way.
  */
 export async function addExtraWorktree(
   db: Db,
   workspaceId: string,
   input: AddExtraWorktreeInput,
   runner: GitRunner = defaultGitRunner,
-): Promise<{ path: string; branch: string; startedFrom: string }> {
+): Promise<AddExtraWorktreeResult> {
   const detail = await getWorkspace(db, workspaceId);
   if (!detail) throw new WorktreeRefusal("workspace not found");
-  if (detail.status !== "active") {
-    throw new WorktreeRefusal(`the workspace is ${detail.status}, not active`);
-  }
+  assertOpenForWorktrees(detail);
   const ready = detail.repos.filter((r) => r.status === "ready");
+  // Either is accepted: AGENTS.md names the folder, the user names the repo.
   const wanted = input.repo.trim().toLowerCase();
-  const wr = ready.find(
+  const workspaceRepo = ready.find(
     (r) =>
       basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted,
   );
-  if (!wr) {
+  if (!workspaceRepo) {
     const folders = ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
     throw new WorktreeRefusal(
       `no ready repo "${input.repo}" in this workspace (repos: ${folders})`,
@@ -679,45 +687,176 @@ export async function addExtraWorktree(
 
   const branch = input.branch.trim();
   assertUsableBranch(branch, "branch");
-  const reserved = [wr.branch, wr.baseBranch, wr.repo.defaultBranch];
-  if (reserved.includes(branch)) {
-    throw new WorktreeRefusal(`${branch} is this workspace's own or base branch`);
+  if (isReservedBranchName(branch)) {
+    throw new WorktreeRefusal(`${branch} can't be used as a branch name here; pick another`);
   }
   const base = input.base?.trim() || undefined;
   if (base !== undefined) assertUsableBranch(base, "base");
 
-  const folder = `${basename(wr.worktreePath)}-${branch.replaceAll("/", "-")}`;
+  const folder = `${basename(workspaceRepo.worktreePath)}-${branch.replaceAll("/", "-")}`;
   const path = `${detail.rootPath}/${folder}`;
-  if (existsSync(path)) throw new WorktreeRefusal(`${path} already exists`);
+  const clone = workspaceRepo.repo.primaryClonePath;
 
-  const clone = wr.repo.primaryClonePath;
-  const startedFrom = await withRepoLock(wr.repoId, async () => {
-    if (await branchExists(runner, clone, branch)) {
-      throw new WorktreeRefusal(`branch ${branch} already exists locally; pick a new name`);
+  return withRepoLock(workspaceRepo.repoId, async () => {
+    // Again under the lock: an archive or provision run that started since the
+    // read above would tear down or rewrite what this adds.
+    const current = await getWorkspace(db, workspaceId);
+    if (!current) throw new WorktreeRefusal("workspace not found");
+    assertOpenForWorktrees(current);
+    const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
+    if (live >= MAX_EXTRA_WORKTREES) {
+      throw new WorktreeRefusal(
+        `${basename(workspaceRepo.worktreePath)} already has ${live} extra worktrees; remove one first`,
+      );
     }
+
     await fetchRemote(runner, clone);
-    const remote = new Set(await listRemoteBranches(runner, clone));
-    if (base === undefined && remote.has(branch)) {
-      await addExistingBranchWorktree(runner, clone, path, branch);
-      return `origin/${branch}`;
+    const [local, remote, taken] = await Promise.all([
+      listLocalBranches(runner, clone),
+      listRemoteBranches(runner, clone),
+      branchesInUse(db, workspaceRepo),
+    ]);
+    const collision = branchCollision(branch, [...local, ...taken]);
+    if (collision) {
+      throw new WorktreeRefusal(
+        `${branch} collides with the existing branch ${collision}; pick a new name`,
+      );
     }
-    if (remote.has(branch)) {
+    const onRemote = remote.find((r) => r.toLowerCase() === branch.toLowerCase());
+    if (onRemote !== undefined && onRemote !== branch) {
+      throw new WorktreeRefusal(`the remote has ${onRemote}; use that exact name to check it out`);
+    }
+    if (onRemote !== undefined && base !== undefined) {
       throw new WorktreeRefusal(
         `${branch} is already on the remote; leave out base to check it out`,
       );
     }
-    const from = base ?? wr.baseBranch;
-    if (!remote.has(from)) throw new WorktreeRefusal(`no remote branch ${from} to start from`);
-    await createWorktree(runner, clone, path, branch, from);
-    return `origin/${from}`;
-  });
+    const startPoint = onRemote ?? base ?? workspaceRepo.baseBranch;
+    if (!remote.includes(startPoint)) {
+      throw new WorktreeRefusal(`no remote branch ${startPoint} to start from`);
+    }
+    if (pathTaken(path)) throw new WorktreeRefusal(`${path} already exists`);
 
-  await db
-    .insert(workspaceExtraWorktrees)
-    .values({ workspaceRepoId: wr.id, branch, worktreePath: path });
-  const after = await getWorkspace(db, workspaceId);
-  if (after) writeClaudeSettings(after);
-  return { path, branch, startedFrom };
+    // Beside the workspace folders, where the sandbox can't write. A dot-name
+    // can't be a workspace's: slugs are letters, digits and dashes.
+    const staging = mkdtempSync(join(dirname(detail.rootPath), ".worktree-staging-"));
+    const stagedPath = join(staging, folder);
+    try {
+      await addWorktreeWithoutHooks(runner, clone, stagedPath, {
+        branch,
+        startPoint,
+        track: onRemote !== undefined,
+      });
+      try {
+        await moveStagedWorktree(clone, stagedPath, path);
+        await db
+          .insert(workspaceExtraWorktrees)
+          .values({ workspaceRepoId: workspaceRepo.id, branch, worktreePath: path })
+          .onConflictDoUpdate({
+            target: [workspaceExtraWorktrees.workspaceRepoId, workspaceExtraWorktrees.worktreePath],
+            set: { branch, createdAt: new Date() },
+          });
+      } catch (e) {
+        await undoWorktree(runner, clone, branch, [stagedPath, path]);
+        throw e;
+      }
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
+
+    const after = await getWorkspace(db, workspaceId);
+    if (after) writeClaudeSettings(after);
+    return { path, branch, startedFrom: `origin/${startPoint}` };
+  });
+}
+
+function assertOpenForWorktrees(detail: WorkspaceDetail): void {
+  if (detail.status !== "active") {
+    throw new WorktreeRefusal(`the workspace is ${detail.status}, not active`);
+  }
+  if (provisioning.has(detail.id)) {
+    throw new WorktreeRefusal("provisioning is still running for this workspace");
+  }
+}
+
+/** True when anything, a dangling symlink included, is already at `path`. */
+function pathTaken(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Renames a worktree checked out at `stagedPath` to `path`, and points its
+ * admin directory at the new place. Git's own `worktree move` isn't used: it
+ * moves into a directory found at the destination, and would follow a symlink
+ * there.
+ */
+async function moveStagedWorktree(clone: string, stagedPath: string, path: string): Promise<void> {
+  const admin = resolveAdminName(clone, stagedPath);
+  if (!admin) throw new Error(`git registered no worktree at ${stagedPath}`);
+  renameSync(stagedPath, path);
+  writeFileSync(join(clone, ".git", "worktrees", admin, "gitdir"), `${path}/.git\n`);
+}
+
+/** Best-effort removal of a worktree that was added but couldn't be recorded. */
+async function undoWorktree(
+  runner: GitRunner,
+  clone: string,
+  branch: string,
+  paths: string[],
+): Promise<void> {
+  for (const path of paths) {
+    await runner(["worktree", "remove", "--force", path], { cwd: clone }).catch(() => undefined);
+  }
+  await runner(["worktree", "prune"], { cwd: clone }).catch(() => undefined);
+  await deleteBranch(runner, clone, branch).catch((e) =>
+    console.warn(`[workspaces] couldn't delete branch ${branch} after a failed add:`, e),
+  );
+}
+
+/**
+ * Deletes the repo's recorded extra worktrees that git no longer has, and
+ * answers how many are left.
+ */
+async function pruneExtraWorktrees(
+  db: Db,
+  workspaceRepoId: string,
+  clone: string,
+): Promise<number> {
+  const rows = await db
+    .select()
+    .from(workspaceExtraWorktrees)
+    .where(eq(workspaceExtraWorktrees.workspaceRepoId, workspaceRepoId));
+  const gone = rows.filter((row) => resolveAdminName(clone, row.worktreePath) === null);
+  if (gone.length > 0) {
+    await db.delete(workspaceExtraWorktrees).where(
+      inArray(
+        workspaceExtraWorktrees.id,
+        gone.map((row) => row.id),
+      ),
+    );
+  }
+  return rows.length - gone.length;
+}
+
+/**
+ * The branches active workspaces on this repo work on or stack on, plus the
+ * repo's default branch. They can be on the remote alone, so the clone's own
+ * branch list misses them.
+ */
+async function branchesInUse(db: Db, workspaceRepo: WorkspaceRepoDetail): Promise<string[]> {
+  const rows = await db
+    .select({ branch: workspaceRepos.branch, baseBranch: workspaceRepos.baseBranch })
+    .from(workspaceRepos)
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .where(and(eq(workspaceRepos.repoId, workspaceRepo.repoId), ne(workspaces.status, "archived")));
+  const names = rows.flatMap((row) => [row.branch, row.baseBranch]);
+  if (workspaceRepo.repo.defaultBranch) names.push(workspaceRepo.repo.defaultBranch);
+  return names;
 }
 
 /** Refuses a name git could misread, or one the sandbox grant can't express as a path. */
@@ -1617,14 +1756,20 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "## Extra worktrees",
       "",
       "If you need another worktree of a repo (one per branch of a stack, say),",
-      "create it with the Yarvis MCP tool `add_worktree`, not `git worktree add`.",
-      "It puts the worktree in this workspace folder, beside the repo's own, and",
-      "lets this session's sandbox commit, rebase and push there. `git worktree",
-      "add` fails inside the sandbox; don't run it outside the sandbox instead.",
-      "The new worktree's branch must not exist locally yet. Yarvis shows",
-      "worktrees in this folder and removes them when the workspace is archived.",
-      "Don't create worktrees or clones anywhere else, such as a temp folder:",
-      "nothing tracks those, and they stay on disk after the work is done.",
+      "create it with the Yarvis MCP tool `add_worktree`, giving the repo's folder",
+      "and the branch. It puts the worktree in this workspace folder, beside the",
+      "repo's own, and lets this session's sandbox commit, rebase and push there.",
+      "Don't run `git worktree add` yourself, inside or outside the sandbox.",
+      "",
+      "The branch must not be in the local clone yet. A branch already on the",
+      "remote is checked out from there; a new one is cut from the workspace's",
+      "base branch, or from `base` if you give one. If the tool refuses a name,",
+      "pick another, or ask the user.",
+      "",
+      "Yarvis shows worktrees in this folder and removes them when the workspace",
+      "is archived. Don't create worktrees or clones anywhere else, such as a",
+      "temp folder: nothing tracks those, and they stay on disk after the work",
+      "is done.",
     );
   }
 
@@ -2313,12 +2458,14 @@ function trackArchive(
 }
 
 /**
- * Returns whether to delete a repo's local branch once its worktree is gone, so archived
- * workspaces don't pile up branches in the shared clone. Only a landed branch
- * goes. Throws when a landed branch has commits that neither a remote nor its
- * merged PR has (work added after the merge) and `force` isn't set, so the user
- * hears about them while the worktree is still there to push from. Otherwise
- * best-effort: a branch left behind costs nothing, so a git failure keeps it.
+ * Whether to delete a repo's local branch once its worktree is gone, so
+ * archived workspaces don't pile up branches in the shared clone. Only a
+ * landed branch goes, and a git failure keeps it, since a branch left behind
+ * costs nothing.
+ *
+ * Throws instead when a landed branch has commits that neither a remote nor
+ * its merged PR has (work added after the merge) and `force` isn't set, so the
+ * user hears about them while the worktree is still there to push from.
  */
 async function checkBranchForArchive(
   runner: GitRunner,
@@ -2402,13 +2549,13 @@ async function removeWorktreesAndFinish(
         // Checked before anything is removed. An extra worktree that stops this
         // attempt would otherwise hide the unpushed commits, and the Force
         // retry that follows skips the check and deletes them unwarned.
-        let deleteLandedBranch = false;
-        let unpushed: unknown = null;
+        let shouldDeleteBranch = false;
+        let unpushedCommitsError: unknown = null;
         if (wr.status !== "removed") {
           try {
-            deleteLandedBranch = await checkBranchForArchive(runner, wr, force);
+            shouldDeleteBranch = await checkBranchForArchive(runner, wr, force);
           } catch (e) {
-            unpushed = e;
+            unpushedCommitsError = e;
           }
         }
         // Swept for a repo already torn down too: an agent can add a worktree
@@ -2427,15 +2574,17 @@ async function removeWorktreesAndFinish(
             });
           }
         } catch (e) {
-          throw unpushed ? new Error(`${errorMessage(e)}; ${errorMessage(unpushed)}`) : e;
+          // Both reasons, since the Force retry the user reaches for skips the commit check.
+          if (!unpushedCommitsError) throw e;
+          throw new Error(`${errorMessage(e)}; ${errorMessage(unpushedCommitsError)}`);
         }
-        if (unpushed) throw unpushed;
+        if (unpushedCommitsError) throw unpushedCommitsError;
         if (wr.status === "removed") return;
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (deleteLandedBranch) await deleteBranchBestEffort(runner, wr);
+        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
       });
       if (wr.status === "removed") continue;
       await db
@@ -2443,7 +2592,7 @@ async function removeWorktreesAndFinish(
         .set({ status: "removed", error: null })
         .where(eq(workspaceRepos.id, wr.id));
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = errorMessage(e);
       errors.push({ repo: wr.repo.name, message });
       await db
         .update(workspaceRepos)
@@ -2459,7 +2608,7 @@ async function removeWorktreesAndFinish(
     try {
       await removeWorkspaceFolder(detail.rootPath, detail.slug, { force });
     } catch (e) {
-      folderError = e instanceof Error ? e.message : String(e);
+      folderError = errorMessage(e);
       errors.push({ repo: "workspace folder", message: folderError });
     }
   }

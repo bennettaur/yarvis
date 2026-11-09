@@ -13,11 +13,11 @@ import { canonicalPath } from "./git.ts";
  * worktrees' admin directories, the object store, and each worktree's branch
  * and that branch's remote-tracking ref, which a push updates. A worktree is
  * the workspace's own, or one Yarvis added for it (`addExtraWorktree`). A
- * fetch that would update other remote-tracking refs asks. Everything that can make git run code, or
- * change what another workspace's git sees, is denied even where an allowed
- * path covers it. Yarvis's own git refuses a clone with a symlink in any of
- * these places (`symlinkScan.ts`), since it runs outside the sandbox and would
- * write through one.
+ * fetch that would update other remote-tracking refs asks. Everything that
+ * can make git run code, or change what another workspace's git sees, is
+ * denied even where an allowed path covers it. Yarvis's own git refuses a
+ * clone with a symlink in any of these places (`symlinkScan.ts`), since it
+ * runs outside the sandbox and would write through one.
  */
 
 /** One worktree of a workspace, as the sandbox needs it. */

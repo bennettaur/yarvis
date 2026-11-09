@@ -1,16 +1,19 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
@@ -311,8 +314,14 @@ describe("workspace worktrees", () => {
       await git(clone, "checkout", "-b", "pushed/feature");
       await commit(clone, "pushed.ts");
       await git(clone, "update-ref", "refs/remotes/origin/pushed/feature", "pushed/feature");
+      await git(clone, "checkout", "-b", "develop", "main");
+      await commit(clone, "develop.ts");
+      await git(clone, "update-ref", "refs/remotes/origin/develop", "develop");
       await git(clone, "checkout", "main");
-      await git(clone, "branch", "-D", "pushed/feature");
+      await git(clone, "branch", "-D", "pushed/feature", "develop");
+      // Packed, as a clone's refs are after `git gc`: a case-variant name then
+      // isn't seen by a lookup of its own loose file.
+      await git(clone, "pack-refs", "--all");
       rmSync(ws.wr.worktreePath, { recursive: true, force: true });
       await git(clone, "worktree", "add", "-b", ws.wr.branch, ws.wr.worktreePath, "main");
       await db.update(repos).set({ primaryClonePath: clone }).where(eq(repos.id, ws.wr.repoId));
@@ -328,6 +337,8 @@ describe("workspace worktrees", () => {
 
     it("cuts a new branch from the base and lets the sandbox commit to it", async () => {
       const { workspaceId, root, clone, runner, settings } = await withRealClone();
+      writeClaudeSettings((await getWorkspace(db, workspaceId))!);
+      const before = settings();
 
       const added = await addExtraWorktree(
         db,
@@ -345,12 +356,77 @@ describe("workspace worktrees", () => {
       const admin = resolveAdminName(clone, added.path);
       expect(admin).not.toBeNull();
       const { allowWrite, denyWrite } = settings();
-      expect(allowWrite).toContain(`${clone}/.git/refs/heads/stack/two`);
-      expect(allowWrite).toContain(`${clone}/.git/refs/remotes/origin/stack/two`);
-      expect(allowWrite).toContain(`${clone}/.git/worktrees/${admin}`);
-      expect(denyWrite).toContain(`${clone}/.git/worktrees/${admin}/gitdir`);
-      // The workspace's own grants stay, and shared entries are listed once.
-      expect(allowWrite.filter((p) => p === `${clone}/.git/objects`)).toHaveLength(1);
+      const git = `${clone}/.git`;
+      // Exactly the new branch and worktree, on top of what the workspace had.
+      expect(allowWrite.filter((p) => !before.allowWrite.includes(p)).sort()).toEqual(
+        [
+          `${git}/logs/refs/heads/stack/two`,
+          `${git}/logs/refs/remotes/origin/stack/two`,
+          `${git}/refs/heads/stack/two`,
+          `${git}/refs/heads/stack/two.lock`,
+          `${git}/refs/remotes/origin/stack/two`,
+          `${git}/refs/remotes/origin/stack/two.lock`,
+          `${git}/worktrees/${admin}`,
+        ].sort(),
+      );
+      expect(before.allowWrite.every((p) => allowWrite.includes(p))).toBe(true);
+      expect(denyWrite).toContain(`${git}/worktrees/${admin}/gitdir`);
+      // Shared entries are listed once.
+      expect(allowWrite.filter((p) => p === `${git}/objects`)).toHaveLength(1);
+      // Nothing is left beside the workspace folders.
+      expect(readdirSync(dirname(root)).filter((n) => n.startsWith(".worktree-staging"))).toEqual(
+        [],
+      );
+    });
+
+    it("cuts a new branch from the base it is given", async () => {
+      const { workspaceId, runner } = await withRealClone();
+
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "on-develop", base: "develop" },
+        runner,
+      );
+
+      expect(added.startedFrom).toBe("origin/develop");
+      expect(existsSync(join(added.path, "develop.ts"))).toBe(true);
+    });
+
+    it("runs none of the repo's hooks on the checkout", async () => {
+      const { workspaceId, clone, runner } = await withRealClone();
+      const marker = join(clone, "hook-ran");
+      const hook = join(clone, ".git", "hooks", "post-checkout");
+      writeFileSync(hook, `#!/bin/sh\ntouch "${marker}"\n`);
+      chmodSync(hook, 0o755);
+
+      await addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, runner);
+
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it("refuses a path something already holds, a symlink included", async () => {
+      const { workspaceId, root, runner } = await withRealClone();
+      symlinkSync(scratchDir("yarvis-victim-"), join(root, "widget-fresh"));
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, runner),
+      ).rejects.toThrow("already exists");
+    });
+
+    it("adds a worktree again where a removed one was", async () => {
+      const { workspaceId, clone, git, runner, settings } = await withRealClone();
+      const add = () =>
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/two" }, runner);
+      const first = await add();
+      await git(clone, "worktree", "remove", first.path);
+      await git(clone, "branch", "-D", "stack/two");
+
+      const again = await add();
+
+      expect(again.path).toBe(first.path);
+      expect(settings().allowWrite).toContain(`${clone}/.git/refs/heads/stack/two`);
+      expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toHaveLength(1);
     });
 
     it("checks out a branch that is only on the remote", async () => {
@@ -388,9 +464,15 @@ describe("workspace worktrees", () => {
       const add = (branch: string, base?: string) =>
         addExtraWorktree(db, workspaceId, { repo: "widget", branch, base }, runner);
 
-      await expect(add(wr.branch)).rejects.toThrow("this workspace's own or base branch");
-      await expect(add("main")).rejects.toThrow("this workspace's own or base branch");
-      await expect(add("kept")).rejects.toThrow("already exists locally");
+      await expect(add(wr.branch)).rejects.toThrow("collides with the existing branch");
+      await expect(add("main")).rejects.toThrow("collides with the existing branch main");
+      // The same ref file as `main` on a case-insensitive filesystem.
+      await expect(add("MAIN")).rejects.toThrow("collides with the existing branch main");
+      await expect(add("Kept")).rejects.toThrow("collides with the existing branch kept");
+      await expect(add("kept/inner")).rejects.toThrow("collides with the existing branch kept");
+      await expect(add("origin/main")).rejects.toThrow("can't be used as a branch name");
+      await expect(add("FETCH_HEAD")).rejects.toThrow("can't be used as a branch name");
+      await expect(add("Pushed/Feature")).rejects.toThrow("use that exact name");
       await expect(add("--upload-pack=x")).rejects.toThrow("unsupported branch name");
       await expect(add("../escape")).rejects.toThrow("unsupported branch name");
       await expect(add("pushed/feature", "main")).rejects.toThrow("already on the remote");
@@ -399,6 +481,34 @@ describe("workspace worktrees", () => {
         addExtraWorktree(db, workspaceId, { repo: "other", branch: "fresh" }, runner),
       ).rejects.toThrow('no ready repo "other"');
       expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
+
+    it("refuses a remote branch another workspace on the repo stacks on", async () => {
+      const { workspaceId, wr, runner } = await withRealClone();
+      const other = await createWorkspace(db, config, {
+        name: `stacked ${++workspaceCount}`,
+        repoIds: [wr.repoId],
+      });
+      await db
+        .update(workspaceRepos)
+        .set({ baseBranch: "pushed/feature" })
+        .where(eq(workspaceRepos.workspaceId, other.id));
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "pushed/feature" }, runner),
+      ).rejects.toThrow("collides with the existing branch pushed/feature");
+    });
+
+    it("refuses while the workspace isn't active", async () => {
+      const { workspaceId, runner } = await withRealClone();
+      await db
+        .update(workspaces)
+        .set({ status: "archiving" })
+        .where(eq(workspaces.id, workspaceId));
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, runner),
+      ).rejects.toThrow("archiving, not active");
     });
   });
 
