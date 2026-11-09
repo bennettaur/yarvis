@@ -524,12 +524,16 @@ describe("diagrams", () => {
 
   it("leaves a diagram as it was when a change has nothing in it", async () => {
     const created = await createDiagram(db, { title: "Architecture", elements });
+    const signals: string[] = [];
+    const unsubscribe = subscribeArtifact(created.id, (change) => signals.push(change));
     const same = await updateDiagram(db, created.id, {
       writer: "heads-down",
       changes: { upsert: [], remove: [] },
     });
+    unsubscribe();
     expect(same?.untrusted).toBe(false);
     expect(same?.updatedAt).toEqual(created.updatedAt);
+    expect(signals).toEqual([]);
   });
 
   it("refuses an addOnly change that touches what is there, and keeps the diagram", async () => {

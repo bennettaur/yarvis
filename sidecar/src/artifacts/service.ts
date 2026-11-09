@@ -315,8 +315,8 @@ export async function updateDiagram(
   input: UpdateDiagramInput,
 ): Promise<Artifact | null> {
   const writer = input.writer ?? "chat";
-  const { title, changes } = input;
-  const nothingToChange = title === undefined && !changes.upsert?.length && !changes.remove?.length;
+  const nothingToChange =
+    input.title === undefined && !input.changes.upsert?.length && !input.changes.remove?.length;
   const row = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(artifacts).where(eq(artifacts.id, id)).for("update");
     if (!current) return null;

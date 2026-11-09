@@ -58,8 +58,8 @@ function stripAll(text: string, needle: string): string {
  * without that flag, so the page's text stays in its own turn. The browser's
  * page reads are left out for the same reason, and their element refs don't
  * outlive the page anyway. So are artifact reads, and the diagram tools, which
- * return the whole scene: one a heads-down pass or specialist wrote sets the
- * same flag.
+ * return the whole scene: reading an artifact a heads-down pass or specialist
+ * wrote sets the same flag.
  */
 const RESULT_NOT_REPLAYED = new Set([
   "read_web_page",

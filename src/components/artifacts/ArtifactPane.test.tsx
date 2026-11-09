@@ -123,7 +123,8 @@ describe("ArtifactPane", () => {
     );
     const host = await mount();
     await waitFor(() => host.textContent?.includes("Still here") ?? false, "the artifact");
-    await new Promise((r) => setTimeout(r, 20));
+    // The first read, then one more for the stream connecting.
+    await waitFor(() => server.reads() === 2, "the stream's first re-read");
     failing = true;
     server.push("updated");
     await waitFor(() => host.querySelector('[role="alert"]') !== null, "the error");
