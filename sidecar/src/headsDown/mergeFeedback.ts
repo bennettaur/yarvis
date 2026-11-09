@@ -80,6 +80,8 @@ export interface MergeFeedbackResult {
   prs: PrFeedback[];
   /** Why the feedback couldn't be checked, when it couldn't. Null when it was. */
   unchecked: string | null;
+  /** Every PR that was read, with open feedback or not. */
+  checked?: { repo: string; number: number }[];
 }
 
 /**
@@ -87,7 +89,14 @@ export interface MergeFeedbackResult {
  * looked up on GitHub, which is only safe when the merge tool is GitHub's.
  */
 export type MergeSubject =
-  | { workspaceId: string }
+  | {
+      workspaceId: string;
+      /**
+       * True when the merge also names other PRs, so a workspace with no open
+       * PR has nothing of its own to merge rather than one Yarvis can't see.
+       */
+      namesOtherPrs?: boolean;
+    }
   | { repo: string; number: number; githubOnly: boolean };
 
 /** Whether the merge has to wait: open feedback, or feedback nobody could check. */
@@ -203,7 +212,11 @@ async function mergeTargets(
 ): Promise<{ targets: Target[] } | { unchecked: string }> {
   if ("workspaceId" in subject) {
     const prs = await workspacePrs(db, subject);
-    if (prs.length === 0) return { unchecked: "the workspace has no open PR Yarvis has seen yet" };
+    if (prs.length === 0) {
+      return subject.namesOtherPrs
+        ? { targets: [] }
+        : { unchecked: "the workspace has no open PR Yarvis has seen yet" };
+    }
     const targets = prs.map(ownedTarget);
     if (targets.some((t) => t === null)) {
       return { unchecked: "can't tell which provider hosts the workspace's repo" };
@@ -258,7 +271,8 @@ export function mergeFeedbackLoader(
           prs.push({ ...pr, handedOff: false, ...feedback });
         }
       }
-      return { prs, unchecked: null };
+      const checked = found.targets.map(({ repo, number }) => ({ repo, number }));
+      return { prs, unchecked: null, checked };
     } catch (e) {
       const reason = redactSecrets(e instanceof Error ? e.message : String(e));
       return { prs: [], unchecked: `reading the PR failed: ${reason.slice(0, MAX_REASON_CHARS)}` };

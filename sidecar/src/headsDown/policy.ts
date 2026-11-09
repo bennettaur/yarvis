@@ -7,6 +7,7 @@ import type { Db } from "../db/client.ts";
 import { type HeadsDownRun, issueLinks, workStreamLinks, workStreams } from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
+import { stripInvisible } from "../web/extract.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
 import type { ClaudeSessionMessenger } from "../workspaces/claudeSession.ts";
 import { getRepo } from "../workspaces/service.ts";
@@ -367,53 +368,111 @@ async function alertUnannouncedMerge(
   });
 }
 
-/** Which PRs a merge call is for. Empty when the call doesn't say. */
-function mergeSubjects(tool: string, args: unknown): MergeSubject[] {
+/**
+ * Which PRs a merge call is for: `subjects` to read, and `bareNumbers`, PR
+ * numbers an instruction gives without a repo. Both empty when the call
+ * doesn't say.
+ */
+function mergeSubjects(
+  tool: string,
+  args: unknown,
+): { subjects: MergeSubject[]; bareNumbers: number[] } {
   if (tool === "send_workspace_instruction") {
     // The session may merge its own PR or any PR the instruction names, so
     // all of them are checked. A named PR is looked up on GitHub only when a
     // workspace owns it, since the session may merge it anywhere.
-    const named = namedPrs(stringArg(args, "instruction") ?? "").map(
-      (pr): MergeSubject => ({ ...pr, githubOnly: false }),
-    );
+    const refs = prRefsIn(stringArg(args, "instruction") ?? "");
+    const named = refs.named.map((pr): MergeSubject => ({ ...pr, githubOnly: false }));
     const workspaceId = stringArg(args, "workspaceId");
-    return workspaceId ? [{ workspaceId }, ...named] : named;
+    const namesOtherPrs = named.length > 0;
+    const subjects: MergeSubject[] = workspaceId
+      ? [{ workspaceId, ...(namesOtherPrs ? { namesOtherPrs } : {}) }, ...named]
+      : named;
+    return { subjects, bareNumbers: refs.bareNumbers };
   }
   const target = mergeCallTarget(tool, args);
-  if (!target) return [];
+  if (!target) return { subjects: [], bareNumbers: [] };
   // `mcp:<server>:<tool>`: only a GitHub server's PR can be looked up on GitHub.
   const server = tool.split(":")[1] ?? "";
-  return [{ ...target, githubOnly: /github/i.test(server) }];
+  return { subjects: [{ ...target, githubOnly: /github/i.test(server) }], bareNumbers: [] };
 }
 
-/** Every PR an instruction names as `owner/repo#N` or by its URL. */
-function namedPrs(text: string): { repo: string; number: number }[] {
+/** `owner/repo#N`. A GitHub owner has no dots, and a slash before it means a longer path. */
+const PR_REF = /(?<![\w./-])([\w-]+)\/([\w.-]+)#(\d+)\b/g;
+
+/** A "repo" that is really a file, as in `docs/setup.md#3`, which links a heading. */
+const FILE_LIKE =
+  /\.(md|mdx|txt|rst|html?|json|ya?ml|toml|[cm]?[jt]sx?|rs|py|go|rb|java|kt|swift|css|scss|sh)$/i;
+
+/** A PR number with no repo: `#57`, `PR 57`, or a pull request URL on another host. */
+const BARE_PR = [
+  /(?<![\w/&])#(\d+)\b/g,
+  /\b(?:PR|pull request)\s*#?(\d+)\b/gi,
+  /\/(?:pull|pulls|pullrequest|merge_requests)\/(\d+)\b/gi,
+];
+
+/**
+ * The PRs an instruction names: as `owner/repo#N` or by GitHub URL, and by
+ * number alone. Invisible characters are dropped first, so a zero-width space
+ * inside `acme/api#57` can't hide it.
+ */
+function prRefsIn(instruction: string): {
+  named: { repo: string; number: number }[];
+  bareNumbers: number[];
+} {
   const found = new Map<string, { repo: string; number: number }>();
   const add = (repo: string, number: number) => found.set(mergeKey(repo, number), { repo, number });
-  for (const m of text.matchAll(new RegExp(PR_URL, "g"))) add(`${m[1]}/${m[2]}`, Number(m[3]));
-  for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) add(m[1] ?? "", Number(m[2]));
-  return [...found.values()];
+  let text = stripInvisible(instruction).text;
+  text = text.replace(new RegExp(PR_URL, "g"), (_m, owner: string, repo: string, n: string) => {
+    add(`${owner}/${repo}`, Number(n));
+    return " ";
+  });
+  text = text.replace(PR_REF, (m, owner: string, repo: string, n: string) => {
+    if (FILE_LIKE.test(repo)) return m;
+    add(`${owner}/${repo}`, Number(n));
+    return " ";
+  });
+  const bare = new Set<number>();
+  for (const pattern of BARE_PR) {
+    for (const m of text.matchAll(pattern)) bare.add(Number(m[1]));
+  }
+  return { named: [...found.values()], bareNumbers: [...bare] };
 }
 
 /**
  * The open feedback on everything a merge call may merge. One PR that
- * couldn't be checked leaves the whole call unchecked, and a call that
- * doesn't say which PR is unchecked too.
+ * couldn't be checked leaves the whole call unchecked, and so does a call
+ * that doesn't say which PR, or a PR number with no repo that isn't one of
+ * the PRs read.
  */
 async function feedbackFor(
   load: MergeFeedbackLoader,
   tool: string,
   args: unknown,
 ): Promise<MergeFeedbackResult> {
-  const subjects = mergeSubjects(tool, args);
-  if (subjects.length === 0) {
+  const { subjects, bareNumbers } = mergeSubjects(tool, args);
+  if (subjects.length === 0 && bareNumbers.length === 0) {
     return { prs: [], unchecked: "the merge call doesn't say which PR it merges" };
   }
   const prs = new Map<string, PrFeedback>();
+  const checked = new Set<string>();
+  const checkedNumbers = new Set<number>();
   for (const subject of subjects) {
+    // The workspace's own PR, named again, was already read.
+    if (!("workspaceId" in subject) && checked.has(mergeKey(subject.repo, subject.number))) {
+      continue;
+    }
     const result = await load(subject);
     if (result.unchecked !== null) return { prs: [], unchecked: result.unchecked };
     for (const pr of result.prs) prs.set(mergeKey(pr.repo, pr.number), pr);
+    for (const pr of result.checked ?? []) {
+      checked.add(mergeKey(pr.repo, pr.number));
+      checkedNumbers.add(pr.number);
+    }
+  }
+  const unknown = bareNumbers.find((n) => !checkedNumbers.has(n));
+  if (unknown !== undefined) {
+    return { prs: [], unchecked: `the instruction names PR #${unknown} without saying which repo` };
   }
   return { prs: [...prs.values()], unchecked: null };
 }

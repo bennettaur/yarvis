@@ -13,6 +13,7 @@ import {
   feedbackIn,
   feedbackInstruction,
   feedbackSummary,
+  type MergeFeedbackLoader,
   type MergeSubject,
   mergeFeedbackLoader,
   type PrFeedback,
@@ -290,7 +291,11 @@ describe("mergeFeedbackLoader", () => {
 
   it("reports nothing for a PR with no open feedback", async () => {
     const load = mergeFeedbackLoader(db, {} as never, fakeSources(detail()));
-    expect(await load(subject)).toEqual({ prs: [], unchecked: null });
+    expect(await load(subject)).toEqual({
+      prs: [],
+      unchecked: null,
+      checked: [{ repo: "acme/billing", number: 12 }],
+    });
   });
 
   it("counts a review asking for changes as feedback, even with no threads", async () => {
@@ -713,7 +718,10 @@ describe("merging with open feedback", () => {
     });
     expect(await waitForApproval("n1", { timeoutMs: 1000 })).toBe(false);
     // The first PR no workspace owns leaves the merge unchecked, so nothing after it is read.
-    expect(asked).toEqual([{ workspaceId }, { repo: "acme/api", number: 7, githubOnly: false }]);
+    expect(asked).toEqual([
+      { workspaceId, namesOtherPrs: true },
+      { repo: "acme/api", number: 7, githubOnly: false },
+    ]);
     const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
     expect(item!.payload.headsDownMergeReview.unchecked).toContain("may not be GitHub's");
 
@@ -735,7 +743,7 @@ describe("merging with open feedback", () => {
       reason: null,
     });
     expect(asked).toEqual([
-      { workspaceId },
+      { workspaceId, namesOtherPrs: true },
       { repo: "acme/api", number: 7, githubOnly: false },
       { repo: "acme/web", number: 5, githubOnly: false },
     ]);
@@ -783,6 +791,72 @@ describe("merging with open feedback", () => {
     expect(prs.map((p: PrFeedback) => [`${p.repo}#${p.number}`, p.workspaceId])).toEqual([
       ["acme/web#5", webWorkspace],
     ]);
+  });
+
+  /** Sends a merge instruction to the workspace and says whether it ran without asking. */
+  async function instructMerge(
+    workspaceId: string,
+    instruction: string,
+    load: MergeFeedbackLoader,
+    toolCallId: string,
+  ): Promise<boolean> {
+    const run = await startRun(db, null);
+    await passApprovalHooks(db, run, () => {}, {
+      mergeFeedback: load,
+      sendInstruction: send,
+    }).onRequest({
+      toolCallId,
+      id: "send_workspace_instruction",
+      args: { workspaceId, instruction },
+      reason: null,
+    });
+    return waitForApproval(toolCallId, { timeoutMs: 1000 });
+  }
+  const clean = () => mergeFeedbackLoader(db, {} as never, fakeSources(detail({})));
+  const heldReason = async () => {
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    return item?.payload.headsDownMergeReview.unchecked ?? null;
+  };
+
+  it("holds a merge whose instruction gives a PR number without its repo", async () => {
+    const workspaceId = await pushedWorkspace();
+    expect(await instructMerge(workspaceId, "Squash merge #57 now.", clean(), "b1")).toBe(false);
+    expect(await heldReason()).toContain("names PR #57 without saying which repo");
+  });
+
+  it("lets a bare PR number through when it is the workspace's own PR", async () => {
+    const workspaceId = await pushedWorkspace();
+    expect(await instructMerge(workspaceId, "Merge PR #12 now.", clean(), "b2")).toBe(true);
+    expect(await heldReason()).toBeNull();
+  });
+
+  it("reads a PR ref past invisible characters, and not a file's heading link", async () => {
+    const workspaceId = await pushedWorkspace();
+    const asked: MergeSubject[] = [];
+    const load = clean();
+    const recording: MergeFeedbackLoader = (subject) => {
+      asked.push(subject);
+      return load(subject);
+    };
+    await instructMerge(
+      workspaceId,
+      "Merge acme/api#\u200b7 as docs/setup.md#3 says.",
+      recording,
+      "b3",
+    );
+    expect(asked).toEqual([
+      { workspaceId, namesOtherPrs: true },
+      { repo: "acme/api", number: 7, githubOnly: false },
+    ]);
+  });
+
+  it("checks only the named PRs when the workspace has no PR of its own", async () => {
+    const workspaceId = await workspaceWithPr({ name: "empty", number: null });
+    const stream = await createStream(db, { title: "ship web" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+    await workspaceWithPr({ name: "web", number: 5 });
+    expect(await instructMerge(workspaceId, "Merge acme/web#5 now.", clean(), "b4")).toBe(true);
+    expect(await heldReason()).toBeNull();
   });
 
   it("doesn't read the PR for a merge the run won't make anyway", async () => {
