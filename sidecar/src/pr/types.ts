@@ -144,6 +144,13 @@ export interface ReviewComment {
    * that two people can share (Azure). Absent on GitHub, whose login is unique.
    */
   authorId?: string;
+  /**
+   * Whether the author is an owner, member or collaborator of the repo. GitHub
+   * lets anyone who can see a repo comment on its PRs; Azure repos are seen
+   * only by their organization, so Azure sets it for everyone. Absent means
+   * unknown, which counts as untrusted.
+   */
+  trusted?: boolean;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */
@@ -175,6 +182,8 @@ export interface ReviewThread {
   /** Whether the viewer may reopen the thread once it is resolved. */
   canUnresolve: boolean;
   comments: ReviewComment[];
+  /** True when the thread has more comments than were loaded. */
+  commentsTruncated?: boolean;
 }
 
 /**
@@ -213,6 +222,14 @@ export interface Reviewer {
    * asking the team, not the name on the request.
    */
   isTeam: boolean;
+  /** Whether the reviewer is an owner, member or collaborator of the repo; as on `ReviewComment`. */
+  trusted?: boolean;
+  /**
+   * The reviewer's last verdict, when a fresh review request replaced it as
+   * `state`. GitHub keeps a "changes requested" review blocking until the
+   * reviewer reviews again, request or not.
+   */
+  previousState?: ReviewerState;
 }
 
 /** A normalized CI check (CheckRun, commit status, or policy evaluation). */

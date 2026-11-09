@@ -381,7 +381,10 @@ describe("a heads-down pass", () => {
       [finish("stop")],
     );
 
-    await runPass(config, db, run, { model });
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async () => ({ prs: [], unchecked: null }),
+    });
 
     expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(
       "Merging docs PRs in acme/docs is fine any time.",
@@ -391,6 +394,65 @@ describe("a heads-down pass", () => {
       title: "Heads down is merging acme/docs#4",
       payload: { headsDownMerge: { risk: "low", number: 4 } },
     });
+  });
+
+  it("checks a merge it announces for open review feedback, and holds it", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("m1", "announce_merge", {
+          repo: "acme/docs",
+          number: 4,
+          risk: "low",
+          why: "Docs only",
+        }),
+        toolCall("m2", "finish_pass", { sleepMinutes: 30, reason: "held" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ repo: "acme/docs", number: 4, githubOnly: false }]);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("Not announced");
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+  });
+
+  it("checks a merge the pass tells a session to make, and holds it for the user", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("s1", "send_workspace_instruction", {
+          workspaceId,
+          instruction: "Merge the PR now.",
+          callReason: "it is approved",
+        }),
+        toolCall("s2", "finish_pass", { sleepMinutes: 30, reason: "merging" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ workspaceId }]);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item?.payload.headsDownMergeReview.unchecked).toBe("no token");
   });
 
   it("records a pass for a run already stopped as stopped by the user, not failed", async () => {
