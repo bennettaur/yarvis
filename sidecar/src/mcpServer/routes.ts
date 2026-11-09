@@ -7,10 +7,12 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
 import { askQuestions, getQuestion, waitForReply } from "../questions/service.ts";
 import { listLocatedReviewComments, updateReviewComment } from "../workspaces/reviewComments.ts";
+import { addExtraWorktree } from "../workspaces/service.ts";
 import type { QuestionOrigin } from "./questionTools.ts";
 import { UUID } from "./results.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
 import { createYarvisMcpServer, WORKSPACE_HEADER, type WorkspaceContext } from "./server.ts";
+import type { AddWorktree } from "./worktreeTools.ts";
 
 /**
  * The MCP endpoint, mounted at `/mcp` OUTSIDE the main bearer wall. Like
@@ -122,13 +124,16 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     };
   };
 
+  const addWorktree: AddWorktree = (workspaceId, input) =>
+    addExtraWorktree(getDb(config.databaseUrl as string).db, workspaceId, input);
+
   router.post("/", async (c) => {
     // A malformed id is ignored rather than refused, so the memory tools still
     // work from a session whose header got mangled.
     const workspaceId = c.req.header(WORKSPACE_HEADER);
     const workspace: WorkspaceContext | undefined =
       workspaceId && UUID.safeParse(workspaceId).success
-        ? { id: workspaceId, reviewComments }
+        ? { id: workspaceId, reviewComments, addWorktree }
         : undefined;
     const db = () => getDb(config.databaseUrl as string).db;
     // Fires once the reply stream ends, the client cancels it, or the request

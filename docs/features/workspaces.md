@@ -114,7 +114,7 @@ writes these files into the root:
 | `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), register each Claude Code session with the workspace, and let the session's sandbox write to each repo's clone |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
-| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
+| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory, work through this workspace's review comments, and add worktrees. See [MCP](mcp.md). |
 | `.yarvis/brief.md` | The work the session was started on, when there is one |
 
 Some details:
@@ -137,8 +137,10 @@ Some details:
   doesn't let a session write to by default. Yarvis adds what this workspace's
   commits need to `sandbox.filesystem.allowWrite`: its worktree's folder under
   `.git/worktrees`, the object store, and its own branch and that branch's
-  remote-tracking ref. Commits, rebases and pushes on the workspace's branch
-  then run inside the sandbox instead of asking you each time. Paths you added
+  remote-tracking ref. A worktree added with `add_worktree` gets the same
+  (see [Other worktrees](#other-worktrees-in-the-workspace)). Commits, rebases
+  and pushes on those branches then run inside the sandbox instead of asking
+  you each time. Paths you added
   yourself stay. Yarvis also turns off fetching tags on each clone
   (`remote.origin.tagOpt`), since nothing in Yarvis uses them.
 - **What still asks.** The clone is shared by every workspace on that repo, and
@@ -434,15 +436,29 @@ by repo. The line under it always names the branch you are looking at.
   repo and path, so one left there would show up on the workspace branch's copy
   of the file.
 
-The workspace's `AGENTS.md` tells the agent to put extra worktrees in the
-workspace folder. The agent's sandbox lets git change only the workspace's own
-branch and worktree, so adding another worktree, and committing, pushing or
-rebasing in it, asks for your approval to run outside the sandbox. Approving a
-commit or a checkout there also runs the repo's git hooks outside the sandbox,
-and the agent can edit their config (for example `lefthook.yml`). Check it
-hasn't changed before approving.
 - In the **Stack** tab, a layer checked out in another worktree has a **View**
   button that switches the column to it.
+
+The workspace's `AGENTS.md` tells the agent to add a worktree with the Yarvis
+MCP tool `add_worktree` ([MCP](mcp.md#adding-a-worktree)). Yarvis runs `git
+worktree add` itself, at `<workspace>/<repo folder>-<branch>`. It records the
+branch, and adds that worktree's folder under `.git/worktrees` and its branch
+to the sandbox's grants. The agent then commits, rebases and pushes there
+without leaving the sandbox.
+
+- **The branch must be new to the clone.** One that already exists locally
+  could be another workspace's branch, or the base branch you merge into, and
+  the sandbox would get write access to it. The branch is checked out from the
+  remote if it's there, and otherwise cut from the workspace's base branch.
+- **No setup script runs** in the new worktree. The agent installs what it
+  needs there.
+- **The grant follows the worktree.** Once the worktree is removed, the next
+  rewrite of `.claude/settings.json` drops its branch too. Archiving removes it
+  with the rest of the workspace.
+- **A worktree made any other way** still shows in the column, but git there
+  asks you to approve leaving the sandbox. Approving a commit or a checkout
+  there also runs the repo's git hooks outside the sandbox, and the agent can
+  edit their config (for example `lefthook.yml`).
 
 ### Stacked pull requests
 

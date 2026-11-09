@@ -255,6 +255,26 @@ findings the same way in the text it copies.
 A workspace provisioned before this header existed gets it the next time it
 is provisioned.
 
+### Adding a worktree
+
+A workspace session also gets `add_worktree`, for working on another branch in
+a worktree of its own (one per layer of a stack, say). The session's sandbox
+can't run `git worktree add`, because that writes to the repo's shared clone.
+So Yarvis runs it, at `<workspace>/<repo folder>-<branch>`, and then lets the
+sandbox commit, rebase and push in that worktree. See
+[Workspaces](workspaces.md#other-worktrees-in-the-workspace).
+
+| Argument | What it is |
+| --- | --- |
+| `repo` | The repo's folder in the workspace, or its name |
+| `branch` | The branch to check out. It must not exist locally yet |
+| `base` | Optional. The remote branch a new branch starts from. Without it, `branch` is checked out from the remote if it's there, and otherwise cut from the workspace's base branch |
+
+Like the review comment tools, it acts on the workspace the header names, and
+the token can name any workspace. What a caller gets from that is a new branch
+and checkout of a repo you registered, inside that workspace's folder, and
+sandbox write access to that one branch.
+
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
@@ -306,8 +326,8 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory, review comment and
-  question tools and nothing else. The rest of the sidecar API keeps its own
+- It uses a **scoped token** that grants the memory, review comment,
+  question and `add_worktree` tools and nothing else. The rest of the sidecar API keeps its own
   bearer token.
 - The session and workspace headers are the caller's claim, the same trust
   attention hooks get. They decide where a question is shown, and

@@ -19,8 +19,10 @@ import {
   type Task,
   tasks,
   type Workspace,
+  type WorkspaceExtraWorktree,
   type WorkspaceRepo,
   type WorkspaceRepoPr,
+  workspaceExtraWorktrees,
   workspaceRepoPr,
   workspaceRepos,
   workspaces,
@@ -88,6 +90,7 @@ import {
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
+import { isSafeBranch } from "./sandboxPaths.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
 import type { RepoTracker } from "./tracker.ts";
 import { removeWorkspaceFolder } from "./workspaceFolder.ts";
@@ -446,6 +449,8 @@ export interface CreateWorkspaceInput {
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
   repo: Repo;
   pr: WorkspaceRepoPr | null;
+  /** Worktrees Yarvis added beside this one (`addExtraWorktree`). */
+  extraWorktrees: WorkspaceExtraWorktree[];
 }
 
 export interface WorkspaceDetail extends Workspace {
@@ -622,6 +627,113 @@ export async function addRepoToWorkspace(
   return row!;
 }
 
+/** A request to add a worktree that the caller can fix; its message is safe to show them. */
+export class WorktreeRefusal extends Error {}
+
+export interface AddExtraWorktreeInput {
+  /** The repo's folder in the workspace, or its name. */
+  repo: string;
+  /** The branch to check out. It must not exist locally yet. */
+  branch: string;
+  /**
+   * The remote branch a new branch starts from. Without it, `branch` is checked
+   * out from the remote when it is there, and otherwise cut from the
+   * workspace's base branch.
+   */
+  base?: string;
+}
+
+/**
+ * Adds a worktree for another branch of one of the workspace's repos, at
+ * `<workspace>/<folder>-<branch>`, and grants the workspace's sandbox that
+ * worktree and branch. Agents ask for this over MCP: inside the sandbox they
+ * can't create a worktree, since that writes to the clone's shared `.git`.
+ *
+ * The branch must be new to the clone. Checking out a branch that already
+ * exists locally would grant the sandbox a branch that may be another
+ * workspace's, or the base branch the user merges into.
+ */
+export async function addExtraWorktree(
+  db: Db,
+  workspaceId: string,
+  input: AddExtraWorktreeInput,
+  runner: GitRunner = defaultGitRunner,
+): Promise<{ path: string; branch: string; startedFrom: string }> {
+  const detail = await getWorkspace(db, workspaceId);
+  if (!detail) throw new WorktreeRefusal("workspace not found");
+  if (detail.status !== "active") {
+    throw new WorktreeRefusal(`the workspace is ${detail.status}, not active`);
+  }
+  const ready = detail.repos.filter((r) => r.status === "ready");
+  const wanted = input.repo.trim().toLowerCase();
+  const wr = ready.find(
+    (r) =>
+      basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted,
+  );
+  if (!wr) {
+    const folders = ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
+    throw new WorktreeRefusal(
+      `no ready repo "${input.repo}" in this workspace (repos: ${folders})`,
+    );
+  }
+
+  const branch = input.branch.trim();
+  assertUsableBranch(branch, "branch");
+  const reserved = [wr.branch, wr.baseBranch, wr.repo.defaultBranch];
+  if (reserved.includes(branch)) {
+    throw new WorktreeRefusal(`${branch} is this workspace's own or base branch`);
+  }
+  const base = input.base?.trim() || undefined;
+  if (base !== undefined) assertUsableBranch(base, "base");
+
+  const folder = `${basename(wr.worktreePath)}-${branch.replaceAll("/", "-")}`;
+  const path = `${detail.rootPath}/${folder}`;
+  if (existsSync(path)) throw new WorktreeRefusal(`${path} already exists`);
+
+  const clone = wr.repo.primaryClonePath;
+  const startedFrom = await withRepoLock(wr.repoId, async () => {
+    if (await branchExists(runner, clone, branch)) {
+      throw new WorktreeRefusal(`branch ${branch} already exists locally; pick a new name`);
+    }
+    await fetchRemote(runner, clone);
+    const remote = new Set(await listRemoteBranches(runner, clone));
+    if (base === undefined && remote.has(branch)) {
+      await addExistingBranchWorktree(runner, clone, path, branch);
+      return `origin/${branch}`;
+    }
+    if (remote.has(branch)) {
+      throw new WorktreeRefusal(
+        `${branch} is already on the remote; leave out base to check it out`,
+      );
+    }
+    const from = base ?? wr.baseBranch;
+    if (!remote.has(from)) throw new WorktreeRefusal(`no remote branch ${from} to start from`);
+    await createWorktree(runner, clone, path, branch, from);
+    return `origin/${from}`;
+  });
+
+  await db
+    .insert(workspaceExtraWorktrees)
+    .values({ workspaceRepoId: wr.id, branch, worktreePath: path });
+  const after = await getWorkspace(db, workspaceId);
+  if (after) writeClaudeSettings(after);
+  return { path, branch, startedFrom };
+}
+
+/** Refuses a name git could misread, or one the sandbox grant can't express as a path. */
+function assertUsableBranch(branch: string, label: string): void {
+  try {
+    assertSafeBranchName(branch);
+  } catch {
+    throw new WorktreeRefusal(`unsupported ${label} name: ${branch}`);
+  }
+  if (!isSafeBranch(branch)) {
+    throw new WorktreeRefusal(
+      `unsupported ${label} name: ${branch} (use letters, digits, ".", "_", "-" and "/")`,
+    );
+  }
+}
+
 /**
  * A workspace list row. Everything on the workspace except the pending kick-off
  * brief, which holds a whole ticket body and is wanted only by the one
@@ -758,6 +870,13 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
     ? await db.select().from(workspaceRepoPr).where(inArray(workspaceRepoPr.workspaceRepoId, wrIds))
     : [];
   const prByWr = new Map(prRows.map((p) => [p.workspaceRepoId, p]));
+  const extraRows = wrIds.length
+    ? await db
+        .select()
+        .from(workspaceExtraWorktrees)
+        .where(inArray(workspaceExtraWorktrees.workspaceRepoId, wrIds))
+        .orderBy(workspaceExtraWorktrees.createdAt)
+    : [];
 
   return {
     ...workspace,
@@ -765,6 +884,7 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
       ...wr,
       repo: repoById.get(wr.repoId)!,
       pr: prByWr.get(wr.id) ?? null,
+      extraWorktrees: extraRows.filter((e) => e.workspaceRepoId === wr.id),
     })),
     tasks: await tasksForWorkspace(db, id),
     issues: await listLinksForWorkspace(db, id),
@@ -1487,19 +1607,14 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
       "## Extra worktrees",
       "",
       "If you need another worktree of a repo (one per branch of a stack, say),",
-      "put it directly in this workspace folder, beside the repo's own:",
-      "`git -C <repo> worktree add ../<repo>-<topic> <branch>`. Yarvis shows",
+      "create it with the Yarvis MCP tool `add_worktree`, not `git worktree add`.",
+      "It puts the worktree in this workspace folder, beside the repo's own, and",
+      "lets this session's sandbox commit, rebase and push there. `git worktree",
+      "add` fails inside the sandbox; don't run it outside the sandbox instead.",
+      "The new worktree's branch must not exist locally yet. Yarvis shows",
       "worktrees in this folder and removes them when the workspace is archived.",
       "Don't create worktrees or clones anywhere else, such as a temp folder:",
       "nothing tracks those, and they stay on disk after the work is done.",
-      "",
-      "Inside the sandbox, git can only change this workspace's own branch and",
-      "worktree. Git commands that add another worktree, or change that",
-      "worktree's branch (commit, push, rebase and so on), fail there. That is",
-      "expected: rerun the failing git command outside the sandbox, which asks",
-      "the user for approval. Run only that git command outside it, not chained",
-      "with installs, builds or tests, which stay inside the sandbox. Don't",
-      "dodge the prompt by putting the worktree somewhere else.",
     );
   }
 

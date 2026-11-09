@@ -13,9 +13,11 @@ import type {
 } from "../memory/index.ts";
 import { ANSWER_WAIT_MS } from "../questions/contract.ts";
 import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
+import { WorktreeRefusal } from "../workspaces/service.ts";
 import { LONG_ANSWER_WAIT_MS, type QuestionToolDeps } from "./questionTools.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
 import { createYarvisMcpServer, type WorkspaceContext } from "./server.ts";
+import type { AddWorktree } from "./worktreeTools.ts";
 
 /** Minimal in-process stand-in so the tool contract is testable without Postgres. */
 class FakeMemory implements MemoryService {
@@ -375,11 +377,15 @@ async function connectToWorkspace(
     reviewComment(OPEN_COMMENT_ID, "rename this", null),
     reviewComment(RESOLVED_COMMENT_ID, "done already", new Date("2026-01-02T00:00:00Z")),
   ],
+  addWorktree: AddWorktree = async () => {
+    throw new Error("addWorktree not expected in this test");
+  },
 ) {
   const store = new FakeReviewComments(WORKSPACE_ID, comments);
   const client = await connect(new FakeMemory(), {
     id: WORKSPACE_ID,
     reviewComments: () => store,
+    addWorktree,
   });
   return { client, store };
 }
@@ -389,11 +395,53 @@ describe("yarvis mcp server in a workspace", () => {
     const outside = await connect(new FakeMemory());
     const outsideTools = (await outside.listTools()).tools.map((t) => t.name);
     expect(outsideTools).not.toContain("list_review_comments");
+    expect(outsideTools).not.toContain("add_worktree");
 
     const { client } = await connectToWorkspace();
     const tools = (await client.listTools()).tools.map((t) => t.name);
     expect(tools).toContain("list_review_comments");
     expect(tools).toContain("resolve_review_comment");
+    expect(tools).toContain("add_worktree");
+  });
+
+  it("adds a worktree to the session's own workspace", async () => {
+    const calls: unknown[][] = [];
+    const { client } = await connectToWorkspace(undefined, async (...args) => {
+      calls.push(args);
+      return { path: "/ws/service-a-stack-2", branch: "stack-2", startedFrom: "origin/main" };
+    });
+    const result = await client.callTool({
+      name: "add_worktree",
+      arguments: { repo: "service-a", branch: "stack-2" },
+    });
+    expect(calls).toEqual([[WORKSPACE_ID, { repo: "service-a", branch: "stack-2" }]]);
+    expect(payload(result)).toEqual({
+      path: "/ws/service-a-stack-2",
+      branch: "stack-2",
+      startedFrom: "origin/main",
+    });
+  });
+
+  it("returns a refusal's reason, and hides any other failure's detail", async () => {
+    const refused = await connectToWorkspace(undefined, async () => {
+      throw new WorktreeRefusal("branch stack-2 already exists locally; pick a new name");
+    });
+    const refusal = await refused.client.callTool({
+      name: "add_worktree",
+      arguments: { repo: "service-a", branch: "stack-2" },
+    });
+    expect(refusal.isError).toBe(true);
+    expect(JSON.stringify(refusal.content)).toContain("already exists locally");
+
+    const failed = await connectToWorkspace(undefined, async () => {
+      throw new Error("fatal: /Users/someone/.repos/secret-path is locked");
+    });
+    const failure = await failed.client.callTool({
+      name: "add_worktree",
+      arguments: { repo: "service-a", branch: "stack-2" },
+    });
+    expect(failure.isError).toBe(true);
+    expect(JSON.stringify(failure.content)).not.toContain("secret-path");
   });
 
   it("lists open comments with where to find the file", async () => {

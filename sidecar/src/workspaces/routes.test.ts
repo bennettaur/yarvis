@@ -29,10 +29,13 @@ import {
 import { listEvents, recordEvent } from "../events/service.ts";
 import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
+import { writeClaudeSettings } from "./claudeSettings.ts";
 import type { RunResult } from "./exec.ts";
 import { canonicalPath, defaultGitRunner, type GitRunner } from "./git.ts";
 import { isDueForRefresh, resetWorkspaceViews } from "./poller.ts";
+import { resolveAdminName } from "./sandboxPaths.ts";
 import {
+  addExtraWorktree,
   addRepoToWorkspace,
   archiveWorkspace,
   assertSafeBranchName,
@@ -278,6 +281,125 @@ describe("workspace worktrees", () => {
     const [primary, ...others] = only?.worktrees ?? [];
     expect(primary?.branch).toBe(wr.branch);
     expect(others.map((w) => w.branch).sort()).toEqual(["stack/api", "stack/auth"]);
+  });
+
+  describe("addExtraWorktree", () => {
+    /** Real git on a local clone. Fetching is a no-op: the hardened env refuses
+     *  local remotes, so `origin`'s branches are written as remote-tracking refs. */
+    async function withRealClone() {
+      const ws = await provisioned();
+      // Under `.repos/`, as every real clone is: that is how a settings rewrite
+      // tells its own sandbox entries from the user's.
+      const clone = join(scratchDir("yarvis-clone-"), ".repos", "acme-widget");
+      mkdirSync(clone, { recursive: true });
+      const git = async (cwd: string, ...args: string[]) => {
+        const result = await defaultGitRunner(
+          ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+          { cwd },
+        );
+        if (result.exitCode !== 0) throw new Error(result.stderr);
+      };
+      const commit = async (cwd: string, file: string) => {
+        writeFileSync(join(cwd, file), file);
+        await git(cwd, "add", file);
+        await git(cwd, "commit", "-m", file);
+      };
+      await git(clone, "init", "-b", "main");
+      await git(clone, "remote", "add", "origin", "https://example.invalid/widget.git");
+      await commit(clone, "base.ts");
+      await git(clone, "update-ref", "refs/remotes/origin/main", "main");
+      await git(clone, "checkout", "-b", "pushed/feature");
+      await commit(clone, "pushed.ts");
+      await git(clone, "update-ref", "refs/remotes/origin/pushed/feature", "pushed/feature");
+      await git(clone, "checkout", "main");
+      await git(clone, "branch", "-D", "pushed/feature");
+      rmSync(ws.wr.worktreePath, { recursive: true, force: true });
+      await git(clone, "worktree", "add", "-b", ws.wr.branch, ws.wr.worktreePath, "main");
+      await db.update(repos).set({ primaryClonePath: clone }).where(eq(repos.id, ws.wr.repoId));
+      const runner: GitRunner = (args, opts) =>
+        args[0] === "fetch"
+          ? Promise.resolve({ stdout: "", stderr: "", exitCode: 0 })
+          : defaultGitRunner(args, opts);
+      const settings = () =>
+        JSON.parse(readFileSync(join(ws.root, ".claude", "settings.json"), "utf-8")).sandbox
+          .filesystem as { allowWrite: string[]; denyWrite: string[] };
+      return { ...ws, clone, git, runner, settings };
+    }
+
+    it("cuts a new branch from the base and lets the sandbox commit to it", async () => {
+      const { workspaceId, root, clone, runner, settings } = await withRealClone();
+
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "stack/two" },
+        runner,
+      );
+
+      expect(added).toEqual({
+        path: `${root}/widget-stack-two`,
+        branch: "stack/two",
+        startedFrom: "origin/main",
+      });
+      expect(existsSync(join(added.path, "base.ts"))).toBe(true);
+      const admin = resolveAdminName(clone, added.path);
+      expect(admin).not.toBeNull();
+      const { allowWrite, denyWrite } = settings();
+      expect(allowWrite).toContain(`${clone}/.git/refs/heads/stack/two`);
+      expect(allowWrite).toContain(`${clone}/.git/refs/remotes/origin/stack/two`);
+      expect(allowWrite).toContain(`${clone}/.git/worktrees/${admin}`);
+      expect(denyWrite).toContain(`${clone}/.git/worktrees/${admin}/gitdir`);
+      // The workspace's own grants stay, and shared entries are listed once.
+      expect(allowWrite.filter((p) => p === `${clone}/.git/objects`)).toHaveLength(1);
+    });
+
+    it("checks out a branch that is only on the remote", async () => {
+      const { workspaceId, runner } = await withRealClone();
+
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "pushed/feature" },
+        runner,
+      );
+
+      expect(added.startedFrom).toBe("origin/pushed/feature");
+      expect(existsSync(join(added.path, "pushed.ts"))).toBe(true);
+    });
+
+    it("drops a removed worktree's grant the next time the settings are written", async () => {
+      const { workspaceId, clone, git, runner, settings } = await withRealClone();
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "stack/two" },
+        runner,
+      );
+
+      await git(clone, "worktree", "remove", added.path);
+      writeClaudeSettings((await getWorkspace(db, workspaceId))!);
+
+      expect(settings().allowWrite).not.toContain(`${clone}/.git/refs/heads/stack/two`);
+    });
+
+    it("refuses a branch it would be unsafe to grant", async () => {
+      const { workspaceId, wr, clone, git, runner } = await withRealClone();
+      await git(clone, "branch", "kept", "main");
+      const add = (branch: string, base?: string) =>
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch, base }, runner);
+
+      await expect(add(wr.branch)).rejects.toThrow("this workspace's own or base branch");
+      await expect(add("main")).rejects.toThrow("this workspace's own or base branch");
+      await expect(add("kept")).rejects.toThrow("already exists locally");
+      await expect(add("--upload-pack=x")).rejects.toThrow("unsupported branch name");
+      await expect(add("../escape")).rejects.toThrow("unsupported branch name");
+      await expect(add("pushed/feature", "main")).rejects.toThrow("already on the remote");
+      await expect(add("fresh", "nowhere")).rejects.toThrow("no remote branch nowhere");
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "other", branch: "fresh" }, runner),
+      ).rejects.toThrow('no ready repo "other"');
+      expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
   });
 
   it("refuses to read a worktree while its archive is still running", async () => {
@@ -1807,7 +1929,8 @@ describe("provision + archive (injected git runner)", () => {
     // The repo is still there, so the tool-manager guidance stays.
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("## Extra worktrees");
-    expect(agents).toContain("rerun the failing git command outside the sandbox");
+    expect(agents).toContain("create it with the Yarvis MCP tool `add_worktree`");
+    expect(agents).not.toContain("outside the sandbox, which asks");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");
   });

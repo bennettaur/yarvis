@@ -10,20 +10,21 @@ import { canonicalPath } from "./git.ts";
  * every commit, rebase and push leaves the sandbox and asks the user. The clone
  * is shared by every workspace on that repo, and its `.git` decides what git
  * runs, so the grant is no wider than this workspace's own commits need: its
- * worktree's admin directory, the object store, and its own branch and that
- * branch's remote-tracking ref, which a push updates. A fetch that would update
- * other remote-tracking refs asks. Everything that can make git run code, or
+ * worktrees' admin directories, the object store, and each worktree's branch
+ * and that branch's remote-tracking ref, which a push updates. A worktree is
+ * the workspace's own, or one Yarvis added for it (`addExtraWorktree`). A
+ * fetch that would update other remote-tracking refs asks. Everything that can make git run code, or
  * change what another workspace's git sees, is denied even where an allowed
  * path covers it. Yarvis's own git refuses a clone with a symlink in any of
  * these places (`symlinkScan.ts`), since it runs outside the sandbox and would
  * write through one.
  */
 
-/** One repo of a workspace, as the sandbox needs it. */
+/** One worktree of a workspace, as the sandbox needs it. */
 export interface SandboxRepo {
   /** The repo's primary clone, whose `.git` every worktree of the repo shares. */
   clonePath: string;
-  /** The branch this workspace commits to. */
+  /** The branch this worktree commits to. */
   branch: string;
   /** This worktree's directory under `.git/worktrees`, or null when it couldn't be matched. */
   adminName: string | null;
@@ -37,7 +38,7 @@ function isSafeSegment(segment: string): boolean {
 }
 
 /** Branch names become paths under `refs/heads`, so every segment must be a plain one. */
-function isSafeBranch(branch: string): boolean {
+export function isSafeBranch(branch: string): boolean {
   return branch.split("/").every(isSafeSegment) && !branch.endsWith(".lock");
 }
 
@@ -77,24 +78,26 @@ export function resolveAdminName(clonePath: string, worktreePath: string): strin
 
 /** The sandbox's `allowWrite` entries for these repos. */
 export function sandboxAllowWrite(repos: readonly SandboxRepo[]): string[] {
-  return repos.flatMap(({ clonePath, branch, adminName }) => {
-    const git = `${clonePath}/.git`;
-    const paths = [`${git}/objects`];
-    if (isSafeBranch(branch)) {
-      // Only the folders' leaves: a session that could create entries beside
-      // them could plant a symlink for a later fetch to write through.
-      paths.push(
-        `${git}/refs/heads/${branch}`,
-        `${git}/refs/heads/${branch}.lock`,
-        `${git}/logs/refs/heads/${branch}`,
-        `${git}/refs/remotes/origin/${branch}`,
-        `${git}/refs/remotes/origin/${branch}.lock`,
-        `${git}/logs/refs/remotes/origin/${branch}`,
-      );
-    }
-    if (adminName && isSafeSegment(adminName)) paths.push(`${git}/worktrees/${adminName}`);
-    return paths;
-  });
+  return unique(
+    repos.flatMap(({ clonePath, branch, adminName }) => {
+      const git = `${clonePath}/.git`;
+      const paths = [`${git}/objects`];
+      if (isSafeBranch(branch)) {
+        // Only the folders' leaves: a session that could create entries beside
+        // them could plant a symlink for a later fetch to write through.
+        paths.push(
+          `${git}/refs/heads/${branch}`,
+          `${git}/refs/heads/${branch}.lock`,
+          `${git}/logs/refs/heads/${branch}`,
+          `${git}/refs/remotes/origin/${branch}`,
+          `${git}/refs/remotes/origin/${branch}.lock`,
+          `${git}/logs/refs/remotes/origin/${branch}`,
+        );
+      }
+      if (adminName && isSafeSegment(adminName)) paths.push(`${git}/worktrees/${adminName}`);
+      return paths;
+    }),
+  );
 }
 
 /**
@@ -109,29 +112,36 @@ export function sandboxAllowWrite(repos: readonly SandboxRepo[]): string[] {
  * a commit and reports it without failing the commit.
  */
 export function sandboxDenyWrite(repos: readonly SandboxRepo[]): string[] {
-  return repos.flatMap(({ clonePath, adminName }) => {
-    const git = `${clonePath}/.git`;
-    const paths = [
-      "config",
-      "config.lock",
-      "hooks",
-      "commondir",
-      "modules",
-      "info",
-      "refs/replace",
-      "refs/tags",
-      "objects/info",
-      "packed-refs",
-      "packed-refs.lock",
-    ].map((path) => `${git}/${path}`);
-    if (adminName && isSafeSegment(adminName)) {
-      const admin = `${git}/worktrees/${adminName}`;
-      paths.push(
-        ...["commondir", "gitdir", "config.worktree", "modules"].map((p) => `${admin}/${p}`),
-      );
-    }
-    return paths;
-  });
+  return unique(
+    repos.flatMap(({ clonePath, adminName }) => {
+      const git = `${clonePath}/.git`;
+      const paths = [
+        "config",
+        "config.lock",
+        "hooks",
+        "commondir",
+        "modules",
+        "info",
+        "refs/replace",
+        "refs/tags",
+        "objects/info",
+        "packed-refs",
+        "packed-refs.lock",
+      ].map((path) => `${git}/${path}`);
+      if (adminName && isSafeSegment(adminName)) {
+        const admin = `${git}/worktrees/${adminName}`;
+        paths.push(
+          ...["commondir", "gitdir", "config.worktree", "modules"].map((p) => `${admin}/${p}`),
+        );
+      }
+      return paths;
+    }),
+  );
+}
+
+/** Two worktrees of one clone share its object store and its denied paths; each is listed once. */
+function unique(paths: string[]): string[] {
+  return [...new Set(paths)];
 }
 
 /**
