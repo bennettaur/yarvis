@@ -584,8 +584,9 @@ export async function listLocalBranches(
 /**
  * Creates a worktree at `worktreePath` on a new local branch `branch`, started
  * from `origin/<startPoint>` (tracking it when `track` is set). The repo's
- * hooks are switched off: the checkout can be a branch an agent pushed, and a
- * post-checkout hook driven by its files would run outside the agent's sandbox.
+ * hooks and the LFS filter are switched off: the checkout can be a branch an
+ * agent pushed, and a post-checkout hook driven by its files would run outside
+ * the agent's sandbox.
  */
 export async function addWorktreeWithoutHooks(
   runner: GitRunner,
@@ -599,6 +600,14 @@ export async function addWorktreeWithoutHooks(
     [
       "-c",
       "core.hooksPath=/dev/null",
+      // A branch's .gitattributes picks the filters, and git-lfs would fetch
+      // from a URL the branch's .lfsconfig names, outside the sandbox's network.
+      "-c",
+      "filter.lfs.process=",
+      "-c",
+      "filter.lfs.smudge=",
+      "-c",
+      "filter.lfs.required=false",
       "worktree",
       "add",
       ...(track ? ["--track"] : []),

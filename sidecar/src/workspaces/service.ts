@@ -703,6 +703,9 @@ export async function addExtraWorktree(
     const current = await getWorkspace(db, workspaceId);
     if (!current) throw new WorktreeRefusal("workspace not found");
     assertOpenForWorktrees(current);
+    if (current.repos.find((r) => r.id === workspaceRepo.id)?.status !== "ready") {
+      throw new WorktreeRefusal(`${basename(workspaceRepo.worktreePath)} is no longer ready`);
+    }
     const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
     if (live >= MAX_EXTRA_WORKTREES) {
       throw new WorktreeRefusal(
@@ -725,6 +728,17 @@ export async function addExtraWorktree(
     const onRemote = remote.find((r) => r.toLowerCase() === branch.toLowerCase());
     if (onRemote !== undefined && onRemote !== branch) {
       throw new WorktreeRefusal(`the remote has ${onRemote}; use that exact name to check it out`);
+    }
+    // A new branch nesting with a remote one (`stack` and `stack/two`) would
+    // make the remote-tracking ref's grant cover a folder.
+    const nested = branchCollision(
+      branch,
+      remote.filter((r) => r !== branch),
+    );
+    if (nested) {
+      throw new WorktreeRefusal(
+        `${branch} collides with the remote branch ${nested}; pick a new name`,
+      );
     }
     if (onRemote !== undefined && base !== undefined) {
       throw new WorktreeRefusal(
@@ -757,7 +771,7 @@ export async function addExtraWorktree(
             set: { branch, createdAt: new Date() },
           });
       } catch (e) {
-        await undoWorktree(runner, clone, branch, [stagedPath, path]);
+        await undoWorktree(runner, clone, branch, { stagedPath, path });
         throw e;
       }
     } finally {
@@ -802,15 +816,26 @@ async function moveStagedWorktree(clone: string, stagedPath: string, path: strin
   writeFileSync(join(clone, ".git", "worktrees", admin, "gitdir"), `${path}/.git\n`);
 }
 
-/** Best-effort removal of a worktree that was added but couldn't be recorded. */
+/**
+ * Best-effort removal of a worktree that was added but couldn't be recorded.
+ * Before the move it is removed through git, at the staging path the agent
+ * can't write. After the move the agent can have swapped the final path for a
+ * symlink to another worktree of the clone, which `git worktree remove` would
+ * follow; deleting the folder directly removes a symlink itself, not its
+ * target, and the stale registration is pruned.
+ */
 async function undoWorktree(
   runner: GitRunner,
   clone: string,
   branch: string,
-  paths: string[],
+  { stagedPath, path }: { stagedPath: string; path: string },
 ): Promise<void> {
-  for (const path of paths) {
-    await runner(["worktree", "remove", "--force", path], { cwd: clone }).catch(() => undefined);
+  if (existsSync(stagedPath)) {
+    await runner(["worktree", "remove", "--force", stagedPath], { cwd: clone }).catch(
+      () => undefined,
+    );
+  } else {
+    rmSync(path, { recursive: true, force: true });
   }
   await runner(["worktree", "prune"], { cwd: clone }).catch(() => undefined);
   await deleteBranch(runner, clone, branch).catch((e) =>

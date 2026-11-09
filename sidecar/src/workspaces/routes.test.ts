@@ -414,6 +414,35 @@ describe("workspace worktrees", () => {
       ).rejects.toThrow("already exists");
     });
 
+    it("undoes a failed move without touching a worktree the agent pointed a symlink at", async () => {
+      const { workspaceId, root, wr, clone, runner } = await withRealClone();
+      const planted: GitRunner = async (args, opts) => {
+        const result = await runner(args, opts);
+        // The agent swaps the destination for a symlink once git has checked out.
+        if (args.includes("worktree") && args.includes("add")) {
+          symlinkSync(wr.worktreePath, join(root, "widget-fresh"));
+        }
+        return result;
+      };
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, planted),
+      ).rejects.toThrow();
+
+      expect(existsSync(join(wr.worktreePath, "base.ts"))).toBe(true);
+      expect(
+        await runner(["rev-parse", "--verify", "--quiet", "refs/heads/fresh"], { cwd: clone }),
+      ).toMatchObject({ exitCode: 1 });
+      expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
+
+    it("refuses a branch that would nest with a remote one", async () => {
+      const { workspaceId, runner } = await withRealClone();
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "pushed" }, runner),
+      ).rejects.toThrow("collides with the remote branch pushed/feature");
+    });
+
     it("adds a worktree again where a removed one was", async () => {
       const { workspaceId, clone, git, runner, settings } = await withRealClone();
       const add = () =>
