@@ -4,10 +4,10 @@
 #     "numpy==2.5.4",
 #     "onnxruntime==1.31.1",
 #     "websockets==15.0.1",
-#     "huggingface_hub==0.36.2",
+#     "huggingface_hub==2.4.0",
 #     # Only for WhisperFeatureExtractor, which smart-turn was trained on. It
 #     # runs on numpy, so torch is not needed.
-#     "transformers==4.57.6",
+#     "transformers==5.22.1",
 # ]
 #
 # [tool.uv]

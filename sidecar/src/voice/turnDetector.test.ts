@@ -224,7 +224,7 @@ describe("TurnDetector", () => {
       const hooks = addedHooks();
       expect(hooks).toHaveLength(1);
       hooks[0]?.(0);
-      expect(killed).toEqual([]);
+      expect(killed).toHaveLength(0);
     });
   });
 
