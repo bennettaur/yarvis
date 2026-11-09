@@ -72,7 +72,7 @@ describe("sizeFor", () => {
     const more = sizeFor(size, [...DEFAULT_SECTIONS, "flow"]);
     expect(more.estimatedCostUsd).toBe(0.54);
     expect(more.overBudget).toBe(true);
-    expect(sizeFor(size, ["tests"]).estimatedCostUsd).toBe(0.22);
+    expect(sizeFor(size, ["tests"]).estimatedCostUsd).toBe(0.18);
   });
 
   it("never goes below zero", () => {

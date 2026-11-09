@@ -161,3 +161,29 @@ export function onOpenPlace(handler: (place: AppPlace) => void): () => void {
 export function useOpenPlaceListener(handler: (place: AppPlace) => void): void {
   useEffect(() => onOpenPlace(handler), [handler]);
 }
+
+const OPEN_ARTIFACT_EVENT = "yarvis:open-artifact";
+
+interface OpenArtifactEvent extends Event {
+  detail: string;
+}
+
+/**
+ * A request to show an artifact beside the Chat tab's conversation. Used by an
+ * artifact link outside any chat; a link inside a chat opens the artifact in
+ * that chat's own pane instead (`ArtifactPaneContext`).
+ */
+export function requestOpenArtifact(id: string): void {
+  target.dispatchEvent(new CustomEvent(OPEN_ARTIFACT_EVENT, { detail: id }));
+}
+
+export function onOpenArtifact(handler: (id: string) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenArtifactEvent).detail);
+  target.addEventListener(OPEN_ARTIFACT_EVENT, listener);
+  return () => target.removeEventListener(OPEN_ARTIFACT_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenArtifact` for the App shell. */
+export function useOpenArtifactListener(handler: (id: string) => void): void {
+  useEffect(() => onOpenArtifact(handler), [handler]);
+}
