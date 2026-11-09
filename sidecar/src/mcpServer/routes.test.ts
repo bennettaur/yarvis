@@ -347,4 +347,14 @@ describe("questionOrigin", () => {
         .sessionKey,
     ).toBeNull();
   });
+
+  it("drops a workspace that isn't the verified session's own", () => {
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": KEY,
+        "X-Yarvis-Session-Token": tokenFor(KEY),
+        "X-Yarvis-Workspace": "22222222-2222-2222-2222-222222222222",
+      }),
+    ).toEqual({ sessionKey: KEY, workspaceId: null });
+  });
 });

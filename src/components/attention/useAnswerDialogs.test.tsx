@@ -23,11 +23,17 @@ function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): 
 type Dialogs = ReturnType<typeof useAnswerDialogs>;
 
 let pending: AttentionItem[] = [];
+let opened = 0;
 let dialogs: Dialogs;
 let unmount: (() => void) | null = null;
 
 function Probe() {
-  dialogs = useAnswerDialogs(() => pending);
+  dialogs = useAnswerDialogs({
+    onOpen: () => {
+      opened++;
+    },
+    pending: () => pending,
+  });
   return null;
 }
 
@@ -39,6 +45,7 @@ afterEach(() => {
   unmount?.();
   unmount = null;
   pending = [];
+  opened = 0;
 });
 
 const permission = item({ id: "perm", seq: 3 });
@@ -72,10 +79,26 @@ describe("useAnswerDialogs", () => {
     expect(dialogs.anyOpen).toBe(true);
   });
 
+  it("counts each dialog as open on its own", async () => {
+    await mount();
+    const cases = [
+      { prompt: question, close: () => dialogs.closeQuestion() },
+      { prompt: headsDown, close: () => dialogs.closeHeadsDown() },
+      { prompt: permission, close: () => dialogs.closePermission() },
+    ];
+    for (const { prompt, close } of cases) {
+      dialogs.open(prompt, "click");
+      await waitFor(() => dialogs.anyOpen, `${prompt.id} to open`);
+      close();
+      await waitFor(() => !dialogs.anyOpen, `${prompt.id} to close`);
+    }
+  });
+
   it("leaves an item with no dialog to the caller", async () => {
     await mount();
     expect(dialogs.open(item({ id: "idle", seq: 1, kind: "idle" }), "click")).toBe(false);
     expect(dialogs.anyOpen).toBe(false);
+    expect(opened).toBe(0);
   });
 
   it("keeps the dialog's own click delay for a click, and lengthens it otherwise", async () => {
@@ -100,6 +123,8 @@ describe("useAnswerDialogs", () => {
     expect(dialogs.permissionItem).toBeNull();
     expect(dialogs.questionItem?.id).toBe("question");
     expect(dialogs.armingMs).toBe(AUTO_OPEN_ARMING_MS);
+    // The chained open tells the caller too, so App can close the bell panel.
+    expect(opened).toBe(2);
   });
 
   it("just closes when nothing else in the workspace waits", async () => {

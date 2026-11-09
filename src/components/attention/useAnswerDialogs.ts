@@ -13,14 +13,28 @@ export type OpenedBy = "click" | "auto";
  * workspace's next prompt opens in its place, so a stack of them doesn't need a
  * trip to the bell each.
  *
- * @param pending The pending attention items; the attention store's by default.
+ * @param options.onOpen Runs whenever a dialog opens, from a click or a chained
+ *   prompt; App closes the attention panel with it so Esc reaches the dialog.
+ * @param options.pending The pending attention items; the attention store's by default.
  */
-export function useAnswerDialogs(pending: () => AttentionItem[] = getAttentionSnapshot) {
+export function useAnswerDialogs({
+  onOpen,
+  pending = getAttentionSnapshot,
+}: {
+  onOpen?: () => void;
+  pending?: () => AttentionItem[];
+} = {}) {
   const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
   const [headsDownItem, setHeadsDownItem] = useState<AttentionItem | null>(null);
   const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
   // A dialog that opened without a click ignores clicks for longer.
   const [openedBy, setOpenedBy] = useState<OpenedBy>("click");
+
+  // A ref so a caller's inline callback doesn't change `open` every render.
+  const onOpenRef = useRef(onOpen);
+  useLayoutEffect(() => {
+    onOpenRef.current = onOpen;
+  }, [onOpen]);
 
   /** Opens the item's dialog. False when the item has none, so the caller can navigate instead. */
   const open = useCallback((item: AttentionItem, by: OpenedBy): boolean => {
@@ -29,6 +43,7 @@ export function useAnswerDialogs(pending: () => AttentionItem[] = getAttentionSn
     else if (item.kind === "question") setQuestionItem(item);
     else setPermissionItem(item);
     setOpenedBy(by);
+    onOpenRef.current?.();
     return true;
   }, []);
 

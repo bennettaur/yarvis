@@ -81,7 +81,8 @@ export default function App() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
-  const dialogs = useAnswerDialogs();
+  const closeAttentionPanel = useCallback(() => setAttentionPanelOpen(false), []);
+  const dialogs = useAnswerDialogs({ onOpen: closeAttentionPanel });
   const { questionItem, headsDownItem, permissionItem } = dialogs;
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
@@ -334,11 +335,7 @@ export default function App() {
     (item: AttentionItem, by: OpenedBy = "click") => {
       // A prompt or question is answered where the user already is. The item
       // stays pending until it is answered, which resolves it on the sidecar.
-      // The panel closes so Esc reaches only the dialog.
-      if (openDialog(item, by)) {
-        setAttentionPanelOpen(false);
-        return;
-      }
+      if (openDialog(item, by)) return;
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },

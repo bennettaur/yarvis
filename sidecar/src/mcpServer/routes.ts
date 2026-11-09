@@ -9,6 +9,7 @@ import { askQuestions, getQuestion, waitForReply } from "../questions/service.ts
 import {
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
+  sessionKeyBelongsTo,
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
 import { listLocatedReviewComments, updateReviewComment } from "../workspaces/reviewComments.ts";
@@ -58,7 +59,9 @@ const MAX_SESSION_KEY = 256;
  * key with its session token, and the key counts only when the token matches
  * it, as on attention ingest: the key decides which workspace's prompts a
  * question opens and chains with, so a process in one terminal mustn't claim
- * another's. The workspace id is the caller's claim and only groups the item.
+ * another's. The workspace id only groups the item. With a verified key it
+ * must be the key's own workspace, as on ingest; without one it is the
+ * caller's unchecked claim.
  * A missing or malformed value reads as absent, since a client Yarvis didn't
  * launch sends neither, and an unset variable expands to an empty string.
  *
@@ -75,9 +78,11 @@ export function questionOrigin(headers: Headers, bearer: string): QuestionOrigin
     sessionKey.length <= MAX_SESSION_KEY &&
     !sessionKey.startsWith("chat:") &&
     sessionTokenMatches(bearer, sessionKey, token);
+  const wellFormed = UUID.safeParse(workspaceId).success;
   return {
     sessionKey: valid ? sessionKey : null,
-    workspaceId: UUID.safeParse(workspaceId).success ? workspaceId : null,
+    workspaceId:
+      wellFormed && (!valid || sessionKeyBelongsTo(sessionKey, workspaceId)) ? workspaceId : null,
   };
 }
 
