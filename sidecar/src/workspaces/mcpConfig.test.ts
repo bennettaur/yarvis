@@ -28,6 +28,36 @@ describe("workspace .mcp.json", () => {
     });
   });
 
+  it("starts the channel relay with the session's own environment, never a literal token", () => {
+    const servers = buildMcpConfig(
+      WORKSPACE_ID,
+      {},
+      {
+        channelMessaging: true,
+        relay: {
+          command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
+          args: ["channel-relay"],
+        },
+      },
+    ).mcpServers as Record<string, Record<string, unknown>>;
+    expect(servers["yarvis-channel"]).toEqual({
+      command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
+      args: ["channel-relay"],
+      env: {
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SIDECAR_PORT: "${YARVIS_SIDECAR_PORT:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_ATTENTION_TOKEN: "${YARVIS_ATTENTION_TOKEN:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        YARVIS_CLAUDE_COMMAND: "${YARVIS_CLAUDE_COMMAND:-}",
+      },
+    });
+  });
+
   it("keeps the user's own servers and unrelated keys", () => {
     const merged = buildMcpConfig(WORKSPACE_ID, {
       mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
@@ -76,5 +106,13 @@ describe("workspace .mcp.json", () => {
       mcpServers: Record<string, unknown>;
     };
     expect(Object.keys(written.mcpServers)).toEqual(["yarvis"]);
+  });
+
+  it("adds the channel relay only while channel messaging is on, and drops it when off", () => {
+    const on = buildMcpConfig(WORKSPACE_ID, {}, { channelMessaging: true });
+    expect(Object.keys(on.mcpServers as object)).toEqual(["yarvis", "yarvis-channel"]);
+
+    const off = buildMcpConfig(WORKSPACE_ID, on);
+    expect(Object.keys(off.mcpServers as object)).toEqual(["yarvis"]);
   });
 });

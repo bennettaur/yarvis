@@ -109,6 +109,13 @@ describe("conditionalConfirmations", () => {
     expect(conditions.get("delete_task")?.({})).toBe(true);
   });
 
+  it("asks before destructive tools once a typed turn has read a workspace session's reply", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
+    reads.hasReadSessionReply = true;
+    expect(conditions.get("delete_task")?.({})).toBe(true);
+  });
+
   it("asks before an artifact rewrite, not an append, where a delete would ask", () => {
     const reads = newUntrustedReads();
     const typed = conditionalConfirmations({ spoken: false, reads, isUserGivenUrl: given });
