@@ -326,6 +326,33 @@ describe("VerificationReportView", () => {
     }
   });
 
+  it("holds the button while the post is in flight", async () => {
+    let release = () => {};
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: () =>
+            new Promise<undefined>((resolve) => {
+              release = () => resolve(undefined);
+            }),
+        },
+      }),
+    );
+    try {
+      const find = (label: string) =>
+        [...host.querySelectorAll("button")].find((b) => b.textContent === label);
+      find("Post to PR")?.click();
+      await waitFor(() => find("Posting…") != null, "the posting state");
+      expect(find("Posting…")?.disabled).toBe(true);
+      release();
+      await waitFor(() => find("Posted to PR") != null, "the posted state");
+    } finally {
+      unmount();
+    }
+  });
+
   it("says when GitHub put a finding on the whole file", async () => {
     const { host, unmount } = await mountForInteraction(
       createElement(VerificationReportView, {

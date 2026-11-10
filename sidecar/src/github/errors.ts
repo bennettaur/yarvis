@@ -41,13 +41,10 @@ export async function githubErrorFrom(res: Response, request: string): Promise<G
   const { message, details } = await readGitHubMessage(res);
   // "Validation Failed" is GitHub's own wording for a 422, used when the body has none.
   const summary = message ?? (res.status === 422 ? "Validation Failed" : null);
-  const fullMessage =
-    details.length > 0
-      ? summary
-        ? `${summary} (${details.join("; ")})`
-        : details.join("; ")
-      : message;
-  const { reason, explanation } = classify(res.status, res.headers, fullMessage);
+  const detailText = details.join("; ");
+  let fullMessage = message;
+  if (details.length > 0) fullMessage = summary ? `${summary} (${detailText})` : detailText;
+  const { reason, explanation } = classify(res.status, res.headers, message, fullMessage);
   return new GitHubError(res.status, reason, explanation, request, details);
 }
 
@@ -65,6 +62,7 @@ interface GitHubMessage {
  * reach logs, the UI and the assistant's tool results, so they are kept short.
  */
 const MAX_ERROR_DETAILS = 5;
+const MAX_ERROR_DETAIL_LENGTH = 200;
 
 const NO_MESSAGE: GitHubMessage = { message: null, details: [] };
 
@@ -79,7 +77,7 @@ async function readGitHubMessage(res: Response): Promise<GitHubMessage> {
           ? body.errors
               .flatMap(describeErrorEntry)
               .slice(0, MAX_ERROR_DETAILS)
-              .map((d) => d.slice(0, MAX_PLAIN_MESSAGE_LENGTH))
+              .map((d) => d.slice(0, MAX_ERROR_DETAIL_LENGTH))
           : [],
       };
     } catch {
@@ -133,10 +131,16 @@ export function rateLimitWaitMs(
   return null;
 }
 
+/**
+ * `message` is GitHub's own top-level message, the only text trusted to decide
+ * the reason. `shown` adds the `errors` details, which can echo text other
+ * people wrote, so it only goes into the explanation.
+ */
 function classify(
   status: number,
   headers: Headers,
   message: string | null,
+  shown: string | null = message,
 ): { reason: GitHubFailureReason; explanation: string } {
   if (status === 401) {
     return {
@@ -185,9 +189,7 @@ function classify(
     // similar refusals carry no header, only GitHub's own message.
     return {
       reason: "forbidden",
-      explanation: message
-        ? `GitHub refused the request: ${message}`
-        : "GitHub refused the request.",
+      explanation: shown ? `GitHub refused the request: ${shown}` : "GitHub refused the request.",
     };
   }
 
@@ -201,7 +203,7 @@ function classify(
 
   return {
     reason: "upstream_error",
-    explanation: message ? `GitHub returned an error: ${message}` : "GitHub returned an error.",
+    explanation: shown ? `GitHub returned an error: ${shown}` : "GitHub returned an error.",
   };
 }
 

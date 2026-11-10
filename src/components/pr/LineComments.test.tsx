@@ -287,6 +287,15 @@ describe("LineCommentBlock", () => {
     expect(view.html).not.toContain("Posted on the whole file instead");
   });
 
+  it("shows the note only under the line it is about", async () => {
+    view.dispose();
+    view = mount(5);
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    expect((await view.render([])).movedToFile).toEqual(right(4));
+    expect(view.html).not.toContain("Posted on the whole file instead");
+  });
+
   it("renders only the threads on its own side", async () => {
     await view.render([thread(4, "new side"), thread(4, "old side", "LEFT")]);
     expect(view.html).toContain("new side");

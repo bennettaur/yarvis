@@ -56,7 +56,7 @@ export type {
 type FetchFn = typeof fetch;
 
 /** Where a posted review comment landed: on its lines, or on the whole file. */
-export type CommentPlacement = "line" | "file";
+type CommentPlacement = "line" | "file";
 
 /**
  * Whether GitHub refused a review comment because its line isn't part of the
@@ -2307,7 +2307,17 @@ export class GitHubClient {
       body: `${describeCommentLines(input)}\n\n${input.body}`,
       subject_type: "file",
     });
-    if (!fileRes.ok) throw await githubErrorFrom(fileRes, "post comment");
+    if (!fileRes.ok) {
+      const fileError = await githubErrorFrom(fileRes, "post comment");
+      // Keep the first refusal too, or the user never learns why a file comment was tried.
+      throw new GitHubError(
+        fileError.status,
+        fileError.reason,
+        `The line isn't part of the diff, and GitHub refused it as a file comment too. ${fileError.explanation}`,
+        "post comment",
+        fileError.details,
+      );
+    }
     return { commitId: pr.head.sha, placement: "file" };
   }
 

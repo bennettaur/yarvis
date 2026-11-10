@@ -105,6 +105,7 @@ describe("githubErrorFrom", () => {
           "line must be part of the diff",
           { field: "path", message: "is invalid" },
           { field: "body", code: "missing" },
+          { field: "side" },
           null,
           7,
         ],
@@ -116,10 +117,21 @@ describe("githubErrorFrom", () => {
       "line must be part of the diff",
       "path: is invalid",
       "body missing",
+      "side",
     ]);
     expect(e.explanation).toBe(
-      "GitHub returned an error: Validation Failed (line must be part of the diff; path: is invalid; body missing)",
+      "GitHub returned an error: Validation Failed (line must be part of the diff; path: is invalid; body missing; side)",
     );
+  });
+
+  it("decides a refusal's reason from GitHub's own message, not its details", async () => {
+    const res = new Response(
+      JSON.stringify({ message: "Forbidden", errors: ["label rate limit exceeded"] }),
+      { status: 403 },
+    );
+    const e = await githubErrorFrom(res, "add label");
+    expect(e.reason).toBe("forbidden");
+    expect(e.explanation).toContain("label rate limit exceeded");
   });
 
   it("keeps 422 reasons short", async () => {

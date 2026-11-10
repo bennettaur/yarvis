@@ -1734,6 +1734,7 @@ describe("github review threads", () => {
       .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).explanation).toStartWith("The line isn't part of the diff");
     expect(calls).toHaveLength(3);
   });
 

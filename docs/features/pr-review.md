@@ -216,7 +216,8 @@ Some limits:
    line you picked in step 1 to the one you shift-click.
 3. Type your question. The answer appears inline, under those lines.
 4. To share an answer with the author, press **Post**. That turns it into a
-   real line comment on the PR.
+   real line comment on the PR. On GitHub, an answer about a line outside the
+   diff goes on the whole file instead, opening with the line it is about.
 
 Until you press **Post**, answers are your own notes. Nothing reaches the
 author. They are stored against those lines and kept indefinitely.
