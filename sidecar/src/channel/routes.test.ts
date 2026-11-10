@@ -16,7 +16,7 @@ import {
   RELAY_ID_HEADER,
   RELAY_PID_HEADER,
 } from "./protocol.ts";
-import { neutralizeChannelTags, relayEnv } from "./relay.ts";
+import { launchedWithChannel, neutralizeChannelTags, relayEnv } from "./relay.ts";
 import { createChannelRoutes } from "./routes.ts";
 import { agentCommandLoadsChannel, launchedFromChannelCommand, sendOverChannel } from "./send.ts";
 
@@ -173,6 +173,32 @@ describe("launchedFromChannelCommand", () => {
     expect(launchedFromChannelCommand(`vim claude ${FLAG}`, `claude ${FLAG}`)).toBe(true);
     const joined = "claude --dangerously-load-development-channels=server:yarvis-channel";
     expect(launchedFromChannelCommand(`${joined} Go on`, joined)).toBe(true);
+  });
+});
+
+describe("launchedWithChannel", () => {
+  const env = { YARVIS_CLAUDE_COMMAND: CHANNEL_COMMAND };
+
+  it("is true when the parent's command line starts with the agent command", async () => {
+    expect(await launchedWithChannel(42, env, () => `${CHANNEL_COMMAND} Go on`)).toBe(true);
+  });
+
+  it("is false, not an error, when the command line can't be read", async () => {
+    expect(await launchedWithChannel(42, env, () => null)).toBe(false);
+    expect(
+      await launchedWithChannel(42, env, () => {
+        throw new Error("ps: Operation not permitted");
+      }),
+    ).toBe(false);
+  });
+
+  it("asks for the command line of the pid it was given", async () => {
+    const asked: number[] = [];
+    await launchedWithChannel(4242, env, (pid) => {
+      asked.push(pid);
+      return CHANNEL_COMMAND;
+    });
+    expect(asked).toEqual([4242]);
   });
 });
 

@@ -440,7 +440,8 @@ report there and leaves the fixes to the author.
   `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
-  bash mode, `/` a slash command, `#` a memory write), `foreground_is_agent`
+  bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
+  `foreground_is_agent`
   refuses to type at all unless the configured agent is what's reading the
   prompt, and the chat agent's system prompt forbids relaying third-party text
   as an instruction. Text the core would refuse that way is never sent over the

@@ -81,17 +81,28 @@ export function relayEnv(
   };
 }
 
+/** A process's command line as `ps` shows it, or null when `ps` can't read it. */
+function psCommandLine(pid: number): string | null {
+  const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  return ps.success ? ps.stdout.toString() : null;
+}
+
 /**
  * Whether the Claude Code that started this relay listens to it: its own
  * command line has to begin with the agent command Yarvis launches sessions
  * from, and that command has to carry the channel flag. Checking the process
  * rather than only the setting rules out a `claude` run by hand in the same
  * terminal, which registers too. Checking the start of it rules out the flag
- * arriving inside the opening prompt. False when either can't be read.
+ * arriving in text the launch adds after the command. False when either can't
+ * be read, so the sidecar types instead.
  */
-async function launchedWithChannel(
+export async function launchedWithChannel(
   parentPid: number,
   env: Record<string, string | undefined>,
+  readCommandLine: (pid: number) => string | null = psCommandLine,
 ): Promise<boolean> {
   try {
     // Env first, as in the core's `resolve_agent_command`. Its default command
@@ -99,15 +110,12 @@ async function launchedWithChannel(
     const agentCommand =
       env.YARVIS_CLAUDE_COMMAND?.trim() || (await readSection<string>("agentCommand"));
     if (!agentCommand) return false;
-    const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(parentPid)], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    if (!ps.success) {
+    const commandLine = readCommandLine(parentPid);
+    if (commandLine === null) {
       console.error(`[channel] couldn't read the session's command line (pid ${parentPid})`);
       return false;
     }
-    return launchedFromChannelCommand(ps.stdout.toString(), agentCommand);
+    return launchedFromChannelCommand(commandLine, agentCommand);
   } catch (e) {
     console.error(`[channel] ${e instanceof Error ? e.message : String(e)}`);
     return false;
