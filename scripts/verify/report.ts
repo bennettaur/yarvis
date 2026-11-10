@@ -379,7 +379,9 @@ function reachText(change: ReviewChange, facts: Facts): string {
   const path = change.location.replace(/:\d+(-\d+)?$/, "");
   const measured = facts.reach?.find((file) => file.path === path);
   if (!measured) return change.reach;
-  return `${change.reach}; its file has ${measured.importers} importers in ${measured.otherAreas} other areas`;
+  const importers = measured.importers === 1 ? "1 importer" : `${measured.importers} importers`;
+  const areas = measured.otherAreas === 1 ? "1 other area" : `${measured.otherAreas} other areas`;
+  return `${change.reach}; its file has ${importers} in ${areas}`;
 }
 
 function describeChange(change: ReviewChange, facts: Facts): string {
