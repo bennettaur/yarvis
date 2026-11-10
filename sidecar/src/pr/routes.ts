@@ -154,11 +154,6 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     const source = sourceFor(ref);
     if ("error" in source) return c.json({ error: source.error }, 400);
 
-    // The assistant may already be writing this PR's guide; a second run would
-    // pay twice and overwrite it.
-    const release = claimGuide(ref);
-    if (!release) return c.json({ error: "a guide for this PR is already being written" }, 409);
-
     const dbh = db();
     const resolved = await resolvePrRunModel(
       config,
@@ -166,11 +161,12 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
       parsed.data.provider,
       parsed.data.model,
     );
-    if ("error" in resolved) {
-      release();
-      return c.json({ error: resolved.error }, 400);
-    }
+    if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
+    // The assistant may already be writing this PR's guide; a second run would
+    // pay twice and overwrite it. Claimed right before the try that releases it.
+    const release = claimGuide(ref);
+    if (!release) return c.json({ error: "a guide for this PR is already being written" }, 409);
     try {
       const { guide, headSha } = await writeGuide(dbh, config, {
         ref,

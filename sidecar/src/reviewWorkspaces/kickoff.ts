@@ -268,7 +268,8 @@ async function startWhenCheckedOut(
           pr,
           "error",
           NOT_STARTED,
-          `The checkout failed: ${pr.error ?? "unknown error"}`,
+          // git's message can echo the author's branch name; the workspace shows it.
+          "The checkout failed. Open the review workspace to see why and retry.",
         );
         return;
       }
