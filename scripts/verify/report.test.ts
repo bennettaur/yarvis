@@ -311,6 +311,55 @@ describe("finalVerdict", () => {
       expect(finalVerdict(review, makeFacts()).verdict).toBe("auto");
     });
 
+    describe("the facts' floor under a review's classification", () => {
+      const facts = makeFacts({
+        files: [
+          { path: "src/a.ts", additions: 9, deletions: 0 },
+          { path: "src/b.ts", additions: 4, deletions: 0 },
+        ],
+        reach: [
+          { path: "src/a.ts", importers: 30, otherAreas: 9, suggested: "core" },
+          { path: "src/b.ts", importers: 2, otherAreas: 2, suggested: "shared" },
+        ],
+      });
+
+      it("scores a logic change at no less than its file's measured reach", () => {
+        const review = makeReview({
+          changes: [
+            change({ kind: "logic", reach: "leaf", evidence: "partial", location: "src/a.ts:3" }),
+            change({ kind: "passive", location: "src/b.ts" }),
+          ],
+        });
+        const { body } = renderReport(review, facts, TARGET);
+        expect(finalVerdict(review, facts).verdict).toBe("agent");
+        expect(body).toContain("logic, core; its file has 30 importers");
+      });
+
+      it("leaves the claimed reach of an addition alone", () => {
+        const review = makeReview({
+          changes: [
+            change({ kind: "addition", reach: "leaf", location: "src/a.ts:3" }),
+            change({ kind: "passive", location: "src/b.ts" }),
+          ],
+        });
+        expect(finalVerdict(review, facts).verdict).toBe("auto");
+      });
+
+      it("scores a changed code file no change names as an unlisted logic change", () => {
+        const review = makeReview({
+          changes: [change({ kind: "passive", location: "src/a.ts" })],
+        });
+        const { body } = renderReport(review, facts, TARGET);
+        expect(finalVerdict(review, facts)).toEqual({
+          verdict: "agent",
+          why: ["high-impact changes"],
+        });
+        expect(body).toContain(
+          "- **Change the review didn't list** `src/b.ts`: logic, shared; its file has 2 importers in 2 other areas, partly tested. Check: Nobody classified this file's change: read it.",
+        );
+      });
+    });
+
     describe("a proven claim", () => {
       const sharedLogic = (overrides: Partial<Change> = {}) =>
         makeReview({
@@ -349,9 +398,37 @@ describe("finalVerdict", () => {
       });
 
       it("counts as partial where its location names no changed file", () => {
-        expect(finalVerdict(sharedLogic({ location: "src/elsewhere.ts" }), covered).verdict).toBe(
-          "agent",
-        );
+        const review = makeReview({
+          changes: [
+            change({ kind: "logic", reach: "shared", location: "src/elsewhere.ts" }),
+            change({ kind: "passive", location: "src/" }),
+          ],
+        });
+        expect(finalVerdict(review, covered).verdict).toBe("agent");
+      });
+
+      it("counts as partial on a file coverage can't measure, or one the diff only deletes from", () => {
+        const facts = makeFacts({
+          files: [
+            { path: "docs/a.md", additions: 3, deletions: 0 },
+            { path: "src/a.ts", additions: 0, deletions: 9 },
+          ],
+        });
+        for (const location of ["docs/a.md", "src/a.ts"]) {
+          expect(finalVerdict(sharedLogic({ location }), facts).verdict).toBe("agent");
+        }
+      });
+
+      it("counts as partial at a folder no changed file sits under, or a path that only prefixes one", () => {
+        for (const location of ["lib/", "src/a"]) {
+          const review = makeReview({
+            changes: [
+              change({ kind: "logic", reach: "shared", location }),
+              change({ kind: "passive", location: "src/" }),
+            ],
+          });
+          expect(finalVerdict(review, covered).verdict).toBe("agent");
+        }
       });
 
       it("checks every changed file under a folder location", () => {
@@ -498,6 +575,12 @@ describe("renderReport's impact", () => {
     );
     expect(data.impactBand).toBe(4);
     expect(parseSignedReport(withSignature(body, "c2ln"))?.data.impactBand).toBe(4);
+  });
+
+  it("signs a very high band so the gate can read it back", () => {
+    const review = makeReview({ changes: [coreLogic, { ...coreLogic, kind: "interface" }] });
+    const { body } = renderReport(review, makeFacts(), TARGET);
+    expect(parseSignedReport(withSignature(body, "c2ln"))?.data.impactBand).toBe(5);
   });
 
   it("describes ranges, bare paths, sensitivity and folded changes in the details", () => {

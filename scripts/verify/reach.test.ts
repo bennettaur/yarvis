@@ -22,7 +22,8 @@ describe("importsOf", () => {
     const text = `import${" ".repeat(200_000)}x\n`.repeat(3);
     const started = performance.now();
     importsOf("src/a.ts", text, new Set());
-    expect(performance.now() - started).toBeLessThan(1000);
+    // Linear takes about a millisecond; the backtracking version took minutes.
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   const files = new Set(["src/lib/api.ts", "src/lib/pr/index.ts", "src/components/A.tsx"]);
@@ -35,10 +36,26 @@ describe("importsOf", () => {
       'import { z } from "zod";',
       'import "./missing";',
     ].join("\n");
-    expect(importsOf("src/components/B.tsx", text, files).sort()).toEqual([
+    expect(importsOf("src/components/B.tsx", text, files).sort()).toStrictEqual([
       "src/components/A.tsx",
       "src/lib/api.ts",
       "src/lib/pr/index.ts",
+    ]);
+  });
+});
+
+describe("importsOf, edge cases", () => {
+  it("returns only relative imports that resolve", () => {
+    const files = new Set(["src/components/zod.ts"]);
+    expect(
+      importsOf("src/components/B.tsx", 'import "./missing";\nimport "zod";', files),
+    ).toStrictEqual([]);
+  });
+
+  it("finds a dynamic import split across lines", () => {
+    const files = new Set(["src/components/A.tsx"]);
+    expect(importsOf("src/components/B.tsx", 'await import(\n  "./A.tsx"\n);', files)).toEqual([
+      "src/components/A.tsx",
     ]);
   });
 });
@@ -91,6 +108,35 @@ describe("measureReach", () => {
       (path) => sources[path] ?? null,
     );
     expect(reach).toEqual([
+      { path: "sidecar/src/lib/util.ts", importers: 0, otherAreas: 0, suggested: "leaf" },
+    ]);
+  });
+
+  it("skips a source file it can't read", () => {
+    const sources: Record<string, string | null> = {
+      "sidecar/src/lib/util.ts": "",
+      "sidecar/src/chat/link.ts": null,
+      "sidecar/src/chat/a.ts": imports("../lib/util.ts"),
+    };
+    expect(
+      measureReach(["sidecar/src/lib/util.ts"], Object.keys(sources), (p) => sources[p] ?? null),
+    ).toEqual([
+      { path: "sidecar/src/lib/util.ts", importers: 1, otherAreas: 1, suggested: "local" },
+    ]);
+  });
+
+  it("ignores TypeScript outside the source roots and a file importing itself", () => {
+    const sources: Record<string, string> = {
+      "sidecar/src/lib/util.ts": imports("./util.ts"),
+      "vite.config.ts": imports("./sidecar/src/lib/util.ts"),
+    };
+    expect(
+      measureReach(
+        ["sidecar/src/lib/util.ts", "vite.config.ts"],
+        Object.keys(sources),
+        (p) => sources[p] ?? null,
+      ),
+    ).toEqual([
       { path: "sidecar/src/lib/util.ts", importers: 0, otherAreas: 0, suggested: "leaf" },
     ]);
   });

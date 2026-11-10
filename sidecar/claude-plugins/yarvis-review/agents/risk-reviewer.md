@@ -47,9 +47,9 @@ List the PR's independent changes in `changes`. A change is one function,
 type, config key, endpoint or migration that changed, together with whatever
 it made the PR update: an interface change and the callers it updated are one
 change, and so is a rename across many files. Fold alike changes that are
-passive, or additions in leaf or local code, into one entry with `count`
-("Comment and naming cleanups", `passive`, `count` 9). List on its own every logic or interface change, and anything in
-shared or core code.
+passive, or tested additions in leaf or local code, into one entry with
+`count` ("Comment and naming cleanups", `passive`, `count` 9). List every
+other change on its own.
 
 You see one group of the PR's patches. When `index.md` lists the patch that
 defines the changed thing in another group, leave the change to that group:
@@ -104,11 +104,10 @@ A rename of a local variable in a core file is `leaf`.
 permissions or what an automated agent may do, secrets, personal data, money,
 or deletes or migrates data.
 
-`check`: for every logic, interface or removal change, every change that is unproven or
-sensitive, and every reorganization that isn't `proven`, one sentence naming what a reviewer should
-confirm:
-"`chargeCard` still refuses a zero amount after the refactor", not "check the
-logic". Leave it empty for the rest.
+`check`: for every logic, interface or removal change, every change that
+is unproven or sensitive, and every reorganization, one sentence naming what
+a reviewer should confirm: "`chargeCard` still refuses a zero amount after
+the refactor", not "check the logic". Leave it empty for the rest.
 
 Give `path` and the head `line` of each change. A folded entry can give the
 folder it covers as `path`, with no line.
@@ -123,17 +122,16 @@ raise your level instead.
 
 ## Level
 
-`level` is your own judgment of the whole PR, made independently of the
-change classification:
+Yarvis scores your changes into a level of its own. `level` is for what that
+classification can't see, so judge it from consequences outside the change
+list, not by repeating it:
 
-- `high`: a logic or interface change in shared or core code, or anything
-  sensitive.
-- `medium`: a logic change in local code, an addition or removal in core
-  code, or a contained client-visible change.
-- `low`: isolated, internal or additive, easy to revert.
-
-A failing CI check that the comments don't explain as unrelated makes the
-level at least `medium`, and is always one of the concerns.
+- `high`: a mistake would reach clients or their data broadly and nothing
+  contains it, or a concern you raised is serious and unresolved.
+- `medium`: a client-visible change that is contained (flagged, backwards
+  compatible, narrow), or a failing CI check the comments don't explain as
+  unrelated, which is also always one of the concerns.
+- `low`: nothing beyond what the changes show.
 
 ## Output rules
 
@@ -144,8 +142,8 @@ level at least `medium`, and is always one of the concerns.
   the split and retry paths"). Don't list what the tests cover case by case.
   Passing CI and "the change is small" are not mitigations. Empty when there
   are none; never list generic good practice.
-- `changes`: at most 15; past that, list every logic, interface, unproven or
-  sensitive change on its own and fold the rest. `title` at most 12 words, `check` at most 40.
+- `changes`: at most 15; past that, fold more of the passive changes and
+  additions. `title` at most 12 words, `check` at most 40.
 - `concerns`: at most 5, most serious first. `title` at most 12 words,
   `detail` at most 40 words saying what could go wrong and when. Cite `path`
   and head `line` when there is one. A concern about other code ("callers

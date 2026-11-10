@@ -22,9 +22,11 @@ import {
   type Evidence,
   type Impact,
   REACHES,
+  type Reach,
   scoreImpact,
 } from "../../sidecar/src/verify/impact.ts";
 import type { Facts } from "./collect.ts";
+import { isMeasurableSource } from "./diffCoverage.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
 import { floorTier, isDependencyFile, stricterTier, type Tier } from "./tier.ts";
@@ -253,17 +255,22 @@ function changePath(change: ReviewChange): string {
   return change.location.replace(/:\d+(-\d+)?$/, "");
 }
 
+/** The changed files a location names: the file itself, or every one under a folder ending in `/`. */
+function filesAt(location: string, facts: Facts): Facts["files"] {
+  return facts.files.filter(
+    (file) => file.path === location || (location.endsWith("/") && file.path.startsWith(location)),
+  );
+}
+
 /**
- * Whether coverage backs a `proven` claim: the location names changed files,
- * and tests ran every changed line in each. It fails closed, so a location
- * that names no changed file, a file no test loads, and a PR measured with
- * `--static` all count as unbacked.
+ * Whether coverage backs a `proven` claim: the location names changed source
+ * files that gained lines, and tests ran every one of them. It fails closed:
+ * a location naming no changed file, a file coverage can't measure (docs,
+ * config, SQL, a file the diff only deletes from), a file no test loads, and
+ * a PR measured with `--static` all count as unbacked.
  */
 function coverageBacks(change: ReviewChange, facts: Facts): boolean {
-  const path = changePath(change);
-  const files = facts.files
-    .map((file) => file.path)
-    .filter((file) => file === path || (path.endsWith("/") && file.startsWith(path)));
+  const files = filesAt(changePath(change), facts);
   const { uncovered, unmeasured, notLoaded, noTestsRan } = facts.coverage;
   const untested = new Set([
     ...uncovered.map((u) => u.path),
@@ -271,24 +278,70 @@ function coverageBacks(change: ReviewChange, facts: Facts): boolean {
     ...notLoaded,
     ...noTestsRan,
   ]);
-  return files.length > 0 && files.every((file) => !untested.has(file));
+  return (
+    files.length > 0 &&
+    files.every(
+      (file) => isMeasurableSource(file.path) && file.additions > 0 && !untested.has(file.path),
+    )
+  );
+}
+
+/** The higher of a change's claimed reach and what the import graph suggests for its files. */
+function measuredReach(change: ReviewChange, facts: Facts): Reach {
+  const paths = new Set(filesAt(changePath(change), facts).map((file) => file.path));
+  return (facts.reach ?? [])
+    .filter((file) => paths.has(file.path))
+    .reduce<Reach>(
+      (reach, file) =>
+        REACHES.indexOf(file.suggested) > REACHES.indexOf(reach) ? file.suggested : reach,
+      change.reach,
+    );
 }
 
 /**
- * The PR's impact, from the review's changes as the facts allow. A change
- * claimed `proven` that coverage doesn't back is scored as `partial`, so a
- * classification steered by the PR's own text can't lower a band the
- * coverage contradicts. It can't catch a lower kind or reach, or a change
- * left out.
+ * Changed code files no change in the review names, each as a partly tested
+ * logic change at its measured reach, since a change the review left out is
+ * one nobody judged.
+ */
+function unlistedChanges(review: Review, facts: Facts): ReviewChange[] {
+  const named = new Set(review.changes.flatMap((change) => filesAt(changePath(change), facts)));
+  return facts.files
+    .filter((file) => isMeasurableSource(file.path) && !named.has(file))
+    .map((file) => ({
+      title: "Change the review didn't list",
+      location: file.path,
+      kind: "logic",
+      reach: facts.reach?.find((r) => r.path === file.path)?.suggested ?? "local",
+      evidence: "partial",
+      sensitive: false,
+      count: 1,
+      check: "Nobody classified this file's change: read it.",
+    }));
+}
+
+/**
+ * The PR's impact, from the review's changes as the facts allow, so a
+ * classification steered by the PR's own text can't score lower than the
+ * facts say:
+ * - a `proven` claim coverage doesn't back is scored as `partial`;
+ * - an interface or logic change is scored at no less than the reach its
+ *   files' importers suggest;
+ * - a changed code file no change names is scored as an unlisted logic change.
+ * It can't catch a change called by a lower kind.
  */
 function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | null {
-  return scoreImpact(
-    review.changes.map((change) =>
+  const adjusted = review.changes.map((change) => {
+    const evidence =
       change.evidence === "proven" && change.kind !== "passive" && !coverageBacks(change, facts)
-        ? { ...change, evidence: "partial" as const }
-        : change,
-    ),
-  );
+        ? "partial"
+        : change.evidence;
+    const reach =
+      change.kind === "interface" || change.kind === "logic"
+        ? measuredReach(change, facts)
+        : change.reach;
+    return { ...change, evidence, reach };
+  });
+  return scoreImpact([...adjusted, ...unlistedChanges(review, facts)]);
 }
 
 /** The report's tier: the stricter of the changed paths' floor and the assessed risk. */

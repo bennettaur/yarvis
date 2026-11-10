@@ -36,6 +36,15 @@ export type Measurement = "measured" | "not-run" | "no-tests";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".rs"];
 
+/** Whether coverage can measure a file at all: source that isn't a test or a type declaration. */
+export function isMeasurableSource(path: string): boolean {
+  return (
+    SOURCE_EXTENSIONS.some((ext) => path.endsWith(ext)) &&
+    !isTestFile(path) &&
+    !path.endsWith(".d.ts")
+  );
+}
+
 /**
  * Calls `onHunk` for each hunk of `git diff -U0` output, with the file's
  * new-side path and the hunk's new-side start and line count. A hunk that only
@@ -196,8 +205,7 @@ export function diffCoverage(
   };
 
   for (const [path, lines] of added) {
-    const ext = SOURCE_EXTENSIONS.find((e) => path.endsWith(e));
-    if (!ext || isTestFile(path) || path.endsWith(".d.ts") || lines.size === 0) continue;
+    if (!isMeasurableSource(path) || lines.size === 0) continue;
     const measured = measurement(path);
     if (measured !== "measured") {
       (measured === "no-tests" ? result.noTestsRan : result.unmeasured).push(path);

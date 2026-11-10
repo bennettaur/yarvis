@@ -422,16 +422,26 @@ For Rust and anything else `facts.reach` doesn't list, Grep for users.
 do, or deletes or migrates data. This is the same ground as step 6b's high
 tier, so such a change raises both the risk tier and the impact band.
 
-`report.ts` scores a `proven` change as `partial` unless coverage backs it:
-its location names changed files and tests ran every changed line in them.
-So a folder location, a file no test loads, and a PR measured with
-`--static` never keep `proven`.
+`report.ts` puts the facts under your classification, so it never scores
+lower than they allow:
 
-**check**: for every logic, interface or removal change, every change that is unproven or
-sensitive, and every reorganization that isn't `proven`, one sentence naming what a reviewer
-should confirm, as specific as a finding's fix:
-"`runAgentTurn` still saves nothing after an abort", not "check the logic".
-`report.ts` refuses a high change without one.
+- A `proven` change counts as `partial` unless coverage backs it: its
+  location names changed source files that gained lines, and tests ran every
+  changed line in them. A folder location needs every changed file under it
+  backed. Docs, config, SQL, a file the diff only deletes from, a file no
+  test loads, and a PR measured with `--static` never keep `proven`.
+- An interface or logic change counts at no less than the reach
+  `facts.reach` suggests for its files.
+- A changed source file no change's location names counts as an unlisted,
+  partly tested logic change at its suggested reach. A folder location names
+  every file under it.
+
+**check**: for every logic, interface or removal change, every change that
+is unproven or sensitive, and every reorganization, one sentence naming what
+a reviewer should confirm, as specific as a finding's fix: "`runAgentTurn`
+still saves nothing after an abort", not "check the logic". `report.ts`
+refuses a change you scored high without one; one the facts raise there
+without one is listed with "read this change".
 
 The band then rises with volume: many changes in one PR are more likely to
 include a bad one, and are harder to revert than the same changes merged one

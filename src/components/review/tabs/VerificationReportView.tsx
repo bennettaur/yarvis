@@ -44,9 +44,9 @@ const RISK_CLASS: Record<VerificationRiskLevel, string> = {
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
 
-// The band labels, kind names, evidence text and attention band copy
-// `sidecar/src/verify/impact.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
-// `reviewWorkspaces/verification.ts`. The frontend can't import either, so change both together.
+// The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`, the
+// evidence text copies `scripts/verify/report.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
+// `reviewWorkspaces/verification.ts`. The frontend can't import them, so change both together.
 const IMPACT_LABEL: Record<ImpactBand, string> = {
   1: "minimal",
   2: "low",
