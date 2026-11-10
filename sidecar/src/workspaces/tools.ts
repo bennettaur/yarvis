@@ -248,7 +248,7 @@ export interface WorkspaceToolDeps {
   startClaudeSession?: ClaudeSessionStarter;
   /** Overrides how an instruction reaches a running session's prompt. */
   sendSessionInstruction?: ClaudeSessionMessenger;
-  /** Overrides the channel hub sessions are messaged through. */
+  /** Overrides the channel hub sessions are messaged through, and the Settings switch. */
   channel?: ChannelSendOptions;
   /** The turn's record of untrusted reads, which a session reply sets. */
   reads?: UntrustedReads;

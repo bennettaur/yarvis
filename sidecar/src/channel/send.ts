@@ -45,32 +45,33 @@ export function launchedFromChannelCommand(processArgs: string, agentCommand: st
  */
 const CHANNEL_MESSAGING_SETTING = "channelMessaging";
 
-/** Whether channel messaging is switched on in Settings. Off when unset or unreadable. */
+/**
+ * Whether channel messaging is switched on in Settings. Only `true` counts: a
+ * missing or unreadable file reads as empty (`readSection`), so it stays off.
+ */
 export async function channelMessagingEnabled(): Promise<boolean> {
-  try {
-    return (await readSection<boolean>(CHANNEL_MESSAGING_SETTING)) === true;
-  } catch {
-    return false;
-  }
+  return (await readSection<unknown>(CHANNEL_MESSAGING_SETTING)) === true;
 }
 
 export interface ChannelSendOptions {
   hub?: ChannelHub;
-  /** Overrides the Settings switch, for tests. */
+  /**
+   * Overrides the Settings switch, for tests. `sendToWorkspaceAgent` checks it
+   * before calling `sendOverChannel`, which doesn't check it again.
+   */
   enabled?: () => Promise<boolean>;
 }
 
 /**
  * Hands `text` to the session's relay. Null when nothing that would deliver it
- * is listening, so the caller types into the PTY instead. Three things must
+ * is listening, so the caller types into the PTY instead. Two things must
  * hold:
- * - a relay is live for that terminal,
- * - the Claude Code that started it was launched with the channel flag, which
- *   the relay checked when it started, since a message to a session without it
- *   is dropped,
- * - that Claude Code is one the workspace's SessionStart hook registered.
+ * - a relay is live for that terminal. A relay only polls after checking that
+ *   its Claude Code was launched with the channel flag, since a message to a
+ *   session without it is dropped;
+ * - its parent is a Claude Code the workspace's SessionStart hook registered.
  *
- * The relay reports its own pid and flag, and the sidecar can't check either.
+ * The relay reports its own pid, and the sidecar can't check it.
  * Any process in the terminal holds the session token, so while no relay owns
  * the channel, one could claim a registered pid and take its messages. That
  * process already runs as the user and could type at the prompt instead, and
@@ -83,6 +84,6 @@ export function sendOverChannel(
   { hub = channelHub }: ChannelSendOptions = {},
 ): ChannelMessage | null {
   const listener = hub.listener(sessionKey);
-  if (!listener?.channelEnabled || !agentPids.includes(listener.pid)) return null;
+  if (!listener || !agentPids.includes(listener.pid)) return null;
   return hub.send(sessionKey, text);
 }

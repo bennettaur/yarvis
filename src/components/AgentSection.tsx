@@ -251,8 +251,9 @@ function ChannelMessagingField({
         Lets the assistant send a workspace session a message it can answer, instead of typing at
         its prompt, and read the answer. It also needs{" "}
         <code>--dangerously-load-development-channels server:yarvis-channel</code> in the command
-        above, a Claude Code research preview. Workspaces created while this is on get the channel's
-        MCP server; older ones keep being typed into. Turning it off applies from the next message.
+        above (channels are a Claude Code research preview). A workspace gets the channel's MCP
+        server when it is provisioned, or a repo is added, while this is on, and loses it when that
+        happens while this is off. Turning it off stops channel messages from the next one.
       </p>
     </div>
   );

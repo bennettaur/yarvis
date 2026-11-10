@@ -824,7 +824,8 @@ pub fn set_terminal_font_size(
 }
 
 /// Turns channel messaging to workspace sessions on or off. The sidecar reads
-/// it on each send and each relay start, so no restart is needed.
+/// it on each send, each relay start and each workspace provision, so no
+/// restart is needed.
 #[tauri::command]
 pub fn set_channel_messaging(
     state: tauri::State<'_, SettingsState>,

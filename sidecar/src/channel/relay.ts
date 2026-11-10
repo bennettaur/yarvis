@@ -12,7 +12,8 @@
  * Claude Code only listens for these events when the session was started with
  * `--dangerously-load-development-channels server:yarvis-channel`. Without it
  * this process still runs, as an ordinary MCP server whose events are dropped,
- * so it tells the sidecar which case it is in and the sidecar types instead.
+ * so it stays idle (no poll, no tools) and the sidecar types instead. It does
+ * the same while channel messaging is off in Settings.
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,7 +21,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { z } from "zod";
 import { readSection } from "../settings/store.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "../workspaces/sessionHeaders.ts";
-import { CHANNEL_ENABLED_HEADER, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
+import { RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
 import {
   CHANNEL_SERVER_NAME,
   channelMessagingEnabled,
@@ -64,7 +65,7 @@ interface RelayEnv {
  */
 export function relayEnv(
   env: Record<string, string | undefined>,
-  relay: { relayId: string; parentPid: number; channelEnabled: boolean },
+  relay: { relayId: string; parentPid: number },
 ): RelayEnv | null {
   const port = env.YARVIS_SIDECAR_PORT;
   const token = env.YARVIS_ATTENTION_TOKEN;
@@ -80,7 +81,6 @@ export function relayEnv(
       [SESSION_TOKEN_HEADER]: sessionToken,
       [RELAY_ID_HEADER]: relay.relayId,
       [RELAY_PID_HEADER]: String(relay.parentPid),
-      [CHANNEL_ENABLED_HEADER]: relay.channelEnabled ? "1" : "0",
     },
   };
 }
@@ -170,14 +170,11 @@ async function pollForever(server: Server, env: RelayEnv): Promise<never> {
 export async function runChannelRelay(): Promise<void> {
   // A relay that can't deliver stays idle: no poll, no tools. The sidecar then
   // sees no listener and types instead, which is what it would do anyway.
-  const channelEnabled =
+  const canDeliver =
     (await channelMessagingEnabled()) && (await launchedWithChannel(process.ppid, process.env));
-  const terminal = relayEnv(process.env, {
-    relayId: crypto.randomUUID(),
-    parentPid: process.ppid,
-    channelEnabled,
-  });
-  const env = channelEnabled ? terminal : null;
+  const env = canDeliver
+    ? relayEnv(process.env, { relayId: crypto.randomUUID(), parentPid: process.ppid })
+    : null;
   const server = new Server(
     { name: CHANNEL_SERVER_NAME, version: "0.1.0" },
     {

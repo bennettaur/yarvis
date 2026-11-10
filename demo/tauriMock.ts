@@ -116,6 +116,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
       return updateSettings({ terminalFontSize: args.value as number | null });
     case "set_attention_animation":
       return updateSettings({ attentionAnimation: args.value as boolean | null });
+    case "set_channel_messaging":
+      return updateSettings({ channelMessaging: args.enabled as boolean });
     case "set_agent":
       // The core stores a blank field as unset.
       return updateSettings({

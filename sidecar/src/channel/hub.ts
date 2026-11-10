@@ -48,14 +48,16 @@ export interface ChannelReply {
   at: string;
 }
 
-/** Who is polling: one relay process, and what it says about itself. */
+/**
+ * Who is polling: one relay process. A relay only polls once it has checked
+ * that its Claude Code listens to the channel (`runChannelRelay`), so a
+ * listener can always deliver.
+ */
 export interface RelayIdentity {
   /** Random per relay process; the first live one owns the terminal's channel. */
   relayId: string;
   /** The relay's parent, which is the Claude Code process that started it. */
   pid: number;
-  /** Whether that Claude Code was launched with the channel flag. */
-  channelEnabled: boolean;
 }
 
 interface SessionChannel {

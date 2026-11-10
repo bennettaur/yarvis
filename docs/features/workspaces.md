@@ -572,10 +572,14 @@ until you turn it on. To turn it on:
    channel (experimental)**.
 2. Add `--dangerously-load-development-channels server:yarvis-channel` to the
    agent command in the same section.
-3. Create a workspace. Only workspaces created while the switch is on get the
-   relay; older ones keep receiving typed instructions. In a new workspace, a
-   session that was already running before step 2 also keeps being typed into.
-4. Accept the channel dialog Claude Code shows at startup. It shows every
+3. Create a workspace, or add a repo to an existing one. A workspace gets the
+   relay whenever it is provisioned while the switch is on, and loses it when
+   that happens while the switch is off. Until then it keeps receiving typed
+   instructions.
+4. Start a new session in it. The relay checks the session's command line once,
+   when the session starts, so a session started before you added the flag
+   keeps being typed into.
+5. Accept the channel dialog Claude Code shows at startup. It shows every
    time, because Yarvis's relay isn't on Claude Code's approved list of
    channels.
 
@@ -584,9 +588,11 @@ until you turn it on. To turn it on:
 How it works:
 
 - Turning the switch off takes effect from the next message: the assistant
-  types instead, and relays started after that stay idle.
-- A workspace created while the switch is on has a `yarvis-channel` server in
-  its `.mcp.json`. That server is
+  types instead. A relay that was already running keeps polling until its
+  session restarts, but nothing more is sent to it, and relays started after
+  that stay idle.
+- A workspace provisioned while the switch is on has a `yarvis-channel` server
+  in its `.mcp.json`. That server is
   the Yarvis sidecar running as a small relay. It collects messages for its own
   terminal and gives the session a `reply` tool. Claude Code asks you to
   approve this server once, the same way it asks for the `yarvis` server. That

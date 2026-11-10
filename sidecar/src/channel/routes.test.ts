@@ -10,15 +10,15 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "../workspaces/agentSessions.ts";
 import { ChannelHub, type RelayIdentity } from "./hub.ts";
-import {
-  CHANNEL_ENABLED_HEADER,
-  CHANNEL_RELAY_ARG,
-  RELAY_ID_HEADER,
-  RELAY_PID_HEADER,
-} from "./protocol.ts";
+import { CHANNEL_RELAY_ARG, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
 import { launchedWithChannel, neutralizeChannelTags, relayEnv } from "./relay.ts";
 import { createChannelRoutes } from "./routes.ts";
-import { agentCommandLoadsChannel, launchedFromChannelCommand, sendOverChannel } from "./send.ts";
+import {
+  agentCommandLoadsChannel,
+  channelMessagingEnabled,
+  launchedFromChannelCommand,
+  sendOverChannel,
+} from "./send.ts";
 
 const config = {
   token: "test-token",
@@ -42,7 +42,6 @@ function appFor(hub: ChannelHub) {
 const relayFor = (overrides: Partial<RelayIdentity> = {}): RelayIdentity => ({
   relayId: crypto.randomUUID(),
   pid: 4242,
-  channelEnabled: true,
   ...overrides,
 });
 
@@ -56,7 +55,6 @@ const headersFor = (
   [SESSION_TOKEN_HEADER]: token,
   [RELAY_ID_HEADER]: relay.relayId,
   [RELAY_PID_HEADER]: String(relay.pid),
-  [CHANNEL_ENABLED_HEADER]: relay.channelEnabled ? "1" : "0",
 });
 
 async function until(condition: () => boolean, what: string) {
@@ -176,6 +174,26 @@ describe("launchedFromChannelCommand", () => {
   });
 });
 
+describe("channelMessagingEnabled", () => {
+  it("is on only when the setting is exactly true", async () => {
+    const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+    const settings = join(mkdtempSync(join(tmpdir(), "yarvis-channel-setting-")), "settings.json");
+    process.env.YARVIS_SETTINGS_PATH = settings;
+    try {
+      const enabledFor = async (value: unknown) => {
+        writeFileSync(settings, JSON.stringify({ channelMessaging: value }));
+        return channelMessagingEnabled();
+      };
+      expect(await enabledFor(true)).toBe(true);
+      for (const value of [false, "true", 1, null]) expect(await enabledFor(value)).toBe(false);
+      writeFileSync(settings, "{ not json");
+      expect(await channelMessagingEnabled()).toBe(false);
+    } finally {
+      process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+    }
+  });
+});
+
 describe("launchedWithChannel", () => {
   const env = { YARVIS_CLAUDE_COMMAND: CHANNEL_COMMAND };
 
@@ -238,12 +256,6 @@ describe("sendOverChannel", () => {
     expect(await poll).toEqual([sent!]);
   });
 
-  it("leaves the message for the PTY when the session was launched without the flag", async () => {
-    const { hub, stop } = await listening(relayFor({ pid: 77, channelEnabled: false }));
-    expect(sendOverChannel(KEY, "hi", [77], { hub })).toBeNull();
-    stop();
-  });
-
   it("leaves the message for the PTY when the relay's parent isn't a registered agent", async () => {
     const { hub, stop } = await listening(relayFor({ pid: 77 }));
     expect(sendOverChannel(KEY, "hi", [12], { hub })).toBeNull();
@@ -254,7 +266,7 @@ describe("sendOverChannel", () => {
 
 describe("relay", () => {
   it("builds nothing outside a Yarvis terminal, and only digits for a port", () => {
-    const who = { relayId: crypto.randomUUID(), parentPid: 1, channelEnabled: true };
+    const who = { relayId: crypto.randomUUID(), parentPid: 1 };
     const full = {
       YARVIS_SIDECAR_PORT: "8765",
       YARVIS_ATTENTION_TOKEN: "t",
@@ -356,7 +368,6 @@ describe("channel relay process", () => {
 
     await until(() => hub.listener(KEY) !== null, "the relay to poll");
     const listener = hub.listener(KEY)!;
-    expect(listener.channelEnabled).toBe(true);
     // The shell, not this test, is the relay's parent.
     expect(listener.pid).not.toBe(process.pid);
     const sent = sendOverChannel(KEY, "summarize what you changed", [listener.pid], { hub })!;
@@ -424,7 +435,7 @@ describe("channel relay process", () => {
       UNDER_FLAGGED_PARENT,
     );
     await until(() => hub.listener(key) !== null, "the relay to poll");
-    expect(hub.listener(key)?.channelEnabled).toBe(true);
+    expect(hub.listener(key)).not.toBeNull();
   });
 
   it("exits when Claude Code closes its stdin, so it can't keep holding the channel", async () => {

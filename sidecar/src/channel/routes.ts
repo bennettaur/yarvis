@@ -10,7 +10,7 @@ import {
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
 import { type ChannelHub, channelHub, type RelayIdentity } from "./hub.ts";
-import { CHANNEL_ENABLED_HEADER, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
+import { RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
 
 /** Longest reply a session can post; the agent reads it back into a prompt. */
 const MAX_REPLY_CHARS = 8_000;
@@ -19,7 +19,6 @@ const relaySchema = z.object({
   relayId: z.string().uuid(),
   // A pid is a 32-bit signed integer.
   pid: z.coerce.number().int().positive().max(2_147_483_647),
-  channelEnabled: z.enum(["0", "1"]).transform((v) => v === "1"),
 });
 
 const replySchema = z.object({
@@ -48,7 +47,6 @@ export function createChannelRoutes(config: Config, hub: ChannelHub = channelHub
     const relay = relaySchema.safeParse({
       relayId: c.req.header(RELAY_ID_HEADER),
       pid: c.req.header(RELAY_PID_HEADER),
-      channelEnabled: c.req.header(CHANNEL_ENABLED_HEADER),
     });
     if (!relay.success) return c.json({ error: "missing or malformed relay headers" }, 400);
     c.set("sessionKey", key.data);

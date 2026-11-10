@@ -9,4 +9,3 @@ export const CHANNEL_RELAY_ARG = "channel-relay";
 
 export const RELAY_ID_HEADER = "X-Yarvis-Relay-Id";
 export const RELAY_PID_HEADER = "X-Yarvis-Relay-Pid";
-export const CHANNEL_ENABLED_HEADER = "X-Yarvis-Channel-Enabled";

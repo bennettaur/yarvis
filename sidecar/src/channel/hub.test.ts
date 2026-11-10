@@ -6,7 +6,6 @@ const KEY = "ws-claude:11111111-1111-4111-8111-111111111111";
 const relay = (overrides: Partial<RelayIdentity> = {}): RelayIdentity => ({
   relayId: crypto.randomUUID(),
   pid: 4242,
-  channelEnabled: true,
   ...overrides,
 });
 

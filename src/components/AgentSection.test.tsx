@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Settings } from "../lib/settings";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { renderToHtml } from "../test/render";
+import { renderToHtml, waitFor } from "../test/render";
 
 /**
  * Covers the agent fields end to end through `invoke`, rather than stubbing
@@ -298,14 +298,12 @@ describe("AgentSection", () => {
     expect(box().checked).toBe(false);
 
     box().click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => box().checked && !box().disabled, "the switch to save on");
     expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: true } });
-    expect(box().checked).toBe(true);
 
     box().click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => !box().checked && !box().disabled, "the switch to save off");
     expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: false } });
-    expect(box().checked).toBe(false);
     cleanup();
   });
 });

@@ -365,8 +365,8 @@ export async function sendToWorkspaceAgent(
   // core refuses it, so a channel message can't carry a command the typed path
   // would refuse.
   const mustBeTyped = typedOnly || opensWithCommandPrefix(instruction);
-  const channelOn = !mustBeTyped && (await (channel?.enabled ?? channelMessagingEnabled)());
-  const message = channelOn
+  const tryChannel = !mustBeTyped && (await (channel?.enabled ?? channelMessagingEnabled)());
+  const message = tryChannel
     ? sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel)
     : null;
   if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
