@@ -121,6 +121,69 @@ export function mergeAnnouncementOf(item: {
   return typeof merge.number === "number" || merge.number === null ? merge : null;
 }
 
+/**
+ * An unresolved review thread on a PR heads-down mode wants to merge, as
+ * `sidecar/src/headsDown/mergeFeedback.ts` sends it. Author and body are
+ * third-party text.
+ */
+export interface FeedbackThread {
+  path: string | null;
+  line: number | null;
+  /** True when the code the thread was left on has since changed. */
+  outdated: boolean;
+  author: string;
+  body: string;
+  /** How many replies follow the first comment. */
+  replies: number;
+}
+
+export interface PrFeedback {
+  repo: string;
+  number: number;
+  title: string | null;
+  workspaceId: string | null;
+  /** True once heads-down mode told the workspace's session to address the feedback. */
+  handedOff: boolean;
+  /** The first few unresolved threads; `threadCount` counts them all. */
+  threads: FeedbackThread[];
+  threadCount: number;
+  /** True when the provider couldn't return every thread. */
+  threadsTruncated: boolean;
+  changesRequestedBy: string[];
+  /** True when some of the feedback may be from outside the repo, so it wasn't handed to the workspace. */
+  fromOutsiders: boolean;
+}
+
+/** A merge held back for open review feedback, waiting on the user's approval. */
+export interface MergeReview {
+  questionId: string;
+  prs: PrFeedback[];
+  /** Why the feedback couldn't be checked, when it couldn't. */
+  unchecked: string | null;
+}
+
+/** The held merge an attention item asks about, if it is one. */
+export function mergeReviewOf(item: {
+  source: string;
+  sessionKey: string | null;
+  kind: string;
+  payload?: unknown;
+}): MergeReview | null {
+  if (item.source !== "system" || item.kind !== "permission") return null;
+  if (!item.sessionKey?.startsWith("heads-down:")) return null;
+  const review = (item.payload as { headsDownMergeReview?: MergeReview } | null)
+    ?.headsDownMergeReview;
+  if (!review || typeof review.questionId !== "string" || !Array.isArray(review.prs)) return null;
+  const wellFormed = review.prs.every(
+    (pr) =>
+      typeof pr?.repo === "string" &&
+      typeof pr.number === "number" &&
+      Array.isArray(pr.threads) &&
+      Array.isArray(pr.changesRequestedBy),
+  );
+  return wellFormed ? review : null;
+}
+
 export type WorkStreamStatus =
   | "active"
   | "waiting-on-user"
@@ -209,6 +272,23 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   await ensureOk(res, `${method} ${path}`);
   return res.json() as Promise<T>;
 }
+
+/**
+ * Cache keys for the Heads down page's lists. They share a prefix so a dialog
+ * that answers a question can invalidate them all at once.
+ */
+export const HEADS_DOWN_CACHE_PREFIX = "heads-down:";
+export const HEADS_DOWN_CACHE_KEYS = {
+  state: `${HEADS_DOWN_CACHE_PREFIX}state`,
+  questions: `${HEADS_DOWN_CACHE_PREFIX}questions`,
+  streams: `${HEADS_DOWN_CACHE_PREFIX}streams`,
+  passes: `${HEADS_DOWN_CACHE_PREFIX}passes`,
+  messages: `${HEADS_DOWN_CACHE_PREFIX}messages`,
+  config: `${HEADS_DOWN_CACHE_PREFIX}config`,
+  allowedTools: `${HEADS_DOWN_CACHE_PREFIX}allowed-tools`,
+  autoApprovals: `${HEADS_DOWN_CACHE_PREFIX}auto-approvals`,
+  routines: `${HEADS_DOWN_CACHE_PREFIX}routines`,
+};
 
 export const getHeadsDownState = () => request<HeadsDownState>("/api/heads-down");
 

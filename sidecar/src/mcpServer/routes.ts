@@ -6,6 +6,12 @@ import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { type MemoryService, PgVectorMemoryStore } from "../memory/index.ts";
 import { askQuestions, getQuestion, waitForReply } from "../questions/service.ts";
+import {
+  SESSION_KEY_HEADER,
+  SESSION_TOKEN_HEADER,
+  sessionKeyBelongsTo,
+  sessionTokenMatches,
+} from "../workspaces/agentSessions.ts";
 import { listLocatedReviewComments, updateReviewComment } from "../workspaces/reviewComments.ts";
 import { addExtraWorktree } from "../workspaces/service.ts";
 import type { QuestionOrigin } from "./questionTools.ts";
@@ -48,26 +54,37 @@ function allowedHosts(port: number): string[] {
   return [`127.0.0.1:${port}`, `localhost:${port}`];
 }
 
-/** Names the terminal a question comes from; a workspace's `.mcp.json` sets it from the PTY's environment. */
-const SESSION_KEY_HEADER = "x-yarvis-session-key";
 const MAX_SESSION_KEY = 256;
 
 /**
- * Which session is asking. These are the caller's claims, held to the same
- * trust as the attention-ingest body: they only decide where a question is
- * shown. A missing or malformed value reads as absent, since a client Yarvis
- * didn't launch sends neither, and an unset variable expands to an empty string.
+ * Which session is asking. A workspace's `.mcp.json` sends the PTY's session
+ * key with its session token, and the key counts only when the token matches
+ * it, as on attention ingest: the key decides which workspace's prompts a
+ * question opens and chains with, so a process in one terminal mustn't claim
+ * another's. The workspace id only groups the item. With a verified key it
+ * must be the key's own workspace, as on ingest; without one it is the
+ * caller's unchecked claim.
+ * A missing or malformed value reads as absent, since a client Yarvis didn't
+ * launch sends neither, and an unset variable expands to an empty string.
+ *
+ * @param bearer The sidecar's full-access token, which signs session tokens.
  */
-export function questionOrigin(headers: Headers): QuestionOrigin {
+export function questionOrigin(headers: Headers, bearer: string): QuestionOrigin {
   const sessionKey = headers.get(SESSION_KEY_HEADER)?.trim() ?? "";
   const workspaceId = headers.get(WORKSPACE_HEADER)?.trim() ?? "";
+  const token = headers.get(SESSION_TOKEN_HEADER)?.trim() ?? "";
   // `chat:` keys belong to the in-app assistant's questions, which show as
   // "Yarvis"; a coding agent claiming one could post under that name.
   const valid =
-    sessionKey && sessionKey.length <= MAX_SESSION_KEY && !sessionKey.startsWith("chat:");
+    sessionKey &&
+    sessionKey.length <= MAX_SESSION_KEY &&
+    !sessionKey.startsWith("chat:") &&
+    sessionTokenMatches(bearer, sessionKey, token);
+  const wellFormed = UUID.safeParse(workspaceId).success;
   return {
     sessionKey: valid ? sessionKey : null,
-    workspaceId: UUID.safeParse(workspaceId).success ? workspaceId : null,
+    workspaceId:
+      wellFormed && (!valid || sessionKeyBelongsTo(sessionKey, workspaceId)) ? workspaceId : null,
   };
 }
 
@@ -142,7 +159,7 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     const done = new AbortController();
     c.req.raw.signal.addEventListener("abort", () => done.abort(), { once: true });
     const server = createYarvisMcpServer(memory, workspace, {
-      origin: questionOrigin(c.req.raw.headers),
+      origin: questionOrigin(c.req.raw.headers, config.token),
       ask: (input) => askQuestions(db(), input),
       getQuestion: (id) => getQuestion(db(), id),
       waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, done.signal),

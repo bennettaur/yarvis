@@ -43,6 +43,7 @@ import {
   upsertLink,
 } from "../issues/service.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
+import type { PrRef } from "../pr/types.ts";
 import { completeTasksByWorkspace, tasksForWorkspace } from "../tasks/service.ts";
 import { ARCHIVED_END_REASON, endWorkspaceAgentSessions } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE, writeWorkspaceBrief } from "./brief.ts";
@@ -2693,4 +2694,28 @@ async function removeWorktreesAndFinish(
   }
 
   return { status, errors, completedTasks: completedTasks.length };
+}
+
+/**
+ * The provider identity of a workspace repo's PR, from its clone URL — the same
+ * derivation the poller uses to find the PR in the first place. Null when the
+ * clone URL names no provider we can read PRs from.
+ */
+export function workspacePrRef(repo: Repo, prNumber: number): PrRef | null {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  if (remote?.provider === "azure") {
+    return {
+      provider: "azure",
+      org: remote.org,
+      project: remote.project,
+      repo: remote.repo,
+      prId: prNumber,
+    };
+  }
+  // GitHub owner/repo are stored on the row at registration; the poller falls
+  // back to them when the clone URL doesn't parse, so this does too.
+  const owner = remote?.provider === "github" ? remote.owner : repo.owner;
+  const name = remote?.provider === "github" ? remote.repo : repo.repo;
+  if (!owner || !name) return null;
+  return { provider: "github", owner, repo: name, number: prNumber };
 }

@@ -52,6 +52,7 @@ export default function PermissionRequestModal({
   sessionKey,
   title,
   onClose,
+  onDone = onClose,
   onGoToSession,
   armingMs = ARMING_MS,
 }: {
@@ -60,6 +61,8 @@ export default function PermissionRequestModal({
   /** The attention item's title, shown until the first request loads. */
   title: string;
   onClose: () => void;
+  /** Called instead of `onClose` once an answer leaves the session with nothing waiting. */
+  onDone?: () => void;
   /** Opens the terminal the session runs in. */
   onGoToSession: () => void;
   /** How long each request ignores clicks after it is shown. */
@@ -151,7 +154,7 @@ export default function PermissionRequestModal({
       // The user asked for the terminal, and that's where the prompt is even
       // when this one had already timed out.
       if (decision.behavior === "terminal") onGoToSession();
-      else if (delivered && remaining?.length === 0) onClose();
+      else if (delivered && remaining?.length === 0) onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

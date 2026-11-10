@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { createHmac } from "node:crypto";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
@@ -301,12 +302,17 @@ describe("mcp endpoint over a real store", () => {
 });
 
 describe("questionOrigin", () => {
-  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers));
+  const BEARER = "test-token";
+  const KEY = "ws-claude:11111111-1111-1111-1111-111111111111";
+  const tokenFor = (key: string) =>
+    createHmac("sha256", BEARER).update(`session:${key}`).digest("hex");
+  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers), BEARER);
 
   it("reads the session and workspace a workspace's .mcp.json sends", () => {
     expect(
       origin({
-        "X-Yarvis-Session-Key": "ws-claude:11111111-1111-1111-1111-111111111111",
+        "X-Yarvis-Session-Key": KEY,
+        "X-Yarvis-Session-Token": tokenFor(KEY),
         "X-Yarvis-Workspace": "11111111-1111-1111-1111-111111111111",
       }),
     ).toEqual({
@@ -326,6 +332,29 @@ describe("questionOrigin", () => {
   });
 
   it("refuses a chat session key, which only the in-app assistant may use", () => {
-    expect(origin({ "X-Yarvis-Session-Key": "chat:some-chat" }).sessionKey).toBeNull();
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": "chat:some-chat",
+        "X-Yarvis-Session-Token": tokenFor("chat:some-chat"),
+      }).sessionKey,
+    ).toBeNull();
+  });
+
+  it("refuses a session key without its own terminal's token", () => {
+    expect(origin({ "X-Yarvis-Session-Key": KEY }).sessionKey).toBeNull();
+    expect(
+      origin({ "X-Yarvis-Session-Key": KEY, "X-Yarvis-Session-Token": tokenFor("ws-claude:other") })
+        .sessionKey,
+    ).toBeNull();
+  });
+
+  it("drops a workspace that isn't the verified session's own", () => {
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": KEY,
+        "X-Yarvis-Session-Token": tokenFor(KEY),
+        "X-Yarvis-Workspace": "22222222-2222-2222-2222-222222222222",
+      }),
+    ).toEqual({ sessionKey: KEY, workspaceId: null });
   });
 });

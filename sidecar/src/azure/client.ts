@@ -177,6 +177,7 @@ export function mapReviewer(reviewer: AzureReviewer): Reviewer {
     state: mapReviewerVote(vote),
     isRequested: vote === 0,
     isTeam: Boolean(reviewer.isContainer),
+    trusted: true,
   };
 }
 
@@ -697,6 +698,8 @@ export class AzureDevOpsClient {
         id: c.id != null ? String(c.id) : "",
         author: c.author?.displayName ?? "",
         ...(c.author?.id ? { authorId: c.author.id } : {}),
+        // Only the organization can see an Azure repo, so every author is one of its people.
+        trusted: true,
         body: c.content ?? "",
         createdAt: c.publishedDate ?? "",
         ...(url ? { url } : {}),
