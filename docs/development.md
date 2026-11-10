@@ -193,9 +193,11 @@ tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
 to 5 with a fixed table, then raises it when the PR bundles many changes. The
 report checks the classification against the facts and never scores below
 them: a `proven` claim coverage doesn't back counts as partly tested, a
-logic or interface change counts at no less than its files' measured reach,
-and a changed code file the review left out counts as an unlisted logic
-change. A band of 4 makes the verdict at least `agent`, and the report lists those
+change that could alter behaviour (logic, interface, removal, or an unproven
+reorganization) counts at no less than its files' measured reach, and a
+changed code file the review left out counts as an unlisted logic change,
+at `shared` reach when the import graph doesn't cover it. Only a logic or
+interface entry can cover a folder. A band of 4 makes the verdict at least `agent`, and the report lists those
 changes under "Needs attention" with what to check. A band of 5 makes it
 `human`. The table and thresholds are first guesses. The band is signed into
 the report data so calibration can later check them against reverts.

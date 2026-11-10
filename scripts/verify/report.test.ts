@@ -278,9 +278,11 @@ describe("finalVerdict", () => {
       evidence: "partial",
       check: "A retry can't send the message twice",
     });
+    // No changed files, so the review's changes are all there is to score.
+    const noChangedFiles = makeFacts({ files: [] });
 
     it("needs an agent for a high-impact change", () => {
-      expect(finalVerdict(makeReview({ changes: [coreLogic] }), makeFacts())).toEqual({
+      expect(finalVerdict(makeReview({ changes: [coreLogic] }), noChangedFiles)).toEqual({
         verdict: "agent",
         why: ["high-impact changes"],
       });
@@ -288,7 +290,7 @@ describe("finalVerdict", () => {
 
     it("needs a human for a very high one", () => {
       const review = makeReview({ changes: [coreLogic, { ...coreLogic, kind: "interface" }] });
-      expect(finalVerdict(review, makeFacts())).toEqual({
+      expect(finalVerdict(review, noChangedFiles)).toEqual({
         verdict: "human",
         why: ["very high impact"],
       });
@@ -298,7 +300,7 @@ describe("finalVerdict", () => {
       const review = makeReview({
         changes: [change({ kind: "logic", reach: "local", evidence: "partial", count: 20 })],
       });
-      expect(finalVerdict(review, makeFacts())).toEqual({
+      expect(finalVerdict(review, noChangedFiles)).toEqual({
         verdict: "agent",
         why: ["high-impact changes"],
       });
@@ -308,7 +310,7 @@ describe("finalVerdict", () => {
       const review = makeReview({
         changes: [change({ kind: "logic", reach: "local", evidence: "partial" })],
       });
-      expect(finalVerdict(review, makeFacts()).verdict).toBe("auto");
+      expect(finalVerdict(review, noChangedFiles).verdict).toBe("auto");
     });
 
     describe("the facts' floor under a review's classification", () => {
@@ -358,6 +360,90 @@ describe("finalVerdict", () => {
           "- **Change the review didn't list** `src/b.ts`: logic, shared; its file has 2 importers in 2 other areas, partly tested. Check: Nobody classified this file's change: read it.",
         );
       });
+
+      it("doesn't let a passive entry at a folder vouch for the files under it", () => {
+        const review = makeReview({
+          changes: [
+            change({ kind: "passive", location: "src/a.ts" }),
+            change({ kind: "passive", location: "src/" }),
+          ],
+        });
+        expect(renderReport(review, facts, TARGET).body).toContain(
+          "**Change the review didn't list** `src/b.ts`",
+        );
+      });
+
+      it("lets a logic entry at a folder name the files under it", () => {
+        const review = makeReview({
+          changes: [
+            change({ kind: "logic", reach: "core", evidence: "partial", location: "src/" }),
+          ],
+        });
+        expect(renderReport(review, facts, TARGET).body).not.toContain(
+          "Change the review didn't list",
+        );
+      });
+
+      it("scores an unlisted file the graph has no reach for as shared", () => {
+        const rust = makeFacts({
+          files: [{ path: "src-tauri/src/a.rs", additions: 5, deletions: 0 }],
+        });
+        const review = makeReview({ changes: [change({ kind: "passive", location: "docs/" })] });
+        expect(finalVerdict(review, rust).verdict).toBe("agent");
+      });
+
+      it("leaves out a file the diff only deletes from", () => {
+        const deleted = makeFacts({
+          files: [{ path: "src/gone.ts", additions: 0, deletions: 30 }],
+        });
+        const review = makeReview({ changes: [change({ kind: "passive", location: "docs/" })] });
+        expect(finalVerdict(review, deleted).verdict).toBe("auto");
+      });
+
+      it("scores an unproven reorganization or a removal at no less than its file's reach", () => {
+        // An untested removal from core code is high; at leaf it would be low.
+        for (const [kind, evidence] of [
+          ["reorganization", "partial"],
+          ["removal", "unproven"],
+        ] as const) {
+          const review = makeReview({
+            changes: [
+              change({ kind, reach: "leaf", evidence, location: "src/a.ts" }),
+              change({ kind: "passive", location: "src/b.ts" }),
+            ],
+          });
+          expect(finalVerdict(review, facts).verdict).toBe("agent");
+        }
+      });
+
+      it("treats a reorganization coverage doesn't back as unproven for its reach", () => {
+        const uncovered = makeFacts({
+          ...facts,
+          coverage: { ...facts.coverage, uncovered: [{ path: "src/a.ts", lines: "3" }] },
+        });
+        const review = makeReview({
+          changes: [
+            change({
+              kind: "reorganization",
+              reach: "leaf",
+              evidence: "proven",
+              location: "src/a.ts",
+            }),
+            change({ kind: "passive", location: "src/b.ts" }),
+          ],
+        });
+        expect(finalVerdict(review, uncovered).verdict).toBe("agent");
+      });
+
+      it("keeps a claimed reach above the measured one", () => {
+        const review = makeReview({
+          changes: [
+            change({ kind: "logic", reach: "core", evidence: "partial", location: "src/b.ts" }),
+            change({ kind: "passive", location: "src/a.ts" }),
+          ],
+        });
+        expect(finalVerdict(review, facts).verdict).toBe("agent");
+      });
     });
 
     describe("a proven claim", () => {
@@ -365,6 +451,7 @@ describe("finalVerdict", () => {
         makeReview({
           changes: [
             change({ kind: "logic", reach: "shared", location: "src/a.ts:3", ...overrides }),
+            change({ kind: "passive", location: "src/b.ts" }),
           ],
         });
       const covered = makeFacts({
@@ -401,7 +488,8 @@ describe("finalVerdict", () => {
         const review = makeReview({
           changes: [
             change({ kind: "logic", reach: "shared", location: "src/elsewhere.ts" }),
-            change({ kind: "passive", location: "src/" }),
+            change({ kind: "passive", location: "src/a.ts" }),
+            change({ kind: "passive", location: "src/b.ts" }),
           ],
         });
         expect(finalVerdict(review, covered).verdict).toBe("agent");
@@ -424,7 +512,8 @@ describe("finalVerdict", () => {
           const review = makeReview({
             changes: [
               change({ kind: "logic", reach: "shared", location }),
-              change({ kind: "passive", location: "src/" }),
+              change({ kind: "passive", location: "src/a.ts" }),
+              change({ kind: "passive", location: "src/b.ts" }),
             ],
           });
           expect(finalVerdict(review, covered).verdict).toBe("agent");

@@ -301,17 +301,26 @@ function measuredReach(change: ReviewChange, facts: Facts): Reach {
 /**
  * Changed code files no change in the review names, each as a partly tested
  * logic change at its measured reach, since a change the review left out is
- * one nobody judged.
+ * one nobody judged. Only an interface or logic change names a whole folder:
+ * otherwise one passive entry at `src/` would vouch for every file under it.
+ * A file the graph has no reach for (Rust, TypeScript outside the source
+ * roots) counts as shared, so an unjudged one still reaches the agent reviewer.
  */
 function unlistedChanges(review: Review, facts: Facts): ReviewChange[] {
-  const named = new Set(review.changes.flatMap((change) => filesAt(changePath(change), facts)));
+  const named = new Set(
+    review.changes.flatMap((change) => {
+      const path = changePath(change);
+      const wholeFolders = change.kind === "interface" || change.kind === "logic";
+      return wholeFolders ? filesAt(path, facts) : facts.files.filter((f) => f.path === path);
+    }),
+  );
   return facts.files
-    .filter((file) => isMeasurableSource(file.path) && !named.has(file))
+    .filter((file) => isMeasurableSource(file.path) && file.additions > 0 && !named.has(file))
     .map((file) => ({
       title: "Change the review didn't list",
       location: file.path,
       kind: "logic",
-      reach: facts.reach?.find((r) => r.path === file.path)?.suggested ?? "local",
+      reach: facts.reach?.find((r) => r.path === file.path)?.suggested ?? "shared",
       evidence: "partial",
       sensitive: false,
       count: 1,
@@ -324,8 +333,9 @@ function unlistedChanges(review: Review, facts: Facts): ReviewChange[] {
  * classification steered by the PR's own text can't score lower than the
  * facts say:
  * - a `proven` claim coverage doesn't back is scored as `partial`;
- * - an interface or logic change is scored at no less than the reach its
- *   files' importers suggest;
+ * - any change that could alter behaviour (interface, logic, removal, or a
+ *   reorganization coverage doesn't prove) is scored at no less than the
+ *   reach its files' importers suggest;
  * - a changed code file no change names is scored as an unlisted logic change.
  * It can't catch a change called by a lower kind.
  */
@@ -335,10 +345,11 @@ function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | nu
       change.evidence === "proven" && change.kind !== "passive" && !coverageBacks(change, facts)
         ? "partial"
         : change.evidence;
-    const reach =
-      change.kind === "interface" || change.kind === "logic"
-        ? measuredReach(change, facts)
-        : change.reach;
+    // An unproven reorganization scores as logic, so it gets logic's floor too.
+    const canAlterBehaviour =
+      ["interface", "logic", "removal"].includes(change.kind) ||
+      (change.kind === "reorganization" && evidence !== "proven");
+    const reach = canAlterBehaviour ? measuredReach(change, facts) : change.reach;
     return { ...change, evidence, reach };
   });
   return scoreImpact([...adjusted, ...unlistedChanges(review, facts)]);

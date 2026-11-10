@@ -357,6 +357,10 @@ alike changes of band 1 or 2 into one entry with `count` (12 passive edits,
 3 new leaf components). List every change that could score 3 or more on its
 own. At most 30 entries; past that, fold more of the lowest-scoring alike
 ones. Keep each `title` under 100 characters and each `check` under 200.
+Only an interface or logic entry can give a folder as its location. Every
+other entry names one file, so fold alike changes within a file, and give
+each changed source file an entry of its own unless an interface or logic
+entry's folder covers it.
 
 **kind**, what the change does:
 
@@ -430,11 +434,13 @@ lower than they allow:
   changed line in them. A folder location needs every changed file under it
   backed. Docs, config, SQL, a file the diff only deletes from, a file no
   test loads, and a PR measured with `--static` never keep `proven`.
-- An interface or logic change counts at no less than the reach
-  `facts.reach` suggests for its files.
-- A changed source file no change's location names counts as an unlisted,
-  partly tested logic change at its suggested reach. A folder location names
-  every file under it.
+- An interface, logic or removal change, or a reorganization coverage
+  doesn't prove, counts at no less than the reach `facts.reach` suggests for
+  its files.
+- A changed source file that gained lines and that no change's location
+  names counts as an unlisted, partly tested logic change at its suggested
+  reach, or `shared` when `facts.reach` doesn't list it (Rust, say). Only an
+  interface or logic entry's folder location names the files under it.
 
 **check**: for every logic, interface or removal change, every change that
 is unproven or sensitive, and every reorganization, one sentence naming what
@@ -498,7 +504,7 @@ Write `$TMPDIR/verify/<N>/review.json`:
   "risk": { "tier": "low | standard | high", "reasons": ["what sets the tier, in under 140 characters"] },
   "changes": [
     { "title": "Retry a send the provider rejected", "location": "sidecar/src/chat/agent.ts:120", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": false, "count": 1, "check": "A retried turn can't save the user's message twice" },
-    { "title": "Comment and naming cleanups", "location": "sidecar/src/chat/", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6 }
+    { "title": "Comment and naming cleanups", "location": "sidecar/src/chat/agent.ts", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6 }
   ],
   "assessed": [{ "path": ".github/workflows/ci.yml", "tier": "standard", "reason": "Adds a typecheck step with the same pinned setup action" }],
   "dimensions": {
