@@ -223,6 +223,15 @@ export interface NewComment {
   startLine?: number;
 }
 
+export interface PostedCommentResult {
+  ok: boolean;
+  /**
+   * "file" when GitHub refused the lines because they aren't part of the diff,
+   * and the comment went on the whole file instead. Azure always says nothing.
+   */
+  placement?: "line" | "file";
+}
+
 /** A saved GitHub search (free-text query). */
 export interface GhFilter {
   id: string;

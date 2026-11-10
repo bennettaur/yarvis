@@ -2,7 +2,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bu
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import * as sidecar from "../../lib/api";
-import type { DiffSide, NewComment, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import type {
+  DiffSide,
+  NewComment,
+  PostedCommentResult,
+  PrFile,
+  PrRef,
+  ReviewThread,
+} from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { mountForInteraction } from "../../test/render";
@@ -20,7 +27,7 @@ const record = async (comment: NewComment) => {
 };
 
 /** Swapped per-test rather than re-mocking, since `mock.module` is global. */
-let post: (comment: NewComment) => Promise<{ ok: boolean }> = record;
+let post: (comment: NewComment) => Promise<PostedCommentResult> = record;
 /** The status the sidecar answers thread writes with. */
 let threadWriteStatus = 200;
 
@@ -180,6 +187,17 @@ describe("useLineComments", () => {
     expect(refetched.pending.map((p) => ({ id: p.id, body: p.body }))).toEqual([
       { id: 1, body: "second" },
     ]);
+  });
+
+  it("adds no optimistic copy when GitHub moved the comment onto the file", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    const comments = await view.render([]);
+    await comments.submit(right(4), "looks off");
+    await settle();
+
+    const after = await view.render([]);
+    expect(after.pending).toEqual([]);
+    expect(after.composer).toBeNull();
   });
 
   it("adds no optimistic copy when the post fails", async () => {

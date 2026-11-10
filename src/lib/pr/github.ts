@@ -5,6 +5,7 @@ import type {
   GhPrConfig,
   MergeMethod,
   NewComment,
+  PostedCommentResult,
   PrDetail,
   PrFile,
   PrInvolvement,
@@ -117,7 +118,7 @@ export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
   );
 export const ghPostComment = (ref: PrRef, comment: NewComment & Record<string, unknown>) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+  send<PostedCommentResult>(`${refApiPath(ref)}/comments`, "POST", comment);
 export const ghReplyToThread = (ref: PrRef, threadId: string, body: string) =>
   send<{ ok: boolean }>(
     `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/replies`,

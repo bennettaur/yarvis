@@ -1639,6 +1639,73 @@ describe("github review threads", () => {
     expect(calls[1]!.body.side).toBe("RIGHT");
   });
 
+  /** A client whose comment POSTs answer with `replies` in turn; the PR read always succeeds. */
+  function commentReplies(...replies: { status: number; body: unknown }[]) {
+    const calls: { url: string; body: any }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (init?.method !== "POST") {
+        return new Response(JSON.stringify({ head: { sha: "abc" } }), { status: 200 });
+      }
+      const reply = replies.shift() ?? { status: 201, body: {} };
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }) as unknown as typeof fetch;
+    return { calls, gh: new GitHubClient("t", fetchImpl) };
+  }
+
+  const outsideDiff = {
+    status: 422,
+    body: {
+      message: "Validation Failed",
+      errors: ["pull_request_review_thread.line must be part of the diff"],
+    },
+  };
+
+  it("says a comment landed on its line when GitHub takes it", async () => {
+    const { gh } = commentReplies({ status: 201, body: {} });
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result).toEqual({ commitId: "abc", placement: "line" });
+  });
+
+  it("moves a comment onto the file when its line is outside the diff", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    const result = await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      side: "LEFT",
+      body: "x",
+    });
+    expect(result).toEqual({ commitId: "abc", placement: "file" });
+    expect(calls[2]!.body).toEqual({
+      commit_id: "abc",
+      path: "a.ts",
+      subject_type: "file",
+      body: "**Line 12 of the old file**\n\nx",
+    });
+  });
+
+  it("names a range's lines in the file-level fallback", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, startLine: 9, body: "x" });
+    expect(calls[2]!.body.body).toBe("**Lines 9-12**\n\nx");
+  });
+
+  it("throws other validation failures with GitHub's reason, without a fallback", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ resource: "PullRequestReviewComment", field: "path", code: "invalid" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).message).toContain("Validation Failed (path invalid)");
+    expect(calls).toHaveLength(2);
+  });
+
   it("replies through the thread reply mutation", async () => {
     const { calls, gh } = capture();
     await gh.replyToThread("T1", "agreed");

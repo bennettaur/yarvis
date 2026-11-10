@@ -111,7 +111,7 @@ export function useLineComments(
   }, [pending, posted.length]);
 
   const submit = async (target: CommentTarget, body: string) => {
-    await postPrComment(
+    const { placement } = await postPrComment(
       prRef,
       {
         path: file.filename,
@@ -124,9 +124,13 @@ export function useLineComments(
       seen,
     );
     invalidateLastReview(prRef);
-    // Read the counter outside the updater, which React may call more than once.
-    const id = nextId.current++;
-    setPosted((p) => [...p, { ...target, id, body }]);
+    // A comment GitHub moved onto the whole file never comes back on this
+    // line, so an optimistic copy here would never be cleared.
+    if (placement !== "file") {
+      // Read the counter outside the updater, which React may call more than once.
+      const id = nextId.current++;
+      setPosted((p) => [...p, { ...target, id, body }]);
+    }
     setComposer(null);
     // Drop the cached detail so the real thread arrives and supersedes the
     // optimistic copy. This wakes every mounted subscriber, so the refetch can

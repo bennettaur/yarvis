@@ -55,6 +55,33 @@ export type {
 
 type FetchFn = typeof fetch;
 
+/** Where a posted review comment landed: on its lines, or on the whole file. */
+export type CommentPlacement = "line" | "file";
+
+/**
+ * Whether GitHub refused a review comment because its line isn't part of the
+ * diff: an unchanged line outside every hunk, or a line number from the other
+ * side of the diff.
+ */
+function isLineOutsideDiff(error: GitHubError): boolean {
+  return (
+    error.status === 422 &&
+    error.details.some((d) => /must be part of the diff|could not be resolved|diff_hunk/i.test(d))
+  );
+}
+
+/** The lines a review comment was meant for, as the heading of its file-level fallback. */
+function describeCommentLines(input: NewComment): string {
+  const side = input.side ?? "RIGHT";
+  const startSide = input.startSide ?? side;
+  const file = (s: string) => (s === "LEFT" ? " of the old file" : "");
+  if (input.startLine == null) return `**Line ${input.line}${file(side)}**`;
+  if (startSide !== side) {
+    return `**Line ${input.startLine}${file(startSide)} to line ${input.line}${file(side)}**`;
+  }
+  return `**Lines ${input.startLine}-${input.line}${file(side)}**`;
+}
+
 function parseRepo(repositoryUrl?: string, htmlUrl?: string): { owner: string; repo: string } {
   if (repositoryUrl) {
     const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
@@ -2236,22 +2263,25 @@ export class GitHubClient {
    * comments to a commit, so the PR's head sha is fetched first; `line` +
    * `side` target the range's last line in the diff, and `start_line` +
    * `start_side` its first.
+   *
+   * GitHub only takes a line comment on a line inside the diff's hunks. When it
+   * refuses the line for that reason, the comment goes on the file instead,
+   * opening with the lines it was meant for, and `placement` says so.
    */
   async postComment(
     owner: string,
     repo: string,
     number: number,
     input: NewComment,
-  ): Promise<{ commitId: string }> {
+  ): Promise<{ commitId: string; placement: CommentPlacement }> {
     const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
     const side = input.side ?? "RIGHT";
     const range =
       input.startLine != null
         ? { start_line: input.startLine, start_side: input.startSide ?? side }
         : {};
-    const res = await this.fetchImpl(
-      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
-      {
+    const post = (fields: Record<string, unknown>) =>
+      this.fetchImpl(`${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -2259,18 +2289,20 @@ export class GitHubClient {
           "X-GitHub-Api-Version": "2022-11-28",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          body: input.body,
-          commit_id: pr.head.sha,
-          path: input.path,
-          line: input.line,
-          side,
-          ...range,
-        }),
-      },
-    );
-    if (!res.ok) throw await githubErrorFrom(res, "post comment");
-    return { commitId: pr.head.sha };
+        body: JSON.stringify({ commit_id: pr.head.sha, path: input.path, ...fields }),
+      });
+
+    const res = await post({ body: input.body, line: input.line, side, ...range });
+    if (res.ok) return { commitId: pr.head.sha, placement: "line" };
+    const error = await githubErrorFrom(res, "post comment");
+    if (!isLineOutsideDiff(error)) throw error;
+
+    const fileRes = await post({
+      body: `${describeCommentLines(input)}\n\n${input.body}`,
+      subject_type: "file",
+    });
+    if (!fileRes.ok) throw await githubErrorFrom(fileRes, "post comment");
+    return { commitId: pr.head.sha, placement: "file" };
   }
 
   /** Replies to a review thread, addressed by its GraphQL node id. */
