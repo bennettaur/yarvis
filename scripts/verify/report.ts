@@ -315,7 +315,7 @@ function unlistedChanges(review: Review, facts: Facts): ReviewChange[] {
     }),
   );
   return facts.files
-    .filter((file) => isMeasurableSource(file.path) && file.additions > 0 && !named.has(file))
+    .filter((file) => isMeasurableSource(file.path) && !named.has(file))
     .map((file) => ({
       title: "Change the review didn't list",
       location: file.path,

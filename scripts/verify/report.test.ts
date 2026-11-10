@@ -392,12 +392,16 @@ describe("finalVerdict", () => {
         expect(finalVerdict(review, rust).verdict).toBe("agent");
       });
 
-      it("leaves out a file the diff only deletes from", () => {
+      it("counts a file the diff only deletes from, since deleting a guard changes behaviour", () => {
         const deleted = makeFacts({
           files: [{ path: "src/gone.ts", additions: 0, deletions: 30 }],
         });
-        const review = makeReview({ changes: [change({ kind: "passive", location: "docs/" })] });
-        expect(finalVerdict(review, deleted).verdict).toBe("auto");
+        const unnamed = makeReview({ changes: [change({ kind: "passive", location: "docs/" })] });
+        expect(finalVerdict(unnamed, deleted).verdict).toBe("agent");
+        const named = makeReview({
+          changes: [change({ kind: "removal", evidence: "partial", location: "src/gone.ts" })],
+        });
+        expect(finalVerdict(named, deleted).verdict).toBe("auto");
       });
 
       it("scores an unproven reorganization or a removal at no less than its file's reach", () => {
@@ -503,7 +507,13 @@ describe("finalVerdict", () => {
           ],
         });
         for (const location of ["docs/a.md", "src/a.ts"]) {
-          expect(finalVerdict(sharedLogic({ location }), facts).verdict).toBe("agent");
+          const review = makeReview({
+            changes: [
+              change({ kind: "logic", reach: "shared", location }),
+              change({ kind: "passive", location: "src/a.ts" }),
+            ],
+          });
+          expect(finalVerdict(review, facts).verdict).toBe("agent");
         }
       });
 

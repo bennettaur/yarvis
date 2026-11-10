@@ -352,15 +352,19 @@ the diff.
 List the PR's independent changes in `changes`. A change is one function,
 type, config key, route or migration that changed, together with whatever it
 made the PR update: an interface change and the twelve callers it updated are
-one change, not thirteen, and so is a rename across forty files. Fold many
-alike changes of band 1 or 2 into one entry with `count` (12 passive edits,
-3 new leaf components). List every change that could score 3 or more on its
-own. At most 30 entries; past that, fold more of the lowest-scoring alike
-ones. Keep each `title` under 100 characters and each `check` under 200.
-Only an interface or logic entry can give a folder as its location. Every
-other entry names one file, so fold alike changes within a file, and give
-each changed source file an entry of its own unless an interface or logic
-entry's folder covers it.
+one change, not thirteen. Fold alike changes of band 1 or 2 in one file into
+one entry with `count` (12 passive edits in `agent.ts`). List every change
+that could score 3 or more on its own. Keep each `title` under 100
+characters and each `check` under 200.
+
+Only an interface or logic entry can give a folder as its location, since
+`report.ts` can't check that what a folder holds is passive. Every other
+entry names one file, and each changed source file needs an entry naming it
+or an interface or logic folder covering it; one left out is scored as an
+unlisted logic change. So a rename of something exported, across forty
+files, is one `interface` entry at their common folder. At most 30 entries:
+a PR with more files than that to list one by one should be split, and its
+band will say so.
 
 **kind**, what the change does:
 
@@ -437,8 +441,8 @@ lower than they allow:
 - An interface, logic or removal change, or a reorganization coverage
   doesn't prove, counts at no less than the reach `facts.reach` suggests for
   its files.
-- A changed source file that gained lines and that no change's location
-  names counts as an unlisted, partly tested logic change at its suggested
+- A changed source file no change's location names, including one the diff
+  only deletes from, counts as an unlisted, partly tested logic change at its suggested
   reach, or `shared` when `facts.reach` doesn't list it (Rust, say). Only an
   interface or logic entry's folder location names the files under it.
 
