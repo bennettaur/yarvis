@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type DisplayError, formatError } from "../../../lib/errors";
 import { killPty, ptyExists } from "../../../lib/pty";
 import { startReviewClaudeSession } from "../../../lib/reviewWorkspaces/api";
@@ -8,7 +8,7 @@ import TerminalPanel from "../../TerminalPanel";
 import type { TabContext } from "./types";
 
 /** The PTY id the core gives a review PR's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
-export const reviewClaudeSessionId = (prId: string) => `review-claude:${prId}`;
+const reviewClaudeSessionId = (prId: string) => `review-claude:${prId}`;
 
 type SessionState =
   | { kind: "starting" }
@@ -17,9 +17,9 @@ type SessionState =
 
 /**
  * Claude Code running in the PR's checkout, for asking questions about the
- * change. The sidecar starts it with the review runs' lockdown (no settings
- * files, no hooks or MCP servers, Bash sandboxed with no network, no edits);
- * this tab only starts it when none is running and attaches to it.
+ * change. The sidecar starts it locked down (see
+ * `sidecar/src/reviewWorkspaces/claudeSession.ts`); this tab only starts it
+ * when none is running and attaches to it.
  *
  * The terminal is mounted only once the session exists: attaching to an id
  * with no session spawns a plain shell under it instead.
@@ -27,25 +27,43 @@ type SessionState =
 export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
   const sessionId = reviewClaudeSessionId(pr.id);
-  const checkoutReady = pr.status === "ready" && pr.worktreeStatus === "ready";
-  const [state, setState] = useState<SessionState>({ kind: "starting" });
+  // The same test the sidecar's `requireCheckout` makes before it starts one.
+  const checkoutReady = pr.status === "ready" && pr.worktreeStatus === "ready" && !!pr.headSha;
+  const [session, setSession] = useState<SessionState>({ kind: "starting" });
+  // Only the latest start may set the state, so a slow one that finishes after
+  // a later start (or after the tab went away) can't overwrite it.
+  const attempt = useRef(0);
 
   const start = useCallback(async () => {
-    setState({ kind: "starting" });
+    const mine = ++attempt.current;
+    const settle = (next: SessionState) => {
+      if (mine === attempt.current) setSession(next);
+    };
+    setSession({ kind: "starting" });
     try {
       if (!(await ptyExists(sessionId))) await startReviewClaudeSession(workspaceId, pr.id);
-      setState({ kind: "live" });
+      settle({ kind: "live" });
     } catch (e) {
-      setState({ kind: "failed", error: formatError(e) });
+      settle({ kind: "failed", error: formatError(e) });
     }
   }, [workspaceId, pr.id, sessionId]);
 
   useEffect(() => {
     if (checkoutReady) void start();
+    return () => {
+      attempt.current++;
+    };
   }, [checkoutReady, start]);
 
   const restart = async () => {
-    await killPty(sessionId).catch(() => {});
+    // Unmount the terminal first, so it doesn't sit on the session being killed.
+    setSession({ kind: "starting" });
+    try {
+      await killPty(sessionId);
+    } catch (e) {
+      setSession({ kind: "failed", error: formatError(e) });
+      return;
+    }
     await start();
   };
 
@@ -54,11 +72,11 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
       <p className="p-4 text-sm text-zinc-400">Claude Code starts once the PR is checked out.</p>
     );
   }
-  if (state.kind === "failed") {
+  if (session.kind === "failed") {
     return (
       <div className="p-4">
         <ErrorNotice
-          error={state.error}
+          error={session.error}
           actions={
             <button
               type="button"
@@ -72,7 +90,7 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
       </div>
     );
   }
-  if (state.kind === "starting") {
+  if (session.kind === "starting") {
     return (
       <div className="p-4">
         <LoadingIndicator label="Starting Claude Code…" />

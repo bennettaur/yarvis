@@ -321,8 +321,9 @@ says so, with **Re-run**.
 checkout, for asking questions about the change: what a function does, where
 something is called from, why a test might fail. It starts once the checkout
 is ready, and keeps running when you switch tabs or close this one, so
-reopening it picks up the same conversation. **Restart** ends it and starts a
-fresh one.
+reopening it picks up the same conversation. When you quit Claude Code, the
+session ends with it, and opening the tab again starts a new one. **Restart**
+ends it and starts a fresh one straight away.
 
 The checkout is code the PR's author wrote, so the session is locked down the
 same way the verification report is:
@@ -332,7 +333,8 @@ same way the verification report is:
   and MCP servers don't load in this session.
 - It can read the checkout but not edit it.
 - Commands run in Claude Code's sandbox with no network, and can't read your
-  SSH, cloud or Yarvis credentials. Every tool call asks you first.
+  SSH, cloud or Yarvis credentials. Claude asks you before running a command
+  or doing anything else beyond reading the checkout.
 - Its instructions tell it that what it reads in the checkout is material to
   explain, not instructions to follow.
 

@@ -191,8 +191,8 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
 }
 
 /**
- * Starts Claude Code in the PR's checkout, or finds the session already
- * running. Answers with the PTY id to attach a terminal to.
+ * Starts Claude Code in the PR's checkout, or leaves the one already running.
+ * Answers with the PTY id to attach a terminal to.
  */
 export function startReviewClaudeSession(workspaceId: string, prId: string) {
   return json<{ sessionId: string }>(

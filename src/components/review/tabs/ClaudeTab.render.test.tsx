@@ -13,6 +13,7 @@ const pr = {
   status: "ready",
   worktreeStatus: "ready",
   worktreePath: "/review/pr1",
+  headSha: "a".repeat(40),
 } as ReviewWorkspacePr;
 
 const ctxFor = (p: ReviewWorkspacePr): TabContext => ({
@@ -28,6 +29,7 @@ let live: boolean;
 let starts: string[];
 let startFails: boolean;
 let attached: string[];
+let kills: string[];
 let mounted: { unmount: () => void } | null = null;
 /** Set when this file installed the IntersectionObserver stub, so it can undo it. */
 let installedObserver = false;
@@ -53,6 +55,7 @@ beforeEach(() => {
   starts = [];
   startFails = false;
   attached = [];
+  kills = [];
   stubReviewApi({
     startReviewClaudeSession: async (_ws, prId) => {
       starts.push(prId);
@@ -69,7 +72,8 @@ beforeEach(() => {
     },
     resizePty: async () => {},
     writePty: async () => {},
-    killPty: async () => {
+    killPty: async (id: string) => {
+      kills.push(id);
       live = false;
     },
     onPtyOutput: async () => () => {},
@@ -88,6 +92,9 @@ afterAll(() => {
   resetReviewApi();
   resetPtyApi();
 });
+
+const buttonNamed = (host: HTMLElement, label: string) =>
+  [...host.querySelectorAll("button")].find((b) => b.textContent === label);
 
 describe("ClaudeTab", () => {
   it("starts a session when none is running, then attaches to it", async () => {
@@ -113,6 +120,29 @@ describe("ClaudeTab", () => {
     await waitFor(() => textOf(m.host.innerHTML).includes("not Claude Code"), "the error");
     expect(textOf(m.host.innerHTML)).toContain("Retry");
     expect(attached).toEqual([]);
+  });
+
+  it("retries a failed start", async () => {
+    startFails = true;
+    const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pr) }));
+    mounted = m;
+    await waitFor(() => textOf(m.host.innerHTML).includes("Retry"), "the Retry button");
+    startFails = false;
+    buttonNamed(m.host, "Retry")?.click();
+    await waitFor(() => attached.length > 0, "the terminal to attach");
+    expect(starts).toEqual(["pr1", "pr1"]);
+  });
+
+  it("restart ends the session and starts a new one", async () => {
+    live = true;
+    const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pr) }));
+    mounted = m;
+    await waitFor(() => attached.length === 1, "the first attach");
+    buttonNamed(m.host, "Restart")?.click();
+    await waitFor(() => attached.length === 2, "the terminal to reattach");
+    expect(kills).toEqual(["review-claude:pr1"]);
+    expect(starts).toEqual(["pr1"]);
+    expect(attached).toEqual(["review-claude:pr1", "review-claude:pr1"]);
   });
 
   it("waits for the checkout before starting anything", async () => {

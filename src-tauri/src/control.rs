@@ -102,8 +102,9 @@ mod unix_impl {
         #[serde(rename = "prId")]
         pr_id: String,
         cwd: String,
-        #[serde(rename = "settingsPath")]
-        settings_path: String,
+        /// The session's settings as JSON text, passed to `--settings` inline
+        /// so there is no file a sandboxed command could rewrite.
+        settings: String,
     }
 
     #[derive(Deserialize)]
@@ -306,8 +307,9 @@ mod unix_impl {
             "claude.spawnReview" => {
                 let p: SpawnReviewParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
+                // Review PR ids are UUIDs too.
                 validate_workspace_id(&p.pr_id).map_err(|_| "invalid prId".to_string())?;
-                spawn_review_claude_session(app, state.inner(), &p.pr_id, p.cwd, &p.settings_path)
+                spawn_review_claude_session(app, state.inner(), &p.pr_id, p.cwd, &p.settings)
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -477,6 +479,21 @@ mod unix_impl {
                 p.resume.as_deref(),
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
             );
+        }
+
+        #[test]
+        fn reads_the_review_session_the_sidecar_sends() {
+            // Shaped like `spawnReviewClaudeSession` in `controlClient.ts`.
+            let p: SpawnReviewParams = serde_json::from_value(json!({
+                "prId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+                "cwd": "/tmp/review/pr",
+                "settings": "{\"disableAllHooks\":true}",
+            }))
+            .expect("sidecar payload");
+            assert_eq!(p.cwd, "/tmp/review/pr");
+            assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
+            assert!(validate_workspace_id(&p.pr_id).is_ok());
+            assert!(validate_workspace_id("../x").is_err());
         }
 
         #[test]

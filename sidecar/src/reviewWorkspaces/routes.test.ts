@@ -1473,32 +1473,27 @@ describe("patches for an agent run", () => {
 });
 
 describe("claude session", () => {
-  let spawned: { prId: string; cwd: string; settingsPath: string }[];
+  let spawned: { prId: string; cwd: string; settings: string }[];
   let hasCore: boolean;
-  let tmpRoot: string;
-  let sessionApp: Hono;
+  let spawnError: Error | null;
+  const sessionApp = new Hono().route(
+    "/rw",
+    createReviewWorkspaceRoutes(config, {
+      deps,
+      claudeSession: {
+        spawn: async (input) => {
+          if (spawnError) throw spawnError;
+          spawned.push(input);
+        },
+        hasCore: () => hasCore,
+      },
+    }),
+  );
 
   beforeEach(() => {
     spawned = [];
     hasCore = true;
-    tmpRoot = mkdtempSync(join(tmpdir(), "yarvis-review-claude-test-"));
-    sessionApp = new Hono().route(
-      "/rw",
-      createReviewWorkspaceRoutes(config, {
-        deps,
-        claudeSession: {
-          spawn: async (input) => {
-            spawned.push(input);
-          },
-          hasCore: () => hasCore,
-          tmpRoot,
-        },
-      }),
-    );
-  });
-
-  afterEach(() => {
-    rmSync(tmpRoot, { recursive: true, force: true });
+    spawnError = null;
   });
 
   const start = (wsId: string, prId: string) =>
@@ -1513,12 +1508,11 @@ describe("claude session", () => {
     expect(spawned).toHaveLength(1);
     const [spawn] = spawned as [(typeof spawned)[number]];
     expect(spawn).toMatchObject({ prId, cwd: worktreePath });
-    expect(spawn.settingsPath.startsWith(tmpRoot)).toBe(true);
-    const settings = JSON.parse(readFileSync(spawn.settingsPath, "utf8"));
+    const settings = JSON.parse(spawn.settings);
     expect(settings.disableAllHooks).toBe(true);
     expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true });
     expect(settings.permissions.deny).toEqual(
-      expect.arrayContaining(["Write", "Edit", "NotebookEdit", "WebFetch"]),
+      expect.arrayContaining(["Write", "Edit", "NotebookEdit", "WebFetch", "Read(~/.ssh)"]),
     );
   });
 
@@ -1537,5 +1531,13 @@ describe("claude session", () => {
     const { wsId, prId } = await readyWorkspace();
     expect((await start(wsId, prId)).status).toBe(503);
     expect(spawned).toHaveLength(0);
+  });
+
+  it("passes on why the core refused", async () => {
+    spawnError = new Error("the configured agent is not Claude Code");
+    const { wsId, prId } = await readyWorkspace();
+    const res = await start(wsId, prId);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("not Claude Code");
   });
 });
