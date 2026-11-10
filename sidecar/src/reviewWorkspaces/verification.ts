@@ -147,8 +147,6 @@ const concernSchema = z.object({
   line: optionalLine,
 });
 
-/** Most changes one risk agent lists; the coordinator joins every group's. */
-const MAX_CHANGES_PER_GROUP = 15;
 /** Most changes the report keeps, highest band first. The load still counts every one. */
 export const MAX_CHANGES_SHOWN = 30;
 
@@ -192,7 +190,9 @@ export const MISSING_CHECK = "No check given: read this change.";
  * The agent classifies the changes and `scoreImpact` scores them. The level
  * is the stricter of the band's and the agent's own, which also covers what
  * the band can't see: a failing CI check, or a group whose agent failed and
- * listed nothing.
+ * listed nothing. Unlike `/verify-pr`'s report, nothing here checks a
+ * `proven` claim against coverage, so the band is for the reader and must not
+ * decide a merge as it stands.
  */
 const riskSchema = z
   .object({
@@ -206,7 +206,9 @@ const riskSchema = z
       .array(changeSchema)
       .nullish()
       .transform((changes) => changes ?? [])
-      .meta({ description: `At most ${MAX_CHANGES_PER_GROUP} items per group.` }),
+      .meta({
+        description: "Every group's changes, all of them. Yarvis scores and trims the list.",
+      }),
   })
   .transform(({ level, changes, ...risk }) => {
     const impact = scoreImpact(changes);

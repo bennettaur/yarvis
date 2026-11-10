@@ -434,6 +434,32 @@ describe("dropping must-read flags a finding already reports", () => {
     expect(notes).toEqual([]);
   });
 
+  it("drops one a high-impact change reports, but not one a low-impact change does", () => {
+    const withChange = (kind: string) =>
+      keptNotes({
+        ...flagged([{ note: retry, line: 18 }]),
+        risk: {
+          level: "low",
+          clientImpact: "Uploads can hang.",
+          mitigations: [],
+          concerns: [],
+          changes: [
+            {
+              title: "Retry count is never decremented",
+              kind,
+              reach: "core",
+              evidence: "partial",
+              check: "c",
+              path: "src/a.ts",
+              line: 17,
+            },
+          ],
+        },
+      });
+    expect(withChange("logic")).toEqual([]);
+    expect(withChange("passive")).toEqual([retry]);
+  });
+
   it("still drops one when the run wasn't asked for risk", () => {
     const notes = keptNotes(
       {

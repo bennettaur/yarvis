@@ -19,6 +19,7 @@ import {
   changeBand,
   describeCounts,
   EVIDENCE,
+  type Evidence,
   type Impact,
   REACHES,
   scoreImpact,
@@ -253,16 +254,37 @@ function changePath(change: ReviewChange): string {
 }
 
 /**
- * The PR's impact, from the review's changes as the facts allow. A change
- * claimed `proven` in a file with changed lines no test runs is scored as
- * `partial`, so a classification steered by the PR's own text can't lower a
- * band the coverage contradicts.
+ * Whether coverage backs a `proven` claim: the location names changed files,
+ * and tests ran every changed line in each. It fails closed, so a location
+ * that names no changed file, a file no test loads, and a PR measured with
+ * `--static` all count as unbacked.
  */
-export function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | null {
-  const uncovered = new Set(facts.coverage.uncovered.map((u) => u.path));
+function coverageBacks(change: ReviewChange, facts: Facts): boolean {
+  const path = changePath(change);
+  const files = facts.files
+    .map((file) => file.path)
+    .filter((file) => file === path || (path.endsWith("/") && file.startsWith(path)));
+  const { uncovered, unmeasured, notLoaded, noTestsRan } = facts.coverage;
+  const untested = new Set([
+    ...uncovered.map((u) => u.path),
+    ...unmeasured,
+    ...notLoaded,
+    ...noTestsRan,
+  ]);
+  return files.length > 0 && files.every((file) => !untested.has(file));
+}
+
+/**
+ * The PR's impact, from the review's changes as the facts allow. A change
+ * claimed `proven` that coverage doesn't back is scored as `partial`, so a
+ * classification steered by the PR's own text can't lower a band the
+ * coverage contradicts. It can't catch a lower kind or reach, or a change
+ * left out.
+ */
+function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | null {
   return scoreImpact(
     review.changes.map((change) =>
-      change.evidence === "proven" && uncovered.has(changePath(change))
+      change.evidence === "proven" && change.kind !== "passive" && !coverageBacks(change, facts)
         ? { ...change, evidence: "partial" as const }
         : change,
     ),
@@ -390,7 +412,7 @@ function mutationNote(mutation: Facts["mutation"]): string {
   return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
 }
 
-const EVIDENCE_TEXT: Record<(typeof EVIDENCE)[number], string> = {
+const EVIDENCE_TEXT: Record<Evidence, string> = {
   proven: "proven by tests",
   partial: "partly tested",
   unproven: "untested",
@@ -509,6 +531,7 @@ export function renderReport(
   if (impact && impact.attention.length > 0) {
     lines.push("", "### Needs attention", "");
     for (const change of impact.attention) {
+      // The schema checks the claimed band; the coverage check can raise it past one without a check.
       lines.push(
         `- **${inline(change.title)}** ${code(change.location)}: ${inline(describeChange(change, facts))}. Check: ${inline(change.check || "none given, so read this change")}`,
       );

@@ -44,8 +44,9 @@ const RISK_CLASS: Record<VerificationRiskLevel, string> = {
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
 
-// The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`,
-// which the frontend can't import; change both together.
+// The band labels, kind names, evidence text and attention band copy
+// `sidecar/src/verify/impact.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
+// `reviewWorkspaces/verification.ts`. The frontend can't import either, so change both together.
 const IMPACT_LABEL: Record<ImpactBand, string> = {
   1: "minimal",
   2: "low",
@@ -65,11 +66,14 @@ const IMPACT_CLASS: Record<ImpactBand, string> = {
 /** Changes at or above this band are listed for attention; the sidecar's `ATTENTION_BAND`. */
 const ATTENTION_BAND = 4;
 
-/** The sidecar's `LEVEL_FOR_BAND`: the risk level a band alone implies. */
-function levelForBand(band: ImpactBand): VerificationRiskLevel {
-  if (band >= 4) return "high";
-  return band === 3 ? "medium" : "low";
-}
+/** The risk level a band alone implies. */
+const LEVEL_FOR_BAND: Record<ImpactBand, VerificationRiskLevel> = {
+  1: "low",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "high",
+};
 
 const KIND_NAMES: [ChangeKind, string, string][] = [
   ["passive", "passive", "passive"],
@@ -540,11 +544,8 @@ function ImpactDetail({
           )
         </summary>
         <ul className="mt-1.5 space-y-1">
-          {impact.changes.map((c) => (
-            <li
-              key={`${c.title}:${c.path}:${c.line}`}
-              className="flex flex-wrap items-center gap-2"
-            >
+          {impact.changes.map((c, i) => (
+            <li key={`${i}:${c.title}`} className="flex flex-wrap items-center gap-2">
               <span className="text-zinc-500">{c.band}/5</span>
               <span className="text-zinc-300">{c.title}</span>
               <Location path={c.path} line={c.line} onOpen={onOpen} />
@@ -612,7 +613,7 @@ export default function VerificationReportView({
                 </span>
               )}
               {/* The level shows beside the band only when the agent judged it stricter. */}
-              {(!risk.impact || risk.level !== levelForBand(risk.impact.band)) && (
+              {(!risk.impact || risk.level !== LEVEL_FOR_BAND[risk.impact.band]) && (
                 <span
                   className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
                 >

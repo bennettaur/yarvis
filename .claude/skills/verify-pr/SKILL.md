@@ -386,14 +386,15 @@ reach or evidence.
 
 - `leaf`: private to its file, a test, a script, or a view nothing else
   renders.
-- `local`: used within its own feature folder.
+- `local`: used within its own feature folder and at most one other.
 - `shared`: used from two to four other feature folders.
+- `core`: used from five or more, or what many features go through: the
+  agent loop, the database client, config, fencing, `guardedFetch`, git, the
+  resource cache.
 
 A feature folder is what `facts.reach` counts as an area:
-`sidecar/src/<folder>`, `src/<folder>/<folder>`, `scripts/<folder>` or
-`demo/<folder>`.
-- `core`: what many features go through: the agent loop, the database
-  client, config, fencing, `guardedFetch`, git, the resource cache.
+`sidecar/src/<folder>`, `src/<folder>/<folder>`, `scripts/<folder>`,
+`demo/<folder>` or `video/<folder>`.
 
 `facts.reach` gives each changed source file's importers and a `suggested`
 reach from the import graph. That is the file's reach, roughly: it doesn't
@@ -421,13 +422,14 @@ For Rust and anything else `facts.reach` doesn't list, Grep for users.
 do, or deletes or migrates data. This is the same ground as step 6b's high
 tier, so such a change raises both the risk tier and the impact band.
 
-`report.ts` scores a `proven` change in a file with changed lines no test
-runs as `partial`, since the coverage says otherwise.
+`report.ts` scores a `proven` change as `partial` unless coverage backs it:
+its location names changed files and tests ran every changed line in them.
+So a folder location, a file no test loads, and a PR measured with
+`--static` never keep `proven`.
 
-**check**: for any change that could score 4 or more (logic, interface or
-removal in shared or core code, a reorganization there that isn't `proven`,
-or anything unproven or sensitive there), one sentence
-naming what a reviewer should confirm, as specific as a finding's fix:
+**check**: for every logic, interface or removal change, every change that is unproven or
+sensitive, and every reorganization that isn't `proven`, one sentence naming what a reviewer
+should confirm, as specific as a finding's fix:
 "`runAgentTurn` still saves nothing after an abort", not "check the logic".
 `report.ts` refuses a high change without one.
 

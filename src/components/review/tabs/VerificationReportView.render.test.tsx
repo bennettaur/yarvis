@@ -167,6 +167,44 @@ describe("VerificationReportView", () => {
     expect(text).toContain("Every change (1 of 40)");
   });
 
+  it("shows only the band when the agent's level matches it", async () => {
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const counts = {
+      passive: 0,
+      reorganization: 0,
+      addition: 0,
+      removal: 0,
+      interface: 0,
+      logic: 1,
+    };
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            risk: {
+              ...risk,
+              level: "medium",
+              impact: {
+                band: 3,
+                highestChangeBand: 3,
+                load: 2,
+                raisedByVolume: 0,
+                total: 0,
+                counts,
+                changes: [],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("moderate impact · 3/5");
+    expect(text).not.toContain("medium risk");
+    expect(text).not.toContain("raised from");
+  });
+
   it("links only paths the PR has, and shows any other as plain text", async () => {
     const html = await renderToHtml(
       createElement(VerificationReportView, {

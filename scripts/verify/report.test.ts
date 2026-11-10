@@ -311,18 +311,63 @@ describe("finalVerdict", () => {
       expect(finalVerdict(review, makeFacts()).verdict).toBe("auto");
     });
 
-    it("doesn't take proof at its word where changed lines have no test", () => {
-      const review = makeReview({
-        changes: [change({ kind: "logic", reach: "shared", location: "src/a.ts:3" })],
+    describe("a proven claim", () => {
+      const sharedLogic = (overrides: Partial<Change> = {}) =>
+        makeReview({
+          changes: [
+            change({ kind: "logic", reach: "shared", location: "src/a.ts:3", ...overrides }),
+          ],
+        });
+      const covered = makeFacts({
+        files: [
+          { path: "src/a.ts", additions: 9, deletions: 0 },
+          { path: "src/b.ts", additions: 4, deletions: 0 },
+        ],
       });
-      const covered = makeFacts();
-      const uncovered = makeFacts({
-        coverage: { ...covered.coverage, uncovered: [{ path: "src/a.ts", lines: "3-9" }] },
+      const withCoverage = (coverage: Partial<Facts["coverage"]>) =>
+        makeFacts({ ...covered, coverage: { ...covered.coverage, ...coverage } });
+
+      it("stands where tests ran every changed line", () => {
+        expect(finalVerdict(sharedLogic(), covered).verdict).toBe("auto");
       });
-      expect(finalVerdict(review, covered).verdict).toBe("auto");
-      expect(finalVerdict(review, uncovered)).toEqual({
-        verdict: "agent",
-        why: ["high-impact changes"],
+
+      it("counts as partial where changed lines have no test, with a prompt to read it", () => {
+        const facts = withCoverage({ uncovered: [{ path: "src/a.ts", lines: "3-9" }] });
+        expect(finalVerdict(sharedLogic(), facts)).toEqual({
+          verdict: "agent",
+          why: ["high-impact changes"],
+        });
+        expect(renderReport(sharedLogic(), facts, TARGET).body).toContain(
+          "Check: none given, so read this change",
+        );
+      });
+
+      it("counts as partial in a file no test loads, or a PR measured without running it", () => {
+        for (const coverage of [{ notLoaded: ["src/a.ts"] }, { unmeasured: ["src/a.ts"] }]) {
+          expect(finalVerdict(sharedLogic(), withCoverage(coverage)).verdict).toBe("agent");
+        }
+      });
+
+      it("counts as partial where its location names no changed file", () => {
+        expect(finalVerdict(sharedLogic({ location: "src/elsewhere.ts" }), covered).verdict).toBe(
+          "agent",
+        );
+      });
+
+      it("checks every changed file under a folder location", () => {
+        const folder = sharedLogic({ location: "src/" });
+        expect(finalVerdict(folder, covered).verdict).toBe("auto");
+        const facts = withCoverage({ uncovered: [{ path: "src/b.ts", lines: "1" }] });
+        expect(finalVerdict(folder, facts).verdict).toBe("agent");
+      });
+
+      it("never lowers an unproven claim", () => {
+        const review = sharedLogic({ evidence: "unproven", check: "x" });
+        const facts = withCoverage({ uncovered: [{ path: "src/a.ts", lines: "3-9" }] });
+        expect(finalVerdict(review, facts)).toEqual({
+          verdict: "human",
+          why: ["very high impact"],
+        });
       });
     });
 
@@ -447,11 +492,12 @@ describe("renderReport's impact", () => {
   it("lists high-impact changes with what to check and how far their file reaches", () => {
     const review = makeReview({ changes: [coreLogic, change({ kind: "passive", count: 4 })] });
     const { body, data } = renderReport(review, makeFacts({ reach }), TARGET);
-    expect(body).toContain("**Impact:** high (4/5) · 4 passive, 1 logic change");
+    expect(body).toContain("**Impact:** high (4/5) · 4 passive, 1 logic change\n");
     expect(body).toContain(
       "- **Retry failed sends** `sidecar/src/chat/agent.ts:120`: logic, core; its file has 8 importers in 5 other areas, partly tested. Check: A retry can't send the message twice",
     );
     expect(data.impactBand).toBe(4);
+    expect(parseSignedReport(withSignature(body, "c2ln"))?.data.impactBand).toBe(4);
   });
 
   it("describes ranges, bare paths, sensitivity and folded changes in the details", () => {
@@ -466,7 +512,10 @@ describe("renderReport's impact", () => {
         change({ title: "Docs", location: "docs/", kind: "passive" }),
       ],
     });
-    const facts = makeFacts({ reach: [{ ...reach[0], importers: 1, otherAreas: 1 }] });
+    const facts = makeFacts({
+      files: [{ path: "sidecar/src/chat/agent.ts", additions: 9, deletions: 0 }],
+      reach: [{ ...reach[0], importers: 1, otherAreas: 1 }],
+    });
     const { body } = renderReport(review, facts, TARGET);
     expect(body).toContain("**Every change, by impact**");
     expect(body).toContain(
@@ -535,6 +584,23 @@ describe("Review", () => {
     });
     expect(Review.safeParse(review).success).toBe(false);
     expect(Review.safeParse(makeReview()).success).toBe(true);
+    const named = makeReview({
+      changes: [change({ kind: "logic", reach: "core", evidence: "partial", check: "x" })],
+    });
+    expect(Review.safeParse(named).success).toBe(true);
+  });
+
+  it("takes several changes and folded counts, but not none or a count of 0", () => {
+    const parses = (changes: unknown[]) => Review.safeParse({ ...makeReview(), changes }).success;
+    expect(parses([change(), change({ count: 20 })])).toBe(true);
+    expect(parses([change({ count: 0 })])).toBe(false);
+    expect(parses([])).toBe(false);
+  });
+
+  it("defaults a change to not sensitive, a count of 1 and no check", () => {
+    const { sensitive: _s, count: _c, check: _k, ...bare } = change();
+    const parsed = Review.parse({ ...makeReview(), changes: [bare] });
+    expect(parsed.changes[0]).toMatchObject({ sensitive: false, count: 1, check: "" });
   });
 
   it("only accepts screenshots that are absolute image paths", () => {

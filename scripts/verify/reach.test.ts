@@ -10,11 +10,21 @@ describe("areaOf", () => {
     expect(areaOf("sidecar/src/chat/agent.ts")).toBe("sidecar/src/chat");
     expect(areaOf("src/components/review/tabs/View.tsx")).toBe("src/components/review");
     expect(areaOf("src/App.tsx")).toBe("src/");
+    expect(areaOf("scripts/verify/report.ts")).toBe("scripts/verify");
+    expect(areaOf("demo/flows/a.ts")).toBe("demo/flows");
+    expect(areaOf("video/src/Scene.tsx")).toBe("video/src");
     expect(areaOf("src-tauri/src/pty.rs")).toBeNull();
   });
 });
 
 describe("importsOf", () => {
+  it("finds an import quickly however much space follows the keyword", () => {
+    const text = `import${" ".repeat(200_000)}x\n`.repeat(3);
+    const started = performance.now();
+    importsOf("src/a.ts", text, new Set());
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   const files = new Set(["src/lib/api.ts", "src/lib/pr/index.ts", "src/components/A.tsx"]);
 
   it("resolves relative imports with and without extensions, and folder indexes", () => {
@@ -69,6 +79,22 @@ describe("measureReach", () => {
     expect(suggestedWith(["a", "b", "c", "d"])).toBe("shared");
   });
 
+  it("counts only TypeScript sources, as changed files and as importers", () => {
+    const sources: Record<string, string> = {
+      "sidecar/src/lib/util.ts": "",
+      "sidecar/src/chat/notes.md": imports("../lib/util.ts"),
+      "docs/x.md": "",
+    };
+    const reach = measureReach(
+      ["sidecar/src/lib/util.ts", "docs/x.md", "src-tauri/src/a.rs"],
+      Object.keys(sources),
+      (path) => sources[path] ?? null,
+    );
+    expect(reach).toEqual([
+      { path: "sidecar/src/lib/util.ts", importers: 0, otherAreas: 0, suggested: "leaf" },
+    ]);
+  });
+
   it("leaves out changed files that no longer exist", () => {
     expect(measureReach(["sidecar/src/gone.ts"], [], () => null)).toEqual([]);
   });
@@ -103,5 +129,13 @@ describe("fileReader", () => {
     expect(read("link.ts")).toBeNull();
     expect(read("fifo.ts")).toBeNull();
     expect(read("big.ts")).toBeNull();
+  });
+
+  it("refuses a file reached through a symlinked folder outside the root", () => {
+    const outside = mkdtempSync(join(tmpdir(), "reach-out-"));
+    writeFileSync(join(outside, "secret.ts"), "export {};");
+    const root = mkdtempSync(join(tmpdir(), "reach-"));
+    symlinkSync(outside, join(root, "linked"));
+    expect(fileReader(root)("linked/secret.ts")).toBeNull();
   });
 });

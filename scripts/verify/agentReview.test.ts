@@ -150,6 +150,8 @@ describe("a report from the gate's side", () => {
       },
       { repo: "bennettaur/yarvis", pr: 7 },
     );
+    // The gate signs the impact band; the sidecar's reader ignores fields it doesn't use.
+    expect(data.impactBand).toBe(3);
     const parsed = parseReport(withSignature(body, "c2ln"));
     expect(parsed?.payload).toBe(payload);
     expect(parsed?.data).toMatchObject({

@@ -11,8 +11,8 @@
  * more.
  */
 
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
+import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join, normalize, sep } from "node:path";
 import type { Reach } from "../../sidecar/src/verify/impact.ts";
 import { isTestFile } from "./tier.ts";
 
@@ -36,6 +36,8 @@ const AREA_DEPTH: [root: string, depth: number][] = [
   ["src/", 2],
   ["scripts/", 1],
   ["demo/", 1],
+  // A separate package, but its scenes render components from `src/`.
+  ["video/", 1],
 ];
 
 const TS_SOURCE = /\.(ts|tsx)$/;
@@ -49,7 +51,8 @@ export function areaOf(path: string): string | null {
   return root + dirs.slice(0, depth).join("/");
 }
 
-const IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g;
+// No two `\s*` sit next to each other, so a run of spaces can't make the match backtrack.
+const IMPORT = /(?:\bfrom|\bimport)\s*(?:\(\s*)?["']([^"'\n]{1,512})["']/g;
 
 /** The repo paths a file imports, resolved against the files that exist. */
 export function importsOf(path: string, text: string, files: ReadonlySet<string>): string[] {
@@ -124,14 +127,15 @@ const MAX_SOURCE_BYTES = 1_000_000;
 
 /**
  * Reads a regular file under `root`, or `null` when it is gone, unreadable, a
- * symlink, or too big. An untrusted PR could otherwise link a source path to
- * `/dev/zero` and hang the run. A symlinked folder is still followed, but only
- * to a regular file under the size cap, and only import counts come out.
+ * symlink, outside `root` through a symlinked folder, or too big. An untrusted
+ * PR could otherwise link a source path to `/dev/zero` and hang the run.
  */
 export function fileReader(root: string): (path: string) => string | null {
+  const realRoot = realpathSync(root);
   return (path) => {
     let fd: number | undefined;
     try {
+      if (!realpathSync(join(root, path)).startsWith(realRoot + sep)) return null;
       // O_NONBLOCK keeps a FIFO from blocking the open.
       fd = openSync(
         join(root, path),

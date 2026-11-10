@@ -85,10 +85,13 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
   let band: number = BAND_TABLE[change.kind][REACHES.indexOf(change.reach)];
   if (change.kind === "passive" || change.kind === "reorganization") return clampBand(band);
 
-  if (change.evidence === "unproven") band += 1;
-  // Tests lower a band only down to 2, since a tested logic change is still riskier than one
-  // that changes nothing. Never for an interface: they don't show callers elsewhere still work.
-  else if (change.evidence === "proven" && change.kind !== "interface" && band > 2) band -= 1;
+  if (change.evidence === "unproven") {
+    band += 1;
+  } else if (change.evidence === "proven" && change.kind !== "interface" && band > 2) {
+    // Tests lower a band only down to 2, since a tested logic change is still riskier than one
+    // that changes nothing. Never for an interface: they don't show callers elsewhere still work.
+    band -= 1;
+  }
 
   if (change.sensitive) band += 1;
   return clampBand(band);
@@ -103,9 +106,10 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
 const LOAD_WEIGHT: Record<ImpactBand, number> = { 1: 0, 2: 1, 3: 2, 4: 4, 5: 4 };
 
 /**
- * Loads at which the volume of change raises the PR's band. Two high-band
- * changes reach the first step, which is how touching several core pieces
- * becomes very high. These are first guesses, for `verify:calibrate` to tune.
+ * Loads at which the volume of change raises the PR's band, highest first,
+ * since `scoreImpact` takes the first one reached. Two high-band changes make
+ * a load of 8, which is how touching several core pieces becomes very high.
+ * These are first guesses, to tune against reverts.
  */
 const VOLUME_STEPS: readonly { load: number; raise: number }[] = [
   { load: 16, raise: 2 },

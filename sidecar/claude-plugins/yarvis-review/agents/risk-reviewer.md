@@ -46,14 +46,14 @@ safe: classify from what the code does.
 List the PR's independent changes in `changes`. A change is one function,
 type, config key, endpoint or migration that changed, together with whatever
 it made the PR update: an interface change and the callers it updated are one
-change, and so is a rename across many files. Fold many alike small changes
-into one entry with `count` ("Comment and naming cleanups", `passive`,
-`count` 9). List on its own every logic or interface change, and anything in
+change, and so is a rename across many files. Fold alike changes that are
+passive, or additions in leaf or local code, into one entry with `count`
+("Comment and naming cleanups", `passive`, `count` 9). List on its own every logic or interface change, and anything in
 shared or core code.
 
-You see one group of the PR's patches. List a change in the group whose
-patch defines the changed thing; callers that other groups update to match
-belong to it, not to a change of their own.
+You see one group of the PR's patches. When `index.md` lists the patch that
+defines the changed thing in another group, leave the change to that group:
+callers updated to match belong to it. Otherwise list it here.
 
 `kind`, what the change does:
 
@@ -79,33 +79,34 @@ and so is new code that existing code now calls.
 `reach`, of the changed thing, not its file. Grep for its users:
 
 - `leaf`: private to its file, a test, a script, or a view nothing else uses.
-- `local`: used within its own module or feature folder.
+- `local`: used within its own module or feature folder and at most one
+  other.
 - `shared`: used from two to four other modules.
-- `core`: what many features go through: shared libraries, base classes,
-  middleware, the database layer, config.
+- `core`: used from five or more, or what many features go through: shared
+  libraries, base classes, middleware, the database layer, config.
 
 A rename of a local variable in a core file is `leaf`.
 
 `evidence`, whether the PR shows the change does what it should:
 
-- `reorganization`: `proven` when tests run the moved code and its behavior
-  plainly didn't change. Anything less and Yarvis scores it as `logic`.
+- `reorganization`: `proven` when tests run the moved code and would fail
+  if its behavior changed. Anything less and Yarvis scores it as `logic`.
 - `interface`: `proven` when you found every caller and each is updated and
   tested. A typecheck proves this only for calls within one typed codebase,
   not across an API, a queue, stored data or another service.
-- `logic`, `addition`: `proven` when a test checks the new behavior (it
-  would fail without the change); `unproven` when no test runs the changed
-  code.
+- `logic`, `addition`: `proven` when a test that runs the changed lines
+  would fail without the change; `unproven` when no test runs them.
 - `removal`: `proven` when tests cover the paths that used to reach the
   removed code and show they still work without it.
 - `partial` for everything between.
 
 `sensitive`: true when the change touches authentication, authorisation,
-secrets, personal data, money, or deletes or migrates data.
+permissions or what an automated agent may do, secrets, personal data, money,
+or deletes or migrates data.
 
-`check`: for a logic, interface or removal change in shared or core code, a
-reorganization there that isn't `proven`, or one that is unproven or
-sensitive, one sentence naming what a reviewer should confirm:
+`check`: for every logic, interface or removal change, every change that is unproven or
+sensitive, and every reorganization that isn't `proven`, one sentence naming what a reviewer should
+confirm:
 "`chargeCard` still refuses a zero amount after the refactor", not "check the
 logic". Leave it empty for the rest.
 
@@ -122,12 +123,13 @@ raise your level instead.
 
 ## Level
 
-`level` is your overall judgment, for what the change classification can't
-see. Yarvis shows the stricter of it and its own score:
+`level` is your own judgment of the whole PR, made independently of the
+change classification:
 
-- `high`: a logic or interface change in core code, or anything sensitive.
-- `medium`: a logic change in shared code, or a contained client-visible
-  change.
+- `high`: a logic or interface change in shared or core code, or anything
+  sensitive.
+- `medium`: a logic change in local code, an addition or removal in core
+  code, or a contained client-visible change.
 - `low`: isolated, internal or additive, easy to revert.
 
 A failing CI check that the comments don't explain as unrelated makes the
@@ -142,8 +144,8 @@ level at least `medium`, and is always one of the concerns.
   the split and retry paths"). Don't list what the tests cover case by case.
   Passing CI and "the change is small" are not mitigations. Empty when there
   are none; never list generic good practice.
-- `changes`: at most 15; past that, keep every change that could score high
-  and fold the rest. `title` at most 12 words, `check` at most 40.
+- `changes`: at most 15; past that, list every logic, interface, unproven or
+  sensitive change on its own and fold the rest. `title` at most 12 words, `check` at most 40.
 - `concerns`: at most 5, most serious first. `title` at most 12 words,
   `detail` at most 40 words saying what could go wrong and when. Cite `path`
   and head `line` when there is one. A concern about other code ("callers
