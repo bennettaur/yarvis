@@ -18,9 +18,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { readSection } from "../settings/store.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "../workspaces/sessionHeaders.ts";
 import { CHANNEL_ENABLED_HEADER, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
-import { agentCommandLoadsChannel, CHANNEL_SERVER_NAME } from "./send.ts";
+import { CHANNEL_SERVER_NAME, launchedFromChannelCommand } from "./send.ts";
 
 /** Wait after a failed poll, so the relay never spins against the sidecar. */
 const RETRY_MS = 3_000;
@@ -81,20 +82,33 @@ export function relayEnv(
 }
 
 /**
- * Whether the Claude Code that started this relay listens to it, from that
- * process's own command line. A setting or env var would describe how sessions
- * are meant to start, not this one: a `claude` run by hand in the same terminal
- * registers too, and would claim a flag it doesn't have. False when the command
- * line can't be read.
+ * Whether the Claude Code that started this relay listens to it: its own
+ * command line has to begin with the agent command Yarvis launches sessions
+ * from, and that command has to carry the channel flag. Checking the process
+ * rather than only the setting rules out a `claude` run by hand in the same
+ * terminal, which registers too. Checking the start of it rules out the flag
+ * arriving inside the opening prompt. False when either can't be read.
  */
-function launchedWithChannel(parentPid: number): boolean {
+async function launchedWithChannel(
+  parentPid: number,
+  env: Record<string, string | undefined>,
+): Promise<boolean> {
   try {
+    // The same precedence as the core's `resolve_agent_command`: env first.
+    const agentCommand =
+      env.YARVIS_CLAUDE_COMMAND?.trim() || (await readSection<string>("agentCommand"));
+    if (!agentCommand) return false;
     const ps = Bun.spawnSync(["ps", "-o", "args=", "-p", String(parentPid)], {
       stdout: "pipe",
       stderr: "ignore",
     });
-    return ps.success && agentCommandLoadsChannel(ps.stdout.toString());
-  } catch {
+    if (!ps.success) {
+      console.error(`[channel] couldn't read the session's command line (pid ${parentPid})`);
+      return false;
+    }
+    return launchedFromChannelCommand(ps.stdout.toString(), agentCommand);
+  } catch (e) {
+    console.error(`[channel] ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }
@@ -144,7 +158,7 @@ export async function runChannelRelay(): Promise<void> {
   const env = relayEnv(process.env, {
     relayId: crypto.randomUUID(),
     parentPid: process.ppid,
-    channelEnabled: launchedWithChannel(process.ppid),
+    channelEnabled: await launchedWithChannel(process.ppid, process.env),
   });
   const server = new Server(
     { name: CHANNEL_SERVER_NAME, version: "0.1.0" },

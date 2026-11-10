@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { createHmac } from "node:crypto";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -16,7 +18,7 @@ import {
 } from "./protocol.ts";
 import { neutralizeChannelTags, relayEnv } from "./relay.ts";
 import { createChannelRoutes } from "./routes.ts";
-import { agentCommandLoadsChannel, sendOverChannel } from "./send.ts";
+import { agentCommandLoadsChannel, launchedFromChannelCommand, sendOverChannel } from "./send.ts";
 
 const config = {
   token: "test-token",
@@ -130,6 +132,43 @@ describe("channel routes", () => {
   });
 });
 
+describe("launchedFromChannelCommand", () => {
+  const FLAG = "--dangerously-load-development-channels server:yarvis-channel";
+
+  it("matches a session started from the agent command", () => {
+    expect(
+      launchedFromChannelCommand(`${CHANNEL_COMMAND} Read .yarvis/brief.md`, CHANNEL_COMMAND),
+    ).toBe(true);
+    expect(
+      launchedFromChannelCommand(`/opt/homebrew/bin/${CHANNEL_COMMAND}`, CHANNEL_COMMAND),
+    ).toBe(true);
+    // An npm install runs the program as a script under node.
+    expect(
+      launchedFromChannelCommand(
+        `node /usr/local/lib/node_modules/.bin/${CHANNEL_COMMAND}`,
+        CHANNEL_COMMAND,
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores the flag when it only appears in the opening prompt", () => {
+    const agentCommand = "claude --permission-mode auto";
+    expect(launchedFromChannelCommand(`${agentCommand} Fix the bug ${FLAG}`, agentCommand)).toBe(
+      false,
+    );
+    // Even with the flag configured, the prompt can't stand in for a missing one.
+    expect(
+      launchedFromChannelCommand(`claude --permission-mode auto Fix it ${FLAG}`, CHANNEL_COMMAND),
+    ).toBe(false);
+  });
+
+  it("refuses a claude run by hand without the configured words", () => {
+    expect(launchedFromChannelCommand("claude", CHANNEL_COMMAND)).toBe(false);
+    expect(launchedFromChannelCommand(`other-agent ${FLAG}`, `other-agent ${FLAG}`)).toBe(true);
+    expect(launchedFromChannelCommand(`sh -c claude ${FLAG}`, `claude ${FLAG}`)).toBe(false);
+  });
+});
+
 describe("agentCommandLoadsChannel", () => {
   it("needs the development-channels flag naming the relay", () => {
     expect(agentCommandLoadsChannel(CHANNEL_COMMAND)).toBe(true);
@@ -213,21 +252,24 @@ describe("channel relay process", () => {
   const RELAY = [process.execPath, resolve(import.meta.dir, "../main.ts"), CHANNEL_RELAY_ARG];
 
   /**
-   * Starts the relay under a shell whose command line carries the channel flag,
-   * standing in for a Claude Code launched with it. The shell stays the
-   * relay's parent because it has more to run after it.
+   * A stand-in for Claude Code: a script named `claude` that runs whatever
+   * follows `--`, so the relay's parent has the command line given before it.
+   * Run by its shebang, it shows in `ps` as `/bin/sh <dir>/claude ...`.
    */
-  const UNDER_FLAGGED_PARENT = {
-    command: "/bin/sh",
-    args: [
-      "-c",
-      'shift 2; "$@"; exit $?',
-      "claude",
-      "--dangerously-load-development-channels",
-      "server:yarvis-channel",
-      ...RELAY,
-    ],
-  };
+  const fakeClaudeDir = mkdtempSync(join(tmpdir(), "fake-claude-"));
+  const fakeClaude = join(fakeClaudeDir, "claude");
+  writeFileSync(
+    fakeClaude,
+    '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\n"$@"\nexit $?\n',
+  );
+  chmodSync(fakeClaude, 0o755);
+  afterAll(() => rmSync(fakeClaudeDir, { recursive: true, force: true }));
+  const underClaude = (...claudeArgs: string[]) => ({
+    command: fakeClaude,
+    args: [...claudeArgs, "--", ...RELAY],
+  });
+  const FLAG_ARGS = ["--dangerously-load-development-channels", "server:yarvis-channel"];
+  const UNDER_FLAGGED_PARENT = underClaude(...FLAG_ARGS);
 
   async function startRelay(
     env: Record<string, string>,
@@ -263,7 +305,8 @@ describe("channel relay process", () => {
     return { client, events };
   }
 
-  const terminalEnv = (sessionKey = KEY) => ({
+  const terminalEnv = (sessionKey = KEY, agentCommand = `claude ${FLAG_ARGS.join(" ")}`) => ({
+    YARVIS_CLAUDE_COMMAND: agentCommand,
     YARVIS_SIDECAR_PORT: String(server.port),
     YARVIS_ATTENTION_TOKEN: config.attentionToken,
     YARVIS_SESSION_KEY: sessionKey,
@@ -305,6 +348,19 @@ describe("channel relay process", () => {
     await startRelay(terminalEnv(key));
     await until(() => hub.listener(key) !== null, "the relay to poll");
     expect(hub.listener(key)).toMatchObject({ pid: process.pid, channelEnabled: false });
+  });
+
+  it("reports no channel flag when it only appears in the session's opening prompt", async () => {
+    const key = "ws-claude:33333333-3333-4333-8333-333333333333";
+    // How the core launches a session on an issue whose text names the flag.
+    await startRelay(
+      terminalEnv(key, "claude --permission-mode auto"),
+      underClaude("--permission-mode", "auto", `Fix it ${FLAG_ARGS.join(" ")}`),
+    );
+    await until(() => hub.listener(key) !== null, "the relay to poll");
+    const listener = hub.listener(key)!;
+    expect(listener.pid).not.toBe(process.pid);
+    expect(listener.channelEnabled).toBe(false);
   });
 
   it("exits when Claude Code closes its stdin, so it can't keep holding the channel", async () => {

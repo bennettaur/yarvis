@@ -79,8 +79,8 @@ function channelRelayEntry(relay: RelayCommand): Record<string, unknown> {
       YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
-      // The relay checks the command the session was launched with for the
-      // channel flag, and this override wins over the stored one.
+      // The relay compares its session's command line with the agent
+      // command, and this override wins over the stored one, as in the core.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
       YARVIS_CLAUDE_COMMAND: "${YARVIS_CLAUDE_COMMAND:-}",
     },
