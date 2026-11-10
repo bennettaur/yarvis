@@ -533,8 +533,9 @@ remote branch that doesn't exist yet.
 A merge that conflicts is left in the worktree with its conflict markers and
 isn't pushed. You can fix it yourself, or hand it back to the agent.
 
-The merge runs without the repo's git hooks. The agent can edit their config
-(for example `lefthook.yml`), and the merge runs outside its sandbox.
+The merge and the push run without the repo's git hooks, so none of them fire.
+They run outside the agent's sandbox, and the agent can edit the hook config
+(for example `lefthook.yml`).
 
 ### Sending an instruction to a running session
 

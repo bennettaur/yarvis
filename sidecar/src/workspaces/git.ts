@@ -321,7 +321,12 @@ export async function worktreeStatus(
   return { dirtyFiles, branch, inProgress };
 }
 
-/** Config that stops a git command from running the repo's hooks. */
+/**
+ * Leading `git` args that turn off the repo's hooks. The sidecar's merge and
+ * push run outside the agent's sandbox, in a worktree the agent can write, and
+ * a hook manager like lefthook reads its commands from that worktree. With
+ * hooks on, the agent could make them run any command.
+ */
 const WITHOUT_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 /** The outcome of merging a base branch into a worktree's branch. */
@@ -339,11 +344,8 @@ export type MergeOutcome =
  * the conflict markers are what an agent session started in that worktree needs
  * in order to resolve them, and a caller that wanted the branch untouched can
  * check `worktreeStatus` first. A merge that fails for any other reason throws,
- * since only conflicts have a defined half-done state.
- *
- * Hooks are off: a hook manager like lefthook reads its commands from the
- * worktree, which the workspace's agent can write, and this merge runs outside
- * the agent's sandbox.
+ * since only conflicts have a defined half-done state. Hooks are off; see
+ * `WITHOUT_HOOKS`.
  */
 export async function mergeBaseIntoWorktree(
   runner: GitRunner,
@@ -373,13 +375,21 @@ export async function mergeBaseIntoWorktree(
   );
 }
 
-/** Pushes the branch to origin, setting it as upstream so later pushes need no args. */
+/**
+ * Pushes the branch to origin, setting it as upstream so later pushes need no
+ * args. Hooks are off; see `WITHOUT_HOOKS`.
+ */
 export async function pushBranch(
   runner: GitRunner,
   worktreePath: string,
   branch: string,
 ): Promise<void> {
-  await git(runner, ["push", "--set-upstream", "origin", branch], worktreePath, NETWORK_TIMEOUT_MS);
+  await git(
+    runner,
+    [...WITHOUT_HOOKS, "push", "--set-upstream", "origin", branch],
+    worktreePath,
+    NETWORK_TIMEOUT_MS,
+  );
 }
 
 /** Fetches the latest default branch into the remote-tracking ref. No checkout. */

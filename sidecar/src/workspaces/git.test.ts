@@ -953,7 +953,14 @@ describe("pushBranch", () => {
   it("pushes the branch and sets it as upstream", async () => {
     const { runner, calls } = fakeRunner(() => ({}));
     await pushBranch(runner, "/wt", "yarvis/fix-the-widget");
-    expect(calls[0]).toEqual(["push", "--set-upstream", "origin", "yarvis/fix-the-widget"]);
+    expect(calls[0]).toEqual([
+      "-c",
+      "core.hooksPath=/dev/null",
+      "push",
+      "--set-upstream",
+      "origin",
+      "yarvis/fix-the-widget",
+    ]);
   });
 
   it("throws with git's own message when the push is rejected", async () => {

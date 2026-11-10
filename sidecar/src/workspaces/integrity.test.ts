@@ -19,6 +19,7 @@ import {
   type GitRunner,
   listChangedFiles,
   mergeBaseIntoWorktree,
+  pushBranch,
   worktreeStatus,
 } from "./git.ts";
 import { checkBeforeWrite, checkRepoIntegrity } from "./integrity.ts";
@@ -80,7 +81,7 @@ function clonedWorkspaceRepo() {
   git(root, "clone", "-q", remote, clone);
   const worktree = join(root, "ws", "api");
   git(clone, "worktree", "add", "-q", "-b", "yarvis/fix", worktree, "origin/main");
-  return { root, seed, clone, worktree };
+  return { root, remote, seed, clone, worktree };
 }
 
 /**
@@ -344,7 +345,18 @@ describe("checkBeforeWrite", () => {
   });
 });
 
-describe("mergeBaseIntoWorktree", () => {
+/** Plants every hook in `hooks`, each touching one marker file, and returns that file. */
+function plantHooks(root: string, clone: string, hooks: string[]): string {
+  const marker = join(root, "hook-ran");
+  for (const hook of hooks) {
+    writeFileSync(join(clone, ".git", "hooks", hook), `#!/bin/sh\ntouch "${marker}"\n`, {
+      mode: 0o755,
+    });
+  }
+  return marker;
+}
+
+describe("merging and pushing with real git", () => {
   it("merges the base without running the repo's hooks", async () => {
     const { root, seed, clone, worktree } = clonedWorkspaceRepo();
     writeFileSync(join(seed, "g"), "upstream\n");
@@ -358,16 +370,32 @@ describe("mergeBaseIntoWorktree", () => {
     git(worktree, "add", "h");
     git(worktree, "commit", "-qm", "mine");
 
-    const marker = join(root, "hook-ran");
-    for (const hook of ["pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-merge"]) {
-      const path = join(clone, ".git", "hooks", hook);
-      writeFileSync(path, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
-    }
+    const marker = plantHooks(root, clone, [
+      "pre-merge-commit",
+      "prepare-commit-msg",
+      "commit-msg",
+      "post-merge",
+    ]);
 
     expect(await mergeBaseIntoWorktree(defaultGitRunner, worktree, "main")).toEqual({
       result: "merged",
     });
     expect(readFileSync(join(worktree, "g"), "utf8")).toBe("upstream\n");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("pushes the branch without running the repo's hooks", async () => {
+    const { root, remote, clone, worktree } = clonedWorkspaceRepo();
+    writeFileSync(join(worktree, "h"), "mine\n");
+    git(worktree, "add", "h");
+    git(worktree, "commit", "-qm", "mine");
+    const marker = plantHooks(root, clone, ["pre-push"]);
+
+    // The hardened env refuses the file transport the test's remote uses.
+    const allowFileRemote: GitRunner = (args, opts) =>
+      defaultGitRunner(["-c", "protocol.file.allow=always", ...args], opts);
+    await pushBranch(allowFileRemote, worktree, "yarvis/fix");
+    expect(git(remote, "rev-parse", "yarvis/fix")).toBe(git(worktree, "rev-parse", "HEAD"));
     expect(existsSync(marker)).toBe(false);
   });
 });
