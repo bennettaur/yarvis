@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { act, createElement } from "react";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { act, createElement, Fragment } from "react";
 import { prDetailKey } from "../../../lib/pr/cache";
 import type { PrDetail, PrRef } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
-import { mountForInteraction } from "../../../test/render";
+import { resetPrApi, stubPrApi } from "../../../test/prApi";
+import { mountForInteraction, waitFor } from "../../../test/render";
 import { type FileAnnotations, useFileAnnotations } from "./useFileAnnotations";
 
 const ref: PrRef = { provider: "github", owner: "acme", repo: "widgets", number: 7 };
@@ -17,19 +18,27 @@ function Harness({ canComment }: { canComment: boolean }) {
     headSha: "h",
     canComment,
   });
-  return null;
+  // Rendered in place of the editor's view zones, so a test can use the composer.
+  return createElement(
+    Fragment,
+    null,
+    latest.zones.map((z) => createElement(Fragment, { key: z.id }, z.render())),
+  );
 }
 
 let unmount = () => {};
+let host: HTMLElement | null = null;
 afterEach(() => {
   unmount();
   latest = null;
 });
+afterAll(() => resetPrApi());
 
 async function mount(canComment: boolean) {
   primeCache(prDetailKey(ref), { reviewThreads: [] } as unknown as PrDetail);
   const mounted = await mountForInteraction(createElement(Harness, { canComment }));
   unmount = mounted.unmount;
+  host = mounted.host;
 }
 
 describe("useFileAnnotations.onLineAction", () => {
@@ -58,5 +67,35 @@ describe("useFileAnnotations.onLineAction", () => {
       latest?.onLineAction({ kind: "ask", side: "LEFT", startLine: 1, endLine: 1 }),
     );
     expect(latest?.notice).toBe("Questions are asked about the new version of the file.");
+  });
+});
+
+describe("useFileAnnotations comment zones", () => {
+  it("keeps a zone under the line for the note when GitHub moved the comment onto the file", async () => {
+    stubPrApi({ postPrComment: async () => ({ ok: true, placement: "file" }) });
+    await mount(true);
+    await act(async () =>
+      latest?.onLineAction({ kind: "comment", side: "RIGHT", startLine: 2, endLine: 2 }),
+    );
+    await waitFor(() => host?.querySelector("textarea") != null, "the composer");
+    const box = host?.querySelector("textarea");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        box,
+        "outside the diff",
+      );
+      box?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      Array.from(host?.querySelectorAll("button") ?? [])
+        .find((b) => b.textContent === "Comment")
+        ?.click(),
+    );
+
+    await waitFor(
+      () => (host?.textContent ?? "").includes("Posted on the whole file instead"),
+      "the moved-to-file note",
+    );
+    expect(latest?.zones.map((z) => z.id)).toContain("comment:RIGHT:2");
   });
 });

@@ -97,6 +97,12 @@ pub struct Settings {
     /// the sidecar's because no sidecar route or tool writes these, so the
     /// assistant can't widen its own allowlist.
     pub allowed_slash_commands: Option<Vec<String>>,
+    /// Whether the assistant may message workspace sessions over a Claude Code
+    /// channel and read their replies (`sidecar/src/channel`). Experimental, so
+    /// unset means off. Kept with the core's settings for the same reason as
+    /// `allowed_slash_commands`: no sidecar route or tool writes it, so the
+    /// assistant can't switch on its own way into a session.
+    pub channel_messaging: Option<bool>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -420,6 +426,16 @@ impl SettingsState {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
             settings.telegram_otp_window_minutes = value;
+        }
+        self.save()
+    }
+
+    /// Turns channel messaging on, or clears it back to the default (off).
+    fn set_channel_messaging(&self, enabled: bool) -> Result<(), String> {
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.channel_messaging = enabled.then_some(true);
         }
         self.save()
     }
@@ -807,6 +823,18 @@ pub fn set_terminal_font_size(
     Ok(state.snapshot().into())
 }
 
+/// Turns channel messaging to workspace sessions on or off. The sidecar reads
+/// it on each send, each relay start and each workspace provision, so no
+/// restart is needed.
+#[tauri::command]
+pub fn set_channel_messaging(
+    state: tauri::State<'_, SettingsState>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    state.set_channel_messaging(enabled)?;
+    Ok(state.snapshot().into())
+}
+
 /// Turns the top bar's attention animation on or off, or clears it back to the
 /// default (on) with `None`. Applied by the webview as it is toggled; this only
 /// makes it survive a restart.
@@ -972,6 +1000,7 @@ mod tests {
         assert!(json["terminalFontSize"].is_null());
         assert!(json["attentionAnimation"].is_null());
         assert!(json["allowedSlashCommands"].is_null());
+        assert!(json["channelMessaging"].is_null());
         assert_eq!(json["defaultAllowedSlashCommands"][0], "compact");
     }
 
@@ -1088,6 +1117,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.snapshot().azure_devops_org_url, None);
+    }
+
+    #[test]
+    fn channel_messaging_is_stored_only_while_on() {
+        let store = temp_store("channel-messaging");
+        store.set_channel_messaging(true).unwrap();
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.channel_messaging, Some(true));
+
+        store.set_channel_messaging(false).unwrap();
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.channel_messaging, None);
     }
 
     #[test]

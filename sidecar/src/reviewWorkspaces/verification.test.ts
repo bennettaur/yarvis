@@ -18,6 +18,7 @@ import {
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   MAX_MUST_READ_FLAGS,
+  MISSING_CHECK,
   mustReadCap,
   normalizeSections,
   similarTitles,
@@ -171,6 +172,93 @@ describe("the report schema", () => {
     expect(parsed.risk?.clientImpact.endsWith("…")).toBe(true);
     expect(parsed.risk?.mitigations).toEqual(["a", "b", "c"]);
     expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
+  });
+
+  describe("risk's impact", () => {
+    const change = (extra: Record<string, unknown> = {}) => ({
+      title: "Retry failed uploads",
+      kind: "logic",
+      reach: "core",
+      evidence: "partial",
+      check: "A retry can't upload twice",
+      path: "src/a.ts",
+      line: 4,
+      ...extra,
+    });
+
+    it("scores the changes and sets the level from the band", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change(), change({ kind: "passive" })] } }),
+      );
+      expect(parsed.risk?.level).toBe("high");
+      expect(parsed.risk?.impact).toMatchObject({ band: 4, load: 4, raisedByVolume: 0 });
+      expect(parsed.risk?.impact?.changes.map((c) => [c.kind, c.band])).toEqual([
+        ["logic", 4],
+        ["passive", 1],
+      ]);
+    });
+
+    it("takes the stricter of the agent's level and the band's", () => {
+      const level = (agent: string, extra: Record<string, unknown>) =>
+        schema.parse(report({ risk: { ...report().risk, level: agent, changes: [change(extra)] } }))
+          .risk?.level;
+      // An agent that saw a failing CI check keeps its level over a small change.
+      expect(level("high", { kind: "addition", reach: "leaf", evidence: "proven" })).toBe("high");
+      expect(level("low", { kind: "logic", reach: "local" })).toBe("medium");
+    });
+
+    it("gives a high change with nothing to check a prompt to read it", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change({ check: null })] } }),
+      );
+      expect(parsed.risk?.impact?.changes[0]?.check).toBe(MISSING_CHECK);
+    });
+
+    it("clamps a count to between 1 and 1000", () => {
+      const counts = [0, -3, 5000].map(
+        (count) =>
+          schema.parse(
+            report({ risk: { ...report().risk, changes: [change({ kind: "passive", count })] } }),
+          ).risk?.impact?.changes[0]?.count,
+      );
+      expect(counts).toEqual([1, 1, 1000]);
+    });
+
+    it("keeps the agent's level when it listed no changes", () => {
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes: null } }));
+      expect(parsed.risk?.level).toBe("low");
+      expect(parsed.risk?.impact).toBeUndefined();
+    });
+
+    it("scores and keeps every change, highest band first", () => {
+      const changes = [
+        change(),
+        ...Array.from({ length: 40 }, () =>
+          change({ kind: "addition", reach: "local", evidence: "partial" }),
+        ),
+      ];
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes } }));
+      expect(parsed.risk?.impact?.load).toBe(44);
+      expect(parsed.risk?.impact?.band).toBe(5);
+      expect(parsed.risk?.impact?.changes).toHaveLength(41);
+      expect(parsed.risk?.impact?.changes[0]?.band).toBe(4);
+    });
+
+    it("defaults a missing count, sensitivity and check", () => {
+      const parsed = schema.parse(
+        report({
+          risk: {
+            ...report().risk,
+            changes: [{ title: "t", kind: "passive", reach: "leaf", evidence: "proven" }],
+          },
+        }),
+      );
+      expect(parsed.risk?.impact?.changes[0]).toMatchObject({
+        count: 1,
+        sensitive: false,
+        check: "",
+      });
+    });
   });
 
   it("refuses values outside its enums and missing sections", () => {
@@ -342,6 +430,32 @@ describe("dropping must-read flags a finding already reports", () => {
       },
     });
     expect(notes).toEqual([]);
+  });
+
+  it("drops one a high-impact change reports, but not one a low-impact change does", () => {
+    const withChange = (kind: string) =>
+      keptNotes({
+        ...flagged([{ note: retry, line: 18 }]),
+        risk: {
+          level: "low",
+          clientImpact: "Uploads can hang.",
+          mitigations: [],
+          concerns: [],
+          changes: [
+            {
+              title: "Retry count is never decremented",
+              kind,
+              reach: "core",
+              evidence: "partial",
+              check: "c",
+              path: "src/a.ts",
+              line: 17,
+            },
+          ],
+        },
+      });
+    expect(withChange("logic")).toEqual([]);
+    expect(withChange("passive")).toEqual([retry]);
   });
 
   it("still drops one when the run wasn't asked for risk", () => {

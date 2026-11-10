@@ -13,7 +13,7 @@
 
 import { spawnSync } from "node:child_process";
 
-const ENTRY = "sidecar/src/server.ts";
+const ENTRY = "sidecar/src/main.ts";
 const OUT_DIR = "src-tauri/binaries";
 
 /** The Rust target triples a release is built for, and Bun's name for each. */

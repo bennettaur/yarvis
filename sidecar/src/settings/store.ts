@@ -13,10 +13,12 @@ import { dirname, join } from "node:path";
  * read-modify-write, so a save on either side carries the other's keys (and
  * another section's) across even though they live in one file.
  *
- * One core-owned key is *read* through here and never written: `agentCommand`,
- * so a scheduled Claude Code job launches the same build as the core's PTY
- * sessions (`jobs/runners.ts`). A read cannot clobber anything, which is what
- * keeps the rule above intact.
+ * A few core-owned keys are *read* through here and never written:
+ * `agentCommand`, so a scheduled Claude Code job launches the same build as the
+ * core's PTY sessions (`jobs/runners.ts`) and the channel relay can recognise
+ * its session's command line (`channel/relay.ts`), and `channelMessaging`, the
+ * switch for messaging sessions over a channel (`channel/send.ts`). A read
+ * cannot clobber anything, which is what keeps the rule above intact.
  *
  * This is a straight port of the read-modify-write discipline
  * `src-tauri/src/settings.rs` uses for this file and

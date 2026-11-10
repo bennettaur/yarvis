@@ -12,7 +12,21 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import {
+  ATTENTION_BAND,
+  BAND_LABELS,
+  CHANGE_KINDS,
+  changeBand,
+  describeCounts,
+  EVIDENCE,
+  type Evidence,
+  type Impact,
+  REACHES,
+  type Reach,
+  scoreImpact,
+} from "../../sidecar/src/verify/impact.ts";
 import type { Facts } from "./collect.ts";
+import { isMeasurableSource } from "./diffCoverage.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
 import { floorTier, isDependencyFile, stricterTier, type Tier } from "./tier.ts";
@@ -60,6 +74,30 @@ const VERDICT_STRICTNESS: Verdict[] = ["auto", "visual", "agent", "human"];
 
 const Dimension = z.object({ status: Status, note: z.string().max(140) });
 
+/**
+ * One independent change in the PR, classified for `impact.ts` to score. An
+ * interface change and the callers it updates are one change; so is a rename
+ * across many files.
+ */
+const Change = z
+  .object({
+    title: z.string().min(1).max(100),
+    /** `path:line` or `path:start-end` of the changed thing, or just the path. */
+    location: z.string().min(1).max(120),
+    kind: z.enum(CHANGE_KINDS),
+    reach: z.enum(REACHES),
+    evidence: z.enum(EVIDENCE),
+    sensitive: z.boolean().default(false),
+    /** How many alike changes this entry stands for. */
+    count: z.number().int().min(1).max(1000).default(1),
+    /** What a reviewer should check. Required on a change scored high enough to list. */
+    check: z.string().max(200).default(""),
+  })
+  .refine((change) => change.check !== "" || changeBand(change) < ATTENTION_BAND, {
+    message: "a change scored high or very high must say what to check",
+    path: ["check"],
+  });
+
 export const Review = z.object({
   /** What the PR is meant to achieve, in one line, taken from its description or issue. */
   goal: z.string().min(1).max(200),
@@ -75,6 +113,8 @@ export const Review = z.object({
     tier: z.enum(["low", "standard", "high"]),
     reasons: z.array(z.string().max(140)).min(1).max(4),
   }),
+  /** Every independent change, for the impact score. */
+  changes: z.array(Change).min(1),
   /**
    * The skill's rating of each file the path floor sent for assessment
    * (`facts.tier.assess`). One left out counts as high.
@@ -163,6 +203,8 @@ const ReportData = z.object({
   needsVisual: z.boolean().optional(),
   /** The model that reviewed, so calibration can compare verdicts across models. */
   model: z.string().optional(),
+  /** The impact score's band, 1 to 5, so calibration can check it against escapes. */
+  impactBand: z.number().int().min(1).max(5).optional(),
 });
 export type ReportData = z.infer<typeof ReportData>;
 
@@ -206,6 +248,113 @@ function code(text: string): string {
   return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
 
+type ReviewChange = Review["changes"][number];
+
+/** A change's path, from a `location` of `path`, `path:line` or `path:start-end`. */
+function changePath(change: ReviewChange): string {
+  return change.location.replace(/:\d+(-\d+)?$/, "");
+}
+
+/** The changed files a location names: the file itself, or every one under a folder ending in `/`. */
+function filesAt(location: string, facts: Facts): Facts["files"] {
+  return facts.files.filter(
+    (file) => file.path === location || (location.endsWith("/") && file.path.startsWith(location)),
+  );
+}
+
+/**
+ * Whether coverage backs a `proven` claim: the location names changed source
+ * files that gained lines, and tests ran every one of them. It fails closed:
+ * a location naming no changed file, a file coverage can't measure (docs,
+ * config, SQL, a file the diff only deletes from), a file no test loads, and
+ * a PR measured with `--static` all count as unbacked.
+ */
+function coverageBacks(change: ReviewChange, facts: Facts): boolean {
+  const files = filesAt(changePath(change), facts);
+  const { uncovered, unmeasured, notLoaded, noTestsRan } = facts.coverage;
+  const untested = new Set([
+    ...uncovered.map((u) => u.path),
+    ...unmeasured,
+    ...notLoaded,
+    ...noTestsRan,
+  ]);
+  return (
+    files.length > 0 &&
+    files.every(
+      (file) => isMeasurableSource(file.path) && file.additions > 0 && !untested.has(file.path),
+    )
+  );
+}
+
+/** The higher of a change's claimed reach and what the import graph suggests for its files. */
+function measuredReach(change: ReviewChange, facts: Facts): Reach {
+  const paths = new Set(filesAt(changePath(change), facts).map((file) => file.path));
+  return (facts.reach ?? [])
+    .filter((file) => paths.has(file.path))
+    .reduce<Reach>(
+      (reach, file) =>
+        REACHES.indexOf(file.suggested) > REACHES.indexOf(reach) ? file.suggested : reach,
+      change.reach,
+    );
+}
+
+/**
+ * Changed code files no change in the review names, each as a partly tested
+ * logic change at its measured reach, since a change the review left out is
+ * one nobody judged. Only an interface or logic change names a whole folder:
+ * otherwise one passive entry at `src/` would vouch for every file under it.
+ * A file the graph has no reach for (Rust, TypeScript outside the source
+ * roots) counts as shared, so an unjudged one still reaches the agent reviewer.
+ */
+function unlistedChanges(review: Review, facts: Facts): ReviewChange[] {
+  const named = new Set(
+    review.changes.flatMap((change) => {
+      const path = changePath(change);
+      const wholeFolders = change.kind === "interface" || change.kind === "logic";
+      return wholeFolders ? filesAt(path, facts) : facts.files.filter((f) => f.path === path);
+    }),
+  );
+  return facts.files
+    .filter((file) => isMeasurableSource(file.path) && !named.has(file))
+    .map((file) => ({
+      title: "Change the review didn't list",
+      location: file.path,
+      kind: "logic",
+      reach: facts.reach?.find((r) => r.path === file.path)?.suggested ?? "shared",
+      evidence: "partial",
+      sensitive: false,
+      count: 1,
+      check: "Nobody classified this file's change: read it.",
+    }));
+}
+
+/**
+ * The PR's impact, from the review's changes as the facts allow, so a
+ * classification steered by the PR's own text can't score lower than the
+ * facts say:
+ * - a `proven` claim coverage doesn't back is scored as `partial`;
+ * - any change that could alter behaviour (interface, logic, removal, or a
+ *   reorganization coverage doesn't prove) is scored at no less than the
+ *   reach its files' importers suggest;
+ * - a changed code file no change names is scored as an unlisted logic change.
+ * It can't catch a change called by a lower kind.
+ */
+function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | null {
+  const adjusted = review.changes.map((change) => {
+    const evidence =
+      change.evidence === "proven" && change.kind !== "passive" && !coverageBacks(change, facts)
+        ? "partial"
+        : change.evidence;
+    // An unproven reorganization scores as logic, so it gets logic's floor too.
+    const canAlterBehaviour =
+      ["interface", "logic", "removal"].includes(change.kind) ||
+      (change.kind === "reorganization" && evidence !== "proven");
+    const reach = canAlterBehaviour ? measuredReach(change, facts) : change.reach;
+    return { ...change, evidence, reach };
+  });
+  return scoreImpact([...adjusted, ...unlistedChanges(review, facts)]);
+}
+
 /** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
 export function riskTier(review: Review, facts: Facts): Tier {
   const floor = floorTier(
@@ -232,6 +381,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   };
 
   if (riskTier(review, facts) === "high") requireAtLeast("human", "high-risk change");
+  const impact = measuredImpact(review, facts);
+  if (impact && impact.band >= 5) requireAtLeast("human", "very high impact");
+  if (impact && impact.band >= ATTENTION_BAND) requireAtLeast("agent", "high-impact changes");
   if (review.findings.some((f) => f.severity === "blocker")) {
     requireAtLeast("human", "blocking finding");
   }
@@ -324,6 +476,38 @@ function mutationNote(mutation: Facts["mutation"]): string {
   return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
 }
 
+const EVIDENCE_TEXT: Record<Evidence, string> = {
+  proven: "proven by tests",
+  partial: "partly tested",
+  unproven: "untested",
+};
+
+/** The change's reach, with its file's measured importers when `collect` counted them. */
+function reachText(change: ReviewChange, facts: Facts): string {
+  const path = changePath(change);
+  const measured = facts.reach?.find((file) => file.path === path);
+  if (!measured) return change.reach;
+  const importers = measured.importers === 1 ? "1 importer" : `${measured.importers} importers`;
+  const areas = measured.otherAreas === 1 ? "1 other area" : `${measured.otherAreas} other areas`;
+  return `${change.reach}; its file has ${importers} in ${areas}`;
+}
+
+function describeChange(change: ReviewChange, facts: Facts): string {
+  const times = change.count > 1 ? ` (${change.count} like it)` : "";
+  const sensitive = change.sensitive ? ", sensitive" : "";
+  return `${change.kind}, ${reachText(change, facts)}, ${EVIDENCE_TEXT[change.evidence]}${sensitive}${times}`;
+}
+
+function impactLine(impact: Impact<ReviewChange>): string {
+  const parts = [`${BAND_LABELS[impact.band]} (${impact.band}/5)`, describeCounts(impact.counts)];
+  if (impact.raisedByVolume > 0) {
+    parts.push(
+      `raised from ${BAND_LABELS[impact.highestChangeBand]} by the number of changes, so splitting the PR would lower it`,
+    );
+  }
+  return parts.join(" · ");
+}
+
 function bulletList(items: string[], limit = 15): string {
   const shown = items.slice(0, limit).map((item) => `- ${code(item)}`);
   if (items.length > limit) shown.push(`- …and ${items.length - limit} more`);
@@ -348,6 +532,7 @@ export function renderReport(
   now: Date = new Date(),
 ): { body: string; data: ReportData; payload: string } {
   const { verdict, why } = finalVerdict(review, facts);
+  const impact = measuredImpact(review, facts);
   const coverage = coverageStatus(facts.coverage);
   const headlineFindings = review.findings.filter((f) => f.severity !== "minor");
   const minorFindings = review.findings.filter((f) => f.severity === "minor");
@@ -382,6 +567,7 @@ export function renderReport(
     "",
     `**Risk:** ${tier} (${inline(riskReasons)}) · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
+    ...(impact ? [`**Impact:** ${inline(impactLine(impact))}`, ""] : []),
     `**Goal:** ${inline(review.goal)}`,
     "",
     inline(review.summary),
@@ -402,6 +588,16 @@ export function renderReport(
         file
           ? `- ${code(path)}: ${file.tier}. ${inline(file.reason)}`
           : `- ${code(path)}: not assessed, so high. Flagged for ${inline(reason)}.`,
+      );
+    }
+  }
+
+  if (impact && impact.attention.length > 0) {
+    lines.push("", "### Needs attention", "");
+    for (const change of impact.attention) {
+      // The schema checks the claimed band; the coverage check can raise it past one without a check.
+      lines.push(
+        `- **${inline(change.title)}** ${code(change.location)}: ${inline(describeChange(change, facts))}. Check: ${inline(change.check || "none given, so read this change")}`,
       );
     }
   }
@@ -507,6 +703,7 @@ export function renderReport(
     ],
     needsVisual: verdict === "visual" || isFlagged(review.dimensions.ui.status),
     model: review.model,
+    ...(impact && { impactBand: impact.band }),
   };
 
   // Base64 so nothing in the data can close the HTML comment early.

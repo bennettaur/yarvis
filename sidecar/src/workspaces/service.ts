@@ -18,6 +18,7 @@ import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
+import { channelMessagingEnabled } from "../channel/send.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -1728,7 +1729,7 @@ function aborted(signal?: AbortSignal): Promise<void> {
  * repos are present, where, and on what branch. Best-effort throughout: a write
  * failure is logged but must not fail provisioning.
  */
-function writeWorkspaceFiles(detail: WorkspaceDetail): void {
+async function writeWorkspaceFiles(detail: WorkspaceDetail): Promise<void> {
   // Copied first so AGENTS.md can say whether there is anything to mention.
   const copied = syncClaudeAssets(
     detail.rootPath,
@@ -1821,7 +1822,9 @@ function writeWorkspaceFiles(detail: WorkspaceDetail): void {
   }
 
   writeClaudeSettings(detail);
-  writeMcpConfig(detail.rootPath, detail.id);
+  writeMcpConfig(detail.rootPath, detail.id, {
+    channelMessaging: await channelMessagingEnabled(),
+  });
 }
 
 /**
@@ -2021,7 +2024,7 @@ export async function provisionWorkspace(
     // The workspace is active only if every repo provisioned cleanly.
     const after = await getWorkspace(db, id);
     if (after) {
-      writeWorkspaceFiles(after);
+      await writeWorkspaceFiles(after);
       await checkWorkspaceIntegrity(db, after, runner);
     }
     const allReady = after?.repos.every((r) => r.status === "ready" || r.status === "removed");
@@ -2206,7 +2209,7 @@ export async function ignoreWorkspaceError(
   // about to have an agent session started in it. Failing here rather than
   // carrying on: a root that can't be created is not a space to work in.
   mkdirSync(detail.rootPath, { recursive: true });
-  writeWorkspaceFiles(detail);
+  await writeWorkspaceFiles(detail);
 
   if (detail.pendingBrief) {
     // Fatal for the same reason it is fatal in `provisionWorkspace`: the agent is

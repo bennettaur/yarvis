@@ -44,6 +44,7 @@ function defaultSettings(): Settings {
     attentionAnimation: null,
     allowedSlashCommands: null,
     defaultAllowedSlashCommands: ["compact"],
+    channelMessaging: null,
   };
 }
 
