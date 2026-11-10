@@ -140,7 +140,7 @@
 <header style="margin-bottom: 56px">
   <div class="kicker">Yarvis · PR verification</div>
   <h1>How <code>/verify-pr</code> decides whether a PR can merge</h1>
-  <p class="lede">Most PRs should be able to merge without anyone reading them. When a person does need to read one, they should know which part to read first and what to check there. <code>/verify-pr</code> is the Claude Code skill that makes that call and posts it on the PR as a signed report the CI gate reads.</p>
+  <p class="lede">Most PRs should be able to merge without anyone reading them. When a person does need to read one, they should know which part to read first and what to check there. <code>/verify-pr</code> is the Claude Code skill that decides which of those a PR needs. It posts that decision on the PR as a signed report, which a CI workflow (the gate) reads to decide whether the PR can merge automatically.</p>
   <p class="muted">The review workspace's in-app Verification report is a different tool, for the person reading a PR. It has <a href="verification-report-explainer.html">its own explainer</a>.</p>
 </header>
 <!-- ───────────────────────────────────────────── -->
@@ -438,7 +438,7 @@
     </div>
     <div class="card">
       <h3>Pictures for UI changes</h3>
-      <p>Screenshots from the demo harness, with a before shot when it helps, so a <code>visual</code> verdict needs a glance rather than a checkout.</p>
+      <p>Screenshots taken by the demo harness (<code>demo/</code>), with a before shot when it helps, so a <code>visual</code> verdict needs a glance rather than a checkout.</p>
     </div>
     <div class="card">
       <h3>A short, fixed shape</h3>

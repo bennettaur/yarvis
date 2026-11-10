@@ -68,44 +68,14 @@
   .card p, .card li { font-size: 15px; color: var(--muted); }
   .card p:last-child, .card ul:last-child { margin-bottom: 0; }
   .card .why { color: var(--text); }
-  .why-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--amber); font-weight: 600; }
 
   table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 15px; }
   th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
   td code { white-space: nowrap; }
 
-  .pill { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
-  .p-auto { color: var(--green); border-color: rgba(74,222,128,.4); }
-  .p-visual { color: var(--blue); border-color: rgba(96,165,250,.4); }
-  .p-agent { color: var(--amber); border-color: rgba(251,191,36,.4); }
-  .p-human { color: var(--red); border-color: rgba(248,113,113,.4); }
-
   .callout { border-left: 3px solid var(--accent); background: var(--panel); padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 16px 0 20px; max-width: 860px; }
   .callout p:last-child { margin-bottom: 0; }
-
-  /* Pipeline: a row of stages with arrows between them. */
-  .pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 18px 0 24px; }
-  .stage { flex: 1 1 150px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
-  .stage b { display: block; color: var(--text); margin-bottom: 4px; }
-  .stage span { color: var(--muted); }
-  .stage.script { border-color: rgba(74,222,128,.45); }
-  .stage.model { border-color: rgba(129,140,248,.55); }
-  .stage.ci { border-color: rgba(251,191,36,.45); }
-  .arrow { align-self: center; color: var(--dim); font-size: 18px; }
-  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: -10px; margin-bottom: 18px; }
-  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
-
-  /* The step list for /verify-pr. */
-  .steps { counter-reset: step; list-style: none; padding: 0; max-width: none; }
-  .steps > li { counter-increment: step; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px 16px 64px; margin-bottom: 12px; }
-  .steps > li::before {
-    content: counter(step); position: absolute; left: 18px; top: 16px; width: 30px; height: 30px; border-radius: 50%;
-    background: var(--panel-2); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px;
-  }
-  .steps h3 { margin: 0 0 6px; }
-  .steps p { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
-  .steps p.why { color: var(--text); margin-bottom: 0; }
 
   .band-table td.n { font-family: var(--mono); text-align: center; }
   .b1 { color: var(--green); } .b2 { color: #a3e635; } .b3 { color: var(--amber); } .b4 { color: #fb923c; } .b5 { color: var(--red); }
@@ -124,8 +94,8 @@
 <nav class="toc">
   <div class="kicker">On this page</div>
   <a href="#goal">What it's for</a>
-  <a href="#principles">The principles</a>
   <a href="#in-app">What's in the report</a>
+  <a href="#principles">The principles</a>
   <a href="#risk">The risk section</a>
   <a href="#context">How we build context</a>
   <a href="#running">Running it</a>
@@ -138,7 +108,7 @@
   <div class="kicker">Yarvis · PR verification</div>
   <h1>How the verification report helps you review a PR</h1>
   <p class="lede">The review workspace's <b>Verification</b> tab is for the person about to read a PR. Claude Code agents read every changed file on your machine and tell you what to read, in what order, and what already looks wrong. It decides nothing and posts nothing on its own.</p>
-  <p class="muted">The <code>/verify-pr</code> skill, which posts a signed report the CI gate merges on, is a different tool. It has <a href="verify-pr-explainer.html">its own explainer</a>.</p>
+  <p class="muted">The <code>/verify-pr</code> skill, which posts a signed report on the PR that CI reads to decide whether the PR can merge automatically, is a different tool. It has <a href="verify-pr-explainer.html">its own explainer</a>.</p>
 </header>
 <!-- ───────────────────────────────────────────── -->
 <section id="goal">
@@ -159,23 +129,46 @@
   </div>
 </section>
 <!-- ───────────────────────────────────────────── -->
+<section id="in-app">
+  <h2>What's in the report</h2>
+  <p>It runs Claude Code on your machine against the PR's checkout. Above <b>Run verification</b> you pick the sections; the summary and must-read files always run. Its progress shows check by check, and every file and line in it opens the diff.</p>
+  <div class="grid g3">
+    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
+    <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
+    <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
+    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted.</p></div>
+    <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. This list appears at the top of the report, each file with the reason.</p></div>
+  </div>
+
+  <h3>Coverage guarantees, and why they matter</h3>
+  <p>A report is only useful if you know what it didn't look at. So:</p>
+  <ul>
+    <li><b>No file is left out to save room.</b> Each changed file's diff is handed to the agents on its own, and each agent is told exactly which patches to read. Only a binary file has no diff. A diff over 2 MB is cut to its first 256 KB, and the agents are told so.</li>
+    <li><b>Big PRs are split into reading groups</b> of about 512 KB of diff each. Every check runs one agent per group, and their findings are merged. One agent can't hold every diff at once, and what it read first would drop out of its context.</li>
+    <li><b>Reads are verified, not assumed.</b> A read only counts when it shows the lines. A failed read, a partly read diff, or lines too long to see whole don't count.</li>
+    <li><b>Bulk is skimmed, not read</b>: the summary agent reads the first 200 lines of each lockfile, minified file, generated or vendored file, and file under <code>dist/</code> or <code>vendor/</code>, to say what it is. A file the PR adds under <code>dist/</code> or <code>vendor/</code> is read in full. Whether a file is marked generated or vendored is read from <code>.gitattributes</code> at the merge-base, so a PR can't mark its own code generated to get it skimmed.</li>
+  </ul>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
 <section id="principles">
   <h2>The principles</h2>
   <div class="grid g2">
     <div class="card">
       <h3>Read everything, or say what wasn't read</h3>
-      <p>No file is dropped to save room, and Yarvis checks from what the agents actually opened which files no check read in full.</p>
+      <p>No file is dropped to save room. Yarvis looks at which files the agents actually opened and lists every changed file that no check read in full.</p>
       <p class="why">Why: a report that silently skipped a file reads exactly like one that found nothing wrong in it.</p>
     </div>
     <div class="card">
       <h3>One agent per concern</h3>
-      <p>Each check is its own agent with its own brief and its own file list.</p>
+      <p>Each check is its own agent with its own brief, reading the same patches as the others.</p>
       <p class="why">Why: one agent asked about everything gives each area a little attention. Narrow briefs find more.</p>
     </div>
     <div class="card">
       <h3>Questions, not verdicts</h3>
       <p>What looks off in a must-read file is a question to check while you read, not a finding. The impact band guides your reading; it doesn't decide a merge.</p>
-      <p class="why">Why: the report is model-written and isn't checked against coverage the way <code>/verify-pr</code>'s is. You are the one deciding.</p>
+      <p class="why">Why: the report is model-written, and its band isn't checked against test coverage or the import graph, so it is the agent's classification taken as given. You are the one deciding.</p>
     </div>
     <div class="card">
       <h3>Everything from the PR is data</h3>
@@ -190,38 +183,18 @@
     <div class="card">
       <h3>Nothing leaves without you</h3>
       <p>The report stays on your machine. A finding reaches the PR or a workspace agent only when you click to send it.</p>
-      <p class="why">Why: it hasn't been checked the way a posted report is, and you've read the code; the report hasn't been read by anyone yet.</p>
+      <p class="why">Why: the findings are unchecked model output. You've read the code and can judge whether a finding holds. Nothing else has judged it before you.</p>
     </div>
   </div>
 </section>
 <!-- ───────────────────────────────────────────── -->
-<section id="in-app">
-  <h2>What's in the report</h2>
-  <p>It runs Claude Code on your machine against the PR's checkout. Above <b>Run verification</b> you pick the sections; the summary and must-read files always run. Its progress shows check by check, and every file and line in it opens the diff.</p>
-  <div class="grid g3">
-    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
-    <div class="card"><h3>Risk</h3><p>The same impact table as <code>/verify-pr</code>, without the coverage and reach checks, so it guides reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
-    <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
-    <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
-    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted.</p></div>
-    <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. They are listed first, each with the reason.</p></div>
-  </div>
-
-  <h3>Coverage guarantees, and why they matter</h3>
-  <p>A report is only useful if you know what it didn't look at. So:</p>
-  <ul>
-    <li><b>No file is left out to save room.</b> Each changed file's diff is handed to the agents on its own, and each check gets its exact file list.</li>
-    <li><b>Big PRs are split into reading groups</b> of about 512 KB, one agent per group per check, findings merged. One agent can't hold every diff, and what it read early would drop out of its context.</li>
-    <li><b>Reads are verified, not assumed.</b> A read only counts when it shows the lines. A failed read, a partly read diff, or lines too long to see whole don't count.</li>
-    <li><b>Bulk is skimmed, not read</b>: lockfiles, minified files, and generated or vendored files. Whether a file is marked generated or vendored is read from <code>.gitattributes</code> at the merge-base, so a PR can't mark its own code generated to get it skimmed.</li>
-  </ul>
-</section>
 <!-- ───────────────────────────────────────────── -->
 <section id="risk">
   <h2>The risk section and the impact band</h2>
-  <p>The agent lists each independent change with a <b>kind</b>, a <b>reach</b> and <b>evidence</b> (proven, partial or unproven), and whether it is <b>sensitive</b> (secrets, auth, agent permissions, data deletion). <code>sidecar/src/verify/impact.ts</code> turns that into a band from 1 (minimal) to 5 (very high).</p>
-  <p><b>Kinds</b>: <code>passive</code> changes no behaviour (comments, formatting, docs, tests only). <code>reorganization</code> moves or splits code with the same behaviour. <code>addition</code> is new code no existing input reaches without something this PR adds. <code>removal</code> deletes code. <code>interface</code> changes a signature, exported type, schema, payload or setting key. <code>logic</code> means an input that already exists now gets a different result.</p>
-  <p><b>Reach</b> is of the changed thing, not its file: <code>leaf</code> is private to its file, <code>local</code> is used in its own feature folder and at most one other, <code>shared</code> from two to four others, <code>core</code> from five or more, or something many features go through (the agent loop, the database client, config).</p>
+  <p>The agent lists each independent change with a <b>kind</b>, a <b>reach</b> and <b>evidence</b> (proven, partial or unproven), and whether it is <b>sensitive</b> (auth and permissions, what an agent may do, secrets, personal data, money, or deleting or migrating data). <code>sidecar/src/verify/impact.ts</code> turns that into a band from 1 (minimal) to 5 (very high).</p>
+  <p><b>Evidence</b> is the agent's call on whether tests show the change works: <code>proven</code> (tests cover it), <code>partial</code> (some of it), <code>unproven</code> (none).</p>
+  <p><b>Kinds</b>: <code>passive</code> changes no behaviour (comments, formatting, docs, tests only). <code>reorganization</code> moves or splits code with the same behaviour. <code>addition</code> is new code that only runs through other new code in this PR, so nothing that exists today reaches it. <code>removal</code> deletes code something might still reach (if nothing can, it's passive; if something outside the repo can, it's interface). <code>interface</code> changes a signature, exported type, schema, payload or setting key. <code>logic</code> means an input that already exists now gets a different result.</p>
+  <p><b>Reach</b> is of the changed thing, not its file: <code>leaf</code> is private to its file, or a test, a script, or a view nothing else uses, <code>local</code> is used in its own feature folder and at most one other, <code>shared</code> is used from two to four other feature folders, <code>core</code> from five or more, or something many features go through (shared libraries, base classes, middleware, the database layer, config).</p>
   <table class="band-table">
     <thead><tr><th>Kind</th><th>leaf</th><th>local</th><th>shared</th><th>core</th></tr></thead>
     <tbody>
@@ -235,15 +208,15 @@
   </table>
   <p>Then, per change:</p>
   <ul>
-    <li><b>Unproven</b> adds 1. <b>Proven</b> takes 1 off, but never below 2 and never for an interface, since tests on one side don't show callers elsewhere still work.</li>
-    <li><b>Sensitive</b> (secrets, auth, agent permissions, data deletion) adds 1.</li>
-    <li>Passive changes and proven reorganizations never move.</li>
+    <li><b>Unproven</b> adds 1. <b>Partial</b> leaves the band unchanged. <b>Proven</b> takes 1 off a band above 2. It never applies to an interface change, because tests on the changed side don't show that callers elsewhere still work.</li>
+    <li><b>Sensitive</b> adds 1.</li>
+    <li>Passive changes and proven reorganizations skip these adjustments.</li>
     <li>A <b>reorganization</b> that isn't proven scores as logic. "Mostly a move" is the mistake this score exists to catch.</li>
   </ul>
-  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight by its band (0 for band 1, 1, 2, then 4 for bands 4 and 5). A total of 8 raises the PR one band, 16 raises it two. Volume alone can take a PR to 4 but not 5. When volume raised the band, the report says so: splitting the PR would lower it.</p>
+  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight (a folded entry such as "9 comment cleanups" counts nine times): band 1 adds 0, band 2 adds 1, band 3 adds 2, bands 4 and 5 add 4. A total of 8 or more raises the PR one band, and 16 or more raises it two. Volume alone can raise a PR to band 4 but never to 5. When volume raised the band, the report says so: splitting the PR would lower it.</p>
 
-  <p>Changes at band 4 or above are listed under <b>Needs attention</b> with what to check. A high change the agent gave no check for says "read this change". Every change is behind <b>Every change</b>.</p>
-  <p>The section's overall level (low, medium or high) is the stricter of the band's and the agent's own rating. The agent's rating covers what the band can't see, such as a failing CI check, or a reading group whose agent failed and listed nothing.</p>
+  <p>Changes at band 4 or above are listed under <b>Needs attention</b> with what to check. A high change with nothing specific to verify says "No check given: read this change." Every change is behind <b>Every change</b>.</p>
+  <p>The section's overall level is low (bands 1-2), medium (3) or high (4-5), or the agent's own rating if that is higher. The agent's rating covers what the band can't see, such as a failing CI check, or a reading group whose agent failed and listed nothing.</p>
   <div class="callout">
     <p>The table is the same one <code>/verify-pr</code> uses, but the in-app report doesn't check the classification against coverage or the import graph. A change the agent calls proven stays proven. That's why the band here guides your reading rather than deciding anything.</p>
   </div>
@@ -255,20 +228,16 @@
   <h3>For the agents</h3>
   <div class="grid g2">
     <div class="card">
-      <h3>Room to read everything</h3>
-      <p>Each changed file's diff is handed over on its own, each check gets its exact file list, and big PRs are split into reading groups so no agent has to drop early diffs from its context.</p>
-    </div>
-    <div class="card">
       <h3>The surrounding code, not only the diff</h3>
-      <p>The flow diagram and simpler-approach agents search the whole checkout. A change is often only wrong in how it meets code that didn't change.</p>
+      <p>The flow diagram and simpler-approach agents follow the code beyond the diff, into the rest of the checkout. A change is often only wrong in how it meets code that didn't change.</p>
     </div>
     <div class="card">
       <h3>The PR's own description</h3>
       <p>The simpler-approach agent reads what the PR says it is for, then looks for a smaller way to get there, and names the code it would build on.</p>
     </div>
     <div class="card">
-      <h3>What's bulk and what's code</h3>
-      <p>Generated and vendored files are decided from the merge-base, and the summary agent reads the first 200 lines of each to say what it is, so bulk is described without eating the reading budget.</p>
+      <h3>Every diff, with room to read it</h3>
+      <p>Per-file diffs, an exact list of patches per agent, and reading groups, as in <a href="#in-app">Coverage guarantees</a>.</p>
     </div>
   </div>
 
@@ -283,12 +252,12 @@
       <p>A strip above each diff lists the must-read reason, risk concerns and check findings that cite a line. Must-read lines are amber, cited lines red, with the reason on hover. The file tree marks must-read files.</p>
     </div>
     <div class="card">
-      <h3>An order to read in</h3>
-      <p>The guided review walks the change from the request that arrives to what it finally writes. Data and test files fold into sanity-check steps so the walkthrough stays on logic.</p>
+      <h3>Next to the report: an order to read in</h3>
+      <p><b>Guided review</b> is a separate tool in the PR bar, run by an agent on your configured LLM provider. It orders the change from the request that arrives to what it finally writes. Data and test files fold into sanity-check steps so the walkthrough stays on logic.</p>
     </div>
     <div class="card">
       <h3>The shape of the flow</h3>
-      <p>The flow diagram shows where the change sits: changed code highlighted, the callers and tables around it drawn in, so you see how far it reaches before reading a line.</p>
+      <p>The flow diagram shows where the change sits: the changed steps highlighted, traced up to what starts the flow and down to where it ends, so you see how far it reaches before reading a line.</p>
     </div>
     <div class="card">
       <h3>Progress that tracks itself</h3>
@@ -296,7 +265,7 @@
     </div>
     <div class="card">
       <h3>A path back to the author</h3>
-      <p><b>Post to PR</b> posts a finding as a line comment, quoted and with <code>@</code> mentions broken. <b>Add to <i>workspace</i></b> puts it in the Yarvis workspace's review comments, labelled as a report finding, so its agent checks it rather than taking it as your instruction. A report for an older head offers neither, since its line numbers may have moved.</p>
+      <p><b>Post to PR</b> posts a finding as a line comment, quoted and with <code>@</code> mentions escaped, so posting doesn't notify anyone. When the PR came from a Yarvis workspace, <b>Add to <i>workspace</i></b> puts it in the Yarvis workspace's review comments, labelled as a report finding, so its agent checks it rather than taking it as your instruction. A report for an older head offers neither, since its line numbers may have moved.</p>
     </div>
   </div>
 </section>
@@ -305,7 +274,7 @@
   <h2>Running it</h2>
   <ul>
     <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Pick sections and press <b>Run verification</b>. Starting a second run for the same PR joins the one already running.</li>
-    <li><b>From the assistant</b>: "verify bennettaur/yarvis#612" from chat, voice or Telegram. It uses or creates a review workspace, waits for the clone, and never runs the setup script. It asks first when the PR is large, over budget, of unknown size, or from a repo you haven't registered, since the name may have come from someone else's text.</li>
+    <li><b>From the assistant</b>: "verify bennettaur/yarvis#612" from chat, voice or Telegram. It uses or creates a review workspace, waits for the clone, and never runs the setup script. It asks first when the PR is large, over budget, of unknown size, or from a repo you haven't registered, since the PR reference may have come from text someone else wrote.</li>
     <li><b>Cost</b>: before a large run, or one estimated over the budget in <b>Settings → PR review</b>, you see an estimate and are asked. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
     <li><b>Staleness</b>: a report for an older head says so and offers <b>Re-run</b>. If a re-run fails or is cancelled, the last good report stays.</li>
   </ul>
@@ -317,6 +286,7 @@
     <thead><tr><th>What</th><th>Where</th></tr></thead>
     <tbody>
       <tr><td>The report's runner</td><td><code>sidecar/src/reviewWorkspaces/verification.ts</code></td></tr>
+      <tr><td>The agents and their briefs</td><td><code>sidecar/claude-plugins/yarvis-review/</code></td></tr>
       <tr><td>Impact band table</td><td><code>sidecar/src/verify/impact.ts</code></td></tr>
       <tr><td>How Claude Code runs are locked down</td><td><code>sidecar/src/agentRuns/</code></td></tr>
       <tr><td>The report and guided review, for users</td><td><code>docs/features/review-workspaces.md</code>, <code>docs/features/pr-review.md</code></td></tr>
