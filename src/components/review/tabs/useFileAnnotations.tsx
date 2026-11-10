@@ -97,7 +97,11 @@ export function useFileAnnotations({
   const asking = insights.asking?.path === path ? insights.asking : null;
   const zones = useMemo<EditorZone[]>(
     () => [
-      ...commentAnchors(inline, comments.pending, comments.composer).map(
+      ...commentAnchors(
+        inline,
+        comments.movedToFile ? [...comments.pending, comments.movedToFile] : comments.pending,
+        comments.composer,
+      ).map(
         (anchor): EditorZone => ({
           id: `comment:${anchor.side}:${anchor.line}`,
           side: anchor.side,
@@ -127,7 +131,16 @@ export function useFileAnnotations({
         }),
       ),
     ],
-    [inline, comments.pending, comments.composer, insightsForPath, asking, path, headSha],
+    [
+      inline,
+      comments.pending,
+      comments.composer,
+      comments.movedToFile,
+      insightsForPath,
+      asking,
+      path,
+      headSha,
+    ],
   );
 
   return {

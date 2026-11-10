@@ -198,6 +198,18 @@ describe("useLineComments", () => {
     const after = await view.render([]);
     expect(after.pending).toEqual([]);
     expect(after.composer).toBeNull();
+    expect(after.movedToFile).toEqual(right(4));
+  });
+
+  it("forgets where a comment moved once another composer opens", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    const comments = await view.render([]);
+    await comments.submit(right(4), "looks off");
+    await settle();
+    (await view.render([])).openComposer("RIGHT", 9);
+    await settle();
+
+    expect((await view.render([])).movedToFile).toBeNull();
   });
 
   it("adds no optimistic copy when the post fails", async () => {
@@ -251,6 +263,19 @@ describe("LineCommentBlock", () => {
 
     await view.render([thread(4, "looks off")]);
     expect(view.html.split("looks off")).toHaveLength(2);
+  });
+
+  it("says on the line that the comment went on the whole file", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    await view.render([]);
+    expect(view.html).toContain("Posted on the whole file instead");
+
+    Array.from(view.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Dismiss")
+      ?.click();
+    await view.render([]);
+    expect(view.html).not.toContain("Posted on the whole file instead");
   });
 
   it("renders only the threads on its own side", async () => {

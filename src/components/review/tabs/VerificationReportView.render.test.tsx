@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
-import { mountForInteraction, renderToHtml, textOf } from "../../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -320,6 +320,24 @@ describe("VerificationReportView", () => {
       const posted = buttons("Posted to PR")[0];
       expect(posted?.disabled).toBe(true);
       expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says when GitHub put a finding on the whole file", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: { toPr: async () => "file" as const },
+      }),
+    );
+    try {
+      const post = [...host.querySelectorAll("button")].find((b) => b.textContent === "Post to PR");
+      post?.click();
+      await waitFor(() => textOf(host.innerHTML).includes("On the whole file"), "the notice");
+      expect(textOf(host.innerHTML)).toContain("Posted to PR");
     } finally {
       unmount();
     }
