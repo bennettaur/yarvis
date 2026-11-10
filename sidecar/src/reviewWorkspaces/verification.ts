@@ -97,7 +97,7 @@ const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
 
 /** Titles and details: the agents are asked for at most 12 and 40 words. */
-const TITLE_CHARS = 100;
+export const TITLE_CHARS = 100;
 const DETAIL_CHARS = 280;
 
 const findingSchema = z.object({
@@ -166,23 +166,6 @@ const mustReadSchema = z.object({
     .meta({ description: `At most ${MAX_MUST_READ_FLAGS} items.` }),
 });
 
-/** Past this a diagram is dropped rather than cut, since a cut one doesn't render. */
-export const MAX_MERMAID_CHARS = 6000;
-
-const flowSchema = z
-  .object({
-    title: boundedText(TITLE_CHARS),
-    explanation: boundedText(700),
-    mermaid: z
-      .string()
-      .meta({ description: `A Mermaid flowchart, at most ${MAX_MERMAID_CHARS} characters.` }),
-  })
-  .transform((flow) =>
-    flow.mermaid.length > MAX_MERMAID_CHARS
-      ? { ...flow, mermaid: "", tooLarge: true }
-      : { ...flow, mermaid: flow.mermaid.trim() },
-  );
-
 /**
  * Whether the PR as a whole has a materially simpler way to its goal. The
  * complexity check judges code line by line; this judges the design.
@@ -219,13 +202,11 @@ export const CHECK_SECTIONS = [
 type CheckSection = (typeof CHECK_SECTIONS)[number];
 
 /** The sections a reviewer can pick. The summary and must-reads always run. */
-export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "approach", "flow"] as const;
+export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "approach"] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
-export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow",
-);
+/** A run that doesn't say runs every section. */
+export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS;
 
 /** The agent that writes each section, for following its reads. */
 export const SECTION_AGENTS: Record<ReportSection, string> = {
@@ -238,7 +219,6 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   observability: "yarvis-review:observability-reviewer",
   quality: "yarvis-review:quality-reviewer",
   approach: "yarvis-review:approach-reviewer",
-  flow: "yarvis-review:flow-diagram",
 };
 
 /** The picked sections in report order, without repeats; the default when none are given. */
@@ -432,7 +412,6 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     observability: checkSchema,
     quality: checkSchema,
     approach: approachSchema,
-    flow: flowSchema,
   };
   // Only the asked-for sections are in the shape, all required: Claude Code is
   // shown only what to write, and a section the model adds anyway is stripped
@@ -466,9 +445,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
   });
   return fixed.extend(askedSchemas).transform((report) => {
     // The shape is built per run, so its type can't say which sections it has.
-    const { summary, mustRead, risk, approach, flow, ...answered } = report as z.output<
-      typeof fixed
-    > &
+    const { summary, mustRead, risk, approach, ...answered } = report as z.output<typeof fixed> &
       Answered;
     const checks: Partial<Record<CheckSection, Check>> = {};
     for (const name of CHECK_SECTIONS) {
@@ -491,7 +468,6 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       ...(risk && { risk: { ...risk, concerns } }),
       ...deduped,
       ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
-      ...(flow && { flow }),
     };
   });
 }
@@ -550,7 +526,7 @@ const LARGE_PR = { changedLines: 4_000, files: 150 };
  * the code patches came to about 115 bytes per changed line. Those runs had
  * seven reading agents; the observability, quality and approach agents are
  * counted as three more readers but BASE_TOKENS was not re-measured for them,
- * and the flow and approach agents' searches of the checkout aren't counted.
+ * and the approach agent's searches of the checkout aren't counted.
  * Two points fix two constants exactly and test nothing, and the other models
  * are this formula at their own rates, unmeasured: a warning's estimate, not a
  * bill.
@@ -837,6 +813,16 @@ export function buildVerificationMaterial(
   };
 }
 
+/** Writes pr.md, index.md and groups/ beside the patches, as the plugin's agents expect them. */
+export function writeReviewContext(contextDir: string, material: VerificationMaterial): void {
+  writeFileSync(join(contextDir, "pr.md"), material.contextFile);
+  writeFileSync(join(contextDir, "index.md"), material.indexFile);
+  mkdirSync(join(contextDir, "groups"));
+  material.groupFiles.forEach((file, i) => {
+    writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Context directories
 // ---------------------------------------------------------------------------
@@ -875,16 +861,18 @@ const DISALLOWED_TOOLS = ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "
 const MAX_TURNS = 40;
 
 /** The PR at one commit: what a report was made against. */
-function targetKeyFor(refKey: string, headSha: string): string {
+export function targetKeyFor(refKey: string, headSha: string): string {
   return `${refKey}@${headSha}`;
 }
 
-/** The newest verification run for a PR (any head), matched on the `refKey` its meta records. */
-async function latestRunId(db: Db, refKey: string, status?: string): Promise<string | null> {
-  const conditions = [
-    eq(agentRuns.kind, VERIFICATION_RUN_KIND),
-    sql`${agentRuns.meta}->>'refKey' = ${refKey}`,
-  ];
+/** The newest run of `kind` for a PR (any head), matched on the `refKey` its meta records. */
+export async function latestRunId(
+  db: Db,
+  refKey: string,
+  status?: string,
+  kind: string = VERIFICATION_RUN_KIND,
+): Promise<string | null> {
+  const conditions = [eq(agentRuns.kind, kind), sql`${agentRuns.meta}->>'refKey' = ${refKey}`];
   if (status) conditions.push(eq(agentRuns.status, status));
   const [row] = await db
     .select({ id: agentRuns.id })
@@ -1000,12 +988,7 @@ export async function startVerification(
         { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index, sections },
         contextDir,
       );
-      writeFileSync(join(contextDir, "pr.md"), material.contextFile);
-      writeFileSync(join(contextDir, "index.md"), material.indexFile);
-      mkdirSync(join(contextDir, "groups"));
-      material.groupFiles.forEach((file, i) => {
-        writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
-      });
+      writeReviewContext(contextDir, material);
       const audit = emptyAudit();
       let volumes: ReadVolume[] = [];
       const handle = await startClaudeRun(
@@ -1112,9 +1095,8 @@ export interface VerificationSize {
   /**
    * About what one section adds: one more agent reading every file. The
    * estimate moves by this much per section added to or taken from the
-   * defaults. It leaves out the agent's own fixed overhead and, for the flow
-   * diagram and the approach rating, their reads of the checkout, so it runs
-   * low.
+   * defaults. It leaves out the agent's own fixed overhead and, for the
+   * approach rating, its reads of the checkout, so it runs low.
    */
   sectionCostUsd: number;
   /** The sections {@link estimatedCostUsd} assumes. */

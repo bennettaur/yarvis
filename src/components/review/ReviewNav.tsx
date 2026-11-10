@@ -1,15 +1,27 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { streamAgentRun } from "../../lib/agentRuns";
 import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
+import { invalidate } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
 import { useCommitsSinceLastReview } from "../../lib/reviewWorkspaces/sinceReview";
+import { runSections, sizeFor } from "../../lib/reviewWorkspaces/verification";
+import { Loader } from "../ai-elements/loader";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
 import CommitsList from "./nav/CommitsList";
 import { prColor } from "./prColors";
+import { runFlowDiagram } from "./tabs/DiagramTab";
 import { STATIC_TAB_LABEL } from "./tabs/registry";
+import {
+  flowDiagramKey,
+  useLatestFlowDiagram,
+  useLatestVerification,
+  verificationKey,
+} from "./tabs/reviewData";
 import type { PrColor, StaticTabKind, TabSpec } from "./tabs/types";
+import { runVerification } from "./tabs/VerificationTab";
 
 /** "repo#12": the short name a PR goes by in the nav and before its tab titles. */
 export function prLabel(pr: Pick<ReviewWorkspacePr, "ref">): string {
@@ -74,6 +86,108 @@ function Item({
       {badge}
     </button>
   );
+}
+
+/**
+ * A nav item for an agent run's tab, with a small button beside it that
+ * starts the run and opens the tab to follow it.
+ */
+function RunItem({
+  label,
+  active,
+  hasRun,
+  running,
+  canRun,
+  runHint,
+  onOpen,
+  onRun,
+}: {
+  label: string;
+  active: boolean;
+  /** A run has been made before, so the button re-runs. */
+  hasRun: boolean;
+  running: boolean;
+  canRun: boolean;
+  /** The run button's tooltip: what it does, or why it can't run yet. */
+  runHint: string;
+  onOpen: () => void;
+  /** Starts the run; a rejection is shown under the item. */
+  onRun: () => Promise<void>;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      await onRun();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+  return (
+    <div>
+      <div className="flex items-center">
+        <div className="min-w-0 flex-1">
+          <Item
+            label={label}
+            active={active}
+            onClick={onOpen}
+            badge={running ? <Loader size={12} /> : undefined}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void run()}
+          disabled={!canRun || running || starting}
+          title={runHint}
+          aria-label={`${hasRun ? "Re-run" : "Run"} ${label.toLowerCase()}`}
+          className="mr-2 shrink-0 rounded border border-zinc-700 px-1.5 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {starting ? "…" : hasRun ? "Re-run" : "Run"}
+        </button>
+      </div>
+      {error && <p className="px-3 text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * Re-reads `key` when the live run `runId` ends, so the nav's spinner and Run
+ * button follow a run whose tab isn't open to do it.
+ */
+function useRefreshWhenRunEnds(runId: string | null, key: string) {
+  useEffect(() => {
+    if (!runId) return;
+    const abort = new AbortController();
+    void (async () => {
+      try {
+        for await (const _event of streamAgentRun(runId, abort.signal)) {
+          // Only the end of the stream matters here.
+        }
+      } catch {
+        // A lost stream still ends in a re-read, which says where the run got to.
+      }
+      if (!abort.signal.aborted) invalidate(key);
+    })();
+    return () => abort.abort();
+  }, [runId, key]);
+}
+
+/**
+ * Calls `onChange` when `value` changes after the first render.
+ */
+function useOnChange(value: string, onChange: () => void) {
+  const last = useRef(value);
+  const callback = useRef(onChange);
+  callback.current = onChange;
+  useEffect(() => {
+    if (last.current === value) return;
+    last.current = value;
+    callback.current();
+  }, [value]);
 }
 
 function Section({
@@ -141,6 +255,29 @@ function PrGroup({
   const isActive = (kind: string) => active?.prId === pr.id && active.kind === kind;
   const activePath = active?.prId === pr.id && "path" in active ? active.path : null;
   const open = (kind: StaticTabKind) => openTab({ kind, prId: pr.id });
+  const verification = useLatestVerification(workspaceId, pr.id);
+  const diagram = useLatestFlowDiagram(workspaceId, pr.id);
+  const checkedOut = pr.status === "ready" && pr.worktreeStatus === "ready";
+  const verificationRun = verification.data?.run ?? null;
+  const diagramRun = diagram.data?.run ?? null;
+  const liveRun = (run: { id: string; status: string; live: boolean } | null) =>
+    run?.status === "running" && run.live ? run.id : null;
+  useRefreshWhenRunEnds(liveRun(verificationRun), verificationKey(pr.id));
+  useRefreshWhenRunEnds(liveRun(diagramRun), flowDiagramKey(pr.id));
+  // The latest runs' answers depend on the checkout: the size is only known
+  // once it is ready, and "current" is against its head.
+  useOnChange(`${checkedOut}:${pr.headSha}`, () => {
+    invalidate(verificationKey(pr.id));
+    invalidate(flowDiagramKey(pr.id));
+  });
+  const nextSections = runSections(verificationRun?.meta);
+  const verificationSize = verification.data?.size;
+  // A large or over-budget PR asks before a run starts, and that question is in
+  // the tab. A size not known yet asks too, rather than skip the question.
+  const verificationNeedsConfirm =
+    !verificationSize ||
+    verificationSize.large ||
+    sizeFor(verificationSize, nextSections).overBudget;
   const needsSetupAnswer =
     pr.worktreeStatus === "ready" && pr.setupConsent === null && pr.setupStatus === null;
 
@@ -192,6 +329,45 @@ function PrGroup({
               }
             />
           ))}
+          <RunItem
+            label={STATIC_TAB_LABEL.verification}
+            active={isActive("verification")}
+            hasRun={verificationRun !== null}
+            running={verificationRun?.status === "running"}
+            canRun={checkedOut && !verification.loading}
+            runHint={
+              !checkedOut
+                ? "Waiting for the checkout"
+                : verificationNeedsConfirm
+                  ? "Opens the report first, to confirm a run on a large or costly PR"
+                  : "Have agents check the PR does what it says"
+            }
+            onOpen={() => open("verification")}
+            onRun={async () => {
+              // One that needs confirming only opens the tab, where the question is.
+              if (!verificationNeedsConfirm) {
+                await runVerification(workspaceId, pr.id, nextSections);
+              }
+              open("verification");
+            }}
+          />
+          <RunItem
+            label={STATIC_TAB_LABEL.diagram}
+            active={isActive("diagram")}
+            hasRun={diagramRun !== null}
+            running={diagramRun?.status === "running"}
+            canRun={checkedOut && !diagram.loading}
+            runHint={
+              checkedOut
+                ? "Have an agent draw the flow the change sits in"
+                : "Waiting for the checkout"
+            }
+            onOpen={() => open("diagram")}
+            onRun={async () => {
+              await runFlowDiagram(workspaceId, pr.id);
+              open("diagram");
+            }}
+          />
           {needsSetupAnswer && (
             <button
               type="button"

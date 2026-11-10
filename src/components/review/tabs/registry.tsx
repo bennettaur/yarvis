@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import CommitTab from "./CommitTab";
+import DiagramTab from "./DiagramTab";
 import DiffTab from "./DiffTab";
 import FileTab from "./FileTab";
 import GuideTab from "./GuideTab";
@@ -18,6 +19,7 @@ export const STATIC_TAB_LABEL: Record<StaticTabKind, string> = {
   "since-review": "Since last review",
   guide: "Guided review",
   verification: "Verification",
+  diagram: "Flow diagram",
   mutation: "Mutation testing",
 };
 
@@ -98,6 +100,8 @@ export function renderTab(spec: TabSpec, ctx: TabContext): ReactNode {
       return <GuideTab ctx={ctx} />;
     case "verification":
       return <VerificationTab ctx={ctx} />;
+    case "diagram":
+      return <DiagramTab ctx={ctx} />;
     case "mutation":
       return <MutationTab ctx={ctx} />;
   }

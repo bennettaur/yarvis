@@ -11,7 +11,6 @@ import {
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
-import FlowDiagram from "./FlowDiagram";
 
 /** What a must-read's flags are called, in the report and on the diff. */
 export const FLAG_LABEL = "Looks off";
@@ -455,12 +454,6 @@ export default function VerificationReportView({
               <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
             ))}
           </ul>
-        </Section>
-      )}
-
-      {report.flow && (
-        <Section title="Flow">
-          <FlowDiagram flow={report.flow} />
         </Section>
       )}
 

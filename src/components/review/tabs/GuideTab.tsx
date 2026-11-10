@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { stepPaths } from "../../../lib/pr/guide";
 import LoadingIndicator from "../../LoadingIndicator";
-import PrFlowDiagramSection from "../../pr/PrFlowDiagramSection";
 import PrGuidePanel, { PrGuideStart, stepLocation } from "../../pr/PrGuidePanel";
 import type { DiffFocus } from "../../pr/shared";
 import { usePrGuide } from "../../pr/usePrGuide";
@@ -29,10 +28,9 @@ export function guideFocusTab(
 
 /**
  * The guided review as a tab: the whole tour down the side, and the step the
- * reader is on beside it, with the flow diagram below the step. Every move —
- * Next, Back, a step, a flagged finding, a covered file — opens that place in
- * a diff tab, and moving past a step marks its files viewed, as the classic
- * review does.
+ * reader is on beside it. Every move — Next, Back, a step, a flagged finding,
+ * a covered file — opens that place in a diff tab, and moving past a step
+ * marks its files viewed, as the classic review does.
  */
 export default function GuideTab({ ctx }: { ctx: TabContext }) {
   const viewed = useReviewViewed(ctx.prRef);
@@ -112,9 +110,8 @@ export default function GuideTab({ ctx }: { ctx: TabContext }) {
           );
         })}
       </ol>
-      <div className="min-w-0 flex-1 space-y-4 overflow-y-auto">
+      <div className="min-w-0 flex-1 overflow-y-auto">
         <PrGuidePanel guide={guide} inline />
-        <PrFlowDiagramSection guide={guide.guide} />
       </div>
     </div>
   );

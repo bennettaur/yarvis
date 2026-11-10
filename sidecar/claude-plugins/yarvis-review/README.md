@@ -10,8 +10,8 @@ private temp directory for each run, removed when the run ends.
 The verification report is the `verification-report` skill, which runs the
 summary agent and whichever of the others the reviewer picked (risk,
 completeness, tests, complexity, performance, comments, observability,
-quality, approach, and the flow diagram) in parallel and assembles their
-answers. Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
+quality, and approach) in parallel and assembles their answers. Its run
+starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context, an `index.md` of every changed file and one numbered
 patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a
 directory the run may read, marks bulk to skim, and splits the rest into
@@ -19,6 +19,11 @@ reading groups no bigger than one agent can hold; on a big PR the skill runs
 each check once per group. Once the run answers it removes duplicate
 findings across sections and adds which changed files no agent read
 (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+
+The flow diagram is the `flow-diagram` agent alone, run as the main thread
+(`--agent yarvis-review:flow-diagram`). Its run starts from
+`sidecar/src/reviewWorkspaces/flowDiagram.ts`, which writes the same context
+the verification report does.
 
 The "What's changed" re-review summary is the `rereviewer` agent alone, run as
 the main thread (`--agent yarvis-review:rereviewer`). Its run starts from

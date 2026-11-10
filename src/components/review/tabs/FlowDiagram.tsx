@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { VerificationFlow } from "../../../lib/reviewWorkspaces/verification";
+import type { FlowDiagram as Flow } from "../../../lib/reviewWorkspaces/flowDiagram";
 
 /** The flowchart forms the flow agent is told to write; anything else is shown as source only. */
 const FLOWCHART = /^(flowchart|graph)\s/;
@@ -30,7 +30,7 @@ let renders = 0;
 async function renderSvg(source: string): Promise<string> {
   const mermaid = await loadMermaid();
   renders += 1;
-  const id = `verification-flow-${renders}`;
+  const id = `flow-diagram-${renders}`;
   try {
     const { svg } = await mermaid.render(id, source);
     return svg;
@@ -42,8 +42,8 @@ async function renderSvg(source: string): Promise<string> {
 
 const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
-/** The report's flow section: the diagram, what it shows, and its source to fall back on. */
-export default function FlowDiagram({ flow }: { flow: VerificationFlow }) {
+/** A flow diagram run's answer: the diagram, what it shows, and its source to fall back on. */
+export default function FlowDiagram({ flow }: { flow: Flow }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const source = flow.mermaid;

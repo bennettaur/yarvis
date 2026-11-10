@@ -1062,6 +1062,146 @@ cat "${fakeDir}/result.jsonl"`,
   });
 });
 
+describe("flow diagram", () => {
+  const diagram = {
+    title: "How a changes",
+    explanation: "e",
+    mermaid: "flowchart TD\n  start --> a\n",
+  };
+  const detail = {
+    title: "Feature work",
+    body: "Changes a and renames old.",
+    author: "octocat",
+    headRef: "feature",
+    baseRef: "main",
+    checks: [],
+    reviewThreads: [],
+  } as unknown as PrDetail;
+  let fakeDir: string;
+  let diagramApp: Hono;
+
+  /** A `claude` that records its stdin and argv, waits for `release`, then answers with the diagram. */
+  beforeEach(async () => {
+    await sql`TRUNCATE agent_runs`;
+    fakeDir = mkdtempSync(join(tmpdir(), "yarvis-flow-diagram-fake-"));
+    writeFileSync(
+      join(fakeDir, "result.jsonl"),
+      `${JSON.stringify(resultLine({ structured_output: diagram }))}\n`,
+    );
+    const program = fakeClaude(
+      fakeDir,
+      "claude",
+      `cat > "${fakeDir}/stdin.txt"
+printf '%s\\n' "$@" > "${fakeDir}/args.txt"
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+cat "${fakeDir}/result.jsonl"`,
+    );
+    const registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
+    diagramApp = new Hono().route(
+      "/rw",
+      createReviewWorkspaceRoutes(config, {
+        deps,
+        flowDiagram: {
+          loadDetail: async () => detail,
+          settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5 }),
+          run: { program, registry, instance: "test" },
+        },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    writeFileSync(join(fakeDir, "release"), "");
+    rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  const request = (method: string, wsId: string, prId: string) =>
+    diagramApp.request(`/rw/${wsId}/prs/${prId}/flow-diagram`, { method });
+
+  async function latest(wsId: string, prId: string) {
+    return (await (await request("GET", wsId, prId)).json()) as {
+      run: { id: string; status: string; live: boolean; result: unknown } | null;
+      current: boolean;
+    };
+  }
+
+  it("runs the flow agent alone on the checkout, and serves its diagram", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
+
+    const res = await request("POST", wsId, prId);
+    expect(res.status).toBe(202);
+    const { runId } = (await res.json()) as { runId: string };
+    // A second start joins the run already going.
+    const again = await request("POST", wsId, prId);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ runId, existing: true });
+
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:flow-diagram");
+    expect(
+      args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
+    ).toEqual(["Read", "Grep", "Glob"]);
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
+    expect(existsSync(join(contextDir, "patches/src/a.ts.diff"))).toBe(true);
+    const stdin = join(fakeDir, "stdin.txt");
+    await until(
+      async () => existsSync(stdin) && readFileSync(stdin, "utf8").includes("READ_BUDGET_KB"),
+      "the fake's stdin",
+    );
+    // The PR's text reaches the agent only fenced, through pr.md.
+    expect(readFileSync(stdin, "utf8")).not.toContain("Changes a and renames old.");
+
+    writeFileSync(join(fakeDir, "release"), "");
+    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: {
+        id: runId,
+        live: false,
+        result: { ...diagram, mermaid: "flowchart TD\n  start --> a" },
+      },
+      current: true,
+    });
+    await until(async () => !existsSync(contextDir), "the context folder to go");
+    // A diagram run is not a verification report.
+    const verification = await call("GET", `/${wsId}/prs/${prId}/verification`);
+    expect(((await verification.json()) as { run: unknown }).run).toBeNull();
+  });
+
+  it("keeps the last good diagram in view when a re-run fails, marked by its head", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const insert = async (head: string, minutesAgo: number, status: string) => {
+      const [row] = await db
+        .insert(agentRuns)
+        .values({
+          kind: "pr-flow-diagram",
+          targetKey: `gh:o/r/1@${head}`,
+          status,
+          instance: "test",
+          meta: { refKey: "gh:o/r/1", headSha: head },
+          startedAt: new Date(Date.now() - minutesAgo * 60_000),
+        })
+        .returning({ id: agentRuns.id });
+      return row?.id as string;
+    };
+    const good = await insert("older-head", 30, "succeeded");
+    const failed = await insert(headSha, 5, "failed");
+    // Another kind for the same PR is not a diagram.
+    await insert(headSha, 1, "succeeded").then((id) =>
+      db.update(agentRuns).set({ kind: "verification-report" }).where(eq(agentRuns.id, id)),
+    );
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: failed, status: "failed" },
+      current: true,
+      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+    });
+  });
+});
+
 describe("re-review summary", () => {
   const answer = {
     summary: "Changed a. Nothing else.",

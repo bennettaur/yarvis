@@ -44,6 +44,7 @@ export const STATIC_ORDER: StaticTabKind[] = [
   "since-review",
   "guide",
   "verification",
+  "diagram",
   "mutation",
 ];
 

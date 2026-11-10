@@ -18,6 +18,10 @@ import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
 import { sweepContextDirs } from "./reviewWorkspaces/agentContext.ts";
+import {
+  FLOW_DIAGRAM_CONTEXT_DIR_PREFIX,
+  FLOW_DIAGRAM_RUN_TIMEOUT_MS,
+} from "./reviewWorkspaces/flowDiagram.ts";
 import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
 import {
   failInterruptedMutationRuns,
@@ -107,7 +111,11 @@ try {
       prefix: VERIFICATION_CONTEXT_DIR_PREFIX,
       maxAgeMs: VERIFICATION_RUN_TIMEOUT_MS,
     }) +
-    sweepContextDirs({ prefix: REREVIEW_CONTEXT_DIR_PREFIX, maxAgeMs: REREVIEW_RUN_TIMEOUT_MS });
+    sweepContextDirs({ prefix: REREVIEW_CONTEXT_DIR_PREFIX, maxAgeMs: REREVIEW_RUN_TIMEOUT_MS }) +
+    sweepContextDirs({
+      prefix: FLOW_DIAGRAM_CONTEXT_DIR_PREFIX,
+      maxAgeMs: FLOW_DIAGRAM_RUN_TIMEOUT_MS,
+    });
   if (removed > 0) console.log(`[agent-context] removed ${removed} leftover context folders`);
 } catch (e) {
   console.error("[agent-context] could not sweep leftover context folders:", e);

@@ -48,7 +48,6 @@ export const VERIFICATION_AGENTS: readonly {
   { agent: "observability-reviewer", label: "Observability", section: "observability" },
   { agent: "quality-reviewer", label: "Code quality", section: "quality" },
   { agent: "approach-reviewer", label: "Simpler approach", section: "approach" },
-  { agent: "flow-diagram", label: "Flow diagram", section: "flow" },
 ];
 
 /** A run's progress before any event: every agent it was asked to run, waiting. */
