@@ -590,7 +590,7 @@ How it works:
   checks this when it starts: the command line of the Claude Code that started
   it has to begin with your agent command from Settings, and that command has
   to include the flag. A `claude` you start by hand in the terminal only counts
-  if you type the same command.
+  if you type your agent command from Settings word for word.
 - If no answer comes back, the session may not have seen the message. The
   assistant can only confirm the message was handed to the relay.
 - Replies are kept in memory until Yarvis restarts or the session is stopped.

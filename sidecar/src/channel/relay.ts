@@ -94,7 +94,8 @@ async function launchedWithChannel(
   env: Record<string, string | undefined>,
 ): Promise<boolean> {
   try {
-    // The same precedence as the core's `resolve_agent_command`: env first.
+    // Env first, as in the core's `resolve_agent_command`. Its default command
+    // has no channel flag, so an unset one can stop here.
     const agentCommand =
       env.YARVIS_CLAUDE_COMMAND?.trim() || (await readSection<string>("agentCommand"));
     if (!agentCommand) return false;

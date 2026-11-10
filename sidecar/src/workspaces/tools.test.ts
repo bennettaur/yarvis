@@ -20,11 +20,12 @@ import { createTask, getTask } from "../tasks/service.ts";
 import { clearRecapCache } from "./activity.ts";
 import { recordAgentSessionEnd, recordAgentSessionStart } from "./agentSessions.ts";
 import { WORKSPACE_BRIEF_FILE } from "./brief.ts";
-import type {
-  ClaudeSessionStarter,
-  SendSessionInstructionInput,
-  SendSessionSlashCommandInput,
-  StartClaudeSessionInput,
+import {
+  type ClaudeSessionStarter,
+  opensWithCommandPrefix,
+  type SendSessionInstructionInput,
+  type SendSessionSlashCommandInput,
+  type StartClaudeSessionInput,
 } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
@@ -2378,6 +2379,19 @@ describe("workspace tools", () => {
     expect(typedSlash).toHaveLength(1);
     expect(words.via).toBe("pty");
     expect(typed.map((t) => t.instruction)).toEqual(["/compact"]);
+  });
+
+  it("opensWithCommandPrefix matches what the core refuses as a command", () => {
+    for (const text of ["!whoami", "#remember this", "/compact", "@src/x.ts", "  \n/compact"]) {
+      expect(opensWithCommandPrefix(text)).toBe(true);
+    }
+    // The core turns these into spaces before checking the first character.
+    for (const text of ["\u202e/compact", "\u2066!rm -rf ~", "\u0007#note", "\u2028@x"]) {
+      expect(opensWithCommandPrefix(text)).toBe(true);
+    }
+    for (const text of ["run it with !important", "what changed in src/?", "ok"]) {
+      expect(opensWithCommandPrefix(text)).toBe(false);
+    }
   });
 
   it("send_workspace_slash_command passes on the core's refusal of a command not allowed", async () => {

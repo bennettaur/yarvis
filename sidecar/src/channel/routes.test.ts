@@ -164,8 +164,13 @@ describe("launchedFromChannelCommand", () => {
 
   it("refuses a claude run by hand without the configured words", () => {
     expect(launchedFromChannelCommand("claude", CHANNEL_COMMAND)).toBe(false);
-    expect(launchedFromChannelCommand(`other-agent ${FLAG}`, `other-agent ${FLAG}`)).toBe(true);
     expect(launchedFromChannelCommand(`sh -c claude ${FLAG}`, `claude ${FLAG}`)).toBe(false);
+  });
+
+  it("accepts any agent program and the flag's = form", () => {
+    expect(launchedFromChannelCommand(`other-agent ${FLAG}`, `other-agent ${FLAG}`)).toBe(true);
+    const joined = "claude --dangerously-load-development-channels=server:yarvis-channel";
+    expect(launchedFromChannelCommand(`${joined} Go on`, joined)).toBe(true);
   });
 });
 

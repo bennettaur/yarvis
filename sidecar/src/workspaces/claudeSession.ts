@@ -292,6 +292,22 @@ export type AgentSendResult =
   | { delivered: false; failure: AgentSendFailure; error: string };
 
 /**
+ * Characters the core turns into spaces before it checks an instruction's first
+ * character (`is_unsafe_name_char` in pty.rs): control characters, line and
+ * paragraph separators, and bidi marks, overrides and isolates.
+ */
+const LEADING_IGNORED = /^[\s\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/u;
+
+/**
+ * True when the core would refuse `text` as opening with a command prefix.
+ * Mirrors `INSTRUCTION_PREFIXES_REJECTED` in pty.rs: `!` is bash mode, `/` a
+ * slash command, `#` a memory write and `@` a file mention.
+ */
+export function opensWithCommandPrefix(text: string): boolean {
+  return /^[!#/@]/.test(text.replace(LEADING_IGNORED, ""));
+}
+
+/**
  * Gives an instruction to a workspace's agent and records that it did, shared
  * by every caller that forwards text into a session so they all keep the same
  * rules. It goes over the session's channel when one is listening, where it
@@ -301,8 +317,8 @@ export type AgentSendResult =
  * influenced, and the event log is read back into later prompts.
  *
  * On the typed path, when the core can't tell what holds the prompt and
- * nothing has registered, the agent most likely predates the workspace's registration hooks; writing
- * them now means a restarted session registers.
+ * nothing has registered, the agent most likely predates the workspace's
+ * registration hooks; writing them now means a restarted session registers.
  */
 export async function sendToWorkspaceAgent(
   db: Db,
@@ -342,8 +358,9 @@ export async function sendToWorkspaceAgent(
   };
 
   // Text the prompt would read as a command stays on the typed path, where the
-  // core refuses it, so the channel can't be used to get one run in words.
-  const mustBeTyped = typedOnly || /^[!#/]/.test(instruction.trimStart());
+  // core refuses it, so a channel message can't carry a command the typed path
+  // would refuse.
+  const mustBeTyped = typedOnly || opensWithCommandPrefix(instruction);
   const message = mustBeTyped
     ? null
     : sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel);

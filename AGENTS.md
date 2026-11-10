@@ -443,9 +443,10 @@ report there and leaves the fixes to the author.
   bash mode, `/` a slash command, `#` a memory write), `foreground_is_agent`
   refuses to type at all unless the configured agent is what's reading the
   prompt, and the chat agent's system prompt forbids relaying third-party text
-  as an instruction; text opening with one of those characters is never sent over
-  the channel, so the same refusal applies. `claude.slash` is the one way a line opening with `/` gets
-  in: the core types it only when the command is on an allowlist no sidecar
+  as an instruction. Text the core would refuse that way is never sent over the
+  channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
+  same refusal applies. `claude.slash` is the one way a line opening with `/`
+  gets in: the core types it only when the command is on an allowlist no sidecar
   route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the
   agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
