@@ -592,9 +592,9 @@ How it works:
   session restarts, but nothing more is sent to it, and relays started after
   that stay idle.
 - A workspace provisioned while the switch is on has a `yarvis-channel` server
-  in its `.mcp.json`. That server is
-  the Yarvis sidecar running as a small relay. It collects messages for its own
-  terminal and gives the session a `reply` tool. Claude Code asks you to
+  in its `.mcp.json`. That server is the Yarvis sidecar running as a small
+  relay. It collects messages for its own terminal and gives the session a
+  `reply` tool. Claude Code asks you to
   approve this server once, the same way it asks for the `yarvis` server. That
   approval is separate from the channel dialog, which comes back every startup.
 - The assistant sends over the channel only when the session was launched with

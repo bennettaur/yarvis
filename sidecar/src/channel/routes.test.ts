@@ -177,7 +177,8 @@ describe("launchedFromChannelCommand", () => {
 describe("channelMessagingEnabled", () => {
   it("is on only when the setting is exactly true", async () => {
     const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
-    const settings = join(mkdtempSync(join(tmpdir(), "yarvis-channel-setting-")), "settings.json");
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-channel-setting-"));
+    const settings = join(dir, "settings.json");
     process.env.YARVIS_SETTINGS_PATH = settings;
     try {
       const enabledFor = async (value: unknown) => {
@@ -190,6 +191,7 @@ describe("channelMessagingEnabled", () => {
       expect(await channelMessagingEnabled()).toBe(false);
     } finally {
       process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

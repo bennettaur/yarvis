@@ -1742,7 +1742,8 @@ describe("provision + archive (injected git runner)", () => {
     expect(await servers()).toEqual(["yarvis"]);
 
     const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
-    const settings = join(mkdtempSync(join(tmpdir(), "yarvis-channel-settings-")), "settings.json");
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-channel-settings-"));
+    const settings = join(dir, "settings.json");
     writeFileSync(settings, JSON.stringify({ channelMessaging: true }));
     process.env.YARVIS_SETTINGS_PATH = settings;
     try {
@@ -1750,6 +1751,7 @@ describe("provision + archive (injected git runner)", () => {
       expect(await servers()).toEqual(["yarvis", "yarvis-channel"]);
     } finally {
       process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
     }
 
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });

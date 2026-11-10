@@ -443,9 +443,9 @@ report there and leaves the fixes to the author.
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
   `foreground_is_agent` refuses to type at all unless the configured agent is
   what's reading the prompt, and the chat agent's system prompt forbids
-  relaying third-party text as an instruction. Text the core would refuse that way is never sent over the
-  channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
-  same refusal applies. `claude.slash` is the one way a line opening with `/`
+  relaying third-party text as an instruction. Text the core would refuse that
+  way is never sent over the channel (`opensWithCommandPrefix` in
+  `workspaces/claudeSession.ts`), so the same refusal applies. `claude.slash` is the one way a line opening with `/`
   gets in: the core types it only when the command is on an allowlist no sidecar
   route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the
@@ -481,16 +481,16 @@ report there and leaves the fixes to the author.
   - The message reaches Claude Code as a channel event, not keystrokes, so
     there is no prompt line to submit early and no command prefix to read.
   - The listener is checked rather than assumed. A relay polls with its
-    terminal's `YARVIS_SESSION_TOKEN`, its parent's pid, and whether that
-    Claude Code was launched with the channel flag. The relay decides that
-    once, at startup: the parent's command line has to begin with the
+    terminal's `YARVIS_SESSION_TOKEN` and its parent's pid, and only after
+    deciding, once at startup, that its parent Claude Code was launched with
+    the channel flag: the parent's command line has to begin with the
     configured agent command, word for word, and that command has to carry
-    the flag. `ps` joins argv with spaces, so a flag found anywhere else could
+    the flag. Otherwise it stays idle. `ps` joins argv with spaces, so a flag found anywhere else could
     be text the core adds after the command, such as a workspace name taken
     from an issue title (`agent_launch_command` in `pty.rs`).
-    A send goes over the channel only when that pid is one the workspace's
-    SessionStart hook registered and the flag was there. Otherwise it is
-    typed, since a session without the flag drops channel events. The first
+    A send goes over the channel only when a relay is polling and its pid is
+    one the workspace's SessionStart hook registered. Otherwise it is typed,
+    since a session without the flag drops channel events. The first
     live relay owns the channel and a second gets 409, so a nested
     `claude -p` started from the terminal can't take the session's messages.
     A process in that terminal can still claim a registered pid. That is the

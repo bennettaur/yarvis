@@ -2136,7 +2136,8 @@ describe("workspace tools", () => {
     const { hub, poll } = listeningHub(created.workspaceId);
     const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, channel: { hub } });
     const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
-    const settings = join(mkdtempSync(join(tmpdir(), "yarvis-channel-on-")), "settings.json");
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-channel-on-"));
+    const settings = join(dir, "settings.json");
     writeFileSync(settings, JSON.stringify({ channelMessaging: true }));
     process.env.YARVIS_SETTINGS_PATH = settings;
     let result: { via?: string };
@@ -2147,6 +2148,7 @@ describe("workspace tools", () => {
       )) as { via?: string };
     } finally {
       process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
     }
 
     expect(result.via).toBe("channel");
