@@ -33,8 +33,11 @@ describe("workspace .mcp.json", () => {
       WORKSPACE_ID,
       {},
       {
-        command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
-        args: ["channel-relay"],
+        channelMessaging: true,
+        relay: {
+          command: "/Applications/Yarvis.app/Contents/MacOS/yarvis-sidecar",
+          args: ["channel-relay"],
+        },
       },
     ).mcpServers as Record<string, Record<string, unknown>>;
     expect(servers["yarvis-channel"]).toEqual({
@@ -61,7 +64,7 @@ describe("workspace .mcp.json", () => {
       somethingElse: true,
     });
     const servers = merged.mcpServers as Record<string, unknown>;
-    expect(Object.keys(servers).sort()).toEqual(["linear", "yarvis", "yarvis-channel"]);
+    expect(Object.keys(servers).sort()).toEqual(["linear", "yarvis"]);
     expect(merged.somethingElse).toBe(true);
   });
 
@@ -70,7 +73,7 @@ describe("workspace .mcp.json", () => {
       mcpServers: { yarvis: { type: "http", url: "http://127.0.0.1:1234/mcp" } },
     });
     const servers = stale.mcpServers as Record<string, Record<string, unknown>>;
-    expect(Object.keys(servers)).toEqual(["yarvis", "yarvis-channel"]);
+    expect(Object.keys(servers)).toEqual(["yarvis"]);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
     expect(servers.yarvis?.url).toBe("http://127.0.0.1:${YARVIS_SIDECAR_PORT}/mcp");
   });
@@ -89,7 +92,7 @@ describe("workspace .mcp.json", () => {
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, { url?: string }>;
     };
-    expect(Object.keys(written.mcpServers).sort()).toEqual(["linear", "yarvis", "yarvis-channel"]);
+    expect(Object.keys(written.mcpServers).sort()).toEqual(["linear", "yarvis"]);
     expect(written.mcpServers.linear?.url).toBe("https://mcp.linear.app/mcp");
   });
 
@@ -102,6 +105,14 @@ describe("workspace .mcp.json", () => {
     const written = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, unknown>;
     };
-    expect(Object.keys(written.mcpServers)).toEqual(["yarvis", "yarvis-channel"]);
+    expect(Object.keys(written.mcpServers)).toEqual(["yarvis"]);
+  });
+
+  it("adds the channel relay only while channel messaging is on, and drops it when off", () => {
+    const on = buildMcpConfig(WORKSPACE_ID, {}, { channelMessaging: true });
+    expect(Object.keys(on.mcpServers as object)).toEqual(["yarvis", "yarvis-channel"]);
+
+    const off = buildMcpConfig(WORKSPACE_ID, on);
+    expect(Object.keys(off.mcpServers as object)).toEqual(["yarvis"]);
   });
 });

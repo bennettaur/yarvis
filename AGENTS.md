@@ -473,8 +473,12 @@ report there and leaves the fixes to the author.
   any other's. This is not a boundary against a determined process running as
   the same user, which can read another process's environment.
 - The channel (`sidecar/src/channel/`) is the other way text reaches a
-  session, and `sendToWorkspaceAgent` tries it first. It meets the same three
-  guards in its own way:
+  session, and `sendToWorkspaceAgent` tries it first. It is off unless the
+  user ticks the experimental `channelMessaging` setting, which the core owns
+  like `allowedSlashCommands` so the assistant can't turn it on. Without it no
+  relay is written to `.mcp.json`, a relay that starts stays idle, and every
+  send is typed. With it on, the channel meets the same three guards in its
+  own way:
   - The message reaches Claude Code as a channel event, not keystrokes, so
     there is no prompt line to submit early and no command prefix to read.
   - The listener is checked rather than assumed. A relay polls with its

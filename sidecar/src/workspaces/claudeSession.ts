@@ -20,7 +20,11 @@
  */
 
 import { channelHub } from "../channel/hub.ts";
-import { type ChannelSendOptions, sendOverChannel } from "../channel/send.ts";
+import {
+  type ChannelSendOptions,
+  channelMessagingEnabled,
+  sendOverChannel,
+} from "../channel/send.ts";
 import {
   killClaudeSession,
   sendClaudeInstruction,
@@ -361,9 +365,10 @@ export async function sendToWorkspaceAgent(
   // core refuses it, so a channel message can't carry a command the typed path
   // would refuse.
   const mustBeTyped = typedOnly || opensWithCommandPrefix(instruction);
-  const message = mustBeTyped
-    ? null
-    : sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel);
+  const channelOn = !mustBeTyped && (await (channel?.enabled ?? channelMessagingEnabled)());
+  const message = channelOn
+    ? sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel)
+    : null;
   if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
 
   try {

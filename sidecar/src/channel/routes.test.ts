@@ -298,6 +298,9 @@ describe("channel relay process", () => {
   );
   chmodSync(fakeClaude, 0o755);
   afterAll(() => rmSync(fakeClaudeDir, { recursive: true, force: true }));
+  /** A settings file with channel messaging switched on in Settings. */
+  const SETTINGS_ON = join(fakeClaudeDir, "settings-on.json");
+  writeFileSync(SETTINGS_ON, JSON.stringify({ channelMessaging: true }));
   const underClaude = (...claudeArgs: string[]) => ({
     command: fakeClaude,
     args: [...claudeArgs, "--", ...RELAY],
@@ -331,7 +334,7 @@ describe("channel relay process", () => {
         env: {
           PATH: process.env.PATH ?? "",
           // Never the user's real settings file.
-          YARVIS_SETTINGS_PATH: join(import.meta.dir, "no-such-settings.json"),
+          YARVIS_SETTINGS_PATH: SETTINGS_ON,
           ...env,
         },
       }),
@@ -376,31 +379,46 @@ describe("channel relay process", () => {
     expect(rejected.isError).toBe(true);
   });
 
-  it("reports no channel flag when its parent's command line doesn't carry one", async () => {
+  /** True once the relay has connected and offers its `reply` tool. */
+  async function offersReply(client: Client): Promise<boolean> {
+    return (await client.listTools()).tools.some((t) => t.name === "reply");
+  }
+
+  it("stays idle when its parent's command line doesn't carry the flag", async () => {
     const key = "ws-claude:22222222-2222-4222-8222-222222222222";
     // Launched straight from this test, whose command line has no flag.
-    await startRelay(terminalEnv(key));
-    await until(() => hub.listener(key) !== null, "the relay to poll");
-    expect(hub.listener(key)).toMatchObject({ pid: process.pid, channelEnabled: false });
+    const { client } = await startRelay(terminalEnv(key));
+    expect(await offersReply(client)).toBe(false);
+    expect(hub.listener(key)).toBeNull();
   });
 
-  it("reports no channel flag when it only appears in the session's opening prompt", async () => {
+  it("stays idle when the flag only appears in text after the agent command", async () => {
     const key = "ws-claude:33333333-3333-4333-8333-333333333333";
-    // How the core launches a session on an issue whose text names the flag.
-    await startRelay(
+    const { client } = await startRelay(
       terminalEnv(key, "claude --permission-mode auto"),
       underClaude("--permission-mode", "auto", `Fix it ${FLAG_ARGS.join(" ")}`),
     );
-    await until(() => hub.listener(key) !== null, "the relay to poll");
-    const listener = hub.listener(key)!;
-    expect(listener.pid).not.toBe(process.pid);
-    expect(listener.channelEnabled).toBe(false);
+    expect(await offersReply(client)).toBe(false);
+    expect(hub.listener(key)).toBeNull();
+  });
+
+  it("stays idle while channel messaging is off in Settings, even with the flag", async () => {
+    const key = "ws-claude:55555555-5555-4555-8555-555555555555";
+    const { client } = await startRelay(
+      { ...terminalEnv(key), YARVIS_SETTINGS_PATH: join(fakeClaudeDir, "no-such-settings.json") },
+      UNDER_FLAGGED_PARENT,
+    );
+    expect(await offersReply(client)).toBe(false);
+    expect(hub.listener(key)).toBeNull();
   });
 
   it("reads the agent command from settings when the env doesn't override it", async () => {
     const key = "ws-claude:44444444-4444-4444-8444-444444444444";
     const settings = join(fakeClaudeDir, "settings.json");
-    writeFileSync(settings, JSON.stringify({ agentCommand: `claude ${FLAG_ARGS.join(" ")}` }));
+    writeFileSync(
+      settings,
+      JSON.stringify({ channelMessaging: true, agentCommand: `claude ${FLAG_ARGS.join(" ")}` }),
+    );
     await startRelay(
       { ...terminalEnv(key, ""), YARVIS_SETTINGS_PATH: settings },
       UNDER_FLAGGED_PARENT,

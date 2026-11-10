@@ -79,6 +79,7 @@ let settings: Settings = {
   attentionAnimation: null,
   allowedSlashCommands: null,
   defaultAllowedSlashCommands: ["compact"],
+  channelMessaging: null,
 };
 
 const presentSecrets = new Set(config.presentSecrets);

@@ -388,7 +388,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
     const sent = await sendToWorkspaceAgent(db, detail, text, {
       agentPids,
       send,
-      channel: { hub },
+      channel: { ...deps.channel, hub },
       typedOnly,
       eventSource: "chat",
       eventPayload,

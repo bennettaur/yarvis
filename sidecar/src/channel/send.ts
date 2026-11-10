@@ -1,3 +1,4 @@
+import { readSection } from "../settings/store.ts";
 import { type ChannelHub, type ChannelMessage, channelHub } from "./hub.ts";
 
 export const CHANNEL_SERVER_NAME = "yarvis-channel";
@@ -37,8 +38,26 @@ export function launchedFromChannelCommand(processArgs: string, agentCommand: st
   return commandArgs.every((arg, i) => args[start + 1 + i] === arg);
 }
 
+/**
+ * The experimental Settings switch for messaging sessions over the channel.
+ * The core owns it (`channel_messaging` in `settings.rs`) and nothing in the
+ * sidecar writes it, so the assistant can't turn it on for itself.
+ */
+const CHANNEL_MESSAGING_SETTING = "channelMessaging";
+
+/** Whether channel messaging is switched on in Settings. Off when unset or unreadable. */
+export async function channelMessagingEnabled(): Promise<boolean> {
+  try {
+    return (await readSection<boolean>(CHANNEL_MESSAGING_SETTING)) === true;
+  } catch {
+    return false;
+  }
+}
+
 export interface ChannelSendOptions {
   hub?: ChannelHub;
+  /** Overrides the Settings switch, for tests. */
+  enabled?: () => Promise<boolean>;
 }
 
 /**
@@ -49,8 +68,13 @@ export interface ChannelSendOptions {
  * - the Claude Code that started it was launched with the channel flag, which
  *   the relay checked when it started, since a message to a session without it
  *   is dropped,
- * - that Claude Code is one the workspace's SessionStart hook registered, so a
- *   stray process in the terminal holding the session token can't stand in.
+ * - that Claude Code is one the workspace's SessionStart hook registered.
+ *
+ * The relay reports its own pid and flag, and the sidecar can't check either.
+ * Any process in the terminal holds the session token, so while no relay owns
+ * the channel, one could claim a registered pid and take its messages. That
+ * process already runs as the user and could type at the prompt instead, and
+ * what it replies is read as untrusted text.
  */
 export function sendOverChannel(
   sessionKey: string,

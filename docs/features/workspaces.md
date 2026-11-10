@@ -565,13 +565,17 @@ half-typed line, and the session can answer it. This lets you ask the
 assistant things like "ask the billing-api session what it changed" and get
 the answer back in Yarvis.
 
-It uses Claude Code's channels, which are a research preview. To turn it on:
+It uses Claude Code's channels, which are a research preview, so it is off
+until you turn it on. To turn it on:
 
-1. Add `--dangerously-load-development-channels server:yarvis-channel` to the
-   agent command in **Settings → Repositories → Agent**.
-2. Start a new session in the workspace. A session that was already running
-   keeps receiving typed instructions.
-3. Accept the channel dialog Claude Code shows at startup. It shows every
+1. In **Settings → Repositories → Agent**, tick **Message sessions over a
+   channel (experimental)**.
+2. Add `--dangerously-load-development-channels server:yarvis-channel` to the
+   agent command in the same section.
+3. Create a workspace. Only workspaces created while the switch is on get the
+   relay; older ones keep receiving typed instructions. In a new workspace, a
+   session that was already running before step 2 also keeps being typed into.
+4. Accept the channel dialog Claude Code shows at startup. It shows every
    time, because Yarvis's relay isn't on Claude Code's approved list of
    channels.
 
@@ -579,7 +583,10 @@ It uses Claude Code's channels, which are a research preview. To turn it on:
 
 How it works:
 
-- Every workspace's `.mcp.json` has a `yarvis-channel` server. That server is
+- Turning the switch off takes effect from the next message: the assistant
+  types instead, and relays started after that stay idle.
+- A workspace created while the switch is on has a `yarvis-channel` server in
+  its `.mcp.json`. That server is
   the Yarvis sidecar running as a small relay. It collects messages for its own
   terminal and gives the session a `reply` tool. Claude Code asks you to
   approve this server once, the same way it asks for the `yarvis` server. That

@@ -61,6 +61,9 @@ export interface Settings {
   allowedSlashCommands: string[] | null;
   /** Slash commands always allowed, whatever `allowedSlashCommands` holds. */
   defaultAllowedSlashCommands: string[];
+  /** Experimental: whether the assistant may message workspace sessions over a
+   *  Claude Code channel and read their replies; null means off. */
+  channelMessaging: boolean | null;
 }
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
@@ -84,6 +87,11 @@ export const setAgent = (name: string | null, command: string | null) =>
  * spaces or punctuation, since arguments are never part of the allowlist. */
 export const setAllowedSlashCommands = (commands: string[]) =>
   invoke<Settings>("set_allowed_slash_commands", { commands });
+
+/** Turns channel messaging to workspace sessions on or off. The sidecar reads it
+ * on each send and each session start, so no restart is needed. */
+export const setChannelMessaging = (enabled: boolean) =>
+  invoke<Settings>("set_channel_messaging", { enabled });
 
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */

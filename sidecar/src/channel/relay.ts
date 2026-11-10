@@ -21,7 +21,11 @@ import { z } from "zod";
 import { readSection } from "../settings/store.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "../workspaces/sessionHeaders.ts";
 import { CHANNEL_ENABLED_HEADER, RELAY_ID_HEADER, RELAY_PID_HEADER } from "./protocol.ts";
-import { CHANNEL_SERVER_NAME, launchedFromChannelCommand } from "./send.ts";
+import {
+  CHANNEL_SERVER_NAME,
+  channelMessagingEnabled,
+  launchedFromChannelCommand,
+} from "./send.ts";
 
 /** Wait after a failed poll, so the relay never spins against the sidecar. */
 const RETRY_MS = 3_000;
@@ -164,11 +168,16 @@ async function pollForever(server: Server, env: RelayEnv): Promise<never> {
 }
 
 export async function runChannelRelay(): Promise<void> {
-  const env = relayEnv(process.env, {
+  // A relay that can't deliver stays idle: no poll, no tools. The sidecar then
+  // sees no listener and types instead, which is what it would do anyway.
+  const channelEnabled =
+    (await channelMessagingEnabled()) && (await launchedWithChannel(process.ppid, process.env));
+  const terminal = relayEnv(process.env, {
     relayId: crypto.randomUUID(),
     parentPid: process.ppid,
-    channelEnabled: await launchedWithChannel(process.ppid, process.env),
+    channelEnabled,
   });
+  const env = channelEnabled ? terminal : null;
   const server = new Server(
     { name: CHANNEL_SERVER_NAME, version: "0.1.0" },
     {
@@ -201,7 +210,7 @@ export async function runChannelRelay(): Promise<void> {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    // `reply` is only listed with a Yarvis terminal to answer to.
+    // `reply` is only listed while the relay delivers for a Yarvis terminal.
     if (req.params.name !== "reply" || !env) {
       return {
         isError: true,

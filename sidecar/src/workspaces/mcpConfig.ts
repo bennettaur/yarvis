@@ -96,9 +96,9 @@ function channelRelayEntry(relay: RelayCommand): Record<string, unknown> {
 export function buildMcpConfig(
   workspaceId: string,
   existing: Record<string, unknown> = {},
-  relay: RelayCommand = currentRelayCommand(),
+  { channelMessaging = false, relay = currentRelayCommand() }: McpConfigOptions = {},
 ): Record<string, unknown> {
-  const servers =
+  const { [CHANNEL_SERVER_NAME]: _previousRelay, ...servers } =
     existing.mcpServers && typeof existing.mcpServers === "object"
       ? (existing.mcpServers as Record<string, unknown>)
       : {};
@@ -108,9 +108,17 @@ export function buildMcpConfig(
     mcpServers: {
       ...servers,
       [MCP_SERVER_NAME]: yarvisServerEntry(workspaceId),
-      [CHANNEL_SERVER_NAME]: channelRelayEntry(relay),
+      // Only while the Settings switch is on, so a workspace without it has
+      // no relay to approve or run.
+      ...(channelMessaging ? { [CHANNEL_SERVER_NAME]: channelRelayEntry(relay) } : {}),
     },
   };
+}
+
+export interface McpConfigOptions {
+  /** Whether channel messaging is on (`channelMessagingEnabled`). */
+  channelMessaging?: boolean;
+  relay?: RelayCommand;
 }
 
 /**
@@ -120,7 +128,11 @@ export function buildMcpConfig(
  * Best-effort: a corrupt existing file is overwritten and any failure is logged,
  * never fatal to provisioning.
  */
-export function writeMcpConfig(rootPath: string, workspaceId: string): void {
+export function writeMcpConfig(
+  rootPath: string,
+  workspaceId: string,
+  options: McpConfigOptions = {},
+): void {
   try {
     const file = `${rootPath}/.mcp.json`;
     let existing: Record<string, unknown> = {};
@@ -135,7 +147,10 @@ export function writeMcpConfig(rootPath: string, workspaceId: string): void {
       }
     }
 
-    writeFileSync(file, `${JSON.stringify(buildMcpConfig(workspaceId, existing), null, 2)}\n`);
+    writeFileSync(
+      file,
+      `${JSON.stringify(buildMcpConfig(workspaceId, existing, options), null, 2)}\n`,
+    );
   } catch (e) {
     console.error("[workspaces] failed to write .mcp.json:", e);
   }

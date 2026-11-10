@@ -39,6 +39,7 @@ function defaultSettings(): Settings {
     attentionAnimation: null,
     allowedSlashCommands: null,
     defaultAllowedSlashCommands: ["compact"],
+    channelMessaging: null,
   };
 }
 
@@ -58,6 +59,11 @@ mock.module("@tauri-apps/api/core", () => ({
         allowedSlashCommands:
           commands.length > 0 ? commands.map((c) => c.replace(/^\//, "")) : null,
       };
+      return stored;
+    }
+    if (command === "set_channel_messaging") {
+      const { enabled } = args as { enabled: boolean };
+      stored = { ...stored, channelMessaging: enabled ? true : null };
       return stored;
     }
     if (command === "get_settings" || command === "set_agent") return stored;
@@ -283,6 +289,23 @@ describe("AgentSection", () => {
     await clickSaveCommands(host);
     expect(host.innerHTML).not.toContain("so it can't be allowed");
     expect(host.innerHTML).toContain("Saved.");
+    cleanup();
+  });
+
+  it("turns channel messaging on and off through the core", async () => {
+    const { host, cleanup } = await mount();
+    const box = () => host.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box().checked).toBe(false);
+
+    box().click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: true } });
+    expect(box().checked).toBe(true);
+
+    box().click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: false } });
+    expect(box().checked).toBe(false);
     cleanup();
   });
 });
