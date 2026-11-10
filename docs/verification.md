@@ -9,7 +9,9 @@ the agent review, is signed with its own key.
 This page explains how the pieces fit together. The settings, commands and
 exact rules are in [Development](development.md#verifying-a-pr-for-merge).
 For the methodology and the reasoning behind each step, open
-[the PR verification explainer](pr-verification-explainer.html) in a browser.
+[the `/verify-pr` explainer](verify-pr-explainer.html) in a browser. The
+review workspace's in-app report has
+[its own explainer](verification-report-explainer.html).
 
 ## The flow
 
