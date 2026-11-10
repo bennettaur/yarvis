@@ -343,3 +343,31 @@ describe("checkBeforeWrite", () => {
     expect(await checkBeforeWrite(defaultGitRunner, clone, worktree)).toEqual([]);
   });
 });
+
+describe("mergeBaseIntoWorktree", () => {
+  it("merges the base without running the repo's hooks", async () => {
+    const { root, seed, clone, worktree } = clonedWorkspaceRepo();
+    writeFileSync(join(seed, "g"), "upstream\n");
+    git(seed, "add", "g");
+    git(seed, "commit", "-qm", "upstream");
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    git(clone, "fetch", "-q", "origin");
+    // A commit of the workspace's own, so the merge makes a merge commit and
+    // reaches every hook a merge can run.
+    writeFileSync(join(worktree, "h"), "mine\n");
+    git(worktree, "add", "h");
+    git(worktree, "commit", "-qm", "mine");
+
+    const marker = join(root, "hook-ran");
+    for (const hook of ["pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-merge"]) {
+      const path = join(clone, ".git", "hooks", hook);
+      writeFileSync(path, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+    }
+
+    expect(await mergeBaseIntoWorktree(defaultGitRunner, worktree, "main")).toEqual({
+      result: "merged",
+    });
+    expect(readFileSync(join(worktree, "g"), "utf8")).toBe("upstream\n");
+    expect(existsSync(marker)).toBe(false);
+  });
+});

@@ -321,6 +321,9 @@ export async function worktreeStatus(
   return { dirtyFiles, branch, inProgress };
 }
 
+/** Config that stops a git command from running the repo's hooks. */
+const WITHOUT_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
 /** The outcome of merging a base branch into a worktree's branch. */
 export type MergeOutcome =
   | { result: "up-to-date" }
@@ -337,13 +340,17 @@ export type MergeOutcome =
  * in order to resolve them, and a caller that wanted the branch untouched can
  * check `worktreeStatus` first. A merge that fails for any other reason throws,
  * since only conflicts have a defined half-done state.
+ *
+ * Hooks are off: a hook manager like lefthook reads its commands from the
+ * worktree, which the workspace's agent can write, and this merge runs outside
+ * the agent's sandbox.
  */
 export async function mergeBaseIntoWorktree(
   runner: GitRunner,
   worktreePath: string,
   baseBranch: string,
 ): Promise<MergeOutcome> {
-  const result = await runner(["merge", "--no-edit", remoteRef(baseBranch)], {
+  const result = await runner([...WITHOUT_HOOKS, "merge", "--no-edit", remoteRef(baseBranch)], {
     cwd: worktreePath,
   });
   if (result.exitCode === 0) {

@@ -908,7 +908,13 @@ describe("mergeBaseIntoWorktree", () => {
   it("merges the remote base branch, never a local ref", async () => {
     const { runner, calls } = fakeRunner(() => ({ stdout: "Merge made by the 'ort' strategy.\n" }));
     expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({ result: "merged" });
-    expect(calls[0]).toEqual(["merge", "--no-edit", "refs/remotes/origin/main"]);
+    expect(calls[0]).toEqual([
+      "-c",
+      "core.hooksPath=/dev/null",
+      "merge",
+      "--no-edit",
+      "refs/remotes/origin/main",
+    ]);
   });
 
   it("distinguishes an already-merged base from a real merge", async () => {
@@ -918,7 +924,7 @@ describe("mergeBaseIntoWorktree", () => {
 
   it("reports the conflicted files and leaves the merge in the worktree", async () => {
     const { runner, calls } = fakeRunner((args) => {
-      if (args[0] === "merge") return { exitCode: 1, stderr: "Automatic merge failed" };
+      if (args.includes("merge")) return { exitCode: 1, stderr: "Automatic merge failed" };
       if (args[0] === "diff") return { stdout: "src/app.ts\nREADME.md\n" };
       return {};
     });
@@ -932,7 +938,7 @@ describe("mergeBaseIntoWorktree", () => {
 
   it("throws when the merge failed for a reason other than conflicts", async () => {
     const { runner } = fakeRunner((args) => {
-      if (args[0] === "merge") {
+      if (args.includes("merge")) {
         return { exitCode: 128, stderr: "fatal: refusing to merge unrelated histories" };
       }
       return {}; // no unmerged paths
