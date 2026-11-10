@@ -38,6 +38,30 @@ describe("changeBand", () => {
     expect(changeBand(change({ kind: "interface", reach: "core", evidence: "proven" }))).toBe(4);
   });
 
+  it("scores an unproven reorganization as an unproven logic change", () => {
+    expect(
+      changeBand(change({ kind: "reorganization", reach: "shared", evidence: "unproven" })),
+    ).toBe(5);
+  });
+
+  it("lowers a proven addition in core code", () => {
+    expect(changeBand(change({ kind: "addition", reach: "core", evidence: "proven" }))).toBe(2);
+  });
+
+  it("doesn't move a change that behaves as before, even on sensitive ground", () => {
+    const sensitive = { sensitive: true, reach: "core" as const };
+    expect(changeBand(change({ ...sensitive, kind: "passive" }))).toBe(1);
+    expect(changeBand(change({ ...sensitive, kind: "reorganization", evidence: "proven" }))).toBe(
+      2,
+    );
+  });
+
+  it("lets proof and sensitive ground cancel out", () => {
+    expect(
+      changeBand(change({ kind: "logic", reach: "core", evidence: "proven", sensitive: true })),
+    ).toBe(4);
+  });
+
   it("raises sensitive ground one band, up to very high", () => {
     expect(changeBand(change({ kind: "addition", reach: "local", sensitive: true }))).toBe(3);
     expect(
@@ -56,24 +80,36 @@ describe("scoreImpact", () => {
       change({ kind: "passive", count: 40 }),
       change({ kind: "logic", reach: "local" }),
     ]);
-    expect(impact).toMatchObject({ band: 3, changeBand: 3, load: 2, raisedByVolume: 0 });
+    expect(impact).toMatchObject({ band: 3, highestChangeBand: 3, load: 2, raisedByVolume: 0 });
     expect(impact?.attention).toEqual([]);
   });
 
   it("raises many small changes one band", () => {
     const impact = scoreImpact([change({ kind: "addition", reach: "local", count: 10 })]);
-    expect(impact).toMatchObject({ band: 3, changeBand: 2, load: 10, raisedByVolume: 1 });
+    expect(impact).toMatchObject({ band: 3, highestChangeBand: 2, load: 10, raisedByVolume: 1 });
+  });
+
+  it("doesn't raise below a load of 8", () => {
+    const impact = scoreImpact([change({ kind: "addition", reach: "local", count: 7 })]);
+    expect(impact).toMatchObject({ band: 2, load: 7, raisedByVolume: 0 });
+  });
+
+  it("raises one band up to a load of 15 and two from 16", () => {
+    const at = (count: number) =>
+      scoreImpact([change({ kind: "addition", reach: "local", count })]);
+    expect(at(15)).toMatchObject({ band: 3, raisedByVolume: 1 });
+    expect(at(16)).toMatchObject({ band: 4, highestChangeBand: 2, raisedByVolume: 2 });
   });
 
   it("never lets volume alone raise a PR past high", () => {
     const impact = scoreImpact([change({ kind: "logic", reach: "local", count: 20 })]);
-    expect(impact).toMatchObject({ band: 4, changeBand: 3, load: 40, raisedByVolume: 1 });
+    expect(impact).toMatchObject({ band: 4, highestChangeBand: 3, load: 40, raisedByVolume: 1 });
   });
 
   it("makes two high changes very high", () => {
     const core = change({ kind: "logic", reach: "core" });
     const impact = scoreImpact([core, { ...core, kind: "interface" }]);
-    expect(impact).toMatchObject({ band: 5, changeBand: 4, load: 8 });
+    expect(impact).toMatchObject({ band: 5, highestChangeBand: 4, load: 8 });
     expect(impact?.attention).toHaveLength(2);
   });
 

@@ -75,9 +75,10 @@ describe("VerificationReportView", () => {
         level: "high",
         impact: {
           band: 4,
-          changeBand: 3,
+          highestChangeBand: 3,
           load: 9,
           raisedByVolume: 1,
+          total: 2,
           counts: {
             passive: 4,
             reorganization: 0,
@@ -107,6 +108,7 @@ describe("VerificationReportView", () => {
       ),
     );
     expect(text).toContain("high impact · 4/5");
+    // The agent's level matches the band's, so it isn't shown twice.
     expect(text).not.toContain("high risk");
     expect(text).toContain("4 passive, 2 logic changes");
     expect(text).toContain("raised from moderate by the number of changes");
@@ -114,6 +116,55 @@ describe("VerificationReportView", () => {
     expect(text).toContain("logic · core · partly tested");
     expect(text).toContain("Every change (2)");
     expect(text).toContain("passive · core · partly tested · 4 like it");
+  });
+
+  it("shows the agent's level beside the band when the agent judged it stricter", async () => {
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            risk: {
+              ...risk,
+              level: "high",
+              impact: {
+                band: 2,
+                highestChangeBand: 2,
+                load: 1,
+                raisedByVolume: 0,
+                total: 40,
+                counts: {
+                  passive: 0,
+                  reorganization: 0,
+                  addition: 1,
+                  removal: 0,
+                  interface: 0,
+                  logic: 0,
+                },
+                changes: [
+                  {
+                    title: "Add a cache",
+                    kind: "addition",
+                    reach: "local",
+                    evidence: "proven",
+                    sensitive: false,
+                    count: 1,
+                    check: "",
+                    band: 2,
+                  },
+                ],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("low impact · 2/5");
+    expect(text).toContain("high risk");
+    expect(text).not.toContain("Needs attention");
+    expect(text).toContain("Every change (1 of 40)");
   });
 
   it("links only paths the PR has, and shows any other as plain text", async () => {

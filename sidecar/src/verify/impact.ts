@@ -72,7 +72,11 @@ const BAND_TABLE: Record<ChangeKind, readonly [ImpactBand, ImpactBand, ImpactBan
 
 const clampBand = (band: number): ImpactBand => Math.min(5, Math.max(1, band)) as ImpactBand;
 
-/** One change's band: the table, then at most one step for evidence and one for sensitive ground. */
+/**
+ * One change's band: the table, then at most one step for evidence and one for
+ * sensitive ground. A passive change or a proven reorganization behaves as
+ * before, so neither moves, wherever it is.
+ */
 export function changeBand(change: ClassifiedChange): ImpactBand {
   // A move nobody showed to be a move might change behaviour, so it scores as one that does.
   if (change.kind === "reorganization" && change.evidence !== "proven") {
@@ -82,7 +86,8 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
   if (change.kind === "passive" || change.kind === "reorganization") return clampBand(band);
 
   if (change.evidence === "unproven") band += 1;
-  // Good tests make a logic change safer, but never as safe as one that changes nothing.
+  // Tests lower a band only down to 2, since a tested logic change is still riskier than one
+  // that changes nothing. Never for an interface: they don't show callers elsewhere still work.
   else if (change.evidence === "proven" && change.kind !== "interface" && band > 2) band -= 1;
 
   if (change.sensitive) band += 1;
@@ -121,7 +126,7 @@ export interface Impact<T extends ClassifiedChange> {
   /** The PR's band: its highest change band, raised by volume. */
   band: ImpactBand;
   /** The highest band any one change has. */
-  changeBand: ImpactBand;
+  highestChangeBand: ImpactBand;
   load: number;
   /** How many bands volume added. Non-zero means splitting the PR would lower it. */
   raisedByVolume: number;
@@ -152,10 +157,10 @@ export function scoreImpact<T extends ClassifiedChange>(changes: readonly T[]): 
   }
   const raise = VOLUME_STEPS.find((step) => load >= step.load)?.raise ?? 0;
   const ceiling = top >= ATTENTION_BAND ? 5 : VOLUME_ONLY_CEILING;
-  const band = clampBand(Math.max(top, Math.min(ceiling, top + raise)));
+  const band = clampBand(Math.min(ceiling, top + raise));
   return {
     band,
-    changeBand: top,
+    highestChangeBand: top,
     load,
     raisedByVolume: band - top,
     changes: scored,
@@ -164,25 +169,18 @@ export function scoreImpact<T extends ClassifiedChange>(changes: readonly T[]): 
   };
 }
 
+const KIND_NAMES: Record<ChangeKind, [one: string, many: string]> = {
+  passive: ["passive", "passive"],
+  reorganization: ["reorganization", "reorganizations"],
+  addition: ["addition", "additions"],
+  removal: ["removal", "removals"],
+  interface: ["interface change", "interface changes"],
+  logic: ["logic change", "logic changes"],
+};
+
 /** "6 passive, 2 reorganizations, 1 addition": the kinds in a PR, for a summary line. */
 export function describeCounts(counts: Record<ChangeKind, number>): string {
-  const plural: Record<ChangeKind, string> = {
-    passive: "passive",
-    reorganization: "reorganizations",
-    addition: "additions",
-    removal: "removals",
-    interface: "interface changes",
-    logic: "logic changes",
-  };
-  const singular: Record<ChangeKind, string> = {
-    passive: "passive",
-    reorganization: "reorganization",
-    addition: "addition",
-    removal: "removal",
-    interface: "interface change",
-    logic: "logic change",
-  };
   return CHANGE_KINDS.filter((kind) => counts[kind] > 0)
-    .map((kind) => `${counts[kind]} ${counts[kind] === 1 ? singular[kind] : plural[kind]}`)
+    .map((kind) => `${counts[kind]} ${KIND_NAMES[kind][counts[kind] === 1 ? 0 : 1]}`)
     .join(", ");
 }

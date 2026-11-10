@@ -19,6 +19,7 @@ import {
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   MAX_MUST_READ_FLAGS,
+  MISSING_CHECK,
   mustReadCap,
   normalizeSections,
   similarTitles,
@@ -198,6 +199,32 @@ describe("the report schema", () => {
       ]);
     });
 
+    it("takes the stricter of the agent's level and the band's", () => {
+      const level = (agent: string, extra: Record<string, unknown>) =>
+        schema.parse(report({ risk: { ...report().risk, level: agent, changes: [change(extra)] } }))
+          .risk?.level;
+      // An agent that saw a failing CI check keeps its level over a small change.
+      expect(level("high", { kind: "addition", reach: "leaf", evidence: "proven" })).toBe("high");
+      expect(level("low", { kind: "logic", reach: "local" })).toBe("medium");
+    });
+
+    it("gives a high change with nothing to check a prompt to read it", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change({ check: null })] } }),
+      );
+      expect(parsed.risk?.impact?.changes[0]?.check).toBe(MISSING_CHECK);
+    });
+
+    it("clamps a count to between 1 and 1000", () => {
+      const counts = [0, -3, 5000].map(
+        (count) =>
+          schema.parse(
+            report({ risk: { ...report().risk, changes: [change({ kind: "passive", count })] } }),
+          ).risk?.impact?.changes[0]?.count,
+      );
+      expect(counts).toEqual([1, 1, 1000]);
+    });
+
     it("keeps the agent's level when it listed no changes", () => {
       const parsed = schema.parse(report({ risk: { ...report().risk, changes: null } }));
       expect(parsed.risk?.level).toBe("low");
@@ -215,6 +242,7 @@ describe("the report schema", () => {
       expect(parsed.risk?.impact?.load).toBe(44);
       expect(parsed.risk?.impact?.band).toBe(5);
       expect(parsed.risk?.impact?.changes).toHaveLength(MAX_CHANGES_SHOWN);
+      expect(parsed.risk?.impact?.total).toBe(41);
       expect(parsed.risk?.impact?.changes[0]?.band).toBe(4);
     });
 

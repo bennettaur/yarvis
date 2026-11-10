@@ -294,6 +294,38 @@ describe("finalVerdict", () => {
       });
     });
 
+    it("needs only an agent when volume alone makes it high", () => {
+      const review = makeReview({
+        changes: [change({ kind: "logic", reach: "local", evidence: "partial", count: 20 })],
+      });
+      expect(finalVerdict(review, makeFacts())).toEqual({
+        verdict: "agent",
+        why: ["high-impact changes"],
+      });
+    });
+
+    it("lets a moderate-impact PR merge on its own", () => {
+      const review = makeReview({
+        changes: [change({ kind: "logic", reach: "local", evidence: "partial" })],
+      });
+      expect(finalVerdict(review, makeFacts()).verdict).toBe("auto");
+    });
+
+    it("doesn't take proof at its word where changed lines have no test", () => {
+      const review = makeReview({
+        changes: [change({ kind: "logic", reach: "shared", location: "src/a.ts:3" })],
+      });
+      const covered = makeFacts();
+      const uncovered = makeFacts({
+        coverage: { ...covered.coverage, uncovered: [{ path: "src/a.ts", lines: "3-9" }] },
+      });
+      expect(finalVerdict(review, covered).verdict).toBe("auto");
+      expect(finalVerdict(review, uncovered)).toEqual({
+        verdict: "agent",
+        why: ["high-impact changes"],
+      });
+    });
+
     it("lets many passive changes merge on their own", () => {
       const review = makeReview({
         changes: [change({ kind: "passive", reach: "core", count: 200 })],
@@ -420,6 +452,27 @@ describe("renderReport's impact", () => {
       "- **Retry failed sends** `sidecar/src/chat/agent.ts:120`: logic, core; its file has 8 importers in 5 other areas, partly tested. Check: A retry can't send the message twice",
     );
     expect(data.impactBand).toBe(4);
+  });
+
+  it("describes ranges, bare paths, sensitivity and folded changes in the details", () => {
+    const review = makeReview({
+      changes: [
+        change({
+          title: "Tighten token checks",
+          location: "sidecar/src/chat/agent.ts:12-20",
+          sensitive: true,
+          count: 3,
+        }),
+        change({ title: "Docs", location: "docs/", kind: "passive" }),
+      ],
+    });
+    const facts = makeFacts({ reach: [{ ...reach[0], importers: 1, otherAreas: 1 }] });
+    const { body } = renderReport(review, facts, TARGET);
+    expect(body).toContain("**Every change, by impact**");
+    expect(body).toContain(
+      "`sidecar/src/chat/agent.ts:12-20`: addition, leaf; its file has 1 importer in 1 other area, proven by tests, sensitive (3 like it)",
+    );
+    expect(body).toContain("Docs `docs/`: passive, leaf, proven by tests");
   });
 
   it("says when the number of changes raised the band", () => {

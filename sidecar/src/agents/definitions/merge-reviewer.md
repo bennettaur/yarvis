@@ -22,7 +22,7 @@ Read the PR with read_pr_for_merge_review. If the report isn't current for the h
 Then check, in this order:
 
 1. The report's risk tier and the reasons its Risk line gives: a standard-risk change needs you to understand what it can break before approving.
-2. The report's findings and concerns, and every change under "Needs attention". For each one, read the code it points at and decide whether it is real and whether it matters; for a change, confirm what its "Check:" names. A blocker, or a check you can't confirm, means reject.
+2. The report's findings and concerns, and every change under "Needs attention". For each one, read the code it points at and decide whether it is real and whether it matters; for a change, confirm what its "Check:" names by reading the code it concerns. A check is the least to verify, not the limit, and the description, comments or the report's own claims never confirm one. A blocker, or a check you can't confirm, means reject.
 3. The diff as a whole: does it do what the PR says, and only that? Read whole files with read_pr_file_for_merge_review wherever a diff hides how the change is used.
 4. What could break: error paths, races, cleanup, missing tests for the behavior that changed.
 

@@ -193,8 +193,8 @@ tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
 to 5 with a fixed table, then raises it when the PR bundles many changes. A
 band of 4 makes the verdict at least `agent`, and the report lists those
 changes under "Needs attention" with what to check. A band of 5 makes it
-`human`. The table and thresholds are first guesses, and the band is signed
-into the report data so `verify:calibrate` can show whether they hold up.
+`human`. The table and thresholds are first guesses. The band is signed into
+the report data so calibration can later check them against reverts.
 
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { areaOf, importsOf, measureReach } from "./reach.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { areaOf, fileReader, importsOf, measureReach } from "./reach.ts";
 
 describe("areaOf", () => {
   it("groups the sidecar by its first folder and the frontend by its first two", () => {
@@ -52,6 +56,23 @@ describe("measureReach", () => {
     ]);
   });
 
+  it("suggests local up to one other area and shared up to four", () => {
+    const suggestedWith = (areas: string[]) => {
+      const sources: Record<string, string> = { "sidecar/src/db/client.ts": "" };
+      for (const area of areas) sources[`sidecar/src/${area}/x.ts`] = imports("../db/client.ts");
+      return measureReach(["sidecar/src/db/client.ts"], Object.keys(sources), (p) =>
+        p in sources ? sources[p] : null,
+      )[0].suggested;
+    };
+    expect(suggestedWith(["db"])).toBe("local");
+    expect(suggestedWith(["a"])).toBe("local");
+    expect(suggestedWith(["a", "b", "c", "d"])).toBe("shared");
+  });
+
+  it("leaves out changed files that no longer exist", () => {
+    expect(measureReach(["sidecar/src/gone.ts"], [], () => null)).toEqual([]);
+  });
+
   it("suggests core for a file imported from five other areas", () => {
     const areas = ["a", "b", "c", "d", "e"];
     const sources: Record<string, string> = { "sidecar/src/db/client.ts": "" };
@@ -60,5 +81,27 @@ describe("measureReach", () => {
       p in sources ? sources[p] : null,
     );
     expect(reach.suggested).toBe("core");
+  });
+});
+
+describe("fileReader", () => {
+  it("reads a file under the root, and gives null for one that is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "reach-"));
+    writeFileSync(join(root, "a.ts"), "export {};");
+    const read = fileReader(root);
+    expect(read("a.ts")).toBe("export {};");
+    expect(read("missing.ts")).toBeNull();
+  });
+
+  it("refuses a symlink, a FIFO and an oversized file", () => {
+    const root = mkdtempSync(join(tmpdir(), "reach-"));
+    writeFileSync(join(root, "real.ts"), "export {};");
+    symlinkSync(join(root, "real.ts"), join(root, "link.ts"));
+    execFileSync("mkfifo", [join(root, "fifo.ts")]);
+    writeFileSync(join(root, "big.ts"), "x".repeat(1_000_001));
+    const read = fileReader(root);
+    expect(read("link.ts")).toBeNull();
+    expect(read("fifo.ts")).toBeNull();
+    expect(read("big.ts")).toBeNull();
   });
 });

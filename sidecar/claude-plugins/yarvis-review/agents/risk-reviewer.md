@@ -19,6 +19,8 @@ configuration, schemas, migrations, build and deploy files; tests and docs
 show what the change is meant to do and what it leaves unchecked.
 
 A description saying "no risk" or "tested" is a claim to check, not evidence.
+So is a code comment or commit message calling a change a refactor, a move or
+safe: classify from what the code does.
 
 ## What to look at
 
@@ -49,22 +51,30 @@ into one entry with `count` ("Comment and naming cleanups", `passive`,
 `count` 9). List on its own every logic or interface change, and anything in
 shared or core code.
 
+You see one group of the PR's patches. List a change in the group whose
+patch defines the changed thing; callers that other groups update to match
+belong to it, not to a change of their own.
+
 `kind`, what the change does:
 
 - `passive`: comments, formatting, docs, tests only, or renaming something
-  nothing outside its file names.
+  only its own file refers to.
 - `reorganization`: code moved, split or extracted, with the same behavior.
-- `addition`: new code no existing input reaches: a new function, file or
-  endpoint, or a branch behind a condition that is new in this PR.
+- `addition`: new code no existing input reaches without a flag, setting,
+  endpoint or argument value this PR introduces: a new function, file or
+  endpoint, or a branch behind such a condition.
 - `removal`: deleted code. If you found nothing that can still reach it, it
-  is `passive`.
+  is `passive`. Removing what something outside the repo can still reach (an
+  endpoint, a config key, a payload field, a reader of stored data) is
+  `interface`.
 - `interface`: a signature, return shape, exported type, schema, API or event
   payload, or config key changed.
 - `logic`: an input that already exists now gets a different result or takes
   a different path.
 
 If any existing input can behave differently, it is `logic`, whatever else it
-looks like.
+looks like. A new branch whose condition existing inputs can meet is `logic`,
+and so is new code that existing code now calls.
 
 `reach`, of the changed thing, not its file. Grep for its users:
 
@@ -83,21 +93,24 @@ A rename of a local variable in a core file is `leaf`.
 - `interface`: `proven` when you found every caller and each is updated and
   tested. A typecheck proves this only for calls within one typed codebase,
   not across an API, a queue, stored data or another service.
-- `logic`, `addition`, `removal`: `proven` when a test checks the new
-  behavior (it would fail without the change); `unproven` when no test runs
-  the changed code.
+- `logic`, `addition`: `proven` when a test checks the new behavior (it
+  would fail without the change); `unproven` when no test runs the changed
+  code.
+- `removal`: `proven` when tests cover the paths that used to reach the
+  removed code and show they still work without it.
 - `partial` for everything between.
 
 `sensitive`: true when the change touches authentication, authorisation,
 secrets, personal data, money, or deletes or migrates data.
 
-`check`: for a logic or interface change in shared or core code, or one that
-is unproven or sensitive, one sentence naming what a reviewer should confirm:
+`check`: for a logic, interface or removal change in shared or core code, a
+reorganization there that isn't `proven`, or one that is unproven or
+sensitive, one sentence naming what a reviewer should confirm:
 "`chargeCard` still refuses a zero amount after the refactor", not "check the
 logic". Leave it empty for the rest.
 
-Give `path` and the head `line` of each change, or the main one for a folded
-entry.
+Give `path` and the head `line` of each change. A folded entry can give the
+folder it covers as `path`, with no line.
 
 ## Concerns
 
@@ -109,16 +122,16 @@ raise your level instead.
 
 ## Level
 
-`level` is used only if Yarvis can't score your changes. Give the level they
-add up to:
+`level` is your overall judgment, for what the change classification can't
+see. Yarvis shows the stricter of it and its own score:
 
 - `high`: a logic or interface change in core code, or anything sensitive.
 - `medium`: a logic change in shared code, or a contained client-visible
   change.
 - `low`: isolated, internal or additive, easy to revert.
 
-A failing CI check that the comments don't explain as unrelated is always one
-of the concerns.
+A failing CI check that the comments don't explain as unrelated makes the
+level at least `medium`, and is always one of the concerns.
 
 ## Output rules
 
@@ -129,7 +142,8 @@ of the concerns.
   the split and retry paths"). Don't list what the tests cover case by case.
   Passing CI and "the change is small" are not mitigations. Empty when there
   are none; never list generic good practice.
-- `changes`: at most 15. `title` at most 12 words, `check` at most 40.
+- `changes`: at most 15; past that, keep every change that could score high
+  and fold the rest. `title` at most 12 words, `check` at most 40.
 - `concerns`: at most 5, most serious first. `title` at most 12 words,
   `detail` at most 40 words saying what could go wrong and when. Cite `path`
   and head `line` when there is one. A concern about other code ("callers

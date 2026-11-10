@@ -148,9 +148,7 @@ const concernSchema = z.object({
 });
 
 /** Most changes one risk agent lists; the coordinator joins every group's. */
-export const MAX_CHANGES_PER_GROUP = 15;
-/** Most changes scored, past any number of groups; a guard on what the model sends, not a target. */
-const MAX_CHANGES_READ = 120;
+const MAX_CHANGES_PER_GROUP = 15;
 /** Most changes the report keeps, highest band first. The load still counts every one. */
 export const MAX_CHANGES_SHOWN = 30;
 
@@ -175,7 +173,9 @@ const changeSchema = z.object({
   line: optionalLine,
 });
 
-const LEVEL_FOR_BAND: Record<ImpactBand, "low" | "medium" | "high"> = {
+type RiskLevel = "low" | "medium" | "high";
+
+const LEVEL_FOR_BAND: Record<ImpactBand, RiskLevel> = {
   1: "low",
   2: "low",
   3: "medium",
@@ -183,10 +183,16 @@ const LEVEL_FOR_BAND: Record<ImpactBand, "low" | "medium" | "high"> = {
   5: "high",
 };
 
+const LEVEL_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+
+/** Shown for a high change the agent gave nothing to check on, so the reader still has a prompt. */
+export const MISSING_CHECK = "No check given: read this change.";
+
 /**
- * The agent classifies the changes and `scoreImpact` scores them, so the
- * level follows the band whenever there are changes to score. The agent's own
- * level stands only for a run that listed none.
+ * The agent classifies the changes and `scoreImpact` scores them. The level
+ * is the stricter of the band's and the agent's own, which also covers what
+ * the band can't see: a failing CI check, or a group whose agent failed and
+ * listed nothing.
  */
 const riskSchema = z
   .object({
@@ -194,22 +200,34 @@ const riskSchema = z
     clientImpact: boundedText(240),
     mitigations: boundedList(boundedText(100), 3),
     concerns: boundedList(concernSchema, MAX_FINDINGS),
-    // Not `boundedList`: every change counts toward the load, so the cut to
-    // what is shown comes after scoring.
+    // Not `boundedList`: every change counts toward the load and could be the
+    // highest, so the cut to what is shown comes after scoring.
     changes: z
       .array(changeSchema)
       .nullish()
-      .transform((changes) => (changes ?? []).slice(0, MAX_CHANGES_READ))
+      .transform((changes) => changes ?? [])
       .meta({ description: `At most ${MAX_CHANGES_PER_GROUP} items per group.` }),
   })
   .transform(({ level, changes, ...risk }) => {
     const impact = scoreImpact(changes);
     if (!impact) return { ...risk, level, impact: undefined };
-    const { changes: scored, attention: _, ...score } = impact;
+    const bandLevel = LEVEL_FOR_BAND[impact.band];
+    // Attention isn't stored: it is the changes at or above a band, which the view filters for.
+    const { changes: allScored, attention: _, ...score } = impact;
     return {
       ...risk,
-      level: LEVEL_FOR_BAND[impact.band],
-      impact: { ...score, changes: scored.slice(0, MAX_CHANGES_SHOWN) },
+      level: LEVEL_RANK[level] > LEVEL_RANK[bandLevel] ? level : bandLevel,
+      impact: {
+        ...score,
+        total: allScored.length,
+        changes: allScored
+          .slice(0, MAX_CHANGES_SHOWN)
+          .map((change) =>
+            change.band >= ATTENTION_BAND && !change.check
+              ? { ...change, check: MISSING_CHECK }
+              : change,
+          ),
+      },
     };
   });
 
@@ -561,7 +579,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     return {
       summary,
       mustRead: dropCoveredFlags(mustRead, cited, audit),
-      ...(risk && { risk: { ...risk, concerns, ...(impact && { impact }) } }),
+      ...(risk && { risk: { ...risk, concerns, impact } }),
       ...deduped,
       ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
       ...(flow && { flow }),

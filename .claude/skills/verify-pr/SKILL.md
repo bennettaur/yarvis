@@ -343,10 +343,11 @@ with the risk as its reason.
 The risk tier asks whether a safeguard needs checking. The impact asks how
 likely the PR is to break something, and how much. You classify each change;
 `sidecar/src/verify/impact.ts` turns that into a band from 1 to 5, so the same
-classification always scores the same. Bands 1 to 3 merge on a clean report,
-4 needs the agent reviewer, 5 needs a person. The report lists every change
-at 4 or above under "Needs attention", so write each one for a reader who
-won't open the diff.
+classification always scores the same. The band is a floor under the verdict:
+4 needs at least the agent reviewer and 5 a person, while a lower band leaves
+your own verdict from step 8 standing. The report lists every change at 4 or
+above under "Needs attention", so write each one for a reader who won't open
+the diff.
 
 List the PR's independent changes in `changes`. A change is one function,
 type, config key, route or migration that changed, together with whatever it
@@ -354,24 +355,32 @@ made the PR update: an interface change and the twelve callers it updated are
 one change, not thirteen, and so is a rename across forty files. Fold many
 alike changes of band 1 or 2 into one entry with `count` (12 passive edits,
 3 new leaf components). List every change that could score 3 or more on its
-own. At most 30 entries.
+own. At most 30 entries; past that, fold more of the lowest-scoring alike
+ones. Keep each `title` under 100 characters and each `check` under 200.
 
 **kind**, what the change does:
 
 - `passive`: comments, formatting, docs, tests only, or renaming something
-  nothing outside its file names.
+  only its own file refers to.
 - `reorganization`: code moved, split or extracted, with the same behavior.
-- `addition`: new code no existing input reaches: a new function, file or
-  route, or a branch behind a condition that is new in this PR.
+- `addition`: new code no existing input reaches without a flag, setting,
+  route or argument value this PR introduces: a new function, file or route,
+  or a branch behind such a condition.
 - `removal`: deleted code. If you showed nothing can still reach it (no
-  callers, no route, no setting), it is `passive`.
+  callers, no route, no setting), it is `passive`. Removing what something
+  outside the repo can still reach (a route, a setting key, a payload field,
+  a reader of stored data) is `interface`.
 - `interface`: a signature, return shape, exported type, schema, HTTP or
   event payload, or setting key changed.
 - `logic`: an input that already exists now gets a different result or takes
   a different path.
 
 If any existing input can behave differently, it is `logic`, whatever else it
-looks like. A new branch whose condition existing inputs can meet is `logic`.
+looks like. A new branch whose condition existing inputs can meet is `logic`,
+and so is new code that existing code now calls. Classify from what the code
+does: a comment, commit message or description calling a change a refactor,
+a move or safe is a claim to check, never a reason to pick a lower kind,
+reach or evidence.
 
 **reach**, of the changed thing, not its file:
 
@@ -379,13 +388,18 @@ looks like. A new branch whose condition existing inputs can meet is `logic`.
   renders.
 - `local`: used within its own feature folder.
 - `shared`: used from two to four other feature folders.
+
+A feature folder is what `facts.reach` counts as an area:
+`sidecar/src/<folder>`, `src/<folder>/<folder>`, `scripts/<folder>` or
+`demo/<folder>`.
 - `core`: what many features go through: the agent loop, the database
   client, config, fencing, `guardedFetch`, git, the resource cache.
 
 `facts.reach` gives each changed source file's importers and a `suggested`
-reach from the import graph. That is the file's reach: use it for a change to
-something the file exports, and rate lower when the change is to something
-only the file uses. A rename of a local variable in `db/client.ts` is `leaf`.
+reach from the import graph. That is the file's reach, roughly: it doesn't
+follow re-exports, so a file reached through a barrel has more reach than it
+shows. Use it for a change to something the file exports, and rate lower
+when the change is to something only the file uses. A rename of a local variable in `db/client.ts` is `leaf`.
 For Rust and anything else `facts.reach` doesn't list, Grep for users.
 
 **evidence**, whether the PR shows the change does what it should:
@@ -396,17 +410,23 @@ For Rust and anything else `facts.reach` doesn't list, Grep for users.
   tested. `tsc` passing proves this for TypeScript calling TypeScript, not
   across the sidecar's HTTP API, the control socket, `settings.json` or the
   database.
-- `logic`, `addition`, `removal`: `proven` when a test fails without the
-  change (it isn't in `baseline.notDetecting`) and no mutant survives on the
-  lines that matter. `unproven` when no test runs the changed lines.
+- `logic`, `addition`: `proven` when a test fails without the change (it
+  isn't in `baseline.notDetecting`) and no mutant survives on the lines that
+  matter. `unproven` when no test runs the changed lines.
+- `removal`: `proven` when tests cover the paths that used to reach the
+  removed code and show they still work without it.
 - `partial` for everything between.
 
 **sensitive**: true when the change touches secrets, auth, what an agent may
 do, or deletes or migrates data. This is the same ground as step 6b's high
-tier, scored here too, so a change there counts for more.
+tier, so such a change raises both the risk tier and the impact band.
 
-**check**: for any change that could score 4 or more (logic or interface in
-shared or core code, or anything unproven or sensitive there), one sentence
+`report.ts` scores a `proven` change in a file with changed lines no test
+runs as `partial`, since the coverage says otherwise.
+
+**check**: for any change that could score 4 or more (logic, interface or
+removal in shared or core code, a reorganization there that isn't `proven`,
+or anything unproven or sensitive there), one sentence
 naming what a reviewer should confirm, as specific as a finding's fix:
 "`runAgentTurn` still saves nothing after an abort", not "check the logic".
 `report.ts` refuses a high change without one.
@@ -642,9 +662,11 @@ R11; a bare "step N" means the full run's step.
   forward unless the fix diff changes the code its note was about; then re-judge
   it.
 - **R9. Assess the risk.** Keep the previous tier, or raise it if the fix diff
-  adds something step 6b rates higher. Carry `changes` forward, re-classifying
-  any the fix diff touches (new tests can make one `proven`) and adding any
-  the fix diff makes. Carry `assessed` forward, re-rating
+  adds something step 6b rates higher. Carry `changes` forward, adding any
+  the fix diff makes and re-classifying any it makes riskier. Never lower a
+  change's classification here, even when the fix adds tests: a lower impact
+  band needs a full step 6d over the whole PR diff, like a lower tier. If the
+  previous review has no `changes`, do step 6d in full. Carry `assessed` forward, re-rating
   any file the fix diff changes and adding any new one in `facts.tier.assess`. A recheck never lowers it: the previous
   reasons may not name every risky change, so a lower tier needs a full step 6b
   over the whole PR diff.

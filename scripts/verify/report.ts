@@ -79,13 +79,13 @@ const Dimension = z.object({ status: Status, note: z.string().max(140) });
 const Change = z
   .object({
     title: z.string().min(1).max(100),
-    /** `path:line` of the changed thing, or just the path. */
+    /** `path:line` or `path:start-end` of the changed thing, or just the path. */
     location: z.string().min(1).max(120),
     kind: z.enum(CHANGE_KINDS),
     reach: z.enum(REACHES),
     evidence: z.enum(EVIDENCE),
     sensitive: z.boolean().default(false),
-    /** Like changes folded into this entry, so a PR of many small ones stays a short list. */
+    /** How many alike changes this entry stands for. */
     count: z.number().int().min(1).max(1000).default(1),
     /** What a reviewer should check. Required on a change scored high enough to list. */
     check: z.string().max(200).default(""),
@@ -245,6 +245,30 @@ function code(text: string): string {
   return `\`${text.replace(/\r?\n/g, " ").replace(/`/g, "'")}\``;
 }
 
+type ReviewChange = Review["changes"][number];
+
+/** A change's path, from a `location` of `path`, `path:line` or `path:start-end`. */
+function changePath(change: ReviewChange): string {
+  return change.location.replace(/:\d+(-\d+)?$/, "");
+}
+
+/**
+ * The PR's impact, from the review's changes as the facts allow. A change
+ * claimed `proven` in a file with changed lines no test runs is scored as
+ * `partial`, so a classification steered by the PR's own text can't lower a
+ * band the coverage contradicts.
+ */
+export function measuredImpact(review: Review, facts: Facts): Impact<ReviewChange> | null {
+  const uncovered = new Set(facts.coverage.uncovered.map((u) => u.path));
+  return scoreImpact(
+    review.changes.map((change) =>
+      change.evidence === "proven" && uncovered.has(changePath(change))
+        ? { ...change, evidence: "partial" as const }
+        : change,
+    ),
+  );
+}
+
 /** The report's tier: the stricter of the changed paths' floor and the assessed risk. */
 export function riskTier(review: Review, facts: Facts): Tier {
   const floor = floorTier(
@@ -271,7 +295,7 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   };
 
   if (riskTier(review, facts) === "high") requireAtLeast("human", "high-risk change");
-  const impact = scoreImpact(review.changes);
+  const impact = measuredImpact(review, facts);
   if (impact && impact.band >= 5) requireAtLeast("human", "very high impact");
   if (impact && impact.band >= ATTENTION_BAND) requireAtLeast("agent", "high-impact changes");
   if (review.findings.some((f) => f.severity === "blocker")) {
@@ -372,11 +396,9 @@ const EVIDENCE_TEXT: Record<(typeof EVIDENCE)[number], string> = {
   unproven: "untested",
 };
 
-type ReviewChange = Review["changes"][number];
-
 /** The change's reach, with its file's measured importers when `collect` counted them. */
 function reachText(change: ReviewChange, facts: Facts): string {
-  const path = change.location.replace(/:\d+(-\d+)?$/, "");
+  const path = changePath(change);
   const measured = facts.reach?.find((file) => file.path === path);
   if (!measured) return change.reach;
   const importers = measured.importers === 1 ? "1 importer" : `${measured.importers} importers`;
@@ -394,7 +416,7 @@ function impactLine(impact: Impact<ReviewChange>): string {
   const parts = [`${BAND_LABELS[impact.band]} (${impact.band}/5)`, describeCounts(impact.counts)];
   if (impact.raisedByVolume > 0) {
     parts.push(
-      `raised from ${BAND_LABELS[impact.changeBand]} by the number of changes, so splitting the PR would lower it`,
+      `raised from ${BAND_LABELS[impact.highestChangeBand]} by the number of changes, so splitting the PR would lower it`,
     );
   }
   return parts.join(" · ");
@@ -424,7 +446,7 @@ export function renderReport(
   now: Date = new Date(),
 ): { body: string; data: ReportData; payload: string } {
   const { verdict, why } = finalVerdict(review, facts);
-  const impact = scoreImpact(review.changes);
+  const impact = measuredImpact(review, facts);
   const coverage = coverageStatus(facts.coverage);
   const headlineFindings = review.findings.filter((f) => f.severity !== "minor");
   const minorFindings = review.findings.filter((f) => f.severity === "minor");
@@ -488,7 +510,7 @@ export function renderReport(
     lines.push("", "### Needs attention", "");
     for (const change of impact.attention) {
       lines.push(
-        `- **${inline(change.title)}** ${code(change.location)}: ${inline(describeChange(change, facts))}. Check: ${inline(change.check)}`,
+        `- **${inline(change.title)}** ${code(change.location)}: ${inline(describeChange(change, facts))}. Check: ${inline(change.check || "none given, so read this change")}`,
       );
     }
   }

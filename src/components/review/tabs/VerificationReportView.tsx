@@ -36,12 +36,16 @@ const SEVERITY_CLASS: Record<Severity, string> = {
   low: "border-zinc-700 text-zinc-400",
 };
 
-const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], string> = {
+type VerificationRiskLevel = NonNullable<VerificationReport["risk"]>["level"];
+
+const RISK_CLASS: Record<VerificationRiskLevel, string> = {
   high: "border-red-700 bg-red-950/40 text-red-300",
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
 
+// The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`,
+// which the frontend can't import; change both together.
 const IMPACT_LABEL: Record<ImpactBand, string> = {
   1: "minimal",
   2: "low",
@@ -60,6 +64,12 @@ const IMPACT_CLASS: Record<ImpactBand, string> = {
 
 /** Changes at or above this band are listed for attention; the sidecar's `ATTENTION_BAND`. */
 const ATTENTION_BAND = 4;
+
+/** The sidecar's `LEVEL_FOR_BAND`: the risk level a band alone implies. */
+function levelForBand(band: ImpactBand): VerificationRiskLevel {
+  if (band >= 4) return "high";
+  return band === 3 ? "medium" : "low";
+}
 
 const KIND_NAMES: [ChangeKind, string, string][] = [
   ["passive", "passive", "passive"],
@@ -493,15 +503,16 @@ function ImpactDetail({
       <div className="text-xs text-zinc-400">
         {countsText(impact.counts)}
         {impact.raisedByVolume > 0 &&
-          ` · raised from ${IMPACT_LABEL[impact.changeBand]} by the number of changes, so splitting the PR would lower it`}
+          ` · raised from ${IMPACT_LABEL[impact.highestChangeBand]} by the number of changes, so splitting the PR would lower it`}
       </div>
       {attention.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-xs text-zinc-500">Needs attention</div>
           <ul className="space-y-1.5">
-            {attention.map((c) => (
+            {attention.map((c, i) => (
               <li
-                key={`${c.title}:${c.path}:${c.line}`}
+                // Folded entries can share a title and have no location, so the position keeps keys unique.
+                key={`${i}:${c.title}`}
                 className={viewedClass(isViewed(viewed, c.path))}
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -522,7 +533,11 @@ function ImpactDetail({
       )}
       <details className="text-xs">
         <summary className="cursor-pointer text-zinc-500">
-          Every change ({impact.changes.length})
+          Every change (
+          {impact.total > impact.changes.length
+            ? `${impact.changes.length} of ${impact.total}`
+            : impact.total}
+          )
         </summary>
         <ul className="mt-1.5 space-y-1">
           {impact.changes.map((c) => (
@@ -589,15 +604,21 @@ export default function VerificationReportView({
         <Section title="Risk">
           <div className="space-y-2 text-sm">
             <div className="flex items-start gap-2">
-              <span
-                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${
-                  risk.impact ? IMPACT_CLASS[risk.impact.band] : RISK_CLASS[risk.level]
-                }`}
-              >
-                {risk.impact
-                  ? `${IMPACT_LABEL[risk.impact.band]} impact · ${risk.impact.band}/5`
-                  : `${risk.level} risk`}
-              </span>
+              {risk.impact && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${IMPACT_CLASS[risk.impact.band]}`}
+                >
+                  {IMPACT_LABEL[risk.impact.band]} impact · {risk.impact.band}/5
+                </span>
+              )}
+              {/* The level shows beside the band only when the agent judged it stricter. */}
+              {(!risk.impact || risk.level !== levelForBand(risk.impact.band)) && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+                >
+                  {risk.level} risk
+                </span>
+              )}
               <span className="text-zinc-300">{risk.clientImpact}</span>
             </div>
             {risk.impact && (
