@@ -18,25 +18,38 @@
  * every start, and the checkouts reach the session as `--add-dir`s.
  */
 
-import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { hasCoreChannel, spawnReviewClaudeSession } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
-import { getReviewWorkspace, ReviewWorkspaceError } from "./service.ts";
-import { requireCheckout } from "./verification.ts";
+import { assertWorktreeInWorkspace, getReviewWorkspace, ReviewWorkspaceError } from "./service.ts";
 
-const DENIED_EDIT_TOOLS = ["Write", "Edit", "NotebookEdit"];
+/** The most checkouts one session reads; matches `MAX_REVIEW_DIRS` in `pty.rs`. */
+const MAX_SESSION_PRS = 20;
 
-/** The settings a review session runs with: the review runs' lockdown, minus edits. */
-function reviewSessionSettings(): Record<string, unknown> {
+/**
+ * Tools the session never needs. The edit tools because it answers questions.
+ * `Skill` because a checkout added with `--add-dir` may ship its own skills,
+ * whose frontmatter can pre-approve tools.
+ */
+const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
+
+/**
+ * The settings a review session runs with: the review runs' lockdown, minus
+ * edits and skills. Sandboxed commands also can't write to any checkout, so
+ * one PR's code can't change another's, which a later setup run would execute.
+ */
+function reviewSessionSettings(checkouts: string[]): Record<string, unknown> {
   const settings = lockedDownSettings();
   const permissions = settings.permissions as { deny: string[] };
+  const sandbox = settings.sandbox as { filesystem: Record<string, unknown> };
   return {
     ...settings,
-    permissions: { ...permissions, deny: [...permissions.deny, ...DENIED_EDIT_TOOLS] },
+    permissions: { ...permissions, deny: [...permissions.deny, ...DENIED_TOOLS] },
+    sandbox: { ...sandbox, filesystem: { ...sandbox.filesystem, denyWrite: checkouts } },
   };
 }
 
@@ -57,6 +70,13 @@ function freshSessionFolder(config: Config, workspaceId: string): string {
   if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() === false)
     rmSync(dir, { force: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Checked again before anything is removed: a link swapped in for either
+  // folder would point the emptying below at whatever it names.
+  if (
+    realpathSync(dir) !== join(realpathSync(config.workspacesRoot), ".review-sessions", workspaceId)
+  ) {
+    throw new Error(`${dir} is not a plain folder; left in place`);
+  }
   for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
   return dir;
 }
@@ -74,15 +94,16 @@ export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
 /**
  * Starts the workspace's session over every PR whose checkout is ready, or
  * leaves the one already running alone (the core discards a spawn whose id is
- * taken). A PR checked out later joins on the next start. Answers with the
- * session's PTY id and the PRs it was started with.
+ * taken; its folder is still emptied, which a running session only uses as
+ * scratch space). A PR checked out later joins on the next start. Answers with
+ * the session's PTY id.
  */
 export async function startReviewClaudeSession(
   db: Db,
   config: Config,
   workspaceId: string,
   deps: ReviewClaudeDeps = defaultReviewClaudeDeps,
-): Promise<{ sessionId: string; prIds: string[] }> {
+): Promise<{ sessionId: string }> {
   if (!deps.hasCore()) {
     throw new ReviewWorkspaceError(
       "the app's core isn't running, so it can't start a session",
@@ -91,17 +112,22 @@ export async function startReviewClaudeSession(
   }
   const ws = await getReviewWorkspace(db, workspaceId);
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
-  const ready = ws.prs.filter((pr) => {
-    try {
-      requireCheckout(config, pr);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  if (ws.status !== "active") {
+    throw new ReviewWorkspaceError(`review workspace is ${ws.status}`, 409);
+  }
+  const ready = ws.prs.filter(
+    (pr) => pr.status === "ready" && pr.worktreeStatus === "ready" && pr.headSha,
+  );
   if (ready.length === 0) {
     throw new ReviewWorkspaceError("no pull request in this workspace is checked out yet", 409);
   }
+  if (ready.length > MAX_SESSION_PRS) {
+    throw new ReviewWorkspaceError(
+      `Ask Claude reads at most ${MAX_SESSION_PRS} pull requests; this workspace has ${ready.length}`,
+      409,
+    );
+  }
+  for (const pr of ready) assertWorktreeInWorkspace(config, pr);
 
   const cwd = freshSessionFolder(config, ws.id);
   // Paths and ref keys only: titles are the authors' text.
@@ -113,7 +139,7 @@ export async function startReviewClaudeSession(
       workspaceId: ws.id,
       cwd,
       addDirs: ready.map((pr) => pr.worktreePath),
-      settings: JSON.stringify(reviewSessionSettings()),
+      settings: JSON.stringify(reviewSessionSettings(ready.map((pr) => pr.worktreePath))),
       context,
     });
   } catch (e) {
@@ -121,5 +147,5 @@ export async function startReviewClaudeSession(
     // Code, too many terminals open), so its message is the answer.
     throw new ReviewWorkspaceError(describeError(e), 502);
   }
-  return { sessionId: reviewClaudeSessionId(ws.id), prIds: ready.map((pr) => pr.id) };
+  return { sessionId: reviewClaudeSessionId(ws.id) };
 }

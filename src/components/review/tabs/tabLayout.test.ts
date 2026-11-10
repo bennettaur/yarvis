@@ -100,6 +100,16 @@ describe("openTab", () => {
     expect(ids(layout)).toHaveLength(3);
   });
 
+  it("moves the Claude tab to a remaining PR when its PR is removed", () => {
+    const layout = pruneTabs(
+      open(desc("a"), desc("b"), { kind: "claude", prId: "a" }),
+      new Set(["b"]),
+    );
+    expect(ids(layout)).toEqual(["description:b", "claude"]);
+    expect(layout.groups[0]!.tabs[1]).toEqual({ kind: "claude", prId: "b" });
+    expect(ids(pruneTabs(layout, new Set()))).toEqual([]);
+  });
+
   it("keeps one Claude tab for the workspace, whichever PR opens it", () => {
     const layout = open(desc("a"), { kind: "claude", prId: "a" }, { kind: "claude", prId: "b" });
     expect(ids(layout)).toEqual(["description:a", "claude"]);

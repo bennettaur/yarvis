@@ -2,7 +2,7 @@
 //! the core to do things it can't do itself — spawning, killing, and typing an
 //! instruction or an allowed slash command into a Claude Code session in a
 //! workspace PTY, starting a locked-down one over a review workspace's PR
-//! checkouts (`claude.spawnReview`), writing an MCP server's OAuth credentials or a signed-in
+//! checkouts (`claude.spawnReview`) and ending it (`claude.killReview`), writing an MCP server's OAuth credentials or a signed-in
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
 //! (`alarm.fire`) or stopping one (`alarm.release`).
 //!
@@ -323,6 +323,15 @@ mod unix_impl {
                     &p.context,
                 )
             }
+            "claude.killReview" => {
+                let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                kill_session(
+                    state.inner(),
+                    &format!("{}{}", crate::pty::REVIEW_CLAUDE_PREFIX, p.workspace_id),
+                );
+                Ok(())
+            }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
@@ -508,6 +517,7 @@ mod unix_impl {
             assert_eq!(p.add_dirs.len(), 2);
             assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
             assert!(p.context.starts_with("github/o/r/1"));
+            assert!(validate_workspace_id("../x").is_err());
         }
 
         #[test]

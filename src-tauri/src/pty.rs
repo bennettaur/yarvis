@@ -1288,12 +1288,63 @@ fn review_launch_command(
     )
 }
 
-/// Most PR checkouts a review session takes; a review workspace holds at most
-/// 20 PRs (`createSchema` in the sidecar's review routes).
+/// Most PR checkouts a review session takes. The sidecar refuses a workspace
+/// with more before it asks (`MAX_SESSION_PRS` in `reviewWorkspaces/claudeSession.ts`).
 const MAX_REVIEW_DIRS: usize = 20;
 
 /// Longest context the sidecar may append to the guardrail: a sentence per PR.
 const MAX_REVIEW_CONTEXT_CHARS: usize = 8_000;
+
+/// Checks what the sidecar sent for a review session and returns the context,
+/// cleaned for the launch line. Pure, apart from asking whether each folder
+/// exists, so it is testable without an `AppHandle`.
+fn check_review_spawn(
+    workspace_id: &str,
+    cwd: &str,
+    add_dirs: &[String],
+    settings: &str,
+    context: &str,
+) -> Result<String, String> {
+    // Quoting stops the shell parser, not the line editor the line is typed
+    // into, which reads a tab or a carriage return as a key.
+    if [cwd, settings]
+        .into_iter()
+        .chain(add_dirs.iter().map(String::as_str))
+        .any(|text| text.chars().any(is_unsafe_name_char))
+    {
+        return Err("the session carries a control character".into());
+    }
+    let is_folder = |p: &str| Path::new(p).is_absolute() && Path::new(p).is_dir();
+    // The shell's own hooks (mise, direnv) act on the folder it opens in and
+    // its parents, so it must open in the session's own folder, never a checkout.
+    let session_folder = Path::new(".review-sessions").join(workspace_id);
+    if !is_folder(cwd) || !Path::new(cwd).ends_with(&session_folder) {
+        return Err("the session folder is missing".into());
+    }
+    if add_dirs.is_empty() || add_dirs.len() > MAX_REVIEW_DIRS {
+        return Err(format!(
+            "a review session takes 1 to {MAX_REVIEW_DIRS} checkouts"
+        ));
+    }
+    if !add_dirs.iter().all(|d| is_folder(d)) {
+        return Err("a checkout is not a folder".into());
+    }
+    if add_dirs
+        .iter()
+        .any(|d| Path::new(cwd).starts_with(d) || Path::new(d).starts_with(cwd))
+    {
+        return Err("the session folder overlaps a checkout".into());
+    }
+    // Only a JSON object can reach the line, and it goes in single-quoted.
+    if !serde_json::from_str::<serde_json::Value>(settings).is_ok_and(|v| v.is_object()) {
+        return Err("the session settings are not a JSON object".into());
+    }
+    let context = sanitize_prompt_text(context);
+    if context.chars().count() > MAX_REVIEW_CONTEXT_CHARS {
+        return Err("the session context is too long".into());
+    }
+    Ok(context)
+}
 
 /// Starts Claude Code for a review workspace under
 /// `review-claude:<workspace_id>`, for the user to ask questions about its PRs.
@@ -1315,26 +1366,7 @@ pub fn spawn_review_claude_session(
 ) -> Result<(), String> {
     let program = exec_claude_program(&agent_command(app))
         .ok_or("the configured agent is not Claude Code, so it can't run a review session")?;
-    let is_folder = |p: &str| Path::new(p).is_absolute() && Path::new(p).is_dir();
-    if !is_folder(&cwd) {
-        return Err("the session folder is missing".into());
-    }
-    if add_dirs.is_empty() || add_dirs.len() > MAX_REVIEW_DIRS {
-        return Err(format!(
-            "a review session takes 1 to {MAX_REVIEW_DIRS} checkouts"
-        ));
-    }
-    if !add_dirs.iter().all(|d| is_folder(d)) {
-        return Err("a checkout is not a folder".into());
-    }
-    // Only a JSON object can reach the line, and it goes in single-quoted.
-    if !serde_json::from_str::<serde_json::Value>(settings).is_ok_and(|v| v.is_object()) {
-        return Err("the session settings are not a JSON object".into());
-    }
-    let context = sanitize_prompt_text(context);
-    if context.chars().count() > MAX_REVIEW_CONTEXT_CHARS {
-        return Err("the session context is too long".into());
-    }
+    let context = check_review_spawn(workspace_id, &cwd, add_dirs, settings, context)?;
     let id = format!("{REVIEW_CLAUDE_PREFIX}{workspace_id}");
     // `spawn_into_state` keeps whatever already holds the id, so an exited
     // session would win over this one and the tab's attach would then spawn a
@@ -1537,15 +1569,15 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, check_resume, exec_claude_program,
-        hmac_sha256_hex, is_attention_addressable, is_unsafe_name_char, is_valid_resume_id,
-        lock_scrollback, merge_allowed_slash_commands, prepare_instruction, prepare_slash_command,
-        remote_control_command, resolve_agent_command, resolve_max_sessions, review_launch_command,
-        runs_claude_code, session_env, session_token, shell_single_quote, snapshot, Scrollback,
-        DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
-        MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS, REVIEW_CLAUDE_PREFIX,
-        REVIEW_SESSION_GUARDRAIL,
+        agent_launch_command, attention_workspace_id, check_resume, check_review_spawn,
+        exec_claude_program, hmac_sha256_hex, is_attention_addressable, is_unsafe_name_char,
+        is_valid_resume_id, lock_scrollback, merge_allowed_slash_commands, prepare_instruction,
+        prepare_slash_command, remote_control_command, resolve_agent_command, resolve_max_sessions,
+        review_launch_command, runs_claude_code, session_env, session_token, shell_single_quote,
+        snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_REVIEW_DIRS,
+        MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
+        REVIEW_CLAUDE_PREFIX, REVIEW_SESSION_GUARDRAIL,
     };
     use std::sync::Mutex;
 
@@ -2029,6 +2061,42 @@ mod tests {
         assert!(with_context.ends_with(&shell_single_quote(&format!(
             "{REVIEW_SESSION_GUARDRAIL} PR x in /r/c."
         ))));
+    }
+
+    #[test]
+    fn check_review_spawn_refuses_what_the_line_cannot_carry() {
+        let root = std::env::temp_dir().join(format!("yarvis-review-spawn-{}", std::process::id()));
+        let cwd_path = root.join(".review-sessions").join("ws1");
+        let checkout_path = root.join(".review").join("ws1").join("pr");
+        std::fs::create_dir_all(&cwd_path).unwrap();
+        std::fs::create_dir_all(&checkout_path).unwrap();
+        let cwd = cwd_path.to_string_lossy().into_owned();
+        let checkout = checkout_path.to_string_lossy().into_owned();
+        let one = [checkout.clone()];
+        let check = |cwd: &str, dirs: &[String], settings: &str, context: &str| {
+            check_review_spawn("ws1", cwd, dirs, settings, context)
+        };
+
+        assert_eq!(
+            check(&cwd, &one, "{}", "a\nb").as_deref(),
+            Ok("a b"),
+            "a newline would submit the line early"
+        );
+        // Opened anywhere but the session's own folder, the shell's hooks would
+        // run on whatever is there.
+        assert!(check(&checkout, &one, "{}", "").is_err());
+        assert!(check_review_spawn("ws2", &cwd, &one, "{}", "").is_err());
+        assert!(check(&cwd, std::slice::from_ref(&cwd), "{}", "").is_err());
+        assert!(check("relative", &one, "{}", "").is_err());
+        assert!(check(&cwd, &[], "{}", "").is_err());
+        assert!(check(&cwd, &vec![checkout.clone(); MAX_REVIEW_DIRS + 1], "{}", "").is_err());
+        assert!(check(&cwd, &["/no/such/dir".into()], "{}", "").is_err());
+        assert!(check(&cwd, &[format!("{checkout}\t")], "{}", "").is_err());
+        assert!(check(&cwd, &one, "{\"a\":\t1}", "").is_err());
+        assert!(check(&cwd, &one, "[]", "").is_err());
+        assert!(check(&cwd, &one, "not json", "").is_err());
+        assert!(check(&cwd, &one, "{}", &"x".repeat(9_000)).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

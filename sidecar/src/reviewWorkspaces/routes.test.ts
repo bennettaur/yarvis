@@ -1483,10 +1483,16 @@ describe("claude session", () => {
   let spawned: Spawn[];
   let hasCore: boolean;
   let spawnError: Error | null;
+  let ended: string[];
   const sessionApp = new Hono().route(
     "/rw",
     createReviewWorkspaceRoutes(config, {
-      deps,
+      deps: () => ({
+        ...deps(),
+        endClaudeSession: async (id) => {
+          ended.push(id);
+        },
+      }),
       claudeSession: {
         spawn: async (input) => {
           if (spawnError) throw spawnError;
@@ -1501,16 +1507,17 @@ describe("claude session", () => {
     spawned = [];
     hasCore = true;
     spawnError = null;
+    ended = [];
   });
 
   const start = (wsId: string) =>
     sessionApp.request(`/rw/${wsId}/claude-session`, { method: "POST" });
 
   it("starts Claude Code outside the checkouts, reading them, with the locked-down settings", async () => {
-    const { wsId, prId, worktreePath } = await readyWorkspace();
+    const { wsId, worktreePath } = await readyWorkspace();
     const res = await start(wsId);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sessionId: `review-claude:${wsId}`, prIds: [prId] });
+    expect(await res.json()).toEqual({ sessionId: `review-claude:${wsId}` });
 
     expect(spawned).toHaveLength(1);
     const [spawn] = spawned as [Spawn];
@@ -1522,8 +1529,18 @@ describe("claude session", () => {
     expect(settings.disableAllHooks).toBe(true);
     expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true });
     expect(settings.permissions.deny).toEqual(
-      expect.arrayContaining(["Write", "Edit", "NotebookEdit", "WebFetch", "Read(~/.ssh)"]),
+      expect.arrayContaining([
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Skill",
+        "WebFetch",
+        "Read(~/.ssh)",
+      ]),
     );
+    // One PR's code mustn't be able to change another's checkout.
+    expect(settings.sandbox.filesystem.denyWrite).toEqual([worktreePath]);
+    expect(settings.sandbox.filesystem.denyRead.length).toBeGreaterThan(0);
   });
 
   it("empties the session folder before each start", async () => {
@@ -1553,6 +1570,29 @@ describe("claude session", () => {
     const { wsId } = await readyWorkspace();
     expect((await start(wsId)).status).toBe(503);
     expect(spawned).toHaveLength(0);
+  });
+
+  it("ends the session when a PR leaves or the workspace is archived, and won't start one after", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect((await sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" })).ok).toBe(
+      true,
+    );
+    expect(ended).toEqual([wsId]);
+
+    const other = await readyWorkspace();
+    expect((await sessionApp.request(`/rw/${other.wsId}/archive`, { method: "POST" })).ok).toBe(
+      true,
+    );
+    expect(ended).toEqual([wsId, other.wsId]);
+    expect((await start(other.wsId)).status).toBe(409);
+    expect(spawned).toHaveLength(0);
+    await until(async () => {
+      const [row] = await db
+        .select()
+        .from(reviewWorkspaces)
+        .where(eq(reviewWorkspaces.id, other.wsId));
+      return row?.status === "archived";
+    }, "the archive to finish");
   });
 
   it("passes on why the core refused", async () => {

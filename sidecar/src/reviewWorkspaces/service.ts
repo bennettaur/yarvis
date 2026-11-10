@@ -17,11 +17,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, rmdirSync } from "node:fs";
+import { existsSync, rmdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { and, asc, desc, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
+import { hasCoreChannel, killReviewClaudeSession } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import {
   type ReviewWorkspace,
@@ -144,6 +145,11 @@ export interface ReviewDeps {
    * isn't stacked or the provider has no stacks. Absent means the same.
    */
   stackOf?(ref: PrRef): Promise<PrRef[]>;
+  /**
+   * Ends the workspace's Ask Claude session, whose checkouts are being
+   * removed. Absent means there is none to end, as in tests with no core.
+   */
+  endClaudeSession?(workspaceId: string): Promise<void>;
 }
 
 function locatorFor(ref: PrRef): PrLocator {
@@ -235,7 +241,23 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
       );
       return otherOpenLayers(stack);
     },
+    async endClaudeSession(workspaceId) {
+      if (hasCoreChannel()) await killReviewClaudeSession(workspaceId);
+    },
   };
+}
+
+/**
+ * Ends the workspace's Ask Claude session before a checkout it reads goes. A
+ * failure is logged, not thrown: the removal the user asked for still happens,
+ * and the session just loses the folder.
+ */
+async function endClaudeSession(deps: ReviewDeps, workspaceId: string): Promise<void> {
+  try {
+    await deps.endClaudeSession?.(workspaceId);
+  } catch (e) {
+    console.error("[review-workspaces] could not end the Claude Code session:", describeError(e));
+  }
 }
 
 /**
@@ -839,6 +861,7 @@ export async function removeReviewPr(
   if (isRunning(pr.id)) {
     throw new ReviewWorkspaceError("this pull request is still being updated", 409);
   }
+  await endClaudeSession(deps, workspaceId);
   await removePrWorktree(config, pr, deps);
   await releaseReviewedCommits(db, config, pr, deps);
   await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
@@ -869,6 +892,7 @@ export async function archiveReviewWorkspace(
     throw new ReviewWorkspaceError(`review workspace is already ${ws.status}`, 409);
   }
   const ws = await requireWorkspace(db, id);
+  await endClaudeSession(deps, id);
 
   void (async () => {
     const failures: string[] = [];
@@ -887,6 +911,8 @@ export async function archiveReviewWorkspace(
       // above kept, and is already reported.
       rmdirSync(reviewWorkspaceDir(config, id));
     } catch {}
+    // The Ask Claude session's scratch folder: the session ended above.
+    rmSync(join(config.workspacesRoot, ".review-sessions", id), { recursive: true, force: true });
     await db
       .update(reviewWorkspaces)
       .set({

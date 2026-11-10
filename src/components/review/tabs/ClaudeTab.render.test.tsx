@@ -61,7 +61,7 @@ beforeEach(() => {
       starts.push(ws);
       if (startFails) throw new Error("the configured agent is not Claude Code");
       live = true;
-      return { sessionId: `review-claude:${ws}`, prIds: ["pr1"] };
+      return { sessionId: `review-claude:${ws}` };
     },
   });
   stubPtyApi({
