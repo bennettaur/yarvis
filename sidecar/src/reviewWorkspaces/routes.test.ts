@@ -876,6 +876,8 @@ cat "${fakeDir}/result.jsonl"`,
         body: JSON.stringify(body),
       });
     expect((await start({ sections: ["tests", "vibes"] })).status).toBe(400);
+    // The flow diagram is its own run now, not a section.
+    expect((await start({ sections: ["flow"] })).status).toBe(400);
 
     const res = await start({ sections: ["tests"] });
     expect(res.status).toBe(202);
@@ -1143,6 +1145,19 @@ cat "${fakeDir}/result.jsonl"`,
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
     ).toEqual(["Read", "Grep", "Glob"]);
+    expect(args).toContain("--disallowedTools");
+    const disallowed = args.slice(args.indexOf("--disallowedTools") + 1);
+    for (const tool of [
+      "Bash",
+      "Write",
+      "Edit",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+    ]) {
+      expect(disallowed).toContain(tool);
+    }
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
     expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
     expect(existsSync(join(contextDir, "patches/src/a.ts.diff"))).toBe(true);

@@ -24,9 +24,10 @@ function useRunActivity(prId: string, runId: string | null) {
   const [activity, setActivity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    // An error outlives its run, so the failed notice can still say what went wrong.
+    if (!runId) return;
     setActivity(null);
     setError(null);
-    if (!runId) return;
     const abort = new AbortController();
     void (async () => {
       try {

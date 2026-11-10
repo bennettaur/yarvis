@@ -192,7 +192,7 @@ export function runSections(meta: Record<string, unknown> | undefined): readonly
   const recorded = meta?.sections;
   if (!Array.isArray(recorded)) return DEFAULT_SECTIONS;
   const known = REPORT_SECTIONS.filter((s) => recorded.includes(s));
-  // A run of only sections reports no longer have (the flow diagram) ran none of today's.
+  // A run may have recorded only sections a report no longer has; it re-runs the defaults.
   return known.length > 0 ? known : DEFAULT_SECTIONS;
 }
 
