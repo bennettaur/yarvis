@@ -1,5 +1,6 @@
 import { ensureOk, sidecarFetch, streamSSE } from "../api";
 import type { PrRef } from "../pr/types";
+import { killPty } from "../pty";
 
 /** Typed client for the sidecar's `/api/review-workspaces` routes. */
 
@@ -163,9 +164,21 @@ export function openReviewWorkspace(id: string) {
   return json<ReviewWorkspace>(`${BASE}/${id}/open`, "open review workspace", send("POST"));
 }
 
-/** Answers with the workspace `archiving`; it reads `archived` once worktrees are gone. */
-export function archiveReviewWorkspace(id: string) {
-  return json<ReviewWorkspace>(`${BASE}/${id}/archive`, "archive review workspace", send("POST"));
+/**
+ * Answers with the workspace `archiving`; it reads `archived` once worktrees
+ * are gone. Also ends the workspace's Claude Code session, whose checkouts are
+ * being removed.
+ */
+export async function archiveReviewWorkspace(id: string) {
+  const ws = await json<ReviewWorkspace>(
+    `${BASE}/${id}/archive`,
+    "archive review workspace",
+    send("POST"),
+  );
+  await killPty(reviewClaudeSessionId(id)).catch((e) =>
+    console.error("[review] could not end the workspace's Claude Code session:", e),
+  );
+  return ws;
 }
 
 /** Adds a PR and starts cloning it; follow {@link followReviewPrProgress}. */
@@ -190,13 +203,17 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
   );
 }
 
+/** The PTY id the core gives a workspace's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
+export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
+
 /**
- * Starts Claude Code in the PR's checkout, or leaves the one already running.
- * Answers with the PTY id to attach a terminal to.
+ * Starts Claude Code over the workspace's checked-out PRs, or leaves the one
+ * already running. Answers with the PTY id to attach a terminal to and the PRs
+ * it was started with.
  */
-export function startReviewClaudeSession(workspaceId: string, prId: string) {
-  return json<{ sessionId: string }>(
-    `${prPath(workspaceId, prId)}/claude-session`,
+export function startReviewClaudeSession(workspaceId: string) {
+  return json<{ sessionId: string; prIds: string[] }>(
+    `${BASE}/${workspaceId}/claude-session`,
     "start Claude Code",
     send("POST"),
   );

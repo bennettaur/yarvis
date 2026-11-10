@@ -746,15 +746,19 @@ report there and leaves the fixes to the author.
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
   The review workspace's **Ask Claude** tab is the interactive counterpart:
-  a PTY session in the PR's checkout that the user drives, started through
-  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It reads the
-  same `lockedDownSettings` plus a deny on the edit tools, from a file the
-  sidecar writes. The core runs the configured agent's program, minus that
-  command's own flags, under `exec` (so no shell outlives it in the checkout)
-  with `--setting-sources ''`, `--strict-mcp-config`,
-  `--permission-mode default` and a guardrail prompt. Its PTY id
+  one PTY session per review workspace that the user drives, started through
+  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
+  `lockedDownSettings` plus a deny on the edit tools, passed inline. The core
+  runs the configured agent's program, minus that command's own flags, under
+  `exec` (so no shell outlives it) with `--setting-sources ''`,
+  `--strict-mcp-config`, `--permission-mode default`, a guardrail prompt and
+  each ready checkout as an `--add-dir`. The launch line is typed into the
+  user's login shell, whose hooks (mise, direnv) act on the folder it opens in
+  and that folder's parents, so the shell never opens in a checkout: it opens in
+  `<workspacesRoot>/.review-sessions/<workspaceId>/`, emptied before each start
+  because the session's sandboxed commands can write there. Its PTY id
   (`review-claude:`) is not attention addressable, so it gets no sidecar
-  tokens.
+  tokens, and `pty_attach` refuses to put a plain shell under it.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

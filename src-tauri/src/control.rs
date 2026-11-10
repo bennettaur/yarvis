@@ -1,8 +1,8 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
 //! instruction or an allowed slash command into a Claude Code session in a
-//! workspace PTY, starting a locked-down one in a review PR's checkout
-//! (`claude.spawnReview`), writing an MCP server's OAuth credentials or a signed-in
+//! workspace PTY, starting a locked-down one over a review workspace's PR
+//! checkouts (`claude.spawnReview`), writing an MCP server's OAuth credentials or a signed-in
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
 //! (`alarm.fire`) or stopping one (`alarm.release`).
 //!
@@ -99,12 +99,17 @@ mod unix_impl {
 
     #[derive(Deserialize)]
     struct SpawnReviewParams {
-        #[serde(rename = "prId")]
-        pr_id: String,
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
         cwd: String,
+        /// The PR checkouts the session reads, each passed as `--add-dir`.
+        #[serde(rename = "addDirs")]
+        add_dirs: Vec<String>,
         /// The session's settings as JSON text, passed to `--settings` inline
         /// so there is no file a sandboxed command could rewrite.
         settings: String,
+        /// Which PR is checked out where, appended to the session's guardrail.
+        context: String,
     }
 
     #[derive(Deserialize)]
@@ -307,9 +312,16 @@ mod unix_impl {
             "claude.spawnReview" => {
                 let p: SpawnReviewParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
-                // Review PR ids are UUIDs too.
-                validate_workspace_id(&p.pr_id).map_err(|_| "invalid prId".to_string())?;
-                spawn_review_claude_session(app, state.inner(), &p.pr_id, p.cwd, &p.settings)
+                validate_workspace_id(&p.workspace_id)?;
+                spawn_review_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.add_dirs,
+                    &p.settings,
+                    &p.context,
+                )
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -485,15 +497,17 @@ mod unix_impl {
         fn reads_the_review_session_the_sidecar_sends() {
             // Shaped like `spawnReviewClaudeSession` in `controlClient.ts`.
             let p: SpawnReviewParams = serde_json::from_value(json!({
-                "prId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
-                "cwd": "/tmp/review/pr",
+                "workspaceId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+                "cwd": "/tmp/.review-sessions/w",
+                "addDirs": ["/tmp/.review/w/pr1", "/tmp/.review/w/pr2"],
                 "settings": "{\"disableAllHooks\":true}",
+                "context": "github/o/r/1 in /tmp/.review/w/pr1.",
             }))
             .expect("sidecar payload");
-            assert_eq!(p.cwd, "/tmp/review/pr");
+            assert!(validate_workspace_id(&p.workspace_id).is_ok());
+            assert_eq!(p.add_dirs.len(), 2);
             assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
-            assert!(validate_workspace_id(&p.pr_id).is_ok());
-            assert!(validate_workspace_id("../x").is_err());
+            assert!(p.context.starts_with("github/o/r/1"));
         }
 
         #[test]

@@ -57,11 +57,11 @@ beforeEach(() => {
   attached = [];
   kills = [];
   stubReviewApi({
-    startReviewClaudeSession: async (_ws, prId) => {
-      starts.push(prId);
+    startReviewClaudeSession: async (ws) => {
+      starts.push(ws);
       if (startFails) throw new Error("the configured agent is not Claude Code");
       live = true;
-      return { sessionId: `review-claude:${prId}` };
+      return { sessionId: `review-claude:${ws}`, prIds: ["pr1"] };
     },
   });
   stubPtyApi({
@@ -101,8 +101,8 @@ describe("ClaudeTab", () => {
     const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pr) }));
     mounted = m;
     await waitFor(() => attached.length > 0, "the terminal to attach");
-    expect(starts).toEqual(["pr1"]);
-    expect(attached).toEqual(["review-claude:pr1"]);
+    expect(starts).toEqual(["ws"]);
+    expect(attached).toEqual(["review-claude:ws"]);
     expect(textOf(m.host.innerHTML)).toContain("Read-only");
   });
 
@@ -130,7 +130,7 @@ describe("ClaudeTab", () => {
     startFails = false;
     buttonNamed(m.host, "Retry")?.click();
     await waitFor(() => attached.length > 0, "the terminal to attach");
-    expect(starts).toEqual(["pr1", "pr1"]);
+    expect(starts).toEqual(["ws", "ws"]);
   });
 
   it("restart ends the session and starts a new one", async () => {
@@ -140,9 +140,9 @@ describe("ClaudeTab", () => {
     await waitFor(() => attached.length === 1, "the first attach");
     buttonNamed(m.host, "Restart")?.click();
     await waitFor(() => attached.length === 2, "the terminal to reattach");
-    expect(kills).toEqual(["review-claude:pr1"]);
-    expect(starts).toEqual(["pr1"]);
-    expect(attached).toEqual(["review-claude:pr1", "review-claude:pr1"]);
+    expect(kills).toEqual(["review-claude:ws"]);
+    expect(starts).toEqual(["ws"]);
+    expect(attached).toEqual(["review-claude:ws", "review-claude:ws"]);
   });
 
   it("waits for the checkout before starting anything", async () => {

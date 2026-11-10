@@ -317,25 +317,36 @@ says so, with **Re-run**.
 
 ### Ask Claude
 
-**Ask Claude** in the PR bar opens a tab with Claude Code running in the PR's
-checkout, for asking questions about the change: what a function does, where
-something is called from, why a test might fail. It starts once the checkout
-is ready, and keeps running when you switch tabs or close this one, so
-reopening it picks up the same conversation. When you quit Claude Code, the
-session ends with it, and opening the tab again starts a new one. **Restart**
-ends it and starts a fresh one straight away.
+**Ask Claude** in the PR bar opens a tab with Claude Code reading the
+workspace's PR checkouts, for asking questions about the changes: what a
+function does, where something is called from, why a test might fail. There
+is one session per workspace, and it reads every PR checked out there, so with
+a [stack](#open-a-pr) it can answer across the layers. Opening it from any PR's
+bar brings up the same tab.
 
-The checkout is code the PR's author wrote, so the session is locked down the
-same way the verification report is:
+It starts once a checkout is ready, and keeps running when you switch tabs or
+close this one, so reopening it picks up the same conversation. A PR added to
+the workspace after it started joins when you press **Restart**, which ends the
+session and starts a fresh one. When you quit Claude Code, the session ends
+with it, and opening the tab again starts a new one. Archiving the workspace
+ends it too.
 
-- It reads no settings files: not the checkout's, whose hooks Claude Code
-  would run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules
-  and MCP servers don't load in this session.
-- It can read the checkout but not edit it.
+The checkouts are code the PRs' authors wrote, so the session is locked down
+the same way the verification report is:
+
+- It reads no settings files: not a checkout's, whose hooks Claude Code would
+  run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules and MCP
+  servers don't load in this session.
+- It can read the checkouts but not edit them.
 - Commands run in Claude Code's sandbox with no network, and can't read your
   SSH, cloud or Yarvis credentials. Claude asks you before running a command
-  or doing anything else beyond reading the checkout.
-- Its instructions tell it that what it reads in the checkout is material to
+  or doing anything else beyond reading the checkouts.
+- It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
+  the like) act on the folder a terminal opens in, so the session opens in an
+  empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
+  workspaces folder, and reaches the checkouts from there. That folder is
+  emptied before each start.
+- Its instructions tell it that what it reads in the checkouts is material to
   explain, not instructions to follow.
 
 It needs the agent command under **Settings → Repositories → Agent** to run

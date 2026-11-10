@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type DisplayError, formatError } from "../../../lib/errors";
 import { killPty, ptyExists } from "../../../lib/pty";
-import { startReviewClaudeSession } from "../../../lib/reviewWorkspaces/api";
+import { reviewClaudeSessionId, startReviewClaudeSession } from "../../../lib/reviewWorkspaces/api";
 import ErrorNotice from "../../ErrorNotice";
 import LoadingIndicator from "../../LoadingIndicator";
 import TerminalPanel from "../../TerminalPanel";
 import type { TabContext } from "./types";
-
-/** The PTY id the core gives a review PR's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
-const reviewClaudeSessionId = (prId: string) => `review-claude:${prId}`;
 
 type SessionState =
   | { kind: "starting" }
@@ -16,8 +13,8 @@ type SessionState =
   | { kind: "failed"; error: DisplayError };
 
 /**
- * Claude Code running in the PR's checkout, for asking questions about the
- * change. The sidecar starts it locked down (see
+ * Claude Code for the workspace, reading every PR checked out in it, for asking
+ * questions about the changes. The sidecar starts it locked down (see
  * `sidecar/src/reviewWorkspaces/claudeSession.ts`); this tab only starts it
  * when none is running and attaches to it.
  *
@@ -26,8 +23,9 @@ type SessionState =
  */
 export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
-  const sessionId = reviewClaudeSessionId(pr.id);
-  // The same test the sidecar's `requireCheckout` makes before it starts one.
+  const sessionId = reviewClaudeSessionId(workspaceId);
+  // The PR the tab was opened from. The sidecar adds every ready PR, and answers
+  // 409 when none is; this only waits for the obvious case.
   const checkoutReady = pr.status === "ready" && pr.worktreeStatus === "ready" && !!pr.headSha;
   const [session, setSession] = useState<SessionState>({ kind: "starting" });
   // Only the latest start may set the state, so a slow one that finishes after
@@ -41,12 +39,12 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
     };
     setSession({ kind: "starting" });
     try {
-      if (!(await ptyExists(sessionId))) await startReviewClaudeSession(workspaceId, pr.id);
+      if (!(await ptyExists(sessionId))) await startReviewClaudeSession(workspaceId);
       settle({ kind: "live" });
     } catch (e) {
       settle({ kind: "failed", error: formatError(e) });
     }
-  }, [workspaceId, pr.id, sessionId]);
+  }, [workspaceId, sessionId]);
 
   useEffect(() => {
     if (checkoutReady) void start();
@@ -101,13 +99,14 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
         <span className="min-w-0 flex-1 truncate">
-          Read-only: Claude Code can read the checkout but not edit it, and commands run sandboxed
-          with no network. Your own settings, hooks and MCP servers aren't loaded.
+          Read-only: Claude Code reads every PR checked out here but can't edit them, and commands
+          run sandboxed with no network. Your own settings, hooks and MCP servers aren't loaded. A
+          PR added later joins on Restart.
         </span>
         <button
           type="button"
           onClick={() => void restart()}
-          title="End this session and start a new one"
+          title="End this session and start a new one over every checked-out PR"
           className="shrink-0 rounded-md border border-zinc-700 px-2 py-1 text-zinc-200 hover:bg-zinc-800"
         >
           Restart

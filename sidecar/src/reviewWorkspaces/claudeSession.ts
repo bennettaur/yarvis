@@ -1,22 +1,31 @@
 /**
- * An interactive Claude Code session in a review PR's checkout, for asking
- * questions about the PR. The user drives it in a tab; the core owns the PTY.
+ * An interactive Claude Code session for a review workspace, for asking
+ * questions about its PRs. One session covers every PR checked out in the
+ * workspace, so it can answer across a stack. The user drives it in a tab; the
+ * core owns the PTY.
  *
- * The checkout is code the PR's author wrote, so the session gets the same
+ * The checkouts are code the PRs' authors wrote, so the session gets the same
  * settings the headless review runs get (`lockedDownSettings`): no settings
- * file from the checkout or the user, no hooks, no MCP servers, Bash in a
+ * file from a checkout or the user, no hooks, no MCP servers, Bash in a
  * sandbox with no network, and the home folder's credentials unreadable. On top
  * of that it can't edit files, since its job is answering questions. The core
  * adds `--setting-sources ''` and a guardrail prompt when it builds the launch
  * line (`spawn_review_claude_session` in `src-tauri/src/pty.rs`).
+ *
+ * The launch line is typed into the user's login shell, whose hooks (mise,
+ * direnv, a dotenv plugin) act on the folder it starts in and that folder's
+ * parents. So the shell starts in a folder of Yarvis's own, emptied before
+ * every start, and the checkouts reach the session as `--add-dir`s.
  */
 
+import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { hasCoreChannel, spawnReviewClaudeSession } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
-import { getReviewPr, ReviewWorkspaceError } from "./service.ts";
+import { getReviewWorkspace, ReviewWorkspaceError } from "./service.ts";
 import { requireCheckout } from "./verification.ts";
 
 const DENIED_EDIT_TOOLS = ["Write", "Edit", "NotebookEdit"];
@@ -31,8 +40,26 @@ function reviewSessionSettings(): Record<string, unknown> {
   };
 }
 
-/** The PTY id the core gives a review PR's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
-export const reviewClaudeSessionId = (prId: string) => `review-claude:${prId}`;
+/** The PTY id the core gives a workspace's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
+export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
+
+/**
+ * The folder a workspace's session starts in, emptied first. The session's
+ * sandboxed commands can write there, so whatever a past session left (a
+ * `mise.toml`, an `.envrc`) is removed before the next shell starts in it. It
+ * keeps its path, since Claude Code remembers folder trust by path.
+ */
+function freshSessionFolder(config: Config, workspaceId: string): string {
+  const root = join(config.workspacesRoot, ".review-sessions");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const dir = join(root, workspaceId);
+  // A link in its place would send the shell somewhere else.
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() === false)
+    rmSync(dir, { force: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
+  return dir;
+}
 
 export interface ReviewClaudeDeps {
   spawn: typeof spawnReviewClaudeSession;
@@ -45,36 +72,54 @@ export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
 };
 
 /**
- * Starts the PR's session, or leaves the one already running alone (the core
- * discards a spawn whose id is taken). Answers with the session's PTY id for
- * the frontend to attach to.
+ * Starts the workspace's session over every PR whose checkout is ready, or
+ * leaves the one already running alone (the core discards a spawn whose id is
+ * taken). A PR checked out later joins on the next start. Answers with the
+ * session's PTY id and the PRs it was started with.
  */
 export async function startReviewClaudeSession(
   db: Db,
   config: Config,
   workspaceId: string,
-  prId: string,
   deps: ReviewClaudeDeps = defaultReviewClaudeDeps,
-): Promise<{ sessionId: string }> {
+): Promise<{ sessionId: string; prIds: string[] }> {
   if (!deps.hasCore()) {
     throw new ReviewWorkspaceError(
       "the app's core isn't running, so it can't start a session",
       503,
     );
   }
-  const pr = await getReviewPr(db, workspaceId, prId);
-  requireCheckout(config, pr);
+  const ws = await getReviewWorkspace(db, workspaceId);
+  if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
+  const ready = ws.prs.filter((pr) => {
+    try {
+      requireCheckout(config, pr);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (ready.length === 0) {
+    throw new ReviewWorkspaceError("no pull request in this workspace is checked out yet", 409);
+  }
 
+  const cwd = freshSessionFolder(config, ws.id);
+  // Paths and ref keys only: titles are the authors' text.
+  const context = `The pull requests are checked out at: ${ready
+    .map((pr) => `${pr.refKey} in ${pr.worktreePath}`)
+    .join("; ")}.`;
   try {
     await deps.spawn({
-      prId: pr.id,
-      cwd: pr.worktreePath,
+      workspaceId: ws.id,
+      cwd,
+      addDirs: ready.map((pr) => pr.worktreePath),
       settings: JSON.stringify(reviewSessionSettings()),
+      context,
     });
   } catch (e) {
     // The core refuses for reasons the user can act on (the agent isn't Claude
     // Code, too many terminals open), so its message is the answer.
     throw new ReviewWorkspaceError(describeError(e), 502);
   }
-  return { sessionId: reviewClaudeSessionId(pr.id) };
+  return { sessionId: reviewClaudeSessionId(ws.id), prIds: ready.map((pr) => pr.id) };
 }

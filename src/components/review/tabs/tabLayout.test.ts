@@ -99,6 +99,12 @@ describe("openTab", () => {
     });
     expect(ids(layout)).toHaveLength(3);
   });
+
+  it("keeps one Claude tab for the workspace, whichever PR opens it", () => {
+    const layout = open(desc("a"), { kind: "claude", prId: "a" }, { kind: "claude", prId: "b" });
+    expect(ids(layout)).toEqual(["description:a", "claude"]);
+    expect(layout.groups[0]!.activeId).toBe("claude");
+  });
 });
 
 describe("openTab into groups", () => {

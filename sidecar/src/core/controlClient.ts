@@ -142,14 +142,17 @@ export async function spawnClaudeSession(input: {
 }
 
 /**
- * Asks the core to start Claude Code in a review PR's checkout, keyed
- * `review-claude:<prId>`, with `settings` (JSON text) as its only settings. The
- * core builds the rest of the launch line itself.
+ * Asks the core to start Claude Code for a review workspace, keyed
+ * `review-claude:<workspaceId>`, in `cwd` with each of `addDirs` added.
+ * `settings` (JSON text) is its only settings and `context` is appended to the
+ * core's own guardrail prompt. The core builds the rest of the launch line.
  */
 export async function spawnReviewClaudeSession(input: {
-  prId: string;
+  workspaceId: string;
   cwd: string;
+  addDirs: string[];
   settings: string;
+  context: string;
 }): Promise<void> {
   await rpc("claude.spawnReview", input);
 }

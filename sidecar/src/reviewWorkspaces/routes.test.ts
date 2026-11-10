@@ -1473,7 +1473,14 @@ describe("patches for an agent run", () => {
 });
 
 describe("claude session", () => {
-  let spawned: { prId: string; cwd: string; settings: string }[];
+  type Spawn = {
+    workspaceId: string;
+    cwd: string;
+    addDirs: string[];
+    settings: string;
+    context: string;
+  };
+  let spawned: Spawn[];
   let hasCore: boolean;
   let spawnError: Error | null;
   const sessionApp = new Hono().route(
@@ -1496,18 +1503,21 @@ describe("claude session", () => {
     spawnError = null;
   });
 
-  const start = (wsId: string, prId: string) =>
-    sessionApp.request(`/rw/${wsId}/prs/${prId}/claude-session`, { method: "POST" });
+  const start = (wsId: string) =>
+    sessionApp.request(`/rw/${wsId}/claude-session`, { method: "POST" });
 
-  it("starts Claude Code in the PR's checkout with the locked-down settings, read-only", async () => {
+  it("starts Claude Code outside the checkouts, reading them, with the locked-down settings", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
-    const res = await start(wsId, prId);
+    const res = await start(wsId);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sessionId: `review-claude:${prId}` });
+    expect(await res.json()).toEqual({ sessionId: `review-claude:${wsId}`, prIds: [prId] });
 
     expect(spawned).toHaveLength(1);
-    const [spawn] = spawned as [(typeof spawned)[number]];
-    expect(spawn).toMatchObject({ prId, cwd: worktreePath });
+    const [spawn] = spawned as [Spawn];
+    expect(spawn.workspaceId).toBe(wsId);
+    expect(spawn.cwd).toBe(join(config.workspacesRoot, ".review-sessions", wsId));
+    expect(spawn.addDirs).toEqual([worktreePath]);
+    expect(spawn.context).toContain(`gh:o/r/1 in ${worktreePath}`);
     const settings = JSON.parse(spawn.settings);
     expect(settings.disableAllHooks).toBe(true);
     expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true });
@@ -1516,11 +1526,23 @@ describe("claude session", () => {
     );
   });
 
-  it("refuses until the checkout is ready", async () => {
+  it("empties the session folder before each start", async () => {
+    const { wsId } = await readyWorkspace();
+    await start(wsId);
+    const cwd = (spawned[0] as Spawn).cwd;
+    // What a past session's sandboxed command could have left for the next shell.
+    writeFileSync(join(cwd, "mise.toml"), "[env]\n");
+    mkdirSync(join(cwd, ".bin"));
+    await start(wsId);
+    expect((spawned[1] as Spawn).cwd).toBe(cwd);
+    expect(readdirSync(cwd)).toEqual([]);
+  });
+
+  it("refuses until a checkout is ready", async () => {
     checkoutGate = gate();
     const { wsId, prId } = await startWorkspace();
     await until(async () => (await prRow(prId)).status === "ready", "ready");
-    expect((await start(wsId, prId)).status).toBe(409);
+    expect((await start(wsId)).status).toBe(409);
     expect(spawned).toHaveLength(0);
     checkoutGate.open();
     await progress(wsId, prId);
@@ -1528,15 +1550,15 @@ describe("claude session", () => {
 
   it("says so when there is no core to start a session in", async () => {
     hasCore = false;
-    const { wsId, prId } = await readyWorkspace();
-    expect((await start(wsId, prId)).status).toBe(503);
+    const { wsId } = await readyWorkspace();
+    expect((await start(wsId)).status).toBe(503);
     expect(spawned).toHaveLength(0);
   });
 
   it("passes on why the core refused", async () => {
     spawnError = new Error("the configured agent is not Claude Code");
-    const { wsId, prId } = await readyWorkspace();
-    const res = await start(wsId, prId);
+    const { wsId } = await readyWorkspace();
+    const res = await start(wsId);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("not Claude Code");
   });
