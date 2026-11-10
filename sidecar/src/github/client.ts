@@ -76,6 +76,14 @@ function isLineOutsideDiff(error: GitHubError): boolean {
   );
 }
 
+/**
+ * Whether GitHub refused a review comment's `commit_id`, which happens when the
+ * commit the reviewer viewed was force-pushed out of the PR.
+ */
+function isUnknownCommit(error: GitHubError): boolean {
+  return error.status === 422 && error.details.some((d) => /commit_id|commit_sha/i.test(d));
+}
+
 /** The lines a review comment was meant for, as the heading of its file-level fallback. */
 function describeCommentLines(input: NewComment): string {
   const side = input.side ?? "RIGHT";
@@ -2307,6 +2315,15 @@ export class GitHubClient {
     const res = await post({ body: input.body, line: input.line, side, ...range });
     if (res.ok) return { commitId, placement: "line" };
     const error = await githubErrorFrom(res, "post comment");
+    if (viewedHead && isUnknownCommit(error)) {
+      throw new GitHubError(
+        error.status,
+        error.reason,
+        "The commit you were viewing is no longer part of the pull request, likely after a force-push. Reload to comment on its current head.",
+        "post comment",
+        error.details,
+      );
+    }
     if (!isLineOutsideDiff(error)) throw error;
 
     const fileRes = await post({
@@ -2315,6 +2332,10 @@ export class GitHubClient {
     });
     if (!fileRes.ok) {
       const fileError = await githubErrorFrom(fileRes, "post comment");
+      // A token, rate-limit or SSO failure says what to do on its own.
+      if (fileError.reason !== "upstream_error" && fileError.reason !== "forbidden") {
+        throw fileError;
+      }
       // Keep the first refusal too, or the user never learns why a file comment was tried.
       throw new GitHubError(
         fileError.status,

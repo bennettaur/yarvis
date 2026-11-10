@@ -134,6 +134,12 @@ describe("githubErrorFrom", () => {
     expect(e.explanation).toContain("label rate limit exceeded");
   });
 
+  it("shows the details alone when a non-422 refusal has no message", async () => {
+    const res = new Response(JSON.stringify({ errors: ["upstream timeout"] }), { status: 500 });
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.explanation).toBe("GitHub returned an error: upstream timeout");
+  });
+
   it("keeps 422 reasons short", async () => {
     const errors = Array.from({ length: 8 }, () => "x".repeat(500));
     const res = new Response(JSON.stringify({ errors }), { status: 422 });

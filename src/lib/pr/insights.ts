@@ -21,7 +21,7 @@ export interface PrInsight {
   createdAt: string;
   /**
    * Only on the answer to a post: "file" when GitHub put the comment on the
-   * whole file because the line isn't part of the diff. Gone after a reload.
+   * whole file because the line isn't part of the diff. Not stored, so it is gone once the list reloads.
    */
   placement?: CommentPlacement;
 }

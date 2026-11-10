@@ -1743,6 +1743,33 @@ describe("github review threads", () => {
     expect(calls[0]!.body.commit_id).toBe("d".repeat(40));
   });
 
+  it("says so when the viewed head is no longer part of the PR", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ field: "commit_id", code: "invalid" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" }, "d".repeat(40))
+      .catch((e: unknown) => e);
+    expect((error as GitHubError).explanation).toContain("no longer part of the pull request");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rethrows a token failure on the fallback as it is", async () => {
+    const { gh } = commentReplies(outsideDiff, {
+      status: 401,
+      body: { message: "Bad credentials" },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect((error as GitHubError).reason).toBe("unauthorized");
+    expect((error as GitHubError).explanation).not.toContain("isn't part of the diff");
+  });
+
   it("names a range that crosses from the old file to the new one", async () => {
     const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
     await gh.postComment("o", "r", 4, {

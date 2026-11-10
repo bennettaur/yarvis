@@ -11,6 +11,7 @@ import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
 import { saveGuide } from "./guides.ts";
+import { saveInsight } from "./insights.ts";
 import { savePrModelConfig } from "./models.ts";
 import { createPrRoutes } from "./routes.ts";
 import type { PrRef } from "./types.ts";
@@ -315,6 +316,57 @@ describe("model choice for guided reviews and line questions", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain("Anthropic");
+  });
+});
+
+describe("POST /api/pr/insight/:id/post", () => {
+  const withGithub = createApp({ ...config, secrets: { githubToken: "ghp_test" } });
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  beforeEach(async () => {
+    await sql`TRUNCATE pr_insights RESTART IDENTITY`;
+  });
+
+  it("anchors the answer to the head it was asked on, and says when it went on the file", async () => {
+    const headSha = "e".repeat(40);
+    const insight = await saveInsight(db, {
+      ref,
+      path: "src/api.ts",
+      startLine: 3,
+      endLine: 4,
+      headSha,
+      question: "why?",
+      answer: "because",
+    });
+    const sent: { commit_id?: string; subject_type?: string }[] = [];
+    const replies = [
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: ["pull_request_review_thread.line must be part of the diff"],
+        },
+      },
+      { status: 201, body: {} },
+    ];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") sent.push(JSON.parse(String(init.body)));
+      const reply = init?.method === "POST" ? replies.shift() : undefined;
+      return new Response(JSON.stringify(reply?.body ?? {}), { status: reply?.status ?? 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await withGithub.request(`/api/pr/insight/${insight.id}/post`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { placement?: string; postedAt: string | null };
+    expect(body.placement).toBe("file");
+    expect(body.postedAt).not.toBeNull();
+    expect(sent.map((s) => s.commit_id)).toEqual([headSha, headSha]);
+    expect(sent[1]?.subject_type).toBe("file");
   });
 });
 

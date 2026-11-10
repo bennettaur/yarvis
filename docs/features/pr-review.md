@@ -218,7 +218,8 @@ Some limits:
 4. To share an answer with the author, press **Post**. That turns it into a
    real line comment on the PR. On GitHub, an answer about a line outside the
    diff goes on the whole file instead, opening with the line it is about, and
-   the answer says so until the page reloads.
+   the answer says so until its list next reloads. An answer can't be posted once
+   a force-push has removed the commit it was asked on.
 
 Until you press **Post**, answers are your own notes. Nothing reaches the
 author. They are stored against those lines and kept indefinitely.
