@@ -242,8 +242,22 @@ export function setRatio(layout: TabLayout, ratio: number): TabLayout {
 
 /** Drops the tabs of PRs no longer in the workspace. */
 export function pruneTabs(layout: TabLayout, prIds: ReadonlySet<string>): TabLayout {
-  let next = layout;
-  for (const g of layout.groups) {
+  // The Claude tab is the workspace's, so it moves to a PR that is still there
+  // rather than closing with the one that opened it.
+  const [heir] = prIds;
+  let next =
+    heir === undefined
+      ? layout
+      : {
+          ...layout,
+          groups: layout.groups.map((g) => ({
+            ...g,
+            tabs: g.tabs.map((t) =>
+              t.kind === "claude" && !prIds.has(t.prId) ? { ...t, prId: heir } : t,
+            ),
+          })),
+        };
+  for (const g of next.groups) {
     for (const t of g.tabs) if (!prIds.has(t.prId)) next = closeTab(next, tabId(t));
   }
   return next;

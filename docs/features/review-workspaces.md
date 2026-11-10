@@ -328,8 +328,9 @@ It starts once a checkout is ready, and keeps running when you switch tabs or
 close this one, so reopening it picks up the same conversation. A PR added to
 the workspace after it started joins when you press **Restart**, which ends the
 session and starts a fresh one. When you quit Claude Code, the session ends
-with it, and opening the tab again starts a new one. Archiving the workspace
-ends it too.
+with it, and opening the tab again starts a new one. Removing a PR from the
+workspace, or archiving the workspace, ends it too, since a checkout it reads
+is going away.
 
 The checkouts are code the PRs' authors wrote, so the session is locked down
 the same way the verification report is:
@@ -337,7 +338,9 @@ the same way the verification report is:
 - It reads no settings files: not a checkout's, whose hooks Claude Code would
   run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules and MCP
   servers don't load in this session.
-- It can read the checkouts but not edit them.
+- It can read the checkouts but not change them, neither with its edit tools
+  nor from a command it runs, so one PR's code can't rewrite another's. It
+  doesn't load skills, which a checkout could ship to pre-approve tools.
 - Commands run in Claude Code's sandbox with no network, and can't read your
   SSH, cloud or Yarvis credentials. Claude asks you before running a command
   or doing anything else beyond reading the checkouts.

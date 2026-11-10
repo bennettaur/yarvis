@@ -157,6 +157,11 @@ export async function spawnReviewClaudeSession(input: {
   await rpc("claude.spawnReview", input);
 }
 
+/** Asks the core to end a review workspace's Ask Claude session, if one is running. */
+export async function killReviewClaudeSession(workspaceId: string): Promise<void> {
+  await rpc("claude.killReview", { workspaceId });
+}
+
 /** Asks the core to kill a workspace's Claude session, if one is running. */
 export async function killClaudeSession(workspaceId: string): Promise<void> {
   await rpc("claude.kill", { workspaceId });

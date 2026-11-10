@@ -146,7 +146,7 @@ const AGENT_TABS: { kind: StaticTabKind; label: string; title: string }[] = [
   {
     kind: "claude",
     label: "Ask Claude",
-    title: "Chat with Claude Code about the PR, in its checkout",
+    title: "Chat with Claude Code about every PR in this workspace",
   },
 ];
 

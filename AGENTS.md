@@ -22,8 +22,8 @@ Three processes, each with a clean ownership boundary:
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
   method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
-  `claude.send`, `claude.slash`, `mcp.saveOAuth`, `github.saveToken`,
-  `alarm.fire`, `alarm.release`)
+  `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
+  `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -748,7 +748,9 @@ report there and leaves the fixes to the author.
   The review workspace's **Ask Claude** tab is the interactive counterpart:
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
-  `lockedDownSettings` plus a deny on the edit tools, passed inline. The core
+  `lockedDownSettings` plus a deny on the edit tools and `Skill`, and a
+  sandbox `denyWrite` on every checkout, passed inline: one PR's code must not
+  be able to rewrite another's, which that PR's unsandboxed setup would run. The core
   runs the configured agent's program, minus that command's own flags, under
   `exec` (so no shell outlives it) with `--setting-sources ''`,
   `--strict-mcp-config`, `--permission-mode default`, a guardrail prompt and
@@ -758,7 +760,10 @@ report there and leaves the fixes to the author.
   `<workspacesRoot>/.review-sessions/<workspaceId>/`, emptied before each start
   because the session's sandboxed commands can write there. Its PTY id
   (`review-claude:`) is not attention addressable, so it gets no sidecar
-  tokens, and `pty_attach` refuses to put a plain shell under it.
+  tokens, and `pty_attach` refuses to put a plain shell under it. The core
+  checks the folder is `.review-sessions/<workspaceId>` and overlaps no
+  checkout, and refuses control characters in what it types. Removing a PR or
+  archiving the workspace ends the session first, through `claude.killReview`.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its
