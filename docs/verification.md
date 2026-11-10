@@ -8,6 +8,12 @@ the agent review, is signed with its own key.
 
 This page explains how the pieces fit together. The settings, commands and
 exact rules are in [Development](development.md#verifying-a-pr-for-merge).
+For the methodology and the reasoning behind each step, read
+[the `/verify-pr` explainer](https://bennettaur.github.io/yarvis/verification/verify-pr-explainer.html).
+The review workspace's in-app report has
+[its own explainer](https://bennettaur.github.io/yarvis/verification/verification-report-explainer.html).
+Their sources are `docs/verify-pr-explainer.html` and
+`docs/verification-report-explainer.html`, published to the demo site.
 
 ## The flow
 
