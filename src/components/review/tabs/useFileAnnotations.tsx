@@ -97,6 +97,7 @@ export function useFileAnnotations({
   const asking = insights.asking?.path === path ? insights.asking : null;
   const zones = useMemo<EditorZone[]>(
     () => [
+      // The moved-to-file note hangs under its line the way a pending comment does.
       ...commentAnchors(
         inline,
         comments.movedToFile ? [...comments.pending, comments.movedToFile] : comments.pending,

@@ -14,7 +14,12 @@ import { fakeExpansion } from "../../test/expansion";
 import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { mountForInteraction } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
-import { LineCommentBlock, type LineComments, useLineComments } from "./LineComments";
+import {
+  hasLineComments,
+  LineCommentBlock,
+  type LineComments,
+  useLineComments,
+} from "./LineComments";
 import { DiffBody } from "./PrFileDiffs";
 
 const sent: NewComment[] = [];
@@ -193,22 +198,25 @@ describe("useLineComments", () => {
     post = async () => ({ ok: true, placement: "file" });
     const comments = await view.render([]);
     await comments.submit(right(4), "looks off");
-    await settle();
 
     const after = await view.render([]);
     expect(after.pending).toEqual([]);
     expect(after.composer).toBeNull();
     expect(after.movedToFile).toEqual(right(4));
+    // The diff renderers only mount a line's block when it has something to show.
+    expect(hasLineComments("RIGHT", 4, after)).toBe(true);
+    expect(hasLineComments("LEFT", 4, after)).toBe(false);
+    expect(hasLineComments("RIGHT", 5, after)).toBe(false);
   });
 
   it("forgets where a comment moved once another composer opens", async () => {
     post = async () => ({ ok: true, placement: "file" });
     const comments = await view.render([]);
     await comments.submit(right(4), "looks off");
-    await settle();
-    (await view.render([])).openComposer("RIGHT", 9);
-    await settle();
+    const moved = await view.render([]);
+    expect(moved.movedToFile).toEqual(right(4));
 
+    moved.openComposer("RIGHT", 9);
     expect((await view.render([])).movedToFile).toBeNull();
   });
 
@@ -270,6 +278,7 @@ describe("LineCommentBlock", () => {
     await (await view.render([])).submit(right(4), "looks off");
     await view.render([]);
     expect(view.html).toContain("Posted on the whole file instead");
+    expect(view.host.querySelector('[role="status"]')?.textContent).toContain("line 4");
 
     Array.from(view.host.querySelectorAll("button"))
       .find((b) => b.textContent === "Dismiss")

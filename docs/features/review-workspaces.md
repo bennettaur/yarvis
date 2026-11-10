@@ -90,7 +90,8 @@ head in a tab of its own.
 - **Comment**: hover a line and click the comment button in the margin, or
   select lines and use the bar beside the selection for a multi-line comment.
   Either side works. On GitHub, a comment on a line outside the diff goes on
-  the whole file instead, opening with the lines it is about.
+  the whole file instead, opening with the lines it is about, and a note
+  under the line says so.
 - **Ask**: the same way, with the ask button, to ask about those lines as in
   the PRs tab's [line questions](pr-review.md#ask-about-a-line). The answer
   stays under the lines. Questions go on the new version of the file; asking
@@ -225,7 +226,8 @@ from the verification report, with its text quoted and any `@` mentions
 broken so nobody is notified and no bot takes it as a command. GitHub only
 takes a line comment on a line inside the diff, so a finding on an unchanged
 line is posted as a comment on the whole file, opening with the line it is
-about. Any other refusal shows beside the button. When the PR was raised from a Yarvis
+about, and a note beside the button says so. Any other refusal shows beside
+the button. When the PR was raised from a Yarvis
 workspace, **Add to *workspace*** adds it to that workspace's
 [review comments](workspaces.md#the-right-column) instead, where its agent can
 pick it up. There it carries a **report finding** badge, and the agent reads

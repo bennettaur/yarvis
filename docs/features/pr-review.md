@@ -100,6 +100,10 @@ alike. There is no pending review to submit.
    side: shift-clicking a **+** on the other side starts a new comment there.
 3. Type the comment and press **Comment**.
 
+GitHub only takes a line comment on a line inside the diff. A comment on a
+line you expanded into view goes on the whole file instead, opening with the
+lines it is about, and a note under the line says so.
+
 Existing threads appear under the line they belong to, including threads on
 the old file. Each thread has two controls:
 

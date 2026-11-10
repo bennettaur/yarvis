@@ -148,6 +148,7 @@ export function useLineComments(
   };
 
   const openComposer = (side: DiffSide, line: number, extend = false) => {
+    // The note is about the last post only; starting another comment moves on from it.
     setMovedToFile(null);
     setComposer((current) =>
       extend && current?.side === side ? extendTarget(current, line) : { side, line },
@@ -188,7 +189,8 @@ export function hasLineComments(
 
 /**
  * Everything hanging below one diff line on one side: its threads, this
- * session's optimistic comments, and the composer when open. Renders nothing
+ * session's optimistic comments, a note when GitHub moved this session's
+ * comment onto the whole file, and the composer when open. Renders nothing
  * when the line has none of those — an empty container's padding would
  * otherwise show up as a blank gap between consecutive rows.
  */
@@ -236,7 +238,7 @@ export function LineCommentBlock({
         >
           <span>
             Posted on the whole file instead. GitHub only takes line comments on lines inside the
-            diff, so the comment starts by naming {describeLines(moved)}.
+            diff, so the comment names {describeLines(moved)} at the top.
           </span>
           <button
             type="button"

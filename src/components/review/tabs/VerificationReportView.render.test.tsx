@@ -298,6 +298,7 @@ describe("VerificationReportView", () => {
         poster: {
           toPr: async (f, section) => {
             sent.push(`pr ${section} ${f.path}:${f.line}`);
+            return undefined;
           },
           toWorkspace: {
             name: "cache-work",
@@ -336,8 +337,14 @@ describe("VerificationReportView", () => {
     try {
       const post = [...host.querySelectorAll("button")].find((b) => b.textContent === "Post to PR");
       post?.click();
-      await waitFor(() => textOf(host.innerHTML).includes("On the whole file"), "the notice");
-      expect(textOf(host.innerHTML)).toContain("Posted to PR");
+      await waitFor(
+        () => textOf(host.innerHTML).includes("Posted on the whole file instead"),
+        "the notice",
+      );
+      const posted = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "Posted to PR",
+      );
+      expect(posted?.disabled).toBe(true);
     } finally {
       unmount();
     }
