@@ -56,6 +56,35 @@ describe("ChannelHub", () => {
     expect(hub.send(KEY, "anyone there?")).toBeNull();
   });
 
+  it("counts a relay as live until exactly five seconds after its last poll", async () => {
+    let now = 1_000_000;
+    const hub = new ChannelHub(() => now);
+    const who = relay();
+    await pollOnce(hub, who);
+
+    now += 4_999;
+    expect(hub.listener(KEY)).toEqual(who);
+    now += 1;
+    expect(hub.listener(KEY)).toBeNull();
+  });
+
+  it("delivers a queued message until exactly fifteen seconds after it was sent", async () => {
+    let now = 1_000_000;
+    const hub = new ChannelHub(() => now);
+    const who = relay();
+    await pollOnce(hub, who);
+    const kept = hub.send(KEY, "still wanted");
+    now += 14_999;
+    expect(await hub.next(KEY, who)).toEqual([kept!]);
+
+    await pollOnce(hub, who);
+    hub.send(KEY, "too late");
+    now += 15_000;
+    const controller = new AbortController();
+    controller.abort();
+    expect(await hub.next(KEY, who, controller.signal)).toEqual([]);
+  });
+
   it("counts a relay as live for the whole of a long poll, past the grace window", async () => {
     let now = 1_000_000;
     const hub = new ChannelHub(() => now);

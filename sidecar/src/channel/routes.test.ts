@@ -169,6 +169,8 @@ describe("launchedFromChannelCommand", () => {
 
   it("accepts any agent program and the flag's = form", () => {
     expect(launchedFromChannelCommand(`other-agent ${FLAG}`, `other-agent ${FLAG}`)).toBe(true);
+    // argv[1] counts whatever runs it; the registered pid is the other check.
+    expect(launchedFromChannelCommand(`vim claude ${FLAG}`, `claude ${FLAG}`)).toBe(true);
     const joined = "claude --dangerously-load-development-channels=server:yarvis-channel";
     expect(launchedFromChannelCommand(`${joined} Go on`, joined)).toBe(true);
   });
@@ -235,6 +237,7 @@ describe("relay", () => {
     };
     expect(relayEnv(full, who)?.baseUrl).toBe("http://127.0.0.1:8765/ingest/channel");
     expect(relayEnv({ ...full, YARVIS_SIDECAR_PORT: "8765@evil" }, who)).toBeNull();
+    expect(relayEnv({ ...full, YARVIS_SIDECAR_PORT: "evil.example:8765" }, who)).toBeNull();
     expect(relayEnv({ ...full, YARVIS_SESSION_TOKEN: undefined }, who)).toBeNull();
   });
 
@@ -366,6 +369,18 @@ describe("channel relay process", () => {
     const listener = hub.listener(key)!;
     expect(listener.pid).not.toBe(process.pid);
     expect(listener.channelEnabled).toBe(false);
+  });
+
+  it("reads the agent command from settings when the env doesn't override it", async () => {
+    const key = "ws-claude:44444444-4444-4444-8444-444444444444";
+    const settings = join(fakeClaudeDir, "settings.json");
+    writeFileSync(settings, JSON.stringify({ agentCommand: `claude ${FLAG_ARGS.join(" ")}` }));
+    await startRelay(
+      { ...terminalEnv(key, ""), YARVIS_SETTINGS_PATH: settings },
+      UNDER_FLAGGED_PARENT,
+    );
+    await until(() => hub.listener(key) !== null, "the relay to poll");
+    expect(hub.listener(key)?.channelEnabled).toBe(true);
   });
 
   it("exits when Claude Code closes its stdin, so it can't keep holding the channel", async () => {

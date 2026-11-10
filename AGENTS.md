@@ -482,8 +482,8 @@ report there and leaves the fixes to the author.
     once, at startup: the parent's command line has to begin with the
     configured agent command, word for word, and that command has to carry
     the flag. `ps` joins argv with spaces, so a flag found anywhere else could
-    be the issue text the core passes as the opening prompt
-    (`agent_launch_command` in `pty.rs`).
+    be text the core adds after the command, such as a workspace name taken
+    from an issue title (`agent_launch_command` in `pty.rs`).
     A send goes over the channel only when that pid is one the workspace's
     SessionStart hook registered and the flag was there. Otherwise it is
     typed, since a session without the flag drops channel events. The first

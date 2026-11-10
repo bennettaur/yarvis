@@ -15,14 +15,17 @@ export function agentCommandLoadsChannel(command: string | null | undefined): bo
 }
 
 /**
- * True when a process's command line (`ps -o args=`) is the agent command
- * starting, and that command loads the channel. Only the command's own words
- * are compared, from the start: whatever the launch adds after them, such as an
- * issue's text as the opening prompt, can't supply the flag. `ps` joins argv
- * with spaces, so a flag inside a quoted prompt would otherwise read as real.
- * The program matches by file name as argv[0], or as argv[1] when an
- * interpreter runs it as a script. An agent command with quoting or env
- * assignments never matches, so its sessions are typed into instead.
+ * True when a process's command line (`ps -o args=`) begins with the agent
+ * command, word for word, and that command loads the channel.
+ * - Only the command's own words count. `ps` joins argv with spaces, so a flag
+ *   inside a later argument, such as the workspace name the core passes to
+ *   `--remote-control` (which can come from an issue title), would otherwise
+ *   read as real.
+ * - The program matches by file name as argv[0], or as argv[1] when another
+ *   program runs it, as an interpreter runs a script. Which program that is
+ *   isn't checked: the pid must also be one the SessionStart hook registered.
+ * - An agent command with quoting or env assignments never matches, so its
+ *   sessions are typed into instead.
  */
 export function launchedFromChannelCommand(processArgs: string, agentCommand: string): boolean {
   if (!agentCommandLoadsChannel(agentCommand)) return false;

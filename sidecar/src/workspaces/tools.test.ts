@@ -26,6 +26,7 @@ import {
   type SendSessionInstructionInput,
   type SendSessionSlashCommandInput,
   type StartClaudeSessionInput,
+  sendToWorkspaceAgent,
 } from "./claudeSession.ts";
 import type { GitRunner } from "./git.ts";
 import {
@@ -2379,6 +2380,28 @@ describe("workspace tools", () => {
     expect(typedSlash).toHaveLength(1);
     expect(words.via).toBe("pty");
     expect(typed.map((t) => t.instruction)).toEqual(["/compact"]);
+  });
+
+  it("sendToWorkspaceAgent types plain text when asked to, even with a channel listening", async () => {
+    const created = await activeWorkspace("Typed on request");
+    await registerAgentTab(created.workspaceId);
+    const { hub, stop } = listeningHub(created.workspaceId);
+    const typed: SendSessionInstructionInput[] = [];
+    const detail = (await getWorkspace(db, created.workspaceId))!;
+
+    const sent = await sendToWorkspaceAgent(db, detail, "keep going", {
+      agentPids: [process.pid],
+      send: async (input) => {
+        typed.push(input);
+      },
+      channel: { hub },
+      typedOnly: true,
+      eventSource: "test",
+    });
+    stop();
+
+    expect(sent).toEqual({ delivered: true, via: "pty" });
+    expect(typed.map((t) => t.instruction)).toEqual(["keep going"]);
   });
 
   it("opensWithCommandPrefix matches what the core refuses as a command", () => {
