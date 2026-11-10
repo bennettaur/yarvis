@@ -181,6 +181,13 @@ stops it. Every file and line in the report opens the diff there.
 - **Code quality** looks for code that goes against the language's or the
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
+- **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
+  agent classifies each change by what it does (a comment edit, a move, an
+  addition, a changed interface or changed logic), how much code depends on
+  what changed, and whether tests prove it. Yarvis scores those the same way
+  every time, and raises the score when the PR bundles many changes. Changes
+  that score high are listed under **Needs attention** with what to check,
+  and every change is listed behind **Every change**.
 - **Simpler approach** rates the PR as a whole, where the complexity check
   looks at its code line by line. One agent reads the description and the
   code, then searches the checkout for something the PR could have reused or

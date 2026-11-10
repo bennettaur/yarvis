@@ -38,6 +38,14 @@ import {
 import { prSourceFor } from "../pr/source.ts";
 import type { CheckItem, PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import {
+  ATTENTION_BAND,
+  CHANGE_KINDS,
+  EVIDENCE,
+  type ImpactBand,
+  REACHES,
+  scoreImpact,
+} from "../verify/impact.ts";
+import {
   boundedList,
   boundedText,
   clip,
@@ -46,6 +54,7 @@ import {
   optionalLine,
   optionalPath,
   plural,
+  positiveInt,
   repoPath,
 } from "./agentContext.ts";
 import {
@@ -138,12 +147,85 @@ const concernSchema = z.object({
   line: optionalLine,
 });
 
-const riskSchema = z.object({
-  level: z.enum(["low", "medium", "high"]),
-  clientImpact: boundedText(240),
-  mitigations: boundedList(boundedText(100), 3),
-  concerns: boundedList(concernSchema, MAX_FINDINGS),
+/** One change, classified for `verify/impact.ts` to score. */
+const changeSchema = z.object({
+  title: boundedText(TITLE_CHARS),
+  kind: z.enum(CHANGE_KINDS),
+  reach: z.enum(REACHES),
+  evidence: z.enum(EVIDENCE),
+  sensitive: z
+    .boolean()
+    .nullish()
+    .transform((v) => v ?? false),
+  count: z
+    .number()
+    .nullish()
+    .transform((n) => Math.min(positiveInt(n) ?? 1, 1000)),
+  check: boundedText(DETAIL_CHARS)
+    .nullish()
+    .transform((c) => c ?? ""),
+  path: optionalPath,
+  line: optionalLine,
 });
+
+type RiskLevel = "low" | "medium" | "high";
+
+const LEVEL_FOR_BAND: Record<ImpactBand, RiskLevel> = {
+  1: "low",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "high",
+};
+
+const LEVEL_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+
+/** Shown for a high change the agent gave nothing to check on, so the reader still has a prompt. */
+export const MISSING_CHECK = "No check given: read this change.";
+
+/**
+ * The agent classifies the changes and `scoreImpact` scores them. The level
+ * is the stricter of the band's and the agent's own, which also covers what
+ * the band can't see: a failing CI check, or a group whose agent failed and
+ * listed nothing. Unlike `/verify-pr`'s report, nothing here checks a
+ * `proven` claim against coverage, so the band is for the reader and must not
+ * decide a merge as it stands.
+ */
+const riskSchema = z
+  .object({
+    level: z.enum(["low", "medium", "high"]),
+    clientImpact: boundedText(240),
+    mitigations: boundedList(boundedText(100), 3),
+    concerns: boundedList(concernSchema, MAX_FINDINGS),
+    // Not `boundedList`: every change counts toward the load and could be the
+    // highest, so the cut to what is shown comes after scoring.
+    changes: z
+      .array(changeSchema)
+      .nullish()
+      .transform((changes) => changes ?? [])
+      .meta({
+        description: "Every group's changes, all of them.",
+      }),
+  })
+  .transform(({ level, changes, ...risk }) => {
+    const impact = scoreImpact(changes);
+    if (!impact) return { ...risk, level, impact: undefined };
+    const bandLevel = LEVEL_FOR_BAND[impact.band];
+    // Attention isn't stored: it is the changes at or above a band, which the view filters for.
+    const { changes: allScored, attention: _, ...score } = impact;
+    return {
+      ...risk,
+      level: LEVEL_RANK[level] > LEVEL_RANK[bandLevel] ? level : bandLevel,
+      impact: {
+        ...score,
+        changes: allScored.map((change) =>
+          change.band >= ATTENTION_BAND && !change.check
+            ? { ...change, check: MISSING_CHECK }
+            : change,
+        ),
+      },
+    };
+  });
 
 const mustReadFlagSchema = z.object({
   note: boundedText(160),
@@ -480,15 +562,20 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       };
     }
     const concerns = risk?.concerns.map((c) => withRepoPath(c, limits.checkoutDir)) ?? [];
+    const impact = risk?.impact && {
+      ...risk.impact,
+      changes: risk.impact.changes.map((c) => withRepoPath(c, limits.checkoutDir)),
+    };
     const deduped = dedupeChecks(checks, audit);
     const cited = [
       ...concerns,
+      ...(impact?.changes.filter((c) => c.band >= ATTENTION_BAND) ?? []),
       ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
     ];
     return {
       summary,
       mustRead: dropCoveredFlags(mustRead, cited, audit),
-      ...(risk && { risk: { ...risk, concerns } }),
+      ...(risk && { risk: { ...risk, concerns, impact } }),
       ...deduped,
       ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
       ...(flow && { flow }),
