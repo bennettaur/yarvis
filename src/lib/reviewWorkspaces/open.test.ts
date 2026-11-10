@@ -87,22 +87,24 @@ describe("addStackLayers", () => {
         return {} as ReviewWorkspacePr;
       },
     });
-    expect(await addStackLayers("ws", [layer(1), layer(2), layer(3)])).toEqual([]);
+    await addStackLayers("ws", [layer(1), layer(2), layer(3)]);
     expect(order).toEqual(["r#1", "r#2", "r#3"]);
   });
 
-  it("keeps going past a layer that fails and names it", async () => {
+  it("keeps going past layers that fail, then names each one", async () => {
     const added: string[] = [];
     stubReviewApi({
       addReviewPr: async (_ws, ref) => {
-        if (shortPrName(ref) === "r#2") throw new Error("already in the workspace");
-        added.push(shortPrName(ref));
+        const name = shortPrName(ref);
+        if (name === "r#2") throw new Error("already in the workspace");
+        if (name === "r#3") throw new Error("not found");
+        added.push(name);
         return {} as ReviewWorkspacePr;
       },
     });
-    expect(await addStackLayers("ws", [layer(1), layer(2), layer(3)])).toEqual([
-      "r#2: already in the workspace",
-    ]);
-    expect(added).toEqual(["r#1", "r#3"]);
+    await expect(addStackLayers("ws", [layer(1), layer(2), layer(3), layer(4)])).rejects.toThrow(
+      "Couldn't add r#2: already in the workspace; r#3: not found",
+    );
+    expect(added).toEqual(["r#1", "r#4"]);
   });
 });

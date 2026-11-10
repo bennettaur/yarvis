@@ -30,15 +30,16 @@ From the PRs tab, the PR's header has **Open in review workspace**, which does
 the same and switches to the Review tab. Its **▾** lists your review
 workspaces, to add the PR to one of them instead.
 
-When a GitHub PR is part of a stack, its nav group gets a **Stack** section
-listing the other open layers the workspace doesn't hold yet, bottom first,
-each with a checkbox. Nothing from the stack is added until you ask. Tick
-the ones you want and press **Add selected**, or press **Add all**. A layer
-someone has already approved is marked **Approved** and starts unticked, so the
-default skips work that has already been reviewed. Draft layers are marked
-**Draft**. When the workspace holds several layers of one stack, the section
-shows under the lowest of them. Merged layers and branches
-with no PR aren't listed. The stack is found the same way as the PRs tab's
+When a GitHub PR in the workspace is part of a stack, the top of the nav gets a
+**Stack** section listing the other open layers the workspace doesn't hold yet,
+bottom first, each with a checkbox. There is one section per stack, however
+many of its layers the workspace holds. Nothing from the stack is added until
+you ask. Tick the ones you want and press **Add selected**, or press **Add
+all**. A layer someone has already approved is marked **Approved** and starts
+unticked, so the default skips work that has already been reviewed. Draft
+layers are marked **Draft**. Merged layers and branches with no PR aren't
+listed. If one layer can't be added, the rest still are, and the error names
+the ones that failed. The stack is found the same way as the PRs tab's
 [Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be
 read, the section doesn't show.
 

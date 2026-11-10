@@ -120,20 +120,16 @@ function PrGroup({
   color,
   active,
   progress,
-  heldRefKeys,
   openTab,
   onSetup,
-  onAddStackLayers,
 }: {
   workspaceId: string;
   pr: ReviewWorkspacePr;
   color: PrColor;
   active: TabSpec | null;
   progress: string | null;
-  heldRefKeys: ReadonlySet<string>;
   openTab: (spec: TabSpec) => void;
   onSetup: () => void;
-  onAddStackLayers: (refs: PrRef[]) => Promise<void>;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const { data: detail } = usePrDetail(pr.ref);
@@ -207,7 +203,6 @@ function PrGroup({
               Setup hasn't run · review the script…
             </button>
           )}
-          <StackLayers prRef={pr.ref} heldRefKeys={heldRefKeys} onAdd={onAddStackLayers} />
           <Section title="Changed files" count={changed.data?.files.length} defaultOpen>
             <ChangedFilesTree
               workspaceId={workspaceId}
@@ -267,13 +262,30 @@ export default function ReviewNav({
   /** Adds PRs from a stack the reviewer picked, in the order given. */
   onAddStackLayers: (refs: PrRef[]) => Promise<void>;
 }) {
+  const groups = navGroups(prs);
   const heldRefKeys = new Set(prs.map((pr) => pr.refKey));
+  // Held here rather than per picker, so no picker can start a second add.
+  const [addingStack, setAddingStack] = useState(false);
+  const addStackLayers = async (refs: PrRef[]) => {
+    setAddingStack(true);
+    try {
+      await onAddStackLayers(refs);
+    } finally {
+      setAddingStack(false);
+    }
+  };
   return (
     <nav className="h-full overflow-y-auto bg-zinc-950" aria-label="Pull requests">
       {prs.length === 0 && (
         <p className="p-3 text-xs text-zinc-500">Paste a PR link above to start reviewing.</p>
       )}
-      {navGroups(prs).map(({ pr, color }) => (
+      <StackLayers
+        refs={groups.map(({ pr }) => pr.ref)}
+        heldRefKeys={heldRefKeys}
+        adding={addingStack}
+        onAdd={addStackLayers}
+      />
+      {groups.map(({ pr, color }) => (
         <PrGroup
           key={pr.id}
           workspaceId={workspaceId}
@@ -281,10 +293,8 @@ export default function ReviewNav({
           color={color}
           active={active}
           progress={progress.get(pr.id) ?? null}
-          heldRefKeys={heldRefKeys}
           openTab={openTab}
           onSetup={() => onSetup(pr)}
-          onAddStackLayers={onAddStackLayers}
         />
       ))}
     </nav>

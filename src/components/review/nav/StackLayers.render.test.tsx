@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { prStackKey } from "../../../lib/pr/cache";
 import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
-import { primeCache } from "../../../lib/resourceCache";
-import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
-import StackLayers, { addableLayers, offersStack, pickedByDefault } from "./StackLayers";
+import { mountForInteraction, waitFor } from "../../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../../test/sidecarApi";
+import StackLayers, { addableLayers, notInStack, pickedByDefault } from "./StackLayers";
 
 const ref = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
 
@@ -36,6 +35,24 @@ const stackOf = (entries: StackEntry[]): PrStack => ({
 
 let unmount = () => {};
 afterEach(() => unmount());
+afterAll(resetSidecarApi);
+
+/**
+ * Answers the stack lookups from `stacks`, keyed by PR number, and records
+ * which numbers were asked for. Each test uses its own numbers, since the
+ * answers are cached per PR.
+ */
+function serveStacks(stacks: Record<number, PrStack>): number[] {
+  const asked: number[] = [];
+  stubSidecarApi({
+    sidecarFetch: async (path: string) => {
+      const number = Number(new URL(path, "http://x").searchParams.get("number"));
+      asked.push(number);
+      return Response.json({ stack: stacks[number] ?? null });
+    },
+  });
+  return asked;
+}
 
 const button = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
@@ -62,17 +79,11 @@ describe("addableLayers", () => {
   });
 });
 
-describe("offersStack", () => {
-  const stack = stackOf([entry(1), entry(2), entry(3), entry(4)]);
-  const held = new Set(["gh:o/r/2", "gh:o/r/4"]);
-
-  it("offers the stack from the lowest held layer only", () => {
-    expect(offersStack(stack, ref(2), held)).toBe(true);
-    expect(offersStack(stack, ref(4), held)).toBe(false);
-  });
-
-  it("offers nothing without a stack", () => {
-    expect(offersStack(null, ref(2), held)).toBe(false);
+describe("notInStack", () => {
+  it("drops the PRs a stack lists, keeping the order of the rest", () => {
+    const stack = stackOf([entry(1), entry(2), entry(0, { state: "none" })]);
+    expect(notInStack([ref(2), ref(9), ref(1), ref(8)], stack)).toEqual([ref(9), ref(8)]);
+    expect(notInStack([ref(2)], null)).toEqual([ref(2)]);
   });
 });
 
@@ -85,102 +96,83 @@ describe("pickedByDefault", () => {
 });
 
 describe("StackLayers", () => {
-  it("shows nothing when every other layer is already held", async () => {
-    primeCache(prStackKey(ref(10)), stackOf([entry(10, { isCurrent: true }), entry(11)]));
-    const html = await renderToHtml(
-      createElement(StackLayers, {
-        prRef: ref(10),
-        heldRefKeys: new Set(["gh:o/r/10", "gh:o/r/11"]),
-        onAdd: async () => {},
-      }),
+  const mount = async (
+    refs: PrRef[],
+    held: string[],
+    { adding = false, onAdd = async (_refs: PrRef[]) => {} } = {},
+  ) => {
+    const mounted = await mountForInteraction(
+      createElement(StackLayers, { refs, heldRefKeys: new Set(held), adding, onAdd }),
     );
-    expect(textOf(html)).toBe("");
+    unmount = mounted.unmount;
+    return mounted.host;
+  };
+  const pickers = (host: HTMLElement) => host.querySelectorAll('section[aria-label="Stack"]');
+
+  it("looks a stack up once, however many of its layers the workspace holds", async () => {
+    const stack = stackOf([entry(10), entry(11), entry(12), entry(13)]);
+    const asked = serveStacks({ 11: stack, 13: stack, 20: stackOf([entry(20), entry(21)]) });
+    const host = await mount([ref(11), ref(13), ref(20)], ["gh:o/r/11", "gh:o/r/13", "gh:o/r/20"]);
+    await waitFor(() => pickers(host).length === 2, "a picker per stack");
+    expect(asked).toEqual([11, 20]);
+    expect(pickers(host)[0]!.textContent).toContain("2 not added");
+    expect(pickers(host)[1]!.textContent).toContain("1 not added");
+  });
+
+  it("shows nothing when every other layer is already held", async () => {
+    serveStacks({ 30: stackOf([entry(30), entry(31)]) });
+    const host = await mount([ref(30), ref(31)], ["gh:o/r/30", "gh:o/r/31"]);
+    expect(pickers(host).length).toBe(0);
   });
 
   it("adds only the picked layers, skipping approved ones unless ticked", async () => {
-    primeCache(
-      prStackKey(ref(20)),
-      stackOf([
-        entry(19, { reviewDecision: "approved" }),
-        entry(20, { isCurrent: true }),
-        entry(21),
-      ]),
-    );
+    serveStacks({
+      40: stackOf([entry(39, { reviewDecision: "approved" }), entry(40), entry(41)]),
+    });
     const added: PrRef[][] = [];
-    const mounted = await mountForInteraction(
-      createElement(StackLayers, {
-        prRef: ref(20),
-        heldRefKeys: new Set(["gh:o/r/20"]),
-        onAdd: async (refs) => {
-          added.push(refs);
-        },
-      }),
-    );
-    unmount = mounted.unmount;
-    const { host } = mounted;
+    const host = await mount([ref(40)], ["gh:o/r/40"], {
+      onAdd: async (refs) => {
+        added.push(refs);
+      },
+    });
+    await waitFor(() => pickers(host).length === 1, "the picker");
     expect(host.textContent).toContain("Approved");
+
     expect(button(host, "Add selected").textContent).toBe("Add selected (1)");
     button(host, "Add selected").click();
     await waitFor(() => added.length === 1, "the first add");
-    expect(added[0]).toEqual([ref(21)]);
+    expect(added[0]).toEqual([ref(41)]);
 
-    await waitFor(() => !button(host, "Add all").disabled, "the first add to finish");
     button(host, "Add all").click();
     await waitFor(() => added.length === 2, "the add-all");
-    expect(added[1]).toEqual([ref(19), ref(21)]);
+    expect(added[1]).toEqual([ref(39), ref(41)]);
   });
 
   it("lets the reviewer tick an approved layer in", async () => {
-    primeCache(
-      prStackKey(ref(30)),
-      stackOf([entry(29, { reviewDecision: "approved" }), entry(30, { isCurrent: true })]),
-    );
+    serveStacks({ 50: stackOf([entry(49, { reviewDecision: "approved" }), entry(50)]) });
     const added: PrRef[][] = [];
-    const mounted = await mountForInteraction(
-      createElement(StackLayers, {
-        prRef: ref(30),
-        heldRefKeys: new Set(["gh:o/r/30"]),
-        onAdd: async (refs) => {
-          added.push(refs);
-        },
-      }),
-    );
-    unmount = mounted.unmount;
-    const { host } = mounted;
+    const host = await mount([ref(50)], ["gh:o/r/50"], {
+      onAdd: async (refs) => {
+        added.push(refs);
+      },
+    });
+    await waitFor(() => pickers(host).length === 1, "the picker");
     host.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
-    await waitFor(() => host.textContent?.includes("Add selected (1)") ?? false, "the tick");
-    [...host.querySelectorAll("button")]
-      .find((b) => b.textContent?.startsWith("Add selected"))!
-      .click();
+    await waitFor(
+      () => button(host, "Add selected").textContent === "Add selected (1)",
+      "the tick",
+    );
+    button(host, "Add selected").click();
     await waitFor(() => added.length === 1, "the add");
-    expect(added[0]).toEqual([ref(29)]);
+    expect(added[0]).toEqual([ref(49)]);
   });
 
-  it("holds the controls while an add is running", async () => {
-    primeCache(prStackKey(ref(40)), stackOf([entry(40, { isCurrent: true }), entry(41)]));
-    let release = () => {};
-    let calls = 0;
-    const mounted = await mountForInteraction(
-      createElement(StackLayers, {
-        prRef: ref(40),
-        heldRefKeys: new Set(["gh:o/r/40"]),
-        onAdd: () => {
-          calls++;
-          return new Promise<void>((resolve) => {
-            release = resolve;
-          });
-        },
-      }),
-    );
-    unmount = mounted.unmount;
-    const { host } = mounted;
-    button(host, "Add selected").click();
-    await waitFor(() => button(host, "Add all").disabled, "the controls to lock");
+  it("locks every control while an add is running", async () => {
+    serveStacks({ 60: stackOf([entry(60), entry(61)]) });
+    const host = await mount([ref(60)], ["gh:o/r/60"], { adding: true });
+    await waitFor(() => pickers(host).length === 1, "the picker");
     expect(button(host, "Add selected").disabled).toBe(true);
+    expect(button(host, "Add all").disabled).toBe(true);
     expect(host.querySelector<HTMLInputElement>("input[type=checkbox]")!.disabled).toBe(true);
-    button(host, "Add all").click();
-    expect(calls).toBe(1);
-    release();
-    await waitFor(() => !button(host, "Add all").disabled, "the controls to unlock");
   });
 });

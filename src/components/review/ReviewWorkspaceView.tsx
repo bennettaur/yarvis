@@ -321,11 +321,7 @@ export default function ReviewWorkspaceView({
       open({ kind: "description", prId: pr.id });
     });
 
-  const addLayers = (refs: PrRef[]) =>
-    attempt(async () => {
-      const failed = await addStackLayers(workspaceId, refs);
-      if (failed.length) throw new Error(`Couldn't add ${failed.join("; ")}`);
-    });
+  const addLayers = (refs: PrRef[]) => attempt(() => addStackLayers(workspaceId, refs));
 
   const archive = async () => {
     await archiveReviewWorkspace(workspaceId);
