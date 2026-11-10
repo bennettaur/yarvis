@@ -95,7 +95,7 @@ import { ensureCommit, pinReviewedCommit, unpinReviewedCommits } from "./sinceRe
 export class ReviewWorkspaceError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 404 | 409 | 502 | 503,
   ) {
     super(message);
     this.name = "ReviewWorkspaceError";

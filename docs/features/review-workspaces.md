@@ -315,6 +315,31 @@ from the PR, its tests or a model is shown as plain text. A path is a link to
 the diff only when the PR changes that file. A pass made for an older head
 says so, with **Re-run**.
 
+### Ask Claude
+
+**Ask Claude** in the PR bar opens a tab with Claude Code running in the PR's
+checkout, for asking questions about the change: what a function does, where
+something is called from, why a test might fail. It starts once the checkout
+is ready, and keeps running when you switch tabs or close this one, so
+reopening it picks up the same conversation. **Restart** ends it and starts a
+fresh one.
+
+The checkout is code the PR's author wrote, so the session is locked down the
+same way the verification report is:
+
+- It reads no settings files: not the checkout's, whose hooks Claude Code
+  would run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules
+  and MCP servers don't load in this session.
+- It can read the checkout but not edit it.
+- Commands run in Claude Code's sandbox with no network, and can't read your
+  SSH, cloud or Yarvis credentials. Every tool call asks you first.
+- Its instructions tell it that what it reads in the checkout is material to
+  explain, not instructions to follow.
+
+It needs the agent command under **Settings → Repositories → Agent** to run
+Claude Code (see [The agent command](workspaces.md#the-agent-command)). That
+setting's own flags (such as `--permission-mode auto`) are left out here.
+
 ### Since last review
 
 For a re-review: what the author did since you last looked, without wading
@@ -481,8 +506,9 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review** and **Verification**, which open those tabs (see
-  [Guided review](#guided-review) and [Verification report](#verification-report)).
+- **Guided review**, **Verification** and **Ask Claude**, which open those
+  tabs (see [Guided review](#guided-review),
+  [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
   last reviewed (see [Since last review](#since-last-review)),

@@ -1471,3 +1471,71 @@ describe("patches for an agent run", () => {
     expect(facts.bulk.get("dist/evil.js")?.skim).toBeNull();
   });
 });
+
+describe("claude session", () => {
+  let spawned: { prId: string; cwd: string; settingsPath: string }[];
+  let hasCore: boolean;
+  let tmpRoot: string;
+  let sessionApp: Hono;
+
+  beforeEach(() => {
+    spawned = [];
+    hasCore = true;
+    tmpRoot = mkdtempSync(join(tmpdir(), "yarvis-review-claude-test-"));
+    sessionApp = new Hono().route(
+      "/rw",
+      createReviewWorkspaceRoutes(config, {
+        deps,
+        claudeSession: {
+          spawn: async (input) => {
+            spawned.push(input);
+          },
+          hasCore: () => hasCore,
+          tmpRoot,
+        },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  const start = (wsId: string, prId: string) =>
+    sessionApp.request(`/rw/${wsId}/prs/${prId}/claude-session`, { method: "POST" });
+
+  it("starts Claude Code in the PR's checkout with the locked-down settings, read-only", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    const res = await start(wsId, prId);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sessionId: `review-claude:${prId}` });
+
+    expect(spawned).toHaveLength(1);
+    const [spawn] = spawned as [(typeof spawned)[number]];
+    expect(spawn).toMatchObject({ prId, cwd: worktreePath });
+    expect(spawn.settingsPath.startsWith(tmpRoot)).toBe(true);
+    const settings = JSON.parse(readFileSync(spawn.settingsPath, "utf8"));
+    expect(settings.disableAllHooks).toBe(true);
+    expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true });
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining(["Write", "Edit", "NotebookEdit", "WebFetch"]),
+    );
+  });
+
+  it("refuses until the checkout is ready", async () => {
+    checkoutGate = gate();
+    const { wsId, prId } = await startWorkspace();
+    await until(async () => (await prRow(prId)).status === "ready", "ready");
+    expect((await start(wsId, prId)).status).toBe(409);
+    expect(spawned).toHaveLength(0);
+    checkoutGate.open();
+    await progress(wsId, prId);
+  });
+
+  it("says so when there is no core to start a session in", async () => {
+    hasCore = false;
+    const { wsId, prId } = await readyWorkspace();
+    expect((await start(wsId, prId)).status).toBe(503);
+    expect(spawned).toHaveLength(0);
+  });
+});

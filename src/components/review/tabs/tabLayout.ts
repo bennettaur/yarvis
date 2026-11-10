@@ -45,6 +45,7 @@ export const STATIC_ORDER: StaticTabKind[] = [
   "guide",
   "verification",
   "mutation",
+  "claude",
 ];
 
 const DYNAMIC_KINDS: ReadonlySet<string> = new Set<DynamicTabKind>([

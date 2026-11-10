@@ -8,6 +8,11 @@ import { clientError, describeError } from "../llm/errors.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
+import {
+  defaultReviewClaudeDeps,
+  type ReviewClaudeDeps,
+  startReviewClaudeSession,
+} from "./claudeSession.ts";
 import { isValidSymbol } from "./definitions.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
@@ -128,6 +133,8 @@ export interface ReviewWorkspaceRouteOptions {
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
+  /** Replaces the core control channel the PR's Claude Code session starts through, for tests. */
+  claudeSession?: ReviewClaudeDeps;
 }
 
 /**
@@ -464,6 +471,24 @@ export function createReviewWorkspaceRoutes(
           c.req.param("prId"),
           parsed.data,
           deps(),
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Starts Claude Code in the PR's checkout for the user to ask questions in,
+  // or leaves the session already running. Answers with its PTY id.
+  router.post("/:id/prs/:prId/claude-session", async (c) => {
+    try {
+      return c.json(
+        await startReviewClaudeSession(
+          db(),
+          config,
+          c.req.param("id"),
+          c.req.param("prId"),
+          options.claudeSession ?? defaultReviewClaudeDeps,
         ),
       );
     } catch (e) {

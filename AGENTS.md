@@ -21,7 +21,7 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `claude.slash`,
+  method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`, `claude.send`, `claude.slash`,
   `mcp.saveOAuth`, `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
@@ -744,6 +744,15 @@ report there and leaves the fixes to the author.
   run the PR's code and its setup runs unsandboxed, so this is defence in
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The review workspace's **Ask Claude** tab is the interactive counterpart:
+  a PTY session in the PR's checkout that the user drives, started through
+  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It reads the
+  same `lockedDownSettings` plus a deny on the edit tools, from a file the
+  sidecar writes, and the core adds `--setting-sources ''`,
+  `--strict-mcp-config`, `--permission-mode default` and a guardrail prompt to
+  the configured program with its own flags dropped. Its PTY id
+  (`review-claude:`) is not attention addressable, so it gets no sidecar
+  tokens.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

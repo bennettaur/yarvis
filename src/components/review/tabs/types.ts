@@ -10,7 +10,8 @@ export type StaticTabKind =
   | "since-review"
   | "guide"
   | "verification"
-  | "mutation";
+  | "mutation"
+  | "claude";
 
 export type TabSpec =
   | { kind: StaticTabKind; prId: string }

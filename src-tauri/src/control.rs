@@ -1,7 +1,8 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
 //! instruction or an allowed slash command into a Claude Code session in a
-//! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
+//! workspace PTY, starting a locked-down one in a review PR's checkout
+//! (`claude.spawnReview`), writing an MCP server's OAuth credentials or a signed-in
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
 //! (`alarm.fire`) or stopping one (`alarm.release`).
 //!
@@ -52,7 +53,7 @@ mod unix_impl {
     use super::ControlSocketPath;
     use crate::pty::{
         kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
-        PtyState,
+        spawn_review_claude_session, PtyState,
     };
 
     /// Cap on a single request line, bounding what one message can buffer.
@@ -94,6 +95,15 @@ mod unix_impl {
         /// sidecar relaunches a workspace's agent after the app restarted.
         #[serde(default)]
         resume: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct SpawnReviewParams {
+        #[serde(rename = "prId")]
+        pr_id: String,
+        cwd: String,
+        #[serde(rename = "settingsPath")]
+        settings_path: String,
     }
 
     #[derive(Deserialize)]
@@ -292,6 +302,12 @@ mod unix_impl {
                     p.resume.as_deref(),
                     p.instruction.as_deref(),
                 )
+            }
+            "claude.spawnReview" => {
+                let p: SpawnReviewParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.pr_id).map_err(|_| "invalid prId".to_string())?;
+                spawn_review_claude_session(app, state.inner(), &p.pr_id, p.cwd, &p.settings_path)
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;

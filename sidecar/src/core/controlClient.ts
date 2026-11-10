@@ -141,6 +141,19 @@ export async function spawnClaudeSession(input: {
   });
 }
 
+/**
+ * Asks the core to start Claude Code in a review PR's checkout, keyed
+ * `review-claude:<prId>`, with the settings file at `settingsPath` as its only
+ * settings. The core builds the rest of the launch line itself.
+ */
+export async function spawnReviewClaudeSession(input: {
+  prId: string;
+  cwd: string;
+  settingsPath: string;
+}): Promise<void> {
+  await rpc("claude.spawnReview", input);
+}
+
 /** Asks the core to kill a workspace's Claude session, if one is running. */
 export async function killClaudeSession(workspaceId: string): Promise<void> {
   await rpc("claude.kill", { workspaceId });

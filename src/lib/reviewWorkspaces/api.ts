@@ -191,6 +191,18 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
 }
 
 /**
+ * Starts Claude Code in the PR's checkout, or finds the session already
+ * running. Answers with the PTY id to attach a terminal to.
+ */
+export function startReviewClaudeSession(workspaceId: string, prId: string) {
+  return json<{ sessionId: string }>(
+    `${prPath(workspaceId, prId)}/claude-session`,
+    "start Claude Code",
+    send("POST"),
+  );
+}
+
+/**
  * Replays the PR's latest clone/refresh/setup run and yields the rest of it.
  * Ends at once when there is no recent run to show; aborting `signal` closes
  * the stream.
