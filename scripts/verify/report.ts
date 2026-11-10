@@ -12,6 +12,17 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import {
+  ATTENTION_BAND,
+  BAND_LABELS,
+  CHANGE_KINDS,
+  changeBand,
+  describeCounts,
+  EVIDENCE,
+  type Impact,
+  REACHES,
+  scoreImpact,
+} from "../../sidecar/src/verify/impact.ts";
 import type { Facts } from "./collect.ts";
 import { ghApi, ghApiPages, run } from "./exec.ts";
 import { REPORT_NAMESPACE, signPayload } from "./signing.ts";
@@ -60,6 +71,30 @@ const VERDICT_STRICTNESS: Verdict[] = ["auto", "visual", "agent", "human"];
 
 const Dimension = z.object({ status: Status, note: z.string().max(140) });
 
+/**
+ * One independent change in the PR, classified for `impact.ts` to score. An
+ * interface change and the callers it updates are one change; so is a rename
+ * across many files.
+ */
+const Change = z
+  .object({
+    title: z.string().min(1).max(100),
+    /** `path:line` of the changed thing, or just the path. */
+    location: z.string().min(1).max(120),
+    kind: z.enum(CHANGE_KINDS),
+    reach: z.enum(REACHES),
+    evidence: z.enum(EVIDENCE),
+    sensitive: z.boolean().default(false),
+    /** Like changes folded into this entry, so a PR of many small ones stays a short list. */
+    count: z.number().int().min(1).max(1000).default(1),
+    /** What a reviewer should check. Required on a change scored high enough to list. */
+    check: z.string().max(200).default(""),
+  })
+  .refine((change) => change.check !== "" || changeBand(change) < ATTENTION_BAND, {
+    message: "a change scored high or very high must say what to check",
+    path: ["check"],
+  });
+
 export const Review = z.object({
   /** What the PR is meant to achieve, in one line, taken from its description or issue. */
   goal: z.string().min(1).max(200),
@@ -75,6 +110,8 @@ export const Review = z.object({
     tier: z.enum(["low", "standard", "high"]),
     reasons: z.array(z.string().max(140)).min(1).max(4),
   }),
+  /** Every independent change, for the impact score. */
+  changes: z.array(Change).min(1).max(30),
   /**
    * The skill's rating of each file the path floor sent for assessment
    * (`facts.tier.assess`). One left out counts as high.
@@ -163,6 +200,8 @@ const ReportData = z.object({
   needsVisual: z.boolean().optional(),
   /** The model that reviewed, so calibration can compare verdicts across models. */
   model: z.string().optional(),
+  /** The impact score's band, 1 to 5, so calibration can check it against escapes. */
+  impactBand: z.number().int().min(1).max(5).optional(),
 });
 export type ReportData = z.infer<typeof ReportData>;
 
@@ -232,6 +271,9 @@ export function finalVerdict(review: Review, facts: Facts): { verdict: Verdict; 
   };
 
   if (riskTier(review, facts) === "high") requireAtLeast("human", "high-risk change");
+  const impact = scoreImpact(review.changes);
+  if (impact && impact.band >= 5) requireAtLeast("human", "very high impact");
+  if (impact && impact.band >= ATTENTION_BAND) requireAtLeast("agent", "high-impact changes");
   if (review.findings.some((f) => f.severity === "blocker")) {
     requireAtLeast("human", "blocking finding");
   }
@@ -324,6 +366,38 @@ function mutationNote(mutation: Facts["mutation"]): string {
   return `${percent(mutation.score)} of ${total} mutants on changed lines caught${skipped}`;
 }
 
+const EVIDENCE_TEXT: Record<(typeof EVIDENCE)[number], string> = {
+  proven: "proven by tests",
+  partial: "partly tested",
+  unproven: "untested",
+};
+
+type ReviewChange = Review["changes"][number];
+
+/** The change's reach, with its file's measured importers when `collect` counted them. */
+function reachText(change: ReviewChange, facts: Facts): string {
+  const path = change.location.replace(/:\d+(-\d+)?$/, "");
+  const measured = facts.reach?.find((file) => file.path === path);
+  if (!measured) return change.reach;
+  return `${change.reach}; its file has ${measured.importers} importers in ${measured.otherAreas} other areas`;
+}
+
+function describeChange(change: ReviewChange, facts: Facts): string {
+  const times = change.count > 1 ? ` (${change.count} like it)` : "";
+  const sensitive = change.sensitive ? ", sensitive" : "";
+  return `${change.kind}, ${reachText(change, facts)}, ${EVIDENCE_TEXT[change.evidence]}${sensitive}${times}`;
+}
+
+function impactLine(impact: Impact<ReviewChange>): string {
+  const parts = [`${BAND_LABELS[impact.band]} (${impact.band}/5)`, describeCounts(impact.counts)];
+  if (impact.raisedByVolume > 0) {
+    parts.push(
+      `raised from ${BAND_LABELS[impact.changeBand]} by the number of changes, so splitting the PR would lower it`,
+    );
+  }
+  return parts.join(" · ");
+}
+
 function bulletList(items: string[], limit = 15): string {
   const shown = items.slice(0, limit).map((item) => `- ${code(item)}`);
   if (items.length > limit) shown.push(`- …and ${items.length - limit} more`);
@@ -348,6 +422,7 @@ export function renderReport(
   now: Date = new Date(),
 ): { body: string; data: ReportData; payload: string } {
   const { verdict, why } = finalVerdict(review, facts);
+  const impact = scoreImpact(review.changes);
   const coverage = coverageStatus(facts.coverage);
   const headlineFindings = review.findings.filter((f) => f.severity !== "minor");
   const minorFindings = review.findings.filter((f) => f.severity === "minor");
@@ -382,6 +457,7 @@ export function renderReport(
     "",
     `**Risk:** ${tier} (${inline(riskReasons)}) · **Head:** \`${facts.head.slice(0, 7)}\``,
     "",
+    ...(impact ? [`**Impact:** ${inline(impactLine(impact))}`, ""] : []),
     `**Goal:** ${inline(review.goal)}`,
     "",
     inline(review.summary),
@@ -406,6 +482,15 @@ export function renderReport(
     }
   }
 
+  if (impact && impact.attention.length > 0) {
+    lines.push("", "### Needs attention", "");
+    for (const change of impact.attention) {
+      lines.push(
+        `- **${inline(change.title)}** ${code(change.location)}: ${inline(describeChange(change, facts))}. Check: ${inline(change.check)}`,
+      );
+    }
+  }
+
   if (headlineFindings.length > 0) {
     lines.push("", "### Findings", "");
     for (const f of headlineFindings) {
@@ -423,6 +508,17 @@ export function renderReport(
   }
 
   const details: string[] = [];
+  if (impact) {
+    details.push(
+      "**Every change, by impact**",
+      "",
+      ...impact.changes.map(
+        (change) =>
+          `- ${change.band}/5 ${inline(change.title)} ${code(change.location)}: ${inline(describeChange(change, facts))}`,
+      ),
+      "",
+    );
+  }
   if (minorFindings.length > 0) {
     details.push(
       "**Minor findings**",
@@ -507,6 +603,7 @@ export function renderReport(
     ],
     needsVisual: verdict === "visual" || isFlagged(review.dimensions.ui.status),
     model: review.model,
+    ...(impact && { impactBand: impact.band }),
   };
 
   // Base64 so nothing in the data can close the HTML comment early.

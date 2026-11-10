@@ -15,6 +15,7 @@ import {
   emptyAudit,
   estimateReadBytes,
   estimateRunCostUsd,
+  MAX_CHANGES_SHOWN,
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   MAX_MUST_READ_FLAGS,
@@ -171,6 +172,67 @@ describe("the report schema", () => {
     expect(parsed.risk?.clientImpact.endsWith("…")).toBe(true);
     expect(parsed.risk?.mitigations).toEqual(["a", "b", "c"]);
     expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
+  });
+
+  describe("risk's impact", () => {
+    const change = (extra: Record<string, unknown> = {}) => ({
+      title: "Retry failed uploads",
+      kind: "logic",
+      reach: "core",
+      evidence: "partial",
+      check: "A retry can't upload twice",
+      path: "src/a.ts",
+      line: 4,
+      ...extra,
+    });
+
+    it("scores the changes and sets the level from the band", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change(), change({ kind: "passive" })] } }),
+      );
+      expect(parsed.risk?.level).toBe("high");
+      expect(parsed.risk?.impact).toMatchObject({ band: 4, load: 4, raisedByVolume: 0 });
+      expect(parsed.risk?.impact?.changes.map((c) => [c.kind, c.band])).toEqual([
+        ["logic", 4],
+        ["passive", 1],
+      ]);
+    });
+
+    it("keeps the agent's level when it listed no changes", () => {
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes: null } }));
+      expect(parsed.risk?.level).toBe("low");
+      expect(parsed.risk?.impact).toBeUndefined();
+    });
+
+    it("counts every change toward the load but keeps only the highest to show", () => {
+      const changes = [
+        change(),
+        ...Array.from({ length: 40 }, () =>
+          change({ kind: "addition", reach: "local", evidence: "partial" }),
+        ),
+      ];
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes } }));
+      expect(parsed.risk?.impact?.load).toBe(44);
+      expect(parsed.risk?.impact?.band).toBe(5);
+      expect(parsed.risk?.impact?.changes).toHaveLength(MAX_CHANGES_SHOWN);
+      expect(parsed.risk?.impact?.changes[0]?.band).toBe(4);
+    });
+
+    it("defaults a missing count, sensitivity and check", () => {
+      const parsed = schema.parse(
+        report({
+          risk: {
+            ...report().risk,
+            changes: [{ title: "t", kind: "passive", reach: "leaf", evidence: "proven" }],
+          },
+        }),
+      );
+      expect(parsed.risk?.impact?.changes[0]).toMatchObject({
+        count: 1,
+        sensitive: false,
+        check: "",
+      });
+    });
   });
 
   it("refuses values outside its enums and missing sections", () => {

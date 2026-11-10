@@ -184,6 +184,18 @@ Low- and standard-risk PRs can merge on a report alone; high-risk ones need
 
 Tests, docs and lockfiles don't count toward the line limits.
 
+Separately from the tier, the report scores the PR's **impact**: how likely
+it is to break something, and how far that would spread. The skill lists
+each independent change with its kind (passive, reorganization, addition,
+removal, interface or logic), its reach (leaf, local, shared or core, helped
+by the importer counts `collect` takes from the import graph), and whether
+tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
+to 5 with a fixed table, then raises it when the PR bundles many changes. A
+band of 4 makes the verdict at least `agent`, and the report lists those
+changes under "Needs attention" with what to check. A band of 5 makes it
+`human`. The table and thresholds are first guesses, and the band is signed
+into the report data so `verify:calibrate` can show whether they hold up.
+
 The workflow and the gate always run as they are on the default branch, so a
 change to either takes effect once it merges. They need these repository
 settings:

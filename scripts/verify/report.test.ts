@@ -15,6 +15,22 @@ const TARGET = { repo: "bennettaur/yarvis", pr: 7 };
 
 const pass = { status: "pass" as const, note: "fine" };
 
+type Change = Review["changes"][number];
+
+function change(overrides: Partial<Change> = {}): Change {
+  return {
+    title: "Add a drag handle to the divider",
+    location: "src/components/List.tsx:40",
+    kind: "addition",
+    reach: "leaf",
+    evidence: "proven",
+    sensitive: false,
+    count: 1,
+    check: "",
+    ...overrides,
+  };
+}
+
 function makeReview(overrides: Partial<Review> = {}): Review {
   return {
     goal: "Let the workspace list be resized",
@@ -22,6 +38,7 @@ function makeReview(overrides: Partial<Review> = {}): Review {
     verdict: "auto",
     verdictReason: "Small, tested, UI only.",
     risk: { tier: "low", reasons: ["Layout only; calls nothing new"] },
+    changes: [change()],
     assessed: [],
     dimensions: {
       goal: pass,
@@ -251,6 +268,39 @@ describe("finalVerdict", () => {
   it("can be made stricter by the reviewer", () => {
     expect(finalVerdict(makeReview({ verdict: "human" }), makeFacts()).verdict).toBe("human");
   });
+
+  describe("impact", () => {
+    const coreLogic = change({
+      title: "Retry failed sends",
+      location: "sidecar/src/chat/agent.ts:120",
+      kind: "logic",
+      reach: "core",
+      evidence: "partial",
+      check: "A retry can't send the message twice",
+    });
+
+    it("needs an agent for a high-impact change", () => {
+      expect(finalVerdict(makeReview({ changes: [coreLogic] }), makeFacts())).toEqual({
+        verdict: "agent",
+        why: ["high-impact changes"],
+      });
+    });
+
+    it("needs a human for a very high one", () => {
+      const review = makeReview({ changes: [coreLogic, { ...coreLogic, kind: "interface" }] });
+      expect(finalVerdict(review, makeFacts())).toEqual({
+        verdict: "human",
+        why: ["very high impact"],
+      });
+    });
+
+    it("lets many passive changes merge on their own", () => {
+      const review = makeReview({
+        changes: [change({ kind: "passive", reach: "core", count: 200 })],
+      });
+      expect(finalVerdict(review, makeFacts()).verdict).toBe("auto");
+    });
+  });
 });
 
 describe("renderReport", () => {
@@ -344,6 +394,44 @@ describe("renderReport", () => {
   });
 });
 
+describe("renderReport's impact", () => {
+  const coreLogic = change({
+    title: "Retry failed sends",
+    location: "sidecar/src/chat/agent.ts:120",
+    kind: "logic",
+    reach: "core",
+    evidence: "partial",
+    check: "A retry can't send the message twice",
+  });
+  const reach = [
+    {
+      path: "sidecar/src/chat/agent.ts",
+      importers: 8,
+      otherAreas: 5,
+      suggested: "core" as const,
+    },
+  ];
+
+  it("lists high-impact changes with what to check and how far their file reaches", () => {
+    const review = makeReview({ changes: [coreLogic, change({ kind: "passive", count: 4 })] });
+    const { body, data } = renderReport(review, makeFacts({ reach }), TARGET);
+    expect(body).toContain("**Impact:** high (4/5) · 4 passive, 1 logic change");
+    expect(body).toContain(
+      "- **Retry failed sends** `sidecar/src/chat/agent.ts:120`: logic, core; its file has 8 importers in 5 other areas, partly tested. Check: A retry can't send the message twice",
+    );
+    expect(data.impactBand).toBe(4);
+  });
+
+  it("says when the number of changes raised the band", () => {
+    const review = makeReview({
+      changes: [change({ kind: "addition", reach: "local", count: 9 })],
+    });
+    const { body } = renderReport(review, makeFacts(), TARGET);
+    expect(body).toContain("raised from low by the number of changes");
+    expect(body).not.toContain("### Needs attention");
+  });
+});
+
 describe("coverageStatus", () => {
   const coverage = (ratio: number | null, notLoaded: string[] = []) => ({
     ...makeFacts().coverage,
@@ -388,6 +476,14 @@ describe("inline", () => {
 });
 
 describe("Review", () => {
+  it("needs a change scored high to say what to check", () => {
+    const review = makeReview({
+      changes: [change({ kind: "logic", reach: "core", evidence: "partial", check: "" })],
+    });
+    expect(Review.safeParse(review).success).toBe(false);
+    expect(Review.safeParse(makeReview()).success).toBe(true);
+  });
+
   it("only accepts screenshots that are absolute image paths", () => {
     const withShot = (path: string) =>
       Review.safeParse({ ...makeReview(), screenshots: [{ path, caption: "x" }] }).success;

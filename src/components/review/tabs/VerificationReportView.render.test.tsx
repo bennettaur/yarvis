@@ -58,6 +58,64 @@ describe("VerificationReportView", () => {
     expect(text).toContain("medium risk");
   });
 
+  it("shows the impact band, what to check, and every change behind a fold", async () => {
+    const change = {
+      kind: "logic" as const,
+      reach: "core" as const,
+      evidence: "partial" as const,
+      sensitive: false,
+      count: 1,
+      path: "src/cache.ts",
+      line: 22,
+    };
+    const scored: VerificationReport = {
+      ...report,
+      risk: {
+        ...(report.risk as NonNullable<VerificationReport["risk"]>),
+        level: "high",
+        impact: {
+          band: 4,
+          changeBand: 3,
+          load: 9,
+          raisedByVolume: 1,
+          counts: {
+            passive: 4,
+            reorganization: 0,
+            addition: 0,
+            removal: 0,
+            interface: 0,
+            logic: 2,
+          },
+          changes: [
+            {
+              ...change,
+              title: "Serve lookups from the cache",
+              check: "A write evicts the cached profile",
+              band: 4,
+            },
+            { ...change, title: "Tidy comments", kind: "passive", count: 4, check: "", band: 1 },
+          ],
+        },
+      },
+    };
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: scored,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("high impact · 4/5");
+    expect(text).not.toContain("high risk");
+    expect(text).toContain("4 passive, 2 logic changes");
+    expect(text).toContain("raised from moderate by the number of changes");
+    expect(text).toContain("A write evicts the cached profile");
+    expect(text).toContain("logic · core · partly tested");
+    expect(text).toContain("Every change (2)");
+    expect(text).toContain("passive · core · partly tested · 4 like it");
+  });
+
   it("links only paths the PR has, and shows any other as plain text", async () => {
     const html = await renderToHtml(
       createElement(VerificationReportView, {

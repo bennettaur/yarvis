@@ -1,13 +1,17 @@
 import { useState } from "react";
 import {
+  type ChangeKind,
   coverageKnown,
+  type ImpactBand,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationApproach,
+  type VerificationChange,
   type VerificationCheck,
   type VerificationCheckKey,
   type VerificationCoverage,
   type VerificationFinding,
+  type VerificationImpact,
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
@@ -37,6 +41,53 @@ const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], strin
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
+
+const IMPACT_LABEL: Record<ImpactBand, string> = {
+  1: "minimal",
+  2: "low",
+  3: "moderate",
+  4: "high",
+  5: "very high",
+};
+
+const IMPACT_CLASS: Record<ImpactBand, string> = {
+  1: RISK_CLASS.low,
+  2: RISK_CLASS.low,
+  3: RISK_CLASS.medium,
+  4: RISK_CLASS.high,
+  5: RISK_CLASS.high,
+};
+
+/** Changes at or above this band are listed for attention; the sidecar's `ATTENTION_BAND`. */
+const ATTENTION_BAND = 4;
+
+const KIND_NAMES: [ChangeKind, string, string][] = [
+  ["passive", "passive", "passive"],
+  ["reorganization", "reorganization", "reorganizations"],
+  ["addition", "addition", "additions"],
+  ["removal", "removal", "removals"],
+  ["interface", "interface change", "interface changes"],
+  ["logic", "logic change", "logic changes"],
+];
+
+const EVIDENCE_TEXT: Record<VerificationChange["evidence"], string> = {
+  proven: "proven by tests",
+  partial: "partly tested",
+  unproven: "untested",
+};
+
+function countsText(counts: VerificationImpact["counts"]): string {
+  return KIND_NAMES.filter(([kind]) => counts[kind] > 0)
+    .map(([kind, one, many]) => `${counts[kind]} ${counts[kind] === 1 ? one : many}`)
+    .join(", ");
+}
+
+function describeChange(change: VerificationChange): string {
+  const parts = [change.kind, change.reach, EVIDENCE_TEXT[change.evidence]];
+  if (change.sensitive) parts.push("sensitive");
+  if (change.count > 1) parts.push(`${change.count} like it`);
+  return parts.join(" · ");
+}
 
 const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
   "much-simpler": "A much simpler way exists",
@@ -422,6 +473,76 @@ function MustReadItem({
 }
 
 /**
+ * What the impact score rests on: the kinds of change, the ones a reviewer
+ * should check, and every change behind a fold for anyone who wants the rest.
+ */
+function ImpactDetail({
+  impact,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  impact: VerificationImpact;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  const attention = impact.changes.filter((c) => c.band >= ATTENTION_BAND);
+  return (
+    <>
+      <div className="text-xs text-zinc-400">
+        {countsText(impact.counts)}
+        {impact.raisedByVolume > 0 &&
+          ` · raised from ${IMPACT_LABEL[impact.changeBand]} by the number of changes, so splitting the PR would lower it`}
+      </div>
+      {attention.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs text-zinc-500">Needs attention</div>
+          <ul className="space-y-1.5">
+            {attention.map((c) => (
+              <li
+                key={`${c.title}:${c.path}:${c.line}`}
+                className={viewedClass(isViewed(viewed, c.path))}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-zinc-200">{c.title}</span>
+                  <Location path={c.path} line={c.line} onOpen={onOpen} />
+                  <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+                </div>
+                <p className="text-xs text-zinc-400">{c.check}</p>
+                <PostFinding
+                  finding={{ title: c.title, detail: c.check, path: c.path, line: c.line }}
+                  section="Impact"
+                  poster={poster}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details className="text-xs">
+        <summary className="cursor-pointer text-zinc-500">
+          Every change ({impact.changes.length})
+        </summary>
+        <ul className="mt-1.5 space-y-1">
+          {impact.changes.map((c) => (
+            <li
+              key={`${c.title}:${c.path}:${c.line}`}
+              className="flex flex-wrap items-center gap-2"
+            >
+              <span className="text-zinc-500">{c.band}/5</span>
+              <span className="text-zinc-300">{c.title}</span>
+              <Location path={c.path} line={c.line} onOpen={onOpen} />
+              <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </>
+  );
+}
+
+/**
  * The report in the order a reviewer uses it: which files it didn't cover,
  * what the change is, which files to read first, how risky it is, then the
  * checks.
@@ -469,12 +590,19 @@ export default function VerificationReportView({
           <div className="space-y-2 text-sm">
             <div className="flex items-start gap-2">
               <span
-                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${
+                  risk.impact ? IMPACT_CLASS[risk.impact.band] : RISK_CLASS[risk.level]
+                }`}
               >
-                {risk.level} risk
+                {risk.impact
+                  ? `${IMPACT_LABEL[risk.impact.band]} impact · ${risk.impact.band}/5`
+                  : `${risk.level} risk`}
               </span>
               <span className="text-zinc-300">{risk.clientImpact}</span>
             </div>
+            {risk.impact && (
+              <ImpactDetail impact={risk.impact} onOpen={onOpen} viewed={viewed} poster={poster} />
+            )}
             {risk.mitigations.length > 0 && (
               <div className="text-xs text-zinc-400">
                 <span className="text-zinc-500">Mitigations: </span>

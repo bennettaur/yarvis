@@ -14,7 +14,9 @@ or a Claude session can be made to do, the verifier and CI. The gate
 recomputes a floor under the risk tier itself, from risky paths, size and
 tripwires on the added lines, and your verdict is capped by the stricter of
 that and your own risk assessment. Outside that floor, your assessment is what
-keeps a risky change from merging unread, so make it honestly.
+keeps a risky change from merging unread, so make it honestly. A second score,
+the impact (step 6d), asks how likely the PR is to break something and how far
+it would spread: you classify each change, and `report.ts` scores it.
 
 The aim is that most PRs merge without anyone reading them, so the report has
 two jobs: say plainly what, if anything, a person must look at, and give every
@@ -336,6 +338,89 @@ abandoned. A real risk (a young or unknown package, install scripts, a
 maintainer change, an unaddressed advisory) also makes the risk tier high,
 with the risk as its reason.
 
+## 6d. Score the impact
+
+The risk tier asks whether a safeguard needs checking. The impact asks how
+likely the PR is to break something, and how much. You classify each change;
+`sidecar/src/verify/impact.ts` turns that into a band from 1 to 5, so the same
+classification always scores the same. Bands 1 to 3 merge on a clean report,
+4 needs the agent reviewer, 5 needs a person. The report lists every change
+at 4 or above under "Needs attention", so write each one for a reader who
+won't open the diff.
+
+List the PR's independent changes in `changes`. A change is one function,
+type, config key, route or migration that changed, together with whatever it
+made the PR update: an interface change and the twelve callers it updated are
+one change, not thirteen, and so is a rename across forty files. Fold many
+alike changes of band 1 or 2 into one entry with `count` (12 passive edits,
+3 new leaf components). List every change that could score 3 or more on its
+own. At most 30 entries.
+
+**kind**, what the change does:
+
+- `passive`: comments, formatting, docs, tests only, or renaming something
+  nothing outside its file names.
+- `reorganization`: code moved, split or extracted, with the same behavior.
+- `addition`: new code no existing input reaches: a new function, file or
+  route, or a branch behind a condition that is new in this PR.
+- `removal`: deleted code. If you showed nothing can still reach it (no
+  callers, no route, no setting), it is `passive`.
+- `interface`: a signature, return shape, exported type, schema, HTTP or
+  event payload, or setting key changed.
+- `logic`: an input that already exists now gets a different result or takes
+  a different path.
+
+If any existing input can behave differently, it is `logic`, whatever else it
+looks like. A new branch whose condition existing inputs can meet is `logic`.
+
+**reach**, of the changed thing, not its file:
+
+- `leaf`: private to its file, a test, a script, or a view nothing else
+  renders.
+- `local`: used within its own feature folder.
+- `shared`: used from two to four other feature folders.
+- `core`: what many features go through: the agent loop, the database
+  client, config, fencing, `guardedFetch`, git, the resource cache.
+
+`facts.reach` gives each changed source file's importers and a `suggested`
+reach from the import graph. That is the file's reach: use it for a change to
+something the file exports, and rate lower when the change is to something
+only the file uses. A rename of a local variable in `db/client.ts` is `leaf`.
+For Rust and anything else `facts.reach` doesn't list, Grep for users.
+
+**evidence**, whether the PR shows the change does what it should:
+
+- `reorganization`: `proven` when tests run the moved code and pass on both
+  the base and the head; anything less and it scores as `logic`.
+- `interface`: `proven` when you found every caller and each is updated and
+  tested. `tsc` passing proves this for TypeScript calling TypeScript, not
+  across the sidecar's HTTP API, the control socket, `settings.json` or the
+  database.
+- `logic`, `addition`, `removal`: `proven` when a test fails without the
+  change (it isn't in `baseline.notDetecting`) and no mutant survives on the
+  lines that matter. `unproven` when no test runs the changed lines.
+- `partial` for everything between.
+
+**sensitive**: true when the change touches secrets, auth, what an agent may
+do, or deletes or migrates data. This is the same ground as step 6b's high
+tier, scored here too, so a change there counts for more.
+
+**check**: for any change that could score 4 or more (logic or interface in
+shared or core code, or anything unproven or sensitive there), one sentence
+naming what a reviewer should confirm, as specific as a finding's fix:
+"`runAgentTurn` still saves nothing after an abort", not "check the logic".
+`report.ts` refuses a high change without one.
+
+The band then rises with volume: many changes in one PR are more likely to
+include a bad one, and are harder to revert than the same changes merged one
+at a time. When volume raised the band, the report says so; if the changes
+are independent, say in a minor finding how the PR could be split.
+
+Classify from the diff, not the description. Don't inflate: most changes in
+most PRs are passive, additions or local, and band 1 to 3 is the usual
+answer. Don't deflate either: calling a logic change a reorganization because
+it is "mostly a move" is the mistake this score exists to catch.
+
 ## 7. Prove UI changes
 
 When the PR changes what the app renders (`src/components/`, `src/App.tsx`,
@@ -362,9 +447,10 @@ Pick a verdict:
   ships: a new screen or flow, a layout or visual design change a user would
   notice, or a result where "right" is a matter of taste. The maintainer
   looks at the screenshots and merges with `/approve`.
-- `agent`: a major finding or a concern: something specific to fix or check,
-  which the fix loop or the merge reviewer can settle.
-- `human`: high risk, a blocker, a failed check, or a judgment you can't make.
+- `agent`: a major finding, a concern, or an impact of 4: something specific
+  to fix or check, which the fix loop or the merge reviewer can settle.
+- `human`: high risk, an impact of 5, a blocker, a failed check, or a
+  judgment you can't make.
 
 `report.ts` raises the verdict to what the risk and checks require, so you can
 only make it stricter.
@@ -378,6 +464,10 @@ Write `$TMPDIR/verify/<N>/review.json`:
   "verdict": "auto | visual | agent | human",
   "verdictReason": "one sentence",
   "risk": { "tier": "low | standard | high", "reasons": ["what sets the tier, in under 140 characters"] },
+  "changes": [
+    { "title": "Retry a send the provider rejected", "location": "sidecar/src/chat/agent.ts:120", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": false, "count": 1, "check": "A retried turn can't save the user's message twice" },
+    { "title": "Comment and naming cleanups", "location": "sidecar/src/chat/", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6 }
+  ],
   "assessed": [{ "path": ".github/workflows/ci.yml", "tier": "standard", "reason": "Adds a typecheck step with the same pinned setup action" }],
   "dimensions": {
     "goal": { "status": "pass", "note": "..." },
@@ -421,7 +511,8 @@ way.
 
 ## 9. Tell the user
 
-Give the verdict, the risk tier and the PR link, then what to fix, most
+Give the verdict, the risk tier, the impact band and the PR link, then the
+changes the report lists under "Needs attention", then what to fix, most
 important first:
 
 - every blocker, major and minor finding;
@@ -551,7 +642,9 @@ R11; a bare "step N" means the full run's step.
   forward unless the fix diff changes the code its note was about; then re-judge
   it.
 - **R9. Assess the risk.** Keep the previous tier, or raise it if the fix diff
-  adds something step 6b rates higher. Carry `assessed` forward, re-rating
+  adds something step 6b rates higher. Carry `changes` forward, re-classifying
+  any the fix diff touches (new tests can make one `proven`) and adding any
+  the fix diff makes. Carry `assessed` forward, re-rating
   any file the fix diff changes and adding any new one in `facts.tier.assess`. A recheck never lowers it: the previous
   reasons may not name every risky change, so a lower tier needs a full step 6b
   over the whole PR diff.

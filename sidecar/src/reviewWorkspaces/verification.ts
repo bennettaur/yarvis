@@ -38,6 +38,14 @@ import {
 import { prSourceFor } from "../pr/source.ts";
 import type { CheckItem, PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import {
+  ATTENTION_BAND,
+  CHANGE_KINDS,
+  EVIDENCE,
+  type ImpactBand,
+  REACHES,
+  scoreImpact,
+} from "../verify/impact.ts";
+import {
   boundedList,
   boundedText,
   clip,
@@ -46,6 +54,7 @@ import {
   optionalLine,
   optionalPath,
   plural,
+  positiveInt,
   repoPath,
 } from "./agentContext.ts";
 import {
@@ -138,12 +147,71 @@ const concernSchema = z.object({
   line: optionalLine,
 });
 
-const riskSchema = z.object({
-  level: z.enum(["low", "medium", "high"]),
-  clientImpact: boundedText(240),
-  mitigations: boundedList(boundedText(100), 3),
-  concerns: boundedList(concernSchema, MAX_FINDINGS),
+/** Most changes one risk agent lists; the coordinator joins every group's. */
+export const MAX_CHANGES_PER_GROUP = 15;
+/** Most changes scored, past any number of groups; a guard on what the model sends, not a target. */
+const MAX_CHANGES_READ = 120;
+/** Most changes the report keeps, highest band first. The load still counts every one. */
+export const MAX_CHANGES_SHOWN = 30;
+
+/** One change, classified for `verify/impact.ts` to score. */
+const changeSchema = z.object({
+  title: boundedText(TITLE_CHARS),
+  kind: z.enum(CHANGE_KINDS),
+  reach: z.enum(REACHES),
+  evidence: z.enum(EVIDENCE),
+  sensitive: z
+    .boolean()
+    .nullish()
+    .transform((v) => v ?? false),
+  count: z
+    .number()
+    .nullish()
+    .transform((n) => Math.min(positiveInt(n) ?? 1, 1000)),
+  check: boundedText(DETAIL_CHARS)
+    .nullish()
+    .transform((c) => c ?? ""),
+  path: optionalPath,
+  line: optionalLine,
 });
+
+const LEVEL_FOR_BAND: Record<ImpactBand, "low" | "medium" | "high"> = {
+  1: "low",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "high",
+};
+
+/**
+ * The agent classifies the changes and `scoreImpact` scores them, so the
+ * level follows the band whenever there are changes to score. The agent's own
+ * level stands only for a run that listed none.
+ */
+const riskSchema = z
+  .object({
+    level: z.enum(["low", "medium", "high"]),
+    clientImpact: boundedText(240),
+    mitigations: boundedList(boundedText(100), 3),
+    concerns: boundedList(concernSchema, MAX_FINDINGS),
+    // Not `boundedList`: every change counts toward the load, so the cut to
+    // what is shown comes after scoring.
+    changes: z
+      .array(changeSchema)
+      .nullish()
+      .transform((changes) => (changes ?? []).slice(0, MAX_CHANGES_READ))
+      .meta({ description: `At most ${MAX_CHANGES_PER_GROUP} items per group.` }),
+  })
+  .transform(({ level, changes, ...risk }) => {
+    const impact = scoreImpact(changes);
+    if (!impact) return { ...risk, level, impact: undefined };
+    const { changes: scored, attention: _, ...score } = impact;
+    return {
+      ...risk,
+      level: LEVEL_FOR_BAND[impact.band],
+      impact: { ...score, changes: scored.slice(0, MAX_CHANGES_SHOWN) },
+    };
+  });
 
 const mustReadFlagSchema = z.object({
   note: boundedText(160),
@@ -480,15 +548,20 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       };
     }
     const concerns = risk?.concerns.map((c) => withRepoPath(c, limits.checkoutDir)) ?? [];
+    const impact = risk?.impact && {
+      ...risk.impact,
+      changes: risk.impact.changes.map((c) => withRepoPath(c, limits.checkoutDir)),
+    };
     const deduped = dedupeChecks(checks, audit);
     const cited = [
       ...concerns,
+      ...(impact?.changes.filter((c) => c.band >= ATTENTION_BAND) ?? []),
       ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
     ];
     return {
       summary,
       mustRead: dropCoveredFlags(mustRead, cited, audit),
-      ...(risk && { risk: { ...risk, concerns } }),
+      ...(risk && { risk: { ...risk, concerns, ...(impact && { impact }) } }),
       ...deduped,
       ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
       ...(flow && { flow }),
