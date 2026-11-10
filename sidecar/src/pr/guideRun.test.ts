@@ -105,9 +105,15 @@ describe("kickOffGuide", () => {
     expect(await kickOffGuide(db, config, ref, { source, runTour, regenerate: true })).toEqual({
       status: "started",
     });
-    await until(async () => (await listAttention(db, {})).length > 0, "the new guide's bell item");
-    expect((await getGuide(db, ref))?.headSha).toBe(head);
+    // A one-step guide counts as finished, so it rings no bell: wait on the
+    // row, then on the run letting go, which is when a plain ask sees it again.
+    await until(async () => (await getGuide(db, ref))?.headSha === head, "the new guide");
+    await until(
+      async () => (await kickOffGuide(db, config, ref, { source, runTour })).status === "exists",
+      "the run to finish",
+    );
     expect((await getGuide(db, ref))?.steps).toHaveLength(1);
+    expect(ran).toBe(1);
   });
 
   it("rings the bell when the agent fails, without the error's text", async () => {
