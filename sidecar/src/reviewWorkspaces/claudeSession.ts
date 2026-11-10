@@ -19,13 +19,19 @@
  */
 
 import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { hasCoreChannel, spawnReviewClaudeSession } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
-import { assertWorktreeInWorkspace, getReviewWorkspace, ReviewWorkspaceError } from "./service.ts";
+import {
+  assertWorktreeInWorkspace,
+  getReviewWorkspace,
+  ReviewWorkspaceError,
+  reviewSessionFolder,
+  withSessionLock,
+} from "./service.ts";
 
 /** The most checkouts one session reads; matches `MAX_REVIEW_DIRS` in `pty.rs`. */
 const MAX_SESSION_PRS = 20;
@@ -40,32 +46,38 @@ const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
 /**
  * The settings a review session runs with: the review runs' lockdown, minus
  * edits and skills. Sandboxed commands also can't write to any checkout, so
- * one PR's code can't change another's, which a later setup run would execute.
+ * one PR's code can't change another's, which a later setup run would execute,
+ * nor to the session's own folder, which the next session's shell opens in.
  */
-function reviewSessionSettings(checkouts: string[]): Record<string, unknown> {
+function reviewSessionSettings(
+  sessionFolder: string,
+  checkouts: string[],
+): Record<string, unknown> {
   const settings = lockedDownSettings();
   const permissions = settings.permissions as { deny: string[] };
   const sandbox = settings.sandbox as { filesystem: Record<string, unknown> };
   return {
     ...settings,
     permissions: { ...permissions, deny: [...permissions.deny, ...DENIED_TOOLS] },
-    sandbox: { ...sandbox, filesystem: { ...sandbox.filesystem, denyWrite: checkouts } },
+    sandbox: {
+      ...sandbox,
+      filesystem: { ...sandbox.filesystem, denyWrite: [sessionFolder, ...checkouts] },
+    },
   };
 }
 
-/** The PTY id the core gives a workspace's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
-export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
+/** The PTY id the core gives a workspace's session; matches `review_session_id` in `pty.rs`. */
+const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
 
 /**
  * The folder a workspace's session starts in, emptied first. The session's
- * sandboxed commands can write there, so whatever a past session left (a
+ * sandboxed commands can't write there, but anything else that did (a
  * `mise.toml`, an `.envrc`) is removed before the next shell starts in it. It
  * keeps its path, since Claude Code remembers folder trust by path.
  */
 function freshSessionFolder(config: Config, workspaceId: string): string {
-  const root = join(config.workspacesRoot, ".review-sessions");
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const dir = join(root, workspaceId);
+  const dir = reviewSessionFolder(config, workspaceId);
+  mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   // A link in its place would send the shell somewhere else.
   if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() === false)
     rmSync(dir, { force: true });
@@ -73,7 +85,8 @@ function freshSessionFolder(config: Config, workspaceId: string): string {
   // Checked again before anything is removed: a link swapped in for either
   // folder would point the emptying below at whatever it names.
   if (
-    realpathSync(dir) !== join(realpathSync(config.workspacesRoot), ".review-sessions", workspaceId)
+    realpathSync(dir) !==
+    reviewSessionFolder({ workspacesRoot: realpathSync(config.workspacesRoot) }, workspaceId)
   ) {
     throw new Error(`${dir} is not a plain folder; left in place`);
   }
@@ -94,9 +107,10 @@ export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
 /**
  * Starts the workspace's session over every PR whose checkout is ready, or
  * leaves the one already running alone (the core discards a spawn whose id is
- * taken; its folder is still emptied, which a running session only uses as
- * scratch space). A PR checked out later joins on the next start. Answers with
- * the session's PTY id.
+ * taken; its folder is still emptied, which a running session can't write to).
+ * A PR checked out later joins on the next start. Answers with the session's
+ * PTY id. Runs under the workspace's session lock, so it can't start a session
+ * between a removal ending the old one and deleting a checkout.
  */
 export async function startReviewClaudeSession(
   db: Db,
@@ -110,6 +124,15 @@ export async function startReviewClaudeSession(
       503,
     );
   }
+  return withSessionLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
+}
+
+async function startLocked(
+  db: Db,
+  config: Config,
+  workspaceId: string,
+  deps: ReviewClaudeDeps,
+): Promise<{ sessionId: string }> {
   const ws = await getReviewWorkspace(db, workspaceId);
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
@@ -139,7 +162,12 @@ export async function startReviewClaudeSession(
       workspaceId: ws.id,
       cwd,
       addDirs: ready.map((pr) => pr.worktreePath),
-      settings: JSON.stringify(reviewSessionSettings(ready.map((pr) => pr.worktreePath))),
+      settings: JSON.stringify(
+        reviewSessionSettings(
+          cwd,
+          ready.map((pr) => pr.worktreePath),
+        ),
+      ),
       context,
     });
   } catch (e) {

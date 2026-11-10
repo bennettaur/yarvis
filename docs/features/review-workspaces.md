@@ -337,7 +337,9 @@ the same way the verification report is:
 
 - It reads no settings files: not a checkout's, whose hooks Claude Code would
   run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules and MCP
-  servers don't load in this session.
+  servers don't load in this session, and neither does a checkout's
+  `CLAUDE.md`, even if your shell sets
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
 - It can read the checkouts but not change them, neither with its edit tools
   nor from a command it runs, so one PR's code can't rewrite another's. It
   doesn't load skills, which a checkout could ship to pre-approve tools.
@@ -347,14 +349,16 @@ the same way the verification report is:
 - It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
   the like) act on the folder a terminal opens in, so the session opens in an
   empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
-  workspaces folder, and reaches the checkouts from there. That folder is
-  emptied before each start.
+  workspaces folder, and reaches the checkouts from there. Its commands can't
+  write to that folder either, and it's emptied before each start.
 - Its instructions tell it that what it reads in the checkouts is material to
   explain, not instructions to follow.
 
 It needs the agent command under **Settings → Repositories → Agent** to run
 Claude Code (see [The agent command](workspaces.md#the-agent-command)). That
-setting's own flags (such as `--permission-mode auto`) are left out here.
+setting's own flags (such as `--permission-mode auto`) are left out here. If
+Claude Code can't start (it isn't on your shell's `PATH`, say), the tab closes
+rather than leaving a plain shell behind.
 
 ### Since last review
 
