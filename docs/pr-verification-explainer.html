@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Yarvis verifies pull requests</title>
+<!--
+  A self-contained explainer page. Open it in a browser; it loads nothing from the network.
+  The reference docs it summarizes: docs/verification.md, docs/development.md
+  ("Verifying a PR for merge"), docs/features/review-workspaces.md
+  ("Verification report") and .claude/skills/verify-pr/SKILL.md.
+-->
+<style>
+  :root {
+    --bg: #09090b;
+    --panel: #18181b;
+    --panel-2: #27272a;
+    --line: #3f3f46;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --dim: #71717a;
+    --accent: #818cf8;
+    --accent-2: #6366f1;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
+    font-size: 16px; line-height: 1.6;
+    background-image: radial-gradient(ellipse at 90% -10%, rgba(99,102,241,.18), transparent 45%);
+    background-repeat: no-repeat;
+  }
+  .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; }
+  main { padding: 48px 56px 96px; min-width: 0; }
+  section { margin-bottom: 64px; scroll-margin-top: 24px; }
+
+  h1 { font-size: 44px; line-height: 1.1; margin: 0 0 16px; letter-spacing: -1px; }
+  h2 { font-size: 28px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.4px; }
+  h3 { font-size: 18px; margin: 24px 0 8px; color: var(--accent); font-weight: 600; }
+  p { margin: 0 0 14px; max-width: 820px; }
+  ul, ol { max-width: 820px; padding-left: 22px; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  a { color: var(--accent); }
+  .lede { font-size: 20px; color: var(--muted); max-width: 860px; }
+  .kicker { font-size: 12px; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); font-weight: 600; margin-bottom: 14px; }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  code { font-family: var(--mono); font-size: .88em; background: var(--panel-2); padding: 1px 6px; border-radius: 4px; }
+  nav.toc {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    padding: 40px 16px 40px 24px; border-right: 1px solid var(--line); font-size: 14px;
+  }
+  nav.toc .kicker { margin-bottom: 12px; }
+  nav.toc a { display: block; color: var(--muted); text-decoration: none; padding: 4px 0; }
+  nav.toc a:hover { color: var(--text); }
+
+  .grid { display: grid; gap: 16px; margin: 16px 0 20px; }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { margin-top: 0; }
+  .card p, .card li { font-size: 15px; color: var(--muted); }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+  .card .why { color: var(--text); }
+  .why-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--amber); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 15px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+  td code { white-space: nowrap; }
+
+  .pill { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+  .p-auto { color: var(--green); border-color: rgba(74,222,128,.4); }
+  .p-visual { color: var(--blue); border-color: rgba(96,165,250,.4); }
+  .p-agent { color: var(--amber); border-color: rgba(251,191,36,.4); }
+  .p-human { color: var(--red); border-color: rgba(248,113,113,.4); }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--panel); padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 16px 0 20px; max-width: 860px; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* Pipeline: a row of stages with arrows between them. */
+  .pipeline { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 18px 0 24px; }
+  .stage { flex: 1 1 150px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+  .stage b { display: block; color: var(--text); margin-bottom: 4px; }
+  .stage span { color: var(--muted); }
+  .stage.script { border-color: rgba(74,222,128,.45); }
+  .stage.model { border-color: rgba(129,140,248,.55); }
+  .stage.ci { border-color: rgba(251,191,36,.45); }
+  .arrow { align-self: center; color: var(--dim); font-size: 18px; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: -10px; margin-bottom: 18px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+  /* The step list for /verify-pr. */
+  .steps { counter-reset: step; list-style: none; padding: 0; max-width: none; }
+  .steps > li { counter-increment: step; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px 16px 64px; margin-bottom: 12px; }
+  .steps > li::before {
+    content: counter(step); position: absolute; left: 18px; top: 16px; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--panel-2); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px;
+  }
+  .steps h3 { margin: 0 0 6px; }
+  .steps p { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
+  .steps p.why { color: var(--text); margin-bottom: 0; }
+
+  .band-table td.n { font-family: var(--mono); text-align: center; }
+  .b1 { color: var(--green); } .b2 { color: #a3e635; } .b3 { color: var(--amber); } .b4 { color: #fb923c; } .b5 { color: var(--red); }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { display: none; }
+    main { padding: 32px 20px 64px; }
+    .g2, .g3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <div class="kicker">On this page</div>
+  <a href="#goal">What we're trying to do</a>
+  <a href="#two-tools">Two tools, two readers</a>
+  <a href="#principles">The principles</a>
+  <a href="#verify-pr">How /verify-pr works</a>
+  <a href="#scores">Risk tier and impact band</a>
+  <a href="#verdicts">Verdicts and merge paths</a>
+  <a href="#trust">Why reports are signed</a>
+  <a href="#in-app">The in-app verification report</a>
+  <a href="#context">How we build context</a>
+  <a href="#recheck">Rechecking after fixes</a>
+  <a href="#after-merge">After merge: reverts and calibration</a>
+  <a href="#files">Where things live</a>
+</nav>
+
+<main>
+
+<header style="margin-bottom: 56px">
+  <div class="kicker">Yarvis · PR verification</div>
+  <h1>How Yarvis verifies pull requests</h1>
+  <p class="lede">Most PRs should be able to merge without anyone reading them. When a person does need to read one, they should know which part to read first and what to check there. Everything below serves one of those two goals.</p>
+</header>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="goal">
+  <h2>What we're trying to do</h2>
+  <p>Reading every diff line by line doesn't scale once agents write most of the code. But merging unread code is only safe if something else has done the reading, and if that something can't be talked into a yes. So the system has three jobs:</p>
+  <ol>
+    <li><b>Measure</b> what can be measured: coverage, whether the new tests fail without the change, whether tests catch small breaking edits, how far each change reaches.</li>
+    <li><b>Judge</b> what needs judgment: does the PR do what it says, is it safe, is it simpler than it could be. Agents do this, and their findings are checked before they count.</li>
+    <li><b>Route</b> the PR: merge it on its own, have a person glance at screenshots, have the merge reviewer agent read it, or hand it to a person. CI makes the final call from a signed report and its own checks.</li>
+  </ol>
+  <div class="callout">
+    <p>The report replaces a first read of the PR, so <b>it has to take less time to read than the diff</b>. A report that lists everything is as slow as reading the code. A report that says "looks fine" is useless. The target is: say plainly what a person must look at, if anything, and give every problem a fix concrete enough that an agent can make it without asking.</p>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="two-tools">
+  <h2>Two tools, two readers</h2>
+  <p>There are two verification tools. They share ideas and some code, but they answer different questions for different readers.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3>The <code>/verify-pr</code> skill</h3>
+      <p>A Claude Code skill run in a workspace session. It measures the PR, runs review agents, judges it and <b>posts a signed report on the PR</b>. The CI gate reads that report to decide whether the yarvis bot can approve and auto-merge.</p>
+      <p><span class="why-label">Reader</span><br><span class="why">CI, and the maintainer deciding whether to merge.</span></p>
+      <p><span class="why-label">Question</span><br><span class="why">"Can this merge, and who, if anyone, has to look first?"</span></p>
+    </div>
+    <div class="card">
+      <h3>The in-app Verification report</h3>
+      <p>The <b>Verification</b> tab in a review workspace. Claude Code agents read every changed file's diff on your machine and write a report that stays local: a summary, must-read files, risk, checks, a simpler-approach rating and an optional flow diagram.</p>
+      <p><span class="why-label">Reader</span><br><span class="why">A person about to review the PR.</span></p>
+      <p><span class="why-label">Question</span><br><span class="why">"What should I read, in what order, and what looks wrong?"</span></p>
+    </div>
+  </div>
+  <p>Two supporting pieces sit around them:</p>
+  <ul>
+    <li><b>The merge reviewer</b> (<code>merge-reviewer</code> specialist): when a <code>/verify-pr</code> report's verdict is <code>agent</code>, it reads the PR, the report and the code the report points at, then posts a signed approve or reject.</li>
+    <li><b>The guided review</b>: an agent orders the change into a tour, outside in, with what it thinks is wrong at each step. It's how a person reads a PR once the report says they should.</li>
+  </ul>
+  <p>Both tools use the same impact scorer (<code>sidecar/src/verify/impact.ts</code>), so a change scores the same band in the review workspace as it does on the PR.</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="principles">
+  <h2>The principles</h2>
+  <p>Most design choices below come from one of these. When a rule looks odd, it is usually one of these applied strictly.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Scripts measure, the model judges</h3>
+      <p><code>scripts/verify/</code> computes coverage, the baseline run, mutation scores, import-graph reach and the path tier. The model never reports those numbers itself.</p>
+      <p class="why">Why: a number a model writes is a claim. A number a script writes is a fact the model has to work around.</p>
+    </div>
+    <div class="card">
+      <h3>The model can only make things stricter</h3>
+      <p>The gate recomputes a risk floor from the changed paths. <code>report.ts</code> raises the verdict to what the risk and checks require. Impact claims are checked against coverage and reach.</p>
+      <p class="why">Why: an agent that misjudges, or reads injected text, can at worst send a PR to a person. It can't send a risky PR to auto-merge.</p>
+    </div>
+    <div class="card">
+      <h3>Everything from the PR is data</h3>
+      <p>Title, description, diff, comments, test names, linked issues and the review agents' own reports are fenced in per-run nonce tags. An instruction found inside them becomes a security finding.</p>
+      <p class="why">Why: the PR's author controls all of that text, and the verifier decides whether their code merges.</p>
+    </div>
+    <div class="card">
+      <h3>Evidence over claims</h3>
+      <p>A test only counts as evidence if it fails on the base branch. A change is only "proven" if coverage backs it. A comment calling something "a refactor" or "safe" is a claim to check, never a reason to score it lower.</p>
+      <p class="why">Why: a test that passes without the change would still pass if the change were reverted, so it doesn't check the change.</p>
+    </div>
+    <div class="card">
+      <h3>When unsure, go stricter</h3>
+      <p>A sensitive file the skill didn't rate counts as high. A changed file left out of the impact list counts as an unlisted logic change. A failed decision means a person looks.</p>
+      <p class="why">Why: a person looking costs a minute. A bad auto-merge costs a revert and trust in the system.</p>
+    </div>
+    <div class="card">
+      <h3>Every finding carries its fix</h3>
+      <p>"Handle the error" isn't a finding. "Catch the <code>ENOENT</code> from <code>readFileSync</code> in <code>load()</code> and return the defaults, with a test that deletes the file" is. Taste isn't a finding at all.</p>
+      <p class="why">Why: the skill fixes its own findings on your PR before posting. A vague finding can't be fixed without asking, so it blocks the loop.</p>
+    </div>
+    <div class="card">
+      <h3>Signed, pinned and short-lived</h3>
+      <p>A report is signed with your SSH key and names the repo, PR, commit and time. It counts for six hours, on that commit only.</p>
+      <p class="why">Why: anything holding your GitHub token can post a comment. Only your machine can sign one.</p>
+    </div>
+    <div class="card">
+      <h3>Thresholds get checked against reality</h3>
+      <p>Verdict, tier and band are signed into the report data. <code>verify:calibrate</code> compares them with later reverts and regressions.</p>
+      <p class="why">Why: the band table and volume steps are first guesses. Calibration is how they stop being guesses.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="verify-pr">
+  <h2>How <code>/verify-pr</code> works</h2>
+  <p>The skill's job is judgment. The scripts do the measuring and posting, and CI does the deciding.</p>
+
+  <div class="pipeline">
+    <div class="stage"><b>Can it merge?</b><span>conflicts, failing checks</span></div>
+    <div class="arrow">→</div>
+    <div class="stage model"><b>Pin the goal</b><span>one line</span></div>
+    <div class="arrow">→</div>
+    <div class="stage script"><b>Collect facts</b><span>coverage, baseline, mutants, reach, tier floor</span></div>
+    <div class="arrow">→</div>
+    <div class="stage model"><b>Review agents</b><span>in parallel</span></div>
+    <div class="arrow">→</div>
+    <div class="stage model"><b>Confirm &amp; judge</b><span>findings, dimensions, risk, impact</span></div>
+    <div class="arrow">→</div>
+    <div class="stage script"><b>Sign &amp; post</b><span>report.ts</span></div>
+    <div class="arrow">→</div>
+    <div class="stage ci"><b>Gate</b><span>verify.yml</span></div>
+  </div>
+  <div class="legend">
+    <span><i style="background: var(--green)"></i>script measures</span>
+    <span><i style="background: var(--accent)"></i>model judges</span>
+    <span><i style="background: var(--amber)"></i>CI decides</span>
+  </div>
+
+  <ol class="steps">
+    <li>
+      <h3>Check the PR can merge</h3>
+      <p>Conflicts or a branch behind its base: on your own PR it offers to merge the default branch in, otherwise it stops. A failing CI check stops it too. Checks still running are fine, since auto-merge waits for them.</p>
+      <p class="why">Why: a report on a PR CI already rejects is wasted work, and the gate would ignore it.</p>
+    </li>
+    <li>
+      <h3>Pin down the goal</h3>
+      <p>One line saying what the PR is meant to achieve, from its title, description and linked issues. If nobody can say, the goal check is rated <code>concern</code>.</p>
+      <p class="why">Why: every other judgment is measured against it. "Does it do what it says, and nothing it doesn't" needs a "what it says".</p>
+    </li>
+    <li>
+      <h3>Collect the facts</h3>
+      <p><code>verify:collect</code> writes <code>facts.json</code>: the path-based risk floor, diff coverage, and the <b>baseline run</b>, which runs the PR's new or edited tests against the base branch's code. A test only counts when the diff touches its own <code>it(...)</code> or <code>test(...)</code> call. With <code>--mutation</code>, Stryker makes small breaking edits to the changed lines and records which ones no test caught. It also records each changed file's importers from the import graph.</p>
+      <p>For an outside contributor's PR, it uses the base branch's copy of the scripts and <code>--static</code>, which only reads the diff and runs none of the PR's code.</p>
+      <p class="why">Why: coverage alone says a line ran, not that anything checked it. The baseline says whether a test checks the change. Mutation says whether it checks the specific lines. An untrusted PR's tests would run with your credentials and could post <code>/approve</code> as you.</p>
+    </li>
+    <li>
+      <h3>Run the review agents</h3>
+      <p>Security, test quality, scope drift, clarity, best practices and dead code always run, in parallel. Performance runs when the PR touches sidecar, Rust or data-loading code. LLM safety runs when it touches prompts, agent tools or the chat, LLM, agents, PR or memory code. Each gets the goal, the base commit, the uncovered lines and the tests that pass without the change, with PR text fenced as untrusted.</p>
+      <p class="why">Why: specialists with a narrow brief find more than one general reviewer, and handing them the facts points them at the weak spots instead of making them rediscover them.</p>
+    </li>
+    <li>
+      <h3>Check the findings itself</h3>
+      <p>Every reviewer finding is a lead. The skill opens the code for each one and keeps only what it can confirm, then sorts them into blocker, major and minor. Before an <code>auto</code> verdict it does its own security pass over the diff. At most five blockers and majors are kept; more than that means a person is needed anyway.</p>
+      <p class="why">Why: reviewers report false positives, and one that read injected text can leave a real problem out or relay an instruction.</p>
+    </li>
+    <li>
+      <h3>Judge each dimension</h3>
+      <p>Goal, tests, reliability, security, complexity, maintainability, UI and supply chain are each rated <code>pass</code>, <code>concern</code>, <code>fail</code> or <code>n/a</code>, with a note under 140 characters. A concern's note says what would make it pass. Coverage isn't rated by the model; <code>report.ts</code> rates it from the facts.</p>
+      <p class="why">Why: short, fixed dimensions keep the report scannable and make it hard to hide a problem in prose.</p>
+    </li>
+    <li>
+      <h3>Assess the risk, check the supply chain, score the impact</h3>
+      <p>Risk asks whether a safeguard needs a person's eyes. The supply-chain check reads every added or bumped package: is it needed, what kind of bump, who publishes it, any advisories. Impact asks how likely the PR is to break something and how far it would spread. See <a href="#scores">Risk tier and impact band</a>.</p>
+      <p class="why">Why: these are different questions. A one-line change to tool approval is small but needs a person. A 40-file logic change in the agent loop has no secrets in it but can break everything.</p>
+    </li>
+    <li>
+      <h3>Prove UI changes</h3>
+      <p>When the PR changes what the app renders, the skill uses the <code>demo-flow</code> harness to capture the changed screens, sometimes with a before shot, and looks at every image for spinners, error banners and clipped text. If the harness can't reach the change, <code>ui</code> is a concern.</p>
+      <p class="why">Why: tests rarely show a layout is right. A screenshot lets a small UI change merge on <code>auto</code>, and lets a big one go to <code>visual</code> where you only look at pictures.</p>
+    </li>
+    <li>
+      <h3>Pick a verdict, preview and post</h3>
+      <p>The skill writes <code>review.json</code>, previews the rendered report with <code>--dry-run</code>, and reads it as the PR's reader would. Posting signs the data block with your SSH key, replaces the previous report, and refuses if the head moved since <code>collect</code> ran.</p>
+      <p class="why">Why: the preview catches a report that's too long or unclear before anyone else sees it. Refusing on a moved head means the report always describes the code that will merge.</p>
+    </li>
+    <li>
+      <h3>Fix, then recheck, then post (your own PR only)</h3>
+      <p>On a PR you authored, the skill fixes every finding, flagged check, test in <code>baseline.notDetecting</code> and surviving mutant on a line that matters, before posting anything. It runs the checks, pushes, and rechecks. Two rounds at most. It asks first when a fix needs a design decision, weakens a safeguard, touches CI or <code>.claude/</code>, or changes a dependency.</p>
+      <p class="why">Why: posting first would let the gate merge the unfixed commit. Fixing first means the report you get is for the fixed code. It never comments <code>/approve</code> or merges; that stays your call.</p>
+    </li>
+  </ol>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="scores">
+  <h2>Risk tier and impact band</h2>
+  <p>The report carries two scores. Both set a floor under the verdict, and the stricter one wins.</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>Risk tier: does a safeguard need checking?</h3>
+      <p><b>high</b>: reads or moves a secret; launches or types into a shell, process or agent session; changes what an agent may do without asking; touches auth, signing, CI or the verifier; deletes or migrates data; sends data to a new host; a risky package.</p>
+      <p><b>standard</b>: a bug would lose data, break a flow the user relies on, or misbehave under load.</p>
+      <p><b>low</b>: a bug would be visible and harmless: layout, copy, docs, tests, a refactor the tests pin down.</p>
+      <p class="why">Rated from what the change does, not where it is. A settings screen change that writes a secret is high.</p>
+    </div>
+    <div class="card">
+      <h3>Impact band: how likely to break, how far?</h3>
+      <p>The skill lists each independent change with a <b>kind</b> (passive, reorganization, addition, removal, interface, logic), a <b>reach</b> (leaf, local, shared, core) and <b>evidence</b> (proven, partial, unproven). <code>impact.ts</code> turns that into a band from 1 to 5 with a fixed table.</p>
+      <p class="why">Why a table: the model classifies, the code scores. The same classification always gets the same band, and the band can be calibrated.</p>
+    </div>
+  </div>
+
+  <h3>The tier floor</h3>
+  <p>CI doesn't take the report's tier on trust. <code>scripts/verify/tier.ts</code> computes its own floor from the changed paths, their size and risky added lines. The verifier and its workflows, agent instructions and hooks, secrets, shell access, tool approval and the MCP server are always high. Workflows, git hooks, build config, the schema and non-additive migrations are sent to the skill to assess, and a file it doesn't rate counts as high. The report can raise the floor, never lower it.</p>
+
+  <h3>The band table</h3>
+  <table class="band-table">
+    <thead><tr><th>Kind</th><th>leaf</th><th>local</th><th>shared</th><th>core</th></tr></thead>
+    <tbody>
+      <tr><td>passive</td><td class="n b1">1</td><td class="n b1">1</td><td class="n b1">1</td><td class="n b1">1</td></tr>
+      <tr><td>reorganization</td><td class="n b1">1</td><td class="n b1">1</td><td class="n b2">2</td><td class="n b2">2</td></tr>
+      <tr><td>addition</td><td class="n b1">1</td><td class="n b2">2</td><td class="n b2">2</td><td class="n b3">3</td></tr>
+      <tr><td>removal</td><td class="n b1">1</td><td class="n b2">2</td><td class="n b3">3</td><td class="n b3">3</td></tr>
+      <tr><td>interface</td><td class="n b2">2</td><td class="n b2">2</td><td class="n b3">3</td><td class="n b4">4</td></tr>
+      <tr><td>logic</td><td class="n b2">2</td><td class="n b3">3</td><td class="n b4">4</td><td class="n b4">4</td></tr>
+    </tbody>
+  </table>
+  <p>Then, per change:</p>
+  <ul>
+    <li><b>Unproven</b> adds 1. <b>Proven</b> takes 1 off, but never below 2 and never for an interface, since tests on one side don't show callers elsewhere still work.</li>
+    <li><b>Sensitive</b> (secrets, auth, agent permissions, data deletion) adds 1.</li>
+    <li>A <b>reorganization</b> that isn't proven scores as logic. "Mostly a move" is the mistake this score exists to catch.</li>
+  </ul>
+  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Volume alone can take a PR to 4 but not 5, so a pile of small changes reaches the merge reviewer but not a person. When volume raised the band, the report says so and suggests how to split the PR.</p>
+
+  <h3>Facts sit under the classification</h3>
+  <p><code>report.ts</code> checks the model's classification against the facts and never scores below them:</p>
+  <ul>
+    <li>A <code>proven</code> claim counts as <code>partial</code> unless tests ran every changed line in its files.</li>
+    <li>A change that could alter behaviour counts at no less than the reach the import graph measured.</li>
+    <li>A changed source file no entry names counts as an unlisted, partly tested logic change.</li>
+  </ul>
+  <p>Changes at band 4 or above are listed under <b>Needs attention</b>, each with a one-sentence <code>check</code> naming what a reviewer should confirm: "<code>runAgentTurn</code> still saves nothing after an abort", not "check the logic".</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="verdicts">
+  <h2>Verdicts and merge paths</h2>
+  <p>Verdicts go from loosest to strictest. The verdict can't be looser than the risk tier or the impact band allows, and the gate checks again.</p>
+  <table>
+    <thead><tr><th>Verdict</th><th>When</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill p-auto">auto</span></td>
+        <td>Low or standard risk, no blocker or major finding, no flagged check, enough of the changed lines covered. Minor findings and small UI changes the screenshots show working are fine.</td>
+        <td>The gate approves as soon as the signed report lands. Auto-merge waits for the rest of CI.</td>
+      </tr>
+      <tr>
+        <td><span class="pill p-visual">visual</span></td>
+        <td>The same, but the UI change is one a person should see: a new screen or flow, a layout or design change.</td>
+        <td>You look at the screenshots in the report and comment <code>/approve</code>.</td>
+      </tr>
+      <tr>
+        <td><span class="pill p-agent">agent</span></td>
+        <td>A major finding, a concern, an unchecked dependency change, UI with no screenshots, tests that miss many mutants, or impact band 4.</td>
+        <td>Ask Yarvis to have the merge reviewer check it. Its signed approve lets the gate approve, unless there is a blocker or the PR is high risk.</td>
+      </tr>
+      <tr>
+        <td><span class="pill p-human">human</span></td>
+        <td>High risk, impact band 5, a blocker, a failed check, or a judgment the skill can't make.</td>
+        <td>You read it and comment <code>/approve</code>. The risk reasons name the safeguards to check.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted">The <code>visual</code> and <code>agent</code> paths exist so that "not safe to merge alone" doesn't always mean "a person reads the whole diff". Most PRs that aren't <code>auto</code> need one specific thing checked, and the report says what.</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="trust">
+  <h2>Why reports are signed</h2>
+  <p>Claude Code, Yarvis and anything else with your GitHub token post as you. That includes a stolen token or a PR's test running under your <code>gh</code> login. If the gate trusted any report comment from your account, any of those could post an <code>auto</code> report and get a PR merged.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Your SSH signing key</h3>
+      <p>Lives in 1Password. Used by <code>/verify-pr</code>. Signs as <code>verify-pr</code> in namespace <code>yarvis-verify</code>. Can sign any verdict.</p>
+    </div>
+    <div class="card">
+      <h3>The merge reviewer's key</h3>
+      <p>Lives in Yarvis's Settings → Credentials. Signs as <code>yarvis-merge-reviewer</code> in namespace <code>yarvis-agent-review</code>. Can only sign a yes or no on an <code>agent</code> report you already signed, at the same commit.</p>
+    </div>
+  </div>
+  <p>The reviewer has its own key because nobody is there to unlock 1Password when it runs, and because it shouldn't be able to do what your key does. Each signature names the repo, PR, commit and time, so it can't be moved to another PR, a newer push, or reused after six hours. The gate always runs <code>main</code>'s copy of itself, and its own files are always high risk.</p>
+  <p class="muted">A signature shows the report was signed on your machine. It doesn't show the run was honest: a prompt-injected agent in a session 1Password unlocked could sign other text. That is why the gate keeps its own tier floor and refuses high risk and blockers whatever the report says. The full threat table is in <code>docs/verification.md</code>.</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="in-app">
+  <h2>The in-app verification report</h2>
+  <p>The review workspace's <b>Verification</b> tab is for the person reviewing. It runs Claude Code on your machine against the PR's checkout, never posts anything on its own, and turns into a to-do list as you read.</p>
+
+  <h3>What it contains</h3>
+  <div class="grid g3">
+    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Risk</h3><p>The same impact scoring as <code>/verify-pr</code>. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
+    <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
+    <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
+    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted.</p></div>
+    <div class="card"><h3>Not examined</h3><p>Yarvis counts, from the files the agents actually opened, which changed files no check read in full. They are listed first, with why.</p></div>
+  </div>
+
+  <h3>Coverage guarantees, and why they matter</h3>
+  <p>A report is only useful if you know what it didn't look at. So:</p>
+  <ul>
+    <li><b>No file is left out to save room.</b> Each changed file's diff is handed to the agents on its own, and each check gets its exact file list.</li>
+    <li><b>Big PRs are split into reading groups</b> of about 512 KB, one agent per group per check, findings merged. One agent can't hold every diff, and what it read early would drop out of its context.</li>
+    <li><b>Reads are verified, not assumed.</b> A read only counts when it shows the lines. A failed read, a partly read diff, or lines too long to see whole don't count.</li>
+    <li><b>Bulk is skimmed, not read</b>: lockfiles, minified files, and generated or vendored files. Those marks are read at the merge-base, so a PR can't mark its own code generated to get it skimmed.</li>
+  </ul>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="context">
+  <h2>How we build context</h2>
+  <p>Both the agents and the human reader start with the same problem: a diff shows what changed, not why it matters or what it touches. A lot of the system exists to hand each reader the context they'd otherwise have to rebuild.</p>
+
+  <h3>For the agents</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h3>A goal to measure against</h3>
+      <p>Pinned before any review starts, and passed to every agent. Scope drift, completeness and the goal check all depend on it.</p>
+    </div>
+    <div class="card">
+      <h3>Facts instead of guesses</h3>
+      <p>Reviewers get the uncovered lines and the tests that pass without the change, so they start at the weak spots. The impact step gets each file's importers from the import graph, so reach isn't guessed.</p>
+    </div>
+    <div class="card">
+      <h3>The repo's own rules</h3>
+      <p>Reliability and security are judged against the invariants in <code>AGENTS.md</code> for the areas the PR touches: untrusted text, worktree paths, tool approval. The bar is the codebase's, not a generic checklist.</p>
+    </div>
+    <div class="card">
+      <h3>Room to read everything</h3>
+      <p>Per-file diffs, exact file lists per check, and reading groups sized so no agent has to drop early diffs from its context.</p>
+    </div>
+    <div class="card">
+      <h3>The surrounding code, not only the diff</h3>
+      <p>The flow diagram and simpler-approach agents search the whole checkout. A change is often only wrong in how it meets code that didn't change.</p>
+    </div>
+    <div class="card">
+      <h3>A clear line between data and instructions</h3>
+      <p>PR text goes in nonce-tagged blocks the agent is told are untrusted. That lets agents read hostile text closely without acting on it.</p>
+    </div>
+  </div>
+
+  <h3>For the person reading</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Where to look, and why</h3>
+      <p>Must-read files with a reason. <b>Needs attention</b> changes with a one-sentence check. High-risk reasons that name the safeguard: "types into the agent's PTY: check <code>prepare_instruction</code> still runs first", not "touches pty.rs".</p>
+    </div>
+    <div class="card">
+      <h3>Annotations on the diff itself</h3>
+      <p>In a review workspace, a strip above each diff lists the must-read reason, risk concerns and check findings that cite a line. Must-read lines are amber, cited lines red, with the reason on hover.</p>
+    </div>
+    <div class="card">
+      <h3>An order to read in</h3>
+      <p>The guided review walks the change outside in, from the request that arrives to what it finally writes. Data and test files fold into sanity-check steps so the walkthrough stays on logic.</p>
+    </div>
+    <div class="card">
+      <h3>The shape of the flow</h3>
+      <p>The flow diagram shows where the change sits: changed code highlighted, the callers and tables around it drawn in, so you see the blast radius before reading a line.</p>
+    </div>
+    <div class="card">
+      <h3>Progress that tracks itself</h3>
+      <p>Marking a file viewed strikes through every must-read, concern and finding in it. <b>Must read</b> counts how many you've done.</p>
+    </div>
+    <div class="card">
+      <h3>A path back to the author</h3>
+      <p>A finding you've read can be posted to the PR as a line comment, or added to the Yarvis workspace's review comments, where its agent treats it as a problem to check rather than your request.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="recheck">
+  <h2>Rechecking after fixes</h2>
+  <p><code>/verify-pr &lt;N&gt; --recheck</code> re-verifies what the last report flagged, plus the commits pushed since, instead of the whole PR. It still posts a complete report for the new head, since the gate reads only the latest one.</p>
+  <ul>
+    <li><b>Facts are always re-collected.</b> Coverage, baseline and mutation are measured, not judged, so they're cheap to trust and cheap to redo.</li>
+    <li><b>Review covers the fix diff.</b> The security reviewer always runs on it, plus the agents for each dimension the last report flagged.</li>
+    <li><b>Each old finding is settled against the code</b>: dropped if fixed, kept if not, rewritten if partly fixed.</li>
+    <li><b>A recheck never lowers the tier or the impact band.</b> The previous reasons may not name every risky change, so lowering either needs a full pass.</li>
+    <li><b>It falls back to a full run</b> when the local files don't match the posted report, the old head isn't in the clone, the fix diff is more than a third of the PR, or the PR now touches a file the old facts didn't list.</li>
+  </ul>
+  <p class="muted">Why: the fix loop would be slow and expensive if every round re-reviewed everything. But a recheck that could loosen the verdict would be a way to launder a risky PR, so it can only keep or tighten.</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="after-merge">
+  <h2>After merge: reverts and calibration</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Auto-revert</h3>
+      <p>When CI fails on <code>main</code> and the gate auto-approved the PR behind that commit (or the merge reviewer did), <code>verify-revert.yml</code> re-runs the failed jobs once. If they fail again, it opens a revert PR and comments on the original. PRs a person approved are left alone.</p>
+    </div>
+    <div class="card">
+      <h3>Calibration</h3>
+      <p><code>bun run verify:calibrate --days 60</code> lists each verdict and approval path against how many merges were later reverted or caused a regression. Add <code>Regression-from: #N</code> to a fix PR's description so a fix-forward counts too.</p>
+    </div>
+  </div>
+  <p>This closes the loop. The thresholds in the tier floor, the band table and the volume steps are first guesses. Calibration shows which verdicts are too loose or too strict.</p>
+</section>
+
+<!-- ───────────────────────────────────────────── -->
+<section id="files">
+  <h2>Where things live</h2>
+  <table>
+    <thead><tr><th>What</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>The skill's steps and rules</td><td><code>.claude/skills/verify-pr/SKILL.md</code></td></tr>
+      <tr><td>Fact collection: coverage, baseline, mutation, reach</td><td><code>scripts/verify/collect.ts</code>, <code>baseline.ts</code>, <code>mutation.ts</code>, <code>reach.ts</code>, <code>diffCoverage.ts</code></td></tr>
+      <tr><td>Path-based risk floor</td><td><code>scripts/verify/tier.ts</code></td></tr>
+      <tr><td>Report rendering, verdict floors, signing</td><td><code>scripts/verify/report.ts</code>, <code>signing.ts</code></td></tr>
+      <tr><td>Impact band table</td><td><code>sidecar/src/verify/impact.ts</code></td></tr>
+      <tr><td>The CI gate</td><td><code>scripts/verify/gate.ts</code>, <code>.github/workflows/verify.yml</code></td></tr>
+      <tr><td>Merge reviewer</td><td><code>scripts/verify/agentReview.ts</code>, <code>sidecar/src/verify/agentReview.ts</code></td></tr>
+      <tr><td>Auto-revert and calibration</td><td><code>.github/workflows/verify-revert.yml</code>, <code>scripts/verify/revert.ts</code>, <code>calibrate.ts</code></td></tr>
+      <tr><td>How the pieces fit, threat model</td><td><code>docs/verification.md</code></td></tr>
+      <tr><td>Settings and exact rules</td><td><code>docs/development.md</code>, "Verifying a PR for merge"</td></tr>
+      <tr><td>The in-app report and guided review</td><td><code>docs/features/review-workspaces.md</code>, <code>docs/features/pr-review.md</code></td></tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+</div>
+</body>
+</html>
