@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
-import { mountForInteraction, renderToHtml, textOf } from "../../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -442,6 +442,7 @@ describe("VerificationReportView", () => {
         poster: {
           toPr: async (f, section) => {
             sent.push(`pr ${section} ${f.path}:${f.line}`);
+            return undefined;
           },
           toWorkspace: {
             name: "cache-work",
@@ -464,6 +465,57 @@ describe("VerificationReportView", () => {
       const posted = buttons("Posted to PR")[0];
       expect(posted?.disabled).toBe(true);
       expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("holds the button while the post is in flight", async () => {
+    let release = () => {};
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: () =>
+            new Promise<undefined>((resolve) => {
+              release = () => resolve(undefined);
+            }),
+        },
+      }),
+    );
+    try {
+      const find = (label: string) =>
+        [...host.querySelectorAll("button")].find((b) => b.textContent === label);
+      find("Post to PR")?.click();
+      await waitFor(() => find("Posting…") != null, "the posting state");
+      expect(find("Posting…")?.disabled).toBe(true);
+      release();
+      await waitFor(() => find("Posted to PR") != null, "the posted state");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says when GitHub put a finding on the whole file", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: { toPr: async () => "file" as const },
+      }),
+    );
+    try {
+      const post = [...host.querySelectorAll("button")].find((b) => b.textContent === "Post to PR");
+      post?.click();
+      await waitFor(
+        () => textOf(host.innerHTML).includes("Posted on the whole file instead"),
+        "the notice",
+      );
+      const posted = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "Posted to PR",
+      );
+      expect(posted?.disabled).toBe(true);
     } finally {
       unmount();
     }

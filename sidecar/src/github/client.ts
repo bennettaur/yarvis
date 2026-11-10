@@ -55,6 +55,47 @@ export type {
 
 type FetchFn = typeof fetch;
 
+/** Where a posted review comment landed: on its lines, or on the whole file. */
+type CommentPlacement = "line" | "file";
+
+/**
+ * Whether GitHub refused a review comment because its line isn't part of the
+ * diff: an unchanged line outside every hunk, or a line number from the other
+ * side of the diff. GitHub has worded this refusal more than one way, so each
+ * known wording is matched, but only about a line: a path that "could not be
+ * resolved" is not in the PR, and a file comment would fail the same way.
+ */
+function isLineOutsideDiff(error: GitHubError): boolean {
+  return (
+    error.status === 422 &&
+    error.details.some(
+      (d) =>
+        /diff_hunk/i.test(d) ||
+        (/line\b/i.test(d) && /must be part of the diff|could not be resolved/i.test(d)),
+    )
+  );
+}
+
+/**
+ * Whether GitHub refused a review comment's `commit_id`, which happens when the
+ * commit the reviewer viewed was force-pushed out of the PR.
+ */
+function isUnknownCommit(error: GitHubError): boolean {
+  return error.status === 422 && error.details.some((d) => /commit_id|commit_sha/i.test(d));
+}
+
+/** The lines a review comment was meant for, as the heading of its file-level fallback. */
+function describeCommentLines(input: NewComment): string {
+  const side = input.side ?? "RIGHT";
+  const startSide = input.startSide ?? side;
+  const oldFileSuffix = (s: string) => (s === "LEFT" ? " of the old file" : "");
+  if (input.startLine == null) return `**Line ${input.line}${oldFileSuffix(side)}**`;
+  if (startSide !== side) {
+    return `**Line ${input.startLine}${oldFileSuffix(startSide)} to line ${input.line}${oldFileSuffix(side)}**`;
+  }
+  return `**Lines ${input.startLine}-${input.line}${oldFileSuffix(side)}**`;
+}
+
 function parseRepo(repositoryUrl?: string, htmlUrl?: string): { owner: string; repo: string } {
   if (repositoryUrl) {
     const m = repositoryUrl.match(/repos\/([^/]+)\/([^/]+)$/);
@@ -2233,25 +2274,34 @@ export class GitHubClient {
 
   /**
    * Posts a review comment on one line or a range. GitHub anchors review
-   * comments to a commit, so the PR's head sha is fetched first; `line` +
+   * comments to a commit: `viewedHead`, the head the reviewer was looking at,
+   * so the line numbers mean what they saw, or else the PR's current head,
+   * fetched first. GitHub accepts any commit in the PR. `line` +
    * `side` target the range's last line in the diff, and `start_line` +
    * `start_side` its first.
+   *
+   * GitHub only takes a line comment on a line inside the diff's hunks. When it
+   * refuses the line for that reason, the comment goes on the file instead,
+   * opening with the lines it was meant for, and `placement` says so.
    */
   async postComment(
     owner: string,
     repo: string,
     number: number,
     input: NewComment,
-  ): Promise<{ commitId: string }> {
-    const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    viewedHead?: string,
+  ): Promise<{ commitId: string; placement: CommentPlacement }> {
+    const commitId =
+      viewedHead ??
+      (await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`)).head
+        .sha;
     const side = input.side ?? "RIGHT";
     const range =
       input.startLine != null
         ? { start_line: input.startLine, start_side: input.startSide ?? side }
         : {};
-    const res = await this.fetchImpl(
-      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`,
-      {
+    const post = (fields: Record<string, unknown>) =>
+      this.fetchImpl(`${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/comments`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -2259,18 +2309,43 @@ export class GitHubClient {
           "X-GitHub-Api-Version": "2022-11-28",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          body: input.body,
-          commit_id: pr.head.sha,
-          path: input.path,
-          line: input.line,
-          side,
-          ...range,
-        }),
-      },
-    );
-    if (!res.ok) throw await githubErrorFrom(res, "post comment");
-    return { commitId: pr.head.sha };
+        body: JSON.stringify({ commit_id: commitId, path: input.path, ...fields }),
+      });
+
+    const res = await post({ body: input.body, line: input.line, side, ...range });
+    if (res.ok) return { commitId, placement: "line" };
+    const error = await githubErrorFrom(res, "post comment");
+    if (viewedHead && isUnknownCommit(error)) {
+      throw new GitHubError(
+        error.status,
+        error.reason,
+        "The commit you were viewing is no longer part of the pull request, likely after a force-push. Reload to comment on its current head.",
+        "post comment",
+        error.details,
+      );
+    }
+    if (!isLineOutsideDiff(error)) throw error;
+
+    const fileRes = await post({
+      body: `${describeCommentLines(input)}\n\n${input.body}`,
+      subject_type: "file",
+    });
+    if (!fileRes.ok) {
+      const fileError = await githubErrorFrom(fileRes, "post comment");
+      // A token, rate-limit or SSO failure says what to do on its own.
+      if (fileError.reason !== "upstream_error" && fileError.reason !== "forbidden") {
+        throw fileError;
+      }
+      // Keep the first refusal too, or the user never learns why a file comment was tried.
+      throw new GitHubError(
+        fileError.status,
+        fileError.reason,
+        `The line isn't part of the diff, and GitHub refused it as a file comment too. ${fileError.explanation}`,
+        "post comment",
+        fileError.details,
+      );
+    }
+    return { commitId, placement: "file" };
   }
 
   /** Replies to a review thread, addressed by its GraphQL node id. */

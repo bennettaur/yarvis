@@ -100,6 +100,10 @@ alike. There is no pending review to submit.
    side: shift-clicking a **+** on the other side starts a new comment there.
 3. Type the comment and press **Comment**.
 
+GitHub only takes a line comment on a line inside the diff. A comment on a
+line you expanded into view goes on the whole file instead, opening with the
+lines it is about, and a note under the line says so.
+
 Existing threads appear under the line they belong to, including threads on
 the old file. Each thread has two controls:
 
@@ -248,7 +252,10 @@ Some limits:
    line you picked in step 1 to the one you shift-click.
 3. Type your question. The answer appears inline, under those lines.
 4. To share an answer with the author, press **Post**. That turns it into a
-   real line comment on the PR.
+   real line comment on the PR. On GitHub, an answer about a line outside the
+   diff goes on the whole file instead, opening with the line it is about, and
+   the answer says so until its list next reloads. An answer can't be posted once
+   a force-push has removed the commit it was asked on.
 
 Until you press **Post**, answers are your own notes. Nothing reaches the
 author. They are stored against those lines and kept indefinitely.

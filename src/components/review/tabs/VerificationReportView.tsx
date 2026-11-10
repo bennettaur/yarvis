@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { CommentPlacement } from "../../../lib/pr/types";
 import {
   type ChangeKind,
   coverageKnown,
@@ -163,7 +164,8 @@ function Location({
  * path and line get the buttons, since both targets anchor to a line.
  */
 export interface FindingPoster {
-  toPr: (finding: Located, section: string) => Promise<void>;
+  /** "file" when GitHub put the comment on the whole file instead of its line. */
+  toPr: (finding: Located, section: string) => Promise<CommentPlacement | undefined>;
   /** Present when the PR was raised from a Yarvis workspace. */
   toWorkspace?: { name: string; add: (finding: Located, section: string) => Promise<void> };
 }
@@ -172,7 +174,7 @@ export interface FindingPoster {
 export type Located = Pick<VerificationFinding, "title" | "detail"> &
   Partial<Pick<VerificationFinding, "severity">> & { path: string; line: number };
 
-type PostState = "posting" | "posted" | { error: string };
+type PostState = "posting" | "posted" | "posted-to-file" | { error: string };
 
 /** The post buttons for one finding, each remembering it was sent so a second click can't repeat it. */
 function PostFinding({
@@ -189,25 +191,27 @@ function PostFinding({
   const { path, line } = finding;
   if (!poster || !path || !line) return null;
   const located: Located = { ...finding, path, line };
-  const send = async (fn: () => Promise<void>, set: (s: PostState) => void) => {
+  const send = async (fn: () => Promise<unknown>, set: (s: PostState) => void) => {
     set("posting");
     try {
-      await fn();
-      set("posted");
+      set((await fn()) === "file" ? "posted-to-file" : "posted");
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
   };
-  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={state === "posting" || state === "posted"}
-      className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
-    >
-      {state === "posting" ? "Posting…" : state === "posted" ? done : idle}
-    </button>
-  );
+  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => {
+    const sent = state === "posted" || state === "posted-to-file";
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={state === "posting" || sent}
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+      >
+        {state === "posting" ? "Posting…" : sent ? done : idle}
+      </button>
+    );
+  };
   const errors = [toPr, toWorkspace].flatMap((s) => (s && typeof s === "object" ? [s.error] : []));
   const workspace = poster.toWorkspace;
   return (
@@ -225,6 +229,12 @@ function PostFinding({
           `Added to ${workspace.name}`,
           () => void send(() => workspace.add(located, section), setToWorkspace),
         )}
+      {toPr === "posted-to-file" && (
+        <span role="status" className="text-[10px] text-amber-300">
+          Posted on the whole file instead: GitHub only takes line comments on lines inside the
+          diff.
+        </span>
+      )}
       {errors.map((e) => (
         <span key={e} role="alert" className="text-[10px] text-red-400">
           {e}
