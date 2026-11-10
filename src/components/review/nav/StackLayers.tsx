@@ -11,8 +11,18 @@ import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
  */
 export function addableLayers(stack: PrStack | null, held: ReadonlySet<string>): StackEntry[] {
   return (stack?.entries ?? []).filter(
-    (e) => hasPullRequest(e) && e.state === "open" && !e.merged && !held.has(refKey(e.ref)),
+    (e) => hasPullRequest(e) && e.state === "open" && !held.has(refKey(e.ref)),
   );
+}
+
+/**
+ * Whether `ref` is the lowest layer of its stack the workspace holds. Every
+ * held layer reads the same stack, so only that one offers the rest, rather
+ * than the same list appearing under each of them.
+ */
+export function offersStack(stack: PrStack | null, ref: PrRef, held: ReadonlySet<string>): boolean {
+  const lowest = (stack?.entries ?? []).find((e) => hasPullRequest(e) && held.has(refKey(e.ref)));
+  return lowest !== undefined && refKey(lowest.ref) === refKey(ref);
 }
 
 /** Ticked to start with unless someone has already approved it. */
@@ -20,21 +30,22 @@ export const pickedByDefault = (entry: StackEntry): boolean => entry.reviewDecis
 
 /**
  * Lists the other open layers of a PR's stack so the reviewer can choose which
- * to pull in. Nothing is added until they ask, since a layer that is already
- * approved usually isn't worth a checkout.
+ * to pull in, rather than every layer arriving uninvited. Approved layers start
+ * unticked, since they usually aren't worth a checkout.
  */
 export default function StackLayers({
   prRef,
-  held,
+  heldRefKeys,
   onAdd,
 }: {
   prRef: PrRef;
-  /** Ref keys of the PRs the workspace already holds. */
-  held: ReadonlySet<string>;
+  heldRefKeys: ReadonlySet<string>;
   onAdd: (refs: PrRef[]) => Promise<void>;
 }) {
   const { data: stack } = usePrStack(prRef);
-  const layers = addableLayers(stack ?? null, held);
+  const layers = offersStack(stack ?? null, prRef, heldRefKeys)
+    ? addableLayers(stack ?? null, heldRefKeys)
+    : [];
   // Only what the user changed; everything else follows `pickedByDefault`.
   const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [adding, setAdding] = useState(false);
@@ -44,7 +55,7 @@ export default function StackLayers({
   const picked = layers.filter(isPicked);
   const toggle = (e: StackEntry) =>
     setOverrides((prev) => new Map(prev).set(refKey(e.ref), !isPicked(e)));
-  const add = async (entries: StackEntry[]) => {
+  const addLayers = async (entries: StackEntry[]) => {
     setAdding(true);
     try {
       await onAdd(entries.map((e) => e.ref));
@@ -87,7 +98,7 @@ export default function StackLayers({
       <div className="mt-1 flex gap-3 text-xs">
         <button
           type="button"
-          onClick={() => add(picked)}
+          onClick={() => addLayers(picked)}
           disabled={adding || picked.length === 0}
           className="text-indigo-300 hover:text-indigo-200 disabled:cursor-default disabled:text-zinc-600"
         >
@@ -95,7 +106,7 @@ export default function StackLayers({
         </button>
         <button
           type="button"
-          onClick={() => add(layers)}
+          onClick={() => addLayers(layers)}
           disabled={adding}
           className="text-zinc-400 hover:text-zinc-200 disabled:cursor-default disabled:text-zinc-600"
         >

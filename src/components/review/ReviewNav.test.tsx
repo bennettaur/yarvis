@@ -97,7 +97,7 @@ describe("ReviewNav", () => {
         progress: new Map([["b", "Receiving objects: 40%"]]),
         openTab: () => {},
         onSetup: () => {},
-        onAddPrs: async () => {},
+        onAddStackLayers: async () => {},
       }),
     );
   };

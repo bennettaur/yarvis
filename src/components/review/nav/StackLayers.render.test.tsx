@@ -4,7 +4,7 @@ import { prStackKey } from "../../../lib/pr/cache";
 import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
-import StackLayers, { addableLayers, pickedByDefault } from "./StackLayers";
+import StackLayers, { addableLayers, offersStack, pickedByDefault } from "./StackLayers";
 
 const ref = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
 
@@ -37,6 +37,9 @@ const stackOf = (entries: StackEntry[]): PrStack => ({
 let unmount = () => {};
 afterEach(() => unmount());
 
+const button = (host: HTMLElement, label: string) =>
+  [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
+
 describe("addableLayers", () => {
   it("keeps open PRs the workspace doesn't hold, bottom first", () => {
     const layers = addableLayers(
@@ -45,6 +48,7 @@ describe("addableLayers", () => {
         entry(2),
         entry(3, { isCurrent: true }),
         entry(4, { state: "closed" }),
+        // Number 0: a branch with no pull request.
         entry(0, { state: "none" }),
         entry(5, { draft: true }),
       ]),
@@ -55,6 +59,20 @@ describe("addableLayers", () => {
 
   it("finds nothing when there is no stack", () => {
     expect(addableLayers(null, new Set())).toEqual([]);
+  });
+});
+
+describe("offersStack", () => {
+  const stack = stackOf([entry(1), entry(2), entry(3), entry(4)]);
+  const held = new Set(["gh:o/r/2", "gh:o/r/4"]);
+
+  it("offers the stack from the lowest held layer only", () => {
+    expect(offersStack(stack, ref(2), held)).toBe(true);
+    expect(offersStack(stack, ref(4), held)).toBe(false);
+  });
+
+  it("offers nothing without a stack", () => {
+    expect(offersStack(null, ref(2), held)).toBe(false);
   });
 });
 
@@ -72,7 +90,7 @@ describe("StackLayers", () => {
     const html = await renderToHtml(
       createElement(StackLayers, {
         prRef: ref(10),
-        held: new Set(["gh:o/r/10", "gh:o/r/11"]),
+        heldRefKeys: new Set(["gh:o/r/10", "gh:o/r/11"]),
         onAdd: async () => {},
       }),
     );
@@ -92,7 +110,7 @@ describe("StackLayers", () => {
     const mounted = await mountForInteraction(
       createElement(StackLayers, {
         prRef: ref(20),
-        held: new Set(["gh:o/r/20"]),
+        heldRefKeys: new Set(["gh:o/r/20"]),
         onAdd: async (refs) => {
           added.push(refs);
         },
@@ -101,16 +119,13 @@ describe("StackLayers", () => {
     unmount = mounted.unmount;
     const { host } = mounted;
     expect(host.textContent).toContain("Approved");
-    const button = (label: string) =>
-      [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
-
-    expect(button("Add selected").textContent).toBe("Add selected (1)");
-    button("Add selected").click();
+    expect(button(host, "Add selected").textContent).toBe("Add selected (1)");
+    button(host, "Add selected").click();
     await waitFor(() => added.length === 1, "the first add");
     expect(added[0]).toEqual([ref(21)]);
 
-    await waitFor(() => !button("Add all").disabled, "the first add to finish");
-    button("Add all").click();
+    await waitFor(() => !button(host, "Add all").disabled, "the first add to finish");
+    button(host, "Add all").click();
     await waitFor(() => added.length === 2, "the add-all");
     expect(added[1]).toEqual([ref(19), ref(21)]);
   });
@@ -124,7 +139,7 @@ describe("StackLayers", () => {
     const mounted = await mountForInteraction(
       createElement(StackLayers, {
         prRef: ref(30),
-        held: new Set(["gh:o/r/30"]),
+        heldRefKeys: new Set(["gh:o/r/30"]),
         onAdd: async (refs) => {
           added.push(refs);
         },
@@ -139,5 +154,33 @@ describe("StackLayers", () => {
       .click();
     await waitFor(() => added.length === 1, "the add");
     expect(added[0]).toEqual([ref(29)]);
+  });
+
+  it("holds the controls while an add is running", async () => {
+    primeCache(prStackKey(ref(40)), stackOf([entry(40, { isCurrent: true }), entry(41)]));
+    let release = () => {};
+    let calls = 0;
+    const mounted = await mountForInteraction(
+      createElement(StackLayers, {
+        prRef: ref(40),
+        heldRefKeys: new Set(["gh:o/r/40"]),
+        onAdd: () => {
+          calls++;
+          return new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        },
+      }),
+    );
+    unmount = mounted.unmount;
+    const { host } = mounted;
+    button(host, "Add selected").click();
+    await waitFor(() => button(host, "Add all").disabled, "the controls to lock");
+    expect(button(host, "Add selected").disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>("input[type=checkbox]")!.disabled).toBe(true);
+    button(host, "Add all").click();
+    expect(calls).toBe(1);
+    release();
+    await waitFor(() => !button(host, "Add all").disabled, "the controls to unlock");
   });
 });

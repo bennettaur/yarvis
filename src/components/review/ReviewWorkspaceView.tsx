@@ -18,6 +18,7 @@ import {
   useReviewChangedFiles,
   useReviewWorkspace,
 } from "../../lib/reviewWorkspaces/cache";
+import { addStackLayers } from "../../lib/reviewWorkspaces/open";
 import PrLocator from "../pr/PrLocator";
 import SplitPane, { usePersistedRatio } from "../SplitPane";
 import ConfirmDialog from "./ConfirmDialog";
@@ -320,15 +321,10 @@ export default function ReviewWorkspaceView({
       open({ kind: "description", prId: pr.id });
     });
 
-  // One at a time, so each layer lands after the one below it in the nav.
-  const addStackLayers = (refs: PrRef[]) =>
+  const addLayers = (refs: PrRef[]) =>
     attempt(async () => {
-      try {
-        for (const ref of refs) await addReviewPr(workspaceId, ref);
-      } finally {
-        // Also after a failed add, so the ones before it show.
-        invalidateReviewWorkspace(workspaceId);
-      }
+      const failed = await addStackLayers(workspaceId, refs);
+      if (failed.length) throw new Error(`Couldn't add ${failed.join("; ")}`);
     });
 
   const archive = async () => {
@@ -374,7 +370,7 @@ export default function ReviewWorkspaceView({
       progress={progress}
       openTab={open}
       onSetup={setConsentPr}
-      onAddPrs={addStackLayers}
+      onAddStackLayers={addLayers}
     />
   );
   const main = (
