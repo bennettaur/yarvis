@@ -21,6 +21,46 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("send_workspace_slash_command")).toBe(true);
   });
 
+  // Each spends an agent run on a PR; reading back the guides they wrote does not.
+  it("asks before starting a guided review or verification report", () => {
+    const families = builtinToolMetadataByFamily();
+    expect(Object.keys(families.prReview ?? {})).toEqual(
+      expect.arrayContaining(["start_pr_guided_review", "start_pr_verification_report"]),
+    );
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_pr_guided_review")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_pr_verification_report")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("list_pr_reviews")).toBe(false);
+  });
+
+  // `confirmed` answers a cost question and `regenerate` loses progress, so the
+  // user, not the model, says yes on a typed turn too.
+  it("asks on a typed turn when a review start confirms a cost or replaces a guide", () => {
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: () => true,
+    });
+    const report = conditions.get("start_pr_verification_report");
+    const guide = conditions.get("start_pr_guided_review");
+    expect(report?.({ pullRequest: {} })).toBe(false);
+    expect(report?.({ pullRequest: {}, confirmed: true })).toBe(true);
+    expect(guide?.({ pullRequest: {} })).toBe(false);
+    expect(guide?.({ pullRequest: {}, regenerate: true })).toBe(true);
+  });
+
+  // A page read this turn may be what suggested the PR, so even a plain start asks.
+  it("asks before any review start once a typed turn has read a web page", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads,
+      isUserGivenUrl: () => true,
+    });
+    reads.hasReadWebPage = true;
+    expect(conditions.get("start_pr_verification_report")?.({ pullRequest: {} })).toBe(true);
+    expect(conditions.get("start_pr_guided_review")?.({ pullRequest: {} })).toBe(true);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
