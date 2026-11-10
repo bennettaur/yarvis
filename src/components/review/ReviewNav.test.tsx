@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { prDetailKey, prStackKey } from "../../lib/pr/cache";
 import type { PrDetail, PrRef, PrStack, StackEntry } from "../../lib/pr/types";
@@ -6,6 +6,7 @@ import { primeCache } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../lib/reviewWorkspaces/cache";
 import { mountForInteraction, renderToHtml, waitFor } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import { PR_COLORS, prColor } from "./prColors";
 import ReviewNav, { cloneStatusText, navGroups, prLabel } from "./ReviewNav";
 
@@ -148,6 +149,7 @@ describe("ReviewNav", () => {
 describe("ReviewNav's stack picker", () => {
   let unmount = () => {};
   afterEach(() => unmount());
+  afterAll(resetSidecarApi);
 
   const layerRef = (number: number): PrRef => ({
     provider: "github",
@@ -241,5 +243,72 @@ describe("ReviewNav's stack picker", () => {
     expect(boxes.every((b) => b.disabled)).toBe(true);
     release();
     await waitFor(() => !button(otherPicker, "Add all").disabled, "the pickers to unlock");
+  });
+
+  it("keeps the reviewer's ticks and looks no stack up again when the workspace's PRs change", async () => {
+    const stack = {
+      trunk: "main",
+      entries: [layer(21), layer(22), layer(23), layer(24), layer(25)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    const other = {
+      trunk: "main",
+      entries: [layer(28), layer(29)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    // Stacks are served rather than primed, so every lookup the nav makes is counted.
+    const asked: number[] = [];
+    stubSidecarApi({
+      sidecarFetch: async (path: string) => {
+        const url = new URL(path, "http://x");
+        // The rest of the nav's reads aren't what this test is about.
+        if (url.pathname !== "/api/pr/stack") {
+          return Response.json({ error: "not served here" }, { status: 404 });
+        }
+        const number = Number(url.searchParams.get("number"));
+        asked.push(number);
+        return Response.json({ stack: number === 28 ? other : stack });
+      },
+    });
+    const navWith = (prs: ReviewWorkspacePr[]) => {
+      for (const p of prs) {
+        primeCache(prDetailKey(p.ref), {
+          title: p.title,
+          reviewThreads: [],
+        } as unknown as PrDetail);
+      }
+      return createElement(ReviewNav, {
+        workspaceId: "ws-1",
+        prs,
+        active: null,
+        progress: new Map(),
+        openTab: () => {},
+        onSetup: () => {},
+        onAddStackLayers: async () => {},
+      });
+    };
+    const mounted = await mountForInteraction(navWith([held(22, 0)]));
+    unmount = mounted.unmount;
+    const nav = mounted.host.querySelector("nav")!;
+    const picker = () => nav.querySelectorAll('section[aria-label="Stack"]');
+    const ticks = (section: Element) =>
+      Object.fromEntries(
+        [...section.querySelectorAll("li")].map((li) => [
+          li.textContent?.match(/#\d+/)?.[0],
+          li.querySelector<HTMLInputElement>("input")!.checked,
+        ]),
+      );
+    await waitFor(() => picker().length === 1, "the picker");
+    nav.querySelector<HTMLInputElement>("li:nth-child(2) input")!.click();
+    await waitFor(() => ticks(picker()[0]!)["#23"] === false, "#23 unticked");
+
+    // The reviewer added #24, and a PR from another stack arrived.
+    mounted.rerender(navWith([held(22, 0), held(24, 1), held(28, 2)]));
+    await waitFor(() => picker().length === 2, "the second stack's picker");
+    expect(ticks(picker()[0]!)).toEqual({ "#21": true, "#23": false, "#25": true });
+    expect(ticks(picker()[1]!)).toEqual({ "#29": true });
+    expect(asked).toEqual([22, 28]);
   });
 });

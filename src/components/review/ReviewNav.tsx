@@ -267,7 +267,9 @@ export default function ReviewNav({
   // Held here rather than per picker, so no picker can start a second add and
   // a picker that remounts while the stacks reload keeps the reviewer's ticks.
   const [addingStack, setAddingStack] = useState(false);
-  const [stackPicks, setStackPicks] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [stackPickOverrides, setStackPickOverrides] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
   const addWhileLocked = async (refs: PrRef[]) => {
     setAddingStack(true);
     try {
@@ -281,13 +283,14 @@ export default function ReviewNav({
       {prs.length === 0 && (
         <p className="p-3 text-xs text-zinc-500">Paste a PR link above to start reviewing.</p>
       )}
+      {/* Keyed by the PR it looks up first, so a new first PR never shows the old one's stack. */}
       <StackLayers
         key={groups[0]?.pr.refKey ?? "none"}
         refs={groups.map(({ pr }) => pr.ref)}
         heldRefKeys={heldRefKeys}
         adding={addingStack}
-        overrides={stackPicks}
-        onToggle={(key, picked) => setStackPicks((prev) => new Map(prev).set(key, picked))}
+        overrides={stackPickOverrides}
+        onToggle={(key, picked) => setStackPickOverrides((prev) => new Map(prev).set(key, picked))}
         onAdd={addWhileLocked}
       />
       {groups.map(({ pr, color }) => (

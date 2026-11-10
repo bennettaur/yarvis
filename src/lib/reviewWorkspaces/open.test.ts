@@ -99,16 +99,20 @@ describe("addStackLayers", () => {
       addReviewPr: async (_ws, ref) => {
         const name = shortPrName(ref);
         if (name === "r#2") throw new Error("already in the workspace");
-        if (name === "r#3") throw new Error("not found");
+        if (name === "r#4") {
+          // Cached after the adds before it, so only a refresh after this
+          // failing last layer drops it.
+          primeCache(reviewWorkspaceKey("ws"), "before the last layer");
+          throw new Error("not found");
+        }
         added.push(name);
         return {} as ReviewWorkspacePr;
       },
     });
-    primeCache(reviewWorkspaceKey("ws"), "before the adds");
     await expect(addStackLayers("ws", [layer(1), layer(2), layer(3), layer(4)])).rejects.toThrow(
-      "Couldn't add r#2: already in the workspace; r#3: not found",
+      "Couldn't add r#2: already in the workspace; r#4: not found",
     );
-    expect(added).toEqual(["r#1", "r#4"]);
+    expect(added).toEqual(["r#1", "r#3"]);
     // The cached workspace was dropped, so the nav reloads and shows the adds.
     expect(await cachedFetch(reviewWorkspaceKey("ws"), async () => "reloaded")).toBe("reloaded");
   });

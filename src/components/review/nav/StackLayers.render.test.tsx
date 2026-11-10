@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement, useState } from "react";
+import { usePrStack } from "../../../lib/pr/cache";
 import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
 import { mountForInteraction, waitFor } from "../../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../../test/sidecarApi";
@@ -150,12 +151,33 @@ describe("StackLayers", () => {
 
   it("stops looking stacks up once a lookup fails", async () => {
     const asked = serveStacks({ 70: "fail", 71: stackOf([entry(70), entry(71), entry(72)]) });
-    const host = await mount([ref(70), ref(71)], ["gh:o/r/70", "gh:o/r/71"]);
-    await waitFor(() => asked.length === 1, "the first lookup");
-    // Give a second lookup the chance to start; none should.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Joins the picker's load of the same stack and shows when it fails. The
+    // picker sees the failure in the same render, and any lookup it went on to
+    // start would begin in that render's effects, before the probe's text is read.
+    function FailureProbe() {
+      const { error } = usePrStack(ref(70));
+      return createElement("p", { id: "probe" }, error ?? "");
+    }
+    const mounted = await mountForInteraction(
+      createElement(
+        "div",
+        null,
+        createElement(StackLayers, {
+          refs: [ref(70), ref(71)],
+          heldRefKeys: new Set(["gh:o/r/70", "gh:o/r/71"]),
+          adding: false,
+          overrides: new Map(),
+          onToggle: () => {},
+          onAdd: async () => {},
+        }),
+        createElement(FailureProbe),
+      ),
+    );
+    unmount = mounted.unmount;
+    const probe = mounted.host.querySelector("#probe")!;
+    await waitFor(() => probe.textContent !== "", "the failed lookup");
     expect(asked).toEqual([70]);
-    expect(pickers(host).length).toBe(0);
+    expect(pickers(mounted.host).length).toBe(0);
   });
 
   it("adds only the picked layers, skipping approved ones unless ticked", async () => {

@@ -48,7 +48,7 @@ export default function StackLayers({ refs, ...picker }: PickerProps & { refs: P
   return (
     <>
       {stack && <StackPicker stack={stack} {...picker} />}
-      {/* Keyed by the ref it looks up, so a new one never starts from another's stack. */}
+      {/* Keyed by the PR it looks up, so when that PR changes it never shows the old PR's stack. */}
       <StackLayers key={rest[0] ? refKey(rest[0]) : "end"} refs={rest} {...picker} />
     </>
   );
