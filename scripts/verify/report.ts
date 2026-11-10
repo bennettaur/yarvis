@@ -114,7 +114,7 @@ export const Review = z.object({
     reasons: z.array(z.string().max(140)).min(1).max(4),
   }),
   /** Every independent change, for the impact score. */
-  changes: z.array(Change).min(1).max(30),
+  changes: z.array(Change).min(1),
   /**
    * The skill's rating of each file the path floor sent for assessment
    * (`facts.tier.assess`). One left out counts as high.
@@ -619,17 +619,6 @@ export function renderReport(
   }
 
   const details: string[] = [];
-  if (impact) {
-    details.push(
-      "**Every change, by impact**",
-      "",
-      ...impact.changes.map(
-        (change) =>
-          `- ${change.band}/5 ${inline(change.title)} ${code(change.location)}: ${inline(describeChange(change, facts))}`,
-      ),
-      "",
-    );
-  }
   if (minorFindings.length > 0) {
     details.push(
       "**Minor findings**",

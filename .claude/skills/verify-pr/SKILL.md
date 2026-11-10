@@ -362,9 +362,8 @@ Only an interface or logic entry can give a folder as its location, since
 entry names one file, and each changed source file needs an entry naming it
 or an interface or logic folder covering it; one left out is scored as an
 unlisted logic change. So a rename of something exported, across forty
-files, is one `interface` entry at their common folder. At most 30 entries:
-a PR with more files than that to list one by one should be split, and its
-band will say so.
+files, is one `interface` entry at their common folder. There is no limit on
+entries: the posted report shows only the changes under "Needs attention".
 
 **kind**, what the change does:
 

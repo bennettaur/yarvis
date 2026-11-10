@@ -682,14 +682,18 @@ describe("renderReport's impact", () => {
     expect(parseSignedReport(withSignature(body, "c2ln"))?.data.impactBand).toBe(5);
   });
 
-  it("describes ranges, bare paths, sensitivity and folded changes in the details", () => {
+  it("describes a change needing attention, and leaves the rest out of the comment", () => {
     const review = makeReview({
       changes: [
         change({
           title: "Tighten token checks",
           location: "sidecar/src/chat/agent.ts:12-20",
+          kind: "logic",
+          reach: "core",
+          evidence: "unproven",
           sensitive: true,
           count: 3,
+          check: "Expired tokens are still refused",
         }),
         change({ title: "Docs", location: "docs/", kind: "passive" }),
       ],
@@ -699,11 +703,10 @@ describe("renderReport's impact", () => {
       reach: [{ ...reach[0], importers: 1, otherAreas: 1 }],
     });
     const { body } = renderReport(review, facts, TARGET);
-    expect(body).toContain("**Every change, by impact**");
     expect(body).toContain(
-      "`sidecar/src/chat/agent.ts:12-20`: addition, leaf; its file has 1 importer in 1 other area, proven by tests, sensitive (3 like it)",
+      "`sidecar/src/chat/agent.ts:12-20`: logic, core; its file has 1 importer in 1 other area, untested, sensitive (3 like it)",
     );
-    expect(body).toContain("Docs `docs/`: passive, leaf, proven by tests");
+    expect(body).not.toContain("Docs `docs/`");
   });
 
   it("says when the number of changes raised the band", () => {
