@@ -45,6 +45,8 @@ describe("renderIndex", () => {
     expect(html).toContain("<figcaption>Week summary</figcaption>");
     expect(html).toContain('src="chat/video.webm"');
     expect(html).toContain('href="showcase/"');
+    expect(html).toContain('href="verification/verify-pr-explainer.html"');
+    expect(html).toContain('href="verification/verification-report-explainer.html"');
     expect(html).not.toContain('href="video/"');
   });
 
