@@ -1087,9 +1087,11 @@ fn remote_control_command(base: &str, name: &str) -> String {
     // `--remote-control` takes the name as an optional value, so Claude Code
     // reads a name starting with `-` as a flag of its own. Names come from issue
     // titles, so one titled `--dangerously-skip-permissions` would otherwise
-    // start the session with that flag.
-    let name = sanitize_session_name(name);
-    let name = name.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
+    // start the session with that flag. Dashes are stripped after sanitizing,
+    // so a removed bidi or control character can't leave one in front, and
+    // whitespace with them, so `- -x` can't leave one either.
+    let sanitized = sanitize_session_name(name);
+    let name = sanitized.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
     format!(
         "{} --remote-control {}",
         base.trim(),
@@ -1872,10 +1874,20 @@ mod tests {
             remote_control_command("claude", "- -  Fix bug"),
             "claude --remote-control 'Fix bug'"
         );
-        // A bidi override can't hide the dash: it is stripped first.
+        // Sanitizing removes the bidi override first, so the dash is then trimmed.
         assert_eq!(
             remote_control_command("claude", "\u{202e}-p"),
             "claude --remote-control 'p'"
+        );
+        // A name of only dashes becomes an empty value, which can't read as a flag.
+        assert_eq!(
+            remote_control_command("claude", "---"),
+            "claude --remote-control ''"
+        );
+        // Only the ASCII hyphen-minus starts a flag, so a look-alike dash is kept.
+        assert_eq!(
+            remote_control_command("claude", "\u{2010}p"),
+            "claude --remote-control '\u{2010}p'"
         );
         // Only a leading dash reads as a flag.
         assert_eq!(
