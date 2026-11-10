@@ -262,8 +262,12 @@ function PrGroup({
   const diagramRun = diagram.data?.run ?? null;
   const liveRun = (run: { id: string; status: string; live: boolean } | null) =>
     run?.status === "running" && run.live ? run.id : null;
-  useRefreshWhenRunEnds(liveRun(verificationRun), verificationKey(pr.id));
-  useRefreshWhenRunEnds(liveRun(diagramRun), flowDiagramKey(pr.id));
+  // A run another Yarvis instance owns can't be followed from here, so it shows
+  // no spinner; Run then joins it and opens the tab, which says so.
+  const liveVerification = liveRun(verificationRun);
+  const liveDiagram = liveRun(diagramRun);
+  useRefreshWhenRunEnds(liveVerification, verificationKey(pr.id));
+  useRefreshWhenRunEnds(liveDiagram, flowDiagramKey(pr.id));
   // The latest runs' answers depend on the checkout: the size is only known
   // once it is ready, and "current" is against its head.
   useOnChange(`${checkedOut}:${pr.headSha}`, () => {
@@ -333,7 +337,7 @@ function PrGroup({
             label={STATIC_TAB_LABEL.verification}
             active={isActive("verification")}
             hasRun={verificationRun !== null}
-            running={verificationRun?.status === "running"}
+            running={liveVerification !== null}
             canRun={checkedOut && !verification.loading}
             runHint={
               !checkedOut
@@ -355,7 +359,7 @@ function PrGroup({
             label={STATIC_TAB_LABEL.diagram}
             active={isActive("diagram")}
             hasRun={diagramRun !== null}
-            running={diagramRun?.status === "running"}
+            running={liveDiagram !== null}
             canRun={checkedOut && !diagram.loading}
             runHint={
               checkedOut

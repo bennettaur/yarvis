@@ -140,4 +140,53 @@ describe("DiagramTab", () => {
     expect(text).toContain("This diagram is for an older head");
     expect(button(host, "Re-run")).toBeDefined();
   });
+
+  it("says what went wrong when a run fails with only its stream's error", async () => {
+    let ended = false;
+    stubReviewApi({
+      streamAgentRun: async function* () {
+        yield { type: "error", message: "The agent ran out of turns" } as never;
+        ended = true;
+      },
+      latestFlowDiagram: async () =>
+        latest({
+          run: ended
+            ? ({ id: "r1", status: "failed", error: null, live: false } as never)
+            : ({ id: "r1", status: "running", live: true } as never),
+          current: true,
+        }),
+    });
+    const host = await mount(
+      latest({ run: { id: "r1", status: "running", live: true } as never, current: true }),
+    );
+    await waitFor(
+      () => textOf(host.innerHTML).includes("The last run failed: The agent ran out of turns"),
+      "the failure with its reason",
+    );
+  });
+
+  it("points at another window's run rather than offering a second one", async () => {
+    const host = await mount(
+      latest({ run: { id: "r1", status: "running", live: false } as never, current: true }),
+    );
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("being drawn by another Yarvis window");
+    expect(button(host, "Check again")).toBeDefined();
+    expect(button(host, "Generate diagram")).toBeUndefined();
+    expect(button(host, "Re-run")).toBeUndefined();
+  });
+
+  it("shows a start that failed", async () => {
+    stubReviewApi({
+      startFlowDiagram: async () => {
+        throw new Error("No checkout");
+      },
+    });
+    const host = await mount(latest({}));
+    button(host, "Generate diagram")?.click();
+    await waitFor(
+      () => host.querySelector('[role="alert"]')?.textContent?.includes("No checkout") ?? false,
+      "the error",
+    );
+  });
 });

@@ -137,6 +137,78 @@ describe("ReviewNav's run buttons", () => {
     expect(sections).toEqual([]);
   });
 
+  it("asks before a run over budget, even on a PR that isn't large", async () => {
+    const sections: unknown[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _prId, picked) => {
+        sections.push(picked);
+        return { runId: "r2", existing: false };
+      },
+    });
+    const opened: TabSpec[] = [];
+    const host = await mount(
+      {
+        size: {
+          files: 2,
+          changedLines: 10,
+          large: false,
+          binary: [],
+          truncated: [],
+          skimmed: [],
+          estimatedCostUsd: 3,
+          sectionCostUsd: 0.04,
+          defaultSections: [...DEFAULT_SECTIONS],
+          budgetUsd: 1,
+          overBudget: true,
+        },
+      },
+      opened,
+    );
+    button(host, "Run verification")?.click();
+    await waitFor(() => opened.length > 0, "the verification tab to open");
+    expect(sections).toEqual([]);
+  });
+
+  it("shows why a run couldn't start, and lets it be tried again", async () => {
+    stubReviewApi({
+      startFlowDiagram: async () => {
+        throw new Error("The checkout isn't ready");
+      },
+    });
+    const opened: TabSpec[] = [];
+    const host = await mount({}, opened);
+    button(host, "Run flow diagram")?.click();
+    await waitFor(
+      () => host.textContent?.includes("The checkout isn't ready") ?? false,
+      "the error",
+    );
+    expect(button(host, "Run flow diagram")?.disabled).toBe(false);
+    expect(opened).toEqual([]);
+  });
+
+  it("doesn't spin for a run another window owns, and Run joins it", async () => {
+    const streamed: string[] = [];
+    const started: string[] = [];
+    stubReviewApi({
+      streamAgentRun: async function* (id) {
+        streamed.push(id);
+        yield { type: "done", status: "succeeded" } as AgentRunEvent;
+      },
+      startFlowDiagram: async (_ws, prId) => {
+        started.push(prId);
+        return { runId: "r1", existing: true };
+      },
+    });
+    const opened: TabSpec[] = [];
+    const host = await mount({}, opened, {}, { run: { id: "r1", status: "running", live: false } });
+    const run = button(host, "Re-run flow diagram");
+    expect(run?.disabled).toBe(false);
+    run?.click();
+    await waitFor(() => opened.length > 0, "the diagram tab to open");
+    expect(started).toEqual(["pr1"]);
+    expect(streamed).toEqual([]);
+  });
+
   it("can't run before the checkout is ready", async () => {
     const host = await mount({}, [], { worktreeStatus: "checking-out" });
     expect(button(host, "Run verification")?.disabled).toBe(true);
