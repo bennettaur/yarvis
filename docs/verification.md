@@ -12,7 +12,8 @@ For the methodology and the reasoning behind each step, read
 [the `/verify-pr` explainer](https://bennettaur.github.io/yarvis/verification/verify-pr-explainer.html).
 The review workspace's in-app report has
 [its own explainer](https://bennettaur.github.io/yarvis/verification/verification-report-explainer.html).
-Both pages are in `docs/` and published to the demo site.
+Their sources are `docs/verify-pr-explainer.html` and
+`docs/verification-report-explainer.html`, published to the demo site.
 
 ## The flow
 
