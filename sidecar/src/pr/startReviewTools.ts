@@ -5,6 +5,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { type KickoffDeps, kickOffVerification } from "../reviewWorkspaces/kickoff.ts";
+import { githubNameSchema, prNumberSchema, refSegmentSchema } from "../reviewWorkspaces/routes.ts";
 import { defaultReviewDeps, ReviewWorkspaceError } from "../reviewWorkspaces/service.ts";
 import { defaultVerificationDeps, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
 import { kickOffGuide } from "./guideRun.ts";
@@ -21,31 +22,15 @@ import type { PrRef } from "./types.ts";
 const PullRequest = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("github"),
-    owner: z
-      .string()
-      .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/)
-      .describe("Repository owner, e.g. bennettaur"),
-    repo: z
-      .string()
-      .regex(/^[A-Za-z0-9._-]+$/)
-      .describe("Repository name, e.g. yarvis"),
-    number: z.number().int().positive().describe("Pull request number"),
+    owner: githubNameSchema.describe("Repository owner, e.g. bennettaur"),
+    repo: githubNameSchema.describe("Repository name, e.g. yarvis"),
+    number: prNumberSchema.describe("Pull request number"),
   }),
   z.object({
     provider: z.literal("azure"),
-    project: z
-      .string()
-      .min(1)
-      .max(200)
-      .refine((s) => !/[/\\]|\.\./.test(s), "invalid name")
-      .describe("Azure DevOps project"),
-    repo: z
-      .string()
-      .min(1)
-      .max(200)
-      .refine((s) => !/[/\\]|\.\./.test(s), "invalid name")
-      .describe("Repository name"),
-    prId: z.number().int().positive().describe("Pull request id"),
+    project: refSegmentSchema.describe("Azure DevOps project"),
+    repo: refSegmentSchema.describe("Repository name"),
+    prId: prNumberSchema.describe("Pull request id"),
   }),
 ]);
 type PullRequest = z.infer<typeof PullRequest>;

@@ -49,8 +49,10 @@ export async function syncGuideAttention(db: Db, ref: PrRef, guide: PrGuideRow):
     source: "system",
     sessionKey,
     kind: "info",
-    title: guide.title ? `Reviewing ${guide.title}` : "PR review in progress",
-    body: stepLabel(guide),
+    // The PR's title is the author's text, so it goes in the body, where it
+    // can't pose as an app alert.
+    title: "PR review in progress",
+    body: guide.title ? `${guide.title}: ${stepLabel(guide)}` : stepLabel(guide),
     navTarget: navTargetFor(ref),
   });
 }
@@ -135,8 +137,22 @@ export type GuideKickoff =
   | { status: "exists"; stale: boolean; progress: string }
   | { status: "error"; error: string };
 
-/** PRs with a guide being written by {@link kickOffGuide}, so a second ask joins the first. */
+/** PRs with a guide being written, so a second ask joins the first rather than paying twice. */
 const guidesInFlight = new Set<string>();
+
+/**
+ * Claims the right to write `ref`'s guide. Returns the release, or null when
+ * one is already being written. Per process, like the chat turn that asks.
+ */
+export function claimGuide(ref: PrRef): (() => void) | null {
+  const key = refKey(ref);
+  if (guidesInFlight.has(key)) return null;
+  guidesInFlight.add(key);
+  return () => guidesInFlight.delete(key);
+}
+
+/** Longest a background guide run may take before it is given up on. */
+const GUIDE_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
  * Starts writing a guide in the background and answers at once. The guide
@@ -155,10 +171,10 @@ export async function kickOffGuide(
     runTour?: typeof generateTour;
   } = {},
 ): Promise<GuideKickoff> {
-  const key = refKey(ref);
-  if (guidesInFlight.has(key)) return { status: "already-running" };
   // Claimed before the first await, so a second ask in the meantime joins this one.
-  guidesInFlight.add(key);
+  const release = claimGuide(ref);
+  if (!release) return { status: "already-running" };
+  // Once the background write owns the key, its .finally releases it; until then this finally does.
   let handedOff = false;
   try {
     const source = options.source ?? prSourceFor(config, ref);
@@ -188,6 +204,7 @@ export async function kickOffGuide(
       resolved,
       title: detail.title,
       url: prWebUrl(ref, config.secrets.azureDevopsOrgUrl),
+      signal: AbortSignal.timeout(GUIDE_TIMEOUT_MS),
       runTour: options.runTour,
     })
       .catch(async (e) => {
@@ -201,9 +218,9 @@ export async function kickOffGuide(
           navTarget: navTargetFor(ref),
         }).catch(() => undefined);
       })
-      .finally(() => guidesInFlight.delete(key));
+      .finally(release);
     return { status: "started" };
   } finally {
-    if (!handedOff) guidesInFlight.delete(key);
+    if (!handedOff) release();
   }
 }

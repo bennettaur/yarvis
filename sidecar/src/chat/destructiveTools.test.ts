@@ -48,6 +48,19 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(guide?.({ pullRequest: {}, regenerate: true })).toBe(true);
   });
 
+  // A page read this turn may be what suggested the PR, so even a plain start asks.
+  it("asks before any review start once a typed turn has read a web page", () => {
+    const reads = newUntrustedReads();
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads,
+      isUserGivenUrl: () => true,
+    });
+    reads.hasReadWebPage = true;
+    expect(conditions.get("start_pr_verification_report")?.({ pullRequest: {} })).toBe(true);
+    expect(conditions.get("start_pr_guided_review")?.({ pullRequest: {} })).toBe(true);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });

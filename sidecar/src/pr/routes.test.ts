@@ -10,6 +10,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
+import { claimGuide } from "./guideRun.ts";
 import { saveGuide } from "./guides.ts";
 import { savePrModelConfig } from "./models.ts";
 import { createPrRoutes } from "./routes.ts";
@@ -145,8 +146,8 @@ describe("PATCH /api/pr/guide/progress", () => {
     const items = await listAttention(db, { status: "pending" });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      title: "Reviewing Add ordering",
-      body: "Step 1 of 2 · src/api.ts",
+      title: "PR review in progress",
+      body: "Add ordering: Step 1 of 2 · src/api.ts",
       navTarget: { type: "pr", owner: "o", repo: "r", number: 1 },
     });
   });
@@ -183,7 +184,7 @@ describe("PATCH /api/pr/guide/progress", () => {
     }
     const items = await listAttention(db, { status: "pending" });
     expect(items).toHaveLength(1);
-    expect(items[0]!.body).toBe("Step 2 of 3 · src/db.ts");
+    expect(items[0]!.body).toBe("Add ordering: Step 2 of 3 · src/db.ts");
   });
 });
 
@@ -265,6 +266,23 @@ describe("POST /api/pr/guide with a guide agent", () => {
     expect(((await res.json()) as any).graph).toEqual(graph);
     const [row] = await sql`SELECT graph FROM pr_guides`;
     expect(row?.graph).toEqual(graph);
+  });
+
+  // The assistant may be writing this PR's guide in the background; pressing
+  // the button meanwhile would pay twice and overwrite it.
+  it("refuses while another guide for the PR is being written", async () => {
+    const release = claimGuide(ref);
+    try {
+      const res = await agentApp.request("/pr/guide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, provider: "anthropic", model: "claude-sonnet-4-5" }),
+      });
+      expect(res.status).toBe(409);
+      expect(await sql`SELECT id FROM pr_guides`).toHaveLength(0);
+    } finally {
+      release?.();
+    }
   });
 });
 

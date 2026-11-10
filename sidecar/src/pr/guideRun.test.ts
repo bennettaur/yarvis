@@ -84,7 +84,9 @@ describe("kickOffGuide", () => {
       headSha: head,
     });
     const [item] = await listAttention(db, {});
-    expect(item).toMatchObject({ title: "Reviewing Feature work", kind: "info" });
+    // The PR's title is the author's text, so it stays out of the bell's title.
+    expect(item).toMatchObject({ title: "PR review in progress", kind: "info" });
+    expect(item?.body).toStartWith("Feature work: Step 1 of 2");
   });
 
   it("keeps an existing guide unless asked to regenerate it", async () => {
@@ -116,6 +118,20 @@ describe("kickOffGuide", () => {
     expect(ran).toBe(1);
   });
 
+  it("says a guide for the PR's current head isn't stale", async () => {
+    await saveGuide(db, { ref, headSha: head, steps, graph, title: "Feature work", url: null });
+    expect(
+      await kickOffGuide(db, config, ref, {
+        source,
+        runTour: async () => ({ steps, headSha: head, graph }),
+      }),
+    ).toEqual({
+      status: "exists",
+      stale: false,
+      progress: "step 1 of 2",
+    });
+  });
+
   it("rings the bell when the agent fails, without the error's text", async () => {
     const runTour = async () => {
       throw new Error("provider said: token sk-secret is invalid");
@@ -142,7 +158,7 @@ describe("kickOffGuide", () => {
       "the guide's bell item",
     );
     const pending = (await listAttention(db, {})).filter((a) => a.status === "pending");
-    expect(pending.map((a) => a.title)).toEqual(["Reviewing Feature work"]);
+    expect(pending.map((a) => a.title)).toEqual(["PR review in progress"]);
   });
 
   it("refuses without provider credentials before reading anything", async () => {

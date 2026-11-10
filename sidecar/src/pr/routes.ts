@@ -10,7 +10,13 @@ import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
-import { guideSessionKey, resolvePrRunModel, syncGuideAttention, writeGuide } from "./guideRun.ts";
+import {
+  claimGuide,
+  guideSessionKey,
+  resolvePrRunModel,
+  syncGuideAttention,
+  writeGuide,
+} from "./guideRun.ts";
 import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
 import {
   deleteInsight,
@@ -148,6 +154,11 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     const source = sourceFor(ref);
     if ("error" in source) return c.json({ error: source.error }, 400);
 
+    // The assistant may already be writing this PR's guide; a second run would
+    // pay twice and overwrite it.
+    const release = claimGuide(ref);
+    if (!release) return c.json({ error: "a guide for this PR is already being written" }, 409);
+
     const dbh = db();
     const resolved = await resolvePrRunModel(
       config,
@@ -155,7 +166,10 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
       parsed.data.provider,
       parsed.data.model,
     );
-    if ("error" in resolved) return c.json({ error: resolved.error }, 400);
+    if ("error" in resolved) {
+      release();
+      return c.json({ error: resolved.error }, 400);
+    }
 
     try {
       const { guide, headSha } = await writeGuide(dbh, config, {
@@ -174,6 +188,8 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
       // body, which routinely echo credentials back.
       console.error("[pr] guide generation failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    } finally {
+      release();
     }
   });
 

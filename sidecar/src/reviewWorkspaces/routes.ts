@@ -64,7 +64,7 @@ import {
  * review clone root and a component of `refKey` (split on `/`), so anything
  * that could climb a directory or add a segment is refused here.
  */
-const refSegmentSchema = z
+export const refSegmentSchema = z
   .string()
   .min(1)
   .max(200)
@@ -73,9 +73,9 @@ const refSegmentSchema = z
       isSafePathSegment(s) && !CONTROL_CHARACTERS.test(s) && !s.includes(":") && s.trim() === s,
     "invalid name",
   );
-const githubNameSchema = refSegmentSchema.and(z.string().regex(/^[A-Za-z0-9._-]+$/));
+export const githubNameSchema = refSegmentSchema.and(z.string().regex(/^[A-Za-z0-9._-]+$/));
 
-const prNumberSchema = z.number().int().positive();
+export const prNumberSchema = z.number().int().positive();
 
 const prRefSchema: z.ZodType<PrRef> = z.discriminatedUnion("provider", [
   z.object({

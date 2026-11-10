@@ -195,8 +195,10 @@ The assistant asks before it starts a report in four cases: the PR is large,
 its estimate is over your budget, its size couldn't be worked out, or its repo
 isn't one you registered under **Settings → Repositories** (the name may have
 come from text someone else wrote). It tells you why, and when you agree, an
-approval prompt confirms it. If the clone finishes after the assistant has
-replied, the bell asks for the go-ahead instead. The bell item opens the
+approval prompt confirms it. Agreeing to an unregistered repo doesn't cover
+the cost, which nobody has seen until the clone finishes: if the clone
+finishes after the assistant has replied, the bell asks for the go-ahead
+instead. The bell item opens the
 report's tab in the review workspace.
 
 Each one is a paid agent run, so a spoken request asks you to approve it

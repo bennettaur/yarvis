@@ -1,5 +1,5 @@
 import { agentRunRegistry, getAgentRunSummary } from "../agentRuns/service.ts";
-import { createAttention } from "../attention/service.ts";
+import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { ReviewWorkspacePr } from "../db/schema.ts";
@@ -22,6 +22,24 @@ import {
   type VerificationDeps,
   type VerificationSize,
 } from "./verification.ts";
+
+/**
+ * The size facts the model gets to relay. The file lists in
+ * {@link VerificationSize} are left out: they are paths the PR's author chose.
+ */
+export type SizeSummary = Pick<
+  VerificationSize,
+  "files" | "changedLines" | "large" | "overBudget" | "estimatedCostUsd" | "budgetUsd"
+>;
+
+const summarize = (size: VerificationSize): SizeSummary => ({
+  files: size.files,
+  changedLines: size.changedLines,
+  large: size.large,
+  overBudget: size.overBudget,
+  estimatedCostUsd: size.estimatedCostUsd,
+  budgetUsd: size.budgetUsd,
+});
 
 /**
  * Starting a PR's verification report from somewhere other than its review
@@ -76,7 +94,7 @@ export type KickoffResult =
       /** Null before a workspace exists, for an unregistered repo. */
       workspaceId: string | null;
       prId: string | null;
-      size: VerificationSize | null;
+      size: SizeSummary | null;
     }
   | { status: "error"; error: string };
 
@@ -85,7 +103,7 @@ const withKickoffLock = createKeyedLock();
 
 /**
  * The options each background wait will start with, by PR. A later ask
- * replaces them, so a confirmation sent while the clone runs isn't lost.
+ * replaces them, so the sections or re-run it names aren't lost.
  */
 const checkoutWaits = new Map<string, KickoffOptions>();
 
@@ -114,6 +132,8 @@ const shortPrName = (ref: PrRef) =>
   `${ref.repo}#${ref.provider === "github" ? ref.number : ref.prId}`;
 
 const prName = (pr: ReviewWorkspacePr) => pr.title?.trim() || pr.refKey;
+
+const sessionKeyFor = (pr: ReviewWorkspacePr) => `pr-verification:${pr.refKey}`;
 
 const registryFor = (deps: KickoffDeps) => deps.verification.run?.registry ?? agentRunRegistry;
 
@@ -159,10 +179,13 @@ export function kickOffVerification(
     }
     if (isCheckedOut(pr)) return startReport(db, config, pr, options, deps);
 
-    const waiting = checkoutWaits.has(pr.refKey);
-    checkoutWaits.set(pr.refKey, options);
-    if (!waiting) {
-      await resumeIfStalled(db, config, pr, deps.review);
+    const isAlreadyWaiting = checkoutWaits.has(pr.refKey);
+    // Before the entry is set, so a failure here leaves no wait that isn't running.
+    if (!isAlreadyWaiting) await resumeIfStalled(db, config, pr, deps.review);
+    // Never `confirmed`: nobody has seen the PR's size yet, so a yes given now
+    // (to an unregistered repo) can't also be a yes to its cost.
+    checkoutWaits.set(pr.refKey, { ...options, confirmed: undefined });
+    if (!isAlreadyWaiting) {
       void startWhenCheckedOut(db, config, pr, deps).finally(() => checkoutWaits.delete(pr.refKey));
     }
     return { status: "waiting-for-checkout", workspaceId, prId, createdWorkspace };
@@ -198,8 +221,13 @@ async function startReport(
     if (!size) reason = "unsized";
     else if (size.large) reason = "large";
     else if (size.overBudget) reason = "over-budget";
-    if (reason) return { status: "needs-confirmation", reason, workspaceId, prId, size };
+    if (reason) {
+      const summary = size ? summarize(size) : null;
+      return { status: "needs-confirmation", reason, workspaceId, prId, size: summary };
+    }
   }
+  // An earlier failure's bell item would otherwise sit beside this run's result.
+  await clearAttentionScope(db, { sessionKey: sessionKeyFor(pr) }, "resolved");
   const started = await startVerification(
     db,
     config,
@@ -284,7 +312,8 @@ function goAheadDetail(result: Extract<KickoffResult, { status: "needs-confirmat
   const { size } = result;
   const ask = "Run it from the review workspace, or ask again and confirm.";
   if (!size) return `Its size couldn't be worked out. ${ask}`;
-  return `${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
+  const why = result.reason === "large" ? "It's a large PR" : "It's over your budget";
+  return `${why}: ${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
 }
 
 /** Rings the bell once a run this module started ends; whoever asked has usually moved on. */
@@ -301,7 +330,14 @@ async function notifyWhenDone(
     if (run?.status === "succeeded") {
       await notify(db, pr, "completed", "Verification report ready", null);
     } else if (run?.status === "failed") {
-      await notify(db, pr, "error", "Verification report failed", run.error);
+      // The run's error can quote what the agent read, so the bell gets a fixed line.
+      await notify(
+        db,
+        pr,
+        "error",
+        "Verification report failed",
+        "The run failed. Open the review workspace to see why.",
+      );
     } else if (run?.status !== "cancelled") {
       console.error(
         `[verification] run ${runId} ended as ${run?.status ?? "missing"}; not notifying`,
@@ -323,7 +359,7 @@ function notify(
   // title, where it could pose as an app alert.
   return createAttention(db, {
     source: "system",
-    sessionKey: `pr-verification:${pr.refKey}`,
+    sessionKey: sessionKeyFor(pr),
     kind,
     title,
     body: detail ? `${prName(pr)}: ${detail}` : prName(pr),

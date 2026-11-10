@@ -10,6 +10,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, reviewWorkspacePrs } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
+import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
@@ -62,6 +63,9 @@ const meta: PrMeta = {
 let remote: TestRemote;
 let fakeDir: string;
 let checkoutFails: boolean;
+/** While set, the PR's checkout waits on it, so a test can hold the clone open. */
+let checkoutGate: Promise<void> | null;
+let failingProgram: string;
 let kickoff: KickoffDeps;
 
 async function until(check: () => Promise<boolean>, what: string): Promise<void> {
@@ -81,6 +85,7 @@ beforeEach(async () => {
   config.workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-kickoff-root-"));
   remote = createTestRemote();
   checkoutFails = false;
+  checkoutGate = null;
   fakeDir = mkdtempSync(join(tmpdir(), "yarvis-kickoff-fake-"));
   writeFileSync(
     join(fakeDir, "result.jsonl"),
@@ -94,6 +99,14 @@ beforeEach(async () => {
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 cat "${fakeDir}/result.jsonl"`,
   );
+  failingProgram = fakeClaude(
+    fakeDir,
+    "claude-fails",
+    `cat > /dev/null
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+echo "agent blew up reading the PR" >&2
+exit 1`,
+  );
   const inner = reviewGit({ allowFileProtocol: true });
   const review: ReviewDeps = {
     loadPr: async () => meta,
@@ -102,10 +115,12 @@ cat "${fakeDir}/result.jsonl"`,
     setupScriptFor: async () => null,
     git: () => ({
       ...inner,
-      local: async (args, opts) =>
-        args[0] === "checkout" && checkoutFails
+      local: async (args, opts) => {
+        if (args[0] === "checkout" && checkoutGate) await checkoutGate;
+        return args[0] === "checkout" && checkoutFails
           ? { stdout: "", stderr: "checkout exploded", exitCode: 1 }
-          : inner.local(args, opts),
+          : inner.local(args, opts);
+      },
     }),
     stackOf: async () => [],
   };
@@ -170,12 +185,35 @@ describe("kickOffVerification", () => {
     expect(await db.select().from(agentRuns)).toHaveLength(0);
 
     // Asking again finds the same workspace instead of making a second one.
+    expect(notice?.body).toContain("It's a large PR");
     const again = await kickOffVerification(db, config, ref, {}, kickoff);
     expect(again).toMatchObject({
       status: "needs-confirmation",
+      reason: "large",
       workspaceId: first.workspaceId,
       prId: first.prId,
       size: { large: true },
+    });
+    // Counts only: the file lists name paths the PR's author chose.
+    expect(again).not.toHaveProperty("size.binary");
+    expect(again).not.toHaveProperty("size.skimmed");
+  });
+
+  it("asks before a PR whose size couldn't be worked out", async () => {
+    kickoff.verification.settings = async () => {
+      throw new Error("settings unreadable");
+    };
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(
+      async () => (await attention()).some((a) => a.title.includes("go-ahead")),
+      "the go-ahead notice",
+    );
+    const [notice] = await attention();
+    expect(notice?.body).toContain("Its size couldn't be worked out");
+    expect(await kickOffVerification(db, config, ref, {}, kickoff)).toMatchObject({
+      status: "needs-confirmation",
+      reason: "unsized",
+      size: null,
     });
   });
 
@@ -210,9 +248,19 @@ describe("kickOffVerification", () => {
     });
   });
 
-  it("asks before cloning a repo the user never registered", async () => {
+  // Through the tool, so the arguments the model sends are the ones that count.
+  it("asks before cloning a repo the user never registered, then still asks about cost", async () => {
     kickoff.isRegistered = async () => false;
-    expect(await kickOffVerification(db, config, ref, {}, kickoff)).toEqual({
+    const tools = buildPrReviewStartTools(db, config, { kickoff: () => kickoff });
+    const start = (input: unknown) =>
+      (
+        tools.start_pr_verification_report as unknown as {
+          execute: (i: unknown, o: unknown) => Promise<unknown>;
+        }
+      ).execute(input, { toolCallId: "t", messages: [] });
+    const pullRequest = { provider: "github", owner: "o", repo: "r", number: 1 };
+
+    expect(await start({ pullRequest })).toEqual({
       status: "needs-confirmation",
       reason: "unregistered-repo",
       workspaceId: null,
@@ -221,15 +269,57 @@ describe("kickOffVerification", () => {
     });
     expect(await sql`SELECT id FROM review_workspaces`).toHaveLength(0);
 
-    const confirmed = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
+    const confirmed = await start({ pullRequest, confirmed: true });
     expect(confirmed).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: true });
-    // Run it to the end, so its bell item can't land in the next test.
-    await until(async () => (await db.select().from(agentRuns)).length > 0, "the run");
+    // The yes was to the repo. Nobody has seen this large PR's cost, so the
+    // clone finishing asks again rather than starting.
+    await until(
+      async () => (await attention()).some((a) => a.title.includes("go-ahead")),
+      "the go-ahead notice",
+    );
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("rings an error bell, without the run's own error, when the report fails", async () => {
+    if (kickoff.verification.run) kickoff.verification.run.program = failingProgram;
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+
+    expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toMatchObject({
+      status: "started",
+    });
     release();
     await until(
-      async () => (await attention()).some((a) => a.title === "Verification report ready"),
-      "the ready notice",
+      async () => (await attention()).some((a) => a.title === "Verification report failed"),
+      "the failure notice",
     );
+    const items = await attention();
+    expect(items.map((a) => a.title)).toEqual(["Verification report failed"]);
+    expect(items[0]?.kind).toBe("error");
+    expect(items[0]?.body).not.toContain("blew up");
+  });
+
+  it("says so when the checkout doesn't finish in time", async () => {
+    const { promise, resolve: openCheckout } = Promise.withResolvers<void>();
+    checkoutGate = promise;
+    kickoff.waitMs = 1;
+    const first = await kickOffVerification(db, config, ref, {}, kickoff);
+    expect(first.status).toBe("waiting-for-checkout");
+    await until(
+      async () => (await attention()).some((a) => a.kind === "error"),
+      "the timeout notice",
+    );
+    const [notice] = await attention();
+    expect(notice?.title).toBe("Verification report not started");
+    expect(notice?.body).toContain("The checkout didn't finish");
+
+    // Let the clone finish, so it doesn't write into the next test.
+    openCheckout();
+    await until(async () => {
+      const [pr] = await db.select().from(reviewWorkspacePrs);
+      return pr?.worktreeStatus === "ready" || pr?.worktreeStatus === "error";
+    }, "the checkout to settle");
   });
 
   it("shares one workspace between two asks made at once", async () => {
