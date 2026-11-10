@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { prDetailKey } from "../../lib/pr/cache";
+import { prDetailKey, prStackKey } from "../../lib/pr/cache";
 import type { PrDetail } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
@@ -85,6 +85,7 @@ describe("ReviewNav", () => {
   const render = (prs: ReviewWorkspacePr[]) => {
     for (const p of prs) {
       primeCache(prDetailKey(p.ref), { title: p.title, reviewThreads: [] } as unknown as PrDetail);
+      primeCache(prStackKey(p.ref), null);
       const key = changedFilesKey(p);
       if (key) primeCache(key, { headSha: p.headSha, mergeBaseSha: p.mergeBaseSha, files: [] });
     }
@@ -96,6 +97,7 @@ describe("ReviewNav", () => {
         progress: new Map([["b", "Receiving objects: 40%"]]),
         openTab: () => {},
         onSetup: () => {},
+        onAddPrs: async () => {},
       }),
     );
   };

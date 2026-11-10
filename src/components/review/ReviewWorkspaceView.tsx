@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { refDisplayRepo, refKey, refNumber } from "../../lib/pr/ref";
-import type { PrSummary } from "../../lib/pr/types";
+import type { PrRef, PrSummary } from "../../lib/pr/types";
 import { invalidatePrefix, primeCache } from "../../lib/resourceCache";
 import {
   addReviewPr,
@@ -320,6 +320,17 @@ export default function ReviewWorkspaceView({
       open({ kind: "description", prId: pr.id });
     });
 
+  // One at a time, so each layer lands after the one below it in the nav.
+  const addStackLayers = (refs: PrRef[]) =>
+    attempt(async () => {
+      try {
+        for (const ref of refs) await addReviewPr(workspaceId, ref);
+      } finally {
+        // Also after a failed add, so the ones before it show.
+        invalidateReviewWorkspace(workspaceId);
+      }
+    });
+
   const archive = async () => {
     await archiveReviewWorkspace(workspaceId);
     invalidateReviewWorkspace(workspaceId);
@@ -363,6 +374,7 @@ export default function ReviewWorkspaceView({
       progress={progress}
       openTab={open}
       onSetup={setConsentPr}
+      onAddPrs={addStackLayers}
     />
   );
   const main = (

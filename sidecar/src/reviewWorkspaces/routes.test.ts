@@ -63,8 +63,6 @@ let loadFails: boolean;
 let checkoutFails: boolean;
 let loadGate: ReturnType<typeof gate> | null;
 let checkoutGate: ReturnType<typeof gate> | null;
-let stack: PrRef[] | Error;
-let stackLookups: number;
 
 /** Real git against the local test remote, with the checkout under the test's control. */
 function controlledGit(): ReviewGit {
@@ -92,11 +90,6 @@ const deps = (): ReviewDeps => ({
   credentialsFor: () => undefined,
   setupScriptFor: async () => setupScript,
   git: controlledGit,
-  stackOf: async () => {
-    stackLookups++;
-    if (stack instanceof Error) throw stack;
-    return stack;
-  },
 });
 
 const app = new Hono().route("/rw", createReviewWorkspaceRoutes(config, { deps }));
@@ -173,8 +166,6 @@ beforeEach(async () => {
   checkoutFails = false;
   loadGate = null;
   checkoutGate = null;
-  stack = [];
-  stackLookups = 0;
 });
 
 afterEach(() => {
@@ -300,58 +291,6 @@ describe("reads", () => {
     );
     // The merge preview's second parent is the PR head.
     expect((await prRow(prId)).headSha).toBe(sh(remote.work, "rev-parse", "feature").trim());
-  });
-});
-
-describe("stacks", () => {
-  const layer = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
-
-  /** The workspace's PRs in order, once it holds `count` and every clone has finished. */
-  async function settled(wsId: string, count: number): Promise<string[]> {
-    let prs: { id: string; refKey: string }[] = [];
-    await until(async () => {
-      prs = ((await (await call("GET", `/${wsId}`)).json()) as { prs: typeof prs }).prs;
-      return prs.length >= count;
-    }, `${count} pull requests`);
-    for (const pr of prs) await progress(wsId, pr.id);
-    return prs.map((pr) => pr.refKey);
-  }
-
-  it("brings the rest of the stack along, with the PR asked for first", async () => {
-    stack = [layer(2), layer(3)];
-    const { wsId } = await startWorkspace(layer(1));
-    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/2", "gh:o/r/3"]);
-  });
-
-  it("adds only the layers the workspace doesn't already hold", async () => {
-    const { wsId } = await startWorkspace(layer(1));
-    stack = [layer(1), layer(5)];
-    const res = await call("POST", `/${wsId}/prs`, { ref: layer(4) });
-    expect(res.status).toBe(201);
-    expect(((await res.json()) as { refKey: string }).refKey).toBe("gh:o/r/4");
-    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/4", "gh:o/r/5"]);
-  });
-
-  it("looks a stack up once when the workspace is opened on two of its layers", async () => {
-    stack = [layer(2), layer(3)];
-    const res = await call("POST", "/", { name: "Review", refs: [layer(1), layer(2)] });
-    const { id: wsId } = (await res.json()) as { id: string };
-    expect(await settled(wsId, 3)).toEqual(["gh:o/r/1", "gh:o/r/2", "gh:o/r/3"]);
-    expect(stackLookups).toBe(1);
-  });
-
-  it("still adds the other layers when one can't be added", async () => {
-    // An owner that can't name a folder fails the add before anything is written.
-    stack = [{ provider: "github", owner: "..", repo: "r", number: 2 }, layer(3)];
-    const { wsId } = await startWorkspace(layer(1));
-    expect(await settled(wsId, 2)).toEqual(["gh:o/r/1", "gh:o/r/3"]);
-  });
-
-  it("adds the PR alone when the stack can't be read", async () => {
-    stack = new Error("rate limited");
-    const { wsId } = await startWorkspace(layer(1));
-    await until(async () => stackLookups > 0, "the stack lookup");
-    expect(await settled(wsId, 1)).toEqual(["gh:o/r/1"]);
   });
 });
 

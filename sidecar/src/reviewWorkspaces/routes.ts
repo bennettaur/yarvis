@@ -48,7 +48,6 @@ import {
   reviewSetupInfo,
   reviewSymbolSearch,
   reviewTree,
-  startStackLayers,
   touchReviewWorkspace,
 } from "./service.ts";
 import {
@@ -219,10 +218,10 @@ export function createReviewWorkspaceRoutes(
     const parsed = addPrSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      const id = c.req.param("id");
-      const pr = await addReviewPr(db(), config, id, parsed.data.ref, deps());
-      void startStackLayers(db(), config, id, [parsed.data.ref], deps());
-      return c.json(pr, 201);
+      return c.json(
+        await addReviewPr(db(), config, c.req.param("id"), parsed.data.ref, deps()),
+        201,
+      );
     } catch (e) {
       return fail(c, e);
     }

@@ -1,12 +1,14 @@
 import { type ReactNode, useState } from "react";
 import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
+import type { PrRef } from "../../lib/pr/types";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
 import { useCommitsSinceLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
 import CommitsList from "./nav/CommitsList";
+import StackLayers from "./nav/StackLayers";
 import { prColor } from "./prColors";
 import { STATIC_TAB_LABEL } from "./tabs/registry";
 import type { PrColor, StaticTabKind, TabSpec } from "./tabs/types";
@@ -118,16 +120,20 @@ function PrGroup({
   color,
   active,
   progress,
+  held,
   openTab,
   onSetup,
+  onAddPrs,
 }: {
   workspaceId: string;
   pr: ReviewWorkspacePr;
   color: PrColor;
   active: TabSpec | null;
   progress: string | null;
+  held: ReadonlySet<string>;
   openTab: (spec: TabSpec) => void;
   onSetup: () => void;
+  onAddPrs: (refs: PrRef[]) => Promise<void>;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const { data: detail } = usePrDetail(pr.ref);
@@ -201,6 +207,7 @@ function PrGroup({
               Setup hasn't run · review the script…
             </button>
           )}
+          <StackLayers prRef={pr.ref} held={held} onAdd={onAddPrs} />
           <Section title="Changed files" count={changed.data?.files.length} defaultOpen>
             <ChangedFilesTree
               workspaceId={workspaceId}
@@ -248,6 +255,7 @@ export default function ReviewNav({
   progress,
   openTab,
   onSetup,
+  onAddPrs,
 }: {
   workspaceId: string;
   prs: ReviewWorkspacePr[];
@@ -256,7 +264,10 @@ export default function ReviewNav({
   progress: ReadonlyMap<string, string>;
   openTab: (spec: TabSpec) => void;
   onSetup: (pr: ReviewWorkspacePr) => void;
+  /** Adds PRs from a stack the reviewer picked, in the order given. */
+  onAddPrs: (refs: PrRef[]) => Promise<void>;
 }) {
+  const held = new Set(prs.map((pr) => pr.refKey));
   return (
     <nav className="h-full overflow-y-auto bg-zinc-950" aria-label="Pull requests">
       {prs.length === 0 && (
@@ -270,8 +281,10 @@ export default function ReviewNav({
           color={color}
           active={active}
           progress={progress.get(pr.id) ?? null}
+          held={held}
           openTab={openTab}
           onSetup={() => onSetup(pr)}
+          onAddPrs={onAddPrs}
         />
       ))}
     </nav>
