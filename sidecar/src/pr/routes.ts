@@ -1,17 +1,17 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { clearAttentionScope, createAttention } from "../attention/service.ts";
+import { clearAttentionScope } from "../attention/service.ts";
 import { AzureDevOpsClient, isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
+import type { PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
 import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
-import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
+import { guideSessionKey, resolvePrRunModel, syncGuideAttention, writeGuide } from "./guideRun.ts";
+import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
 import {
   deleteInsight,
   getInsight,
@@ -19,7 +19,6 @@ import {
   markInsightPosted,
   saveInsight,
 } from "./insights.ts";
-import { type PrModelFeature, resolvePrModel } from "./models.ts";
 import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
 import {
   latestReviewMark,
@@ -108,20 +107,6 @@ const askSchema = z
     path: ["endLine"],
   });
 
-/** Where the attention stream should send the user for this pull request. */
-function navTargetFor(ref: PrRef): AttentionNavTarget {
-  return ref.provider === "github"
-    ? { type: "pr", owner: ref.owner, repo: ref.repo, number: ref.number }
-    : { type: "azure-pr", org: ref.org, project: ref.project, repo: ref.repo, prId: ref.prId };
-}
-
-/** The attention item for a guide is keyed per PR, so re-generating coalesces. */
-const guideSessionKey = (ref: PrRef) => `pr-guide:${refKey(ref)}`;
-
-const stepLabel = (guide: PrGuideRow) =>
-  `Step ${guide.currentStep + 1} of ${guide.steps.length}` +
-  (guide.steps[guide.currentStep] ? ` · ${guide.steps[guide.currentStep]!.path}` : "");
-
 /** The shape the frontend consumes; the row's internals stay on this side. */
 function toGuideResponse(guide: PrGuideRow, headSha: string) {
   return {
@@ -154,63 +139,6 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
   const sourceFor = (ref: PrRef): PrCodeSource | { error: string } => prSourceFor(config, ref);
 
-  /**
-   * Keeps the attention stream in step with a guide's progress. The item
-   * coalesces on (sessionKey, kind), so regenerating or advancing updates the
-   * one live entry rather than stacking. Reaching the last step resolves it —
-   * the review is no longer in progress, and a finished guide sitting in the
-   * panel would read as outstanding work.
-   */
-  const syncAttention = async (ref: PrRef, guide: PrGuideRow) => {
-    const sessionKey = guideSessionKey(ref);
-    const finished = guide.currentStep >= guide.steps.length - 1;
-    if (finished) {
-      await clearAttentionScope(db(), { sessionKey }, "resolved");
-      return;
-    }
-    await createAttention(db(), {
-      source: "system",
-      sessionKey,
-      kind: "info",
-      title: guide.title ? `Reviewing ${guide.title}` : "PR review in progress",
-      body: stepLabel(guide),
-      navTarget: navTargetFor(ref),
-    });
-  };
-
-  /**
-   * Resolves the model an agent run should use: the one the caller names, else
-   * the one saved for `feature` in Settings, else the default chat model.
-   * Returns a message rather than throwing so the route can answer 400 with
-   * something the user can act on — "no LLM provider is configured" is a
-   * settings problem, not a server fault.
-   */
-  const modelFor = async (
-    feature: PrModelFeature,
-    providerId?: string,
-    modelId?: string,
-  ): Promise<
-    | ({ selection: { provider: string; model: string } } & Awaited<
-        ReturnType<typeof resolveModelWithOllama>
-      >)
-    | { error: string }
-  > => {
-    const fallback = await resolvePrModel(config, feature);
-    const provider = providerId ?? fallback?.provider;
-    const model = modelId ?? fallback?.model;
-    if (!provider || !model) return { error: "no LLM provider is configured" };
-    try {
-      // Wrapped rather than returned bare: a resolved model can itself be a
-      // string, so an `"error" in x` check would not tell the two apart.
-      return {
-        selection: { provider, model },
-        ...(await resolveModelWithOllama(config, provider, model)),
-      };
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
-    }
-  };
-
   // Generate (or regenerate) a guide. Replaces any existing one for the PR.
   router.post("/guide", async (c) => {
     const parsed = generateSchema.safeParse(await c.req.json().catch(() => null));
@@ -221,25 +149,23 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor("guide", parsed.data.provider, parsed.data.model);
+    const resolved = await resolvePrRunModel(
+      config,
+      "guide",
+      parsed.data.provider,
+      parsed.data.model,
+    );
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
-      const { provider, model } = resolved.selection;
-      const { steps, headSha, graph } = await runTour(resolved.model, source, {
+      const { guide, headSha } = await writeGuide(dbh, config, {
+        ref,
+        source,
+        resolved,
+        title,
+        url,
         signal: c.req.raw.signal,
-        // An Ollama model writes its final answer through Ollama's own API,
-        // which holds the output to the tour's schema.
-        ollama: resolved.ollama ?? undefined,
-        modelName: model,
-        contextTokens: await modelCompactAtTokens(config, provider, model),
-      });
-      const guide = await saveGuide(dbh, { ref, headSha, steps, graph, title, url });
-      await syncAttention(ref, guide);
-      void emitEvent(dbh, {
-        type: "pr.guide.generated",
-        source: ref.provider,
-        payload: { ref: refKey(ref), title, url, steps: steps.length },
+        runTour,
       });
       return c.json(toGuideResponse(guide, headSha));
     } catch (e) {
@@ -319,7 +245,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
     const guide = await setGuideProgress(db(), ref, step);
     if (!guide) return c.json({ error: "no guide for this pull request" }, 404);
-    await syncAttention(ref, guide);
+    await syncGuideAttention(db(), ref, guide);
     return c.json({ currentStep: guide.currentStep });
   });
 
@@ -334,7 +260,12 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor("ask", parsed.data.provider, parsed.data.model);
+    const resolved = await resolvePrRunModel(
+      config,
+      "ask",
+      parsed.data.provider,
+      parsed.data.model,
+    );
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {

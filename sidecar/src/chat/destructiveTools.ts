@@ -101,6 +101,10 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Starts a Claude Code run that spends money and writes files with nobody
   // reviewing the task it was given.
   "start_claude_code_task",
+  // Each spends an agent run on a PR nobody confirmed. The report also clones
+  // the PR's code to disk.
+  "start_pr_guided_review",
+  "start_pr_verification_report",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */

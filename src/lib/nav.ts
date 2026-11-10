@@ -113,12 +113,12 @@ const OPEN_REVIEW_EVENT = "yarvis:open-review";
 /**
  * A request to show a review workspace on the Review tab, with one of its PRs
  * brought forward when `prId` is set: its description opened, or its
- * "Since last review" tab for `tab: "since-review"`.
+ * "Since last review" or verification report tab when `tab` names one.
  */
 export interface OpenReviewRequest {
   workspaceId: string;
   prId?: string;
-  tab?: "since-review";
+  tab?: "since-review" | "verification";
 }
 
 interface OpenReviewEvent extends Event {

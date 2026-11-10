@@ -18,6 +18,7 @@ import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
+import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
 import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
@@ -118,7 +119,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     jira: buildJiraTools(db, config, { remoteControl }),
     githubIssues: buildIssueTools(db, config),
     azureBoards: buildAzureBoardsTools(db, config),
-    prReview: buildPrReviewTools(db),
+    prReview: { ...buildPrReviewTools(db), ...buildPrReviewStartTools(db, config) },
     mergeReview: buildMergeReviewTools(config),
     calendar: buildCalendarTools(db, config),
     alarms: buildAlarmTools(db, config, { unattended }),

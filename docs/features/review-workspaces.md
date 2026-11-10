@@ -190,6 +190,10 @@ stops it. Every file and line in the report opens the diff there.
   the section says "Not rated".
 - A report made before these checks existed shows only the checks it had.
 
+The assistant can start a report too, and creates the review workspace when
+there isn't one. See
+[Start one from the assistant](pr-review.md#start-one-from-the-assistant).
+
 Above **Run verification** you pick which sections to run: risk, each check,
 **Simpler approach** and the **Flow diagram**. The summary and must-read files
 always run. The diagram is off unless you tick it; the others start ticked,

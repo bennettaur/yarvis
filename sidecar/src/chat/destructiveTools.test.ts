@@ -21,6 +21,17 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("send_workspace_slash_command")).toBe(true);
   });
 
+  // Each spends an agent run on a PR; reading back the guides they wrote does not.
+  it("asks before starting a guided review or verification report", () => {
+    const families = builtinToolMetadataByFamily();
+    expect(Object.keys(families.prReview ?? {})).toEqual(
+      expect.arrayContaining(["start_pr_guided_review", "start_pr_verification_report"]),
+    );
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_pr_guided_review")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("start_pr_verification_report")).toBe(true);
+    expect(DESTRUCTIVE_BUILTIN_TOOLS.has("list_pr_reviews")).toBe(false);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });
