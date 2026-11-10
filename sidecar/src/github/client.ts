@@ -204,6 +204,11 @@ function sumCheckSummaries(a: ChecksSummary, b: ChecksSummary): ChecksSummary {
  */
 const DECIDING_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
+/** Whether an author is one of the repo's own people, by GitHub's `authorAssociation`. */
+function isRepoMember(association: unknown): boolean {
+  return DECIDING_ASSOCIATIONS.has(String(association ?? ""));
+}
+
 /**
  * Collapses a PR's review list into one verdict. GitHub returns every review
  * ever submitted, in submission order, so only each reviewer's latest verdict
@@ -280,15 +285,23 @@ function mapReviewState(state: string | undefined | null): ReviewerState {
 }
 
 /**
- * Merges GitHub's two reviewer sources — `reviewRequests` (still-outstanding
- * requests) and `latestReviews` (the latest review per person that already
- * submitted one) — into a single provider-neutral list. When both name the
- * same login (a re-request after a previous review), the request wins: the
- * viewer needs to know a fresh look is expected.
+ * Merges GitHub's reviewer sources — `reviewRequests` (still-outstanding
+ * requests), `latestReviews` (the latest review per person that already
+ * submitted one) and `latestOpinionatedReviews` (their latest approval or
+ * changes request) — into a single provider-neutral list. A standing verdict
+ * wins over a later comment-only review, so a reply in a thread doesn't hide
+ * a changes request. When a request names the same login (a re-request after
+ * a previous review), the request wins: the viewer needs to know a fresh look
+ * is expected.
  */
 function toReviewers(pr: any): Reviewer[] {
   const byLogin = new Map<string, Reviewer>();
-  const reviewNodes = pr.latestReviews?.nodes ?? [];
+  const reviewNodes = [
+    ...(pr.latestReviews?.nodes ?? []),
+    ...(pr.latestOpinionatedReviews?.nodes ?? []).filter(
+      (node: any) => mapReviewState(node?.state) !== "commented",
+    ),
+  ];
   for (const node of reviewNodes) {
     const login = node?.author?.login;
     if (!login) continue;
@@ -297,10 +310,11 @@ function toReviewers(pr: any): Reviewer[] {
       state: mapReviewState(node.state),
       isRequested: false,
       isTeam: false,
+      trusted: isRepoMember(node.authorAssociation),
     });
   }
   const requestNodes = pr.reviewRequests?.nodes ?? [];
-  // Runs after `latestReviews` so a re-request overwrites the historical review
+  // Runs after the reviews so a re-request overwrites the historical review
   // — a fresh look is expected, and the viewer should see "pending" rather than
   // the stale earlier verdict.
   for (const node of requestNodes) {
@@ -308,11 +322,18 @@ function toReviewers(pr: any): Reviewer[] {
     // GraphQL union: User/Mannequin/Bot carry `login`, Team carries `combinedSlug`.
     const login = reviewer?.login ?? reviewer?.combinedSlug;
     if (!login) continue;
+    const earlier = byLogin.get(login);
     byLogin.set(login, {
       login,
       state: "pending",
       isRequested: true,
       isTeam: reviewer?.__typename === "Team",
+      ...(earlier
+        ? {
+            previousState: earlier.state,
+            ...(earlier.trusted === undefined ? {} : { trusted: earlier.trusted }),
+          }
+        : {}),
     });
   }
   return Array.from(byLogin.values());
@@ -411,9 +432,13 @@ export function toReviewThread(thread: any): ReviewThread {
     canReply: addressable && Boolean(thread.viewerCanReply),
     canResolve: addressable && Boolean(thread.viewerCanResolve),
     canUnresolve: addressable && Boolean(thread.viewerCanUnresolve),
+    ...((thread.comments?.totalCount ?? 0) > (thread.comments?.nodes?.length ?? 0)
+      ? { commentsTruncated: true }
+      : {}),
     comments: (thread.comments?.nodes ?? []).map((comment: any) => ({
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
+      trusted: isRepoMember(comment.authorAssociation),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -798,7 +823,7 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ nodes{ id author{login} body createdAt url } }`;
+  comments(first:100){ totalCount nodes{ id author{login} authorAssociation body createdAt url } }`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
@@ -841,10 +866,10 @@ query($owner:String!,$repo:String!,$number:Int!){
         }
       }
       latestReviews(first:50){
-        nodes{ author{login} state }
+        nodes{ author{login} state authorAssociation }
       }
       latestOpinionatedReviews(first:50){
-        nodes{ author{login} state }
+        nodes{ author{login} state authorAssociation }
       }
       reviewThreads(first:${REVIEW_THREAD_PAGE_SIZE}){
         pageInfo{ hasNextPage endCursor }

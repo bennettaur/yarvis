@@ -35,7 +35,7 @@ import {
   clearAttentionScope,
   createAttention,
   listAttention,
-  resolvePermissionItems,
+  resolveAnsweredPromptItems,
   updateAttentionStatus,
 } from "./service.ts";
 
@@ -292,7 +292,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       // The item may still be on its way in; resolving first would leave it pending.
       await raised;
       if ((handled || hookGone) && !hasPendingPermission(sessionKey)) {
-        const rows = await resolvePermissionItems(db(), sessionKey).catch(() => []);
+        const rows = await resolveAnsweredPromptItems(db(), sessionKey).catch(() => []);
         for (const row of rows) publish(row);
         // Another request from the session may have arrived while that ran;
         // raise its item again so it isn't lost.

@@ -1,4 +1,4 @@
-import { and, desc, eq, ne, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "../db/schema.ts";
 
@@ -168,9 +168,11 @@ export async function clearAttentionScope(
 
 /**
  * Resolves a session's pending permission item once none of its prompts is
- * waiting any more. Returns the updated rows so the caller can publish them.
+ * waiting any more, along with its idle item. Claude Code raises that one when
+ * a prompt sits unanswered for a while, and the session is no longer idle once
+ * the prompt is answered. Returns the updated rows so the caller can publish them.
  */
-export async function resolvePermissionItems(
+export async function resolveAnsweredPromptItems(
   db: Db,
   sessionKey: string,
 ): Promise<AttentionItemRow[]> {
@@ -181,7 +183,7 @@ export async function resolvePermissionItems(
     .where(
       and(
         eq(attentionItems.sessionKey, sessionKey),
-        eq(attentionItems.kind, "permission"),
+        inArray(attentionItems.kind, ["permission", "idle"]),
         eq(attentionItems.status, "pending"),
       ),
     )

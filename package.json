@@ -22,6 +22,7 @@
     "sidecar:dev": "bun run --cwd sidecar dev",
     "sidecar:compile": "bun run scripts/compile-sidecar.ts",
     "sidecar:test": "bun run --cwd sidecar test",
+    "voice:test-turns": "uv run --quiet --script sidecar/src/voice/turn_server_test.py",
     "sidecar:typecheck": "bun run --cwd sidecar typecheck",
     "verify:collect": "bun run scripts/verify/collect.ts",
     "verify:report": "bun run scripts/verify/report.ts",
@@ -69,6 +70,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
+    "@babel/parser": "^8.0.8",
     "@biomejs/biome": "2.5.14",
     "@happy-dom/global-registrator": "^21.0.4",
     "@playwright/test": "^1.63.0",

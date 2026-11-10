@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueSummary } from "../../lib/issues/types";
+import { resetReposApi, stubReposApi } from "../../test/reposApi";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 const item: IssueSummary = {
@@ -89,7 +90,8 @@ stubSidecarApi({
 
 // The repo picker lists the registered repos; none are needed for a scratch
 // workspace, which is what this test starts.
-mock.module("../../lib/repos", () => ({ listRepos: async () => [] }));
+stubReposApi({ listRepos: async () => [] });
+afterAll(resetReposApi);
 
 const { default: AzureBoardsIssuesView } = await import("./AzureBoardsIssuesView");
 const { invalidatePrefix } = await import("../../lib/resourceCache");

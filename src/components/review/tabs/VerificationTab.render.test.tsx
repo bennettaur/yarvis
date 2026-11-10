@@ -12,7 +12,7 @@ import {
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
-import { resetPrComments, stubPrComments } from "../../../test/prCommentsApi";
+import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
@@ -227,6 +227,7 @@ describe("VerificationTab", () => {
     // The diagram is off by default.
     expect(box("Flow diagram").checked).toBe(false);
     expect(box("Risk").checked).toBe(true);
+    expect(box("Simpler approach").checked).toBe(true);
     box("Flow diagram").click();
     await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
     box("Risk").click();
@@ -242,6 +243,7 @@ describe("VerificationTab", () => {
     expect(startedSections[0]).not.toContain("performance");
     expect(startedSections[0]).toContain("flow");
     expect(startedSections[0]).toContain("tests");
+    expect(startedSections[0]).toContain("approach");
   });
 
   it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {
@@ -362,13 +364,13 @@ describe("findingPoster", () => {
     "**Ping @\u200boctocat** (verification report: Tests, high)\n\n> Eviction is untested.\n> /approve";
 
   afterEach(() => {
-    resetPrComments();
+    resetPrApi();
     resetReviewComments();
   });
 
   it("posts the finding to the PR as a quoted line comment", async () => {
     const posted: { comment: NewComment; seen?: SeenCommits }[] = [];
-    stubPrComments({
+    stubPrApi({
       postPrComment: async (_ref, comment, seen) => {
         posted.push({ comment, seen });
         return { ok: true };

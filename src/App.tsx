@@ -5,16 +5,16 @@ import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
-import PermissionRequestModal, {
-  AUTO_OPEN_ARMING_MS,
-} from "./components/attention/PermissionRequestModal";
+import PermissionRequestModal from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
+import { type OpenedBy, useAnswerDialogs } from "./components/attention/useAnswerDialogs";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
 import AgentFieldPanel from "./components/field/AgentFieldPanel";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
+import HeadsDownQuestionDialog from "./components/headsDown/HeadsDownQuestionDialog";
 import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
@@ -36,10 +36,11 @@ import {
 import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
+import VoicePanel from "./components/voice/VoicePanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
-import { type AttentionItem, hasAnswerDialog } from "./lib/attention";
+import type { AttentionItem } from "./lib/attention";
 import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
 import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
@@ -49,6 +50,7 @@ import {
   type OpenReviewRequest,
   type OpenWorkspaceRequest,
   useNewWorkspaceListener,
+  useOpenArtifactListener,
   useOpenPlaceListener,
   useOpenPrListener,
   useOpenReviewListener,
@@ -80,11 +82,9 @@ export default function App() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
-  const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
-  // A Claude session's permission prompt being answered from the modal.
-  const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
-  // True when the modal opened by itself rather than from a click on the bell.
-  const [permissionAutoOpened, setPermissionAutoOpened] = useState(false);
+  const closeAttentionPanel = useCallback(() => setAttentionPanelOpen(false), []);
+  const dialogs = useAnswerDialogs({ onOpen: closeAttentionPanel });
+  const { questionItem, headsDownItem, permissionItem } = dialogs;
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -96,6 +96,9 @@ export default function App() {
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
   const [requestedChatSession, setRequestedChatSession] = useState<string | null>(null);
   const clearRequestedChatSession = useCallback(() => setRequestedChatSession(null), []);
+  // An artifact a link outside any chat asked to show beside the Chat tab's conversation.
+  const [requestedArtifact, setRequestedArtifact] = useState<string | null>(null);
+  const clearRequestedArtifact = useCallback(() => setRequestedArtifact(null), []);
   // A request to open the New Workspace form pre-filled (Tasks "Create workspace" /
   // "Start work"). WorkspacesPanel consumes and clears it.
   const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
@@ -125,6 +128,12 @@ export default function App() {
     setOmniChatOpen(false);
   }, []);
   useOpenPrListener(handleOpenPr);
+
+  const handleOpenArtifact = useCallback((id: string) => {
+    setRequestedArtifact(id);
+    setTab("chat");
+  }, []);
+  useOpenArtifactListener(handleOpenArtifact);
 
   const handleOpenWorkspace = useCallback((request: OpenWorkspaceRequest) => {
     setRequestedWorkspace(request);
@@ -331,22 +340,16 @@ export default function App() {
     [openOmniChat],
   );
 
+  const openDialog = dialogs.open;
   const openAttentionItem = useCallback(
-    (item: AttentionItem) => {
+    (item: AttentionItem, by: OpenedBy = "click") => {
       // A prompt or question is answered where the user already is. The item
       // stays pending until it is answered, which resolves it on the sidecar.
-      // The panel closes so Esc reaches only the dialog.
-      if (hasAnswerDialog(item)) {
-        setAttentionPanelOpen(false);
-        if (item.kind === "question") setQuestionItem(item);
-        else setPermissionItem(item);
-        setPermissionAutoOpened(false);
-        return;
-      }
+      if (openDialog(item, by)) return;
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },
-    [navigateTo],
+    [navigateTo, openDialog],
   );
 
   // A prompt or question from the workspace on screen opens straight away,
@@ -355,22 +358,13 @@ export default function App() {
   const overlayOpenRef = useRef(false);
   useEffect(() => {
     overlayOpenRef.current =
-      permissionItem !== null ||
-      questionItem !== null ||
+      dialogs.anyOpen ||
       omniChatOpen ||
       attentionPanelOpen ||
       clipboardOpen ||
       setupGuideOpen ||
       tourOpen;
-  }, [
-    permissionItem,
-    questionItem,
-    omniChatOpen,
-    attentionPanelOpen,
-    clipboardOpen,
-    setupGuideOpen,
-    tourOpen,
-  ]);
+  }, [dialogs.anyOpen, omniChatOpen, attentionPanelOpen, clipboardOpen, setupGuideOpen, tourOpen]);
 
   useEffect(
     () =>
@@ -379,21 +373,19 @@ export default function App() {
         if (!shouldAutoOpen(getViewedScope(), item)) return;
         // Claimed now: a second item can arrive before the state change commits.
         overlayOpenRef.current = true;
-        openAttentionItem(item);
-        setPermissionAutoOpened(true);
+        openAttentionItem(item, "auto");
       }),
     [openAttentionItem],
   );
 
+  const closeQuestion = dialogs.closeQuestion;
   const openQuestionSession = useCallback(
     (item: AttentionItem) => {
-      setQuestionItem(null);
+      closeQuestion();
       navigateTo(item.navTarget, item.title);
     },
-    [navigateTo],
+    [navigateTo, closeQuestion],
   );
-
-  const closeQuestion = useCallback(() => setQuestionItem(null), []);
 
   const openWipItem = useCallback(
     (item: WipItem) => navigateTo(item.navTarget, item.title),
@@ -445,6 +437,8 @@ export default function App() {
             focusOnShow
             requestedSessionId={requestedChatSession}
             onRequestConsumed={clearRequestedChatSession}
+            requestedArtifactId={requestedArtifact}
+            onArtifactRequestConsumed={clearRequestedArtifact}
           />
         </div>
         {/* Omni fills the region and manages its own layout; page-like views
@@ -496,6 +490,7 @@ export default function App() {
             {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "heads-down" && <HeadsDownPanel />}
+            {tab === "voice" && <VoicePanel />}
             {tab === "dashboard" && <Dashboard />}
             {tab === "settings" && (
               <SettingsPanel
@@ -530,18 +525,30 @@ export default function App() {
 
       <QuestionDialog
         item={questionItem}
-        onClose={closeQuestion}
+        onClose={dialogs.closeQuestion}
+        onDone={dialogs.finishQuestion}
         onOpenSession={openQuestionSession}
+        armingMs={dialogs.armingMs}
+      />
+
+      <HeadsDownQuestionDialog
+        item={headsDownItem}
+        onClose={dialogs.closeHeadsDown}
+        onOpenPage={() => {
+          dialogs.closeHeadsDown();
+          navigateTo({ type: "heads-down" });
+        }}
       />
 
       <PermissionRequestModal
         sessionKey={permissionItem?.sessionKey ?? null}
         title={permissionItem?.title ?? ""}
-        onClose={() => setPermissionItem(null)}
-        armingMs={permissionAutoOpened ? AUTO_OPEN_ARMING_MS : undefined}
+        onClose={dialogs.closePermission}
+        onDone={dialogs.finishPermission}
+        armingMs={dialogs.armingMs}
         onGoToSession={() => {
           if (!permissionItem) return;
-          setPermissionItem(null);
+          dialogs.closePermission();
           void markAttention(permissionItem.id, "read");
           navigateTo(permissionItem.navTarget, permissionItem.title);
         }}
@@ -554,6 +561,7 @@ export default function App() {
           void markAttention(item.id, "read");
           navigateTo(item.navTarget, item.title);
         }}
+        onNavigate={navigateTo}
       />
 
       <AlarmTakeover />

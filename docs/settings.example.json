@@ -72,6 +72,12 @@
     "ttsRefAudio": "",
     "ttsExtras": {},
     "speakReplies": true,
-    "handsFree": false
+    "continuous": false,
+    "activeVoiceId": "",
+    "translationProvider": "",
+    "translationModel": ""
+  },
+  "speechServer": {
+    "port": 8000
   }
 }

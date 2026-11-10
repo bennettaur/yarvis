@@ -22,6 +22,8 @@ describe("workspace .mcp.json", () => {
         "X-Yarvis-Workspace": WORKSPACE_ID,
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
         "X-Yarvis-Session-Key": "${YARVIS_SESSION_KEY:-}",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+        "X-Yarvis-Session-Token": "${YARVIS_SESSION_TOKEN:-}",
       },
     });
   });

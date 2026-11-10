@@ -51,6 +51,23 @@ it runs. The defaults are `Claude` and `claude --permission-mode auto`. Add
 flags there, such as a model or a different permission mode. The
 `YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command.
 
+The same section lists the **allowed slash commands**: the commands and skills
+the assistant may run in a workspace's session (see
+[Running a slash command in a session](#running-a-slash-command-in-a-session)).
+`/compact` is always allowed. Add others by name, separated by spaces, for
+example `/do-code-review`. A plugin skill takes its plugin prefix, as in
+`/code-review-team-core:do-code-review`. Only add commands that are safe to
+run without you watching. Commands that change what the session may do or who
+it acts as, such as `/permissions`, `/hooks`, `/mcp`, `/plugin` or `/login`, are
+refused even if listed, and so are ones that send the transcript away, like
+`/bug`.
+
+Allowing a command lets the assistant choose the text after it. A skill acts on
+that text with its own tools, so only allow skills whose arguments you'd be
+happy for the assistant to write. A name runs whatever skill the workspace has
+under it, which can come from a repo, so prefer a plugin's full
+`plugin:skill` name where there is one.
+
 ## Use it
 
 ### Create a workspace
@@ -330,6 +347,11 @@ Azure DevOps rate limits:
 So a badge can lag a change by up to 15 minutes, or a minute for the workspace
 you have open.
 
+The assistant answers questions about a workspace's PR from the same cache.
+When the answer has to be current, for example right after a push or before
+it tells you checks passed, it reads GitHub or Azure DevOps directly instead,
+and that read updates the badges too.
+
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).
 
@@ -529,7 +551,8 @@ Safety rules:
   a session in the workspace, or when a send is refused for this reason, so
   restarting the session once after that fixes it.
 - **An instruction can't start with `!`, `/`, `#` or `@`.** The agent reads
-  those as commands, not requests.
+  those as commands, not requests. For a slash command, see
+  [Running a slash command in a session](#running-a-slash-command-in-a-session).
 - **A send confirms delivery only, never that the work was done.** Yarvis
   can't see what the agent is showing. If a permission prompt is up, the text
   answers that prompt.
@@ -539,6 +562,27 @@ A PR's **Resolve conflicts** button uses the same path (see
 while a permission prompt is pending. When the workspace has no agent running,
 it writes the merge instructions to `.yarvis/resolve-conflicts.md`, leaving
 `.yarvis/brief.md` as it was, and starts an agent on them.
+
+### Running a slash command in a session
+
+The assistant can also run a slash command in a workspace's running session,
+for example "compact the billing-api session" or "run /do-code-review in the
+billing-api workspace". It can pass text after the command too, as in
+`/compact keep the test plan`.
+
+Only allowed commands run: `/compact`, plus the ones you list in
+**Settings → Repositories → Agent**. The app's core checks the list, not the
+assistant, and only the Settings screen can change it. Anything else is refused
+and the assistant tells you where to add it. The list covers what Yarvis types
+as a slash command. A session can still call a skill on its own when asked in
+words, so what it may do there is bounded by its own permissions, not by this
+list. The text after the command has
+newlines and control characters turned into spaces, so it can't submit a
+second command. The other rules for instructions apply as well: the agent must
+be what's reading the prompt, and a send confirms delivery only. The assistant
+asks you before it runs anything but a bare `/compact`, and a spoken turn or a
+heads-down pass asks before that too. Where the assistant can't ask, it
+refuses the rest and tells you to make the request from the Yarvis app.
 
 ### Asking what a workspace is up to
 
@@ -633,6 +677,12 @@ A permission prompt, or a question Claude asks with its own question tool, can
 be answered straight from the bell. Its row reads `AskUserQuestion:` and the
 first question. See
 [Answering permission prompts](terminals.md#answering-permission-prompts).
+
+When a workspace has several prompts or questions waiting, from different
+sessions, answering the last one in a window opens the next one in its place,
+oldest first. Like a window that opens on its own, it ignores clicks for just
+over a second. Closing a window with ✕ or Escape stops there; the rest wait on
+the bell.
 
 When the prompt or question comes from a session in the workspace you have
 open, its window opens on its own, so you don't have to reach for the bell. Its

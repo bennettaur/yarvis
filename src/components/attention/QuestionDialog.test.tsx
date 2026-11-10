@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
+import { createRoot } from "react-dom/client";
 import type { AttentionItem } from "../../lib/attention";
 import type { AgentQuestion, QuestionAnswer } from "../../lib/questions";
 import { mountForInteraction } from "../../test/render";
@@ -178,6 +179,80 @@ describe("QuestionDialog", () => {
     await settle();
     expect(declined).toEqual(["q1", "q2"]);
     expect(closed).toBe(1);
+  });
+
+  it("reports finishing, not closing, once a reply leaves nothing waiting", async () => {
+    let done = 0;
+    waiting = [QUESTION];
+    const mounted = await mountForInteraction(
+      createElement(QuestionDialog, {
+        item: ITEM,
+        onClose: () => {
+          closed++;
+        },
+        onDone: () => {
+          done++;
+        },
+        onOpenSession: () => {},
+      }),
+    );
+    unmount = mounted.unmount;
+    button(mounted.host, "Skip").click();
+    await settle();
+    expect(done).toBe(1);
+    expect(closed).toBe(0);
+  });
+
+  it("ignores clicks until armed when it opened without a click", async () => {
+    waiting = [QUESTION];
+    const mounted = await mountForInteraction(
+      createElement(QuestionDialog, {
+        item: ITEM,
+        onClose: () => {
+          closed++;
+        },
+        onOpenSession: () => {},
+        armingMs: 300,
+      }),
+      50,
+    );
+    unmount = mounted.unmount;
+    const skip = button(mounted.host, "Skip");
+    expect(skip.parentElement?.hasAttribute("inert")).toBe(true);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(skip.parentElement?.hasAttribute("inert")).toBe(false);
+  });
+
+  it("arms a question set again when the dialog reopens on it", async () => {
+    waiting = [QUESTION];
+    let item: AttentionItem | null = ITEM;
+    const props = () => ({
+      item,
+      onClose: () => {
+        closed++;
+      },
+      onOpenSession: () => {},
+      armingMs: 300,
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    unmount = () => {
+      root.unmount();
+      host.remove();
+    };
+    root.render(createElement(QuestionDialog, props()));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(button(host, "Skip").parentElement?.hasAttribute("inert")).toBe(false);
+
+    item = null;
+    root.render(createElement(QuestionDialog, props()));
+    await settle();
+    item = { ...ITEM };
+    root.render(createElement(QuestionDialog, props()));
+    await settle();
+    expect(button(host, "Skip").parentElement?.hasAttribute("inert")).toBe(true);
   });
 
   it("stays open with the error and keeps the user's draft when a send fails", async () => {

@@ -4,6 +4,7 @@ import type { Db } from "../db/client.ts";
 import { getStream, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
+import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -29,6 +30,8 @@ export function newPassOutcome(): PassOutcome {
  * `announcedMerges` collects the PRs this pass announced (see `mergeKey`), so
  * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
  * names the routines this pass was given; `finish_pass` records only those.
+ * `mergeFeedback` keeps a merge held for open review feedback from being
+ * announced as happening.
  */
 export function buildPassTools(
   db: Db,
@@ -36,6 +39,7 @@ export function buildPassTools(
   onAsked: () => void,
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
+  mergeFeedback?: MergeFeedbackLoader,
 ) {
   return {
     announce_merge: tool({
@@ -56,6 +60,22 @@ export function buildPassTools(
           .describe("Why you are merging it now, and why that risk level"),
       }),
       execute: async (merge) => {
+        // `githubOnly: false` because announce_merge can't tell which merge tool
+        // the pass will call: a PR no workspace owns comes back unchecked here.
+        // The merge call itself is checked again when it's made.
+        const feedback = mergeFeedback
+          ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: false })
+          : null;
+        if (holdsMerge(feedback)) {
+          const why =
+            feedback.unchecked !== null
+              ? "Not announced: Yarvis can't check this PR for open review feedback before the merge call."
+              : "Not announced: the PR has open review feedback, so the merge won't run yet.";
+          return {
+            ok: false,
+            message: `${why} If the merging rules let the merge go ahead, make the merge call: it is checked then, and goes to the PR's workspace or the user.`,
+          };
+        }
         // Added before the alert is written, so a merge call made in the same
         // step finds it and the backstop doesn't raise a second alert.
         announcedMerges.add(mergeKey(merge.repo, merge.number));

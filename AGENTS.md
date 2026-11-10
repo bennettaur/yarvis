@@ -21,8 +21,8 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
-  `github.saveToken`, `alarm.fire`, `alarm.release`)
+  method list (`claude.spawn`, `claude.kill`, `claude.send`, `claude.slash`,
+  `mcp.saveOAuth`, `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -116,6 +116,47 @@ bundle is unsigned or its seal is broken, and `spctl --assess` additionally
 fails the build when a Developer ID was expected but the signature silently fell
 back to ad-hoc.
 
+## Finishing a pull request
+
+A feature isn't done when the code is written. It's done when its PR has
+green CI and a verification report with no unaddressed major findings. On a
+PR you opened from this workspace, carry it that far without waiting to be
+asked. On anyone else's PR, run `/verify-pr` only when asked; it posts a
+report there and leaves the fixes to the author.
+
+1. Before pushing, run the checks for what you touched: `bun run check`,
+   `bun run typecheck` and `bun run sidecar:typecheck`, and the frontend
+   and/or sidecar tests (the sidecar ones need `TEST_DATABASE_URL`; see
+   Commands).
+2. Push and open the PR, then wait for CI with `gh pr checks <N> --watch`.
+3. If a check fails, read the failure before changing anything:
+   `gh run view <run-id> --log-failed`. Then work out whose failure it is:
+   - Caused by the PR: fix it, push, and go back to step 2.
+   - A test unrelated to the PR's change: check whether it also fails on
+     `main` (`gh run list --workflow ci.yml --branch main`) and run that file
+     locally, both on its own and in the file order the CI log shows. A test
+     that passes locally but fails on CI is usually a stub leaking from an
+     earlier file or a fixed delay (see the testing conventions below). Fix it in
+     its own commit, so a reviewer can tell it apart from the feature. The
+     fix keeps the test checking what it checked: never skip it, delete or
+     loosen an assertion, raise a timeout to cover it, or edit CI config. If
+     that seems to be the only way, ask. If you can't find the cause, re-run
+     the job once with `gh run rerun <run-id> --failed`, and say in the PR's
+     description which test failed and that it passed on a re-run.
+   - `bun audit` or `cargo audit` reporting a newly published advisory: these
+     fail every open PR at once, not only yours. Tell the user which advisory
+     and package, and ask before bumping it. The bump belongs in a PR of its
+     own unless the feature already touches that dependency.
+4. Once every check is green on your own PR, mark it ready with
+   `gh pr ready <N>`, then run `/verify-pr <N>`. Ready comes first because
+   the CI gate never auto-merges a draft on a report alone. The skill's
+   step 10 fixes what it found and rechecks, up to two rounds. Those fixes
+   are new commits, so CI runs again, and `/verify-pr` only stops on a
+   check that has already failed, not one still running. Watch the checks on
+   the final head too, and go back to step 3 if one fails.
+5. Ask wherever `/verify-pr` says to ask; nothing here overrides it.
+   Otherwise report the PR link, the CI state and the report's verdict.
+
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
@@ -143,7 +184,19 @@ back to ad-hoc.
   (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
   clear it with `resetSidecarApi` in `afterAll`, never with their own
   `mock.module` of it: that replaces the module for the whole run, so a
-  partial stub breaks whichever file loads next. They render with
+  partial stub breaks whichever file loads next. Every module more than one
+  suite stubs works the same way, registered once in `src/test/` with
+  `passThrough.ts`: `lib/pr/api` (`prApi.ts`), `lib/pr/cache` (`prFiles.ts`),
+  `lib/workspaces` (`workspacesApi.ts`), `lib/pty` (`ptyApi.ts`), `lib/repos`
+  (`reposApi.ts`) and `lib/alarms` (`alarmFixture.ts`). Each has a `stub…`
+  function and a `reset…` for the suite's `afterAll`, and
+  `src/test/passThrough.test.ts` fails when a suite mocks one of them itself or
+  never resets. A module a second suite starts stubbing gets the same
+  treatment. A `spyOn` restored in `afterAll` is fine too, since it ends with
+  the file. This is the most common cause of a test that fails on
+  CI and passes locally: CI lists the test files in a different order than a
+  Mac does, so a leaked stub reaches different files there. To reproduce, run
+  `bun test` with the files in the order the CI log's groups show. They render with
   `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
@@ -153,6 +206,18 @@ back to ad-hoc.
   `sidecar/src/customProviders/routes.test.ts`). The preload in
   `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
   that forgets never writes the user's real one.
+- Tests wait on the thing they assert, never on a fixed delay. CI runners are
+  slower than a dev Mac, so a delay that is long enough locally can be too
+  short there. After a click or a fetch, use `waitFor` from
+  `src/test/render.tsx` (frontend) or an `until` polling loop like the one in
+  `sidecar/src/reviewWorkspaces/routes.test.ts` (sidecar), with a condition
+  naming what should have happened. Before a test ends, also wait for any
+  request it started, such as the refetch after a mutation: one that lands
+  after `afterAll` restores a spy reaches the real client and fails a test
+  that has nothing to do with it.
+- A fake process writes any file a test polls for under a temp name, then
+  `mv`s it into place. The shell creates the file before writing to it, so a
+  test that waits only for the file to exist can read it empty.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
@@ -233,13 +298,28 @@ back to ad-hoc.
   providers keep the `custom:<id>` namespace. Gemini is the odd one: it has no
   audio endpoints, so `GeminiSpeech` drives both halves through
   `generateContent` and wraps the headerless PCM it gets back in a WAV header.
-- Voice is a capability of the chat surfaces, not a surface of its own:
+- Spoken chat is a capability of the chat surfaces, not a surface of its own:
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already
   accumulating. A spoken turn therefore uses whatever provider/model that chat
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
+  The Voice page (`src/components/voice/`) is for setting voice up, not for
+  talking: it runs the local mlx-audio server, keeps saved voices and their
+  cloning clips, and has a studio for hearing text in several voices. The
+  sidecar owns the server process (`voice/server.ts`). Only one server can
+  listen on a port, so only the instance that started it may stop it; who
+  started it is recorded per instance beside `settings.json`, with the
+  process's start time so a reused pid isn't adopted. Continuous mode's turn
+  detector (`voice/turnDetector.ts`) is different: Silero VAD plus smart-turn
+  in a Python script embedded in the sidecar and run with `uv run --script`.
+  Each sidecar starts its own on a port the OS picks, so there is nothing to
+  share or adopt. It exits when its stdin closes, which covers a sidecar killed
+  without warning. The webview streams 16 kHz PCM straight to it over a
+  loopback websocket, gated by a per-start token the sidecar hands out. A
+  saved voice's clip is sent as a file path only to a provider on loopback;
+  anywhere else gets the audio, since the path names the user's home folder.
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
   Ollama decision calls, URL ingest, `read_web_page` — go through
   `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every
@@ -355,22 +435,32 @@ back to ad-hoc.
     and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
-  permissions. `claude.send` is the only such path and it is guarded on both
-  sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
-  submit early into spaces and rejects an instruction opening with a character
-  the agent reads as a command (`!` is bash mode, `/` a slash command, `#` a
-  memory write), `foreground_is_agent` refuses to type at all unless the
-  configured agent is what's reading the prompt, and the chat agent's system
-  prompt forbids relaying third-party text as an instruction. What no layer can
-  establish is *what the agent is showing*, so a send is reported as delivered,
-  never as done. Anything new that forwards text into a session owes the same
-  three. Which process is the agent comes from the pids Claude Code's
-  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
-  executable's file name as the fallback for an agent that registers nothing.
+  permissions. `claude.send` and `claude.slash` are the only such paths.
+  `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
+  turns the control characters that would submit early into spaces and rejects
+  an instruction opening with a character the agent reads as a command (`!` is
+  bash mode, `/` a slash command, `#` a memory write), `foreground_is_agent`
+  refuses to type at all unless the configured agent is what's reading the
+  prompt, and the chat agent's system prompt forbids relaying third-party text
+  as an instruction. `claude.slash` is the one way a line opening with `/` gets
+  in: the core types it only when the command is on an allowlist no sidecar
+  route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
+  `allowedSlashCommands` in `settings.json`, saved from the webview like the
+  agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
+  foreground check, and cleans its arguments like an instruction. A command
+  that changes what the session may do never belongs in the defaults. The list
+  bounds what Yarvis types as a slash command, not which skills a session can be
+  asked in words to run. What no layer can establish is *what the agent is
+  showing*, so a send is reported as delivered, never as done. Anything new that
+  forwards text into a session owes the same three. Which process is the agent
+  comes from the pids Claude Code's SessionStart hook registered
+  (`workspaces/agentSessions.ts`), with the executable's file name as the
+  fallback for an agent that registers nothing.
   A registered pid counts only while it leads the PTY's foreground process
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
   so registration (and a permission prompt sent to `/ingest/permission`, or the
-  hook that settles one at `/ingest/permission/settled`) also
+  hook that settles one at `/ingest/permission/settled`, and an `ask_user`
+  question's session key on the MCP endpoint) also
   needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
   its session key under the sidecar's full-access bearer, which no PTY holds.
   The sidecar recomputes it, so a process can't mint a token for a terminal it

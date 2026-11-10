@@ -18,6 +18,7 @@ import {
   isWithinWorkingHours,
 } from "./config.ts";
 import { publish } from "./hub.ts";
+import { type MergeFeedbackLoader, mergeFeedbackLoader } from "./mergeFeedback.ts";
 import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
@@ -186,7 +187,12 @@ export async function runPass(
   config: Config,
   db: Db,
   run: HeadsDownRun,
-  options: { model?: LanguageModel; retryDelaysMs?: readonly number[]; timeoutMs?: number } = {},
+  options: {
+    model?: LanguageModel;
+    retryDelaysMs?: readonly number[];
+    timeoutMs?: number;
+    mergeFeedback?: MergeFeedbackLoader;
+  } = {},
 ): Promise<PassResult> {
   const headsDownConfig = await getHeadsDownConfig();
   const now = new Date();
@@ -273,6 +279,7 @@ export async function runPass(
           ? "Ran out of time here."
           : `Failed here: ${errorMessage}`;
   const announcedMerges = new Set<string>();
+  const mergeFeedback = options.mergeFeedback ?? mergeFeedbackLoader(db, config);
   try {
     // Stopped, paused or past its stop time while the pass was getting ready:
     // its handlers weren't registered yet.
@@ -312,6 +319,7 @@ export async function runPass(
             : undefined,
           announcedMerges,
           withinWorkingHours,
+          mergeFeedback,
         }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: PASS_INSTRUCTIONS,
@@ -321,6 +329,7 @@ export async function runPass(
           changed,
           announcedMerges,
           routines.map((r) => r.name),
+          mergeFeedback,
         ),
         budget,
         maxRetries: PASS_MODEL_RETRIES,

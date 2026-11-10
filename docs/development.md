@@ -38,6 +38,7 @@ bun run demo                      # record screenshots and video of the UI (see 
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database
+bun run voice:test-turns          # continuous voice's Python turn logic; needs uv
 bun run typecheck                 # frontend tsc --noEmit
 bun run sidecar:typecheck         # sidecar tsc --noEmit
 bun run build                     # typecheck + vite build
@@ -132,13 +133,15 @@ The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
 PR comment from users with write access, and acts as the yarvis GitHub App:
 
 - **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, signed by a key in
-  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow sets a `Verification report` commit status on that commit. The
-  status is always a success: it records that a current report exists, and its
+  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow
+  sets a `Verification report` commit status on that commit. The status is
+  always a success: it records that a current report exists, and its
   description carries the verdict. If the PR is a maintainer's, not a draft,
-  low risk, and the report has no concerns, the bot also approves it and turns
-  on squash auto-merge. A push makes the report stale, so run `/verify-pr`
-  again, or `/verify-pr <N> --recheck` to re-verify only what the last report
-  flagged plus the new commits.
+  low or standard risk, and the report's verdict is `auto`, the bot also
+  approves it and turns on squash auto-merge. A `visual` verdict waits for you
+  to look at the screenshots and comment `/approve`. A push makes the report
+  stale, so run `/verify-pr` again, or `/verify-pr <N> --recheck` to
+  re-verify only what the last report flagged plus the new commits.
 - **`/approve`** from a trusted user. The bot approves the current head and
   turns on auto-merge, marking a draft ready first. This is how a maintainer
   merges their own PR, since GitHub won't let them approve it. On an outside
@@ -146,8 +149,8 @@ PR comment from users with write access, and acts as the yarvis GitHub App:
   push made after you read the diff isn't approved with it. Anything else after
   `/approve` is ignored.
 
-Only low-risk PRs can merge on a report alone. A PR's tier is the stricter of
-two things:
+Low- and standard-risk PRs can merge on a report alone; high-risk ones need
+`/approve`. A PR's tier is the strictest of three things:
 
 - **The risk assessment** in the report: how much harm the change could do,
   judged from what it does, whatever part of the app it is in. A UI change
@@ -156,13 +159,27 @@ two things:
   things around on screen is low. The `/verify-pr` skill makes this call and
   signs it into the report.
 - **A floor from the changed paths** (`scripts/verify/tier.ts`, from both
-  sides of any rename), which the assessment can't lower. It is high for CI
-  and repo config, the verifier itself, agent instructions and hooks
-  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), git hooks, build and test config,
-  secrets and shell access, app permissions, sidecar request handling, agent
-  tool approvals, the MCP server, settings, migrations, dependencies, what
-  the Chrome extension may do, or more than 800 changed lines of code. More
-  than 300 lines is standard. Anything else starts low: no area is presumed
+  sides of any rename), which the assessment can't lower. It is high for the
+  verifier itself and its workflows, agent instructions and hooks
+  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), secrets and shell access, app
+  permissions, sidecar request handling, agent tool approvals, the MCP
+  server, settings, or what the Chrome extension may do. A dependency change
+  that only adds, removes or bumps registry packages, a migration that only
+  adds tables, columns, types or plain indexes, and more than 300 changed
+  lines of code, are standard. "Only adds" is an allowlist of the statement
+  shapes drizzle generates; anything else in a migration is assessed. Install
+  hooks, `verify:` scripts, lockfile sources outside the registry, the root
+  `bunfig.toml`, `tsconfig.json` and `.npmrc`, any `node_modules/` or nested
+  package or tsconfig outside `sidecar/` and `video/`, `.github/actions/`,
+  and any `.github/` change whose added lines name a secret, a write
+  permission or a trigger that runs with them are high. The skill's supply-chain check raises a dependency
+  change to high when it finds a real risk.
+- **Files sent for assessment.** Other workflows and `.github/` files, git
+  hooks, build and test config, the database schema, other migrations, and
+  any other dependency-file edit (a script, a hook, a git or path source) are
+  flagged rather than marked high. The skill rates each one standard or high
+  from what the change does, and signs the paths it rated; the gate counts a
+  flagged file the report didn't rate as high. Anything else starts low: no area is presumed
   safe or risky.
 
 Tests, docs and lockfiles don't count toward the line limits.
@@ -173,7 +190,11 @@ settings:
 
 - `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
   yarvis GitHub App's client ID and private key. The app needs read and write
-  access to actions, contents, pull requests, issues and commit statuses.
+  access to actions, contents, pull requests, issues and commit statuses. The
+  key is a secret of the `yarvis-bot` environment, not of the repo, and that
+  environment only accepts runs on `main`. Only `verify.yml` and
+  `verify-revert.yml` name it, so no other workflow, and no PR branch, can
+  read the key.
 - `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
   IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
   IDs, not logins, because a login freed by a rename can be taken by someone
@@ -440,7 +461,8 @@ sidecar/        Bun + TS service (Hono)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution, the model catalog (catalog.ts) and
                    the decision model (decision.ts)
-  src/voice/       speech to text and text to speech
+  src/voice/       speech to text, text to speech, and continuous mode's
+                   turn detector (turnDetector.ts, turn_server.py)
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
   src/tasks/       daily and weekly tasks, dedupe, "did I already finish this?"
@@ -449,7 +471,7 @@ sidecar/        Bun + TS service (Hono)
   src/web/         reading public web pages, with hidden text and injections screened
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
-  src/artifacts/   markdown documents the assistant writes and reads back
+  src/artifacts/   markdown documents and diagrams the assistant writes and reads back
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision

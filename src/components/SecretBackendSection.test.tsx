@@ -42,6 +42,8 @@ function defaultSettings(): Settings {
     colorTheme: null,
     terminalFontSize: null,
     attentionAnimation: null,
+    allowedSlashCommands: null,
+    defaultAllowedSlashCommands: ["compact"],
   };
 }
 

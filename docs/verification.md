@@ -37,7 +37,7 @@ flowchart TB
   report --> gate
   review --> gate
   approve --> gate
-  gate -- "verdict auto, tier low" --> bot
+  gate -- "verdict auto, tier low or standard" --> bot
   gate -- "agent review approves,<br/>tier low or standard" --> bot
   gate -- "any tier" --> bot
 ```
@@ -57,13 +57,17 @@ the `Verification report` commit status.
 ## Which path a PR takes
 
 The report's verdict picks the path. Verdicts go from loosest to strictest:
-`auto`, `agent`, `human`. A PR's verdict can't be looser than its risk tier
-allows, and the gate checks both again.
+`auto`, `visual`, `agent`, `human`. A PR's verdict can't be looser than its
+risk tier allows, and the gate checks both again. High risk is kept for the
+changes a person has to check the safeguards on: secrets, what an agent or a
+Claude session can be made to do, auth, the verifier, and any workflow,
+script, config or migration the skill rated high after reading it.
 
 | Verdict | For example | What happens |
 | --- | --- | --- |
-| `auto` | Low risk, and every check passed: no finding of any severity, no check with a concern, enough of the changed lines covered by tests | The report alone is enough. The gate approves as soon as the signed report is posted. |
-| `agent` | Standard risk, a major or minor finding, a check with a concern, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
+| `auto` | Low or standard risk, no blocker or major finding, no check with a concern, enough of the changed lines covered by tests. Minor findings are allowed, and so is a small UI change the screenshots show working. | The report alone is enough. The gate approves as soon as the signed report is posted. |
+| `visual` | The same, but the UI change is one a person should see: a new screen or flow, or a layout or design change | Look at the report's screenshots, then comment `/approve`. The merge reviewer can't approve it, nor a UI change the skill couldn't capture. |
+| `agent` | A major finding, a check with a concern, a dependency change without a supply-chain check, a UI change with no screenshots, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
 | `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
 
 On an outside contributor's PR, the comment has to name the commit you read,
@@ -91,7 +95,7 @@ as.
 | Lives in | 1Password, the same key that signs your commits | Yarvis, Settings → Credentials |
 | Used by | `/verify-pr`, when it posts the report | The merge reviewer, when it posts an agent review |
 | Signs as | `verify-pr`, namespace `yarvis-verify` | `yarvis-merge-reviewer`, namespace `yarvis-agent-review` |
-| Can unlock | Any verdict, up to auto-merging a low-risk PR | Only a PR you already signed an `agent` report for, at that same commit |
+| Can unlock | Any verdict, up to auto-merging a low- or standard-risk PR | Only a PR you already signed an `agent` report for, at that same commit |
 
 The merge reviewer doesn't use your SSH signing key, for two reasons:
 
@@ -130,13 +134,16 @@ all of these hold:
 
 1. You run `/verify-pr` on your PR. 1Password may ask to use your SSH signing
    key, and the signed report is posted.
-2. The gate sets the `Verification report` status. If the verdict is `auto`,
-   the bot approves and auto-merge waits for the rest of CI.
-3. If the verdict is `agent`, you ask Yarvis to have the merge reviewer check
+2. On your own PR, the skill fixes what it found, pushes and rechecks before
+   posting, up to two rounds, so the report you get is for the fixed commit.
+3. The gate sets the `Verification report` status. If the verdict is `auto`,
+   the bot approves and auto-merge waits for the rest of CI. If it is
+   `visual`, you look at the screenshots and comment `/approve`.
+4. If the verdict is `agent`, you ask Yarvis to have the merge reviewer check
    the PR. It posts a signed agent review, and the gate acts on an approve.
-4. If the verdict is `human`, or you disagree with a reject, you read the PR
+5. If the verdict is `human`, or you disagree with a reject, you read the PR
    and comment `/approve`.
-5. If you push again, every earlier comment goes stale. Run `/verify-pr`
+6. If you push again, every earlier comment goes stale. Run `/verify-pr`
    again. After pushing fixes for what a report flagged,
    `/verify-pr <N> --recheck` re-verifies only that and the new commits.
 
@@ -165,7 +172,8 @@ These run from the Yarvis repo.
 4. In Yarvis, open Settings → Credentials and paste the key file's contents
    into **Merge reviewer signing key**. Then delete `merge-reviewer.key`.
 5. Check the other repo settings: `VERIFY_TRUSTED_USER_IDS`,
-   `YARVIS_BOT_CLIENT_ID` and `YARVIS_BOT_PRIVATE_KEY`. See
+   `YARVIS_BOT_CLIENT_ID`, and `YARVIS_BOT_PRIVATE_KEY` in the `yarvis-bot`
+   environment (limited to `main`), not as a repo secret. See
    [Development](development.md#verifying-a-pr-for-merge) for what each one
    holds.
 6. Leave `VERIFY_MODE` on `shadow` for a while. In shadow mode the gate sets

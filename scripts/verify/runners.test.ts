@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runBaseline } from "./baseline.ts";
 import { collectCoverage } from "./collect.ts";
+import { parseChangedRanges } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
 
 // The runners' bugs would be in how they call git and bun, so these run both
@@ -38,6 +39,10 @@ function repo(files: Record<string, string>): string {
   return root;
 }
 
+/** Where the PR changed each file, as `collect` reads it. */
+const changedRanges = (root: string, base: string) =>
+  parseChangedRanges(git(root, "diff", "--no-renames", "-U0", base, "HEAD"));
+
 /** Commits the PR's side on top of the repo's first commit, and returns that first commit. */
 function commitPr(root: string, files: Record<string, string>): string {
   writeAll(root, files);
@@ -70,11 +75,12 @@ it("runs with the sidecar's bunfig", () => expect((globalThis as { suite?: strin
 `,
     });
 
-    const result = runBaseline(root, base, [
-      "src/clamp.ts",
-      "src/clamp.test.ts",
-      "sidecar/src/same.test.ts",
-    ]);
+    const result = runBaseline(
+      root,
+      base,
+      ["src/clamp.ts", "src/clamp.test.ts", "sidecar/src/same.test.ts"],
+      changedRanges(root, base),
+    );
 
     expect(result).toEqual({
       detecting: 1,
@@ -92,11 +98,65 @@ it("runs with the sidecar's bunfig", () => expect((globalThis as { suite?: strin
   it("runs nothing when no test changed", () => {
     const root = repo({ "src/a.ts": "export const a = 1;\n" });
     const base = commitPr(root, { "src/a.ts": "export const a = 2;\n" });
-    expect(runBaseline(root, base, ["src/a.ts"])).toEqual({
+    expect(runBaseline(root, base, ["src/a.ts"], changedRanges(root, base))).toEqual({
       detecting: 0,
       notDetecting: [],
       failingOnHead: [],
     });
+  });
+
+  it("leaves out tests in a changed file whose own code the PR didn't touch", () => {
+    const root = repo({
+      "src/flag.ts": "export const flag = false;\n",
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag } from "./flag.ts";
+it("is a boolean", () => {
+  expect(typeof flag).toBe("boolean");
+});
+`,
+    });
+    const base = commitPr(root, {
+      "src/flag.ts": "export const flag = true;\nexport const other = 1;\n",
+      // A new import above the old test and a new test below it.
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag, other } from "./flag.ts";
+it("is a boolean", () => {
+  expect(typeof flag).toBe("boolean");
+});
+it("is on", () => expect(flag && other === 1).toBe(true));
+`,
+    });
+    expect(
+      runBaseline(root, base, ["src/flag.ts", "src/flag.test.ts"], changedRanges(root, base)),
+    ).toEqual({ detecting: 1, notDetecting: [], failingOnHead: [] });
+  });
+
+  it("still reports an untouched test that the PR breaks", () => {
+    const root = repo({
+      "src/flag.ts": "export const flag = false;\n",
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag } from "./flag.ts";
+it("is off", () => {
+  expect(flag).toBe(false);
+});
+`,
+    });
+    const base = commitPr(root, { "src/flag.ts": "export const flag = true;\n" });
+    // The test file is in the list but its test's own lines didn't change.
+    writeAll(root, {
+      "src/flag.test.ts": `import { expect, it } from "bun:test";
+import { flag } from "./flag.ts";
+
+it("is off", () => {
+  expect(flag).toBe(false);
+});
+`,
+    });
+    git(root, "add", "-A");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "blank line");
+    expect(
+      runBaseline(root, base, ["src/flag.ts", "src/flag.test.ts"], changedRanges(root, base)),
+    ).toEqual({ detecting: 0, notDetecting: [], failingOnHead: ["src/flag.test.ts > is off"] });
   });
 });
 
