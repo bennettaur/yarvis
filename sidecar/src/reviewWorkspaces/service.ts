@@ -146,7 +146,7 @@ export interface ReviewDeps {
   stackOf?(ref: PrRef): Promise<PrRef[]>;
 }
 
-function locatorFor(ref: PrRef): PrLocator {
+export function locatorFor(ref: PrRef): PrLocator {
   return ref.provider === "github"
     ? { provider: "github", owner: ref.owner, repo: ref.repo, number: ref.number }
     : { provider: "azure", org: ref.org, project: ref.project, repo: ref.repo, number: ref.prId };

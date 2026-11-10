@@ -375,6 +375,14 @@ describe("findingPoster", () => {
     expect(posted).toEqual([{ comment: { path: "src/cache.ts", line: 12, body: quoted }, seen }]);
   });
 
+  it("passes on where GitHub put the comment", async () => {
+    stubPrApi({ postPrComment: async () => ({ ok: true, placement: "file" }) });
+    expect(await findingPoster(pr.ref, seen, null).toPr(finding, "Tests")).toBe("file");
+
+    stubPrApi({ postPrComment: async () => ({ ok: true }) });
+    expect(await findingPoster(pr.ref, seen, null).toPr(finding, "Tests")).toBeUndefined();
+  });
+
   // A finding is model-written from the PR's code, so the workspace's agent
   // must read it fenced rather than as the user's own request.
   it("adds the finding to the linked workspace marked as a report finding", async () => {

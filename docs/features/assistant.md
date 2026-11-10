@@ -128,6 +128,11 @@ The assistant can act on your workspaces in bulk:
 - **"Compact the billing-api session."** It runs `/compact` there. Other slash
   commands and skills run only once you've allowed them in Settings (see
   [Running a slash command in a session](workspaces.md#running-a-slash-command-in-a-session)).
+- **"Walk me through bennettaur/yarvis#612"** or **"Verify that PR."** It
+  starts a [guided review](pr-review.md#take-a-guided-review) or a
+  [verification report](review-workspaces.md#verification-report) in the
+  background, and the attention bell tells you when it's ready. See
+  [Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks, mergeability and review verdict from the last poll (refreshed every
   minute).
@@ -478,7 +483,8 @@ you asked.
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
   syncing branches, sending an instruction to a session, launching a
-  session, handing a task to Claude Code, forgetting a memory, or delegating.
+  session, handing a task to Claude Code, starting a guided review or
+  verification report, forgetting a memory, or delegating.
   A transcript can be misheard, or picked up from the room.
 - **Scheduled tasks** can't ask, because nobody is watching them. They only
   get tools that read. See [Scheduled tasks](#scheduled-tasks).
@@ -547,8 +553,8 @@ Loaded on demand:
 - **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
   messages and review requests, mark what it's waiting on, and find the stream
   something belongs to.
-- **PR review.** List your guided reviews and search the notes you took while
-  reviewing.
+- **PR review.** List your guided reviews, search the notes you took while
+  reviewing, and start a guided review or a verification report on a PR.
 - **Calendar.** List events and create one.
 - **Alarms.** List your alarms, set one for a time or for a calendar meeting,
   and cancel one. In heads-down mode it can only set meeting alarms, and can't

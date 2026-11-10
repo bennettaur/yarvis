@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
-import { mountForInteraction, renderToHtml, textOf } from "../../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -56,6 +56,150 @@ describe("VerificationReportView", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(text).toContain("src/cache.ts:10–40");
     expect(text).toContain("medium risk");
+  });
+
+  it("shows the impact band, what to check, and every change behind a fold", async () => {
+    const change = {
+      kind: "logic" as const,
+      reach: "core" as const,
+      evidence: "partial" as const,
+      sensitive: false,
+      count: 1,
+      path: "src/cache.ts",
+      line: 22,
+    };
+    const scored: VerificationReport = {
+      ...report,
+      risk: {
+        ...(report.risk as NonNullable<VerificationReport["risk"]>),
+        level: "high",
+        impact: {
+          band: 4,
+          highestChangeBand: 3,
+          load: 9,
+          raisedByVolume: 1,
+          counts: {
+            passive: 4,
+            reorganization: 0,
+            addition: 0,
+            removal: 0,
+            interface: 0,
+            logic: 2,
+          },
+          changes: [
+            {
+              ...change,
+              title: "Serve lookups from the cache",
+              check: "A write evicts the cached profile",
+              band: 4,
+            },
+            { ...change, title: "Tidy comments", kind: "passive", count: 4, check: "", band: 1 },
+          ],
+        },
+      },
+    };
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: scored,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("high impact · 4/5");
+    // The agent's level matches the band's, so it isn't shown twice.
+    expect(text).not.toContain("high risk");
+    expect(text).toContain("4 passive, 2 logic changes");
+    expect(text).toContain("raised from moderate by the number of changes");
+    expect(text).toContain("A write evicts the cached profile");
+    expect(text).toContain("logic · core · partly tested");
+    expect(text).toContain("Every change (2)");
+    expect(text).toContain("passive · core · partly tested · 4 like it");
+  });
+
+  it("shows the agent's level beside the band when the agent judged it stricter", async () => {
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            risk: {
+              ...risk,
+              level: "high",
+              impact: {
+                band: 2,
+                highestChangeBand: 2,
+                load: 1,
+                raisedByVolume: 0,
+                counts: {
+                  passive: 0,
+                  reorganization: 0,
+                  addition: 1,
+                  removal: 0,
+                  interface: 0,
+                  logic: 0,
+                },
+                changes: [
+                  {
+                    title: "Add a cache",
+                    kind: "addition",
+                    reach: "local",
+                    evidence: "proven",
+                    sensitive: false,
+                    count: 1,
+                    check: "",
+                    band: 2,
+                  },
+                ],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("low impact · 2/5");
+    expect(text).toContain("high risk");
+    expect(text).not.toContain("Needs attention");
+    expect(text).toContain("Every change (1)");
+  });
+
+  it("shows only the band when the agent's level matches it", async () => {
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const counts = {
+      passive: 0,
+      reorganization: 0,
+      addition: 0,
+      removal: 0,
+      interface: 0,
+      logic: 1,
+    };
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            risk: {
+              ...risk,
+              level: "medium",
+              impact: {
+                band: 3,
+                highestChangeBand: 3,
+                load: 2,
+                raisedByVolume: 0,
+                counts,
+                changes: [],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("moderate impact · 3/5");
+    expect(text).not.toContain("medium risk");
+    expect(text).not.toContain("raised from");
   });
 
   it("links only paths the PR has, and shows any other as plain text", async () => {
@@ -298,6 +442,7 @@ describe("VerificationReportView", () => {
         poster: {
           toPr: async (f, section) => {
             sent.push(`pr ${section} ${f.path}:${f.line}`);
+            return undefined;
           },
           toWorkspace: {
             name: "cache-work",
@@ -320,6 +465,57 @@ describe("VerificationReportView", () => {
       const posted = buttons("Posted to PR")[0];
       expect(posted?.disabled).toBe(true);
       expect(textOf(host.innerHTML)).toContain("workspace repo not found");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("holds the button while the post is in flight", async () => {
+    let release = () => {};
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: () =>
+            new Promise<undefined>((resolve) => {
+              release = () => resolve(undefined);
+            }),
+        },
+      }),
+    );
+    try {
+      const find = (label: string) =>
+        [...host.querySelectorAll("button")].find((b) => b.textContent === label);
+      find("Post to PR")?.click();
+      await waitFor(() => find("Posting…") != null, "the posting state");
+      expect(find("Posting…")?.disabled).toBe(true);
+      release();
+      await waitFor(() => find("Posted to PR") != null, "the posted state");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says when GitHub put a finding on the whole file", async () => {
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: { toPr: async () => "file" as const },
+      }),
+    );
+    try {
+      const post = [...host.querySelectorAll("button")].find((b) => b.textContent === "Post to PR");
+      post?.click();
+      await waitFor(
+        () => textOf(host.innerHTML).includes("Posted on the whole file instead"),
+        "the notice",
+      );
+      const posted = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "Posted to PR",
+      );
+      expect(posted?.disabled).toBe(true);
     } finally {
       unmount();
     }

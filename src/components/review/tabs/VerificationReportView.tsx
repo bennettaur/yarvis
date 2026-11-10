@@ -1,13 +1,18 @@
 import { useState } from "react";
+import type { CommentPlacement } from "../../../lib/pr/types";
 import {
+  type ChangeKind,
   coverageKnown,
+  type ImpactBand,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationApproach,
+  type VerificationChange,
   type VerificationCheck,
   type VerificationCheckKey,
   type VerificationCoverage,
   type VerificationFinding,
+  type VerificationImpact,
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
@@ -31,11 +36,72 @@ const SEVERITY_CLASS: Record<Severity, string> = {
   low: "border-zinc-700 text-zinc-400",
 };
 
-const RISK_CLASS: Record<NonNullable<VerificationReport["risk"]>["level"], string> = {
+type VerificationRiskLevel = NonNullable<VerificationReport["risk"]>["level"];
+
+const RISK_CLASS: Record<VerificationRiskLevel, string> = {
   high: "border-red-700 bg-red-950/40 text-red-300",
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
+
+// The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`, the
+// evidence text copies `scripts/verify/report.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
+// `reviewWorkspaces/verification.ts`. The frontend can't import them, so change both together.
+const IMPACT_LABEL: Record<ImpactBand, string> = {
+  1: "minimal",
+  2: "low",
+  3: "moderate",
+  4: "high",
+  5: "very high",
+};
+
+const IMPACT_CLASS: Record<ImpactBand, string> = {
+  1: RISK_CLASS.low,
+  2: RISK_CLASS.low,
+  3: RISK_CLASS.medium,
+  4: RISK_CLASS.high,
+  5: RISK_CLASS.high,
+};
+
+/** Changes at or above this band are listed for attention; the sidecar's `ATTENTION_BAND`. */
+const ATTENTION_BAND = 4;
+
+/** The risk level a band alone implies. */
+const LEVEL_FOR_BAND: Record<ImpactBand, VerificationRiskLevel> = {
+  1: "low",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "high",
+};
+
+const KIND_NAMES: [ChangeKind, string, string][] = [
+  ["passive", "passive", "passive"],
+  ["reorganization", "reorganization", "reorganizations"],
+  ["addition", "addition", "additions"],
+  ["removal", "removal", "removals"],
+  ["interface", "interface change", "interface changes"],
+  ["logic", "logic change", "logic changes"],
+];
+
+const EVIDENCE_TEXT: Record<VerificationChange["evidence"], string> = {
+  proven: "proven by tests",
+  partial: "partly tested",
+  unproven: "untested",
+};
+
+function countsText(counts: VerificationImpact["counts"]): string {
+  return KIND_NAMES.filter(([kind]) => counts[kind] > 0)
+    .map(([kind, one, many]) => `${counts[kind]} ${counts[kind] === 1 ? one : many}`)
+    .join(", ");
+}
+
+function describeChange(change: VerificationChange): string {
+  const parts = [change.kind, change.reach, EVIDENCE_TEXT[change.evidence]];
+  if (change.sensitive) parts.push("sensitive");
+  if (change.count > 1) parts.push(`${change.count} like it`);
+  return parts.join(" · ");
+}
 
 const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
   "much-simpler": "A much simpler way exists",
@@ -97,7 +163,8 @@ function Location({
  * path and line get the buttons, since both targets anchor to a line.
  */
 export interface FindingPoster {
-  toPr: (finding: Located, section: string) => Promise<void>;
+  /** "file" when GitHub put the comment on the whole file instead of its line. */
+  toPr: (finding: Located, section: string) => Promise<CommentPlacement | undefined>;
   /** Present when the PR was raised from a Yarvis workspace. */
   toWorkspace?: { name: string; add: (finding: Located, section: string) => Promise<void> };
 }
@@ -106,7 +173,7 @@ export interface FindingPoster {
 export type Located = Pick<VerificationFinding, "title" | "detail"> &
   Partial<Pick<VerificationFinding, "severity">> & { path: string; line: number };
 
-type PostState = "posting" | "posted" | { error: string };
+type PostState = "posting" | "posted" | "posted-to-file" | { error: string };
 
 /** The post buttons for one finding, each remembering it was sent so a second click can't repeat it. */
 function PostFinding({
@@ -123,25 +190,27 @@ function PostFinding({
   const { path, line } = finding;
   if (!poster || !path || !line) return null;
   const located: Located = { ...finding, path, line };
-  const send = async (fn: () => Promise<void>, set: (s: PostState) => void) => {
+  const send = async (fn: () => Promise<unknown>, set: (s: PostState) => void) => {
     set("posting");
     try {
-      await fn();
-      set("posted");
+      set((await fn()) === "file" ? "posted-to-file" : "posted");
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }
   };
-  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={state === "posting" || state === "posted"}
-      className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
-    >
-      {state === "posting" ? "Posting…" : state === "posted" ? done : idle}
-    </button>
-  );
+  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => {
+    const sent = state === "posted" || state === "posted-to-file";
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={state === "posting" || sent}
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+      >
+        {state === "posting" ? "Posting…" : sent ? done : idle}
+      </button>
+    );
+  };
   const errors = [toPr, toWorkspace].flatMap((s) => (s && typeof s === "object" ? [s.error] : []));
   const workspace = poster.toWorkspace;
   return (
@@ -159,6 +228,12 @@ function PostFinding({
           `Added to ${workspace.name}`,
           () => void send(() => workspace.add(located, section), setToWorkspace),
         )}
+      {toPr === "posted-to-file" && (
+        <span role="status" className="text-[10px] text-amber-300">
+          Posted on the whole file instead: GitHub only takes line comments on lines inside the
+          diff.
+        </span>
+      )}
       {errors.map((e) => (
         <span key={e} role="alert" className="text-[10px] text-red-400">
           {e}
@@ -421,6 +496,74 @@ function MustReadItem({
 }
 
 /**
+ * What the impact score rests on: the kinds of change, the ones a reviewer
+ * should check, and every change behind a fold for anyone who wants the rest.
+ */
+function ImpactDetail({
+  impact,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  impact: VerificationImpact;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  const attention = impact.changes.filter((c) => c.band >= ATTENTION_BAND);
+  return (
+    <>
+      <div className="text-xs text-zinc-400">
+        {countsText(impact.counts)}
+        {impact.raisedByVolume > 0 &&
+          ` · raised from ${IMPACT_LABEL[impact.highestChangeBand]} by the number of changes, so splitting the PR would lower it`}
+      </div>
+      {attention.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs text-zinc-500">Needs attention</div>
+          <ul className="space-y-1.5">
+            {attention.map((c, i) => (
+              <li
+                // Folded entries can share a title and have no location, so the position keeps keys unique.
+                key={`${i}:${c.title}`}
+                className={viewedClass(isViewed(viewed, c.path))}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-zinc-200">{c.title}</span>
+                  <Location path={c.path} line={c.line} onOpen={onOpen} />
+                  <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+                </div>
+                <p className="text-xs text-zinc-400">{c.check}</p>
+                <PostFinding
+                  finding={{ title: c.title, detail: c.check, path: c.path, line: c.line }}
+                  section="Impact"
+                  poster={poster}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details className="text-xs">
+        <summary className="cursor-pointer text-zinc-500">
+          Every change ({impact.changes.length})
+        </summary>
+        <ul className="mt-1.5 space-y-1">
+          {impact.changes.map((c, i) => (
+            <li key={`${i}:${c.title}`} className="flex flex-wrap items-center gap-2">
+              <span className="text-zinc-500">{c.band}/5</span>
+              <span className="text-zinc-300">{c.title}</span>
+              <Location path={c.path} line={c.line} onOpen={onOpen} />
+              <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </>
+  );
+}
+
+/**
  * The report in the order a reviewer uses it: which files it didn't cover,
  * what the change is, which files to read first, how risky it is, then the
  * checks.
@@ -461,13 +604,26 @@ export default function VerificationReportView({
         <Section title="Risk">
           <div className="space-y-2 text-sm">
             <div className="flex items-start gap-2">
-              <span
-                className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
-              >
-                {risk.level} risk
-              </span>
+              {risk.impact && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${IMPACT_CLASS[risk.impact.band]}`}
+                >
+                  {IMPACT_LABEL[risk.impact.band]} impact · {risk.impact.band}/5
+                </span>
+              )}
+              {/* The level shows beside the band only when the agent judged it stricter. */}
+              {(!risk.impact || risk.level !== LEVEL_FOR_BAND[risk.impact.band]) && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+                >
+                  {risk.level} risk
+                </span>
+              )}
               <span className="text-zinc-300">{risk.clientImpact}</span>
             </div>
+            {risk.impact && (
+              <ImpactDetail impact={risk.impact} onOpen={onOpen} viewed={viewed} poster={poster} />
+            )}
             {risk.mitigations.length > 0 && (
               <div className="text-xs text-zinc-400">
                 <span className="text-zinc-500">Mitigations: </span>

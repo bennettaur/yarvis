@@ -20,7 +20,7 @@ flowchart TB
   end
 
   subgraph pr["The PR's comments, all posted as you"]
-    report["verification report<br/>commit, verdict, risk tier,<br/>findings, time signed"]
+    report["verification report<br/>commit, verdict, risk tier,<br/>impact band, findings, time signed"]
     review["agent review<br/>commit, which report,<br/>approve or reject"]
     approve["/approve, or /approve SHA"]
   end
@@ -58,7 +58,8 @@ the `Verification report` commit status.
 
 The report's verdict picks the path. Verdicts go from loosest to strictest:
 `auto`, `visual`, `agent`, `human`. A PR's verdict can't be looser than its
-risk tier allows, and the gate checks both again. High risk is kept for the
+risk tier or its impact band allows, and the gate checks the verdict and
+tier again. High risk is kept for the
 changes a person has to check the safeguards on: secrets, what an agent or a
 Claude session can be made to do, auth, the verifier, and any workflow,
 script, config or migration the skill rated high after reading it.
@@ -67,8 +68,14 @@ script, config or migration the skill rated high after reading it.
 | --- | --- | --- |
 | `auto` | Low or standard risk, no blocker or major finding, no check with a concern, enough of the changed lines covered by tests. Minor findings are allowed, and so is a small UI change the screenshots show working. | The report alone is enough. The gate approves as soon as the signed report is posted. |
 | `visual` | The same, but the UI change is one a person should see: a new screen or flow, or a layout or design change | Look at the report's screenshots, then comment `/approve`. The merge reviewer can't approve it, nor a UI change the skill couldn't capture. |
-| `agent` | A major finding, a check with a concern, a dependency change without a supply-chain check, a UI change with no screenshots, or tests that miss many small breaking edits to the changed lines | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
-| `human` | High risk, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
+| `agent` | A major finding, a check with a concern, a dependency change without a supply-chain check, a UI change with no screenshots, tests that miss many small breaking edits to the changed lines, or an impact band of 4 | Someone should read the diff first. You can ask Yarvis to have the merge reviewer do it ("have the merge reviewer check bennettaur/yarvis#123"). If its agent review approves, the gate approves too, unless the report has a blocking finding. If it rejects, the bot won't approve on that report, and the PR waits for you. |
+| `human` | High risk, an impact band of 5, a blocking finding, a check that failed, or tests that fail on the PR | Only you can merge it, by commenting `/approve`. The bot approves for you, because GitHub won't let you approve your own PR. |
+
+The impact band, from 1 to 5, scores how likely the PR is to break something
+and how far that would spread: the skill classifies each change, and
+`sidecar/src/verify/impact.ts` scores the list (see `docs/development.md`,
+"Verifying a PR for merge"). The gate doesn't recompute it. It reads the
+signed verdict, which the band can only make stricter.
 
 On an outside contributor's PR, the comment has to name the commit you read,
 for example `/approve 3f5904a`.

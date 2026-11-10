@@ -123,7 +123,7 @@ export function findingPoster(
 ): FindingPoster {
   return {
     toPr: async (f, section) => {
-      await postPrComment(
+      const { placement } = await postPrComment(
         prRef,
         { path: f.path, line: f.line, body: findingCommentBody(f, section) },
         seen,
@@ -131,6 +131,7 @@ export function findingPoster(
       // So the PR's diff tabs show the new thread, and the review mark the post recorded.
       invalidate(prDetailKey(prRef));
       invalidateLastReview(prRef);
+      return placement;
     },
     ...(linked && {
       toWorkspace: {

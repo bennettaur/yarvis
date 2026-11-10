@@ -40,6 +40,7 @@ import { FULL_SHA } from "./ref";
 import type {
   MergeMethod,
   NewComment,
+  PostedCommentResult,
   PrDetail,
   PrFile,
   PrRef,
@@ -93,7 +94,7 @@ export const postPrComment = (
   ref: PrRef,
   comment: NewComment,
   seen?: SeenCommits,
-): Promise<{ ok: boolean }> => {
+): Promise<PostedCommentResult> => {
   const body = { ...comment, ...seenFields(seen) };
   return ref.provider === "github" ? ghPostComment(ref, body) : azPostComment(ref, body);
 };
