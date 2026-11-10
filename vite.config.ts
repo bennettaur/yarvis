@@ -15,6 +15,15 @@ const port = Number(process.env.YARVIS_DEV_PORT) || 1420;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  // Scan only the app's own pages for dependencies to pre-bundle; add any new
+  // HTML entry point here. By default Vite scans every HTML file under the
+  // root, and `video/player/index.html` resolves react-dom from
+  // `video/node_modules` once `video/` has its own dependencies installed, so
+  // the app would load two copies of React and crash on its first hook.
+  optimizeDeps: {
+    entries: ["index.html", "demo/index.html"],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
