@@ -15,7 +15,6 @@ import {
   emptyAudit,
   estimateReadBytes,
   estimateRunCostUsd,
-  MAX_CHANGES_SHOWN,
   MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   MAX_MUST_READ_FLAGS,
@@ -231,7 +230,7 @@ describe("the report schema", () => {
       expect(parsed.risk?.impact).toBeUndefined();
     });
 
-    it("counts every change toward the load but keeps only the highest to show", () => {
+    it("scores and keeps every change, highest band first", () => {
       const changes = [
         change(),
         ...Array.from({ length: 40 }, () =>
@@ -241,8 +240,7 @@ describe("the report schema", () => {
       const parsed = schema.parse(report({ risk: { ...report().risk, changes } }));
       expect(parsed.risk?.impact?.load).toBe(44);
       expect(parsed.risk?.impact?.band).toBe(5);
-      expect(parsed.risk?.impact?.changes).toHaveLength(MAX_CHANGES_SHOWN);
-      expect(parsed.risk?.impact?.total).toBe(41);
+      expect(parsed.risk?.impact?.changes).toHaveLength(41);
       expect(parsed.risk?.impact?.changes[0]?.band).toBe(4);
     });
 

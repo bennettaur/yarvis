@@ -78,7 +78,6 @@ describe("VerificationReportView", () => {
           highestChangeBand: 3,
           load: 9,
           raisedByVolume: 1,
-          total: 2,
           counts: {
             passive: 4,
             reorganization: 0,
@@ -133,7 +132,6 @@ describe("VerificationReportView", () => {
                 highestChangeBand: 2,
                 load: 1,
                 raisedByVolume: 0,
-                total: 40,
                 counts: {
                   passive: 0,
                   reorganization: 0,
@@ -164,7 +162,7 @@ describe("VerificationReportView", () => {
     expect(text).toContain("low impact · 2/5");
     expect(text).toContain("high risk");
     expect(text).not.toContain("Needs attention");
-    expect(text).toContain("Every change (1 of 40)");
+    expect(text).toContain("Every change (1)");
   });
 
   it("shows only the band when the agent's level matches it", async () => {
@@ -190,7 +188,6 @@ describe("VerificationReportView", () => {
                 highestChangeBand: 3,
                 load: 2,
                 raisedByVolume: 0,
-                total: 0,
                 counts,
                 changes: [],
               },

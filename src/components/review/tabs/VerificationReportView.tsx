@@ -537,11 +537,7 @@ function ImpactDetail({
       )}
       <details className="text-xs">
         <summary className="cursor-pointer text-zinc-500">
-          Every change (
-          {impact.total > impact.changes.length
-            ? `${impact.changes.length} of ${impact.total}`
-            : impact.total}
-          )
+          Every change ({impact.changes.length})
         </summary>
         <ul className="mt-1.5 space-y-1">
           {impact.changes.map((c, i) => (

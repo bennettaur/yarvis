@@ -63,8 +63,6 @@ export interface VerificationImpact {
   load: number;
   raisedByVolume: number;
   counts: Record<ChangeKind, number>;
-  /** How many changes were scored; `changes` keeps only the highest. */
-  total: number;
   /** Highest band first. */
   changes: VerificationChange[];
 }

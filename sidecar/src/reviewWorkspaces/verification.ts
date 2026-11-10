@@ -147,9 +147,6 @@ const concernSchema = z.object({
   line: optionalLine,
 });
 
-/** Most changes the report keeps, highest band first. The load still counts every one. */
-export const MAX_CHANGES_SHOWN = 30;
-
 /** One change, classified for `verify/impact.ts` to score. */
 const changeSchema = z.object({
   title: boundedText(TITLE_CHARS),
@@ -207,7 +204,7 @@ const riskSchema = z
       .nullish()
       .transform((changes) => changes ?? [])
       .meta({
-        description: "Every group's changes, all of them. Yarvis scores and trims the list.",
+        description: "Every group's changes, all of them.",
       }),
   })
   .transform(({ level, changes, ...risk }) => {
@@ -221,14 +218,11 @@ const riskSchema = z
       level: LEVEL_RANK[level] > LEVEL_RANK[bandLevel] ? level : bandLevel,
       impact: {
         ...score,
-        total: allScored.length,
-        changes: allScored
-          .slice(0, MAX_CHANGES_SHOWN)
-          .map((change) =>
-            change.band >= ATTENTION_BAND && !change.check
-              ? { ...change, check: MISSING_CHECK }
-              : change,
-          ),
+        changes: allScored.map((change) =>
+          change.band >= ATTENTION_BAND && !change.check
+            ? { ...change, check: MISSING_CHECK }
+            : change,
+        ),
       },
     };
   });

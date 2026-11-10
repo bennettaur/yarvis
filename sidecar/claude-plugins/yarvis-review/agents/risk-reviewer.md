@@ -142,8 +142,8 @@ list, not by repeating it:
   the split and retry paths"). Don't list what the tests cover case by case.
   Passing CI and "the change is small" are not mitigations. Empty when there
   are none; never list generic good practice.
-- `changes`: at most 15; past that, fold more of the passive changes and
-  additions. `title` at most 12 words, `check` at most 40.
+- `changes`: every change in your group. `title` at most 12 words, `check`
+  at most 40.
 - `concerns`: at most 5, most serious first. `title` at most 12 words,
   `detail` at most 40 words saying what could go wrong and when. Cite `path`
   and head `line` when there is one. A concern about other code ("callers
