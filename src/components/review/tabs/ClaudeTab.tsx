@@ -24,8 +24,8 @@ type SessionState =
 export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
   const sessionId = reviewClaudeSessionId(workspaceId);
-  // The PR the tab was opened from. The sidecar adds every ready PR, and answers
-  // 409 when none is; this only waits for the obvious case.
+  // The sidecar adds every ready PR and answers 409 when none is ready; this
+  // only stops the tab from asking before its own PR is checked out.
   const checkoutReady = pr.status === "ready" && pr.worktreeStatus === "ready" && !!pr.headSha;
   const [session, setSession] = useState<SessionState>({ kind: "starting" });
   // Only the latest start may set the state, so a slow one that finishes after
@@ -54,6 +54,8 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
   }, [checkoutReady, start]);
 
   const restart = async () => {
+    // A start still in flight mustn't mark the session live while it's killed.
+    attempt.current++;
     // Unmount the terminal first, so it doesn't sit on the session being killed.
     setSession({ kind: "starting" });
     try {
@@ -113,7 +115,7 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
         </button>
       </div>
       <div className="min-h-0 flex-1">
-        <TerminalPanel sessionId={sessionId} cwd={pr.worktreePath} embedded />
+        <TerminalPanel sessionId={sessionId} embedded />
       </div>
     </div>
   );

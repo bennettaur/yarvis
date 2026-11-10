@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1484,6 +1486,8 @@ describe("claude session", () => {
   let hasCore: boolean;
   let spawnError: Error | null;
   let ended: string[];
+  let endGate: ReturnType<typeof gate> | null;
+  let endError: Error | null;
   const sessionApp = new Hono().route(
     "/rw",
     createReviewWorkspaceRoutes(config, {
@@ -1491,6 +1495,8 @@ describe("claude session", () => {
         ...deps(),
         endClaudeSession: async (id) => {
           ended.push(id);
+          await endGate?.promise;
+          if (endError) throw endError;
         },
       }),
       claudeSession: {
@@ -1508,7 +1514,13 @@ describe("claude session", () => {
     hasCore = true;
     spawnError = null;
     ended = [];
+    endGate = null;
+    endError = null;
   });
+
+  const sessionFolder = (wsId: string) => join(config.workspacesRoot, ".review-sessions", wsId);
+  const setWorkspaceStatus = (wsId: string, status: "active" | "archiving") =>
+    db.update(reviewWorkspaces).set({ status }).where(eq(reviewWorkspaces.id, wsId));
 
   const start = (wsId: string) =>
     sessionApp.request(`/rw/${wsId}/claude-session`, { method: "POST" });
@@ -1538,8 +1550,9 @@ describe("claude session", () => {
         "Read(~/.ssh)",
       ]),
     );
-    // One PR's code mustn't be able to change another's checkout.
-    expect(settings.sandbox.filesystem.denyWrite).toEqual([worktreePath]);
+    // One PR's code mustn't be able to change another's checkout, nor leave
+    // anything in the folder the next session's shell opens in.
+    expect(settings.sandbox.filesystem.denyWrite).toEqual([spawn.cwd, worktreePath]);
     expect(settings.sandbox.filesystem.denyRead.length).toBeGreaterThan(0);
   });
 
@@ -1553,6 +1566,100 @@ describe("claude session", () => {
     await start(wsId);
     expect((spawned[1] as Spawn).cwd).toBe(cwd);
     expect(readdirSync(cwd)).toEqual([]);
+  });
+
+  it("reads every ready PR, leaving out one still checking out", async () => {
+    const head = sh(remote.bare, "rev-parse", "refs/pull/1/head").trim();
+    for (const n of [2, 3]) sh(remote.bare, "update-ref", `refs/pull/${n}/head`, head);
+    stack = [
+      { ...ref, number: 2 },
+      { ...ref, number: 3 },
+    ];
+    const { wsId } = await startWorkspace();
+    let ids: string[] = [];
+    await until(async () => {
+      ids = (
+        await db.select().from(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.workspaceId, wsId))
+      ).map((r) => r.id);
+      return ids.length === 3;
+    }, "three pull requests");
+    for (const id of ids) await progress(wsId, id);
+    const rows = await db
+      .select()
+      .from(reviewWorkspacePrs)
+      .where(eq(reviewWorkspacePrs.workspaceId, wsId));
+    const pending = rows.find((r) => r.refKey === "gh:o/r/3");
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreeStatus: "checking-out" })
+      .where(eq(reviewWorkspacePrs.id, pending?.id as string));
+
+    expect((await start(wsId)).status).toBe(200);
+    const [spawn] = spawned as [Spawn];
+    const ready = rows.filter((r) => r.refKey !== "gh:o/r/3").map((r) => r.worktreePath);
+    expect([...spawn.addDirs].sort()).toEqual([...ready].sort());
+    expect(spawn.context).toContain("gh:o/r/1");
+    expect(spawn.context).toContain("gh:o/r/2");
+    expect(spawn.context).not.toContain("gh:o/r/3");
+    const settings = JSON.parse(spawn.settings);
+    expect([...settings.sandbox.filesystem.denyWrite].sort()).toEqual([spawn.cwd, ...ready].sort());
+  });
+
+  it("refuses more PRs than one session reads", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const [row] = await db.select().from(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, prId));
+    if (!row) throw new Error("no row");
+    await db.insert(reviewWorkspacePrs).values(
+      Array.from({ length: 20 }, (_, i) => ({
+        ...row,
+        id: crypto.randomUUID(),
+        refKey: `gh:o/r/${100 + i}`,
+        ref: { ...ref, number: 100 + i },
+        position: 100 + i,
+      })),
+    );
+    const res = await start(wsId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("at most 20");
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("refuses a workspace that isn't active, or a checkout outside it", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    await setWorkspaceStatus(wsId, "archiving");
+    expect((await start(wsId)).status).toBe(409);
+    await setWorkspaceStatus(wsId, "active");
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreePath: tmpdir() })
+      .where(eq(reviewWorkspacePrs.id, prId));
+    expect((await start(wsId)).ok).toBe(false);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("replaces a link in the session folder's place, leaving what it pointed at", async () => {
+    const { wsId } = await readyWorkspace();
+    const target = mkdtempSync(join(tmpdir(), "yarvis-link-target-"));
+    writeFileSync(join(target, "keep"), "");
+    mkdirSync(join(config.workspacesRoot, ".review-sessions"));
+    symlinkSync(target, sessionFolder(wsId));
+
+    expect((await start(wsId)).status).toBe(200);
+    expect(lstatSync(sessionFolder(wsId)).isDirectory()).toBe(true);
+    expect((spawned[0] as Spawn).cwd).toBe(sessionFolder(wsId));
+    expect(existsSync(join(target, "keep"))).toBe(true);
+  });
+
+  it("refuses to empty a session folder reached through a linked parent", async () => {
+    const { wsId } = await readyWorkspace();
+    const target = mkdtempSync(join(tmpdir(), "yarvis-link-target-"));
+    mkdirSync(join(target, wsId));
+    writeFileSync(join(target, wsId, "keep"), "");
+    symlinkSync(target, join(config.workspacesRoot, ".review-sessions"));
+
+    expect((await start(wsId)).ok).toBe(false);
+    expect(spawned).toHaveLength(0);
+    expect(existsSync(join(target, wsId, "keep"))).toBe(true);
   });
 
   it("refuses until a checkout is ready", async () => {
@@ -1580,12 +1687,53 @@ describe("claude session", () => {
     expect(ended).toEqual([wsId]);
 
     const other = await readyWorkspace();
+    expect((await start(other.wsId)).status).toBe(200);
+    spawned = [];
     expect((await sessionApp.request(`/rw/${other.wsId}/archive`, { method: "POST" })).ok).toBe(
       true,
     );
     expect(ended).toEqual([wsId, other.wsId]);
     expect((await start(other.wsId)).status).toBe(409);
     expect(spawned).toHaveLength(0);
+    await until(async () => {
+      const [row] = await db
+        .select()
+        .from(reviewWorkspaces)
+        .where(eq(reviewWorkspaces.id, other.wsId));
+      return row?.status === "archived";
+    }, "the archive to finish");
+    expect(existsSync(sessionFolder(other.wsId))).toBe(false);
+  });
+
+  it("doesn't start a session while a PR's removal is under way", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    endGate = gate();
+    const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
+    await until(async () => ended.length === 1, "the removal to end the session");
+    // Without the lock this start would read the PR, not yet deleted, and
+    // spawn a session over the checkout being removed.
+    const starting = start(wsId);
+    endGate.open();
+    expect((await removal).ok).toBe(true);
+    expect((await starting).status).toBe(409);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("still removes a PR and archives when the session can't be ended", async () => {
+    endError = new Error("core gone");
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    expect((await sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" })).ok).toBe(
+      true,
+    );
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(
+      await db.select().from(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, prId)),
+    ).toEqual([]);
+
+    const other = await readyWorkspace();
+    expect((await sessionApp.request(`/rw/${other.wsId}/archive`, { method: "POST" })).ok).toBe(
+      true,
+    );
     await until(async () => {
       const [row] = await db
         .select()

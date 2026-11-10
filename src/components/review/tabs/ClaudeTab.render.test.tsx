@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement, useState } from "react";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { resetPtyApi, stubPtyApi } from "../../../test/ptyApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
@@ -30,6 +30,10 @@ let starts: string[];
 let startFails: boolean;
 let attached: string[];
 let kills: string[];
+let killFails: boolean;
+/** When set, the first start waits on it and then fails. */
+let firstStartGate: Promise<void> | null;
+let firstStart: Promise<unknown> | null;
 let mounted: { unmount: () => void } | null = null;
 /** Set when this file installed the IntersectionObserver stub, so it can undo it. */
 let installedObserver = false;
@@ -56,9 +60,18 @@ beforeEach(() => {
   startFails = false;
   attached = [];
   kills = [];
+  killFails = false;
+  firstStartGate = null;
+  firstStart = null;
   stubReviewApi({
     startReviewClaudeSession: async (ws) => {
       starts.push(ws);
+      if (firstStartGate && starts.length === 1) {
+        const gate = firstStartGate;
+        firstStart = gate.then(() => {});
+        await gate;
+        throw new Error("a stale start failed");
+      }
       if (startFails) throw new Error("the configured agent is not Claude Code");
       live = true;
       return { sessionId: `review-claude:${ws}` };
@@ -74,6 +87,7 @@ beforeEach(() => {
     writePty: async () => {},
     killPty: async (id: string) => {
       kills.push(id);
+      if (killFails) throw new Error("could not end the session");
       live = false;
     },
     onPtyOutput: async () => () => {},
@@ -92,6 +106,18 @@ afterAll(() => {
   resetReviewApi();
   resetPtyApi();
 });
+
+/** Mounts the tab on `initial`, returning a way to swap the PR it was opened from. */
+async function mountSwappable(initial: ReviewWorkspacePr) {
+  let swap: (p: ReviewWorkspacePr) => void = () => {};
+  function Harness() {
+    const [current, setCurrent] = useState(initial);
+    swap = setCurrent;
+    return createElement(ClaudeTab, { ctx: ctxFor(current) });
+  }
+  const m = await mountForInteraction(createElement(Harness));
+  return { ...m, swap: (p: ReviewWorkspacePr) => swap(p) };
+}
 
 const buttonNamed = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === label);
@@ -143,6 +169,50 @@ describe("ClaudeTab", () => {
     expect(kills).toEqual(["review-claude:ws"]);
     expect(starts).toEqual(["ws"]);
     expect(attached).toEqual(["review-claude:ws", "review-claude:ws"]);
+  });
+
+  it("shows why a restart failed, without starting another session", async () => {
+    live = true;
+    const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pr) }));
+    mounted = m;
+    await waitFor(() => attached.length === 1, "the first attach");
+    killFails = true;
+    buttonNamed(m.host, "Restart")?.click();
+    await waitFor(() => textOf(m.host.innerHTML).includes("could not end"), "the error");
+    expect(starts).toEqual([]);
+    expect(attached).toHaveLength(1);
+  });
+
+  it("starts once the PR's checkout is ready", async () => {
+    const pending = { ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr;
+    const m = await mountSwappable(pending);
+    mounted = m;
+    expect(starts).toEqual([]);
+    m.swap(pr);
+    await waitFor(() => attached.length > 0, "the terminal to attach");
+    expect(starts).toEqual(["ws"]);
+  });
+
+  it("ignores a start that finishes after a newer one", async () => {
+    const release = Promise.withResolvers<void>();
+    firstStartGate = release.promise;
+    const pending = { ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr;
+    const m = await mountSwappable(pr);
+    mounted = m;
+    await waitFor(() => starts.length === 1, "the first start");
+    // Leaving and coming back starts again; the first is still out.
+    m.swap(pending);
+    await waitFor(() => textOf(m.host.innerHTML).includes("starts once"), "the waiting note");
+    m.swap(pr);
+    await waitFor(() => attached.length > 0, "the second start to attach");
+    // `act` returns once the late failure and anything it set have rendered.
+    await act(async () => {
+      release.resolve();
+      await firstStart;
+    });
+    expect(starts).toHaveLength(2);
+    expect(textOf(m.host.innerHTML)).not.toContain("stale start");
+    expect(textOf(m.host.innerHTML)).toContain("Read-only");
   });
 
   it("waits for the checkout before starting anything", async () => {

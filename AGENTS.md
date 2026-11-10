@@ -749,21 +749,27 @@ report there and leaves the fixes to the author.
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
   `lockedDownSettings` plus a deny on the edit tools and `Skill`, and a
-  sandbox `denyWrite` on every checkout, passed inline: one PR's code must not
-  be able to rewrite another's, which that PR's unsandboxed setup would run. The core
-  runs the configured agent's program, minus that command's own flags, under
-  `exec` (so no shell outlives it) with `--setting-sources ''`,
+  sandbox `denyWrite` on every checkout and on its own folder, passed inline:
+  one PR's code must not be able to rewrite another's, which that PR's
+  unsandboxed setup would run. The core runs the configured agent's program,
+  minus that command's own flags, under `exec` (so no shell outlives it, and
+  `|| exit` covers an `exec` that fails) with `--setting-sources ''`,
   `--strict-mcp-config`, `--permission-mode default`, a guardrail prompt and
-  each ready checkout as an `--add-dir`. The launch line is typed into the
-  user's login shell, whose hooks (mise, direnv) act on the folder it opens in
-  and that folder's parents, so the shell never opens in a checkout: it opens in
-  `<workspacesRoot>/.review-sessions/<workspaceId>/`, emptied before each start
-  because the session's sandboxed commands can write there. Its PTY id
+  each ready checkout as an `--add-dir`. `--setting-sources ''` keeps an
+  added folder's skills, agents and `CLAUDE.md` out, except that
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`, so the
+  core sets it to 0 after the user's own assignments. The launch line is typed
+  into the user's login shell, whose hooks (mise, direnv) act on the folder it
+  opens in and that folder's parents, so the shell never opens in a checkout:
+  it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`, which the
+  session can't write to and which is emptied before each start. Its PTY id
   (`review-claude:`) is not attention addressable, so it gets no sidecar
   tokens, and `pty_attach` refuses to put a plain shell under it. The core
-  checks the folder is `.review-sessions/<workspaceId>` and overlaps no
-  checkout, and refuses control characters in what it types. Removing a PR or
-  archiving the workspace ends the session first, through `claude.killReview`.
+  checks, on real paths, that the folder is `.review-sessions/<workspaceId>`
+  and overlaps no checkout, and refuses control characters in what it types.
+  Removing a PR or archiving the workspace ends the session first, through
+  `claude.killReview`, under a per-workspace lock (`withSessionLock`) that a
+  start also takes, so no start lands between the kill and the removal.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

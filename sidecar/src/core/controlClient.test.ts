@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnClaudeSession } from "./controlClient.ts";
+import {
+  killReviewClaudeSession,
+  spawnClaudeSession,
+  spawnReviewClaudeSession,
+} from "./controlClient.ts";
 
 /** A stand-in for the core's control socket that records each request and accepts it. */
 const dir = mkdtempSync(join(tmpdir(), "yarvis-core-"));
@@ -62,6 +66,27 @@ describe("spawnClaudeSession", () => {
           resume: "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
         },
       },
+    ]);
+  });
+});
+
+describe("review sessions", () => {
+  it("sends the session under the method and keys the core reads", async () => {
+    // `SpawnReviewParams` and `KillParams` in src-tauri/src/control.rs.
+    requests.length = 0;
+    const session = {
+      workspaceId: "w1",
+      cwd: "/tmp/.review-sessions/w1",
+      addDirs: ["/tmp/.review/w1/pr1"],
+      settings: "{}",
+      context: "gh:o/r/1 in /tmp/.review/w1/pr1.",
+    };
+    await spawnReviewClaudeSession(session);
+    await killReviewClaudeSession("w1");
+
+    expect(requests).toEqual([
+      { method: "claude.spawnReview", params: session },
+      { method: "claude.killReview", params: { workspaceId: "w1" } },
     ]);
   });
 });
