@@ -170,28 +170,34 @@ A guide is made once per PR. It is kept until you approve, request changes, or
 merge. Pushing new commits marks it out of date rather than deleting it. A
 guide nobody has touched for 30 days is deleted.
 
-### Start one from the assistant
+### Start a review or report from the assistant
 
 You can ask the assistant for a guided review or a verification report
 instead of pressing the button, from chat, voice or Telegram ("walk me
-through bennettaur/yarvis#612", "verify yarvis#612"). Both run in the
-background, and the attention bell tells you when they're done.
+through bennettaur/yarvis#612", "verify bennettaur/yarvis#612"). Both run in
+the background, and the attention bell tells you when they're done.
 
 - **Guided review**: the agent writes the guide as if you had pressed
-  **Guided review**, using the same model. Open the bell item to read it in
-  the PRs tab. If the PR already has a guide, the assistant tells you how far
-  you got and only writes a new one if you ask, because a new guide replaces
-  the old one and your place in it.
+  **Guided review**, with the model set for guided reviews under **Settings →
+  PR review**. Open the bell item to read it in the PRs tab. If the PR already
+  has a guide, the assistant tells you how far you got and whether the PR has
+  moved on since. It writes a new one only if you ask, and asks you to approve
+  that, because a new guide replaces the old one and your place in it.
 - **Verification report**: the report needs a local checkout, so the assistant
   uses the [review workspace](review-workspaces.md) already holding the PR,
   or creates one named after it. It waits for the clone, then starts the
   report with the default sections unless you name others. The setup script
-  never runs: that still needs your answer in the review workspace. A PR the
-  review tab would warn about, because it's large or estimated over your
-  budget, isn't started. The assistant gives you the size and estimate and
-  asks first. If the clone finishes after the assistant has replied, the bell
-  asks for the go-ahead instead. The bell item opens the report's tab in the
-  review workspace.
+  never runs: that still needs your answer in the review workspace. If a
+  report for the PR's current commit already exists, it says so instead of
+  running another, unless you ask for a fresh one.
+
+The assistant asks before it starts a report in four cases: the PR is large,
+its estimate is over your budget, its size couldn't be worked out, or its repo
+isn't one you registered under **Settings → Repositories** (the name may have
+come from text someone else wrote). It tells you why, and when you agree, an
+approval prompt confirms it. If the clone finishes after the assistant has
+replied, the bell asks for the go-ahead instead. The bell item opens the
+report's tab in the review workspace.
 
 Each one is a paid agent run, so a spoken request asks you to approve it
 first. Nothing is posted to the PR: the guide and the report stay on your

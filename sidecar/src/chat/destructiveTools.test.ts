@@ -32,6 +32,22 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("list_pr_reviews")).toBe(false);
   });
 
+  // `confirmed` answers a cost question and `regenerate` loses progress, so the
+  // user, not the model, says yes on a typed turn too.
+  it("asks on a typed turn when a review start confirms a cost or replaces a guide", () => {
+    const conditions = conditionalConfirmations({
+      spoken: false,
+      reads: newUntrustedReads(),
+      isUserGivenUrl: () => true,
+    });
+    const report = conditions.get("start_pr_verification_report");
+    const guide = conditions.get("start_pr_guided_review");
+    expect(report?.({ pullRequest: {} })).toBe(false);
+    expect(report?.({ pullRequest: {}, confirmed: true })).toBe(true);
+    expect(guide?.({ pullRequest: {} })).toBe(false);
+    expect(guide?.({ pullRequest: {}, regenerate: true })).toBe(true);
+  });
+
   it("asks before adding a repo to a workspace", () => {
     expect(DESTRUCTIVE_BUILTIN_TOOLS.has("add_repo_to_workspace")).toBe(true);
   });

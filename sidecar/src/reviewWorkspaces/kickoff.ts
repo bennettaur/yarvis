@@ -3,13 +3,17 @@ import { createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { ReviewWorkspacePr } from "../db/schema.ts";
+import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
+import { findRepoForPr } from "../workspaces/service.ts";
 import {
   createReviewWorkspace,
   getReviewPr,
   listReviewWorkspaces,
+  locatorFor,
   type ReviewDeps,
+  resumeIfStalled,
 } from "./service.ts";
 import {
   latestVerification,
@@ -24,37 +28,74 @@ import {
  * workspace, such as the assistant. It finds or makes the workspace, waits for
  * the checkout in the background, and reports back through the attention bell,
  * since whoever asked has usually moved on by the time the report is written.
+ *
+ * The in-flight state here is per process. A chat turn runs in one instance,
+ * and `startVerification` itself refuses a second run across instances.
  */
 
 /** Longest the background wait gives a clone and checkout before giving up. */
 export const CHECKOUT_WAIT_MS = 15 * 60 * 1000;
 const CHECKOUT_POLL_MS = 2000;
 
+export interface KickoffOptions {
+  sections?: readonly ReportSection[];
+  /** The user agreed, after being told why, to a run that needs their go-ahead. */
+  confirmed?: boolean;
+  /** Run again even though a report for the PR's current head exists. */
+  rerun?: boolean;
+}
+
 export interface KickoffDeps {
   review: ReviewDeps;
   verification: VerificationDeps;
+  /** Whether the PR's repo is one the user registered; defaults to the repos table. */
+  isRegistered?: (ref: PrRef) => Promise<boolean>;
   /** Overridden by tests so the wait doesn't take real seconds. */
   pollMs?: number;
   waitMs?: number;
 }
 
+/**
+ * Why a run waits for the user: the same size and budget questions the review
+ * tab asks before its Run button goes ahead, a PR that couldn't be sized, or a
+ * repo the user never registered, since the name may have come from text
+ * someone else wrote.
+ */
+export type ConfirmReason = "large" | "over-budget" | "unsized" | "unregistered-repo";
+
 export type KickoffResult =
   | { status: "started"; workspaceId: string; prId: string; runId: string }
   | { status: "already-running"; workspaceId: string; prId: string; runId: string }
+  /** A report for the PR's current head is already there. */
+  | { status: "exists"; workspaceId: string; prId: string; runId: string }
   /** The checkout isn't ready yet; the report starts on its own once it is. */
   | { status: "waiting-for-checkout"; workspaceId: string; prId: string; createdWorkspace: boolean }
-  /** Large or over budget, so the user has to agree to the cost first. */
-  | { status: "needs-confirmation"; workspaceId: string; prId: string; size: VerificationSize }
+  | {
+      status: "needs-confirmation";
+      reason: ConfirmReason;
+      /** Null before a workspace exists, for an unregistered repo. */
+      workspaceId: string | null;
+      prId: string | null;
+      size: VerificationSize | null;
+    }
   | { status: "error"; error: string };
 
-/** PRs with a background wait in progress, so a second ask doesn't start a second waiter. */
-const waiting = new Set<string>();
+/** Serializes find-or-create per PR, so two quick asks share one workspace. */
+const withKickoffLock = createKeyedLock();
+
+/**
+ * The options each background wait will start with, by PR. A later ask
+ * replaces them, so a confirmation sent while the clone runs isn't lost.
+ */
+const checkoutWaits = new Map<string, KickoffOptions>();
 
 /** The active review workspace already holding `ref`, most recently opened first. */
-async function findPr(db: Db, ref: PrRef): Promise<{ workspaceId: string; prId: string } | null> {
+async function findReviewWorkspacePr(
+  db: Db,
+  ref: PrRef,
+): Promise<{ workspaceId: string; prId: string } | null> {
   const key = refKey(ref);
-  const workspaces = await listReviewWorkspaces(db);
-  for (const ws of workspaces) {
+  for (const ws of await listReviewWorkspaces(db)) {
     if (ws.status !== "active") continue;
     const pr = ws.prs.find((p) => p.refKey === key);
     if (pr) return { workspaceId: ws.id, prId: pr.id };
@@ -62,10 +103,10 @@ async function findPr(db: Db, ref: PrRef): Promise<{ workspaceId: string; prId: 
   return null;
 }
 
-const checkedOut = (pr: ReviewWorkspacePr) =>
+const isCheckedOut = (pr: ReviewWorkspacePr) =>
   pr.status === "ready" && pr.worktreeStatus === "ready" && pr.headSha !== null;
 
-const checkoutFailed = (pr: ReviewWorkspacePr) =>
+const hasCheckoutFailed = (pr: ReviewWorkspacePr) =>
   pr.status === "error" || pr.worktreeStatus === "error";
 
 /** "repo#12", the name the PRs tab gives a review workspace it creates. */
@@ -74,75 +115,90 @@ const shortPrName = (ref: PrRef) =>
 
 const prName = (pr: ReviewWorkspacePr) => pr.title?.trim() || pr.refKey;
 
-/**
- * Starts the verification report for `ref`, or says why it didn't.
- *
- * A PR past the size or budget the review tab warns about needs `confirmed`,
- * the same question the tab asks before its own Run button goes ahead.
- */
-export async function kickOffVerification(
+const registryFor = (deps: KickoffDeps) => deps.verification.run?.registry ?? agentRunRegistry;
+
+/** Starts the verification report for `ref`, or says why it didn't. */
+export function kickOffVerification(
   db: Db,
   config: Config,
   ref: PrRef,
-  options: { sections?: readonly ReportSection[]; confirmed?: boolean },
+  options: KickoffOptions,
   deps: KickoffDeps,
 ): Promise<KickoffResult> {
-  let found = await findPr(db, ref);
-  let createdWorkspace = false;
-  if (!found) {
-    const ws = await createReviewWorkspace(
-      db,
-      config,
-      { name: shortPrName(ref), refs: [ref] },
-      deps.review,
-    );
-    const pr = ws.prs[0];
-    if (!pr) return { status: "error", error: "the review workspace was created without the PR" };
-    found = { workspaceId: ws.id, prId: pr.id };
-    createdWorkspace = true;
-  }
-  const { workspaceId, prId } = found;
+  return withKickoffLock(refKey(ref), async () => {
+    let found = await findReviewWorkspacePr(db, ref);
+    let createdWorkspace = false;
+    if (!found) {
+      const isRegistered =
+        deps.isRegistered ?? (async (r) => (await findRepoForPr(db, locatorFor(r))) !== null);
+      if (!options.confirmed && !(await isRegistered(ref))) {
+        const none = { workspaceId: null, prId: null, size: null };
+        return { status: "needs-confirmation", reason: "unregistered-repo", ...none };
+      }
+      const ws = await createReviewWorkspace(
+        db,
+        config,
+        { name: shortPrName(ref), refs: [ref] },
+        deps.review,
+      );
+      const pr = ws.prs[0];
+      if (!pr) return { status: "error", error: "the review workspace was created without the PR" };
+      found = { workspaceId: ws.id, prId: pr.id };
+      createdWorkspace = true;
+    }
+    const { workspaceId, prId } = found;
 
-  const pr = await getReviewPr(db, workspaceId, prId);
-  if (checkoutFailed(pr)) {
-    return { status: "error", error: `the checkout failed: ${pr.error ?? "unknown error"}` };
-  }
-  if (checkedOut(pr)) return startChecked(db, config, pr, options, deps);
+    const pr = await getReviewPr(db, workspaceId, prId);
+    // The reason is in the attention item and the workspace's log. It quotes
+    // git, which can echo the author's branch name, so the model doesn't get it.
+    if (hasCheckoutFailed(pr)) {
+      return {
+        status: "error",
+        error: "the checkout failed; open the PR's review workspace to see why and retry",
+      };
+    }
+    if (isCheckedOut(pr)) return startReport(db, config, pr, options, deps);
 
-  if (!waiting.has(pr.refKey)) {
-    waiting.add(pr.refKey);
-    void startWhenCheckedOut(db, config, pr, options, deps).finally(() =>
-      waiting.delete(pr.refKey),
-    );
-  }
-  return { status: "waiting-for-checkout", workspaceId, prId, createdWorkspace };
+    const waiting = checkoutWaits.has(pr.refKey);
+    checkoutWaits.set(pr.refKey, options);
+    if (!waiting) {
+      await resumeIfStalled(db, config, pr, deps.review);
+      void startWhenCheckedOut(db, config, pr, deps).finally(() => checkoutWaits.delete(pr.refKey));
+    }
+    return { status: "waiting-for-checkout", workspaceId, prId, createdWorkspace };
+  });
 }
 
-async function startChecked(
+async function startReport(
   db: Db,
   config: Config,
   pr: ReviewWorkspacePr,
-  options: { sections?: readonly ReportSection[]; confirmed?: boolean },
+  options: KickoffOptions,
   deps: KickoffDeps,
 ): Promise<KickoffResult> {
   const { workspaceId, id: prId } = pr;
-  const registry = deps.verification.run?.registry ?? agentRunRegistry;
+  const latest = await latestVerification(
+    db,
+    config,
+    workspaceId,
+    prId,
+    deps.review,
+    (id) => registryFor(deps).isLive(id),
+    deps.verification.settings,
+  );
+  if (latest.run?.live) {
+    return { status: "already-running", workspaceId, prId, runId: latest.run.id };
+  }
+  if (!options.rerun && latest.lastSucceeded?.current) {
+    return { status: "exists", workspaceId, prId, runId: latest.lastSucceeded.run.id };
+  }
   if (!options.confirmed) {
-    const latest = await latestVerification(
-      db,
-      config,
-      workspaceId,
-      prId,
-      deps.review,
-      (id) => registry.isLive(id),
-      deps.verification.settings,
-    );
-    if (latest.run?.live) {
-      return { status: "already-running", workspaceId, prId, runId: latest.run.id };
-    }
-    if (latest.size && (latest.size.large || latest.size.overBudget)) {
-      return { status: "needs-confirmation", workspaceId, prId, size: latest.size };
-    }
+    const { size } = latest;
+    let reason: ConfirmReason | null = null;
+    if (!size) reason = "unsized";
+    else if (size.large) reason = "large";
+    else if (size.overBudget) reason = "over-budget";
+    if (reason) return { status: "needs-confirmation", reason, workspaceId, prId, size };
   }
   const started = await startVerification(
     db,
@@ -153,7 +209,8 @@ async function startChecked(
     deps.verification,
     options.sections,
   );
-  // A run that was already going has a notifier, or was started from the tab.
+  // Only follow a run this call started. One already going was started by an
+  // earlier ask, which follows it, or from the tab, where the user is watching.
   if (!started.existing) void notifyWhenDone(db, pr, started.runId, deps);
   return {
     status: started.existing ? "already-running" : "started",
@@ -163,25 +220,26 @@ async function startChecked(
   };
 }
 
-/** Polls until the PR is checked out, then starts the report as if it had been asked for then. */
+const NOT_STARTED = "Verification report not started";
+
+/** Polls until the PR is checked out, then starts the report with the latest ask's options. */
 async function startWhenCheckedOut(
   db: Db,
   config: Config,
   initial: ReviewWorkspacePr,
-  options: { sections?: readonly ReportSection[]; confirmed?: boolean },
   deps: KickoffDeps,
 ): Promise<void> {
   const deadline = Date.now() + (deps.waitMs ?? CHECKOUT_WAIT_MS);
   const pollMs = deps.pollMs ?? CHECKOUT_POLL_MS;
   let pr = initial;
   try {
-    while (!checkedOut(pr)) {
-      if (checkoutFailed(pr)) {
+    while (!isCheckedOut(pr)) {
+      if (hasCheckoutFailed(pr)) {
         await notify(
           db,
           pr,
           "error",
-          "Verification report not started",
+          NOT_STARTED,
           `The checkout failed: ${pr.error ?? "unknown error"}`,
         );
         return;
@@ -191,23 +249,23 @@ async function startWhenCheckedOut(
           db,
           pr,
           "error",
-          "Verification report not started",
-          "The checkout didn't finish in time.",
+          NOT_STARTED,
+          "The checkout didn't finish. Open the review workspace to retry it.",
         );
         return;
       }
       await Bun.sleep(pollMs);
       pr = await getReviewPr(db, pr.workspaceId, pr.id);
     }
-    const result = await startChecked(db, config, pr, options, deps);
+    const options = checkoutWaits.get(pr.refKey) ?? {};
+    const result = await startReport(db, config, pr, options, deps);
     if (result.status === "needs-confirmation") {
-      const { size } = result;
       await notify(
         db,
         pr,
         "info",
         "Verification report needs your go-ahead",
-        `${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. Run it from the review workspace, or ask again and confirm.`,
+        goAheadDetail(result),
       );
     }
   } catch (e) {
@@ -216,32 +274,38 @@ async function startWhenCheckedOut(
       db,
       pr,
       "error",
-      "Verification report not started",
+      NOT_STARTED,
       "Starting the report failed. See Settings → Diagnostics.",
     ).catch(() => undefined);
   }
 }
 
-/** Rings the bell once the run ends, whoever started it. */
+function goAheadDetail(result: Extract<KickoffResult, { status: "needs-confirmation" }>): string {
+  const { size } = result;
+  const ask = "Run it from the review workspace, or ask again and confirm.";
+  if (!size) return `Its size couldn't be worked out. ${ask}`;
+  return `${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
+}
+
+/** Rings the bell once a run this module started ends; whoever asked has usually moved on. */
 async function notifyWhenDone(
   db: Db,
   pr: ReviewWorkspacePr,
   runId: string,
   deps: KickoffDeps,
 ): Promise<void> {
-  const registry = deps.verification.run?.registry ?? agentRunRegistry;
   try {
-    await registry.follow(runId, () => undefined);
-    // The registry can let go a moment before the run's row is written.
-    let run = await getAgentRunSummary(db, runId);
-    for (let i = 0; run?.status === "running" && i < 30; i++) {
-      await Bun.sleep(deps.pollMs ?? CHECKOUT_POLL_MS);
-      run = await getAgentRunSummary(db, runId);
-    }
+    // The run's row is written before the registry lets it go.
+    await registryFor(deps).follow(runId, () => undefined);
+    const run = await getAgentRunSummary(db, runId);
     if (run?.status === "succeeded") {
       await notify(db, pr, "completed", "Verification report ready", null);
+    } else if (run?.status === "failed") {
+      await notify(db, pr, "error", "Verification report failed", run.error);
     } else if (run?.status !== "cancelled") {
-      await notify(db, pr, "error", "Verification report failed", run?.error ?? null);
+      console.error(
+        `[verification] run ${runId} ended as ${run?.status ?? "missing"}; not notifying`,
+      );
     }
   } catch (e) {
     console.error("[verification] could not report the run's end:", describeError(e));

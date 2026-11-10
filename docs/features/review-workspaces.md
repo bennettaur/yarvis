@@ -192,7 +192,7 @@ stops it. Every file and line in the report opens the diff there.
 
 The assistant can start a report too, and creates the review workspace when
 there isn't one. See
-[Start one from the assistant](pr-review.md#start-one-from-the-assistant).
+[Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 
 Above **Run verification** you pick which sections to run: risk, each check,
 **Simpler approach** and the **Flow diagram**. The summary and must-read files

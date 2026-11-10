@@ -3,7 +3,7 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
-import { describeError } from "../llm/errors.ts";
+import { describeError, redactSecrets } from "../llm/errors.ts";
 import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
 import { getGuide, isStale, saveGuide } from "./guides.ts";
 import { type PrModelFeature, resolvePrModel } from "./models.ts";
@@ -18,7 +18,7 @@ import { type PrRef, refKey } from "./types.ts";
  */
 
 /** Where the attention stream should send the user for this pull request. */
-export function navTargetFor(ref: PrRef): AttentionNavTarget {
+function navTargetFor(ref: PrRef): AttentionNavTarget {
   return ref.provider === "github"
     ? { type: "pr", owner: ref.owner, repo: ref.repo, number: ref.number }
     : { type: "azure-pr", org: ref.org, project: ref.project, repo: ref.repo, prId: ref.prId };
@@ -149,53 +149,61 @@ export async function kickOffGuide(
   ref: PrRef,
   options: {
     regenerate?: boolean;
-    /** Replace the provider and the guide agent, for tests. */
+    /** Replaces the provider, for tests. */
     source?: PrCodeSource;
+    /** Replaces the guide agent, for tests. */
     runTour?: typeof generateTour;
   } = {},
 ): Promise<GuideKickoff> {
   const key = refKey(ref);
   if (guidesInFlight.has(key)) return { status: "already-running" };
-
-  const source = options.source ?? prSourceFor(config, ref);
-  if ("error" in source) return { status: "error", error: source.error };
-  const detail = await source.detail();
-
-  if (!options.regenerate) {
-    const existing = await getGuide(db, ref);
-    if (existing) {
-      return {
-        status: "exists",
-        stale: isStale(existing, detail.headSha),
-        progress: `step ${existing.currentStep + 1} of ${existing.steps.length}`,
-      };
-    }
-  }
-
-  const resolved = await resolvePrRunModel(config, "guide");
-  if ("error" in resolved) return { status: "error", error: resolved.error };
-
+  // Claimed before the first await, so a second ask in the meantime joins this one.
   guidesInFlight.add(key);
-  const title = detail.title;
-  void writeGuide(db, config, {
-    ref,
-    source,
-    resolved,
-    title,
-    url: prWebUrl(ref, config.secrets.azureDevopsOrgUrl),
-    runTour: options.runTour,
-  })
-    .catch(async (e) => {
-      console.error("[pr] guide generation failed:", describeError(e));
-      await createAttention(db, {
-        source: "system",
-        sessionKey: guideSessionKey(ref),
-        kind: "error",
-        title: "Guided review failed",
-        body: `${title}: the agent run failed. See Settings → Diagnostics.`,
-        navTarget: navTargetFor(ref),
-      }).catch(() => undefined);
+  let handedOff = false;
+  try {
+    const source = options.source ?? prSourceFor(config, ref);
+    if ("error" in source) return { status: "error", error: source.error };
+    const detail = await source.detail();
+
+    if (!options.regenerate) {
+      const existing = await getGuide(db, ref);
+      if (existing) {
+        return {
+          status: "exists",
+          stale: isStale(existing, detail.headSha),
+          progress: `step ${existing.currentStep + 1} of ${existing.steps.length}`,
+        };
+      }
+    }
+
+    const resolved = await resolvePrRunModel(config, "guide");
+    if ("error" in resolved) return { status: "error", error: redactSecrets(resolved.error) };
+
+    // An earlier failure's bell item would otherwise sit beside the new guide's.
+    await clearAttentionScope(db, { sessionKey: guideSessionKey(ref) }, "resolved");
+    handedOff = true;
+    void writeGuide(db, config, {
+      ref,
+      source,
+      resolved,
+      title: detail.title,
+      url: prWebUrl(ref, config.secrets.azureDevopsOrgUrl),
+      runTour: options.runTour,
     })
-    .finally(() => guidesInFlight.delete(key));
-  return { status: "started" };
+      .catch(async (e) => {
+        console.error("[pr] guide generation failed:", describeError(e));
+        await createAttention(db, {
+          source: "system",
+          sessionKey: guideSessionKey(ref),
+          kind: "error",
+          title: "Guided review failed",
+          body: `${detail.title}: the agent run failed. See Settings → Diagnostics.`,
+          navTarget: navTargetFor(ref),
+        }).catch(() => undefined);
+      })
+      .finally(() => guidesInFlight.delete(key));
+    return { status: "started" };
+  } finally {
+    if (!handedOff) guidesInFlight.delete(key);
+  }
 }

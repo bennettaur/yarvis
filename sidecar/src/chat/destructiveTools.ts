@@ -156,6 +156,11 @@ function changesDiagram(args: unknown): boolean {
   return a?.addOnly !== true || a.title !== undefined;
 }
 
+/** A boolean argument the model set to true. */
+function flagSet(args: unknown, name: string): boolean {
+  return (args as Record<string, unknown> | null)?.[name] === true;
+}
+
 /**
  * Built-ins that ask only under a condition checked when they are called.
  *
@@ -170,6 +175,11 @@ function changesDiagram(args: unknown): boolean {
  * allowed skill acts on its arguments with its own tools, and issue, PR and MCP
  * text a turn reads doesn't count as untrusted above, so the user confirms
  * which skill runs and with what.
+ *
+ * Starting a verification report with `confirmed` asks too: the flag answers a
+ * question about cost or an unregistered repo, and that answer has to be the
+ * user's, not the model's. Regenerating a guide asks because it throws away
+ * how far the user got through the old one.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
  * it asks under the same conditions; an append does not. So does an
@@ -195,6 +205,14 @@ export function conditionalConfirmations(options: {
     conditions.set(
       "send_workspace_slash_command",
       (args) => !isBareCompact(args) || hasReadUntrusted(reads),
+    );
+    conditions.set(
+      "start_pr_verification_report",
+      (args) => flagSet(args, "confirmed") || hasReadUntrusted(reads),
+    );
+    conditions.set(
+      "start_pr_guided_review",
+      (args) => flagSet(args, "regenerate") || hasReadUntrusted(reads),
     );
   }
   conditions.set(

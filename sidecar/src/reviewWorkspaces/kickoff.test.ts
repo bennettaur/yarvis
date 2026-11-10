@@ -112,7 +112,16 @@ cat "${fakeDir}/result.jsonl"`,
   kickoff = {
     review,
     verification: {
-      loadDetail: async () => ({ title: "Feature work", body: "" }) as unknown as PrDetail,
+      loadDetail: async () =>
+        ({
+          title: "Feature work",
+          body: "",
+          author: "octocat",
+          headRef: "feature",
+          baseRef: "main",
+          checks: [],
+          reviewThreads: [],
+        }) as unknown as PrDetail,
       settings: async () => ({ model: "haiku", maxBudgetUsd: 100 }),
       run: {
         program,
@@ -120,6 +129,7 @@ cat "${fakeDir}/result.jsonl"`,
         instance: "test",
       },
     },
+    isRegistered: async () => true,
     pollMs: 25,
   };
 });
@@ -178,7 +188,8 @@ describe("kickOffVerification", () => {
     expect(started).toMatchObject({ status: "started" });
     if (started.status !== "started") throw new Error("unreachable");
 
-    const joined = await kickOffVerification(db, config, ref, {}, kickoff);
+    // Confirming again doesn't start a second run.
+    const joined = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
     expect(joined).toEqual({ ...started, status: "already-running" });
 
     release();
@@ -191,6 +202,47 @@ describe("kickOffVerification", () => {
     // One run, and one notice for it, though it was asked for twice.
     const ready = (await attention()).filter((a) => a.title === "Verification report ready");
     expect(ready).toHaveLength(1);
+
+    // A report for the current head is kept unless a re-run is asked for.
+    expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toEqual({
+      ...started,
+      status: "exists",
+    });
+  });
+
+  it("asks before cloning a repo the user never registered", async () => {
+    kickoff.isRegistered = async () => false;
+    expect(await kickOffVerification(db, config, ref, {}, kickoff)).toEqual({
+      status: "needs-confirmation",
+      reason: "unregistered-repo",
+      workspaceId: null,
+      prId: null,
+      size: null,
+    });
+    expect(await sql`SELECT id FROM review_workspaces`).toHaveLength(0);
+
+    const confirmed = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
+    expect(confirmed).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: true });
+    // Run it to the end, so its bell item can't land in the next test.
+    await until(async () => (await db.select().from(agentRuns)).length > 0, "the run");
+    release();
+    await until(
+      async () => (await attention()).some((a) => a.title === "Verification report ready"),
+      "the ready notice",
+    );
+  });
+
+  it("shares one workspace between two asks made at once", async () => {
+    const [a, b] = await Promise.all([
+      kickOffVerification(db, config, ref, {}, kickoff),
+      kickOffVerification(db, config, ref, {}, kickoff),
+    ]);
+    expect(a).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: true });
+    expect(b).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: false });
+    expect(await sql`SELECT id FROM review_workspaces`).toHaveLength(1);
+    await until(async () => (await attention()).length > 0, "the go-ahead notice");
+    // One waiter, so one notice.
+    expect(await attention()).toHaveLength(1);
   });
 
   it("says so when the checkout fails", async () => {
@@ -206,6 +258,8 @@ describe("kickOffVerification", () => {
 
     const again = await kickOffVerification(db, config, ref, {}, kickoff);
     expect(again.status).toBe("error");
+    // The model gets a fixed message; git's output stays in the bell and the log.
+    expect(again).not.toHaveProperty("error", expect.stringContaining("exploded"));
     const [pr] = await db.select().from(reviewWorkspacePrs);
     expect(pr?.worktreeStatus).toBe("error");
   });

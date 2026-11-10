@@ -132,7 +132,7 @@ The assistant can act on your workspaces in bulk:
   starts a [guided review](pr-review.md#take-a-guided-review) or a
   [verification report](review-workspaces.md#verification-report) in the
   background, and the attention bell tells you when it's ready. See
-  [Start one from the assistant](pr-review.md#start-one-from-the-assistant).
+  [Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks, mergeability and review verdict from the last poll (refreshed every
   minute).

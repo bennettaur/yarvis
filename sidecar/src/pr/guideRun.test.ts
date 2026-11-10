@@ -76,7 +76,7 @@ describe("kickOffGuide", () => {
     });
 
     openAgent();
-    await until(async () => (await getGuide(db, ref)) !== null, "the guide");
+    await until(async () => (await listAttention(db, {})).length > 0, "the guide's bell item");
     const guide = await getGuide(db, ref);
     expect(guide).toMatchObject({
       title: "Feature work",
@@ -105,7 +105,8 @@ describe("kickOffGuide", () => {
     expect(await kickOffGuide(db, config, ref, { source, runTour, regenerate: true })).toEqual({
       status: "started",
     });
-    await until(async () => (await getGuide(db, ref))?.headSha === head, "the new guide");
+    await until(async () => (await listAttention(db, {})).length > 0, "the new guide's bell item");
+    expect((await getGuide(db, ref))?.headSha).toBe(head);
     expect((await getGuide(db, ref))?.steps).toHaveLength(1);
   });
 
@@ -121,6 +122,21 @@ describe("kickOffGuide", () => {
     expect(item).toMatchObject({ title: "Guided review failed", kind: "error" });
     expect(item?.body).not.toContain("sk-secret");
     expect(await getGuide(db, ref)).toBeNull();
+
+    // A later success clears the failure rather than sitting beside it.
+    const ok = async () => ({ steps, headSha: head, graph });
+    await until(
+      async () =>
+        (await kickOffGuide(db, config, ref, { source, runTour: ok })).status === "started",
+      "the failed run to let go",
+    );
+    await until(async () => (await getGuide(db, ref)) !== null, "the guide");
+    await until(
+      async () => (await listAttention(db, {})).some((a) => a.kind === "info"),
+      "the guide's bell item",
+    );
+    const pending = (await listAttention(db, {})).filter((a) => a.status === "pending");
+    expect(pending.map((a) => a.title)).toEqual(["Reviewing Feature work"]);
   });
 
   it("refuses without provider credentials before reading anything", async () => {
