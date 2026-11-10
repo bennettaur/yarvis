@@ -82,3 +82,22 @@ export async function addToReviewWorkspace(workspaceId: string, ref: PrRef): Pro
   invalidateReviewWorkspace(workspaceId);
   requestOpenReview({ workspaceId, prId: pr.id });
 }
+
+/**
+ * Adds stack layers the reviewer picked, one at a time so each lands after the
+ * one below it in the nav. A layer that fails doesn't stop the rest; once all
+ * have been tried, the error names every one that failed.
+ */
+export async function addStackLayers(workspaceId: string, refs: PrRef[]): Promise<void> {
+  const failed: string[] = [];
+  for (const ref of refs) {
+    try {
+      await addReviewPr(workspaceId, ref);
+    } catch (e) {
+      failed.push(`${shortPrName(ref)}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // After a failure too, so the layers added before it show.
+    invalidateReviewWorkspace(workspaceId);
+  }
+  if (failed.length) throw new Error(`Couldn't add ${failed.join("; ")}`);
+}

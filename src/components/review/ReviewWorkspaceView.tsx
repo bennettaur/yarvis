@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { refDisplayRepo, refKey, refNumber } from "../../lib/pr/ref";
-import type { PrSummary } from "../../lib/pr/types";
+import type { PrRef, PrSummary } from "../../lib/pr/types";
 import { invalidatePrefix, primeCache } from "../../lib/resourceCache";
 import {
   addReviewPr,
@@ -18,6 +18,7 @@ import {
   useReviewChangedFiles,
   useReviewWorkspace,
 } from "../../lib/reviewWorkspaces/cache";
+import { addStackLayers } from "../../lib/reviewWorkspaces/open";
 import PrLocator from "../pr/PrLocator";
 import SplitPane, { usePersistedRatio } from "../SplitPane";
 import ConfirmDialog from "./ConfirmDialog";
@@ -320,6 +321,8 @@ export default function ReviewWorkspaceView({
       open({ kind: "description", prId: pr.id });
     });
 
+  const addLayers = (refs: PrRef[]) => attempt(() => addStackLayers(workspaceId, refs));
+
   const archive = async () => {
     await archiveReviewWorkspace(workspaceId);
     invalidateReviewWorkspace(workspaceId);
@@ -363,6 +366,7 @@ export default function ReviewWorkspaceView({
       progress={progress}
       openTab={open}
       onSetup={setConsentPr}
+      onAddStackLayers={addLayers}
     />
   );
   const main = (
