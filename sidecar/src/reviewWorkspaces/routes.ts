@@ -9,7 +9,7 @@ import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { isValidSymbol } from "./definitions.ts";
-import { latestFlowDiagram, startFlowDiagram } from "./flowDiagram.ts";
+import { type FlowDiagramDeps, latestFlowDiagram, startFlowDiagram } from "./flowDiagram.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -126,7 +126,7 @@ export interface ReviewWorkspaceRouteOptions {
   /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
   verification?: VerificationDeps;
   /** Replaces the provider, settings and `claude` the flow diagram uses, for tests. */
-  flowDiagram?: VerificationDeps;
+  flowDiagram?: FlowDiagramDeps;
   /** Replaces the provider, settings and `claude` the re-review summary uses, for tests. */
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */

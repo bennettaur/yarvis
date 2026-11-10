@@ -284,12 +284,17 @@ checkout) follows the changed code up to what starts the flow (a route, a job,
 a UI action) and down to where it ends. It draws the flow as a Mermaid
 flowchart with the changed steps highlighted, plus a short explanation.
 **Cancel** stops a run, and **Re-run** draws it again. A diagram made for an
-older head is still shown, marked as such.
+older head is still shown, marked as such. It runs on the verification
+report's model (Settings → PR review), and isn't checked against its budget:
+it reads much less than a report.
 
 Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
 is too long, isn't drawn, and the tab says so. The diagram is model-written
 from the PR's code, so it is drawn in Mermaid's strict mode and shown as an
 image, where it can't run anything.
+
+This is a different diagram from the one in the PRs tab, which comes with a
+guided review (see [See the flow diagram](pr-review.md#see-the-flow-diagram)).
 
 ### Mutation testing
 

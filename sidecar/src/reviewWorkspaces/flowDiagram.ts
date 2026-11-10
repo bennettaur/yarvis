@@ -21,10 +21,17 @@ import {
   buildVerificationMaterial,
   latestRunId,
   requireCheckout,
+  TITLE_CHARS,
   targetKeyFor,
   type VerificationDeps,
   writeReviewContext,
 } from "./verification.ts";
+
+/**
+ * The provider and settings a diagram run reads. It runs on the verification
+ * report's model, so it shares that report's settings rather than having its own.
+ */
+export type FlowDiagramDeps = VerificationDeps;
 
 export const FLOW_DIAGRAM_RUN_KIND = "pr-flow-diagram";
 
@@ -36,7 +43,7 @@ export const MAX_MERMAID_CHARS = 6000;
 
 export const flowDiagramSchema = z
   .object({
-    title: boundedText(100),
+    title: boundedText(TITLE_CHARS),
     explanation: boundedText(700),
     mermaid: z
       .string()
@@ -47,8 +54,6 @@ export const flowDiagramSchema = z
       ? { ...flow, mermaid: "", tooLarge: true }
       : { ...flow, mermaid: flow.mermaid.trim() },
   );
-
-export type FlowDiagram = z.output<typeof flowDiagramSchema>;
 
 export const FLOW_DIAGRAM_CONTEXT_DIR_PREFIX = "yarvis-flow-diagram-";
 
@@ -100,8 +105,10 @@ export async function startFlowDiagram(
   workspaceId: string,
   prId: string,
   reviewDeps: ReviewDeps,
-  deps: VerificationDeps,
+  deps: FlowDiagramDeps,
 ): Promise<StartedFlowDiagram> {
+  // Read once for the lock key, which can't change; everything else comes
+  // from the read inside.
   const { refKey } = await getReviewPr(db, workspaceId, prId);
   return withPrLock(refKey, async () => {
     const pr = await getReviewPr(db, workspaceId, prId);
@@ -123,8 +130,9 @@ export async function startFlowDiagram(
     const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
     try {
       const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
-      // The same pr.md and index.md the verification agents read, which the
-      // agent's shared instructions describe.
+      // The same pr.md, index.md and groups/ the verification agents read,
+      // which the agent's shared instructions describe. Only those files are
+      // used: the report's own prompt is built alongside and dropped.
       writeReviewContext(
         contextDir,
         buildVerificationMaterial(

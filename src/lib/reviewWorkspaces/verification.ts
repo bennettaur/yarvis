@@ -152,7 +152,9 @@ export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS;
 export function runSections(meta: Record<string, unknown> | undefined): readonly ReportSection[] {
   const recorded = meta?.sections;
   if (!Array.isArray(recorded)) return DEFAULT_SECTIONS;
-  return REPORT_SECTIONS.filter((s) => recorded.includes(s));
+  const known = REPORT_SECTIONS.filter((s) => recorded.includes(s));
+  // A run of only sections reports no longer have (the flow diagram) ran none of today's.
+  return known.length > 0 ? known : DEFAULT_SECTIONS;
 }
 
 /** The size facts with the estimate moved to `sections`, for warning before that run. */

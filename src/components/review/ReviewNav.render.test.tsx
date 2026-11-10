@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import type { AgentRunEvent } from "../../lib/agentRuns";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../lib/reviewWorkspaces/cache";
-import type { LatestVerification, ReportSection } from "../../lib/reviewWorkspaces/verification";
+import {
+  DEFAULT_SECTIONS,
+  type LatestVerification,
+  type ReportSection,
+} from "../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { resetReviewApi, stubReviewApi } from "../../test/reviewWorkspacesApi";
 import ReviewNav from "./ReviewNav";
@@ -34,15 +39,20 @@ afterEach(() => {
   resetReviewApi();
 });
 
-async function mount(verification: Partial<LatestVerification>, opened: TabSpec[]) {
+async function mount(
+  verification: Partial<LatestVerification>,
+  opened: TabSpec[],
+  over: Partial<ReviewWorkspacePr> = {},
+  diagram: object = {},
+) {
   primeCache(prDetailKey(pr.ref), { title: pr.title, reviewThreads: [] } as unknown as PrDetail);
   primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
   primeCache(verificationKey(pr.id), { ...none, size: null, ...verification });
-  primeCache(flowDiagramKey(pr.id), none);
+  primeCache(flowDiagramKey(pr.id), { ...none, ...diagram });
   const mounted = await mountForInteraction(
     createElement(ReviewNav, {
       workspaceId: "ws",
-      prs: [pr],
+      prs: [{ ...pr, ...over }],
       active: null,
       progress: new Map(),
       openTab: (spec) => opened.push(spec),
@@ -83,7 +93,22 @@ describe("ReviewNav's run buttons", () => {
     });
     const opened: TabSpec[] = [];
     const host = await mount(
-      { run: { id: "r1", status: "succeeded", meta: { sections: ["tests"] } } as never },
+      {
+        run: { id: "r1", status: "succeeded", meta: { sections: ["tests"] } } as never,
+        size: {
+          files: 2,
+          changedLines: 10,
+          large: false,
+          binary: [],
+          truncated: [],
+          skimmed: [],
+          estimatedCostUsd: 0.4,
+          sectionCostUsd: 0.04,
+          defaultSections: [...DEFAULT_SECTIONS],
+          budgetUsd: 2,
+          overBudget: false,
+        },
+      },
       opened,
     );
     button(host, "Re-run verification")?.click();
@@ -101,9 +126,46 @@ describe("ReviewNav's run buttons", () => {
       },
     });
     const opened: TabSpec[] = [];
-    const host = await mount({ size: { large: true, overBudget: false } as never }, opened);
-    button(host, "Run verification")?.click();
+    const large = await mount({ size: { large: true, overBudget: false } as never }, opened);
+    button(large, "Run verification")?.click();
     await waitFor(() => opened.length > 0, "the verification tab to open");
+    unmount();
+    // A size not known yet asks too, rather than skip the question.
+    const unknown = await mount({ size: null }, opened);
+    button(unknown, "Run verification")?.click();
+    await waitFor(() => opened.length > 1, "the verification tab to open again");
     expect(sections).toEqual([]);
+  });
+
+  it("can't run before the checkout is ready", async () => {
+    const host = await mount({}, [], { worktreeStatus: "checking-out" });
+    expect(button(host, "Run verification")?.disabled).toBe(true);
+    expect(button(host, "Run flow diagram")?.disabled).toBe(true);
+  });
+
+  it("follows a live run to its end, so the button is free again", async () => {
+    let ended = false;
+    let end = () => {};
+    const ending = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    stubReviewApi({
+      streamAgentRun: async function* () {
+        await ending;
+        ended = true;
+        yield { type: "done", status: "succeeded" } as AgentRunEvent;
+      },
+      latestFlowDiagram: async () => ({
+        ...none,
+        run: { id: "r1", status: ended ? "succeeded" : "running", live: !ended } as never,
+      }),
+    });
+    const host = await mount({}, [], {}, { run: { id: "r1", status: "running", live: true } });
+    expect(button(host, "Re-run flow diagram")?.disabled).toBe(true);
+    end();
+    await waitFor(
+      () => button(host, "Re-run flow diagram")?.disabled === false,
+      "the button once the run ends",
+    );
   });
 });

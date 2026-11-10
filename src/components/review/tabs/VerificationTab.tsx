@@ -263,9 +263,15 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const lastSections = runSections(run?.meta);
   const sections = pickedSections ?? lastSections;
   const runningHere = run?.status === "running" && run.live ? run.id : null;
-  const followId = started?.id ?? runningHere;
+  // A run going now wins over one this tab started earlier, which may have
+  // finished since: the nav's Run button starts runs the tab didn't.
+  const followId = runningHere ?? started?.id ?? null;
   // A run followed but not started here lists the sections its own meta records.
-  const progress = useVerificationRun(pr.id, followId, started?.sections ?? lastSections);
+  const progress = useVerificationRun(
+    pr.id,
+    followId,
+    started && started.id === followId ? started.sections : lastSections,
+  );
   const running = followId !== null && progress !== null && progress.finished === null;
   const runningElsewhere = !running && run?.status === "running" && !run.live;
   const report = reportOf(latest.data);

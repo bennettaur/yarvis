@@ -143,7 +143,7 @@ const AGENT_TABS: { kind: StaticTabKind; label: string; title: string }[] = [
 /**
  * The bar for the PR in front: whichever one the focused tab belongs to. It
  * carries that PR's colour, the review actions the classic page has, the
- * agent-powered tabs, and the checkout's own controls.
+ * guided review, and the checkout's own controls.
  */
 export default function ReviewPrBar({
   workspaceId,

@@ -48,8 +48,9 @@ describe("findingCommentBody", () => {
 describe("runSections", () => {
   it("reads a run's sections in report order, and the default for a run that recorded none", () => {
     expect(runSections({ sections: ["approach", "tests"] })).toEqual(["tests", "approach"]);
-    // A section reports no longer have, like the flow diagram, is dropped.
+    // Sections removed from reports, such as `flow`, are dropped.
     expect(runSections({ sections: ["flow", "tests"] })).toEqual(["tests"]);
+    expect(runSections({ sections: ["flow"] })).toEqual(DEFAULT_SECTIONS);
     expect(runSections({})).toEqual(DEFAULT_SECTIONS);
     expect(runSections(undefined)).toEqual(DEFAULT_SECTIONS);
   });
@@ -71,6 +72,7 @@ describe("sizeFor", () => {
   };
 
   it("moves the estimate by each section added or dropped, and re-weighs the budget", () => {
+    // One section more than a size whose defaults leave one out.
     const more = sizeFor({ ...size, defaultSections: DEFAULT_SECTIONS.slice(1) }, DEFAULT_SECTIONS);
     expect(more.estimatedCostUsd).toBe(0.54);
     expect(more.overBudget).toBe(true);

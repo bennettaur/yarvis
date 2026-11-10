@@ -1132,7 +1132,10 @@ cat "${fakeDir}/result.jsonl"`,
     const res = await request("POST", wsId, prId);
     expect(res.status).toBe(202);
     const { runId } = (await res.json()) as { runId: string };
-    expect((await request("POST", wsId, prId)).status).toBe(200);
+    // A second start joins the run already going.
+    const again = await request("POST", wsId, prId);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ runId, existing: true });
 
     await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
     const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
@@ -1165,6 +1168,37 @@ cat "${fakeDir}/result.jsonl"`,
     // A diagram run is not a verification report.
     const verification = await call("GET", `/${wsId}/prs/${prId}/verification`);
     expect(((await verification.json()) as { run: unknown }).run).toBeNull();
+  });
+
+  it("keeps the last good diagram in view when a re-run fails, marked by its head", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const insert = async (head: string, minutesAgo: number, status: string) => {
+      const [row] = await db
+        .insert(agentRuns)
+        .values({
+          kind: "pr-flow-diagram",
+          targetKey: `gh:o/r/1@${head}`,
+          status,
+          instance: "test",
+          meta: { refKey: "gh:o/r/1", headSha: head },
+          startedAt: new Date(Date.now() - minutesAgo * 60_000),
+        })
+        .returning({ id: agentRuns.id });
+      return row?.id as string;
+    };
+    const good = await insert("older-head", 30, "succeeded");
+    const failed = await insert(headSha, 5, "failed");
+    // Another kind for the same PR is not a diagram.
+    await insert(headSha, 1, "succeeded").then((id) =>
+      db.update(agentRuns).set({ kind: "verification-report" }).where(eq(agentRuns.id, id)),
+    );
+
+    expect(await latest(wsId, prId)).toMatchObject({
+      run: { id: failed, status: "failed" },
+      current: true,
+      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+    });
   });
 });
 

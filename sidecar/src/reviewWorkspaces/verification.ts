@@ -97,7 +97,7 @@ const SEVERITIES = ["high", "medium", "low"] as const;
 const SEVERITY_ORDER: Record<(typeof SEVERITIES)[number], number> = { high: 0, medium: 1, low: 2 };
 
 /** Titles and details: the agents are asked for at most 12 and 40 words. */
-const TITLE_CHARS = 100;
+export const TITLE_CHARS = 100;
 const DETAIL_CHARS = 280;
 
 const findingSchema = z.object({

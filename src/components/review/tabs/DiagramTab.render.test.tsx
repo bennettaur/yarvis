@@ -80,13 +80,35 @@ const button = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === label);
 
 describe("DiagramTab", () => {
-  it("explains the diagram and generates one only when asked", async () => {
+  it("generates a diagram only when asked, then follows the run to the diagram", async () => {
+    let finished = false;
+    stubReviewApi({
+      streamAgentRun: async function* () {
+        yield { type: "tool", id: "t1", name: "Read", summary: "src/a.ts", subagentId: null };
+        finished = true;
+      },
+      // The start re-reads the latest run, then its end re-reads it again.
+      latestFlowDiagram: async () =>
+        finished
+          ? latest({
+              run: { id: "r9", status: "succeeded", live: false } as never,
+              current: true,
+              lastSucceeded: {
+                run: { id: "r9", status: "succeeded", result: diagram } as never,
+                headSha: pr.headSha,
+                current: true,
+              },
+            })
+          : latest({ run: { id: "r9", status: "running", live: true } as never, current: true }),
+    });
     const host = await mount(latest({}));
     expect(textOf(host.innerHTML)).toContain("draws it as a flowchart");
     expect(started).toEqual([]);
     button(host, "Generate diagram")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(started).toEqual(["pr1"]);
+    await waitFor(() => textOf(host.innerHTML).includes("How an order is saved"), "the diagram");
+    expect(textOf(host.innerHTML)).not.toContain("older head");
   });
 
   it("follows a running diagram's activity, and cancels it", async () => {

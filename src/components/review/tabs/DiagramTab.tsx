@@ -67,7 +67,7 @@ export default function DiagramTab({ ctx }: { ctx: TabContext }) {
   const diagram = good?.run.result ?? null;
   const failed = run?.status === "failed";
   const cancelled = run?.status === "cancelled";
-  const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
+  const checkedOut = pr.status === "ready" && pr.worktreeStatus === "ready";
 
   const start = async () => {
     setStarting(true);
@@ -124,8 +124,8 @@ export default function DiagramTab({ ctx }: { ctx: TabContext }) {
                 <button
                   type="button"
                   onClick={() => void start()}
-                  disabled={starting || notReady}
-                  title={notReady ? "Waiting for the checkout" : undefined}
+                  disabled={starting || !checkedOut}
+                  title={checkedOut ? undefined : "Waiting for the checkout"}
                   className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
                 >
                   {starting ? "Starting…" : run ? "Re-run" : "Generate diagram"}
@@ -160,6 +160,8 @@ export default function DiagramTab({ ctx }: { ctx: TabContext }) {
             )}
           </div>
         )}
+
+        {running && progress.error && <p className="text-xs text-red-400">{progress.error}</p>}
 
         {runningElsewhere && (
           <p className="text-sm text-zinc-400">
