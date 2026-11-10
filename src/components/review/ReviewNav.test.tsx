@@ -174,18 +174,25 @@ describe("ReviewNav's stack picker", () => {
       position,
     });
 
-  it("offers a stack's other layers once, above the PRs, and holds every control while adding", async () => {
+  it("offers each stack's other layers once, above the PRs, and holds every picker while adding", async () => {
     const stack = {
       trunk: "main",
       entries: [layer(1, { reviewDecision: "approved" }), layer(2), layer(3), layer(4), layer(5)],
       stackNumber: null,
       truncated: false,
     } as PrStack;
-    const prs = [held(2, 0), held(4, 1)];
+    const other = {
+      trunk: "main",
+      entries: [layer(8), layer(9)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    const prs = [held(2, 0), held(4, 1), held(8, 2)];
     for (const p of prs) {
       primeCache(prDetailKey(p.ref), { title: p.title, reviewThreads: [] } as unknown as PrDetail);
-      primeCache(prStackKey(p.ref), stack);
     }
+    primeCache(prStackKey(layerRef(2)), stack);
+    primeCache(prStackKey(layerRef(8)), other);
     let release = () => {};
     const added: PrRef[][] = [];
     const mounted = await mountForInteraction(
@@ -206,27 +213,33 @@ describe("ReviewNav's stack picker", () => {
     );
     unmount = mounted.unmount;
     const nav = mounted.host.querySelector("nav")!;
+    await waitFor(
+      () => nav.querySelectorAll(':scope > section[aria-label="Stack"]').length === 2,
+      "a picker per stack",
+    );
     const sections = [...nav.querySelectorAll(":scope > section")];
     expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual([
       "Stack",
+      "Stack",
       "stacked#2",
       "stacked#4",
+      "stacked#8",
     ]);
-    const picker = sections[0]!;
-    expect(picker.textContent).toContain("3 not added");
+    const [picker, otherPicker] = sections as [Element, Element];
     expect(
       [...picker.querySelectorAll("li")].map((li) => li.textContent?.match(/#\d+/)?.[0]),
     ).toEqual(["#1", "#3", "#5"]);
     const boxes = [...picker.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
     expect(boxes.map((b) => b.checked)).toEqual([false, true, true]);
 
-    const button = (label: string) =>
-      [...picker.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
-    button("Add selected").click();
-    await waitFor(() => button("Add all").disabled, "the controls to lock");
+    const button = (section: Element, label: string) =>
+      [...section.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
+    button(picker, "Add selected").click();
+    await waitFor(() => button(otherPicker, "Add all").disabled, "the other picker to lock");
     expect(added).toEqual([[layerRef(3), layerRef(5)]]);
+    expect(button(picker, "Add all").disabled).toBe(true);
     expect(boxes.every((b) => b.disabled)).toBe(true);
     release();
-    await waitFor(() => !button("Add all").disabled, "the controls to unlock");
+    await waitFor(() => !button(otherPicker, "Add all").disabled, "the pickers to unlock");
   });
 });

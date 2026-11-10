@@ -40,8 +40,9 @@ unticked, so the default skips work that has already been reviewed. Draft
 layers are marked **Draft**. Merged layers and branches with no PR aren't
 listed. If one layer can't be added, the rest still are, and the error names
 the ones that failed. The stack is found the same way as the PRs tab's
-[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be
-read, the section doesn't show.
+[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If a stack
+can't be read, its section doesn't show, and neither do the ones after it, so a
+GitHub that is already failing isn't asked again for every layer you hold.
 
 The nav and the description show straight away. The PR's commits are fetched
 in the background, and the PR's header in the nav says how far that has got.

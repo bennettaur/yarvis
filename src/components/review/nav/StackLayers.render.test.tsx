@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
 import { mountForInteraction, waitFor } from "../../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../../test/sidecarApi";
@@ -42,13 +42,15 @@ afterAll(resetSidecarApi);
  * which numbers were asked for. Each test uses its own numbers, since the
  * answers are cached per PR.
  */
-function serveStacks(stacks: Record<number, PrStack>): number[] {
+function serveStacks(stacks: Record<number, PrStack | "fail">): number[] {
   const asked: number[] = [];
   stubSidecarApi({
     sidecarFetch: async (path: string) => {
       const number = Number(new URL(path, "http://x").searchParams.get("number"));
       asked.push(number);
-      return Response.json({ stack: stacks[number] ?? null });
+      const stack = stacks[number];
+      if (stack === "fail") return Response.json({ error: "rate limited" }, { status: 502 });
+      return Response.json({ stack: stack ?? null });
     },
   });
   return asked;
@@ -73,10 +75,6 @@ describe("addableLayers", () => {
     );
     expect(layers.map((e) => e.number)).toEqual([2, 5]);
   });
-
-  it("finds nothing when there is no stack", () => {
-    expect(addableLayers(null, new Set())).toEqual([]);
-  });
 });
 
 describe("notInStack", () => {
@@ -96,18 +94,37 @@ describe("pickedByDefault", () => {
 });
 
 describe("StackLayers", () => {
+  /** Holds the ticks the way ReviewNav does, so a click changes what renders. */
+  function Harness(props: {
+    refs: PrRef[];
+    held: string[];
+    adding: boolean;
+    onAdd: (refs: PrRef[]) => Promise<void>;
+  }) {
+    const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
+    return createElement(StackLayers, {
+      refs: props.refs,
+      heldRefKeys: new Set(props.held),
+      adding: props.adding,
+      overrides,
+      onToggle: (key, picked) => setOverrides((prev) => new Map(prev).set(key, picked)),
+      onAdd: props.onAdd,
+    });
+  }
   const mount = async (
     refs: PrRef[],
     held: string[],
     { adding = false, onAdd = async (_refs: PrRef[]) => {} } = {},
   ) => {
     const mounted = await mountForInteraction(
-      createElement(StackLayers, { refs, heldRefKeys: new Set(held), adding, onAdd }),
+      createElement(Harness, { refs, held, adding, onAdd }),
     );
     unmount = mounted.unmount;
     return mounted.host;
   };
   const pickers = (host: HTMLElement) => host.querySelectorAll('section[aria-label="Stack"]');
+  const listed = (picker: Element) =>
+    [...picker.querySelectorAll("li")].map((li) => li.textContent?.match(/#\d+/)?.[0]);
 
   it("looks a stack up once, however many of its layers the workspace holds", async () => {
     const stack = stackOf([entry(10), entry(11), entry(12), entry(13)]);
@@ -115,13 +132,29 @@ describe("StackLayers", () => {
     const host = await mount([ref(11), ref(13), ref(20)], ["gh:o/r/11", "gh:o/r/13", "gh:o/r/20"]);
     await waitFor(() => pickers(host).length === 2, "a picker per stack");
     expect(asked).toEqual([11, 20]);
-    expect(pickers(host)[0]!.textContent).toContain("2 not added");
-    expect(pickers(host)[1]!.textContent).toContain("1 not added");
+    expect(listed(pickers(host)[0]!)).toEqual(["#10", "#12"]);
+    expect(listed(pickers(host)[1]!)).toEqual(["#21"]);
   });
 
-  it("shows nothing when every other layer is already held", async () => {
-    serveStacks({ 30: stackOf([entry(30), entry(31)]) });
-    const host = await mount([ref(30), ref(31)], ["gh:o/r/30", "gh:o/r/31"]);
+  it("leaves out a stack whose other layers are all held", async () => {
+    const asked = serveStacks({
+      30: stackOf([entry(30), entry(31)]),
+      32: stackOf([entry(32), entry(33)]),
+    });
+    const host = await mount([ref(30), ref(31), ref(32)], ["gh:o/r/30", "gh:o/r/31", "gh:o/r/32"]);
+    // Stacks load in order, so the second one's picker means the first has answered.
+    await waitFor(() => pickers(host).length === 1, "the second stack's picker");
+    expect(listed(pickers(host)[0]!)).toEqual(["#33"]);
+    expect(asked).toEqual([30, 32]);
+  });
+
+  it("stops looking stacks up once a lookup fails", async () => {
+    const asked = serveStacks({ 70: "fail", 71: stackOf([entry(70), entry(71), entry(72)]) });
+    const host = await mount([ref(70), ref(71)], ["gh:o/r/70", "gh:o/r/71"]);
+    await waitFor(() => asked.length === 1, "the first lookup");
+    // Give a second lookup the chance to start; none should.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(asked).toEqual([70]);
     expect(pickers(host).length).toBe(0);
   });
 
@@ -136,7 +169,10 @@ describe("StackLayers", () => {
       },
     });
     await waitFor(() => pickers(host).length === 1, "the picker");
-    expect(host.textContent).toContain("Approved");
+    const badges = [...host.querySelectorAll("li")].map((li) =>
+      li.textContent?.includes("Approved"),
+    );
+    expect(badges).toEqual([true, false]);
 
     expect(button(host, "Add selected").textContent).toBe("Add selected (1)");
     button(host, "Add selected").click();
@@ -148,8 +184,8 @@ describe("StackLayers", () => {
     expect(added[1]).toEqual([ref(39), ref(41)]);
   });
 
-  it("lets the reviewer tick an approved layer in", async () => {
-    serveStacks({ 50: stackOf([entry(49, { reviewDecision: "approved" }), entry(50)]) });
+  it("lets the reviewer tick an approved layer in, and won't add when nothing is ticked", async () => {
+    serveStacks({ 50: stackOf([entry(49, { reviewDecision: "approved" }), entry(50), entry(51)]) });
     const added: PrRef[][] = [];
     const host = await mount([ref(50)], ["gh:o/r/50"], {
       onAdd: async (refs) => {
@@ -157,7 +193,10 @@ describe("StackLayers", () => {
       },
     });
     await waitFor(() => pickers(host).length === 1, "the picker");
-    host.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
+    const [approved, open] = [...host.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
+    open!.click();
+    await waitFor(() => button(host, "Add selected").disabled, "nothing ticked");
+    approved!.click();
     await waitFor(
       () => button(host, "Add selected").textContent === "Add selected (1)",
       "the tick",

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { usePrStack } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
 import { hasPullRequest } from "../../../lib/pr/stack";
@@ -9,15 +8,15 @@ import type { PrRef, PrStack, StackEntry } from "../../../lib/pr/types";
  * hold yet, bottom first. A merged layer's change is already in the trunk, and
  * a branch with no PR has nothing to check out.
  */
-export function addableLayers(stack: PrStack | null, held: ReadonlySet<string>): StackEntry[] {
-  return (stack?.entries ?? []).filter(
-    (e) => hasPullRequest(e) && e.state === "open" && !held.has(refKey(e.ref)),
+export function addableLayers(stack: PrStack, heldRefKeys: ReadonlySet<string>): StackEntry[] {
+  return stack.entries.filter(
+    (e) => hasPullRequest(e) && e.state === "open" && !heldRefKeys.has(refKey(e.ref)),
   );
 }
 
-/** The held PRs a stack doesn't already account for, so it is looked up once. */
+/** The held PRs this stack doesn't list, so no stack is looked up twice. */
 export function notInStack(refs: PrRef[], stack: PrStack | null): PrRef[] {
-  const inStack = new Set((stack?.entries ?? []).filter(hasPullRequest).map((e) => refKey(e.ref)));
+  const inStack = new Set((stack?.entries ?? []).map((e) => refKey(e.ref)));
   return refs.filter((r) => !inStack.has(refKey(r)));
 }
 
@@ -26,8 +25,10 @@ export const pickedByDefault = (entry: StackEntry): boolean => entry.reviewDecis
 
 interface PickerProps {
   heldRefKeys: ReadonlySet<string>;
-  /** True while any add runs, so no picker can start a second one. */
   adding: boolean;
+  /** Ticks the reviewer changed, by ref key; the rest follow `pickedByDefault`. */
+  overrides: ReadonlyMap<string, boolean>;
+  onToggle: (key: string, picked: boolean) => void;
   onAdd: (refs: PrRef[]) => Promise<void>;
 }
 
@@ -38,33 +39,39 @@ interface PickerProps {
  */
 export default function StackLayers({ refs, ...picker }: PickerProps & { refs: PrRef[] }) {
   const first = refs[0] ?? null;
-  const { data, loading } = usePrStack(first);
+  const { data: stack, loading, error } = usePrStack(first);
   // Wait for this stack before looking up the next, or they all start at once.
-  if (!first || (loading && !data)) return null;
-  const stack = data ?? null;
+  // A failed lookup ends the chain: the next held PR is usually in the same
+  // stack, and walking it again would hit a provider that is already failing.
+  if (!first || loading || (error && !stack)) return null;
+  const rest = notInStack(refs.slice(1), stack);
   return (
     <>
       {stack && <StackPicker stack={stack} {...picker} />}
-      <StackLayers refs={notInStack(refs.slice(1), stack)} {...picker} />
+      {/* Keyed by the ref it looks up, so a new one never starts from another's stack. */}
+      <StackLayers key={rest[0] ? refKey(rest[0]) : "end"} refs={rest} {...picker} />
     </>
   );
 }
 
 /**
  * Lists a stack's open layers the workspace doesn't hold so the reviewer can
- * choose which to pull in. Approved layers start unticked, since they usually
- * aren't worth a checkout.
+ * choose which to pull in.
  */
-function StackPicker({ stack, heldRefKeys, adding, onAdd }: PickerProps & { stack: PrStack }) {
+function StackPicker({
+  stack,
+  heldRefKeys,
+  adding,
+  overrides,
+  onToggle,
+  onAdd,
+}: PickerProps & { stack: PrStack }) {
   const layers = addableLayers(stack, heldRefKeys);
-  // Only what the user changed; everything else follows `pickedByDefault`.
-  const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   if (layers.length === 0) return null;
 
   const isPicked = (e: StackEntry) => overrides.get(refKey(e.ref)) ?? pickedByDefault(e);
   const picked = layers.filter(isPicked);
-  const toggle = (e: StackEntry) =>
-    setOverrides((prev) => new Map(prev).set(refKey(e.ref), !isPicked(e)));
+  const toggle = (e: StackEntry) => onToggle(refKey(e.ref), !isPicked(e));
   const addLayers = (entries: StackEntry[]) => onAdd(entries.map((e) => e.ref));
 
   return (

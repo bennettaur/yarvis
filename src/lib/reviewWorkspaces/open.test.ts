@@ -2,7 +2,9 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { resetReviewApi, stubReviewApi } from "../../test/reviewWorkspacesApi";
 import { resolvePrLocator } from "../pr/locate";
 import type { PrRef } from "../pr/types";
+import { cachedFetch, primeCache } from "../resourceCache";
 import type { ReviewWorkspacePr, ReviewWorkspaceSummary } from "./api";
+import { reviewWorkspaceKey } from "./cache";
 import { addStackLayers, findWorkspaceWithPr, prWebUrl, shortPrName } from "./open";
 
 const ws = (
@@ -102,9 +104,12 @@ describe("addStackLayers", () => {
         return {} as ReviewWorkspacePr;
       },
     });
+    primeCache(reviewWorkspaceKey("ws"), "before the adds");
     await expect(addStackLayers("ws", [layer(1), layer(2), layer(3), layer(4)])).rejects.toThrow(
       "Couldn't add r#2: already in the workspace; r#3: not found",
     );
     expect(added).toEqual(["r#1", "r#4"]);
+    // The cached workspace was dropped, so the nav reloads and shows the adds.
+    expect(await cachedFetch(reviewWorkspaceKey("ws"), async () => "reloaded")).toBe("reloaded");
   });
 });
