@@ -482,6 +482,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.repo,
         params.number,
         comment,
+        headSha,
       );
       await recordSeen(
         { provider: "github", ...params },

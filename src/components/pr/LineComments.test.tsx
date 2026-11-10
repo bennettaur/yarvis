@@ -209,6 +209,12 @@ describe("useLineComments", () => {
     expect(hasLineComments("RIGHT", 5, after)).toBe(false);
   });
 
+  it("moves the composer, rather than growing it, on a plain click", async () => {
+    (await view.render([])).openComposer("RIGHT", 4);
+    (await view.render([])).openComposer("RIGHT", 9);
+    expect((await view.render([])).composer).toEqual({ side: "RIGHT", line: 9 });
+  });
+
   it("forgets where a comment moved once another composer opens", async () => {
     post = async () => ({ ok: true, placement: "file" });
     const comments = await view.render([]);
@@ -290,6 +296,15 @@ describe("LineCommentBlock", () => {
   it("shows the note only under the line it is about", async () => {
     view.dispose();
     view = mount(5);
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    expect((await view.render([])).movedToFile).toEqual(right(4));
+    expect(view.html).not.toContain("Posted on the whole file instead");
+  });
+
+  it("shows the note only on the side it is about", async () => {
+    view.dispose();
+    view = mount(4, "LEFT");
     post = async () => ({ ok: true, placement: "file" });
     await (await view.render([])).submit(right(4), "looks off");
     expect((await view.render([])).movedToFile).toEqual(right(4));

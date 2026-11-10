@@ -1,6 +1,6 @@
 import { ensureOk, sidecarFetch } from "../api";
 import { prRefQuery } from "./guide";
-import type { PrRef } from "./types";
+import type { CommentPlacement, PrRef } from "./types";
 
 /**
  * Client for line insights: answers to questions the reviewer asked about
@@ -19,6 +19,11 @@ export interface PrInsight {
   /** Set once the insight has been shared with the pull request's author. */
   postedAt: string | null;
   createdAt: string;
+  /**
+   * Only on the answer to a post: "file" when GitHub put the comment on the
+   * whole file because the line isn't part of the diff. Gone after a reload.
+   */
+  placement?: CommentPlacement;
 }
 
 async function request<T>(path: string, method: string, body?: unknown): Promise<T> {

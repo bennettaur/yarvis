@@ -2266,7 +2266,9 @@ export class GitHubClient {
 
   /**
    * Posts a review comment on one line or a range. GitHub anchors review
-   * comments to a commit, so the PR's head sha is fetched first; `line` +
+   * comments to a commit: `viewedHead`, the head the reviewer was looking at,
+   * so the line numbers mean what they saw, or else the PR's current head,
+   * fetched first. GitHub accepts any commit in the PR. `line` +
    * `side` target the range's last line in the diff, and `start_line` +
    * `start_side` its first.
    *
@@ -2279,8 +2281,12 @@ export class GitHubClient {
     repo: string,
     number: number,
     input: NewComment,
+    viewedHead?: string,
   ): Promise<{ commitId: string; placement: CommentPlacement }> {
-    const pr = await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    const commitId =
+      viewedHead ??
+      (await this.api<{ head: { sha: string } }>(`/repos/${owner}/${repo}/pulls/${number}`)).head
+        .sha;
     const side = input.side ?? "RIGHT";
     const range =
       input.startLine != null
@@ -2295,11 +2301,11 @@ export class GitHubClient {
           "X-GitHub-Api-Version": "2022-11-28",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ commit_id: pr.head.sha, path: input.path, ...fields }),
+        body: JSON.stringify({ commit_id: commitId, path: input.path, ...fields }),
       });
 
     const res = await post({ body: input.body, line: input.line, side, ...range });
-    if (res.ok) return { commitId: pr.head.sha, placement: "line" };
+    if (res.ok) return { commitId, placement: "line" };
     const error = await githubErrorFrom(res, "post comment");
     if (!isLineOutsideDiff(error)) throw error;
 
@@ -2318,7 +2324,7 @@ export class GitHubClient {
         fileError.details,
       );
     }
-    return { commitId: pr.head.sha, placement: "file" };
+    return { commitId, placement: "file" };
   }
 
   /** Replies to a review thread, addressed by its GraphQL node id. */

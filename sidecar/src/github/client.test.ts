@@ -1713,6 +1713,36 @@ describe("github review threads", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("moves a comment onto the file when GitHub finds no diff hunk for it", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [{ field: "pull_request_review_thread.diff_hunk", code: "missing_field" }],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("anchors a comment to the head the reviewer viewed, without reading the PR", async () => {
+    const { calls, gh } = commentReplies({ status: 201, body: {} });
+    const result = await gh.postComment(
+      "o",
+      "r",
+      4,
+      { path: "a.ts", line: 12, body: "x" },
+      "d".repeat(40),
+    );
+    expect(result.commitId).toBe("d".repeat(40));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body.commit_id).toBe("d".repeat(40));
+  });
+
   it("names a range that crosses from the old file to the new one", async () => {
     const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
     await gh.postComment("o", "r", 4, {

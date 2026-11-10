@@ -402,12 +402,15 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     const ref = parseRefKey(insight.refKey);
     if (!ref) return c.json({ error: "insight has an unreadable pull request identity" }, 500);
 
+    // The answer's line numbers are the head it was asked on, so the comment is anchored there.
+    const viewedHead = COMMIT_SHA_PATTERN.test(insight.headSha) ? insight.headSha : undefined;
+    let placement: "line" | "file" | undefined;
     try {
-      await postComment(ref, {
-        path: insight.path,
-        line: insight.endLine,
-        body: insight.answer,
-      });
+      placement = await postComment(
+        ref,
+        { path: insight.path, line: insight.endLine, body: insight.answer },
+        viewedHead,
+      );
     } catch (e) {
       console.error("[pr] posting an insight failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
@@ -421,7 +424,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     // away underneath us the stamp has nowhere to land, and answering with a
     // null body would have the client splice it into its list.
     if (!stamped) return c.json({ error: "the insight was deleted while posting" }, 409);
-    return c.json(stamped);
+    return c.json({ ...stamped, placement });
   });
 
   router.delete("/insight/:id", async (c) => {
@@ -430,16 +433,27 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     return c.json({ deleted: await deleteInsight(db(), id.data) });
   });
 
-  /** Posts a line comment through whichever provider owns the pull request. */
+  /**
+   * Posts a line comment through whichever provider owns the pull request.
+   * Resolves to "file" when GitHub put it on the whole file because the line
+   * isn't part of the diff; Azure takes any line, so it resolves to undefined.
+   */
   async function postComment(
     ref: PrRef,
     comment: { path: string; line: number; body: string },
-  ): Promise<void> {
+    viewedHead?: string,
+  ): Promise<"line" | "file" | undefined> {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) throw new Error("github token not configured");
-      await createGitHubClient(config, token).postComment(ref.owner, ref.repo, ref.number, comment);
-      return;
+      const { placement } = await createGitHubClient(config, token).postComment(
+        ref.owner,
+        ref.repo,
+        ref.number,
+        comment,
+        viewedHead,
+      );
+      return placement;
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
     if (!azureDevopsToken || !azureDevopsOrgUrl) throw new Error("azure devops not configured");
@@ -455,6 +469,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
       { project: ref.project, repo: ref.repo, prId: ref.prId },
       comment,
     );
+    return undefined;
   }
 
   /**
