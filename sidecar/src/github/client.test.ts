@@ -1770,6 +1770,25 @@ describe("github review threads", () => {
     expect((error as GitHubError).explanation).not.toContain("isn't part of the diff");
   });
 
+  it("falls back when one of several 422 reasons is about the line", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [
+            "pull_request_review_thread.line must be part of the diff",
+            { field: "subject", code: "custom" },
+          ],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
   it("names a range that crosses from the old file to the new one", async () => {
     const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
     await gh.postComment("o", "r", 4, {
