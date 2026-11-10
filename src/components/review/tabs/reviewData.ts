@@ -22,6 +22,10 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import {
+  type LatestFlowDiagram,
+  latestFlowDiagram,
+} from "../../../lib/reviewWorkspaces/flowDiagram";
 import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
   type LatestVerification,
@@ -79,6 +83,20 @@ export function useLatestVerification(
   return useCachedResource(
     verificationKey(prId),
     () => latestVerification(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+}
+
+export const flowDiagramKey = (prId: string) => `${reviewWorkspacePrefix(prId)}flow-diagram`;
+
+/** The PR's latest flow diagram run. Not pinned to a commit: a run finishing changes it. */
+export function useLatestFlowDiagram(
+  workspaceId: string,
+  prId: string,
+): Resource<LatestFlowDiagram> {
+  return useCachedResource(
+    flowDiagramKey(prId),
+    () => latestFlowDiagram(workspaceId, prId),
     SIDECAR_FRESHNESS,
   );
 }

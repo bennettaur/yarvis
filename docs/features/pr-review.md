@@ -175,8 +175,7 @@ guide nobody has touched for 30 days is deleted.
 While it builds a guide, the agent writes down how the code fits together:
 which handler calls which function, which function writes which table. That
 record is kept with the guide and drawn as a **Flow diagram** section above
-**Files**, and below the current step in a review workspace's guided review
-tab.
+**Files**.
 
 1. Generate a guided review, as above. The section appears once the guide is
    ready. It costs nothing extra: the diagram comes from the same agent run.

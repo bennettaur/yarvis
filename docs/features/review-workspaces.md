@@ -62,6 +62,11 @@ title:
 - **Since last review** opens what changed since you last reviewed the PR (see
   [Since last review](#since-last-review)). When there are commits you haven't
   seen, it says how many.
+- **Verification** and **Flow diagram** open those agent-run tabs (see
+  [Verification report](#verification-report) and [Flow diagram](#flow-diagram)).
+  The small **Run** button beside each starts a run and opens its tab. It
+  reads **Re-run** once there has been one, and a spinner shows while one is
+  going.
 - **Changed files** is a tree of what the PR changes, with how many you've
   viewed. Each file has a viewed checkbox, its comment count (amber while a
   thread is open), and a **must read** marker when the
@@ -159,13 +164,11 @@ with a leading `/head/` (for example `/head/app`).
 [guided review](pr-review.md#take-a-guided-review) as a tab: the tour down
 the side and the current step beside it. Next, Back, a step, a flagged finding
 or a covered file each open that place in a diff tab, and moving past a step
-marks its files viewed. When the guide has one, the
-[flow diagram](pr-review.md#see-the-flow-diagram) is a folded section below
-the current step.
+marks its files viewed.
 
 ### Verification report
 
-**Verification** in the PR bar opens a tab where agents (Claude Code,
+**Verification** in the PR's nav opens a tab where agents (Claude Code,
 running on your machine against the PR's checkout) read every changed file's
 diff and report: a summary, the files that must be read and why, the risk, and
 checks for completeness, tests, complexity, performance, comments,
@@ -190,23 +193,19 @@ stops it. Every file and line in the report opens the diff there.
   the section says "Not rated".
 - A report made before these checks existed shows only the checks it had.
 
-Above **Run verification** you pick which sections to run: risk, each check,
-**Simpler approach** and the **Flow diagram**. The summary and must-read files
-always run. The diagram is off unless you tick it; the others start ticked,
-and after a run the boxes start where that run's did, so a section added
-since the last run starts unticked. The cost estimate follows what you pick.
+Above **Run verification** you pick which sections to run: risk, each check
+and **Simpler approach**. The summary and must-read files always run. Every
+section starts ticked, and after a run the boxes start where that run's did,
+so a section added since the last run starts unticked. The cost estimate
+follows what you pick.
 If a report is already being written for the PR, starting another joins that
 run, with the sections it was started with.
 A report shows only the sections its run was asked for.
 
-The **Flow diagram** traces the whole flow the change sits in, not just the
-diff. An agent follows the changed code up to what starts the flow (a route, a
-job, a UI action) and down to where it ends, and draws it as a Mermaid
-flowchart with the changed steps highlighted, plus a short explanation.
-Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
-is too long, isn't drawn, and the section says so. The diagram is model-written from the PR's code, so
-it is drawn in Mermaid's strict mode and shown as an image, where it can't run
-anything.
+**Run** beside **Verification** in the nav starts a report with the sections
+the last run had, or every section if there hasn't been one. On a large PR, or
+one the estimate puts over the budget, it opens the tab instead, so you can
+confirm there.
 
 Under each must-read file, the report lists anything in it that already looks
 off or unclear, such as a branch that looks inverted or a value that seems to
@@ -274,6 +273,23 @@ one.
   (**Settings → PR review**), you are asked first, with a rough cost estimate
   against the budget. The budget only warns: once you choose **Run anyway**,
   the run finishes whatever it ends up costing.
+
+### Flow diagram
+
+**Flow diagram** in the PR's nav opens a tab that traces the whole flow the
+change sits in, not just the diff. It is generated only when you ask, with
+**Generate diagram** in the tab or **Run** in the nav, and runs on its own,
+separately from the verification report. An agent (Claude Code, on the PR's
+checkout) follows the changed code up to what starts the flow (a route, a job,
+a UI action) and down to where it ends. It draws the flow as a Mermaid
+flowchart with the changed steps highlighted, plus a short explanation.
+**Cancel** stops a run, and **Re-run** draws it again. A diagram made for an
+older head is still shown, marked as such.
+
+Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
+is too long, isn't drawn, and the tab says so. The diagram is model-written
+from the PR's code, so it is drawn in Mermaid's strict mode and shown as an
+image, where it can't run anything.
 
 ### Mutation testing
 
@@ -481,8 +497,7 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review** and **Verification**, which open those tabs (see
-  [Guided review](#guided-review) and [Verification report](#verification-report)).
+- **Guided review**, which opens that tab (see [Guided review](#guided-review)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
   last reviewed (see [Since last review](#since-last-review)),

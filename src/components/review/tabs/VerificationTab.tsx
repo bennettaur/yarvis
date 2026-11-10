@@ -80,6 +80,20 @@ export function useVerificationRun(
   return progress;
 }
 
+/**
+ * Starts a report on `sections`, then re-reads the PR's latest run so the tab
+ * follows the new one. Shared by the tab and the nav's run button.
+ */
+export async function runVerification(
+  workspaceId: string,
+  prId: string,
+  sections: readonly ReportSection[],
+): Promise<{ existing: boolean; runId: string }> {
+  const started = await startVerification(workspaceId, prId, sections);
+  invalidate(verificationKey(prId));
+  return started;
+}
+
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
   const [workspace, setWorkspace] = useState<WorkspaceForPr | null>(null);
@@ -161,7 +175,6 @@ const SECTION_LABEL: Record<ReportSection, string> = {
   risk: "Risk",
   ...CHECK_LABEL,
   approach: "Simpler approach",
-  flow: "Flow diagram",
 };
 
 /** Which sections the next run writes. The summary and must-read files always come with it. */
@@ -283,12 +296,11 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setActionError(null);
     setJoined(false);
     try {
-      const { runId, existing } = await startVerification(workspaceId, pr.id, sections);
+      const { runId, existing } = await runVerification(workspaceId, pr.id, sections);
       // A run already going was started with its own sections, not these; it
       // is followed as `runningHere` once the latest run is re-read.
       if (existing) setJoined(true);
       else setStarted({ id: runId, sections });
-      invalidate(verificationKey(pr.id));
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -435,8 +447,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             be read, how risky it is, and whether it is complete, tested, simple, fast, well
             commented, observable and well written, and whether there is a simpler way to do what
             the PR does. Checks that pass say so in a line, and the report lists any file the checks
-            didn't read. Pick the sections above; the flow diagram traces the whole flow the change
-            sits in and is off unless you ask for it.
+            didn't read. Pick the sections above.
           </p>
         )}
 

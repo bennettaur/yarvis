@@ -68,15 +68,6 @@ export const coverageKnown = (
   c: VerificationCoverage | UnknownCoverage | undefined,
 ): c is VerificationCoverage => !!c && !("unknown" in c);
 
-/** A Mermaid flowchart of the flow the change sits in. `mermaid` is empty when there was none to draw. */
-export interface VerificationFlow {
-  title: string;
-  explanation: string;
-  mermaid: string;
-  /** The agent's diagram was over the size limit, so it was dropped. */
-  tooLarge?: boolean;
-}
-
 /**
  * Whether the PR as a whole has a materially simpler way to its goal.
  * `alternative` is empty, and there is no location, unless a simpler way was
@@ -111,7 +102,6 @@ export interface VerificationReport {
   observability?: VerificationCheck;
   quality?: VerificationCheck;
   approach?: VerificationApproach;
-  flow?: VerificationFlow;
   /** Absent on a report from before coverage was counted. */
   coverage?: VerificationCoverage | UnknownCoverage;
 }
@@ -152,13 +142,11 @@ export const VERIFICATION_CHECKS = [
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
 /** The sections a reviewer can pick, in report order; mirrors the sidecar's `REPORT_SECTIONS`. */
-export const REPORT_SECTIONS = ["risk", ...VERIFICATION_CHECKS, "approach", "flow"] as const;
+export const REPORT_SECTIONS = ["risk", ...VERIFICATION_CHECKS, "approach"] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** What the sidecar runs when no sections are picked: everything but the diagram. */
-export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow",
-);
+/** What the sidecar runs when no sections are picked: every one. */
+export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS;
 
 /** The sections a run was asked for, from its meta; a run from before sections could be picked ran the default set. */
 export function runSections(meta: Record<string, unknown> | undefined): readonly ReportSection[] {

@@ -4,12 +4,17 @@ import { refNumber } from "../../lib/pr/ref";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
 import { useCommitsSinceLastReview } from "../../lib/reviewWorkspaces/sinceReview";
+import { runSections } from "../../lib/reviewWorkspaces/verification";
+import { Loader } from "../ai-elements/loader";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
 import CommitsList from "./nav/CommitsList";
 import { prColor } from "./prColors";
+import { runFlowDiagram } from "./tabs/DiagramTab";
 import { STATIC_TAB_LABEL } from "./tabs/registry";
+import { useLatestFlowDiagram, useLatestVerification } from "./tabs/reviewData";
 import type { PrColor, StaticTabKind, TabSpec } from "./tabs/types";
+import { runVerification } from "./tabs/VerificationTab";
 
 /** "repo#12": the short name a PR goes by in the nav and before its tab titles. */
 export function prLabel(pr: Pick<ReviewWorkspacePr, "ref">): string {
@@ -73,6 +78,71 @@ function Item({
       <span className="truncate">{label}</span>
       {badge}
     </button>
+  );
+}
+
+/**
+ * A nav item for an agent run's tab, with a small button beside it that
+ * starts the run and opens the tab to follow it.
+ */
+function RunItem({
+  label,
+  active,
+  hasRun,
+  running,
+  canRun,
+  runTitle,
+  onOpen,
+  onRun,
+}: {
+  label: string;
+  active: boolean;
+  /** A run has been made before, so the button re-runs. */
+  hasRun: boolean;
+  running: boolean;
+  canRun: boolean;
+  runTitle: string;
+  onOpen: () => void;
+  /** Starts the run; a rejection is shown under the item. */
+  onRun: () => Promise<void>;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      await onRun();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+  return (
+    <div>
+      <div className="flex items-center">
+        <div className="min-w-0 flex-1">
+          <Item
+            label={label}
+            active={active}
+            onClick={onOpen}
+            badge={running ? <Loader size={12} /> : undefined}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void run()}
+          disabled={!canRun || running || starting}
+          title={runTitle}
+          aria-label={`${hasRun ? "Re-run" : "Run"} ${label.toLowerCase()}`}
+          className="mr-2 shrink-0 rounded border border-zinc-700 px-1.5 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+        >
+          {starting ? "…" : hasRun ? "Re-run" : "Run"}
+        </button>
+      </div>
+      {error && <p className="px-3 text-xs text-red-400">{error}</p>}
+    </div>
   );
 }
 
@@ -141,6 +211,14 @@ function PrGroup({
   const isActive = (kind: string) => active?.prId === pr.id && active.kind === kind;
   const activePath = active?.prId === pr.id && "path" in active ? active.path : null;
   const open = (kind: StaticTabKind) => openTab({ kind, prId: pr.id });
+  const verification = useLatestVerification(workspaceId, pr.id);
+  const diagram = useLatestFlowDiagram(workspaceId, pr.id);
+  const checkedOut = pr.status === "ready" && pr.worktreeStatus === "ready";
+  const verificationRun = verification.data?.run ?? null;
+  const diagramRun = diagram.data?.run ?? null;
+  const size = verification.data?.size;
+  // A large or over-budget PR asks before a run starts, and that question is in the tab.
+  const verificationNeedsAsking = !!size && (size.large || size.overBudget);
   const needsSetupAnswer =
     pr.worktreeStatus === "ready" && pr.setupConsent === null && pr.setupStatus === null;
 
@@ -192,6 +270,44 @@ function PrGroup({
               }
             />
           ))}
+          <RunItem
+            label={STATIC_TAB_LABEL.verification}
+            active={isActive("verification")}
+            hasRun={verificationRun !== null}
+            running={verificationRun?.status === "running"}
+            canRun={checkedOut && !verification.loading}
+            runTitle={
+              !checkedOut
+                ? "Waiting for the checkout"
+                : verificationNeedsAsking
+                  ? "This PR is large or may cost more than the budget: opens the report to confirm"
+                  : "Have agents check the PR does what it says"
+            }
+            onOpen={() => open("verification")}
+            onRun={async () => {
+              if (!verificationNeedsAsking) {
+                await runVerification(workspaceId, pr.id, runSections(verificationRun?.meta));
+              }
+              open("verification");
+            }}
+          />
+          <RunItem
+            label={STATIC_TAB_LABEL.diagram}
+            active={isActive("diagram")}
+            hasRun={diagramRun !== null}
+            running={diagramRun?.status === "running"}
+            canRun={checkedOut && !diagram.loading}
+            runTitle={
+              checkedOut
+                ? "Have an agent draw the flow the change sits in"
+                : "Waiting for the checkout"
+            }
+            onOpen={() => open("diagram")}
+            onRun={async () => {
+              await runFlowDiagram(workspaceId, pr.id);
+              open("diagram");
+            }}
+          />
           {needsSetupAnswer && (
             <button
               type="button"

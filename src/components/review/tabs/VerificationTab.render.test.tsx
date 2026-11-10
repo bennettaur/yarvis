@@ -224,24 +224,19 @@ describe("VerificationTab", () => {
       [...host.querySelectorAll("label")]
         .find((l) => l.textContent === label)
         ?.querySelector("input") as HTMLInputElement;
-    // The diagram is off by default.
-    expect(box("Flow diagram").checked).toBe(false);
     expect(box("Risk").checked).toBe(true);
     expect(box("Simpler approach").checked).toBe(true);
-    box("Flow diagram").click();
-    await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
     box("Risk").click();
     box("Performance").click();
     await waitFor(() => !box("Performance").checked, "two sections to be dropped");
     button(host, "Run verification")?.click();
     await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
-    // One section more and two fewer than the default: $1.40 less $0.10.
-    expect(textOf(host.innerHTML)).toContain("about $1.30");
+    // Two sections fewer than the default: $1.40 less $0.20.
+    expect(textOf(host.innerHTML)).toContain("about $1.20");
     button(host, "Run anyway")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(startedSections[0]).not.toContain("risk");
     expect(startedSections[0]).not.toContain("performance");
-    expect(startedSections[0]).toContain("flow");
     expect(startedSections[0]).toContain("tests");
     expect(startedSections[0]).toContain("approach");
   });

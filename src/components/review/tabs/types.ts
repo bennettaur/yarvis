@@ -10,6 +10,7 @@ export type StaticTabKind =
   | "since-review"
   | "guide"
   | "verification"
+  | "diagram"
   | "mutation";
 
 export type TabSpec =

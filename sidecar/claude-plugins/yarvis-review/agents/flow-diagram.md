@@ -1,6 +1,6 @@
 ---
 name: flow-diagram
-description: Draws a Mermaid flowchart of the whole flow a pull request's change sits in, from what starts it to where it ends, with the changed steps marked. Used by the verification report.
+description: Draws a Mermaid flowchart of the whole flow a pull request's change sits in, from what starts it to where it ends, with the changed steps marked. Runs on its own, as the main thread of a review workspace's flow diagram run.
 tools: Read, Grep, Glob
 model: inherit
 ---

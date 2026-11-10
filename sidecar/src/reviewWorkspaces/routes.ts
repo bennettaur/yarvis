@@ -9,6 +9,7 @@ import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { isValidSymbol } from "./definitions.ts";
+import { latestFlowDiagram, startFlowDiagram } from "./flowDiagram.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -124,6 +125,8 @@ export interface ReviewWorkspaceRouteOptions {
   deps?: (db: Db) => ReviewDeps;
   /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
   verification?: VerificationDeps;
+  /** Replaces the provider, settings and `claude` the flow diagram uses, for tests. */
+  flowDiagram?: VerificationDeps;
   /** Replaces the provider, settings and `claude` the re-review summary uses, for tests. */
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
@@ -512,6 +515,39 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+  // Starts the PR's flow diagram, or answers with the run already going for
+  // it. The run is followed on `/api/agent-runs/:runId/events`.
+  router.post("/:id/prs/:prId/flow-diagram", async (c) => {
+    try {
+      const started = await startFlowDiagram(
+        db(),
+        config,
+        c.req.param("id"),
+        c.req.param("prId"),
+        deps(),
+        options.flowDiagram ?? defaultVerificationDeps(config),
+      );
+      return c.json(started, started.existing ? 200 : 202);
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // The PR's latest flow diagram run (any head), and whether it was made
+  // against the head the PR is at now.
+  router.get("/:id/prs/:prId/flow-diagram", async (c) => {
+    const registry = options.flowDiagram?.run?.registry ?? agentRunRegistry;
+    try {
+      return c.json(
+        await latestFlowDiagram(db(), c.req.param("id"), c.req.param("prId"), (id) =>
+          registry.isLive(id),
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
   // Starts the "What's changed" re-review over what changed since the last
   // review (or `?from=<sha>`), or answers with the run already going over the
   // same range. Followed on `/api/agent-runs/:runId/events`.

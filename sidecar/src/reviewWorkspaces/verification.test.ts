@@ -15,7 +15,6 @@ import {
   emptyAudit,
   estimateReadBytes,
   estimateRunCostUsd,
-  MAX_MERMAID_CHARS,
   MAX_MUST_READ,
   MAX_MUST_READ_FLAGS,
   mustReadCap,
@@ -187,20 +186,14 @@ describe("the report schema", () => {
   });
 
   it("asks for only the picked sections, and drops any it wasn't asked for", () => {
-    const picked = verificationReportSchema({ ...limits, sections: ["tests", "flow"] });
-    const flow = {
-      title: "How uploads retry",
-      explanation: "e",
-      mermaid: "flowchart TD\n a --> b",
-    };
-    const parsed = picked.parse({ ...report(), flow });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
-    expect(parsed.flow).toEqual(flow);
-    const { flow: _f, ...withoutFlow } = { ...report(), flow };
-    expect(picked.safeParse(withoutFlow).success).toBe(false);
+    const picked = verificationReportSchema({ ...limits, sections: ["tests", "risk"] });
+    const parsed = picked.parse(report());
+    expect(Object.keys(parsed).sort()).toEqual(["mustRead", "risk", "summary", "tests"]);
+    const { risk: _r, ...withoutRisk } = report();
+    expect(picked.safeParse(withoutRisk).success).toBe(false);
     // Only the summary and the picked sections are required of the answer.
     const required = JSON.parse(jsonSchemaArg(picked)).required;
-    expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect([...required].sort()).toEqual(["mustRead", "risk", "summary", "tests"]);
   });
 
   it("keeps the simpler way only when the rating says there is one", () => {
@@ -248,39 +241,18 @@ describe("the report schema", () => {
     expect(much.approach).toMatchObject({ alternative: "Reuse it.", line: 2 });
   });
 
-  it("drops a diagram too long to render rather than cutting it", () => {
-    const parsed = verificationReportSchema({ ...limits, sections: ["flow"] }).parse({
-      summary: "s",
-      mustRead: [],
-      flow: { title: "t", explanation: "e", mermaid: "x".repeat(MAX_MERMAID_CHARS + 1) },
-    });
-    expect(parsed.flow).toMatchObject({ mermaid: "", tooLarge: true });
-  });
-
-  it("keeps a diagram right at the limit, trimmed", () => {
-    // With its trailing newline the answer is exactly MAX_MERMAID_CHARS long.
-    const mermaid = `flowchart TD\n${"x".repeat(MAX_MERMAID_CHARS - 14)}`;
-    const parsed = verificationReportSchema({ ...limits, sections: ["flow"] }).parse({
-      summary: "s",
-      mustRead: [],
-      flow: { title: "t", explanation: "e", mermaid: `${mermaid}\n` },
-    });
-    expect(parsed.flow).toEqual({ title: "t", explanation: "e", mermaid });
-  });
-
   it("strips a section it didn't ask for unread, so a malformed one can't fail the run", () => {
-    const picked = verificationReportSchema({ ...limits, sections: ["flow"] });
+    const picked = verificationReportSchema({ ...limits, sections: ["risk"] });
     const parsed = picked.parse({
       summary: "s",
       mustRead: [],
-      flow: { title: "t", explanation: "e", mermaid: "flowchart TD\n a --> b" },
+      risk: report().risk,
       tests: { status: "ok", findings: "not a list" },
-      risk: { level: "extreme" },
     });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(parsed).sort()).toEqual(["mustRead", "risk", "summary"]);
     // Claude Code is shown only the fields to write.
     const sent = JSON.parse(jsonSchemaArg(picked));
-    expect(Object.keys(sent.properties).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(sent.properties).sort()).toEqual(["mustRead", "risk", "summary"]);
   });
 
   it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
@@ -901,16 +873,15 @@ describe("sweeping leftover context folders", () => {
 
 describe("picking sections", () => {
   it("keeps report order and drops repeats, and runs the default set when none are picked", () => {
-    expect(normalizeSections(["flow", "risk", "flow"])).toEqual(["risk", "flow"]);
+    expect(normalizeSections(["tests", "risk", "tests"])).toEqual(["risk", "tests"]);
     expect(normalizeSections([])).toEqual([...DEFAULT_SECTIONS]);
-    expect(normalizeSections()).not.toContain("flow");
   });
 
   it("tells the run which sections to write", () => {
     const material = buildVerificationMaterial(
-      { ...hostileInput(), sections: ["tests", "flow"] },
+      { ...hostileInput(), sections: ["risk", "tests"] },
       "/tmp/ctx",
     );
-    expect(material.prompt).toContain("SECTIONS=tests,flow");
+    expect(material.prompt).toContain("SECTIONS=risk,tests");
   });
 });
