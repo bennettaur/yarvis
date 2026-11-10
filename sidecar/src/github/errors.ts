@@ -39,11 +39,15 @@ export class GitHubError extends Error {
  */
 export async function githubErrorFrom(res: Response, request: string): Promise<GitHubError> {
   const { message, details } = await readGitHubMessage(res);
-  const { reason, explanation } = classify(
-    res.status,
-    res.headers,
-    details.length > 0 ? `${message ?? "Validation Failed"} (${details.join("; ")})` : message,
-  );
+  // "Validation Failed" is GitHub's own wording for a 422, used when the body has none.
+  const summary = message ?? (res.status === 422 ? "Validation Failed" : null);
+  const fullMessage =
+    details.length > 0
+      ? summary
+        ? `${summary} (${details.join("; ")})`
+        : details.join("; ")
+      : message;
+  const { reason, explanation } = classify(res.status, res.headers, fullMessage);
   return new GitHubError(res.status, reason, explanation, request, details);
 }
 
@@ -56,6 +60,14 @@ interface GitHubMessage {
   details: string[];
 }
 
+/**
+ * Details can echo text other people wrote, such as a branch or label name, and
+ * reach logs, the UI and the assistant's tool results, so they are kept short.
+ */
+const MAX_ERROR_DETAILS = 5;
+
+const NO_MESSAGE: GitHubMessage = { message: null, details: [] };
+
 async function readGitHubMessage(res: Response): Promise<GitHubMessage> {
   try {
     const text = await res.text();
@@ -63,25 +75,33 @@ async function readGitHubMessage(res: Response): Promise<GitHubMessage> {
       const body = JSON.parse(text) as { message?: unknown; errors?: unknown };
       return {
         message: typeof body.message === "string" ? body.message : null,
-        details: Array.isArray(body.errors) ? body.errors.flatMap(errorDetail) : [],
+        details: Array.isArray(body.errors)
+          ? body.errors
+              .flatMap(describeErrorEntry)
+              .slice(0, MAX_ERROR_DETAILS)
+              .map((d) => d.slice(0, MAX_PLAIN_MESSAGE_LENGTH))
+          : [],
       };
     } catch {
-      if (/html/i.test(res.headers.get("content-type") ?? ""))
-        return { message: null, details: [] };
+      if (/html/i.test(res.headers.get("content-type") ?? "")) return NO_MESSAGE;
       return { message: text.trim().slice(0, MAX_PLAIN_MESSAGE_LENGTH) || null, details: [] };
     }
   } catch {
-    return { message: null, details: [] };
+    return NO_MESSAGE;
   }
 }
 
-/** GitHub sends an `errors` entry either as a plain string or as `{ field, code, message }`. */
-function errorDetail(entry: unknown): string[] {
+/**
+ * GitHub sends an `errors` entry either as a plain string or as
+ * `{ field, code, message }`. An entry with none of those gives `[]`.
+ */
+function describeErrorEntry(entry: unknown): string[] {
   if (typeof entry === "string") return [entry];
   if (!entry || typeof entry !== "object") return [];
   const { field, code, message } = entry as { field?: unknown; code?: unknown; message?: unknown };
-  if (typeof message === "string")
+  if (typeof message === "string") {
     return [typeof field === "string" ? `${field}: ${message}` : message];
+  }
   if (typeof field === "string") return [typeof code === "string" ? `${field} ${code}` : field];
   return [];
 }

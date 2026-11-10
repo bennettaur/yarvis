@@ -1690,6 +1690,77 @@ describe("github review threads", () => {
     expect(calls[2]!.body.body).toBe("**Lines 9-12**\n\nx");
   });
 
+  it("moves a comment onto the file when GitHub says its line could not be resolved", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [
+            {
+              resource: "PullRequestReviewComment",
+              code: "custom",
+              field: "pull_request_review_thread.line",
+              message: "could not be resolved",
+            },
+          ],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("names a range that crosses from the old file to the new one", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      startLine: 9,
+      startSide: "LEFT",
+      body: "x",
+    });
+    expect(calls[2]!.body.body).toBe("**Line 9 of the old file to line 12**\n\nx");
+  });
+
+  it("throws when GitHub refuses the file-level fallback too", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, {
+      status: 422,
+      body: { message: "Validation Failed" },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("does not fall back when the path could not be resolved", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ field: "pull_request_review_thread.path", message: "could not be resolved" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("falls back only on a 422", async () => {
+    const { calls, gh } = commentReplies({ ...outsideDiff, status: 403 });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(calls).toHaveLength(2);
+  });
+
   it("throws other validation failures with GitHub's reason, without a fallback", async () => {
     const { calls, gh } = commentReplies({
       status: 422,

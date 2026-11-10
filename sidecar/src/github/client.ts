@@ -61,12 +61,18 @@ export type CommentPlacement = "line" | "file";
 /**
  * Whether GitHub refused a review comment because its line isn't part of the
  * diff: an unchanged line outside every hunk, or a line number from the other
- * side of the diff.
+ * side of the diff. GitHub has worded this refusal more than one way, so each
+ * known wording is matched, but only about a line: a path that "could not be
+ * resolved" is not in the PR, and a file comment would fail the same way.
  */
 function isLineOutsideDiff(error: GitHubError): boolean {
   return (
     error.status === 422 &&
-    error.details.some((d) => /must be part of the diff|could not be resolved|diff_hunk/i.test(d))
+    error.details.some(
+      (d) =>
+        /diff_hunk/i.test(d) ||
+        (/line\b/i.test(d) && /must be part of the diff|could not be resolved/i.test(d)),
+    )
   );
 }
 
@@ -74,12 +80,12 @@ function isLineOutsideDiff(error: GitHubError): boolean {
 function describeCommentLines(input: NewComment): string {
   const side = input.side ?? "RIGHT";
   const startSide = input.startSide ?? side;
-  const file = (s: string) => (s === "LEFT" ? " of the old file" : "");
-  if (input.startLine == null) return `**Line ${input.line}${file(side)}**`;
+  const oldFileSuffix = (s: string) => (s === "LEFT" ? " of the old file" : "");
+  if (input.startLine == null) return `**Line ${input.line}${oldFileSuffix(side)}**`;
   if (startSide !== side) {
-    return `**Line ${input.startLine}${file(startSide)} to line ${input.line}${file(side)}**`;
+    return `**Line ${input.startLine}${oldFileSuffix(startSide)} to line ${input.line}${oldFileSuffix(side)}**`;
   }
-  return `**Lines ${input.startLine}-${input.line}${file(side)}**`;
+  return `**Lines ${input.startLine}-${input.line}${oldFileSuffix(side)}**`;
 }
 
 function parseRepo(repositoryUrl?: string, htmlUrl?: string): { owner: string; repo: string } {

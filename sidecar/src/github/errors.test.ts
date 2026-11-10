@@ -96,6 +96,40 @@ describe("githubErrorFrom", () => {
     expect(e.reason).toBe("not_found");
     expect(e.explanation).toContain("private repository");
   });
+
+  it("keeps the reasons GitHub gives for a 422, in either entry shape", async () => {
+    const res = new Response(
+      JSON.stringify({
+        message: "Validation Failed",
+        errors: [
+          "line must be part of the diff",
+          { field: "path", message: "is invalid" },
+          { field: "body", code: "missing" },
+          null,
+          7,
+        ],
+      }),
+      { status: 422 },
+    );
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.details).toEqual([
+      "line must be part of the diff",
+      "path: is invalid",
+      "body missing",
+    ]);
+    expect(e.explanation).toBe(
+      "GitHub returned an error: Validation Failed (line must be part of the diff; path: is invalid; body missing)",
+    );
+  });
+
+  it("keeps 422 reasons short", async () => {
+    const errors = Array.from({ length: 8 }, () => "x".repeat(500));
+    const res = new Response(JSON.stringify({ errors }), { status: 422 });
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.details).toHaveLength(5);
+    expect(e.details.every((d) => d.length === 200)).toBe(true);
+    expect(e.explanation).toStartWith("GitHub returned an error: Validation Failed (");
+  });
 });
 
 describe("GitHubClient rate limiting", () => {

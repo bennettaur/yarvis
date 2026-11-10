@@ -227,7 +227,7 @@ export interface PostedCommentResult {
   ok: boolean;
   /**
    * "file" when GitHub refused the lines because they aren't part of the diff,
-   * and the comment went on the whole file instead. Azure always says nothing.
+   * and the comment went on the whole file instead. Azure never sets it.
    */
   placement?: "line" | "file";
 }
