@@ -166,7 +166,9 @@ with a leading `/head/` (for example `/head/app`).
 [guided review](pr-review.md#take-a-guided-review) as a tab: the tour down
 the side and the current step beside it. Next, Back, a step, a flagged finding
 or a covered file each open that place in a diff tab, and moving past a step
-marks its files viewed.
+marks its files viewed. When the guide has one, the
+[flow diagram](pr-review.md#see-the-flow-diagram) is a folded section below
+the current step.
 
 ### Verification report
 
@@ -309,8 +311,9 @@ is too long, isn't drawn, and the tab says so. The diagram is model-written
 from the PR's code, so it is drawn in Mermaid's strict mode and shown as an
 image, where it can't run anything.
 
-This is a different diagram from the one in the PRs tab, which comes with a
-guided review (see [See the flow diagram](pr-review.md#see-the-flow-diagram)).
+This is a different diagram from the one that comes with a guided review,
+shown in the PRs tab and the **Guided review** tab (see
+[See the flow diagram](pr-review.md#see-the-flow-diagram)).
 
 ### Mutation testing
 

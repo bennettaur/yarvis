@@ -215,9 +215,9 @@ machine. To post the verification report the repo's CI reads, use the
 While it builds a guide, the agent writes down how the code fits together:
 which handler calls which function, which function writes which table. That
 record is kept with the guide and drawn as a **Flow diagram** section above
-**Files**. A review workspace has its own **Flow diagram** tab instead,
-generated on demand (see
-[Flow diagram](review-workspaces.md#flow-diagram)).
+**Files**, and below the current step in a review workspace's guided review
+tab. A review workspace also has its own **Flow diagram** tab, generated on
+demand (see [Flow diagram](review-workspaces.md#flow-diagram)).
 
 1. Generate a guided review, as above. The section appears once the guide is
    ready. It costs nothing extra: the diagram comes from the same agent run.
