@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import type { AgentRunEvent } from "../../lib/agentRuns";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { PrDetail } from "../../lib/pr/types";
@@ -207,6 +207,51 @@ describe("ReviewNav's run buttons", () => {
     await waitFor(() => opened.length > 0, "the diagram tab to open");
     expect(started).toEqual(["pr1"]);
     expect(streamed).toEqual([]);
+  });
+
+  it("re-reads the latest runs once the checkout is ready, and when its head moves", async () => {
+    const reads: string[] = [];
+    stubReviewApi({
+      latestVerification: async () => {
+        reads.push("verification");
+        return { ...none, size: null };
+      },
+      latestFlowDiagram: async () => {
+        reads.push("diagram");
+        return none;
+      },
+    });
+    primeCache(prDetailKey(pr.ref), { title: pr.title, reviewThreads: [] } as unknown as PrDetail);
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(verificationKey(pr.id), { ...none, size: null });
+    primeCache(flowDiagramKey(pr.id), none);
+    let setPr: (next: ReviewWorkspacePr) => void = () => {};
+    function Host() {
+      const [current, set] = useState<ReviewWorkspacePr>({ ...pr, worktreeStatus: "checking-out" });
+      setPr = set;
+      return createElement(ReviewNav, {
+        workspaceId: "ws",
+        prs: [current],
+        active: null,
+        progress: new Map(),
+        openTab: () => {},
+        onSetup: () => {},
+      });
+    }
+    const mounted = await mountForInteraction(createElement(Host));
+    unmount = mounted.unmount;
+    const before = reads.length;
+    setPr({ ...pr });
+    await waitFor(
+      () => reads.slice(before).includes("verification") && reads.slice(before).includes("diagram"),
+      "both re-read once the checkout is ready",
+    );
+    const ready = reads.length;
+    setPr({ ...pr, headSha: "n".repeat(40) });
+    await waitFor(
+      () => reads.slice(ready).includes("verification") && reads.slice(ready).includes("diagram"),
+      "both re-read once the head moves",
+    );
   });
 
   it("can't run before the checkout is ready", async () => {
