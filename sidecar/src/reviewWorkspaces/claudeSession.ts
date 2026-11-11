@@ -22,7 +22,11 @@ import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs
 import { dirname, join } from "node:path";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
-import { hasCoreChannel, spawnReviewClaudeSession } from "../core/controlClient.ts";
+import {
+  hasCoreChannel,
+  killReviewClaudeSession,
+  spawnReviewClaudeSession,
+} from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
 import {
@@ -30,7 +34,7 @@ import {
   getReviewWorkspace,
   ReviewWorkspaceError,
   reviewSessionFolder,
-  withSessionLock,
+  withClaudeSessionLock,
 } from "./service.ts";
 
 /** The most checkouts one session reads; matches `MAX_REVIEW_DIRS` in `pty.rs`. */
@@ -76,6 +80,10 @@ const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspac
  * keeps its path, since Claude Code remembers folder trust by path.
  */
 function freshSessionFolder(config: Config, workspaceId: string): string {
+  const real = reviewSessionFolder(
+    { workspacesRoot: realpathSync(config.workspacesRoot) },
+    workspaceId,
+  );
   const dir = reviewSessionFolder(config, workspaceId);
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   // A link in its place would send the shell somewhere else.
@@ -84,23 +92,22 @@ function freshSessionFolder(config: Config, workspaceId: string): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Checked again before anything is removed: a link swapped in for either
   // folder would point the emptying below at whatever it names.
-  if (
-    realpathSync(dir) !==
-    reviewSessionFolder({ workspacesRoot: realpathSync(config.workspacesRoot) }, workspaceId)
-  ) {
+  if (realpathSync(dir) !== real) {
     throw new Error(`${dir} is not a plain folder; left in place`);
   }
   for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
-  return dir;
+  return real;
 }
 
 export interface ReviewClaudeDeps {
   spawn: typeof spawnReviewClaudeSession;
+  kill: typeof killReviewClaudeSession;
   hasCore: () => boolean;
 }
 
 export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
   spawn: spawnReviewClaudeSession,
+  kill: killReviewClaudeSession,
   hasCore: hasCoreChannel,
 };
 
@@ -124,7 +131,7 @@ export async function startReviewClaudeSession(
       503,
     );
   }
-  return withSessionLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
+  return withClaudeSessionLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
 }
 
 async function startLocked(
@@ -153,24 +160,26 @@ async function startLocked(
   for (const pr of ready) assertWorktreeInWorkspace(config, pr);
 
   const cwd = freshSessionFolder(config, ws.id);
+  // Real paths, as the sandbox compares them, so a linked workspaces folder
+  // doesn't leave the write deny naming a path the sandbox never sees.
+  const checkouts = ready.map((pr) => realpathSync(pr.worktreePath));
   // Paths and ref keys only: titles are the authors' text.
   const context = `The pull requests are checked out at: ${ready
-    .map((pr) => `${pr.refKey} in ${pr.worktreePath}`)
+    .map((pr, i) => `${pr.refKey} in ${checkouts[i]}`)
     .join("; ")}.`;
   try {
     await deps.spawn({
       workspaceId: ws.id,
       cwd,
-      addDirs: ready.map((pr) => pr.worktreePath),
-      settings: JSON.stringify(
-        reviewSessionSettings(
-          cwd,
-          ready.map((pr) => pr.worktreePath),
-        ),
-      ),
+      addDirs: checkouts,
+      settings: JSON.stringify(reviewSessionSettings(cwd, checkouts)),
       context,
     });
   } catch (e) {
+    // A spawn that timed out here may still land in the core, after a removal
+    // queued behind this start has ended the session. Ending it while the lock
+    // is held means nothing is left running.
+    await deps.kill(ws.id).catch(() => {});
     // The core refuses for reasons the user can act on (the agent isn't Claude
     // Code, too many terminals open), so its message is the answer.
     throw new ReviewWorkspaceError(describeError(e), 502);

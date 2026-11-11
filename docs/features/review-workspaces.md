@@ -344,7 +344,8 @@ the same way the verification report is:
   nor from a command it runs, so one PR's code can't rewrite another's. It
   doesn't load skills, which a checkout could ship to pre-approve tools.
 - Commands run in Claude Code's sandbox with no network, and can't read your
-  SSH, cloud or Yarvis credentials. Claude asks you before running a command
+  SSH, cloud or Yarvis credentials. Claude in Chrome is off, so it can't act
+  in your browser. Claude asks you before running a command
   or doing anything else beyond reading the checkouts.
 - It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
   the like) act on the folder a terminal opens in, so the session opens in an

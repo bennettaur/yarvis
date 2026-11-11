@@ -37,7 +37,9 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
     const settle = (next: SessionState) => {
       if (mine === attempt.current) setSession(next);
     };
-    setSession({ kind: "starting" });
+    // A live session stays on screen while it's checked again, so a refresh of
+    // the PR doesn't unmount the terminal mid-conversation.
+    setSession((s) => (s.kind === "live" ? s : { kind: "starting" }));
     try {
       if (!(await ptyExists(sessionId))) await startReviewClaudeSession(workspaceId);
       settle({ kind: "live" });
@@ -55,19 +57,21 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
 
   const restart = async () => {
     // A start still in flight mustn't mark the session live while it's killed.
-    attempt.current++;
+    const mine = ++attempt.current;
     // Unmount the terminal first, so it doesn't sit on the session being killed.
     setSession({ kind: "starting" });
     try {
       await killPty(sessionId);
     } catch (e) {
-      setSession({ kind: "failed", error: formatError(e) });
+      if (mine === attempt.current) setSession({ kind: "failed", error: formatError(e) });
       return;
     }
     await start();
   };
 
-  if (!checkoutReady) {
+  // The PR's checkout going back to checking out (a refresh) leaves a running
+  // session on screen.
+  if (!checkoutReady && session.kind !== "live") {
     return (
       <p className="p-4 text-sm text-zinc-400">Claude Code starts once the PR is checked out.</p>
     );
@@ -100,7 +104,7 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
-        <span className="min-w-0 flex-1 truncate">
+        <span className="min-w-0 flex-1">
           Read-only: Claude Code reads every PR checked out here but can't edit them, and commands
           run sandboxed with no network. Your own settings, hooks and MCP servers aren't loaded. A
           PR added later joins on Restart.

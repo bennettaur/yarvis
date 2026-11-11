@@ -1285,7 +1285,8 @@ fn exec_claude_program(base: &str) -> Option<String> {
 /// The launch line for a review session. `--setting-sources ''` keeps every
 /// settings file out, the checkout's included, whose hooks Claude Code would
 /// run itself; `settings` (JSON the sidecar builds from `lockedDownSettings`)
-/// is the only configuration. No MCP servers, and the
+/// is the only configuration. No MCP servers and no Claude in Chrome, which
+/// acts in the user's signed-in browser outside the sandbox. The
 /// default permission mode, so anything past a plain read asks the user, who is
 /// at the tab to answer. An interactive shell outlives an `exec` that fails
 /// (the program isn't on its `PATH`), so `|| exit` ends it then.
@@ -1304,7 +1305,7 @@ fn review_launch_command(
         context => format!("{REVIEW_SESSION_GUARDRAIL} {context}"),
     };
     format!(
-        "{program} --setting-sources '' --settings {} --strict-mcp-config \
+        "{program} --setting-sources '' --settings {} --strict-mcp-config --no-chrome \
          --permission-mode default{dirs} --append-system-prompt {} || exit",
         shell_single_quote(settings),
         shell_single_quote(&prompt),
@@ -1339,11 +1340,10 @@ fn check_review_spawn(
     }
     // Compared as real paths, so a link can't make two folders look apart.
     let real_folder = |p: &str| {
-        Path::new(p)
-            .is_absolute()
-            .then(|| std::fs::canonicalize(p).ok())
-            .flatten()
-            .filter(|p| p.is_dir())
+        if !Path::new(p).is_absolute() {
+            return None;
+        }
+        std::fs::canonicalize(p).ok().filter(|p| p.is_dir())
     };
     // The shell's own hooks (mise, direnv) act on the folder it opens in and
     // its parents, so it must open in the session's own folder, never a checkout.
@@ -2089,6 +2089,7 @@ mod tests {
         );
         assert!(cmd.contains("--add-dir '/r/a b' --add-dir '/r/c'"));
         assert!(cmd.contains("--strict-mcp-config"));
+        assert!(cmd.contains("--no-chrome"));
         assert!(cmd.contains("--permission-mode default"));
         assert!(!cmd.contains("--permission-mode auto"));
         // The guardrail is one quoted argument, and a failed `exec` ends the shell.
@@ -2163,7 +2164,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_review_spawn_may_start_a_review_session() {
+    fn is_review_session_matches_only_review_ids() {
         assert_eq!(review_session_id("ws1"), "review-claude:ws1");
         // `pty_attach` refuses these rather than putting a plain shell there.
         assert!(is_review_session(&review_session_id("ws1")));

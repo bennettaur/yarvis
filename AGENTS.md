@@ -750,11 +750,13 @@ report there and leaves the fixes to the author.
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
   `lockedDownSettings` plus a deny on the edit tools and `Skill`, and a
   sandbox `denyWrite` on every checkout and on its own folder, passed inline:
-  one PR's code must not be able to rewrite another's, which that PR's
-  unsandboxed setup would run. The core runs the configured agent's program,
+  one PR's code must not be able to rewrite another's, whose setup would then
+  run it unsandboxed. The core runs the configured agent's program,
   minus that command's own flags, under `exec` (so no shell outlives it, and
   `|| exit` covers an `exec` that fails) with `--setting-sources ''`,
-  `--strict-mcp-config`, `--permission-mode default`, a guardrail prompt and
+  `--strict-mcp-config`, `--no-chrome` (Claude in Chrome acts in the user's
+  signed-in browser, outside the sandbox), `--permission-mode default`, a
+  guardrail prompt and
   each ready checkout as an `--add-dir`. `--setting-sources ''` keeps an
   added folder's skills, agents and `CLAUDE.md` out, except that
   `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`, so the
@@ -768,8 +770,11 @@ report there and leaves the fixes to the author.
   checks, on real paths, that the folder is `.review-sessions/<workspaceId>`
   and overlaps no checkout, and refuses control characters in what it types.
   Removing a PR or archiving the workspace ends the session first, through
-  `claude.killReview`, under a per-workspace lock (`withSessionLock`) that a
-  start also takes, so no start lands between the kill and the removal.
+  `claude.killReview`, under a per-workspace lock (`withClaudeSessionLock`)
+  that a start also takes, so no start lands between the kill and the removal.
+  The lock is per sidecar: a second app instance sharing the database can
+  start a session the first one's removal doesn't end. That is accepted, since
+  the session is read-only and only loses its folders.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

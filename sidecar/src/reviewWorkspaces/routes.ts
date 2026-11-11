@@ -133,7 +133,7 @@ export interface ReviewWorkspaceRouteOptions {
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
-  /** Replaces the core control channel the PR's Claude Code session starts through, for tests. */
+  /** Replaces the core control channel the workspace's Ask Claude session starts through, for tests. */
   claudeSession?: ReviewClaudeDeps;
 }
 
