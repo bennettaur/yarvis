@@ -176,6 +176,37 @@ describe("DiagramTab", () => {
     expect(button(host, "Re-run")).toBeUndefined();
   });
 
+  it("says a run was cancelled, and keeps the last diagram under it", async () => {
+    const host = await mount(
+      latest({
+        run: { id: "r2", status: "cancelled", live: false } as never,
+        current: true,
+        lastSucceeded: {
+          run: { id: "r1", status: "succeeded", result: diagram } as never,
+          headSha: "g".repeat(40),
+          current: false,
+        },
+      }),
+    );
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("The last run was cancelled. Below is the last diagram, from ggggggg");
+    expect(text).not.toContain("failed");
+    expect(text).toContain("How an order is saved");
+  });
+
+  it("can't generate before the checkout is ready", async () => {
+    const original = ctx.pr;
+    ctx.pr = { ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr;
+    try {
+      const host = await mount(latest({}));
+      const generate = button(host, "Generate diagram");
+      expect(generate?.disabled).toBe(true);
+      expect(generate?.title).toBe("Waiting for the checkout");
+    } finally {
+      ctx.pr = original;
+    }
+  });
+
   it("shows a start that failed", async () => {
     stubReviewApi({
       startFlowDiagram: async () => {
