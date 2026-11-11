@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -1488,6 +1489,10 @@ describe("claude session", () => {
   let ended: string[];
   let endGate: ReturnType<typeof gate> | null;
   let endError: Error | null;
+  let killed: string[];
+  let spawnGate: ReturnType<typeof gate> | null;
+  /** The order spawns finish and sessions are ended in, across both stubs. */
+  let events: string[];
   const sessionApp = new Hono().route(
     "/rw",
     createReviewWorkspaceRoutes(config, {
@@ -1495,6 +1500,7 @@ describe("claude session", () => {
         ...deps(),
         endClaudeSession: async (id) => {
           ended.push(id);
+          events.push("end");
           await endGate?.promise;
           if (endError) throw endError;
         },
@@ -1503,6 +1509,11 @@ describe("claude session", () => {
         spawn: async (input) => {
           if (spawnError) throw spawnError;
           spawned.push(input);
+          await spawnGate?.promise;
+          events.push("spawn");
+        },
+        kill: async (id) => {
+          killed.push(id);
         },
         hasCore: () => hasCore,
       },
@@ -1516,6 +1527,9 @@ describe("claude session", () => {
     ended = [];
     endGate = null;
     endError = null;
+    killed = [];
+    spawnGate = null;
+    events = [];
   });
 
   const sessionFolder = (wsId: string) => join(config.workspacesRoot, ".review-sessions", wsId);
@@ -1534,9 +1548,11 @@ describe("claude session", () => {
     expect(spawned).toHaveLength(1);
     const [spawn] = spawned as [Spawn];
     expect(spawn.workspaceId).toBe(wsId);
-    expect(spawn.cwd).toBe(join(config.workspacesRoot, ".review-sessions", wsId));
-    expect(spawn.addDirs).toEqual([worktreePath]);
-    expect(spawn.context).toContain(`gh:o/r/1 in ${worktreePath}`);
+    // Real paths, as the sandbox compares them: the temp folder is a link on macOS.
+    const realCheckout = realpathSync(worktreePath);
+    expect(spawn.cwd).toBe(join(realpathSync(config.workspacesRoot), ".review-sessions", wsId));
+    expect(spawn.addDirs).toEqual([realCheckout]);
+    expect(spawn.context).toContain(`gh:o/r/1 in ${realCheckout}`);
     const settings = JSON.parse(spawn.settings);
     expect(settings.disableAllHooks).toBe(true);
     expect(settings.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true });
@@ -1552,7 +1568,7 @@ describe("claude session", () => {
     );
     // One PR's code mustn't be able to change another's checkout, nor leave
     // anything in the folder the next session's shell opens in.
-    expect(settings.sandbox.filesystem.denyWrite).toEqual([spawn.cwd, worktreePath]);
+    expect(settings.sandbox.filesystem.denyWrite).toEqual([spawn.cwd, realCheckout]);
     expect(settings.sandbox.filesystem.denyRead.length).toBeGreaterThan(0);
   });
 
@@ -1563,6 +1579,7 @@ describe("claude session", () => {
     // What a past session's sandboxed command could have left for the next shell.
     writeFileSync(join(cwd, "mise.toml"), "[env]\n");
     mkdirSync(join(cwd, ".bin"));
+    writeFileSync(join(cwd, ".bin", "claude"), "#!/bin/sh\n");
     await start(wsId);
     expect((spawned[1] as Spawn).cwd).toBe(cwd);
     expect(readdirSync(cwd)).toEqual([]);
@@ -1596,28 +1613,49 @@ describe("claude session", () => {
 
     expect((await start(wsId)).status).toBe(200);
     const [spawn] = spawned as [Spawn];
-    const ready = rows.filter((r) => r.refKey !== "gh:o/r/3").map((r) => r.worktreePath);
+    const ready = rows
+      .filter((r) => r.refKey !== "gh:o/r/3")
+      .map((r) => realpathSync(r.worktreePath));
     expect([...spawn.addDirs].sort()).toEqual([...ready].sort());
     expect(spawn.context).toContain("gh:o/r/1");
     expect(spawn.context).toContain("gh:o/r/2");
     expect(spawn.context).not.toContain("gh:o/r/3");
     const settings = JSON.parse(spawn.settings);
     expect([...settings.sandbox.filesystem.denyWrite].sort()).toEqual([spawn.cwd, ...ready].sort());
+
+    // A PR that failed, or whose checkout has no head yet, is left out too.
+    const failed = rows.find((r) => r.refKey === "gh:o/r/2");
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ status: "error" })
+      .where(eq(reviewWorkspacePrs.id, failed?.id as string));
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreeStatus: "ready", headSha: null })
+      .where(eq(reviewWorkspacePrs.id, pending?.id as string));
+    expect((await start(wsId)).status).toBe(200);
+    expect((spawned[1] as Spawn).addDirs).toHaveLength(1);
+    expect((spawned[1] as Spawn).context).toContain("gh:o/r/1");
   });
 
   it("refuses more PRs than one session reads", async () => {
     const { wsId, prId } = await readyWorkspace();
     const [row] = await db.select().from(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, prId));
     if (!row) throw new Error("no row");
-    await db.insert(reviewWorkspacePrs).values(
-      Array.from({ length: 20 }, (_, i) => ({
+    const copies = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
         ...row,
         id: crypto.randomUUID(),
-        refKey: `gh:o/r/${100 + i}`,
-        ref: { ...ref, number: 100 + i },
-        position: 100 + i,
-      })),
-    );
+        refKey: `gh:o/r/${from + i}`,
+        ref: { ...ref, number: from + i },
+        position: from + i,
+      }));
+    // Twenty is the most one session reads.
+    await db.insert(reviewWorkspacePrs).values(copies(100, 19));
+    expect((await start(wsId)).status).toBe(200);
+    expect((spawned[0] as Spawn).addDirs).toHaveLength(20);
+    spawned = [];
+    await db.insert(reviewWorkspacePrs).values(copies(200, 1));
     const res = await start(wsId);
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toContain("at most 20");
@@ -1625,6 +1663,7 @@ describe("claude session", () => {
   });
 
   it("refuses a workspace that isn't active, or a checkout outside it", async () => {
+    expect((await start(crypto.randomUUID())).status).toBe(404);
     const { wsId, prId } = await readyWorkspace();
     await setWorkspaceStatus(wsId, "archiving");
     expect((await start(wsId)).status).toBe(409);
@@ -1646,7 +1685,7 @@ describe("claude session", () => {
 
     expect((await start(wsId)).status).toBe(200);
     expect(lstatSync(sessionFolder(wsId)).isDirectory()).toBe(true);
-    expect((spawned[0] as Spawn).cwd).toBe(sessionFolder(wsId));
+    expect((spawned[0] as Spawn).cwd).toBe(realpathSync(sessionFolder(wsId)));
     expect(existsSync(join(target, "keep"))).toBe(true);
   });
 
@@ -1657,7 +1696,7 @@ describe("claude session", () => {
     writeFileSync(join(target, wsId, "keep"), "");
     symlinkSync(target, join(config.workspacesRoot, ".review-sessions"));
 
-    expect((await start(wsId)).ok).toBe(false);
+    expect((await start(wsId)).status).toBe(500);
     expect(spawned).toHaveLength(0);
     expect(existsSync(join(target, wsId, "keep"))).toBe(true);
   });
@@ -1725,6 +1764,7 @@ describe("claude session", () => {
     expect((await sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" })).ok).toBe(
       true,
     );
+    expect(ended).toEqual([wsId]);
     expect(existsSync(worktreePath)).toBe(false);
     expect(
       await db.select().from(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, prId)),
@@ -1741,6 +1781,28 @@ describe("claude session", () => {
         .where(eq(reviewWorkspaces.id, other.wsId));
       return row?.status === "archived";
     }, "the archive to finish");
+    expect(ended).toEqual([wsId, other.wsId]);
+  });
+
+  it("ends a session whose start was under way when the workspace was archived", async () => {
+    const { wsId } = await readyWorkspace();
+    spawnGate = gate();
+    const starting = start(wsId);
+    await until(async () => spawned.length === 1, "the spawn to be asked for");
+    const archiving = sessionApp.request(`/rw/${wsId}/archive`, { method: "POST" });
+    // Long enough for an archive that didn't wait for the start to claim the
+    // workspace and end a session that doesn't exist yet.
+    for (let i = 0; i < 4; i++) {
+      await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId));
+    }
+    spawnGate.open();
+    expect((await starting).status).toBe(200);
+    expect((await archiving).ok).toBe(true);
+    expect(events).toEqual(["spawn", "end"]);
+    await until(async () => {
+      const [row] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId));
+      return row?.status === "archived";
+    }, "the archive to finish");
   });
 
   it("passes on why the core refused", async () => {
@@ -1749,5 +1811,7 @@ describe("claude session", () => {
     const res = await start(wsId);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("not Claude Code");
+    // A spawn that timed out could still land in the core, so it's ended.
+    expect(killed).toEqual([wsId]);
   });
 });

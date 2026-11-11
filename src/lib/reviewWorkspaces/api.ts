@@ -190,7 +190,7 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
   );
 }
 
-/** The PTY id the core gives a workspace's session; matches `REVIEW_CLAUDE_PREFIX` in `pty.rs`. */
+/** The PTY id the core gives a workspace's session; matches `review_session_id` in `pty.rs`. */
 export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
 
 /**

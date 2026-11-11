@@ -215,6 +215,19 @@ describe("ClaudeTab", () => {
     expect(textOf(m.host.innerHTML)).toContain("Read-only");
   });
 
+  it("keeps the terminal while the PR's checkout is refreshed", async () => {
+    const m = await mountSwappable(pr);
+    mounted = m;
+    await waitFor(() => attached.length === 1, "the terminal to attach");
+    await act(async () => m.swap({ ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr));
+    expect(textOf(m.host.innerHTML)).toContain("Read-only");
+    await act(async () => m.swap(pr));
+    expect(textOf(m.host.innerHTML)).toContain("Read-only");
+    // Still the first terminal: it was never unmounted and attached again.
+    expect(attached).toHaveLength(1);
+    expect(starts).toEqual(["ws"]);
+  });
+
   it("waits for the checkout before starting anything", async () => {
     const pending = { ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr;
     const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pending) }));

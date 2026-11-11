@@ -252,14 +252,14 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
  * this, keyed by workspace, so a start can't land between a removal ending the
  * session and deleting the checkout.
  */
-export const withSessionLock = createKeyedLock();
+export const withClaudeSessionLock = createKeyedLock();
 
 /**
  * Ends the workspace's Ask Claude session before a checkout it reads goes. A
  * failure is logged, not thrown: the removal the user asked for still happens,
  * and the session just loses the folder.
  */
-async function endClaudeSession(deps: ReviewDeps, workspaceId: string): Promise<void> {
+async function endClaudeSessionQuietly(deps: ReviewDeps, workspaceId: string): Promise<void> {
   try {
     await deps.endClaudeSession?.(workspaceId);
   } catch (e) {
@@ -876,10 +876,13 @@ export async function removeReviewPr(
   if (isRunning(pr.id)) {
     throw new ReviewWorkspaceError("this pull request is still being updated", 409);
   }
-  await withSessionLock(workspaceId, async () => {
-    await endClaudeSession(deps, workspaceId);
+  // Both can refuse, and neither touches the checkout a session reads, so they
+  // run before the session is ended and outside its lock.
+  assertWorktreeInWorkspace(config, pr);
+  await releaseReviewedCommits(db, config, pr, deps);
+  await withClaudeSessionLock(workspaceId, async () => {
+    await endClaudeSessionQuietly(deps, workspaceId);
     await removePrWorktree(config, pr, deps);
-    await releaseReviewedCommits(db, config, pr, deps);
     await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
   });
   forgetRuns(pr.id);
@@ -900,13 +903,13 @@ export async function archiveReviewWorkspace(
   // Conditional, so of two archives racing only one gets the row back and
   // goes on to remove anything. Under the session lock, so a start either ends
   // before the claim (and is ended here) or sees the workspace archiving.
-  const claimed = await withSessionLock(id, async () => {
+  const claimed = await withClaudeSessionLock(id, async () => {
     const [row] = await db
       .update(reviewWorkspaces)
       .set({ status: "archiving", updatedAt: new Date() })
       .where(and(eq(reviewWorkspaces.id, id), eq(reviewWorkspaces.status, "active")))
       .returning();
-    if (row) await endClaudeSession(deps, id);
+    if (row) await endClaudeSessionQuietly(deps, id);
     return row;
   });
   if (!claimed) {
