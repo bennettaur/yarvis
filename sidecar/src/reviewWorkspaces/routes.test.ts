@@ -29,7 +29,13 @@ import { patchIndex, readingGroups, writePatchFiles } from "./patchFiles.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
 import { reviewSinceReview, reviewSinceSources } from "./reviewMarks.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
-import { type PrMeta, type ReviewDeps, reviewDiffFacts, reviewPatchSources } from "./service.ts";
+import {
+  type PrMeta,
+  type ReviewDeps,
+  reviewClonePath,
+  reviewDiffFacts,
+  reviewPatchSources,
+} from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
 import type { VerificationSize } from "./verification.ts";
 
@@ -1505,9 +1511,14 @@ describe("claude session", () => {
         "Read(~/.ssh)",
       ]),
     );
-    // One PR's code mustn't be able to change another's checkout, nor leave
-    // anything in the folder the next session's shell opens in.
-    expect(settings.sandbox.filesystem.denyWrite).toEqual([spawn.cwd, realCheckout]);
+    // One PR's code mustn't be able to change another's checkout, nor the
+    // clone's hooks and config, nor leave anything in the folder the next
+    // session's shell opens in.
+    expect(settings.sandbox.filesystem.denyWrite).toEqual([
+      spawn.cwd,
+      realCheckout,
+      realpathSync(reviewClonePath(config, ref)),
+    ]);
     expect(settings.sandbox.filesystem.denyRead.length).toBeGreaterThan(0);
   });
 
@@ -1561,7 +1572,10 @@ describe("claude session", () => {
     expect(spawn.context).toContain("gh:o/r/2");
     expect(spawn.context).not.toContain("gh:o/r/3");
     const settings = JSON.parse(spawn.settings);
-    expect([...settings.sandbox.filesystem.denyWrite].sort()).toEqual([spawn.cwd, ...ready].sort());
+    // The three PRs share one clone, named once.
+    expect([...settings.sandbox.filesystem.denyWrite].sort()).toEqual(
+      [spawn.cwd, ...ready, realpathSync(reviewClonePath(config, ref))].sort(),
+    );
 
     // A PR that failed, or whose checkout has no head yet, is left out too.
     const failed = rows.find((r) => r.refKey === "gh:o/r/2");
@@ -1685,10 +1699,13 @@ describe("claude session", () => {
   });
 
   it("doesn't start a session while a PR's removal is under way", async () => {
-    const { wsId, prId } = await readyWorkspace();
+    const { wsId, prId, worktreePath } = await readyWorkspace();
     endGate = gate();
     const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
     await until(async () => ended.length === 1, "the removal to end the session");
+    // The session is ended before its checkout goes.
+    expect(existsSync(worktreePath)).toBe(true);
+    expect((await prRow(prId)).id).toBe(prId);
     // Without the lock this start would read the PR, not yet deleted, and
     // spawn a session over the checkout being removed.
     const starting = start(wsId);
@@ -1696,6 +1713,40 @@ describe("claude session", () => {
     expect((await removal).ok).toBe(true);
     expect((await starting).status).toBe(409);
     expect(spawned).toHaveLength(0);
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  it("ends the session before an archive removes the checkouts", async () => {
+    const { wsId, worktreePath } = await readyWorkspace();
+    endGate = gate();
+    const archiving = sessionApp.request(`/rw/${wsId}/archive`, { method: "POST" });
+    await until(async () => ended.length === 1, "the archive to end the session");
+    const [claimed] = await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId));
+    expect(claimed?.status).toBe("archiving");
+    expect(existsSync(worktreePath)).toBe(true);
+    endGate.open();
+    expect((await archiving).ok).toBe(true);
+    await until(async () => !existsSync(worktreePath), "the archive to remove the checkout");
+  });
+
+  it("doesn't remove a PR whose refresh began while the removal waited", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    spawnGate = gate();
+    const starting = start(wsId);
+    await until(async () => spawned.length === 1, "the spawn to be asked for");
+    // Queued behind the start, which holds the session lock.
+    const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
+    loadGate = gate();
+    expect(
+      (await sessionApp.request(`/rw/${wsId}/prs/${prId}/refresh`, { method: "POST" })).status,
+    ).toBe(202);
+    spawnGate.open();
+    expect((await starting).status).toBe(200);
+    expect((await removal).status).toBe(409);
+    expect(ended).toEqual([]);
+    expect(existsSync(worktreePath)).toBe(true);
+    loadGate.open();
+    await progress(wsId, prId);
   });
 
   it("still removes a PR and archives when the session can't be ended", async () => {

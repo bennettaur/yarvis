@@ -33,6 +33,7 @@ import {
   assertWorktreeInWorkspace,
   getReviewWorkspace,
   ReviewWorkspaceError,
+  reviewClonePath,
   reviewSessionFolder,
   withClaudeSessionLock,
 } from "./service.ts";
@@ -51,11 +52,14 @@ const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
  * The settings a review session runs with: the review runs' lockdown, minus
  * edits and skills. Sandboxed commands also can't write to any checkout, so
  * one PR's code can't change another's, which a later setup run would execute,
- * nor to the session's own folder, which the next session's shell opens in.
+ * nor to the clones the checkouts share a `.git` with, whose hooks and config
+ * the sidecar's own git commands would run, nor to the session's own folder,
+ * which the next session's shell opens in.
  */
 function reviewSessionSettings(
   sessionFolder: string,
   checkouts: string[],
+  clones: string[],
 ): Record<string, unknown> {
   const settings = lockedDownSettings();
   const permissions = settings.permissions as { deny: string[] };
@@ -65,7 +69,7 @@ function reviewSessionSettings(
     permissions: { ...permissions, deny: [...permissions.deny, ...DENIED_TOOLS] },
     sandbox: {
       ...sandbox,
-      filesystem: { ...sandbox.filesystem, denyWrite: [sessionFolder, ...checkouts] },
+      filesystem: { ...sandbox.filesystem, denyWrite: [sessionFolder, ...checkouts, ...clones] },
     },
   };
 }
@@ -163,6 +167,7 @@ async function startLocked(
   // Real paths, as the sandbox compares them, so a linked workspaces folder
   // doesn't leave the write deny naming a path the sandbox never sees.
   const checkouts = ready.map((pr) => realpathSync(pr.worktreePath));
+  const clones = [...new Set(ready.map((pr) => realpathSync(reviewClonePath(config, pr.ref))))];
   // Paths and ref keys only: titles are the authors' text.
   const context = `The pull requests are checked out at: ${ready
     .map((pr, i) => `${pr.refKey} in ${checkouts[i]}`)
@@ -172,7 +177,7 @@ async function startLocked(
       workspaceId: ws.id,
       cwd,
       addDirs: checkouts,
-      settings: JSON.stringify(reviewSessionSettings(cwd, checkouts)),
+      settings: JSON.stringify(reviewSessionSettings(cwd, checkouts, clones)),
       context,
     });
   } catch (e) {

@@ -784,9 +784,10 @@ report there and leaves the fixes to the author.
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
   `lockedDownSettings` plus a deny on the edit tools and `Skill`, and a
-  sandbox `denyWrite` on every checkout and on its own folder, passed inline:
-  one PR's code must not be able to rewrite another's, whose setup would then
-  run it unsandboxed. The core runs the configured agent's program,
+  sandbox `denyWrite` on every checkout, on the clones they share a `.git`
+  with and on its own folder, passed inline: one PR's code must not be able to
+  rewrite another's, whose setup would then run it unsandboxed, nor plant a
+  hook or config in a clone, which the sidecar's git would run. The core runs the configured agent's program,
   minus that command's own flags, under `exec` (so no shell outlives it, and
   `|| exit` covers an `exec` that fails) with `--setting-sources ''`,
   `--strict-mcp-config`, `--no-chrome` (Claude in Chrome acts in the user's
@@ -801,12 +802,14 @@ report there and leaves the fixes to the author.
   it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`, which the
   session can't write to and which is emptied before each start. Its PTY id
   (`review-claude:`) is not attention addressable, so it gets no sidecar
-  tokens, and `pty_attach` refuses to put a plain shell under it. The core
+  tokens, and `spawn_into_state` refuses to put a plain shell under it. The core
   checks, on real paths, that the folder is `.review-sessions/<workspaceId>`
   and overlaps no checkout, and refuses control characters in what it types.
   Removing a PR or archiving the workspace ends the session first, through
   `claude.killReview`, under a per-workspace lock (`withClaudeSessionLock`)
   that a start also takes, so no start lands between the kill and the removal.
+  A removal reads the PR and checks it isn't being updated under that lock,
+  since the lock can wait behind a start.
   The lock is per sidecar: a second app instance sharing the database can
   start a session the first one's removal doesn't end. That is accepted, since
   the session is read-only and only loses its folders.
