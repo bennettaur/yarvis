@@ -25,6 +25,7 @@ import {
   issueLinks,
   repos,
   tasks,
+  workspaceExtraWorktrees,
   workspaceRepoPr,
   workspaceRepos,
   workspaces,
@@ -607,6 +608,52 @@ describe("workspace worktrees", () => {
       expect(branches).not.toContain("stack/landed");
       expect(branches).toContain("stack/working");
       expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
+
+    it("keeps a landed branch on archive that another workspace stacks on", async () => {
+      const { workspaceId, wr, clone, runner } = await withRealClone();
+      await addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/shared" }, runner);
+      const other = await createWorkspace(db, config, {
+        name: `stacked ${++workspaceCount}`,
+        repoIds: [wr.repoId],
+      });
+      // A different case, which is the same ref file on macOS.
+      await db
+        .update(workspaceRepos)
+        .set({ baseBranch: "Stack/Shared" })
+        .where(eq(workspaceRepos.workspaceId, other.id));
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result).toMatchObject({ status: "archived", errors: [] });
+      expect(await listLocalBranches(runner, clone)).toContain("stack/shared");
+    });
+
+    it("treats another workspace's added branch as in use", async () => {
+      const { workspaceId, wr, clone, runner } = await withRealClone();
+      await addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/mine" }, runner);
+      const other = await createWorkspace(db, config, {
+        name: `sibling ${++workspaceCount}`,
+        repoIds: [wr.repoId],
+      });
+      const [otherWr] = await db
+        .select()
+        .from(workspaceRepos)
+        .where(eq(workspaceRepos.workspaceId, other.id));
+      // As if the sibling had added these, and its own stack/theirs folder was since deleted.
+      for (const branch of ["stack/mine", "stack/theirs"]) {
+        await db.insert(workspaceExtraWorktrees).values({
+          workspaceRepoId: otherWr!.id,
+          branch,
+          worktreePath: join(other.rootPath, `widget-${branch.replace("/", "-")}`),
+        });
+      }
+
+      await expect(
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/theirs" }, runner),
+      ).rejects.toThrow("collides with the existing branch stack/theirs");
+      await archiveWorkspace(db, workspaceId, {}, runner);
+      expect(await listLocalBranches(runner, clone)).toContain("stack/mine");
     });
   });
 

@@ -728,8 +728,8 @@ The archive also removes any other worktree of the workspace's repos that sits
 inside the workspace folder, such as one an agent added for another branch of a
 stack. These follow the same rule: uncommitted work stops the archive until you
 force it. Once they're gone, each branch an agent made with `add_worktree` is
-deleted if the base branch already contains it, unless another workspace uses
-it. Other branches, such as a squash-merged one, are kept.
+deleted if the base branch already contains it, unless another workspace works
+on or stacks on it. Other branches, such as a squash-merged one, are kept.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
 landed: the base branch already contains it, or its PR merged and the remote

@@ -876,17 +876,31 @@ async function pruneExtraWorktrees(
 }
 
 /**
- * The branches active workspaces on this repo work on or stack on, plus the
- * repo's default branch. They can be on the remote alone, so the clone's own
- * branch list misses them.
+ * The branches active workspaces on this repo work on or stack on, the
+ * branches other active workspaces added with `add_worktree`, and the repo's
+ * default branch. They can be on the remote alone, or gone from the clone
+ * while their row stays, so the clone's own branch list misses them.
  */
 async function branchesInUse(db: Db, workspaceRepo: WorkspaceRepoDetail): Promise<string[]> {
+  const active = and(
+    eq(workspaceRepos.repoId, workspaceRepo.repoId),
+    ne(workspaces.status, "archived"),
+  );
   const rows = await db
     .select({ branch: workspaceRepos.branch, baseBranch: workspaceRepos.baseBranch })
     .from(workspaceRepos)
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(and(eq(workspaceRepos.repoId, workspaceRepo.repoId), ne(workspaces.status, "archived")));
-  const names = rows.flatMap((row) => [row.branch, row.baseBranch]);
+    .where(active);
+  const extraRows = await db
+    .select({ branch: workspaceExtraWorktrees.branch })
+    .from(workspaceExtraWorktrees)
+    .innerJoin(workspaceRepos, eq(workspaceExtraWorktrees.workspaceRepoId, workspaceRepos.id))
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .where(and(active, ne(workspaceRepos.id, workspaceRepo.id)));
+  const names = [
+    ...rows.flatMap((row) => [row.branch, row.baseBranch]),
+    ...extraRows.map((row) => row.branch),
+  ];
   if (workspaceRepo.repo.defaultBranch) names.push(workspaceRepo.repo.defaultBranch);
   return names;
 }
@@ -2566,10 +2580,10 @@ async function deleteLandedExtraBranches(
     .from(workspaceExtraWorktrees)
     .where(eq(workspaceExtraWorktrees.workspaceRepoId, wr.id));
   const inUse = new Set((await branchesInUse(db, wr)).map((b) => b.toLowerCase()));
+  const clone = wr.repo.primaryClonePath;
   for (const row of rows) {
     if (inUse.has(row.branch.toLowerCase())) continue;
     try {
-      const clone = wr.repo.primaryClonePath;
       if (await branchLanded(runner, clone, row.branch, wr.baseBranch, false)) {
         await deleteBranch(runner, clone, row.branch);
       }
