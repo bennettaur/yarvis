@@ -8,7 +8,7 @@ import AttentionPanel from "./components/attention/AttentionPanel";
 import PermissionRequestModal from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
 import { type OpenedBy, useAnswerDialogs } from "./components/attention/useAnswerDialogs";
-import ChatPanel from "./components/ChatPanel";
+import ChatTabs from "./components/ChatTabs";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
@@ -63,7 +63,6 @@ import { OmniChatOverlayProvider } from "./lib/omniChatOverlay";
 import { shouldAutoOpenSetupGuide } from "./lib/onboarding";
 import type { PrSummary } from "./lib/pr/types";
 import type { SettingsTabKey } from "./lib/settingsTabs";
-import { CHAT_TAB_SESSION_KEY } from "./lib/useChatThread";
 import { useTelegramSecurityAlerts } from "./lib/useTelegramSecurityAlerts";
 import { getWip, type WipItem } from "./lib/wip";
 
@@ -434,10 +433,8 @@ export default function App() {
         {/* Chat stays mounted while another tab is showing, so a turn keeps
             streaming instead of being cancelled by the unmount. */}
         <div className={tab === "chat" ? "h-full" : "hidden"}>
-          <ChatPanel
+          <ChatTabs
             active={tab === "chat"}
-            sessionStorageKey={CHAT_TAB_SESSION_KEY}
-            focusOnShow
             requestedSessionId={requestedChatSession}
             onRequestConsumed={clearRequestedChatSession}
             requestedArtifactId={requestedArtifact}

@@ -4,7 +4,7 @@ import type { PendingApproval } from "../lib/chat";
 import { Button } from "./ui/button";
 
 /** How long a newly promoted call is immune to the keyboard shortcuts (ms). */
-const ARMING_MS = 400;
+export const ARMING_MS = 400;
 
 /**
  * The approve/deny prompt for pending MCP tool calls: one bar above the thread

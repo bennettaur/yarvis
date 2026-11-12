@@ -172,8 +172,8 @@ back to something at a useful time:
 
 When a task runs and has something for you, it posts in the chat it came from
 and rings the attention bell. The item's title names the task, and its text is
-the start of what the assistant found. Click it to open that chat, which also
-reloads it if it was already open. A task the [heads-down](heads-down.md) loop
+the start of what the assistant found. Click it to open that chat in its tab on the
+Chat tab, or in a new tab, reloading it if it was already open. A task the [heads-down](heads-down.md) loop
 scheduled opens the **Heads down** page instead, since its passes run in chats
 you don't see.
 
@@ -254,8 +254,8 @@ reply. Click the link and the artifact opens beside the conversation, in the
 Chat tab or the Omni Chat overlay, so you can read it while you keep talking.
 Drag the divider to resize it; ✕ closes it. The pane follows the artifact as it
 changes, so you can watch the assistant write it. A link somewhere other than a
-chat, or **Open beside chat** in Memory → Artifacts, opens it beside the Chat
-tab's conversation. An untrusted artifact's links open where they say rather
+chat, or **Open beside chat** in Memory → Artifacts, opens it beside the
+current chat on the Chat tab. An untrusted artifact's links open where they say rather
 than inside Yarvis.
 
 Ask for a diagram ("sketch how the checkout services talk to each other") and
