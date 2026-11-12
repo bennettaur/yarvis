@@ -1281,6 +1281,10 @@ ask, say what the command does and why the user's question needs it.";
 /// assignments so it wins over theirs and the shell's: set to 1, Claude Code
 /// loads each checkout's CLAUDE.md as instructions, even with
 /// `--setting-sources ''`.
+///
+/// `env -u` drops credentials the login shell's rc files may export, so the
+/// session's commands can't read them, and Yarvis's own session tokens, which
+/// a session with no hooks or MCP servers never uses.
 fn exec_claude_program(base: &str) -> Option<String> {
     if !runs_claude_code(base) {
         return None;
@@ -1291,14 +1295,35 @@ fn exec_claude_program(base: &str) -> Option<String> {
             words.extend([
                 "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0",
                 "exec",
-                word,
+                "env",
             ]);
+            for var in REVIEW_SESSION_UNSET_ENV {
+                words.extend(["-u", var]);
+            }
+            words.push(word);
             break;
         }
         words.push(word);
     }
     Some(words.join(" "))
 }
+
+/// Environment variables a review session starts without; see `exec_claude_program`.
+const REVIEW_SESSION_UNSET_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "NPM_TOKEN",
+    "YARVIS_ATTENTION_TOKEN",
+    "YARVIS_SESSION_TOKEN",
+    "YARVIS_MCP_TOKEN",
+];
 
 /// The launch line for a review session. `--setting-sources ''` keeps every
 /// settings file out, the checkout's included, whose hooks Claude Code would
@@ -1621,7 +1646,7 @@ mod tests {
         snapshot, Scrollback, SpawnSpec, DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS,
         DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_REVIEW_DIRS,
         MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
-        REVIEW_SESSION_GUARDRAIL,
+        REVIEW_SESSION_GUARDRAIL, REVIEW_SESSION_UNSET_ENV,
     };
     use std::sync::Mutex;
 
@@ -2075,21 +2100,27 @@ mod tests {
 
     #[test]
     fn exec_claude_program_drops_the_agent_commands_own_flags() {
+        let unset: String = REVIEW_SESSION_UNSET_ENV
+            .iter()
+            .map(|var| format!(" -u {var}"))
+            .collect();
         assert_eq!(
-            exec_claude_program("claude --permission-mode auto").as_deref(),
-            Some("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0 exec claude")
+            exec_claude_program("claude --permission-mode auto"),
+            Some(format!(
+                "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0 exec env{unset} claude"
+            ))
         );
+        assert!(unset.contains(" -u GH_TOKEN") && unset.contains(" -u YARVIS_MCP_TOKEN"));
         // Assignments stay before `exec`, which a shell would otherwise run as
         // the program, and the CLAUDE.md switch comes after the user's own.
         assert_eq!(
             exec_claude_program(
                 "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 /opt/bin/claude --model opus"
-            )
-            .as_deref(),
-            Some(
+            ),
+            Some(format!(
                 "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
-                 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0 exec /opt/bin/claude"
-            )
+                 CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0 exec env{unset} /opt/bin/claude"
+            ))
         );
         assert_eq!(exec_claude_program("codex --full-auto"), None);
     }

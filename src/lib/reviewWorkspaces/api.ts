@@ -195,14 +195,11 @@ export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${w
 
 /**
  * Starts Claude Code over the workspace's checked-out PRs, or leaves the one
- * already running. Answers with the PTY id to attach a terminal to.
+ * already running. Attach to it at {@link reviewClaudeSessionId}.
  */
-export function startReviewClaudeSession(workspaceId: string) {
-  return json<{ sessionId: string }>(
-    `${BASE}/${workspaceId}/claude-session`,
-    "start Claude Code",
-    send("POST"),
-  );
+export async function startReviewClaudeSession(workspaceId: string): Promise<void> {
+  const res = await sidecarFetch(`${BASE}/${workspaceId}/claude-session`, send("POST"));
+  await ensureOk(res, "start Claude Code");
 }
 
 /**

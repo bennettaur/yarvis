@@ -796,7 +796,11 @@ report there and leaves the fixes to the author.
   each ready checkout as an `--add-dir`. `--setting-sources ''` keeps an
   added folder's skills, agents and `CLAUDE.md` out, except that
   `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`, so the
-  core sets it to 0 after the user's own assignments. The launch line is typed
+  core sets it to 0 after the user's own assignments. `env -u` drops common
+  credential variables the login shell may export (`GH_TOKEN`, the AWS keys,
+  `REVIEW_SESSION_UNSET_ENV` in `pty.rs`) and Yarvis's session tokens. It is
+  a denylist, and a command's shell may get them back from the user's rc
+  files; the sandbox's lack of network is what stops them leaving. The launch line is typed
   into the user's login shell, whose hooks (mise, direnv) act on the folder it
   opens in and that folder's parents, so the shell never opens in a checkout:
   it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`, which the
@@ -808,8 +812,11 @@ report there and leaves the fixes to the author.
   Removing a PR or archiving the workspace ends the session first, through
   `claude.killReview`, under a per-workspace lock (`withClaudeSessionLock`)
   that a start also takes, so no start lands between the kill and the removal.
-  A removal reads the PR and checks it isn't being updated under that lock,
-  since the lock can wait behind a start.
+  A refresh, and a clone resumed after a restart, start under that lock too,
+  and a removal reads the PR and checks it isn't being updated under it, so
+  neither starts on a PR being removed. `claude.spawnReview` and `claude.killReview` time out after 5s,
+  since removals wait on them; a spawn that timed out is ended, since it may
+  still land, but one the core refused isn't, so a running session survives it.
   The lock is per sidecar: a second app instance sharing the database can
   start a session the first one's removal doesn't end. That is accepted, since
   the session is read-only and only loses its folders.

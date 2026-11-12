@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -19,6 +20,7 @@ import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
+import { ControlTimeoutError } from "../core/controlClient.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
@@ -1486,9 +1488,7 @@ describe("claude session", () => {
 
   it("starts Claude Code outside the checkouts, reading them, with the locked-down settings", async () => {
     const { wsId, worktreePath } = await readyWorkspace();
-    const res = await start(wsId);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sessionId: `review-claude:${wsId}` });
+    expect((await start(wsId)).status).toBe(204);
 
     expect(spawned).toHaveLength(1);
     const [spawn] = spawned as [Spawn];
@@ -1562,7 +1562,7 @@ describe("claude session", () => {
       .set({ worktreeStatus: "checking-out" })
       .where(eq(reviewWorkspacePrs.id, pending?.id as string));
 
-    expect((await start(wsId)).status).toBe(200);
+    expect((await start(wsId)).status).toBe(204);
     const [spawn] = spawned as [Spawn];
     const ready = rows
       .filter((r) => r.refKey !== "gh:o/r/3")
@@ -1587,7 +1587,7 @@ describe("claude session", () => {
       .update(reviewWorkspacePrs)
       .set({ worktreeStatus: "ready", headSha: null })
       .where(eq(reviewWorkspacePrs.id, pending?.id as string));
-    expect((await start(wsId)).status).toBe(200);
+    expect((await start(wsId)).status).toBe(204);
     expect((spawned[1] as Spawn).addDirs).toHaveLength(1);
     expect((spawned[1] as Spawn).context).toContain("gh:o/r/1");
   });
@@ -1606,7 +1606,7 @@ describe("claude session", () => {
       }));
     // Twenty is the most one session reads.
     await db.insert(reviewWorkspacePrs).values(copies(100, 19));
-    expect((await start(wsId)).status).toBe(200);
+    expect((await start(wsId)).status).toBe(204);
     expect((spawned[0] as Spawn).addDirs).toHaveLength(20);
     spawned = [];
     await db.insert(reviewWorkspacePrs).values(copies(200, 1));
@@ -1637,7 +1637,7 @@ describe("claude session", () => {
     mkdirSync(join(config.workspacesRoot, ".review-sessions"));
     symlinkSync(target, sessionFolder(wsId));
 
-    expect((await start(wsId)).status).toBe(200);
+    expect((await start(wsId)).status).toBe(204);
     expect(lstatSync(sessionFolder(wsId)).isDirectory()).toBe(true);
     expect((spawned[0] as Spawn).cwd).toBe(realpathSync(sessionFolder(wsId)));
     expect(existsSync(join(target, "keep"))).toBe(true);
@@ -1680,7 +1680,7 @@ describe("claude session", () => {
     expect(ended).toEqual([wsId]);
 
     const other = await readyWorkspace();
-    expect((await start(other.wsId)).status).toBe(200);
+    expect((await start(other.wsId)).status).toBe(204);
     spawned = [];
     expect((await sessionApp.request(`/rw/${other.wsId}/archive`, { method: "POST" })).ok).toBe(
       true,
@@ -1729,24 +1729,99 @@ describe("claude session", () => {
     await until(async () => !existsSync(worktreePath), "the archive to remove the checkout");
   });
 
-  it("doesn't remove a PR whose refresh began while the removal waited", async () => {
+  it("doesn't remove a PR while its refresh runs", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
-    spawnGate = gate();
-    const starting = start(wsId);
-    await until(async () => spawned.length === 1, "the spawn to be asked for");
-    // Queued behind the start, which holds the session lock.
-    const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
     loadGate = gate();
     expect(
       (await sessionApp.request(`/rw/${wsId}/prs/${prId}/refresh`, { method: "POST" })).status,
     ).toBe(202);
-    spawnGate.open();
-    expect((await starting).status).toBe(200);
-    expect((await removal).status).toBe(409);
+    expect((await sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" })).status).toBe(
+      409,
+    );
     expect(ended).toEqual([]);
     expect(existsSync(worktreePath)).toBe(true);
     loadGate.open();
     await progress(wsId, prId);
+  });
+
+  it("doesn't start a refresh of a PR whose removal is under way", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    spawnGate = gate();
+    const starting = start(wsId);
+    await until(async () => spawned.length === 1, "the spawn to be asked for");
+    // Both queue behind the start, which holds the session lock.
+    const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
+    const refresh = sessionApp.request(`/rw/${wsId}/prs/${prId}/refresh`, { method: "POST" });
+    spawnGate.open();
+    expect((await starting).status).toBe(204);
+    expect((await removal).ok).toBe(true);
+    // Without the lock the refresh would start on the PR and recreate its checkout.
+    expect((await refresh).status).toBe(404);
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  it("doesn't resume a stalled clone of a PR whose removal is under way", async () => {
+    const { wsId, prId, worktreePath } = await readyWorkspace();
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ status: "cloning" })
+      .where(eq(reviewWorkspacePrs.id, prId));
+    endGate = gate();
+    const removal = sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" });
+    await until(async () => ended.length === 1, "the removal to end the session");
+    // Reads the PR before the removal deletes it, then waits on the lock.
+    const following = sessionApp.request(`/rw/${wsId}/prs/${prId}/progress`);
+    for (let i = 0; i < 4; i++) await prRow(prId);
+    endGate.open();
+    expect((await removal).ok).toBe(true);
+    // A resumed clone would stream until it finished, recreating the checkout.
+    await (await following).text();
+    expect(existsSync(worktreePath)).toBe(false);
+  });
+
+  it("refuses to remove a checkout outside the workspace, leaving the session running", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    await db
+      .update(reviewWorkspacePrs)
+      .set({ worktreePath: tmpdir() })
+      .where(eq(reviewWorkspacePrs.id, prId));
+    expect((await sessionApp.request(`/rw/${wsId}/prs/${prId}`, { method: "DELETE" })).ok).toBe(
+      false,
+    );
+    expect(ended).toEqual([]);
+    expect((await prRow(prId)).id).toBe(prId);
+  });
+
+  it("ends nothing when archiving a workspace already archiving", async () => {
+    const { wsId } = await readyWorkspace();
+    await setWorkspaceStatus(wsId, "archiving");
+    expect((await sessionApp.request(`/rw/${wsId}/archive`, { method: "POST" })).status).toBe(409);
+    expect(ended).toEqual([]);
+  });
+
+  it("reports a session folder the archive couldn't remove", async () => {
+    const { wsId } = await readyWorkspace();
+    expect((await start(wsId)).status).toBe(204);
+    const sessions = join(config.workspacesRoot, ".review-sessions");
+    chmodSync(sessions, 0o500);
+    try {
+      expect((await sessionApp.request(`/rw/${wsId}/archive`, { method: "POST" })).ok).toBe(true);
+      const archived = async () =>
+        (await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId)))[0];
+      await until(async () => (await archived())?.status === "archived", "the archive to finish");
+      expect((await archived())?.error).toContain(wsId);
+    } finally {
+      chmodSync(sessions, 0o700);
+    }
+  });
+
+  it("says so when a ready checkout has gone missing", async () => {
+    const { wsId, worktreePath } = await readyWorkspace();
+    rmSync(worktreePath, { recursive: true, force: true });
+    const res = await start(wsId);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("checkout is missing");
+    expect(spawned).toHaveLength(0);
   });
 
   it("still removes a PR and archives when the session can't be ended", async () => {
@@ -1787,7 +1862,7 @@ describe("claude session", () => {
       await db.select().from(reviewWorkspaces).where(eq(reviewWorkspaces.id, wsId));
     }
     spawnGate.open();
-    expect((await starting).status).toBe(200);
+    expect((await starting).status).toBe(204);
     expect((await archiving).ok).toBe(true);
     expect(events).toEqual(["spawn", "end"]);
     await until(async () => {
@@ -1802,7 +1877,14 @@ describe("claude session", () => {
     const res = await start(wsId);
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("not Claude Code");
-    // A spawn that timed out could still land in the core, so it's ended.
+    // A refused spawn started nothing, and a session already running stays.
+    expect(killed).toEqual([]);
+  });
+
+  it("ends a session whose spawn timed out, since it could still land", async () => {
+    spawnError = new ControlTimeoutError("control RPC 'claude.spawnReview' timed out");
+    const { wsId } = await readyWorkspace();
+    expect((await start(wsId)).status).toBe(502);
     expect(killed).toEqual([wsId]);
   });
 });

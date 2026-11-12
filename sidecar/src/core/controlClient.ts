@@ -25,6 +25,11 @@ const pending = new Map<number, Pending>();
 
 /** How long to wait for a reply before failing a request. */
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Review sessions are started and ended under a per-workspace lock that
+ * removals and archives wait on, so a hung core holds them up for less.
+ */
+const REVIEW_SESSION_TIMEOUT_MS = 5_000;
 
 function socketPath(): string {
   const path = process.env.YARVIS_CORE_SOCK;
@@ -92,14 +97,21 @@ async function getSocket(): Promise<net.Socket> {
   return connecting;
 }
 
-async function rpc(method: string, params: Record<string, unknown>): Promise<void> {
+/** A request the core didn't answer in time. It may still act on it later. */
+export class ControlTimeoutError extends Error {}
+
+async function rpc(
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<void> {
   const s = await getSocket();
   const id = nextId++;
   const payload = `${JSON.stringify({ id, method, params })}\n`;
   return await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (pending.delete(id)) reject(new Error(`control RPC '${method}' timed out`));
-    }, REQUEST_TIMEOUT_MS);
+      if (pending.delete(id)) reject(new ControlTimeoutError(`control RPC '${method}' timed out`));
+    }, timeoutMs);
     pending.set(id, {
       resolve: () => {
         clearTimeout(timer);
@@ -154,12 +166,12 @@ export async function spawnReviewClaudeSession(input: {
   settings: string;
   context: string;
 }): Promise<void> {
-  await rpc("claude.spawnReview", input);
+  await rpc("claude.spawnReview", input, REVIEW_SESSION_TIMEOUT_MS);
 }
 
 /** Asks the core to end a review workspace's Ask Claude session, if one is running. */
 export async function killReviewClaudeSession(workspaceId: string): Promise<void> {
-  await rpc("claude.killReview", { workspaceId });
+  await rpc("claude.killReview", { workspaceId }, REVIEW_SESSION_TIMEOUT_MS);
 }
 
 /** Asks the core to kill a workspace's Claude session, if one is running. */

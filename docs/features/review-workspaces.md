@@ -368,7 +368,8 @@ the same way the verification report is:
   hook would run the next time Yarvis fetches. It
   doesn't load skills, which a checkout could ship to pre-approve tools.
 - Commands run in Claude Code's sandbox with no network, and can't read your
-  SSH, cloud or Yarvis credentials. Claude in Chrome is off, so it can't act
+  SSH, cloud or Yarvis credentials. Claude Code starts without common
+  credential variables your shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is off, so it can't act
   in your browser. Claude asks you before running a command
   or doing anything else beyond reading the checkouts.
 - It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and

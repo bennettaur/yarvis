@@ -44,7 +44,10 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
       if (!(await ptyExists(sessionId))) await startReviewClaudeSession(workspaceId);
       settle({ kind: "live" });
     } catch (e) {
-      settle({ kind: "failed", error: formatError(e) });
+      // A session that is still running stays on screen, whatever went wrong
+      // checking it again.
+      const running = await ptyExists(sessionId).catch(() => false);
+      settle(running ? { kind: "live" } : { kind: "failed", error: formatError(e) });
     }
   }, [workspaceId, sessionId]);
 

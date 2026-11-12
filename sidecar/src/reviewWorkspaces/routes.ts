@@ -478,17 +478,16 @@ export function createReviewWorkspaceRoutes(
   });
 
   // Starts Claude Code over the workspace's checked-out PRs for the user to ask
-  // questions in, or leaves the session already running. Answers with its PTY id.
+  // questions in, or leaves the session already running.
   router.post("/:id/claude-session", async (c) => {
     try {
-      return c.json(
-        await startReviewClaudeSession(
-          db(),
-          config,
-          c.req.param("id"),
-          options.claudeSession ?? defaultReviewClaudeDeps,
-        ),
+      await startReviewClaudeSession(
+        db(),
+        config,
+        c.req.param("id"),
+        options.claudeSession ?? defaultReviewClaudeDeps,
       );
+      return c.body(null, 204);
     } catch (e) {
       return fail(c, e);
     }

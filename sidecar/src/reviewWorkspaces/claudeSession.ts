@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import {
+  ControlTimeoutError,
   hasCoreChannel,
   killReviewClaudeSession,
   spawnReviewClaudeSession,
@@ -74,9 +75,6 @@ function reviewSessionSettings(
   };
 }
 
-/** The PTY id the core gives a workspace's session; matches `review_session_id` in `pty.rs`. */
-const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
-
 /**
  * The folder a workspace's session starts in, emptied first. The session's
  * sandboxed commands can't write there, but anything else that did (a
@@ -119,8 +117,7 @@ export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
  * Starts the workspace's session over every PR whose checkout is ready, or
  * leaves the one already running alone (the core discards a spawn whose id is
  * taken; its folder is still emptied, which a running session can't write to).
- * A PR checked out later joins on the next start. Answers with the session's
- * PTY id. Runs under the workspace's session lock, so it can't start a session
+ * A PR checked out later joins on the next start. Runs under the workspace's session lock, so it can't start a session
  * between a removal ending the old one and deleting a checkout.
  */
 export async function startReviewClaudeSession(
@@ -128,7 +125,7 @@ export async function startReviewClaudeSession(
   config: Config,
   workspaceId: string,
   deps: ReviewClaudeDeps = defaultReviewClaudeDeps,
-): Promise<{ sessionId: string }> {
+): Promise<void> {
   if (!deps.hasCore()) {
     throw new ReviewWorkspaceError(
       "the app's core isn't running, so it can't start a session",
@@ -143,7 +140,7 @@ async function startLocked(
   config: Config,
   workspaceId: string,
   deps: ReviewClaudeDeps,
-): Promise<{ sessionId: string }> {
+): Promise<void> {
   const ws = await getReviewWorkspace(db, workspaceId);
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
@@ -166,8 +163,8 @@ async function startLocked(
   const cwd = freshSessionFolder(config, ws.id);
   // Real paths, as the sandbox compares them, so a linked workspaces folder
   // doesn't leave the write deny naming a path the sandbox never sees.
-  const checkouts = ready.map((pr) => realpathSync(pr.worktreePath));
-  const clones = [...new Set(ready.map((pr) => realpathSync(reviewClonePath(config, pr.ref))))];
+  const checkouts = ready.map((pr) => realFolder(pr.worktreePath));
+  const clones = [...new Set(ready.map((pr) => realFolder(reviewClonePath(config, pr.ref))))];
   // Paths and ref keys only: titles are the authors' text.
   const context = `The pull requests are checked out at: ${ready
     .map((pr, i) => `${pr.refKey} in ${checkouts[i]}`)
@@ -181,13 +178,26 @@ async function startLocked(
       context,
     });
   } catch (e) {
-    // A spawn that timed out here may still land in the core, after a removal
-    // queued behind this start has ended the session. Ending it while the lock
-    // is held means nothing is left running.
-    await deps.kill(ws.id).catch(() => {});
+    // A spawn that timed out may still land in the core, after a removal queued
+    // behind this start has ended the session, so it's ended while the lock is
+    // held. That also ends a session that was already running, which can't be
+    // told apart from one that landed late.
+    if (e instanceof ControlTimeoutError) await deps.kill(ws.id).catch(() => {});
     // The core refuses for reasons the user can act on (the agent isn't Claude
     // Code, too many terminals open), so its message is the answer.
     throw new ReviewWorkspaceError(describeError(e), 502);
   }
-  return { sessionId: reviewClaudeSessionId(ws.id) };
+}
+
+/** A checkout or clone's real path; a 409 when it went missing after it was marked ready. */
+function realFolder(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    throw new ReviewWorkspaceError(
+      "a pull request's checkout is missing; refresh it and try again",
+      409,
+    );
+  }
 }

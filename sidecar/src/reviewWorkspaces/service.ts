@@ -231,9 +231,10 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
 }
 
 /**
- * Starting a workspace's Ask Claude session and removing what it reads take
- * this, keyed by workspace, so a start can't land between a removal ending the
- * session and deleting the checkout.
+ * Starting a workspace's Ask Claude session, starting a refresh or a resumed
+ * clone, and removing what the session reads take this, keyed by workspace, so
+ * a start can't land between a removal ending the session and deleting the
+ * checkout, and no clone or refresh starts on a PR being removed.
  */
 export const withClaudeSessionLock = createKeyedLock();
 
@@ -743,15 +744,28 @@ export async function resumeIfStalled(
 ): Promise<void> {
   if (pr.status !== "pending" && pr.status !== "cloning") return;
   if (isRunning(pr.id)) return;
-  const [ws] = await db
-    .select({ status: reviewWorkspaces.status })
-    .from(reviewWorkspaces)
-    .where(eq(reviewWorkspaces.id, pr.workspaceId));
-  if (ws?.status !== "active") return;
-  startSync(db, config, pr, "clone", deps);
+  // Checked again under the lock removals take, so a PR removed in the
+  // meantime isn't cloned again.
+  await withClaudeSessionLock(pr.workspaceId, async () => {
+    const [row] = await db
+      .select()
+      .from(reviewWorkspacePrs)
+      .where(eq(reviewWorkspacePrs.id, pr.id));
+    if (!row || (row.status !== "pending" && row.status !== "cloning") || isRunning(row.id)) return;
+    const [ws] = await db
+      .select({ status: reviewWorkspaces.status })
+      .from(reviewWorkspaces)
+      .where(eq(reviewWorkspaces.id, row.workspaceId));
+    if (ws?.status !== "active") return;
+    startSync(db, config, row, "clone", deps);
+  });
 }
 
-/** Fetches the PR's current head and moves its worktree there. */
+/**
+ * Fetches the PR's current head and moves its worktree there. Started under
+ * the session lock, so a removal either sees the run and refuses, or has
+ * deleted the PR before it can start.
+ */
 export async function refreshReviewPr(
   db: Db,
   config: Config,
@@ -759,13 +773,15 @@ export async function refreshReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
-  await requireActiveWorkspace(db, workspaceId);
-  const pr = await getReviewPr(db, workspaceId, prId);
-  const phase = pr.status === "ready" ? "refresh" : "clone";
-  if (!startSync(db, config, pr, phase, deps)) {
-    throw new ReviewWorkspaceError("this pull request is already being updated", 409);
-  }
-  return pr;
+  return withClaudeSessionLock(workspaceId, async () => {
+    await requireActiveWorkspace(db, workspaceId);
+    const pr = await getReviewPr(db, workspaceId, prId);
+    const phase = pr.status === "ready" ? "refresh" : "clone";
+    if (!startSync(db, config, pr, phase, deps)) {
+      throw new ReviewWorkspaceError("this pull request is already being updated", 409);
+    }
+    return pr;
+  });
 }
 
 /**
@@ -801,8 +817,8 @@ export async function removeReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<void> {
-  // Read and checked under the lock, which can wait behind a start, so a
-  // refresh that began in the meantime isn't removed from under itself.
+  // Read and checked under the lock refreshes start under, so a refresh is
+  // either running here and refused, or starts after the PR is gone.
   const pr = await withClaudeSessionLock(workspaceId, async () => {
     const pr = await getReviewPr(db, workspaceId, prId);
     if (isRunning(pr.id)) {

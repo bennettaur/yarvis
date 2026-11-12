@@ -26,6 +26,8 @@ const ctxFor = (p: ReviewWorkspacePr): TabContext => ({
 });
 
 let live: boolean;
+/** How many of the next `ptyExists` calls fail. */
+let existsFailures: number;
 let starts: string[];
 let startFails: boolean;
 let attached: string[];
@@ -56,6 +58,7 @@ beforeEach(() => {
     installedObserver = true;
   }
   live = false;
+  existsFailures = 0;
   starts = [];
   startFails = false;
   attached = [];
@@ -74,11 +77,16 @@ beforeEach(() => {
       }
       if (startFails) throw new Error("the configured agent is not Claude Code");
       live = true;
-      return { sessionId: `review-claude:${ws}` };
     },
   });
   stubPtyApi({
-    ptyExists: async () => live,
+    ptyExists: async () => {
+      if (existsFailures > 0) {
+        existsFailures--;
+        throw new Error("the core didn't answer");
+      }
+      return live;
+    },
     attachPty: async (id: string) => {
       attached.push(id);
       return { scrollback: [], endOffset: 0 };
@@ -226,6 +234,30 @@ describe("ClaudeTab", () => {
     // Still the first terminal: it was never unmounted and attached again.
     expect(attached).toHaveLength(1);
     expect(starts).toEqual(["ws"]);
+  });
+
+  it("keeps a running session on screen when checking it again fails", async () => {
+    const m = await mountSwappable(pr);
+    mounted = m;
+    await waitFor(() => attached.length === 1, "the terminal to attach");
+    await act(async () => m.swap({ ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr));
+    existsFailures = 1;
+    await act(async () => m.swap(pr));
+    await waitFor(() => existsFailures === 0, "the re-check");
+    expect(textOf(m.host.innerHTML)).toContain("Read-only");
+    expect(textOf(m.host.innerHTML)).not.toContain("didn't answer");
+    expect(attached).toHaveLength(1);
+  });
+
+  it("shows the error when a re-check fails and the session is gone", async () => {
+    const m = await mountSwappable(pr);
+    mounted = m;
+    await waitFor(() => attached.length === 1, "the terminal to attach");
+    await act(async () => m.swap({ ...pr, worktreeStatus: "checking-out" } as ReviewWorkspacePr));
+    live = false;
+    startFails = true;
+    await act(async () => m.swap(pr));
+    await waitFor(() => textOf(m.host.innerHTML).includes("not Claude Code"), "the error");
   });
 
   it("waits for the checkout before starting anything", async () => {
