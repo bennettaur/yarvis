@@ -15,6 +15,8 @@ interface SentRequest {
 
 const sent: SentRequest[] = [];
 let replies: { status: number; body: unknown }[] = [];
+/** When set, every reply waits on it, to catch the component mid-request. */
+let hold: Promise<void> | null = null;
 
 // The transport is stubbed rather than lib/pr/fixChecks, so the path and body
 // that client builds stay under test.
@@ -35,6 +37,7 @@ stubSidecarApi({
   getDbHealth: async () => ({ configured: true, reachable: true }),
   sidecarFetch: async (path: string, init: RequestInit = {}) => {
     sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (hold) await hold;
     const reply = replies.shift() ?? { status: 200, body: null };
     return new Response(JSON.stringify(reply.body), { status: reply.status });
   },
@@ -61,6 +64,7 @@ const opened: OpenWorkspaceRequest[] = [];
 beforeEach(() => {
   sent.length = 0;
   replies = [];
+  hold = null;
   opened.length = 0;
   unsubscribe = onOpenWorkspace((r) => opened.push(r));
 });
@@ -111,6 +115,55 @@ describe("WorkspaceFailingChecks", () => {
   it("can't hand a fork's checks to an agent", async () => {
     const host = await mount(detail([check({ conclusion: "FAILURE" })], { fromFork: true }));
     expect(button(host, "Fix with Claude")?.disabled).toBe(true);
+  });
+
+  it("can't hand a closed PR's checks to an agent", async () => {
+    const host = await mount(detail([check({ conclusion: "FAILURE" })], { state: "MERGED" }));
+    expect(button(host, "Fix with Claude")?.disabled).toBe(true);
+  });
+
+  it("offers the button on an active Azure DevOps PR", async () => {
+    const host = await mount(detail([check({ conclusion: "FAILURE" })], { state: "active" }));
+    expect(button(host, "Fix with Claude")?.disabled).toBe(false);
+  });
+
+  it("holds the button while the request is out, so a second click can't send twice", async () => {
+    let release = () => {};
+    hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    replies = [{ status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } }];
+    const host = await mount(detail([check({ conclusion: "FAILURE" })]));
+
+    button(host, "Fix with Claude")?.click();
+    await waitFor(() => button(host, "Handing off…") !== undefined, "the pending button");
+    expect(button(host, "Handing off…")?.disabled).toBe(true);
+    release();
+    await waitFor(() => (host.textContent ?? "").includes("Sent to the agent"), "the result");
+  });
+
+  it("asks before sending a second time", async () => {
+    replies = [
+      { status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } },
+      { status: 200, body: { outcome: "sent", workspaceId: "w1", name: "Payments" } },
+    ];
+    const host = await mount(detail([check({ conclusion: "FAILURE" })]));
+    button(host, "Fix with Claude")?.click();
+    await waitFor(() => button(host, "Send again") !== undefined, "the result");
+    expect(button(host, "Fix with Claude")).toBeUndefined();
+
+    button(host, "Send again")?.click();
+    await waitFor(() => button(host, "Cancel") !== undefined, "the second-send prompt");
+    expect(button(host, "Fix with Claude")).toBeUndefined();
+    button(host, "Cancel")?.click();
+    await waitFor(() => button(host, "Send again") !== undefined, "the result again");
+    expect(sent).toHaveLength(1);
+
+    button(host, "Send again")?.click();
+    await waitFor(() => button(host, "Yes, send again") !== undefined, "the second-send prompt");
+    button(host, "Yes, send again")?.click();
+    await waitFor(() => sent.length === 2, "the second request");
+    await waitFor(() => button(host, "Send again") !== undefined, "the second result");
   });
 
   it("sends the ref and reports the agent it reached", async () => {

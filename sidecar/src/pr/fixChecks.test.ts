@@ -17,13 +17,14 @@ import {
 import { createRepo, createWorkspace, getWorkspace } from "../workspaces/service.ts";
 import {
   buildFixChecksInstructions,
+  checkLinkRoot,
   FIX_CHECKS_FILE,
   FIX_CHECKS_KICKOFF,
   FixChecksInFlight,
-  type FixChecksOptions,
   failingChecks,
   fixFailingChecksForPr,
 } from "./fixChecks.ts";
+import type { AgentHandOffOptions } from "./resolveConflicts.ts";
 import type { PrCodeSource } from "./source.ts";
 import type { CheckItem, PrDetail, PrRef } from "./types.ts";
 import { PrWorkspaceRefusal } from "./workspace.ts";
@@ -83,6 +84,7 @@ describe("buildFixChecksInstructions", () => {
   const input = {
     number: 7,
     url: "https://github.com/acme/widget/pull/7",
+    linkRoot: "https://github.com/acme/widget/",
     headRef: "topic",
     failing: [check({ name: "lint" }), check({ name: "test", url: null })],
   };
@@ -123,16 +125,33 @@ describe("buildFixChecksInstructions", () => {
     expect(text).toContain("could not fix or are unsure about");
   });
 
-  it("keeps links only on the pull request's own host", () => {
+  // Anyone who can post a commit status picks its link, and a page in another
+  // repository on the same host is theirs to write.
+  it("keeps links only inside the pull request's own repository", () => {
     const text = buildFixChecksInstructions({
       ...input,
       failing: [
-        check({ name: "lint", url: "https://evil.example/log" }),
-        check({ name: "test", url: "http://github.com/acme/widget/actions/runs/2" }),
+        check({ name: "a", url: "https://evil.example/log" }),
+        check({ name: "b", url: "http://github.com/acme/widget/actions/runs/2" }),
+        check({ name: "c", url: "https://github.com/mallory/widget/issues/1" }),
+        check({ name: "d", url: "https://github.com/acme/widget/../../mallory/x" }),
+        check({ name: "e", url: "https://github.com/acme/widget-fork/runs/3" }),
+        check({ name: "f", url: "https://github.com/Acme/Widget/runs/4" }),
+        check({ name: "g", url: `https://github.com/acme/widget/runs/${"9".repeat(200)}` }),
       ],
     });
-    expect(text).not.toContain("evil.example");
-    expect(text).not.toContain("http://github.com");
+    expect(text).toContain(
+      "- a\n- b\n- c\n- d\n- e\n- f https://github.com/Acme/Widget/runs/4\n- g\n",
+    );
+  });
+
+  it("lists the first fifteen failing checks and counts the rest", () => {
+    const failing = Array.from({ length: 20 }, (_, i) => check({ name: `c${i}`, url: null }));
+    const text = buildFixChecksInstructions({ ...input, failing });
+    expect(text).toContain("- c14\n");
+    expect(text).not.toContain("- c15");
+    expect(text).toContain("5 more failing checks are not listed here; find them as in step 2");
+    expect(buildFixChecksInstructions(input)).not.toContain("more failing checks");
   });
 
   // The core refuses typed instructions over 4000 characters rather than
@@ -149,8 +168,31 @@ describe("buildFixChecksInstructions", () => {
       failing,
     });
     expect(Array.from(text).length).toBeLessThanOrEqual(4000);
-    expect(text).toMatch(/\d+ more failing checks are not listed here\./);
     expect(text).toContain(`- ${"é".repeat(80)} ${longUrl}`);
+    // Only as many are dropped as it takes to fit, and the count covers the rest.
+    const listed = text.match(/^- é/gm)?.length ?? 0;
+    expect(listed).toBeGreaterThan(5);
+    expect(text).toContain(`${200 - listed} more failing checks are not listed here`);
+  });
+});
+
+describe("checkLinkRoot", () => {
+  it("is the repository on GitHub", () => {
+    expect(checkLinkRoot(ref)).toBe("https://github.com/acme/widget/");
+  });
+
+  it("is the project on Azure DevOps, where pipelines sit beside the repos", () => {
+    const azure: PrRef = {
+      provider: "azure",
+      org: "contoso",
+      project: "Web App",
+      repo: "site",
+      prId: 9,
+    };
+    expect(checkLinkRoot(azure)).toBe("https://dev.azure.com/contoso/Web%20App/");
+    expect(checkLinkRoot(azure, "https://contoso.visualstudio.com/")).toBe(
+      "https://contoso.visualstudio.com/Web%20App/",
+    );
   });
 });
 
@@ -177,7 +219,7 @@ function fakes(
   const sent: SendSessionInstructionInput[] = [];
   const started: StartClaudeSessionInput[] = [];
   const kickedOff: string[] = [];
-  const options: FixChecksOptions = {
+  const options: AgentHandOffOptions = {
     send: async (input) => {
       if (overrides.holdSend) await overrides.holdSend;
       if (overrides.sendError) throw new Error(overrides.sendError);
@@ -218,7 +260,7 @@ const registerAgent = (workspaceId: string) =>
 beforeEach(async () => {
   rmSync(workspacesRoot, { recursive: true, force: true });
   mkdirSync(workspacesRoot, { recursive: true });
-  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, workspace_agent_sessions RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE repos, workspaces, workspace_repos, workspace_repo_pr, workspace_agent_sessions, events RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -240,6 +282,23 @@ describe("fixFailingChecksForPr", () => {
     expect(sent[0]!.instruction).toContain("- lint");
     expect(sent[0]!.instruction).not.toContain("- build");
     expect(started).toEqual([]);
+  });
+
+  it("records the send as a fix-checks hand-off", async () => {
+    const repo = await addRepo();
+    const workspace = await activeWorkspace(repo.id);
+    await registerAgent(workspace.id);
+    const { options } = fakes();
+
+    await fixFailingChecksForPr(db, config, fakeSource(), options);
+
+    // The event is written without being awaited, so wait for it to land.
+    let rows: { payload: { purpose?: string } }[] = [];
+    for (let i = 0; i < 100 && rows.length === 0; i++) {
+      rows = await sql`SELECT payload FROM events WHERE type = 'workspace.instruction_sent'`;
+      if (rows.length === 0) await Bun.sleep(10);
+    }
+    expect(rows.map((r) => r.payload.purpose)).toEqual(["fix-checks"]);
   });
 
   it("starts an agent on its own instructions file when none is running", async () => {
@@ -297,8 +356,8 @@ describe("fixFailingChecksForPr", () => {
     });
     const { options, sent } = fakes({ holdSend });
 
+    // The lock is taken before the first await, so the second call sees it at once.
     const first = fixFailingChecksForPr(db, config, fakeSource(), options);
-    await new Promise((resolve) => setTimeout(resolve, 20));
     await expect(fixFailingChecksForPr(db, config, fakeSource(), options)).rejects.toBeInstanceOf(
       FixChecksInFlight,
     );

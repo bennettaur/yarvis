@@ -1,4 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { prDetailKey } from "../lib/pr/cache";
+import type { PrDetail, PrRef } from "../lib/pr/types";
+import { invalidate, primeCache } from "../lib/resourceCache";
 import type {
   ChangedFile,
   WorkspaceRepoDetail,
@@ -252,6 +255,30 @@ describe("WorkspaceSidePanel", () => {
     resetClipboardWrites();
     await clickCopy(host, "Copy the link to web #12");
     expect(clipboardWrites()).toEqual(["https://github.com/octo/web/pull/12"]);
+  });
+
+  it("lists the PR's failing checks with a button to fix them", async () => {
+    const prRef: PrRef = { provider: "github", owner: "octo", repo: "web", number: 12 };
+    primeCache(prDetailKey(prRef), {
+      state: "OPEN",
+      headRef: "feature",
+      fromFork: false,
+      checks: [{ name: "lint", status: "COMPLETED", conclusion: "FAILURE", url: null }],
+    } as PrDetail);
+    try {
+      const host = await mount(
+        () => {},
+        () => {},
+        { ...REPO, pr: { ...POLLED_PR, checkRollup: "failure" } },
+      );
+      await clickTab(host, "PR checks");
+      expect(host.querySelector("[data-testid=failing-checks]")?.textContent).toContain("lint");
+      expect(
+        [...host.querySelectorAll("button")].some((b) => b.textContent === "Fix with Claude"),
+      ).toBe(true);
+    } finally {
+      invalidate(prDetailKey(prRef));
+    }
   });
 
   describe("with a second worktree in the workspace", () => {

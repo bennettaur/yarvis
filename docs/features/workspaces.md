@@ -437,8 +437,11 @@ not to skip or loosen tests, and to report failures that don't come from the
 PR rather than change code for them. The agent is reached the same way as for
 **Resolve conflicts**: typed at the prompt of the one already running, or
 started on the instructions (in `.yarvis/fix-checks.md`) when none is. If the
-agent looks busy, you're asked before it is interrupted. A PR from a fork can't
-be handed over.
+agent looks busy, you're asked before it is interrupted, and **Send again**
+asks before handing the checks over a second time. A PR from a fork, or one
+that is closed or merged, can't be handed over. A check's link is passed on
+only when it points inside the PR's own repository (its project, on Azure
+DevOps), since whoever posts a check chooses its link.
 
 ### Other worktrees in the workspace
 

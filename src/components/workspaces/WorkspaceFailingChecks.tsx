@@ -1,18 +1,21 @@
 import { useState } from "react";
 import { requestOpenWorkspace } from "../../lib/nav";
 import { usePrDetail } from "../../lib/pr/cache";
-import { type FixChecksResult, fixPrChecks, isFailingCheck } from "../../lib/pr/fixChecks";
+import type { AgentHandOffResult } from "../../lib/pr/conflicts";
+import { fixPrChecks, isFailingCheck } from "../../lib/pr/fixChecks";
 import type { PrRef } from "../../lib/pr/types";
 import LoadingIndicator from "../LoadingIndicator";
 import { ChecksList } from "../pr/PrChecks";
 
-type Delivered = Exclude<FixChecksResult, { outcome: "needs_confirm" }>;
+type Delivered = Exclude<AgentHandOffResult, { outcome: "needs_confirm" }>;
 
 type Step =
   | { kind: "idle" }
   | { kind: "pending" }
   | { kind: "confirm"; reason: string }
   | { kind: "done"; result: Delivered }
+  /** Asking whether to send again, so a stray second click doesn't. */
+  | { kind: "again"; result: Delivered }
   | { kind: "error"; message: string };
 
 function doneMessage(result: Delivered): string {
@@ -26,14 +29,15 @@ function doneMessage(result: Delivered): string {
   }
 }
 
-const button =
+const secondaryButton =
   "rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50";
 
 /**
  * Every check on a workspace's PR, with the failing ones pulled to the top and
  * a button that hands them to the workspace's coding agent. The list is the
  * PR's live detail rather than the poller's counts, so each check can be named
- * and opened. Typing into a busy agent is confirmed first, as for conflicts.
+ * and opened. Typing into a busy agent, and sending a second time, are
+ * confirmed first, as for conflicts. Hosts key it on the PR (`refKey`).
  */
 export default function WorkspaceFailingChecks({ prRef }: { prRef: PrRef }) {
   const { data, error, loading, refreshing, refresh } = usePrDetail(prRef);
@@ -44,12 +48,9 @@ export default function WorkspaceFailingChecks({ prRef }: { prRef: PrRef }) {
 
   const failing = data.checks.filter(isFailingCheck);
   const fork = data.fromFork;
-  const fixLabel =
-    step.kind === "pending"
-      ? "Handing off…"
-      : step.kind === "done"
-        ? "Send again"
-        : "Fix with Claude";
+  // The sidecar refuses anything else, so say so before the click.
+  const closed = !["open", "active"].includes(data.state.toLowerCase());
+  const pending = step.kind === "pending";
 
   const run = async (confirm: boolean) => {
     setStep({ kind: "pending" });
@@ -78,35 +79,67 @@ export default function WorkspaceFailingChecks({ prRef }: { prRef: PrRef }) {
           </h3>
           <ChecksList checks={failing} />
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            {step.kind === "confirm" ? (
+            {step.kind === "confirm" && (
               <>
                 <span className="text-amber-200">{step.reason} Send anyway?</span>
-                <button type="button" onClick={() => void run(true)} className={button}>
+                <button type="button" onClick={() => void run(true)} className={secondaryButton}>
                   Send anyway
                 </button>
-                <button type="button" onClick={() => setStep({ kind: "idle" })} className={button}>
+                <button
+                  type="button"
+                  onClick={() => setStep({ kind: "idle" })}
+                  className={secondaryButton}
+                >
                   Cancel
                 </button>
               </>
-            ) : (
+            )}
+            {(step.kind === "idle" || step.kind === "pending" || step.kind === "error") && (
               <button
                 type="button"
                 onClick={() => void run(false)}
-                disabled={step.kind === "pending" || fork}
+                disabled={pending || fork || closed}
                 title={
                   fork
                     ? "This pull request comes from a fork, so its branch can't be checked out in a workspace"
-                    : "Have the workspace's coding agent read the failing checks' logs, fix what the PR broke and push"
+                    : closed
+                      ? "This pull request is no longer open"
+                      : "Have the workspace's coding agent read the failing checks' logs, fix what the PR broke and push"
                 }
                 className="rounded-md bg-red-600 px-2 py-1 font-medium text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {fixLabel}
+                {pending ? "Handing off…" : "Fix with Claude"}
               </button>
             )}
-            {step.kind === "done" && (
+            {(step.kind === "done" || step.kind === "again") && (
               <span role="status" className="text-emerald-300">
                 {doneMessage(step.result)}
               </span>
+            )}
+            {step.kind === "done" && (
+              <button
+                type="button"
+                onClick={() => setStep({ kind: "again", result: step.result })}
+                title="Hand the failing checks to the agent again"
+                className={secondaryButton}
+              >
+                Send again
+              </button>
+            )}
+            {step.kind === "again" && (
+              <>
+                <span className="text-amber-200">Send the instructions again?</span>
+                <button type="button" onClick={() => void run(false)} className={secondaryButton}>
+                  Yes, send again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep({ kind: "done", result: step.result })}
+                  className={secondaryButton}
+                >
+                  Cancel
+                </button>
+              </>
             )}
             {step.kind === "error" && (
               <span role="alert" className="basis-full text-red-400">
