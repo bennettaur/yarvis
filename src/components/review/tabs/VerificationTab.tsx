@@ -335,7 +335,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-4 p-4">
+      {/* 80% so diagrams grow with the window; never narrower than 48rem unless the pane is. */}
+      <div className="mx-auto w-4/5 min-w-[min(100%,48rem)] space-y-4 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-zinc-200">Verification report</h2>
           {good && report && !running && (
