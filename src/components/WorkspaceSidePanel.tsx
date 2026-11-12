@@ -22,6 +22,7 @@ import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import type { OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
+import WorkspaceFailingChecks from "./workspaces/WorkspaceFailingChecks";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
 import WorkspaceStackView from "./workspaces/WorkspaceStackView";
 
@@ -648,6 +649,7 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
       )}
       {pr.mergeable && <div className="text-zinc-500">mergeable: {pr.mergeable}</div>}
       {pr.lastError && <div className="text-red-400">{pr.lastError}</div>}
+      {summary && <WorkspaceFailingChecks key={summary.url} prRef={summary.ref} />}
     </div>
   );
 }

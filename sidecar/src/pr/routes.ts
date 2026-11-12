@@ -10,6 +10,7 @@ import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
+import { FixChecksInFlight, fixFailingChecksForPr } from "./fixChecks.ts";
 import {
   claimGuide,
   guideSessionKey,
@@ -516,6 +517,33 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
     } catch (e) {
       console.error("[pr] could not hand the conflicts to an agent:", describeError(e));
       if (e instanceof ResolveConflictsInFlight) return c.json({ error: clientError(e) }, 409);
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
+    }
+  });
+
+  /**
+   * Hands the pull request's failing CI checks to a coding agent, by the same
+   * routes as `/resolve-conflicts` (see `fixFailingChecksForPr`), with the same
+   * `confirm` and status codes.
+   */
+  router.post("/fix-checks", async (c) => {
+    const parsed = z
+      .object({ ref: prRef, confirm: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const source = sourceFor(parsed.data.ref);
+    if ("error" in source) return c.json({ error: source.error }, 400);
+
+    try {
+      const result = await fixFailingChecksForPr(db(), config, source, {
+        confirm: parsed.data.confirm,
+      });
+      return c.json(result, result.outcome === "created" ? 201 : 200);
+    } catch (e) {
+      console.error("[pr] could not hand the failing checks to an agent:", describeError(e));
+      if (e instanceof FixChecksInFlight) return c.json({ error: clientError(e) }, 409);
       const refused = e instanceof PrWorkspaceRefusal;
       return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }

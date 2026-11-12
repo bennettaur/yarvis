@@ -425,9 +425,20 @@ reopened, so its comments are kept.
 
 ### PR checks
 
-**PR checks** shows the branch's pull request and its CI checks. It has copy
-buttons for the PR link, each check, and a summary of all checks. See
+**PR checks** shows the branch's pull request and every one of its CI checks,
+read live from GitHub or Azure DevOps. It has copy buttons for the PR link,
+each check, and a summary of all checks. See
 [Clipboard](clipboard.md#copy-buttons).
+
+Checks that finished and failed are listed together at the top, with a **Fix
+with Claude** button. It hands the failing checks to the workspace's coding
+agent, which reads their logs, fixes what the PR broke and pushes. It is told
+not to skip or loosen tests, and to report failures that don't come from the
+PR rather than change code for them. The agent is reached the same way as for
+**Resolve conflicts**: typed at the prompt of the one already running, or
+started on the instructions (in `.yarvis/fix-checks.md`) when none is. If the
+agent looks busy, you're asked before it is interrupted. A PR from a fork can't
+be handed over.
 
 ### Other worktrees in the workspace
 

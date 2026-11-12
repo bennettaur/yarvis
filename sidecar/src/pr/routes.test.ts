@@ -539,6 +539,58 @@ describe("POST /api/pr/workspace", () => {
       expect(((await res.json()) as any).error).toContain("github token");
     });
   });
+
+  describe("POST /api/pr/fix-checks", () => {
+    const fix = (body: unknown = { ref }) =>
+      withGithub.request("/api/pr/fix-checks", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const withChecks = (conclusion: string) => ({
+      ...openPr,
+      state: "OPEN",
+      baseRefName: "main",
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    it("creates a workspace that starts on the failing checks when the PR has none", async () => {
+      stubPrDetail(withChecks("FAILURE"));
+      const res = await fix();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { outcome: string; workspaceId: string };
+      expect(body.outcome).toBe("created");
+      const [row] =
+        await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
+      expect(row?.pending_issue_prompt).toContain("Fix the failing CI checks on pull request #1");
+    });
+
+    it("400s a pull request with nothing failing", async () => {
+      stubPrDetail(withChecks("SUCCESS"));
+      const res = await fix();
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("no failing checks");
+    });
+
+    it("rejects a confirm flag that isn't a boolean", async () => {
+      const res = await fix({ ref, confirm: "yes" });
+      expect(res.status).toBe(400);
+    });
+  });
 });
 
 describe("GET /api/pr/stack", () => {

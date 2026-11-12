@@ -118,7 +118,8 @@ export function prWebUrl(ref: PrRef, azureOrgUrl?: string): string {
   return `${org}/${seg(ref.project)}/_git/${seg(ref.repo)}/pullrequest/${ref.prId}`;
 }
 
-export type ResolveConflictsResult =
+/** What became of handing instructions to a workspace agent; see `deliverToWorkspace`. */
+export type AgentHandOffResult =
   | {
       /** Typed at the prompt of the agent already running in the workspace. */
       outcome: "sent";
@@ -145,10 +146,13 @@ export type ResolveConflictsResult =
       reason: string;
     };
 
+export type ResolveConflictsResult = AgentHandOffResult;
+export type ResolveConflictsOptions = AgentHandOffOptions;
+
 /** A second request for a PR whose first is still being handled. */
 export class ResolveConflictsInFlight extends PrWorkspaceRefusal {}
 
-export interface ResolveConflictsOptions {
+export interface AgentHandOffOptions {
   /** Send even when the agent looks busy. Never overrides a pending permission prompt. */
   confirm?: boolean;
   send?: ClaudeSessionMessenger;
@@ -160,12 +164,12 @@ export interface ResolveConflictsOptions {
   busyReason?: (db: Db, workspace: { id: string; rootPath: string }) => Promise<string | null>;
 }
 
-function isOpen(state: string): boolean {
+export function isOpen(state: string): boolean {
   const s = state.toLowerCase();
   return s === "open" || s === "active";
 }
 
-function checkBranch(branch: string, which: "head" | "base"): void {
+export function checkBranch(branch: string, which: "head" | "base"): void {
   try {
     assertSafeBranchName(branch);
   } catch (e) {
@@ -249,21 +253,49 @@ async function resolve(
   if (!workspace.existing) {
     return { outcome: "created", workspaceId: workspace.workspaceId, name: workspace.name };
   }
-  return deliverToWorkspace(db, workspace.workspaceId, instructions, options);
+  return deliverToWorkspace(
+    db,
+    workspace.workspaceId,
+    instructions,
+    RESOLVE_CONFLICTS_HANDOFF,
+    options,
+  );
 }
 
-async function deliverToWorkspace(
+/** Where a hand-off's instructions go when an agent has to be started on them. */
+export interface AgentHandOff {
+  /** Workspace-relative file the instructions are written to; never the brief. */
+  file: string;
+  /** What the started session is told: read `file` and carry it out. */
+  kickoff: string;
+  /** Recorded on the send event, to tell hand-offs apart in the log. */
+  purpose: string;
+}
+
+const RESOLVE_CONFLICTS_HANDOFF: AgentHandOff = {
+  file: RESOLVE_CONFLICTS_FILE,
+  kickoff: RESOLVE_CONFLICTS_KICKOFF,
+  purpose: "resolve-conflicts",
+};
+
+/**
+ * Hands instructions to a workspace's agent: typed at the prompt of one that is
+ * running, or as the kickoff of one started there. An agent that looks busy is
+ * asked about first, unless `confirm` is set.
+ */
+export async function deliverToWorkspace(
   db: Db,
   workspaceId: string,
   instructions: string,
+  handOff: AgentHandOff,
   {
     confirm = false,
     send,
     startSession = startClaudeSession,
     stopSession = (id) => stopClaudeSession(db, id),
     busyReason = workspaceAgentBusyReason,
-  }: ResolveConflictsOptions,
-): Promise<ResolveConflictsResult> {
+  }: AgentHandOffOptions,
+): Promise<AgentHandOffResult> {
   const workspace = await getWorkspace(db, workspaceId);
   if (!workspace) throw new PrWorkspaceRefusal("the pull request's workspace no longer exists");
   const { id, name, rootPath } = workspace;
@@ -291,7 +323,7 @@ async function deliverToWorkspace(
     agentPids,
     send,
     eventSource: "pr",
-    eventPayload: { purpose: "resolve-conflicts" },
+    eventPayload: { purpose: handOff.purpose },
   });
   if (sent.delivered) return { outcome: "sent", workspaceId: id, name };
 
@@ -313,7 +345,7 @@ async function deliverToWorkspace(
       throw new Error(sent.error);
   }
 
-  await writeResolveFile(rootPath, instructions);
+  await writeHandOffFile(rootPath, handOff.file, instructions);
   // A workspace provisioned before the registration hooks existed gets them,
   // so the session about to start registers and a later send can find it.
   writeClaudeSettings(workspace);
@@ -322,7 +354,7 @@ async function deliverToWorkspace(
     cwd: rootPath,
     name,
     remoteControl: false,
-    instruction: RESOLVE_CONFLICTS_KICKOFF,
+    instruction: handOff.kickoff,
   });
   void emitEvent(db, {
     type: "workspace.session_started",
@@ -332,8 +364,12 @@ async function deliverToWorkspace(
   return { outcome: "started", workspaceId: id, name };
 }
 
-async function writeResolveFile(rootPath: string, instructions: string): Promise<void> {
-  const file = join(rootPath, RESOLVE_CONFLICTS_FILE);
+async function writeHandOffFile(
+  rootPath: string,
+  relativePath: string,
+  instructions: string,
+): Promise<void> {
+  const file = join(rootPath, relativePath);
   await mkdir(dirname(file), { recursive: true });
   // Sanitized as every brief is, against characters that would hide text from
   // a reader of the file but not from the agent.
