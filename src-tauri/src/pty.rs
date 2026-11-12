@@ -475,6 +475,7 @@ fn spawn_into_state(
     id: &str,
     spec: SpawnSpec,
 ) -> Result<(), String> {
+    refuse_plain_review_shell(id, &spec)?;
     // Enforce the per-process cap before spawning, not after, so a flood of
     // calls doesn't briefly hold more shells than the cap allows.
     {
@@ -1248,6 +1249,15 @@ fn is_review_session(id: &str) -> bool {
     id.starts_with(REVIEW_CLAUDE_PREFIX)
 }
 
+/// Refuses to start a shell with no launch line under a review session's id,
+/// as reattaching to an ended session would.
+fn refuse_plain_review_shell(id: &str, spec: &SpawnSpec) -> Result<(), String> {
+    if is_review_session(id) && spec.initial_command.is_none() {
+        return Err("the review session has ended".into());
+    }
+    Ok(())
+}
+
 /// The system prompt addition a review session runs with. The checkout is the
 /// PR author's, so what it says is material, not instructions.
 const REVIEW_SESSION_GUARDRAIL: &str = "You are helping the user review pull requests \
@@ -1464,10 +1474,6 @@ pub fn pty_attach(
             sessions.remove(&id);
         }
     }
-    if is_review_session(&id) {
-        return Err("the review session has ended".into());
-    }
-
     spawn_into_state(
         &app,
         state.inner(),
@@ -1609,12 +1615,12 @@ mod tests {
         agent_launch_command, attention_workspace_id, check_resume, check_review_spawn,
         exec_claude_program, hmac_sha256_hex, is_attention_addressable, is_review_session,
         is_unsafe_name_char, is_valid_resume_id, lock_scrollback, merge_allowed_slash_commands,
-        prepare_instruction, prepare_slash_command, remote_control_command, resolve_agent_command,
-        resolve_max_sessions, review_launch_command, review_session_id, runs_claude_code,
-        session_env, session_token, shell_single_quote, snapshot, Scrollback,
-        DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_REVIEW_DIRS, MAX_SCROLLBACK,
-        MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
+        prepare_instruction, prepare_slash_command, refuse_plain_review_shell,
+        remote_control_command, resolve_agent_command, resolve_max_sessions, review_launch_command,
+        review_session_id, runs_claude_code, session_env, session_token, shell_single_quote,
+        snapshot, Scrollback, SpawnSpec, DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_REVIEW_DIRS,
+        MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
         REVIEW_SESSION_GUARDRAIL,
     };
     use std::sync::Mutex;
@@ -2169,6 +2175,23 @@ mod tests {
         assert!(!is_attention_addressable(&review_session_id(
             "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"
         )));
+    }
+
+    #[test]
+    fn refuses_a_plain_shell_under_a_review_id() {
+        let spec = |initial_command: Option<&str>| SpawnSpec {
+            cols: 80,
+            rows: 24,
+            cwd: None,
+            initial_command: initial_command.map(String::from),
+            strip_provider_secrets: false,
+            start_offset: 0,
+        };
+        let review = review_session_id("ws1");
+        assert!(refuse_plain_review_shell(&review, &spec(None)).is_err());
+        assert!(refuse_plain_review_shell(&review, &spec(Some("exec claude"))).is_ok());
+        assert!(refuse_plain_review_shell("terminal-1", &spec(None)).is_ok());
+        assert!(refuse_plain_review_shell("ws-claude:ws1", &spec(None)).is_ok());
     }
 
     #[test]

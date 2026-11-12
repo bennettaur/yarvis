@@ -363,7 +363,9 @@ the same way the verification report is:
   `CLAUDE.md`, even if your shell sets
   `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
 - It can read the checkouts but not change them, neither with its edit tools
-  nor from a command it runs, so one PR's code can't rewrite another's. It
+  nor from a command it runs, so one PR's code can't rewrite another's. Its
+  commands can't write to the repositories' clones either, where a planted git
+  hook would run the next time Yarvis fetches. It
   doesn't load skills, which a checkout could ship to pre-approve tools.
 - Commands run in Claude Code's sandbox with no network, and can't read your
   SSH, cloud or Yarvis credentials. Claude in Chrome is off, so it can't act

@@ -801,18 +801,20 @@ export async function removeReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<void> {
-  const pr = await getReviewPr(db, workspaceId, prId);
-  if (isRunning(pr.id)) {
-    throw new ReviewWorkspaceError("this pull request is still being updated", 409);
-  }
-  // Both can refuse, and neither touches the checkout a session reads, so they
-  // run before the session is ended and outside its lock.
-  assertWorktreeInWorkspace(config, pr);
-  await releaseReviewedCommits(db, config, pr, deps);
-  await withClaudeSessionLock(workspaceId, async () => {
+  // Read and checked under the lock, which can wait behind a start, so a
+  // refresh that began in the meantime isn't removed from under itself.
+  const pr = await withClaudeSessionLock(workspaceId, async () => {
+    const pr = await getReviewPr(db, workspaceId, prId);
+    if (isRunning(pr.id)) {
+      throw new ReviewWorkspaceError("this pull request is still being updated", 409);
+    }
+    // Refused before the session is ended, so a refusal leaves it running.
+    assertWorktreeInWorkspace(config, pr);
     await endClaudeSessionQuietly(deps, workspaceId);
     await removePrWorktree(config, pr, deps);
+    await releaseReviewedCommits(db, config, pr, deps);
     await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
+    return pr;
   });
   forgetRuns(pr.id);
 }
