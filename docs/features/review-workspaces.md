@@ -30,13 +30,19 @@ From the PRs tab, the PR's header has **Open in review workspace**, which does
 the same and switches to the Review tab. Its **▾** lists your review
 workspaces, to add the PR to one of them instead.
 
-A GitHub PR that is part of a stack brings the rest of its stack along: every
-other open layer is added to the workspace too, after the PR you asked for.
-They appear in the nav a moment later, once GitHub has answered.
-Layers the workspace already holds, merged layers and branches with no PR are
-left out. The stack is found the same way as the PRs tab's
-[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If it can't be
-read, the PR you asked for is still added on its own.
+When a GitHub PR in the workspace is part of a stack, the top of the nav gets a
+**Stack** section listing the other open layers the workspace doesn't hold yet,
+bottom first, each with a checkbox. There is one section per stack, however
+many of its layers the workspace holds. Nothing from the stack is added until
+you ask. Tick the ones you want and press **Add selected**, or press **Add
+all**. A layer someone has already approved is marked **Approved** and starts
+unticked, so the default skips work that has already been reviewed. Draft
+layers are marked **Draft**. Merged layers and branches with no PR aren't
+listed. If one layer can't be added, the rest still are, and the error names
+the ones that failed. The stack is found the same way as the PRs tab's
+[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If a stack
+can't be read, its section doesn't show, and neither do the ones after it, so a
+GitHub that is already failing isn't asked again for every layer you hold.
 
 The nav and the description show straight away. The PR's commits are fetched
 in the background, and the PR's header in the nav says how far that has got.
@@ -89,7 +95,9 @@ head in a tab of its own.
   count above the editor.
 - **Comment**: hover a line and click the comment button in the margin, or
   select lines and use the bar beside the selection for a multi-line comment.
-  Either side works.
+  Either side works. On GitHub, a comment on a line outside the diff goes on
+  the whole file instead, opening with the lines it is about, and a note
+  under the line says so.
 - **Ask**: the same way, with the ask button, to ask about those lines as in
   the PRs tab's [line questions](pr-review.md#ask-about-a-line). The answer
   stays under the lines. Questions go on the new version of the file; asking
@@ -181,6 +189,13 @@ stops it. Every file and line in the report opens the diff there.
 - **Code quality** looks for code that goes against the language's or the
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
+- **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
+  agent classifies each change by what it does (a comment edit, a move, an
+  addition, a changed interface or changed logic), how much code depends on
+  what changed, and whether tests prove it. Yarvis scores those the same way
+  every time, and raises the score when the PR bundles many changes. Changes
+  that score high are listed under **Needs attention** with what to check,
+  and every change is listed behind **Every change**.
 - **Simpler approach** rates the PR as a whole, where the complexity check
   looks at its code line by line. One agent reads the description and the
   code, then searches the checkout for something the PR could have reused or
@@ -189,6 +204,10 @@ stops it. Every file and line in the report opens the diff there.
   names the simpler way and the code it would build on. If the agent fails,
   the section says "Not rated".
 - A report made before these checks existed shows only the checks it had.
+
+The assistant can start a report too, and creates the review workspace when
+there isn't one. See
+[Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 
 Above **Run verification** you pick which sections to run: risk, each check,
 **Simpler approach** and the **Flow diagram**. The summary and must-read files
@@ -221,8 +240,11 @@ its files you've viewed.
 A risk concern or finding that names a file and line can be sent on once you've
 read it. **Post to PR** posts it as a line comment on the PR, marked as coming
 from the verification report, with its text quoted and any `@` mentions
-broken so nobody is notified and no bot takes it as a command. The provider refuses a line outside the diff, and
-the error shows beside the button. When the PR was raised from a Yarvis
+broken so nobody is notified and no bot takes it as a command. GitHub only
+takes a line comment on a line inside the diff, so a finding on an unchanged
+line is posted as a comment on the whole file, opening with the line it is
+about, and a note beside the button says so. Any other refusal shows beside
+the button. When the PR was raised from a Yarvis
 workspace, **Add to *workspace*** adds it to that workspace's
 [review comments](workspaces.md#the-right-column) instead, where its agent can
 pick it up. There it carries a **report finding** badge, and the agent reads

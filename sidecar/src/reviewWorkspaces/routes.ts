@@ -53,7 +53,6 @@ import {
   reviewSetupInfo,
   reviewSymbolSearch,
   reviewTree,
-  startStackLayers,
   touchReviewWorkspace,
 } from "./service.ts";
 import {
@@ -69,7 +68,7 @@ import {
  * review clone root and a component of `refKey` (split on `/`), so anything
  * that could climb a directory or add a segment is refused here.
  */
-const refSegmentSchema = z
+export const refSegmentSchema = z
   .string()
   .min(1)
   .max(200)
@@ -78,9 +77,9 @@ const refSegmentSchema = z
       isSafePathSegment(s) && !CONTROL_CHARACTERS.test(s) && !s.includes(":") && s.trim() === s,
     "invalid name",
   );
-const githubNameSchema = refSegmentSchema.and(z.string().regex(/^[A-Za-z0-9._-]+$/));
+export const githubNameSchema = refSegmentSchema.and(z.string().regex(/^[A-Za-z0-9._-]+$/));
 
-const prNumberSchema = z.number().int().positive();
+export const prNumberSchema = z.number().int().positive();
 
 const prRefSchema: z.ZodType<PrRef> = z.discriminatedUnion("provider", [
   z.object({
@@ -226,10 +225,10 @@ export function createReviewWorkspaceRoutes(
     const parsed = addPrSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      const id = c.req.param("id");
-      const pr = await addReviewPr(db(), config, id, parsed.data.ref, deps());
-      void startStackLayers(db(), config, id, [parsed.data.ref], deps());
-      return c.json(pr, 201);
+      return c.json(
+        await addReviewPr(db(), config, c.req.param("id"), parsed.data.ref, deps()),
+        201,
+      );
     } catch (e) {
       return fail(c, e);
     }

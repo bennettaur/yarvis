@@ -46,7 +46,11 @@ export async function renderToHtml(element: ReactElement, settleMs = 100): Promi
 export async function mountForInteraction(
   element: ReactElement,
   settleMs = 100,
-): Promise<{ host: HTMLElement; unmount: () => void }> {
+): Promise<{
+  host: HTMLElement;
+  rerender: (next: ReactElement) => void;
+  unmount: () => void;
+}> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -54,6 +58,8 @@ export async function mountForInteraction(
   await new Promise((resolve) => setTimeout(resolve, settleMs));
   return {
     host,
+    // Same root, so state held by the tree survives, as it does when a parent re-renders.
+    rerender: (next) => root.render(next),
     unmount: () => {
       root.unmount();
       host.remove();

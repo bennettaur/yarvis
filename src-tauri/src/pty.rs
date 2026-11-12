@@ -1084,10 +1084,18 @@ fn process_executable(_pid: u32) -> Option<String> {
 /// name. Extracted from `spawn_claude_session` so the composition is unit-testable
 /// without reading the environment or spawning a PTY.
 fn remote_control_command(base: &str, name: &str) -> String {
+    // `--remote-control` takes the name as an optional value, so Claude Code
+    // reads a name starting with `-` as a flag of its own. Names come from issue
+    // titles, so one titled `--dangerously-skip-permissions` would otherwise
+    // start the session with that flag. Dashes are stripped after sanitizing,
+    // so a removed bidi or control character can't leave one in front, and
+    // whitespace with them, so `- -x` can't leave one either.
+    let sanitized = sanitize_session_name(name);
+    let name = sanitized.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
     format!(
         "{} --remote-control {}",
         base.trim(),
-        shell_single_quote(&sanitize_session_name(name))
+        shell_single_quote(name)
     )
 }
 
@@ -2177,6 +2185,38 @@ mod tests {
         assert_eq!(
             agent_launch_command("claude", "n", false, None, Some("   ")),
             "claude"
+        );
+    }
+
+    #[test]
+    fn remote_control_command_never_passes_a_name_that_reads_as_a_flag() {
+        assert_eq!(
+            remote_control_command("claude", "--dangerously-skip-permissions"),
+            "claude --remote-control 'dangerously-skip-permissions'"
+        );
+        assert_eq!(
+            remote_control_command("claude", "- -  Fix bug"),
+            "claude --remote-control 'Fix bug'"
+        );
+        // Sanitizing removes the bidi override first, so the dash is then trimmed.
+        assert_eq!(
+            remote_control_command("claude", "\u{202e}-p"),
+            "claude --remote-control 'p'"
+        );
+        // A name of only dashes becomes an empty value, which can't read as a flag.
+        assert_eq!(
+            remote_control_command("claude", "---"),
+            "claude --remote-control ''"
+        );
+        // Only the ASCII hyphen-minus starts a flag, so a look-alike dash is kept.
+        assert_eq!(
+            remote_control_command("claude", "\u{2010}p"),
+            "claude --remote-control '\u{2010}p'"
+        );
+        // Only a leading dash reads as a flag.
+        assert_eq!(
+            remote_control_command("claude", "Fix the --resume flag"),
+            "claude --remote-control 'Fix the --resume flag'"
         );
     }
 

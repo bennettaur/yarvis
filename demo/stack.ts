@@ -325,7 +325,7 @@ export async function startStack(): Promise<Stack> {
     if (process.env[key]) sidecarEnv[key] = process.env[key];
   }
 
-  const sidecar = startProcess("sidecar", bunPath, ["run", "sidecar/src/server.ts"], sidecarEnv);
+  const sidecar = startProcess("sidecar", bunPath, ["run", "sidecar/src/main.ts"], sidecarEnv);
   // Vite only hands `VITE_*` variables to the page, so it can keep the shell's
   // env. `TAURI_DEV_HOST` is dropped: it would bind the dev server to the LAN.
   const { TAURI_DEV_HOST: _, ...viteEnv } = process.env;

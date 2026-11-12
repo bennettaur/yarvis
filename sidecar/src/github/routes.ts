@@ -477,7 +477,13 @@ export function createGithubRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
       const { headSha, baseSha, mergeBaseSha, ...comment } = parsed.data;
-      const { commitId } = await gh.postComment(params.owner, params.repo, params.number, comment);
+      const { commitId, placement } = await gh.postComment(
+        params.owner,
+        params.repo,
+        params.number,
+        comment,
+        headSha,
+      );
       await recordSeen(
         { provider: "github", ...params },
         { headSha, baseSha, mergeBaseSha },
@@ -489,7 +495,7 @@ export function createGithubRoutes(config: Config): Hono {
         source: "github",
         payload: { ref: refKey({ provider: "github", ...params }), path: parsed.data.path ?? null },
       });
-      return c.json({ ok: true }, 201);
+      return c.json({ ok: true, placement }, 201);
     } catch (e) {
       return githubErrorResponse(c, e);
     }
