@@ -17,11 +17,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, rmdirSync } from "node:fs";
+import { existsSync, rmdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { and, asc, desc, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
+import { hasCoreChannel, killReviewClaudeSession } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import {
   type ReviewWorkspace,
@@ -94,7 +95,7 @@ import { ensureCommit, pinReviewedCommit, unpinReviewedCommits } from "./sinceRe
 export class ReviewWorkspaceError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 404 | 409 | 502 | 503,
   ) {
     super(message);
     this.name = "ReviewWorkspaceError";
@@ -138,6 +139,11 @@ export interface ReviewDeps {
    * last-review mark; null (or absent) when the provider isn't configured.
    */
   markProvider?(ref: PrRef): ReviewMarkProvider | null;
+  /**
+   * Ends the workspace's Ask Claude session, whose checkouts are being
+   * removed. Absent means there is none to end, as in tests with no core.
+   */
+  endClaudeSession?(workspaceId: string): Promise<void>;
 }
 
 export function locatorFor(ref: PrRef): PrLocator {
@@ -218,7 +224,30 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
     },
     git: reviewGit,
     markProvider: (ref) => reviewMarkProvider(config, ref),
+    async endClaudeSession(workspaceId) {
+      if (hasCoreChannel()) await killReviewClaudeSession(workspaceId);
+    },
   };
+}
+
+/**
+ * Starting a workspace's Ask Claude session and removing what it reads take
+ * this, keyed by workspace, so a start can't land between a removal ending the
+ * session and deleting the checkout.
+ */
+export const withClaudeSessionLock = createKeyedLock();
+
+/**
+ * Ends the workspace's Ask Claude session before a checkout it reads goes. A
+ * failure is logged, not thrown: the removal the user asked for still happens,
+ * and the session just loses the folder.
+ */
+async function endClaudeSessionQuietly(deps: ReviewDeps, workspaceId: string): Promise<void> {
+  try {
+    await deps.endClaudeSession?.(workspaceId);
+  } catch (e) {
+    console.error("[review-workspaces] could not end the Claude Code session:", describeError(e));
+  }
 }
 
 /**
@@ -259,6 +288,14 @@ export function reviewWorkspacesRoot(config: Pick<Config, "workspacesRoot">): st
 
 export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: string): string {
   return join(reviewWorkspacesRoot(config), id);
+}
+
+/**
+ * The folder a workspace's Ask Claude session starts in, outside every
+ * checkout (`reviewWorkspaces/claudeSession.ts`). Archiving removes it.
+ */
+export function reviewSessionFolder(config: Pick<Config, "workspacesRoot">, id: string): string {
+  return join(config.workspacesRoot, ".review-sessions", id);
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
@@ -764,13 +801,21 @@ export async function removeReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<void> {
-  const pr = await getReviewPr(db, workspaceId, prId);
-  if (isRunning(pr.id)) {
-    throw new ReviewWorkspaceError("this pull request is still being updated", 409);
-  }
-  await removePrWorktree(config, pr, deps);
-  await releaseReviewedCommits(db, config, pr, deps);
-  await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
+  // Read and checked under the lock, which can wait behind a start, so a
+  // refresh that began in the meantime isn't removed from under itself.
+  const pr = await withClaudeSessionLock(workspaceId, async () => {
+    const pr = await getReviewPr(db, workspaceId, prId);
+    if (isRunning(pr.id)) {
+      throw new ReviewWorkspaceError("this pull request is still being updated", 409);
+    }
+    // Refused before the session is ended, so a refusal leaves it running.
+    assertWorktreeInWorkspace(config, pr);
+    await endClaudeSessionQuietly(deps, workspaceId);
+    await removePrWorktree(config, pr, deps);
+    await releaseReviewedCommits(db, config, pr, deps);
+    await db.delete(reviewWorkspacePrs).where(eq(reviewWorkspacePrs.id, pr.id));
+    return pr;
+  });
   forgetRuns(pr.id);
 }
 
@@ -787,12 +832,17 @@ export async function archiveReviewWorkspace(
   deps: ReviewDeps,
 ): Promise<ReviewWorkspaceDetail> {
   // Conditional, so of two archives racing only one gets the row back and
-  // goes on to remove anything.
-  const [claimed] = await db
-    .update(reviewWorkspaces)
-    .set({ status: "archiving", updatedAt: new Date() })
-    .where(and(eq(reviewWorkspaces.id, id), eq(reviewWorkspaces.status, "active")))
-    .returning();
+  // goes on to remove anything. Under the session lock, so a start either ends
+  // before the claim (and is ended here) or sees the workspace archiving.
+  const claimed = await withClaudeSessionLock(id, async () => {
+    const [row] = await db
+      .update(reviewWorkspaces)
+      .set({ status: "archiving", updatedAt: new Date() })
+      .where(and(eq(reviewWorkspaces.id, id), eq(reviewWorkspaces.status, "active")))
+      .returning();
+    if (row) await endClaudeSessionQuietly(deps, id);
+    return row;
+  });
   if (!claimed) {
     const ws = await requireWorkspace(db, id);
     throw new ReviewWorkspaceError(`review workspace is already ${ws.status}`, 409);
@@ -816,6 +866,12 @@ export async function archiveReviewWorkspace(
       // above kept, and is already reported.
       rmdirSync(reviewWorkspaceDir(config, id));
     } catch {}
+    try {
+      // The session ended above, and its sandbox couldn't write to the folder.
+      rmSync(reviewSessionFolder(config, id), { recursive: true, force: true });
+    } catch (e) {
+      failures.push(safeMessage(e));
+    }
     await db
       .update(reviewWorkspaces)
       .set({

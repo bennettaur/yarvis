@@ -21,8 +21,9 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `claude.slash`,
-  `mcp.saveOAuth`, `github.saveToken`, `alarm.fire`, `alarm.release`)
+  method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
+  `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
+  `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY.
@@ -779,6 +780,39 @@ report there and leaves the fixes to the author.
   run the PR's code and its setup runs unsandboxed, so this is defence in
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The review workspace's **Ask Claude** tab is the interactive counterpart:
+  one PTY session per review workspace that the user drives, started through
+  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`). It gets the same
+  `lockedDownSettings` plus a deny on the edit tools and `Skill`, and a
+  sandbox `denyWrite` on every checkout, on the clones they share a `.git`
+  with and on its own folder, passed inline: one PR's code must not be able to
+  rewrite another's, whose setup would then run it unsandboxed, nor plant a
+  hook or config in a clone, which the sidecar's git would run. The core runs the configured agent's program,
+  minus that command's own flags, under `exec` (so no shell outlives it, and
+  `|| exit` covers an `exec` that fails) with `--setting-sources ''`,
+  `--strict-mcp-config`, `--no-chrome` (Claude in Chrome acts in the user's
+  signed-in browser, outside the sandbox), `--permission-mode default`, a
+  guardrail prompt and
+  each ready checkout as an `--add-dir`. `--setting-sources ''` keeps an
+  added folder's skills, agents and `CLAUDE.md` out, except that
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`, so the
+  core sets it to 0 after the user's own assignments. The launch line is typed
+  into the user's login shell, whose hooks (mise, direnv) act on the folder it
+  opens in and that folder's parents, so the shell never opens in a checkout:
+  it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`, which the
+  session can't write to and which is emptied before each start. Its PTY id
+  (`review-claude:`) is not attention addressable, so it gets no sidecar
+  tokens, and `spawn_into_state` refuses to put a plain shell under it. The core
+  checks, on real paths, that the folder is `.review-sessions/<workspaceId>`
+  and overlaps no checkout, and refuses control characters in what it types.
+  Removing a PR or archiving the workspace ends the session first, through
+  `claude.killReview`, under a per-workspace lock (`withClaudeSessionLock`)
+  that a start also takes, so no start lands between the kill and the removal.
+  A removal reads the PR and checks it isn't being updated under that lock,
+  since the lock can wait behind a start.
+  The lock is per sidecar: a second app instance sharing the database can
+  start a session the first one's removal doesn't end. That is accepted, since
+  the session is read-only and only loses its folders.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

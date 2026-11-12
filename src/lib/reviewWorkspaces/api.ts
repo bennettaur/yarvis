@@ -190,6 +190,21 @@ export function refreshReviewPr(workspaceId: string, prId: string) {
   );
 }
 
+/** The PTY id the core gives a workspace's session; matches `review_session_id` in `pty.rs`. */
+export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${workspaceId}`;
+
+/**
+ * Starts Claude Code over the workspace's checked-out PRs, or leaves the one
+ * already running. Answers with the PTY id to attach a terminal to.
+ */
+export function startReviewClaudeSession(workspaceId: string) {
+  return json<{ sessionId: string }>(
+    `${BASE}/${workspaceId}/claude-session`,
+    "start Claude Code",
+    send("POST"),
+  );
+}
+
 /**
  * Replays the PR's latest clone/refresh/setup run and yields the rest of it.
  * Ends at once when there is no recent run to show; aborting `signal` closes

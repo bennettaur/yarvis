@@ -3,7 +3,9 @@
 //! instruction or an allowed slash command into a Claude Code session in a
 //! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
-//! (`alarm.fire`) or stopping one (`alarm.release`).
+//! (`alarm.fire`) or stopping one (`alarm.release`). It also starts and ends
+//! the locked-down session over a review workspace's PR checkouts
+//! (`claude.spawnReview`, `claude.killReview`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -52,7 +54,7 @@ mod unix_impl {
     use super::ControlSocketPath;
     use crate::pty::{
         kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
-        PtyState,
+        spawn_review_claude_session, PtyState,
     };
 
     /// Cap on a single request line, bounding what one message can buffer.
@@ -94,6 +96,21 @@ mod unix_impl {
         /// sidecar relaunches a workspace's agent after the app restarted.
         #[serde(default)]
         resume: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct SpawnReviewParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        cwd: String,
+        /// The PR checkouts the session reads, each passed as `--add-dir`.
+        #[serde(rename = "addDirs")]
+        add_dirs: Vec<String>,
+        /// The session's settings as JSON text, passed to `--settings` inline
+        /// so there is no file a sandboxed command could rewrite.
+        settings: String,
+        /// Which PR is checked out where, appended to the session's guardrail.
+        context: String,
     }
 
     #[derive(Deserialize)]
@@ -293,6 +310,29 @@ mod unix_impl {
                     p.instruction.as_deref(),
                 )
             }
+            "claude.spawnReview" => {
+                let p: SpawnReviewParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                spawn_review_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.add_dirs,
+                    &p.settings,
+                    &p.context,
+                )
+            }
+            "claude.killReview" => {
+                let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                kill_session(
+                    state.inner(),
+                    &crate::pty::review_session_id(&p.workspace_id),
+                );
+                Ok(())
+            }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
@@ -461,6 +501,23 @@ mod unix_impl {
                 p.resume.as_deref(),
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
             );
+        }
+
+        #[test]
+        fn reads_the_review_session_the_sidecar_sends() {
+            // Shaped like `spawnReviewClaudeSession` in `controlClient.ts`.
+            let p: SpawnReviewParams = serde_json::from_value(json!({
+                "workspaceId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+                "cwd": "/tmp/.review-sessions/w",
+                "addDirs": ["/tmp/.review/w/pr1", "/tmp/.review/w/pr2"],
+                "settings": "{\"disableAllHooks\":true}",
+                "context": "github/o/r/1 in /tmp/.review/w/pr1.",
+            }))
+            .expect("sidecar payload");
+            assert!(validate_workspace_id(&p.workspace_id).is_ok());
+            assert_eq!(p.add_dirs.len(), 2);
+            assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
+            assert!(p.context.starts_with("github/o/r/1"));
         }
 
         #[test]

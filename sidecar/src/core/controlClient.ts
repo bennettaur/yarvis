@@ -141,6 +141,27 @@ export async function spawnClaudeSession(input: {
   });
 }
 
+/**
+ * Asks the core to start Claude Code for a review workspace, keyed
+ * `review-claude:<workspaceId>`, in `cwd` with each of `addDirs` added.
+ * `settings` (JSON text) is its only settings and `context` is appended to the
+ * core's own guardrail prompt. The core builds the rest of the launch line.
+ */
+export async function spawnReviewClaudeSession(input: {
+  workspaceId: string;
+  cwd: string;
+  addDirs: string[];
+  settings: string;
+  context: string;
+}): Promise<void> {
+  await rpc("claude.spawnReview", input);
+}
+
+/** Asks the core to end a review workspace's Ask Claude session, if one is running. */
+export async function killReviewClaudeSession(workspaceId: string): Promise<void> {
+  await rpc("claude.killReview", { workspaceId });
+}
+
 /** Asks the core to kill a workspace's Claude session, if one is running. */
 export async function killClaudeSession(workspaceId: string): Promise<void> {
   await rpc("claude.kill", { workspaceId });

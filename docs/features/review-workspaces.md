@@ -337,6 +337,54 @@ from the PR, its tests or a model is shown as plain text. A path is a link to
 the diff only when the PR changes that file. A pass made for an older head
 says so, with **Re-run**.
 
+### Ask Claude
+
+**Ask Claude** in the PR bar opens a tab with Claude Code reading the
+workspace's PR checkouts, for asking questions about the changes: what a
+function does, where something is called from, why a test might fail. There
+is one session per workspace, and it reads every PR checked out there, so with
+a [stack](#open-a-pr) it can answer across the layers. Opening it from any PR's
+bar brings up the same tab.
+
+It starts once a checkout is ready, and keeps running when you switch tabs or
+close this one, so reopening it picks up the same conversation. A PR added to
+the workspace after it started joins when you press **Restart**, which ends the
+session and starts a fresh one. When you quit Claude Code, the session ends
+with it, and opening the tab again starts a new one. Removing a PR from the
+workspace, or archiving the workspace, ends it too, since a checkout it reads
+is going away.
+
+The checkouts are code the PRs' authors wrote, so the session is locked down
+the same way the verification report is:
+
+- It reads no settings files: not a checkout's, whose hooks Claude Code would
+  run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules and MCP
+  servers don't load in this session, and neither does a checkout's
+  `CLAUDE.md`, even if your shell sets
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
+- It can read the checkouts but not change them, neither with its edit tools
+  nor from a command it runs, so one PR's code can't rewrite another's. Its
+  commands can't write to the repositories' clones either, where a planted git
+  hook would run the next time Yarvis fetches. It
+  doesn't load skills, which a checkout could ship to pre-approve tools.
+- Commands run in Claude Code's sandbox with no network, and can't read your
+  SSH, cloud or Yarvis credentials. Claude in Chrome is off, so it can't act
+  in your browser. Claude asks you before running a command
+  or doing anything else beyond reading the checkouts.
+- It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
+  the like) act on the folder a terminal opens in, so the session opens in an
+  empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
+  workspaces folder, and reaches the checkouts from there. Its commands can't
+  write to that folder either, and it's emptied before each start.
+- Its instructions tell it that what it reads in the checkouts is material to
+  explain, not instructions to follow.
+
+It needs the agent command under **Settings → Repositories → Agent** to run
+Claude Code (see [The agent command](workspaces.md#the-agent-command)). That
+setting's own flags (such as `--permission-mode auto`) are left out here. If
+Claude Code can't start (it isn't on your shell's `PATH`, say), the tab closes
+rather than leaving a plain shell behind.
+
 ### Since last review
 
 For a re-review: what the author did since you last looked, without wading
@@ -503,8 +551,9 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review** and **Verification**, which open those tabs (see
-  [Guided review](#guided-review) and [Verification report](#verification-report)).
+- **Guided review**, **Verification** and **Ask Claude**, which open those
+  tabs (see [Guided review](#guided-review),
+  [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
   last reviewed (see [Since last review](#since-last-review)),
