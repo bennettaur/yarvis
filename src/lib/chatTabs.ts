@@ -1,7 +1,13 @@
-import { CHAT_TAB_SESSION_KEY } from "./useChatThread";
-
 /** localStorage key under which the Chat tab's open tabs are kept. */
 export const CHAT_TABS_KEY = "yarvis.chat.tabs";
+
+/**
+ * Where the Chat tab kept its one open session before it had tabs. Only read,
+ * once, to turn that session into the first tab.
+ */
+export const LEGACY_CHAT_SESSION_KEY = "yarvis.chat.sessionId";
+
+const HISTORY_OPEN_KEY = "yarvis.chat.historyOpen";
 
 /** One open chat on the Chat tab. `sessionId` is null until its first message. */
 export interface ChatTab {
@@ -14,12 +20,11 @@ export interface ChatTabsState {
   activeId: string;
 }
 
-export function newTabId(): string {
+export function createTabId(): string {
   return crypto.randomUUID();
 }
 
-function freshState(sessionId: string | null = null): ChatTabsState {
-  const id = newTabId();
+function singleTab(id: string, sessionId: string | null = null): ChatTabsState {
   return { tabs: [{ id, sessionId }], activeId: id };
 }
 
@@ -29,10 +34,7 @@ function isTab(value: unknown): value is ChatTab {
   return typeof t.id === "string" && (t.sessionId === null || typeof t.sessionId === "string");
 }
 
-/**
- * The tabs left open last time. Before the Chat tab had tabs it kept one
- * session id, so a first load opens that chat in a single tab.
- */
+/** The tabs left open last time, or one tab holding the pre-tabs session. */
 export function loadChatTabs(): ChatTabsState {
   try {
     const raw = localStorage.getItem(CHAT_TABS_KEY);
@@ -46,9 +48,9 @@ export function loadChatTabs(): ChatTabsState {
         return { tabs, activeId };
       }
     }
-    return freshState(localStorage.getItem(CHAT_TAB_SESSION_KEY));
+    return singleTab(createTabId(), localStorage.getItem(LEGACY_CHAT_SESSION_KEY));
   } catch {
-    return freshState();
+    return singleTab(createTabId());
   }
 }
 
@@ -60,41 +62,56 @@ export function saveChatTabs(state: ChatTabsState): void {
   }
 }
 
-export function addTab(state: ChatTabsState, id = newTabId()): ChatTabsState {
-  return { tabs: [...state.tabs, { id, sessionId: null }], activeId: id };
+/** Whether the chat history sidebar was showing last time. Shown by default. */
+export function loadHistoryOpen(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_OPEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function saveHistoryOpen(open: boolean): void {
+  try {
+    localStorage.setItem(HISTORY_OPEN_KEY, String(open));
+  } catch {
+    // Only a preference.
+  }
+}
+
+export function addTab(state: ChatTabsState, newTabId: string): ChatTabsState {
+  return { tabs: [...state.tabs, { id: newTabId, sessionId: null }], activeId: newTabId };
 }
 
 /**
  * Brings a chat on screen. A tab that already has it is focused, so one chat
- * never runs in two tabs at once. Otherwise an empty active tab takes it, and
- * failing that it opens in a new tab.
+ * never runs in two tabs at once. Otherwise the active tab takes it if it is
+ * empty and `activeTabIdle` (its first message isn't on its way), and failing
+ * that it opens in a new tab with `newTabId`.
  */
 export function openSessionInTabs(
   state: ChatTabsState,
   sessionId: string,
-  id = newTabId(),
-): { state: ChatTabsState; tabId: string } {
+  { newTabId, activeTabIdle }: { newTabId: string; activeTabIdle: boolean },
+): ChatTabsState {
   const existing = state.tabs.find((t) => t.sessionId === sessionId);
-  if (existing) return { state: { ...state, activeId: existing.id }, tabId: existing.id };
+  if (existing) return { ...state, activeId: existing.id };
   const active = state.tabs.find((t) => t.id === state.activeId);
-  if (active && active.sessionId === null) {
-    return { state: setTabSession(state, active.id, sessionId), tabId: active.id };
+  if (active && active.sessionId === null && activeTabIdle) {
+    return setTabSession(state, active.id, sessionId);
   }
-  return {
-    state: { tabs: [...state.tabs, { id, sessionId }], activeId: id },
-    tabId: id,
-  };
+  return { tabs: [...state.tabs, { id: newTabId, sessionId }], activeId: newTabId };
 }
 
 /**
  * Closes a tab and focuses its neighbour. Closing the last tab leaves an
- * empty one, so the Chat tab always has a composer.
+ * empty one with `newTabId`, so the Chat tab always has a composer.
  */
-export function closeTab(state: ChatTabsState, tabId: string, id = newTabId()): ChatTabsState {
+export function closeTab(state: ChatTabsState, tabId: string, newTabId: string): ChatTabsState {
   const at = state.tabs.findIndex((t) => t.id === tabId);
   if (at === -1) return state;
   const tabs = state.tabs.filter((t) => t.id !== tabId);
-  if (tabs.length === 0) return { tabs: [{ id, sessionId: null }], activeId: id };
+  if (tabs.length === 0) return singleTab(newTabId);
   if (state.activeId !== tabId) return { ...state, tabs };
   return { tabs, activeId: tabs[Math.min(at, tabs.length - 1)]!.id };
 }
@@ -104,7 +121,9 @@ export function setTabSession(
   tabId: string,
   sessionId: string | null,
 ): ChatTabsState {
-  if (!state.tabs.some((t) => t.id === tabId && t.sessionId !== sessionId)) return state;
+  const tab = state.tabs.find((t) => t.id === tabId);
+  // The same object back when nothing changes, so React skips the re-render and the save.
+  if (!tab || tab.sessionId === sessionId) return state;
   return {
     ...state,
     tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, sessionId } : t)),

@@ -56,7 +56,9 @@ open it. If a tab already has it, that tab comes forward. If the current tab is
 still empty, the chat opens there. Otherwise it opens in a new tab. The button
 at the top of the sidebar hides it, and the button at the start of the tab
 strip brings it back. Your open tabs and whether the sidebar is showing are
-remembered across restarts.
+remembered across restarts. Chats from before tabs existed are named the same
+way, from their first message. Chat names also show in Telegram's `/chats`
+list.
 
 The toolbar under the message box holds the rest:
 
@@ -64,7 +66,7 @@ The toolbar under the message box holds the rest:
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
 
-The Chat tab stays loaded when you switch tabs, so a long answer keeps
+The Chat tab stays loaded when you switch to another page, so a long answer keeps
 streaming while you do something else. The thread follows a reply as it
 arrives. Scroll up and it stops following; the arrow button at the bottom of
 the thread jumps back to the newest message.
@@ -79,8 +81,8 @@ the thread jumps back to the newest message.
   message box. When the reply finishes, the queued messages go out one per
   turn, in order. Click **×** to drop one.
 - If the reply fails or you stop it, the queue waits. **Send next** sends the
-  next queued message. Starting a new chat or switching sessions clears the
-  queue. This works the same in Omni Chat.
+  next queued message. On the Chat tab each tab keeps its own
+  queue. In Omni Chat, starting a new chat or switching chats clears it.
 - If a turn fails, **Retry** sends the same message again.
 - Hover over one of your messages for **Resend** and **Edit**. Either restarts
   the chat from that message and discards the replies after it.

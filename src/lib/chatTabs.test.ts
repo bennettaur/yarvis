@@ -3,12 +3,14 @@ import {
   addTab,
   CHAT_TABS_KEY,
   closeTab,
+  LEGACY_CHAT_SESSION_KEY,
   loadChatTabs,
+  loadHistoryOpen,
   openSessionInTabs,
   saveChatTabs,
+  saveHistoryOpen,
   setTabSession,
 } from "./chatTabs";
-import { CHAT_TAB_SESSION_KEY } from "./useChatThread";
 
 afterEach(() => localStorage.clear());
 
@@ -22,7 +24,7 @@ const two = {
 
 describe("loadChatTabs", () => {
   it("opens the single chat the Chat tab kept before it had tabs", () => {
-    localStorage.setItem(CHAT_TAB_SESSION_KEY, "old-session");
+    localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "old-session");
     const state = loadChatTabs();
     expect(state.tabs).toHaveLength(1);
     expect(state.tabs[0]!.sessionId).toBe("old-session");
@@ -49,24 +51,40 @@ describe("loadChatTabs", () => {
   });
 });
 
+describe("loadHistoryOpen", () => {
+  it("shows the history until it is hidden, and remembers that", () => {
+    expect(loadHistoryOpen()).toBe(true);
+    saveHistoryOpen(false);
+    expect(loadHistoryOpen()).toBe(false);
+  });
+});
+
 describe("openSessionInTabs", () => {
+  const idle = { newTabId: "new", activeTabIdle: true };
+  const empty = { tabs: [{ id: "a", sessionId: null }], activeId: "a" };
+
   it("focuses the tab that already has the chat", () => {
-    const { state, tabId } = openSessionInTabs(two, "s2", "new");
-    expect(tabId).toBe("b");
-    expect(state.tabs).toEqual(two.tabs);
-    expect(state.activeId).toBe("b");
+    expect(openSessionInTabs(two, "s2", idle)).toEqual({ ...two, activeId: "b" });
   });
 
   it("opens a chat in the active tab when that tab is still empty", () => {
-    const empty = { tabs: [{ id: "a", sessionId: null }], activeId: "a" };
-    const { state, tabId } = openSessionInTabs(empty, "s9", "new");
-    expect(tabId).toBe("a");
-    expect(state.tabs).toEqual([{ id: "a", sessionId: "s9" }]);
+    expect(openSessionInTabs(empty, "s9", idle)).toEqual({
+      tabs: [{ id: "a", sessionId: "s9" }],
+      activeId: "a",
+    });
+  });
+
+  it("leaves an empty tab whose first message is on its way", () => {
+    const state = openSessionInTabs(empty, "s9", { newTabId: "new", activeTabIdle: false });
+    expect(state.tabs).toEqual([
+      { id: "a", sessionId: null },
+      { id: "new", sessionId: "s9" },
+    ]);
+    expect(state.activeId).toBe("new");
   });
 
   it("opens a new tab when the active one already has a chat", () => {
-    const { state, tabId } = openSessionInTabs(two, "s9", "new");
-    expect(tabId).toBe("new");
+    const state = openSessionInTabs(two, "s9", idle);
     expect(state.tabs.map((t) => t.id)).toEqual(["a", "b", "new"]);
     expect(state.activeId).toBe("new");
   });
@@ -75,12 +93,12 @@ describe("openSessionInTabs", () => {
 describe("closeTab", () => {
   it("focuses the neighbour of the active tab it closes", () => {
     const three = addTab(two, "c");
-    expect(closeTab({ ...three, activeId: "b" }, "b").activeId).toBe("c");
-    expect(closeTab(three, "c").activeId).toBe("b");
+    expect(closeTab({ ...three, activeId: "b" }, "b", "x").activeId).toBe("c");
+    expect(closeTab(three, "c", "x").activeId).toBe("b");
   });
 
   it("keeps the active tab when another one closes", () => {
-    expect(closeTab(two, "b")).toEqual({ tabs: [two.tabs[0]!], activeId: "a" });
+    expect(closeTab(two, "b", "x")).toEqual({ tabs: [two.tabs[0]!], activeId: "a" });
   });
 
   it("leaves one empty tab after the last one closes", () => {

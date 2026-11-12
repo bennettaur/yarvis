@@ -6,28 +6,23 @@ import {
   type ChatTab,
   type ChatTabsState,
   closeTab,
+  createTabId,
   loadChatTabs,
+  loadHistoryOpen,
   openSessionInTabs,
   saveChatTabs,
+  saveHistoryOpen,
   setTabSession,
 } from "../lib/chatTabs";
 import { type DisplayError, formatError } from "../lib/errors";
 import ChatPanel, { type ChatPanelStatus } from "./ChatPanel";
 import ErrorNotice from "./ErrorNotice";
 
-const HISTORY_OPEN_KEY = "yarvis.chat.historyOpen";
-
-function readHistoryOpen(): boolean {
-  try {
-    return localStorage.getItem(HISTORY_OPEN_KEY) !== "false";
-  } catch {
-    return true;
-  }
-}
+const UNTITLED = "Untitled chat";
 
 function tabLabel(tab: ChatTab, sessions: ChatSession[]): string {
   if (!tab.sessionId) return "New chat";
-  return sessions.find((s) => s.id === tab.sessionId)?.title ?? "Untitled chat";
+  return sessions.find((s) => s.id === tab.sessionId)?.title ?? UNTITLED;
 }
 
 /**
@@ -35,7 +30,8 @@ function tabLabel(tab: ChatTab, sessions: ChatSession[]): string {
  * list of every chat beside them. Each tab is its own `ChatPanel`, and all of
  * them stay mounted, so a reply keeps streaming in a tab the user has left.
  *
- * `requestedSessionId` opens that chat, focusing the tab that already has it;
+ * `requestedSessionId` opens that chat, re-reading it in the tab that already
+ * has it, since a scheduled task may have added to it in the background.
  * `requestedArtifactId` opens an artifact beside the active tab's thread.
  */
 export default function ChatTabs({
@@ -52,55 +48,59 @@ export default function ChatTabs({
   onArtifactRequestConsumed: () => void;
 }) {
   const [state, setState] = useState<ChatTabsState>(loadChatTabs);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  // Sessions each tab still has to load: every saved tab on mount, and a tab
-  // asked to re-read its chat, which a scheduled task may have added to.
-  const [pendingLoads, setPendingLoads] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      state.tabs.flatMap((t) => (t.sessionId ? [[t.id, t.sessionId] as const] : [])),
-    ),
+  // Chats a tab still has to read: every saved tab's on mount, one opened from
+  // the history, and one asked to be re-read.
+  const [pendingLoads, setPendingLoads] = useState<Set<string>>(
+    () => new Set(state.tabs.flatMap((t) => (t.sessionId ? [t.sessionId] : []))),
   );
   const [statuses, setStatuses] = useState<Record<string, ChatPanelStatus>>({});
+  // The same `busy` flags, readable inside a state update.
+  const busyTabs = useRef(new Set<string>());
+  // Plain state rather than `useCachedResource`: this tab never unmounts, so
+  // there is no remount to seed, and each refresh below answers an event that
+  // must not be swallowed by the cache's dedupe window.
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const knownSessions = useRef(new Set<string>());
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(readHistoryOpen);
+  const [historyOpen, setHistoryOpen] = useState(loadHistoryOpen);
 
   useEffect(() => saveChatTabs(state), [state]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(HISTORY_OPEN_KEY, String(historyOpen));
-    } catch {
-      // Only a preference.
-    }
-  }, [historyOpen]);
+  useEffect(() => saveHistoryOpen(historyOpen), [historyOpen]);
 
   const refreshSessions = useCallback(async () => {
     try {
-      setSessions(await listSessions());
+      const listed = await listSessions();
+      knownSessions.current = new Set(listed.map((s) => s.id));
+      setSessions(listed);
       setSessionsError(null);
     } catch (e) {
       setSessionsError(formatError(e));
     }
   }, []);
 
-  // Titles are assigned by the sidecar from a chat's first message, and other
-  // surfaces add chats while this tab sits hidden.
+  // Other surfaces add chats while this tab sits hidden.
   useEffect(() => {
     if (active) void refreshSessions();
   }, [active, refreshSessions]);
 
-  const openSession = useCallback((sessionId: string) => {
-    const { state: next, tabId } = openSessionInTabs(stateRef.current, sessionId);
-    stateRef.current = next;
-    setState(next);
-    setPendingLoads((loads) => ({ ...loads, [tabId]: sessionId }));
-  }, []);
+  const openSession = useCallback(
+    (sessionId: string, { reload }: { reload: boolean }) => {
+      const alreadyOpen = state.tabs.some((t) => t.sessionId === sessionId);
+      if (reload || !alreadyOpen) setPendingLoads((loads) => new Set(loads).add(sessionId));
+      const newTabId = createTabId();
+      setState((prev) =>
+        openSessionInTabs(prev, sessionId, {
+          newTabId,
+          activeTabIdle: !busyTabs.current.has(prev.activeId),
+        }),
+      );
+    },
+    [state.tabs],
+  );
 
   useEffect(() => {
     if (!requestedSessionId) return;
-    openSession(requestedSessionId);
+    openSession(requestedSessionId, { reload: true });
     onRequestConsumed();
   }, [requestedSessionId, openSession, onRequestConsumed]);
 
@@ -110,13 +110,12 @@ export default function ChatTabs({
       // not wipe the tab's session.
       if (!sessionId) return;
       setState((prev) => setTabSession(prev, tabId, sessionId));
-      // A chat this tab just started has no row in the list yet.
-      void refreshSessions();
+      // A chat this tab just started has no row in the history yet.
+      if (!knownSessions.current.has(sessionId)) void refreshSessions();
     },
     [refreshSessions],
   );
 
-  const busyTabs = useRef(new Set<string>());
   const onStatusChange = useCallback(
     (tabId: string, status: ChatPanelStatus) => {
       // A reply that just finished is when a new chat's title appears.
@@ -128,18 +127,25 @@ export default function ChatTabs({
     [refreshSessions],
   );
 
-  const consumeLoad = useCallback((tabId: string) => {
+  const consumeLoad = useCallback((sessionId: string) => {
     setPendingLoads((loads) => {
-      const { [tabId]: _, ...rest } = loads;
-      return rest;
+      const next = new Set(loads);
+      next.delete(sessionId);
+      return next;
     });
   }, []);
 
-  const close = (tabId: string) => {
-    setState((prev) => closeTab(prev, tabId));
-    consumeLoad(tabId);
-    busyTabs.current.delete(tabId);
-    setStatuses(({ [tabId]: _, ...rest }) => rest);
+  const close = (tab: ChatTab) => {
+    const newTabId = createTabId();
+    setState((prev) => closeTab(prev, tab.id, newTabId));
+    if (tab.sessionId) consumeLoad(tab.sessionId);
+    busyTabs.current.delete(tab.id);
+    setStatuses(({ [tab.id]: _, ...rest }) => rest);
+  };
+
+  const newTab = () => {
+    const newTabId = createTabId();
+    setState((prev) => addTab(prev, newTabId));
   };
 
   const openTabSessions = new Set(state.tabs.map((t) => t.sessionId));
@@ -171,13 +177,14 @@ export default function ChatTabs({
           )}
           <ul className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
             {sessions.map((s) => {
+              const title = s.title ?? UNTITLED;
               const current = s.id === activeSessionId;
               return (
                 <li key={s.id}>
                   <button
                     type="button"
-                    onClick={() => openSession(s.id)}
-                    title={s.title ?? "Untitled chat"}
+                    onClick={() => openSession(s.id, { reload: false })}
+                    title={title}
                     aria-current={current ? "true" : undefined}
                     className={`block w-full truncate rounded px-2 py-1.5 text-left text-sm ${
                       current
@@ -187,7 +194,7 @@ export default function ChatTabs({
                           : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
                     }`}
                   >
-                    {s.title ?? "Untitled chat"}
+                    {title}
                   </button>
                 </li>
               );
@@ -197,11 +204,7 @@ export default function ChatTabs({
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div
-          role="tablist"
-          aria-label="Open chats"
-          className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-950 px-1"
-        >
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-950 px-1">
           {!historyOpen && (
             <button
               type="button"
@@ -213,16 +216,20 @@ export default function ChatTabs({
               <PanelLeftOpenIcon className="size-4" />
             </button>
           )}
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+          <div
+            role="tablist"
+            aria-label="Open chats"
+            className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+          >
             {state.tabs.map((t) => {
-              const selected = t.id === state.activeId;
+              const isActiveTab = t.id === state.activeId;
               const status = statuses[t.id];
               const label = tabLabel(t, sessions);
               return (
                 <div
                   key={t.id}
                   className={`group flex shrink-0 items-center gap-1 border-b-2 px-2 py-1 text-xs ${
-                    selected
+                    isActiveTab
                       ? "border-indigo-400 text-zinc-100"
                       : status?.awaitingApproval
                         ? "border-transparent text-amber-300 hover:text-amber-200"
@@ -232,7 +239,7 @@ export default function ChatTabs({
                   <button
                     type="button"
                     role="tab"
-                    aria-selected={selected}
+                    aria-selected={isActiveTab}
                     onClick={() => setState((prev) => ({ ...prev, activeId: t.id }))}
                     title={status?.awaitingApproval ? `${label} — needs your approval` : label}
                     className="flex max-w-48 items-center gap-1 truncate"
@@ -246,11 +253,11 @@ export default function ChatTabs({
                   </button>
                   <button
                     type="button"
-                    onClick={() => close(t.id)}
+                    onClick={() => close(t)}
                     aria-label={`Close ${label}`}
                     title="Close tab"
                     className={`rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 ${
-                      selected ? "" : "opacity-0 group-hover:opacity-100"
+                      isActiveTab ? "" : "opacity-0 group-hover:opacity-100"
                     }`}
                   >
                     <XIcon className="size-3" />
@@ -261,7 +268,7 @@ export default function ChatTabs({
           </div>
           <button
             type="button"
-            onClick={() => setState((prev) => addTab(prev))}
+            onClick={newTab}
             aria-label="New chat"
             title="New chat"
             className="shrink-0 rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
@@ -272,15 +279,17 @@ export default function ChatTabs({
 
         <div className="min-h-0 flex-1">
           {state.tabs.map((t) => {
-            const selected = active && t.id === state.activeId;
+            const isActiveTab = t.id === state.activeId;
             return (
-              <div key={t.id} className={t.id === state.activeId ? "h-full" : "hidden"}>
+              <div key={t.id} className={isActiveTab ? "h-full" : "hidden"}>
                 <ChatTabPanel
                   tabId={t.id}
-                  active={selected}
-                  requestedSessionId={pendingLoads[t.id] ?? null}
+                  onScreen={active && isActiveTab}
+                  pendingSessionId={
+                    t.sessionId && pendingLoads.has(t.sessionId) ? t.sessionId : null
+                  }
                   onLoadConsumed={consumeLoad}
-                  requestedArtifactId={t.id === state.activeId ? requestedArtifactId : null}
+                  requestedArtifactId={isActiveTab ? requestedArtifactId : null}
                   onArtifactRequestConsumed={onArtifactRequestConsumed}
                   onSessionChange={onSessionChange}
                   onStatusChange={onStatusChange}
@@ -297,8 +306,8 @@ export default function ChatTabs({
 /** Binds a `ChatPanel`'s callbacks to its tab, so they stay stable across renders. */
 function ChatTabPanel({
   tabId,
-  active,
-  requestedSessionId,
+  onScreen,
+  pendingSessionId,
   onLoadConsumed,
   requestedArtifactId,
   onArtifactRequestConsumed,
@@ -306,15 +315,17 @@ function ChatTabPanel({
   onStatusChange,
 }: {
   tabId: string;
-  active: boolean;
-  requestedSessionId: string | null;
-  onLoadConsumed: (tabId: string) => void;
+  onScreen: boolean;
+  pendingSessionId: string | null;
+  onLoadConsumed: (sessionId: string) => void;
   requestedArtifactId: string | null;
   onArtifactRequestConsumed: () => void;
   onSessionChange: (tabId: string, sessionId: string | null) => void;
   onStatusChange: (tabId: string, status: ChatPanelStatus) => void;
 }) {
-  const consumed = useCallback(() => onLoadConsumed(tabId), [onLoadConsumed, tabId]);
+  const consumed = useCallback(() => {
+    if (pendingSessionId) onLoadConsumed(pendingSessionId);
+  }, [onLoadConsumed, pendingSessionId]);
   const sessionChanged = useCallback(
     (sessionId: string | null) => onSessionChange(tabId, sessionId),
     [onSessionChange, tabId],
@@ -325,10 +336,10 @@ function ChatTabPanel({
   );
   return (
     <ChatPanel
-      active={active}
+      active={onScreen}
       focusOnShow
       showSessionControls={false}
-      requestedSessionId={requestedSessionId}
+      requestedSessionId={pendingSessionId}
       onRequestConsumed={consumed}
       requestedArtifactId={requestedArtifactId}
       onArtifactRequestConsumed={onArtifactRequestConsumed}

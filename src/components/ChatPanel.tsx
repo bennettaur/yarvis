@@ -25,8 +25,9 @@ import ToolApprovalBar from "./ToolApprovalBar";
 import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
 
-/** What a host shows for a panel it keeps off screen. */
+/** What `ChatTabs` marks on the tab of a panel, which may be off screen. */
 export interface ChatPanelStatus {
+  /** A message is on its way or a reply is running. */
   busy: boolean;
   awaitingApproval: boolean;
 }
@@ -35,14 +36,13 @@ const EMPTY_HINT =
   'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
 /**
- * The Chat tab: a thread plus the session picker the overlay doesn't have.
+ * One chat thread, with an optional session picker the overlay doesn't have.
+ * Every tab on the Chat tab holds one, and so does the Chat widget in Omni view.
  * Everything about running a turn — providers, streaming, approvals, errors —
  * belongs to `useChatThread`, so both chat surfaces behave identically.
  *
  * `active` is false while the host keeps the panel mounted but off screen, so a
- * turn keeps streaming after the user switches away. `sessionStorageKey`
- * reopens the last session on mount; each mounted instance needs its own key,
- * or they overwrite each other's. `focusOnShow` moves focus to the composer
+ * turn keeps streaming after the user switches away. `focusOnShow` moves focus to the composer
  * each time the panel comes on screen; it is for the Chat tab, not for a panel
  * that appears beside other inputs, such as an Omni widget.
  * `requestedSessionId` opens that chat, re-reading it even when it is already
@@ -58,7 +58,6 @@ const EMPTY_HINT =
  */
 export default function ChatPanel({
   active = true,
-  sessionStorageKey,
   focusOnShow = false,
   requestedSessionId = null,
   onRequestConsumed,
@@ -69,7 +68,6 @@ export default function ChatPanel({
   onStatusChange,
 }: {
   active?: boolean;
-  sessionStorageKey?: string;
   focusOnShow?: boolean;
   requestedSessionId?: string | null;
   onRequestConsumed?: () => void;
@@ -119,7 +117,7 @@ export default function ChatPanel({
     stop,
     newChat,
     loadSession,
-  } = useChatThread({ onSessionCreated: addSession, reasoning, sessionStorageKey });
+  } = useChatThread({ onSessionCreated: addSession, reasoning });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
   // own, so ours must stop answering the keyboard while it is up.
@@ -132,10 +130,15 @@ export default function ChatPanel({
     onSessionChange?.(sessionId);
   }, [sessionId, onSessionChange]);
 
+  // `busy` only turns on once the turn's session exists, and a first message
+  // waits for that session to be created. A host must not treat the panel as
+  // free in between.
+  const [submitting, setSubmitting] = useState(false);
   const awaitingApproval = approvals.length > 0;
+  const working = busy || submitting;
   useEffect(() => {
-    onStatusChange?.({ busy, awaitingApproval });
-  }, [busy, awaitingApproval, onStatusChange]);
+    onStatusChange?.({ busy: working, awaitingApproval });
+  }, [working, awaitingApproval, onStatusChange]);
 
   useEffect(() => {
     if (!requestedSessionId) return;
@@ -190,9 +193,12 @@ export default function ChatPanel({
     if (queued.length > 0) return queue();
     const text = input;
     setInput("");
-    void send(text).then((sent) => {
-      if (!sent) setInput((current) => current || text);
-    });
+    setSubmitting(true);
+    void send(text)
+      .then((sent) => {
+        if (!sent) setInput((current) => current || text);
+      })
+      .finally(() => setSubmitting(false));
   };
 
   const chat = (
