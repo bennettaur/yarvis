@@ -60,6 +60,23 @@ export interface AddMessageInput {
   metadata?: ChatMessageMetadata;
 }
 
+/** Longest title a chat takes from its first prompt, in characters. */
+export const PROMPT_TITLE_MAX = 60;
+
+/**
+ * A chat's name, taken from the first line of the prompt that opened it. Null
+ * for a prompt with no text to show.
+ */
+export function titleFromPrompt(prompt: string): string | null {
+  const line = prompt
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .find((l) => l.length > 0);
+  if (!line) return null;
+  if (line.length <= PROMPT_TITLE_MAX) return line;
+  return `${line.slice(0, PROMPT_TITLE_MAX - 1).trimEnd()}…`;
+}
+
 export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMessage> {
   const [row] = await db
     .insert(chatMessages)
@@ -76,9 +93,16 @@ export async function addMessage(db: Db, input: AddMessageInput): Promise<ChatMe
   // insert, which keeps microseconds, while a `Date` truncates to milliseconds —
   // so a JS bump within the same millisecond as another session's creation
   // sorted the just-used session *below* it.
+  // An untitled chat is named after the first prompt the user wrote. A
+  // scheduled task's prompt is model-written, so it never names one.
+  const title =
+    input.role === "user" && !input.metadata?.scheduledTask ? titleFromPrompt(input.content) : null;
   await db
     .update(chatSessions)
-    .set({ updatedAt: sql`now()` })
+    .set({
+      updatedAt: sql`now()`,
+      ...(title ? { title: sql`coalesce(${chatSessions.title}, ${title})` } : {}),
+    })
     .where(eq(chatSessions.id, input.sessionId));
   return row!;
 }

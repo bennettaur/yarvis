@@ -25,6 +25,12 @@ import ToolApprovalBar from "./ToolApprovalBar";
 import { Button } from "./ui/button";
 import VoiceControls from "./voice/VoiceControls";
 
+/** What a host shows for a panel it keeps off screen. */
+export interface ChatPanelStatus {
+  busy: boolean;
+  awaitingApproval: boolean;
+}
+
 const EMPTY_HINT =
   'Start a conversation. Set a provider key in Settings if the picker shows "(no key)".';
 
@@ -44,6 +50,11 @@ const EMPTY_HINT =
  * panel calls `onRequestConsumed` once it has. `requestedArtifactId` opens that
  * artifact beside the conversation, for a link clicked outside any chat; links
  * in this panel's own thread open there directly.
+ *
+ * `showSessionControls` is false when a host such as `ChatTabs` supplies its
+ * own way to start and pick chats. That host hears which session the panel
+ * shows through `onSessionChange`, and whether a reply is running or waiting
+ * on an approval through `onStatusChange`.
  */
 export default function ChatPanel({
   active = true,
@@ -53,6 +64,9 @@ export default function ChatPanel({
   onRequestConsumed,
   requestedArtifactId = null,
   onArtifactRequestConsumed,
+  showSessionControls = true,
+  onSessionChange,
+  onStatusChange,
 }: {
   active?: boolean;
   sessionStorageKey?: string;
@@ -61,6 +75,9 @@ export default function ChatPanel({
   onRequestConsumed?: () => void;
   requestedArtifactId?: string | null;
   onArtifactRequestConsumed?: () => void;
+  showSessionControls?: boolean;
+  onSessionChange?: (sessionId: string | null) => void;
+  onStatusChange?: (status: ChatPanelStatus) => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
@@ -112,6 +129,15 @@ export default function ChatPanel({
   const voice = useVoice({ send, streaming, busy, visible: active && !overlayOpen });
 
   useEffect(() => {
+    onSessionChange?.(sessionId);
+  }, [sessionId, onSessionChange]);
+
+  const awaitingApproval = approvals.length > 0;
+  useEffect(() => {
+    onStatusChange?.({ busy, awaitingApproval });
+  }, [busy, awaitingApproval, onStatusChange]);
+
+  useEffect(() => {
     if (!requestedSessionId) return;
     // Re-reading the open chat mid-reply would cancel the reply; it is already
     // on screen, so leave it be.
@@ -137,7 +163,7 @@ export default function ChatPanel({
   // replaced, so a session this panel created while the fetch was in flight
   // stays in the picker.
   useEffect(() => {
-    if (!active) return;
+    if (!active || !showSessionControls) return;
     void (async () => {
       try {
         const listed = await listSessions();
@@ -149,7 +175,7 @@ export default function ChatPanel({
         setSessionsError(formatError(e));
       }
     })();
-  }, [active]);
+  }, [active, showSessionControls]);
 
   const queue = () => {
     if (enqueue(input)) setInput("");
@@ -171,29 +197,31 @@ export default function ChatPanel({
 
   const chat = (
     <div className="flex h-full flex-col gap-4 p-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void newChat().then(() => composerRef.current?.focus())}
-        >
-          <PlusIcon />
-          New chat
-        </Button>
-        <select
-          title={SESSION_HINT}
-          value={sessionId ?? ""}
-          onChange={(e) => e.target.value && void loadSession(e.target.value)}
-          className="h-8 min-w-0 max-w-80 truncate rounded-md border border-input bg-input/30 px-2 text-sm text-foreground outline-none hover:bg-input/50 focus-visible:border-ring"
-        >
-          <option value="">— session —</option>
-          {sessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.title ?? s.id.slice(0, 8)}
-            </option>
-          ))}
-        </select>
-      </div>
+      {showSessionControls && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void newChat().then(() => composerRef.current?.focus())}
+          >
+            <PlusIcon />
+            New chat
+          </Button>
+          <select
+            title={SESSION_HINT}
+            value={sessionId ?? ""}
+            onChange={(e) => e.target.value && void loadSession(e.target.value)}
+            className="h-8 min-w-0 max-w-80 truncate rounded-md border border-input bg-input/30 px-2 text-sm text-foreground outline-none hover:bg-input/50 focus-visible:border-ring"
+          >
+            <option value="">— session —</option>
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.title ?? s.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <Conversation className="rounded-xl border border-border bg-zinc-900/50">
         <ConversationContent>

@@ -2,7 +2,7 @@
 
 There are two ways to type to [the assistant](assistant.md):
 
-- the **Chat** tab, a full-page chat with a session list,
+- the **Chat** tab, a full-page chat with tabs and a list of past chats,
 - **Omni Chat**, a chat overlay you can summon over any screen. It sees
   what you're looking at.
 
@@ -39,8 +39,24 @@ Other tabs only say which tab you're on.
 
 ## The Chat tab
 
-Open it with **Cmd+1**. At the top are **New chat** and a **session**
-dropdown to go back to an earlier chat.
+Open it with **Cmd+1**. You can keep several chats open at once, each in its
+own tab along the top:
+
+- **+** at the end of the tab strip opens a new, empty chat. **×** on a tab
+  closes it. Closing the last tab leaves an empty one in its place.
+- Each chat is named after the first line of the first message you send in
+  it, cut to 60 characters. A new tab says "New chat" until then.
+- A tab whose reply is still running shows a pulsing green dot. One waiting on
+  you to approve a tool call shows an amber dot.
+- Every tab keeps running while you look at another one, so a long reply
+  keeps streaming. Closing a tab mid-reply stops that reply.
+
+The **Chats** sidebar on the left lists every chat, newest first. Click one to
+open it. If a tab already has it, that tab comes forward. If the current tab is
+still empty, the chat opens there. Otherwise it opens in a new tab. The button
+at the top of the sidebar hides it, and the button at the start of the tab
+strip brings it back. Your open tabs and whether the sidebar is showing are
+remembered across restarts.
 
 The toolbar under the message box holds the rest:
 

@@ -7,7 +7,9 @@ import {
   createSession,
   getMessages,
   listSessions,
+  PROMPT_TITLE_MAX,
   rewindToMessage,
+  titleFromPrompt,
 } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -22,7 +24,54 @@ afterAll(async () => {
   await sql.end();
 });
 
+describe("titleFromPrompt", () => {
+  it("takes the first non-blank line with its whitespace collapsed", () => {
+    expect(titleFromPrompt("\n   \n  Plan   my\tweek \nwith details")).toBe("Plan my week");
+  });
+
+  it("shortens a long line to the cap with an ellipsis", () => {
+    const title = titleFromPrompt("word ".repeat(40))!;
+    expect(title.length).toBeLessThanOrEqual(PROMPT_TITLE_MAX);
+    expect(title.endsWith("…")).toBe(true);
+  });
+
+  it("gives no title for a blank prompt", () => {
+    expect(titleFromPrompt("  \n\t ")).toBeNull();
+  });
+});
+
 describe("chat service", () => {
+  it("names an untitled chat after its first user message and keeps that name", async () => {
+    const session = await createSession(db);
+    await addMessage(db, { sessionId: session.id, role: "assistant", content: "Hi, I'm Yarvis" });
+    await addMessage(db, { sessionId: session.id, role: "user", content: "Book a dentist visit" });
+    await addMessage(db, { sessionId: session.id, role: "user", content: "Make it Tuesday" });
+
+    const [listed] = await listSessions(db);
+    expect(listed!.title).toBe("Book a dentist visit");
+  });
+
+  it("keeps a title the session was created with", async () => {
+    const session = await createSession(db, "Planning");
+    await addMessage(db, { sessionId: session.id, role: "user", content: "hello" });
+
+    const [listed] = await listSessions(db);
+    expect(listed!.title).toBe("Planning");
+  });
+
+  it("does not name a chat after a scheduled task's prompt", async () => {
+    const session = await createSession(db);
+    await addMessage(db, {
+      sessionId: session.id,
+      role: "user",
+      content: "Check CI on #12",
+      metadata: { scheduledTask: { id: "t1", attempt: 1, origin: "chat" } },
+    });
+
+    const [listed] = await listSessions(db);
+    expect(listed!.title).toBeNull();
+  });
+
   it("creates a session and stores ordered messages", async () => {
     const session = await createSession(db, "Planning");
     expect(session.id).toBeString();
