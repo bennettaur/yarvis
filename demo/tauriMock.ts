@@ -126,6 +126,19 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
         agentName: (args.name as string | null) || null,
         agentCommand: (args.command as string | null) || null,
       });
+    case "set_agent_harnesses": {
+      const harnesses = args.harnesses as Settings["agentHarnesses"];
+      const defaultHarness = args.defaultHarness as string | null;
+      return updateSettings({
+        agentHarnesses: harnesses?.length ? harnesses : null,
+        defaultAgentHarness: defaultHarness && defaultHarness !== "claude" ? defaultHarness : null,
+      });
+    }
+    // The demo stores no secrets, so no harness has one set.
+    case "list_agent_harness_secret_status":
+      return [];
+    case "set_agent_harness_secret":
+      return null;
     case "set_allowed_slash_commands": {
       // Stored the way the core stores them: no leading '/', lower-case, deduped.
       const names = [
