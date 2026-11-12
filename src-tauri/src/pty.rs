@@ -15,7 +15,6 @@
 //! two without a gap or an overlap — see `PtySnapshot`.
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -26,6 +25,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use sha2::Sha256;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::harness::HarnessKind;
 use crate::settings::{non_blank, SettingsState};
 
 /// Upper bound on per-session captured output, in bytes. Older output is
@@ -148,6 +148,21 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     scrollback: Arc<Mutex<Scrollback>>,
+    /// The harness a workspace agent session was launched with; `None` for any
+    /// other terminal.
+    agent: Option<SessionAgent>,
+}
+
+/// Which harness an agent session runs, kept for as long as the session lives
+/// so a later check judges it against what was launched there rather than
+/// whatever the default is now.
+#[derive(Clone)]
+struct SessionAgent {
+    harness_id: String,
+    harness_name: String,
+    /// The launch command's program; what the foreground check compares
+    /// against when no registered pid matches.
+    program: Option<String>,
 }
 
 #[derive(Default)]
@@ -229,6 +244,9 @@ struct SpawnSpec {
     /// Drop `ANTHROPIC_API_KEY` from the child env so a Claude Code session uses
     /// the user's subscription login (Remote Control does not support API-key auth).
     strip_provider_secrets: bool,
+    /// The harness an agent session runs and the environment it adds. `None`
+    /// for a plain terminal.
+    agent: Option<SpawnAgent>,
     /// Stream offset the new session's capture starts counting from. Non-zero
     /// only when this spawn replaces a dead session under the same id: the
     /// `pty-output:<id>` event name outlives the shell, so a final chunk from the
@@ -237,6 +255,14 @@ struct SpawnSpec {
     /// zero leaves that chunk below where the new stream begins, which is what
     /// makes the frontend's own dedup discard it.
     start_offset: u64,
+}
+
+/// What an agent session's spawn needs from its harness.
+struct SpawnAgent {
+    identity: SessionAgent,
+    /// The harness's plain and secret variables, set before the core's own
+    /// session variables so neither can replace those.
+    env: Vec<(String, String)>,
 }
 
 /// The workspace a PTY id belongs to, when its id encodes one: the pinned Claude
@@ -369,6 +395,15 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
     if spec.strip_provider_secrets {
         cmd.env_remove("ANTHROPIC_API_KEY");
     }
+    // After the strip, so a harness that sets its own provider key keeps it.
+    if let Some(agent) = &spec.agent {
+        for (key, value) in &agent.env {
+            cmd.env(key, value);
+        }
+        // Read back by the SessionStart hook, so a relaunch after a restart
+        // resumes with the harness the session started with.
+        cmd.env(AGENT_HARNESS_ENV, &agent.identity.harness_id);
+    }
     // Every session carries the sidecar port + the two scoped tokens, so whatever
     // runs in it can post to the ingest endpoint (keyed by this exact PTY id) and
     // call the MCP endpoint, without ever seeing the full-access bearer. The
@@ -430,6 +465,7 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
         master: pair.master,
         child,
         scrollback,
+        agent: spec.agent.as_ref().map(|agent| agent.identity.clone()),
     })
 }
 
@@ -537,6 +573,9 @@ pub const DEFAULT_AGENT_COMMAND: &str = "claude --permission-mode auto";
 /// Settings as `agentName`.
 pub const DEFAULT_AGENT_NAME: &str = "Claude";
 
+/// Variable carrying an agent session's harness id into its shell.
+const AGENT_HARNESS_ENV: &str = "YARVIS_AGENT_HARNESS";
+
 /// Env override for the agent command, kept for the case where a command has to
 /// be injected without the app's settings file — it outranks the stored value.
 const AGENT_COMMAND_ENV: &str = "YARVIS_CLAUDE_COMMAND";
@@ -575,6 +614,42 @@ fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> Str
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
+}
+
+/// The built-in harness and the stored ones, as they stand now.
+fn harness_settings(
+    app: &AppHandle,
+) -> (
+    crate::harness::ResolvedHarness,
+    Vec<crate::harness::AgentHarness>,
+    Option<String>,
+) {
+    let settings = app
+        .try_state::<SettingsState>()
+        .map(|state| state.snapshot())
+        .unwrap_or_default();
+    (
+        crate::harness::builtin(agent_name(app), agent_command(app)),
+        settings.agent_harnesses.unwrap_or_default(),
+        settings.default_agent_harness,
+    )
+}
+
+/// The harness a launch runs: `requested` when given, otherwise the default.
+/// Its secret variables are read here, at launch, so the secret store is only
+/// touched for a harness that declares some.
+fn launch_harness(
+    app: &AppHandle,
+    requested: Option<&str>,
+) -> Result<(crate::harness::ResolvedHarness, Vec<(String, String)>), String> {
+    let (builtin, stored, default_id) = harness_settings(app);
+    let harness = crate::harness::resolve(builtin, &stored, default_id.as_deref(), requested)?;
+    let mut env = harness.env.clone();
+    if !harness.secret_env.is_empty() {
+        let root = crate::keychain::read_root()?;
+        env.extend(crate::harness::secret_env_from_root(&root, &harness)?);
+    }
+    Ok((harness, env))
 }
 
 /// The configured (or default) display name for a workspace's agent.
@@ -727,14 +802,13 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// text was "typed but not submitted" means the text is sitting in the
 /// prompt unsent.
 pub fn send_session_instruction(
-    app: &AppHandle,
     state: &PtyState,
     workspace_id: &str,
     instruction: &str,
     agent_pids: &[u32],
 ) -> Result<(), String> {
     let text = prepare_instruction(instruction)?;
-    submit_at_agent_prompt(app, state, workspace_id, &text, agent_pids)
+    submit_at_agent_prompt(state, workspace_id, &text, agent_pids)
 }
 
 /// Slash commands any workspace session may be sent without the user listing
@@ -881,14 +955,13 @@ pub fn send_session_slash_command(
     agent_pids: &[u32],
 ) -> Result<(), String> {
     let line = prepare_slash_command(command, arguments, &allowed_slash_commands(app))?;
-    submit_at_agent_prompt(app, state, workspace_id, &line, agent_pids)
+    submit_at_agent_prompt(state, workspace_id, &line, agent_pids)
 }
 
 /// Types already-checked `text` at the agent's prompt, pauses, re-checks that
 /// the same agent still holds the prompt, then presses Enter. See
 /// `send_session_instruction` for why each step is there.
 fn submit_at_agent_prompt(
-    app: &AppHandle,
     state: &PtyState,
     workspace_id: &str,
     text: &str,
@@ -899,7 +972,7 @@ fn submit_at_agent_prompt(
     // stalling the other terminals.
     let typed_into = {
         let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-        let session = agent_session_for_input(app, &mut sessions, &id, agent_pids)?;
+        let session = agent_session_for_input(&mut sessions, &id, agent_pids)?;
         session
             .writer
             .write_all(text.as_bytes())
@@ -917,8 +990,7 @@ fn submit_at_agent_prompt(
         .sessions
         .lock()
         .map_err(|e| not_submitted(e.to_string()))?;
-    let session =
-        agent_session_for_input(app, &mut sessions, &id, agent_pids).map_err(not_submitted)?;
+    let session = agent_session_for_input(&mut sessions, &id, agent_pids).map_err(not_submitted)?;
     if (session.child.process_id(), foreground_pid(session)) != typed_into {
         return Err(not_submitted(
             "the agent was replaced during the pause".into(),
@@ -931,10 +1003,9 @@ fn submit_at_agent_prompt(
         .map_err(|e| not_submitted(e.to_string()))
 }
 
-/// The running session `id`, when the configured agent is what reads its
-/// prompt; otherwise why text must not be typed there.
+/// The running session `id`, when the agent it was launched with is what
+/// reads its prompt; otherwise why text must not be typed there.
 fn agent_session_for_input<'a>(
-    app: &AppHandle,
     sessions: &'a mut HashMap<String, PtySession>,
     id: &str,
     agent_pids: &[u32],
@@ -945,7 +1016,7 @@ fn agent_session_for_input<'a>(
     if !matches!(session.child.try_wait(), Ok(None)) {
         return Err("the agent session has exited".into());
     }
-    if !foreground_is_agent(app, session, agent_pids) {
+    if !foreground_is_agent(session, agent_pids) {
         return Err(
             "the configured agent is not what is reading that session's prompt; open the workspace and check what is running there".into(),
         );
@@ -1012,7 +1083,7 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 /// a binary fails with it: the foreground executable is then the interpreter
 /// (`node`, `bun`), which doesn't match the command's first word, so the send is
 /// refused rather than delivered to a process this can't identify.
-fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]) -> bool {
+fn foreground_is_agent(session: &PtySession, agent_pids: &[u32]) -> bool {
     let Some(pid) = foreground_pid(session) else {
         eprintln!(
             "[pty] refused instruction: no process other than the shell holds the session's foreground"
@@ -1026,9 +1097,12 @@ fn foreground_is_agent(app: &AppHandle, session: &PtySession, agent_pids: &[u32]
         eprintln!("[pty] refused instruction: could not read the executable of pid {pid}");
         return false;
     };
-    let command = agent_command(app);
-    let Some(argv0) = command.split_whitespace().next() else {
-        eprintln!("[pty] refused instruction: no agent command is configured");
+    let Some(argv0) = session
+        .agent
+        .as_ref()
+        .and_then(|agent| agent.program.as_deref())
+    else {
+        eprintln!("[pty] refused instruction: the session was not launched as an agent");
         return false;
     };
     let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
@@ -1111,28 +1185,29 @@ fn is_valid_resume_id(id: &str) -> bool {
             .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// True when the agent command launches Claude Code, judged by the file name of
-/// its program, past any leading `VAR=value` assignments. Only Claude Code takes
-/// `--resume` with a Claude Code session id.
-fn runs_claude_code(base: &str) -> bool {
-    base.split_whitespace()
-        .find(|word| !word.contains('='))
-        .is_some_and(|program| Path::new(program).file_name() == Some(OsStr::new("claude")))
-}
-
 /// Refuses a `resume` the launch can't honour: an id that isn't a Claude Code
-/// session id, or an agent command that isn't Claude Code. Refused rather than
+/// session id, or a harness that isn't Claude Code. Refused rather than
 /// launched without the flag, since an unattended relaunch should continue the
 /// session that was cut off, not start a different agent.
-fn check_resume(base: &str, resume: Option<&str>) -> Result<(), String> {
+fn check_resume(kind: HarnessKind, resume: Option<&str>) -> Result<(), String> {
     match resume {
         None => Ok(()),
         Some(id) if !is_valid_resume_id(id) => Err("invalid resume session id".into()),
-        Some(_) if !runs_claude_code(base) => {
-            Err("the configured agent is not Claude Code, so it can't resume a session".into())
+        Some(_) if kind != HarnessKind::ClaudeCode => {
+            Err("the agent harness is not Claude Code, so it can't resume a session".into())
         }
         Some(_) => Ok(()),
     }
+}
+
+/// Refuses Remote Control for a harness that isn't Claude Code. Appending the
+/// flag anyway would either fail the launch or start a session the caller
+/// then tells the user they can drive from their phone.
+fn check_remote_control(kind: HarnessKind, remote_control: bool) -> Result<(), String> {
+    if remote_control && kind != HarnessKind::ClaudeCode {
+        return Err("Remote Control needs a Claude Code harness".into());
+    }
+    Ok(())
 }
 
 /// The launch line for an agent session: the base command, with Remote Control
@@ -1149,6 +1224,7 @@ fn agent_launch_command(
     remote_control: bool,
     resume: Option<&str>,
     instruction: Option<&str>,
+    prompt_args: Option<&str>,
 ) -> String {
     let mut command = if remote_control {
         remote_control_command(base, name)
@@ -1159,7 +1235,11 @@ fn agent_launch_command(
         command = format!("{} --resume {}", command, shell_single_quote(id));
     }
     match instruction.map(str::trim).filter(|i| !i.is_empty()) {
-        Some(instruction) => format!("{} {}", command, shell_single_quote(instruction)),
+        Some(instruction) => crate::harness::with_instruction(
+            &command,
+            prompt_args,
+            &shell_single_quote(instruction),
+        ),
         None => command,
     }
 }
@@ -1209,11 +1289,20 @@ pub fn spawn_claude_session(
     remote_control: bool,
     resume: Option<&str>,
     instruction: Option<&str>,
+    harness: Option<&str>,
 ) -> Result<(), String> {
-    let base = agent_command(app);
-    check_resume(&base, resume)?;
+    let (harness, env) = launch_harness(app, harness)?;
+    check_resume(harness.kind, resume)?;
+    check_remote_control(harness.kind, remote_control)?;
     let id = format!("ws-claude:{workspace_id}");
-    let command = agent_launch_command(&base, name, remote_control, resume, instruction);
+    let command = agent_launch_command(
+        &harness.command,
+        name,
+        remote_control,
+        resume,
+        instruction,
+        harness.prompt_args.as_deref(),
+    );
     spawn_into_state(
         app,
         state,
@@ -1224,6 +1313,14 @@ pub fn spawn_claude_session(
             cwd: Some(cwd),
             initial_command: Some(command),
             strip_provider_secrets: true,
+            agent: Some(SpawnAgent {
+                identity: SessionAgent {
+                    program: harness.program(),
+                    harness_id: harness.id,
+                    harness_name: harness.name,
+                },
+                env,
+            }),
             // Nothing to carry: `spawn_into_state` discards this spawn when the id
             // is already taken, so it only reaches a `Scrollback` when no session
             // holds the id and no predecessor's offsets survive to continue from.
@@ -1270,6 +1367,7 @@ pub fn pty_attach(
             cwd,
             initial_command: None,
             strip_provider_secrets: false,
+            agent: None,
             start_offset,
         },
     )?;
@@ -1306,6 +1404,7 @@ pub fn pty_start_claude(
     cwd: String,
     name: String,
     remote_control: bool,
+    harness: Option<String>,
 ) -> Result<(), String> {
     // No instruction: a session the frontend opens on entering a workspace is
     // one the user drives themselves. The issue "Start work" sequence runs in
@@ -1319,27 +1418,64 @@ pub fn pty_start_claude(
         remote_control,
         None,
         None,
+        harness.as_deref(),
     )
 }
 
-/// The agent a workspace surfaces: its tab title and the base command its
-/// launches are built from.
+/// The agent a workspace surfaces: the default harness's tab title and base
+/// command, plus every harness a session can be started with.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
     name: String,
     command: String,
+    harnesses: Vec<crate::harness::HarnessSummary>,
+    default_harness: String,
 }
 
-/// Returns the configured agent, so the frontend's own launches (e.g. the issue
-/// "Start work" terminal) use the same command remote-control sessions are built
-/// from and label the tab the same way.
+/// Returns the configured agent harnesses, so the frontend's own launches use
+/// the same commands the sidecar's are built from and label the tab the same
+/// way.
 #[tauri::command]
 pub fn get_agent_config(app: AppHandle) -> AgentConfig {
+    let (builtin, stored, default_id) = harness_settings(&app);
+    let harnesses = crate::harness::all(builtin, &stored);
+    let default_harness = crate::harness::default_id(&stored, default_id.as_deref());
+    let default = harnesses
+        .iter()
+        .find(|h| h.id == default_harness)
+        .unwrap_or(&harnesses[0]);
     AgentConfig {
-        name: agent_name(&app),
-        command: agent_command(&app),
+        name: default.name.clone(),
+        command: default.command.clone(),
+        default_harness,
+        harnesses: harnesses.iter().map(Into::into).collect(),
     }
+}
+
+/// The harness a live agent session runs, so its tab is titled after it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHarness {
+    id: String,
+    name: String,
+}
+
+/// The harness the live session `id` was launched with, or `None` when no
+/// agent session is running there.
+#[tauri::command]
+pub fn pty_session_harness(
+    state: tauri::State<'_, PtyState>,
+    id: String,
+) -> Result<Option<SessionHarness>, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    Ok(sessions
+        .get(&id)
+        .and_then(|session| session.agent.as_ref())
+        .map(|agent| SessionHarness {
+            id: agent.harness_id.clone(),
+            name: agent.harness_name.clone(),
+        }))
 }
 
 #[tauri::command]
@@ -1398,14 +1534,15 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_launch_command, attention_workspace_id, check_resume, hmac_sha256_hex,
-        is_unsafe_name_char, is_valid_resume_id, lock_scrollback, merge_allowed_slash_commands,
-        prepare_instruction, prepare_slash_command, remote_control_command, resolve_agent_command,
-        resolve_max_sessions, runs_claude_code, session_env, session_token, snapshot, Scrollback,
-        DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS, DEFAULT_MAX_SESSIONS,
-        MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK, MAX_SESSION_NAME_CHARS,
-        MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
+        agent_launch_command, attention_workspace_id, check_remote_control, check_resume,
+        hmac_sha256_hex, is_unsafe_name_char, is_valid_resume_id, lock_scrollback,
+        merge_allowed_slash_commands, prepare_instruction, prepare_slash_command,
+        remote_control_command, resolve_agent_command, resolve_max_sessions, session_env,
+        session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS,
+        DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
+        MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
     };
+    use crate::harness::{runs_claude_code, HarnessKind};
     use std::sync::Mutex;
 
     #[test]
@@ -1744,7 +1881,14 @@ mod tests {
     #[test]
     fn agent_launch_command_adds_remote_control_only_when_asked() {
         assert_eq!(
-            agent_launch_command("claude --permission-mode auto", "Fix bug", true, None, None),
+            agent_launch_command(
+                "claude --permission-mode auto",
+                "Fix bug",
+                true,
+                None,
+                None,
+                None
+            ),
             "claude --permission-mode auto --remote-control 'Fix bug'"
         );
         // A session started at the machine is driven in its own tab; Remote
@@ -1754,6 +1898,7 @@ mod tests {
                 "claude --permission-mode auto",
                 "Fix bug",
                 false,
+                None,
                 None,
                 None
             ),
@@ -1769,14 +1914,15 @@ mod tests {
                 "Fix bug",
                 false,
                 None,
-                Some("Read .yarvis/brief.md")
+                Some("Read .yarvis/brief.md"),
+                None
             ),
             "claude --permission-mode auto 'Read .yarvis/brief.md'"
         );
         // Remote Control and an instruction compose; the name and the
         // instruction are quoted independently.
         assert_eq!(
-            agent_launch_command("claude", "Fix bug", true, None, Some("Do the thing")),
+            agent_launch_command("claude", "Fix bug", true, None, Some("Do the thing"), None),
             "claude --remote-control 'Fix bug' 'Do the thing'"
         );
     }
@@ -1791,6 +1937,7 @@ mod tests {
             false,
             None,
             Some("it's; rm -rf ~ `id` $(id)"),
+            None,
         );
         assert_eq!(cmd, r"claude 'it'\''s; rm -rf ~ `id` $(id)'");
     }
@@ -1803,6 +1950,7 @@ mod tests {
                 "Fix bug",
                 false,
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"),
+                None,
                 None
             ),
             "claude --permission-mode auto --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70'"
@@ -1813,7 +1961,7 @@ mod tests {
                 "Fix bug",
                 true,
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70"),
-                Some("Go on")
+                Some("Go on"), None
             ),
             "claude --remote-control 'Fix bug' --resume '0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70' 'Go on'"
         );
@@ -1848,18 +1996,30 @@ mod tests {
     #[test]
     fn check_resume_refuses_a_resume_the_agent_cannot_take() {
         let id = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
-        assert!(check_resume("claude --permission-mode auto", Some(id)).is_ok());
-        assert!(check_resume("claude", Some("--dangerously-skip-permissions")).is_err());
+        assert!(check_resume(HarnessKind::ClaudeCode, Some(id)).is_ok());
+        assert!(check_resume(
+            HarnessKind::ClaudeCode,
+            Some("--dangerously-skip-permissions")
+        )
+        .is_err());
         // Another agent would read the flag as its own, or fail on it.
-        assert!(check_resume("codex", Some(id)).is_err());
+        assert!(check_resume(HarnessKind::Custom, Some(id)).is_err());
+        assert!(check_resume(HarnessKind::Pi, Some(id)).is_err());
         // Without a resume, any agent launches as before.
-        assert!(check_resume("codex", None).is_ok());
+        assert!(check_resume(HarnessKind::Custom, None).is_ok());
+    }
+
+    #[test]
+    fn check_remote_control_needs_a_claude_code_harness() {
+        assert!(check_remote_control(HarnessKind::ClaudeCode, true).is_ok());
+        assert!(check_remote_control(HarnessKind::Opencode, true).is_err());
+        assert!(check_remote_control(HarnessKind::Opencode, false).is_ok());
     }
 
     #[test]
     fn agent_launch_command_ignores_a_blank_instruction() {
         assert_eq!(
-            agent_launch_command("claude", "n", false, None, Some("   ")),
+            agent_launch_command("claude", "n", false, None, Some("   "), None),
             "claude"
         );
     }

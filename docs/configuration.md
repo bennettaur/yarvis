@@ -181,6 +181,8 @@ has written your providers and MCP servers into it.
 | --- | --- | --- |
 | `agentName` | `"Claude"` | Title of a workspace's agent tab |
 | `agentCommand` | `"claude --permission-mode auto"` | The command a workspace's agent session runs. Add a model or permission flags here. `YARVIS_CLAUDE_COMMAND` overrides it. |
+| `agentHarnesses` | unset | Agent harnesses beyond the built-in one: `id`, `name`, `kind` (`claude-code`, `pi`, `opencode` or `custom`), `command`, `promptArgs`, `env` and `secretEnv` (names only; the values are in the secrets item). Set from Settings → Repositories → Agent; see [Workspaces](features/workspaces.md#agent-harnesses). |
+| `defaultAgentHarness` | unset (`claude`, the built-in agent) | Id of the harness a session gets when none is picked. |
 | `allowedSlashCommands` | unset | Slash commands or skills, beyond `/compact`, that the assistant may run in a workspace's agent session. Names without the `/`, e.g. `["do-code-review"]`. Set from Settings → Repositories → Agent. |
 | `maxPtySessions` | `60` | Maximum number of open terminal sessions (1–1000) |
 | `secretBackend` | `"keychain"` | `"keychain"` or `"onepassword"` |

@@ -372,6 +372,13 @@
       "when": 1794199527080,
       "tag": "0052_public_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794457242132,
+      "tag": "0053_agent_session_harness",
+      "breakpoints": true
     }
   ]
 }

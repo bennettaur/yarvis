@@ -65,6 +65,8 @@ let settings: Settings = {
   defaultAgentName: "Claude",
   defaultAgentCommand: "claude --permission-mode auto",
   agentCommandOverriddenByEnv: false,
+  agentHarnesses: null,
+  defaultAgentHarness: null,
   azureDevopsOrgUrl: null,
   jiraBaseUrl: null,
   jiraEmail: null,
@@ -197,7 +199,18 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
       return {
         name: settings.agentName ?? settings.defaultAgentName,
         command: settings.agentCommand ?? settings.defaultAgentCommand,
+        harnesses: [
+          {
+            id: "claude",
+            name: settings.agentName ?? settings.defaultAgentName,
+            kind: "claude-code",
+            command: settings.agentCommand ?? settings.defaultAgentCommand,
+          },
+        ],
+        defaultHarness: "claude",
       };
+    case "pty_session_harness":
+      return null;
     case "pty_exists":
       return terminals.exists(args.id as string);
     // Never busy, so closing a tab doesn't stop the recording on a confirm dialog.

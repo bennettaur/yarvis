@@ -624,6 +624,25 @@ describe("workspace tools", () => {
     expect(startedCwds[1]).toContain("existing-ws");
   });
 
+  it("start_workspace_session launches the harness it was asked for", async () => {
+    const created = await activeWorkspace("Harness WS");
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.start_workspace_session.execute!(
+      { workspaceId: created.workspaceId, harness: "pi" },
+      opts,
+    );
+    await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
+    // Without one the core picks the default, so none is sent.
+    expect(harnesses).toEqual(["pi", undefined]);
+  });
+
   it("start_workspace_session gives a workspace that lacks them the registration hooks", async () => {
     const created = await activeWorkspace("Older WS");
     const detail = await getWorkspace(db, created.workspaceId);

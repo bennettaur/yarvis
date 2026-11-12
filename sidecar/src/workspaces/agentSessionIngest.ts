@@ -28,6 +28,13 @@ const MAX_BODY_BYTES = 64 * 1024;
 const querySchema = z.object({
   workspaceId: UUID,
   pid: z.coerce.number().int().positive().max(2_147_483_647),
+  // Empty when the session's terminal carries no harness (a session started
+  // by hand in a workspace pane). The core only launches ids of this shape.
+  harness: z
+    .string()
+    .regex(/^([a-z0-9][a-z0-9-]{0,39})?$/)
+    .optional()
+    .transform((v) => v || null),
 });
 
 /**
@@ -98,7 +105,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
     const input = hookInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!input.success) return c.json({ error: input.error.flatten() }, 400);
 
-    const { workspaceId, pid } = query.data;
+    const { workspaceId, pid, harness } = query.data;
     if (!sessionKeyBelongsTo(sessionKey, workspaceId)) {
       return c.json({ error: "session key does not belong to that workspace" }, 400);
     }
@@ -115,6 +122,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         sessionKey,
         claudeSessionId: session_id,
         pid,
+        harness,
         source: source ?? null,
       });
     } else {

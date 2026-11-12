@@ -6,6 +6,7 @@ import {
   setAllowedSlashCommands,
   setChannelMessaging,
 } from "../lib/settings";
+import AgentHarnessesField from "./AgentHarnessesField";
 
 /**
  * The agent every workspace opens with: its tab title and the command its
@@ -125,6 +126,7 @@ export default function AgentSection() {
         </p>
       )}
 
+      {settings && <AgentHarnessesField settings={settings} onSaved={setSettings} />}
       {settings && <SlashCommandsField settings={settings} onSaved={setSettings} />}
       {settings && <ChannelMessagingField settings={settings} onSaved={setSettings} />}
     </section>

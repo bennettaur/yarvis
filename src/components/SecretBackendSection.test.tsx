@@ -30,6 +30,8 @@ function defaultSettings(): Settings {
     defaultAgentName: "Claude",
     defaultAgentCommand: "claude --permission-mode auto",
     agentCommandOverriddenByEnv: false,
+    agentHarnesses: null,
+    defaultAgentHarness: null,
     azureDevopsOrgUrl: null,
     jiraBaseUrl: null,
     jiraEmail: null,

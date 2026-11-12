@@ -1298,6 +1298,8 @@ export interface ProvisionOptions {
    * agent turns it on when the request came from somewhere the user isn't.
    */
   remoteControl?: boolean;
+  /** Agent harness the kick-off session runs; omitted means the default. */
+  harness?: string;
   /** Stops *following* an in-flight run when the caller's stream goes away. It
    *  never cancels the run itself — finishing without an audience is the point. */
   signal?: AbortSignal;
@@ -1544,6 +1546,7 @@ export async function provisionWorkspace(
     signal,
     startSession = startClaudeSession,
     remoteControl = false,
+    harness,
   }: ProvisionOptions = {},
 ): Promise<void> {
   const inFlight = provisioning.get(id);
@@ -1691,7 +1694,7 @@ export async function provisionWorkspace(
     // Launch before the status flips, so a workspace is never reported ready
     // with its kick-off still owed a session — whoever looks next just attaches.
     if (status === "active" && after && pendingBrief) {
-      await launchKickOffSession(db, after, startSession, remoteControl);
+      await launchKickOffSession(db, after, startSession, remoteControl, harness);
     }
 
     await db
@@ -1744,6 +1747,7 @@ async function launchKickOffSession(
   detail: WorkspaceDetail,
   startSession: ClaudeSessionStarter,
   remoteControl: boolean,
+  harness?: string,
 ): Promise<void> {
   try {
     await startSession({
@@ -1752,6 +1756,7 @@ async function launchKickOffSession(
       name: detail.name,
       remoteControl,
       instruction: AGENT_KICKOFF_INSTRUCTION,
+      harness,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);

@@ -64,6 +64,11 @@ export interface StartClaudeSessionInput {
    * workspace's agent is relaunched after the app restarted.
    */
   resumeSessionId?: string;
+  /**
+   * Id of the agent harness to launch (Settings → Agent harnesses). Omitted
+   * means the user's default. The core refuses an id it doesn't have.
+   */
+  harness?: string;
 }
 
 export interface ClaudeSessionResult {
@@ -171,6 +176,7 @@ async function resumeAgentSession(
       name: session.workspaceName,
       remoteControl: false,
       resumeSessionId: session.claudeSessionId,
+      harness: session.harness ?? undefined,
     });
     launched = true;
   } catch (e) {
