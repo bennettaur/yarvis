@@ -875,7 +875,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     list_agent_harnesses: tool({
       description:
-        "List the agent harnesses the user configured for workspace sessions (Claude Code, Pi, OpenCode, or a custom command), with which one is the default. Pass a harness id to start_workspace_session, create_workspace_session, create_scratch_workspace_session, start_work_on_issue or jira_start_work_on_issue only when the user asked for that agent; otherwise leave it out and the default runs. A session that needs Remote Control (one started while the user is away) can only use a claude-code or built-in harness.",
+        "List the agent harnesses the user configured (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user asked for that agent. Remote Control needs a claude-code or built-in harness.",
       inputSchema: z.object({}),
       execute: async () => listAgentHarnesses(),
     }),
