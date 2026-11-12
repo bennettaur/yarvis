@@ -202,6 +202,8 @@ describe("ask_user over MCP", () => {
         signal: hangUp.signal,
       }).catch(() => null);
       const id = await pendingQuestionId();
+      // The question is stored before its waiter is registered, so wait for both.
+      for (let i = 0; i < 100 && !hasWaiter(id); i++) await Bun.sleep(20);
       expect(hasWaiter(id)).toBe(true);
       hangUp.abort();
       await call;
