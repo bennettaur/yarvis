@@ -79,6 +79,16 @@ Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than
 starting a session you can't reach.
 
+Things that come from Claude Code's hooks in the workspace's
+`.claude/settings.json` don't work for other kinds yet: their sessions don't
+register with the workspace, raise attention-bell items, or show on the Agent
+Field page. The assistant can still type an instruction into one, once it
+recognises the harness's program holding the prompt. Channel messaging only
+works for the built-in agent's command.
+
+A harness's variables, secret ones included, are set in the terminal's shell,
+so every command the agent runs there can read them.
+
 The same section lists the **allowed slash commands**: the commands and skills
 the assistant may run in a workspace's session (see
 [Running a slash command in a session](#running-a-slash-command-in-a-session)).
@@ -570,7 +580,7 @@ the background.
 
 Safety rules:
 
-- **The send is refused unless the configured agent is what's reading the
+- **The send is refused unless the session's agent is what's reading the
   prompt.** If the agent exited, or something else is running in that
   terminal, nothing is typed. Yarvis knows which process is Claude because
   each Claude Code session registers itself with the workspace when it starts.

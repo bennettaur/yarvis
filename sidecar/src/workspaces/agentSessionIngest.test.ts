@@ -9,6 +9,7 @@ import {
   ARCHIVED_END_REASON,
   endWorkspaceAgentSessions,
   findResumableAgentSessions,
+  HARNESS_TOKEN_HEADER,
   PROCESS_GONE_END_REASON,
   pidIsAlive,
   reapAndListAgentSessions,
@@ -52,6 +53,8 @@ const PANE = `ws:${WORKSPACE}/t1/p1`;
 /** The token the core puts in a PTY's environment (`session_token` in pty.rs). */
 const tokenFor = (sessionKey: string) =>
   createHmac("sha256", config.token).update(`session:${sessionKey}`).digest("hex");
+const harnessTokenFor = (sessionKey: string, harness: string) =>
+  createHmac("sha256", config.token).update(`harness:${sessionKey}:${harness}`).digest("hex");
 
 async function seedWorkspace(id: string, name: string) {
   await sql`INSERT INTO workspaces (id, name, slug, status, root_path)
@@ -72,6 +75,7 @@ function hook(
     sessionToken = tokenFor(sessionKey ?? AGENT_TAB),
     bearer = ATTENTION_TOKEN,
     harness,
+    harnessToken = harness ? harnessTokenFor(sessionKey ?? AGENT_TAB, harness) : "",
   }: {
     workspaceId?: string;
     pid?: string;
@@ -79,12 +83,14 @@ function hook(
     sessionToken?: string;
     bearer?: string;
     harness?: string;
+    harnessToken?: string;
   } = {},
 ) {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${bearer}`,
     "Content-Type": "application/json",
     [SESSION_TOKEN_HEADER]: sessionToken,
+    [HARNESS_TOKEN_HEADER]: harnessToken,
   };
   if (sessionKey !== null) headers[SESSION_KEY_HEADER] = sessionKey;
   const harnessParam = harness === undefined ? "" : `&harness=${encodeURIComponent(harness)}`;
@@ -331,6 +337,19 @@ describe("findResumableAgentSessions", () => {
     ]);
   });
 
+  it("refuses a harness the core didn't sign for that terminal", async () => {
+    // What a process in the terminal would send to be relaunched as another harness.
+    const forged = await hook(start(S1), {
+      pid: "999999",
+      harness: "claude-yolo",
+      harnessToken: harnessTokenFor(AGENT_TAB, "pi"),
+    });
+    expect(forged.status).toBe(403);
+    const unsigned = await hook(start(S1), { pid: "999999", harness: "pi", harnessToken: "" });
+    expect(unsigned.status).toBe(403);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
   it("rejects a harness id the core could never have launched", async () => {
     const res = await hook(start(S1), { pid: "999999", harness: "Bad Id&x=1" });
     expect(res.status).toBe(400);
@@ -442,6 +461,16 @@ describe("resumeAgentSessions", () => {
       return { sessionKey: `ws-claude:${input.workspaceId}` };
     };
 
+  it("relaunches a cut-off session with the harness it was started with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    const launched: StartClaudeSessionInput[] = [];
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+    expect(launched.map((l) => l.harness)).toEqual(["claude-bedrock"]);
+  });
+
   it("relaunches the cut-off session with --resume and closes its old registration", async () => {
     await hook(start(S1), { pid: "999999" });
     const launched: StartClaudeSessionInput[] = [];
@@ -458,6 +487,8 @@ describe("resumeAgentSessions", () => {
         name: "ws",
         remoteControl: false,
         resumeSessionId: S1,
+        // Registered before it carried a harness, so it was the built-in agent.
+        harness: "claude",
       },
     ]);
     // A resume that never starts isn't retried on every restart.

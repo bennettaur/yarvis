@@ -81,10 +81,8 @@ export interface AgentConfig {
 export const getSessionHarness = (id: string) =>
   invoke<{ id: string; name: string } | null>("pty_session_harness", { id });
 
-/** The configured agent (default `Claude` / `claude --permission-mode auto`, set
- * in Settings and overridable via YARVIS_CLAUDE_COMMAND). The frontend builds its
- * own launches (e.g. the issue terminal) on top of this so they match
- * remote-control sessions. */
+/** The default harness's name and command, plus every harness a session can be
+ * started with (Settings → Repositories → Agent). */
 export const getAgentConfig = () => invoke<AgentConfig>("get_agent_config");
 
 /** True when a non-shell foreground process is running in the session — used to

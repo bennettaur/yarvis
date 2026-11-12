@@ -310,7 +310,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         : null;
 
   /**
-   * Starts a Claude session in an already-active workspace and shapes the tool
+   * Starts an agent session in an already-active workspace and shapes the tool
    * result. Shared by create_workspace_session (after provisioning) and
    * start_workspace_session (existing workspace). Always launches at the
    * workspace root so Claude sees each repo's worktree as a subfolder and can
@@ -875,7 +875,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     list_agent_harnesses: tool({
       description:
-        "List the agent harnesses the user configured for workspace sessions (Claude Code, Pi, OpenCode, or a custom command), with which one is the default. Pass a harness id to start_workspace_session, create_workspace_session, create_scratch_workspace_session or start_work_on_issue only when the user asked for that agent; otherwise leave it out and the default runs.",
+        "List the agent harnesses the user configured for workspace sessions (Claude Code, Pi, OpenCode, or a custom command), with which one is the default. Pass a harness id to start_workspace_session, create_workspace_session, create_scratch_workspace_session, start_work_on_issue or jira_start_work_on_issue only when the user asked for that agent; otherwise leave it out and the default runs. A session that needs Remote Control (one started while the user is away) can only use a claude-code or built-in harness.",
       inputSchema: z.object({}),
       execute: async () => listAgentHarnesses(),
     }),

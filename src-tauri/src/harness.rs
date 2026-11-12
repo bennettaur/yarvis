@@ -33,6 +33,17 @@ pub const SECRET_ENV_SUBTREE: &str = "agent_harness_env";
 /// Placeholder in a harness's `promptArgs` that the quoted instruction replaces.
 pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
 
+/// Characters refused in `promptArgs`. The instruction is quoted before it
+/// replaces `{prompt}`, so a placeholder the user wrapped in quotes of their
+/// own (`'{prompt}'`, `"{prompt}"`) would close that quoting and leave the
+/// instruction for the shell to expand.
+const PROMPT_ARGS_REFUSED: [char; 5] = ['\'', '"', '`', '$', '\\'];
+
+fn prompt_args_are_safe(args: &str) -> bool {
+    args.matches(PROMPT_PLACEHOLDER).count() == 1
+        && !args.chars().any(|c| PROMPT_ARGS_REFUSED.contains(&c))
+}
+
 /// Longest harness id. Ids reach URLs and env vars, so they stay short.
 const MAX_ID_CHARS: usize = 40;
 /// Longest harness name. It is a tab title.
@@ -122,6 +133,17 @@ pub fn deserialize_lenient<'de, D: Deserializer<'de>>(
     Ok(Some(harnesses))
 }
 
+/// Parses `defaultAgentHarness`, reading anything but a string as unset, for
+/// the same reason as [`deserialize_lenient`].
+pub fn deserialize_default_lenient<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        Some(Value::String(id)) => Some(id),
+        _ => None,
+    })
+}
+
 /// A harness ready to launch: what `spawn_claude_session` needs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedHarness {
@@ -136,15 +158,15 @@ pub struct ResolvedHarness {
 }
 
 impl ResolvedHarness {
-    /// The executable the launch line runs, past any leading `VAR=value`
-    /// assignments. The foreground check compares the session's process to it.
+    /// What the foreground check compares the session's process to.
     pub fn program(&self) -> Option<String> {
         program_of(&self.command)
     }
 }
 
-/// See [`ResolvedHarness::program`].
-pub fn program_of(command: &str) -> Option<String> {
+/// The executable a command line runs, past any leading `VAR=value`
+/// assignments.
+fn program_of(command: &str) -> Option<String> {
     command
         .split_whitespace()
         .find(|word| !word.contains('='))
@@ -153,7 +175,7 @@ pub fn program_of(command: &str) -> Option<String> {
 
 /// True when a command launches Claude Code, judged by its program's file name.
 /// Decides the built-in harness's kind, since `agentCommand` carries none.
-pub fn runs_claude_code(command: &str) -> bool {
+fn runs_claude_code(command: &str) -> bool {
     program_of(command)
         .is_some_and(|program| Path::new(&program).file_name() == Some(OsStr::new("claude")))
 }
@@ -212,7 +234,7 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
         .cloned()
         .collect();
     let prompt_args = non_blank(harness.prompt_args.as_deref())
-        .filter(|args| args.matches(PROMPT_PLACEHOLDER).count() == 1)
+        .filter(|args| prompt_args_are_safe(args))
         .or_else(|| harness.kind.default_prompt_args().map(str::to_string));
     Some(ResolvedHarness {
         id: harness.id.clone(),
@@ -252,9 +274,10 @@ pub fn resolve(
     }
 }
 
-/// The id of the harness a launch with no id would get.
-pub fn default_id(stored: &[AgentHarness], default_id: Option<&str>) -> String {
-    default_id
+/// The id of the harness a launch with no id would get, given the stored
+/// `configured` default.
+pub fn default_id(stored: &[AgentHarness], configured: Option<&str>) -> String {
+    configured
         .filter(|id| {
             *id == BUILTIN_HARNESS_ID
                 || stored
@@ -265,7 +288,7 @@ pub fn default_id(stored: &[AgentHarness], default_id: Option<&str>) -> String {
         .to_string()
 }
 
-pub fn is_valid_id(id: &str) -> bool {
+fn is_valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -278,8 +301,8 @@ pub fn is_valid_id(id: &str) -> bool {
 /// A portable environment variable name that isn't one the core sets itself.
 /// `YARVIS_*` carries the session's tokens and key: a harness that set them
 /// would at best break the session's registration and at worst point it at
-/// another terminal's.
-pub fn is_valid_env_name(name: &str) -> bool {
+/// another terminal's. `TERM` is the core's, set for the PTY it opens.
+fn is_valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -358,6 +381,11 @@ pub fn validate(harnesses: &[AgentHarness], default_id: Option<&str>) -> Result<
                     "harness \"{label}\"'s prompt arguments must contain {PROMPT_PLACEHOLDER} exactly once"
                 ));
             }
+            if !prompt_args_are_safe(args) {
+                return Err(format!(
+                    "harness \"{label}\"'s prompt arguments may not contain quotes, $, ` or \\; {PROMPT_PLACEHOLDER} is quoted for you"
+                ));
+            }
         }
         for key in harness.env.keys().chain(harness.secret_env.iter()) {
             if !is_valid_env_name(key) {
@@ -365,6 +393,16 @@ pub fn validate(harnesses: &[AgentHarness], default_id: Option<&str>) -> Result<
                     "harness \"{label}\" sets \"{key}\", which is not a variable name a harness may set"
                 ));
             }
+        }
+        if let Some((_, key)) = harness
+            .secret_env
+            .iter()
+            .enumerate()
+            .find(|(i, key)| harness.secret_env[..*i].contains(key))
+        {
+            return Err(format!(
+                "harness \"{label}\" lists the secret variable \"{key}\" twice"
+            ));
         }
         if let Some(key) = harness
             .secret_env
@@ -413,6 +451,40 @@ pub fn secret_env_from_root(
         .collect()
 }
 
+/// The secret variables `before` declared that `after` no longer does, as
+/// (harness id, variable) pairs. Their stored values are cleared on save, so a
+/// later harness that reuses the id doesn't inherit a key meant for another.
+pub fn dropped_secrets(before: &[AgentHarness], after: &[AgentHarness]) -> Vec<(String, String)> {
+    before
+        .iter()
+        .flat_map(|old| {
+            let kept = after.iter().find(|new| new.id == old.id);
+            old.secret_env
+                .iter()
+                .filter(move |key| !kept.is_some_and(|new| new.secret_env.contains(key)))
+                .map(move |key| (old.id.clone(), key.clone()))
+        })
+        .collect()
+}
+
+/// Removes `dropped` from the secret-store subtree; returns whether anything
+/// was there to remove. A harness left with no values loses its entry.
+pub fn prune_secrets(subtree: &mut Value, dropped: &[(String, String)]) -> bool {
+    let Some(harnesses) = subtree.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for (id, key) in dropped {
+        if let Some(values) = harnesses.get_mut(id).and_then(Value::as_object_mut) {
+            changed |= values.remove(key).is_some();
+            if values.is_empty() {
+                harnesses.remove(id);
+            }
+        }
+    }
+    changed
+}
+
 /// Places a quoted instruction in a launch line: through the harness's prompt
 /// arguments when it has them, otherwise as a trailing positional argument.
 /// `quoted` must already be shell-quoted; the arguments around it are the
@@ -424,8 +496,8 @@ pub fn with_instruction(command: &str, prompt_args: Option<&str>, quoted: &str) 
     }
 }
 
-/// The public view of a harness: what Settings, the workspace picker and the
-/// sidecar's tools list. Carries the names of secret variables, never values.
+/// A harness as the workspace picker lists it (`get_agent_config`): no
+/// environment, plain or secret.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessSummary {
@@ -475,6 +547,18 @@ mod tests {
             builtin("C".into(), "FOO=1 /opt/bin/claude".into()).kind,
             HarnessKind::ClaudeCode
         );
+    }
+
+    #[test]
+    fn runs_claude_code_matches_only_the_claude_program() {
+        assert!(runs_claude_code("claude --permission-mode auto"));
+        assert!(runs_claude_code("/opt/homebrew/bin/claude"));
+        assert!(runs_claude_code("CLAUDE_CONFIG_DIR=/tmp/c claude"));
+        assert!(!runs_claude_code("codex"));
+        assert!(!runs_claude_code("aider --model sonnet"));
+        assert!(!runs_claude_code("npx claude-code"));
+        assert!(!runs_claude_code("echo claude"));
+        assert!(!runs_claude_code(""));
     }
 
     #[test]
@@ -573,7 +657,28 @@ mod tests {
         harness.prompt_args = Some("{prompt} {prompt}".into());
         assert!(validate(&[harness.clone()], None).is_err());
         harness.prompt_args = Some("-p {prompt}".into());
+        assert!(validate(&[harness.clone()], None).is_ok());
+        harness.prompt_args = Some("--task={prompt}".into());
         assert!(validate(&[harness], None).is_ok());
+    }
+
+    #[test]
+    fn a_quoted_placeholder_is_refused_on_save_and_ignored_on_read() {
+        for args in [
+            "--prompt '{prompt}'",
+            "--prompt \"{prompt}\"",
+            "$X {prompt}",
+            "`x` {prompt}",
+        ] {
+            let mut harness = stored("pi", HarnessKind::Pi, "pi");
+            harness.prompt_args = Some(args.into());
+            assert!(
+                validate(&[harness.clone()], None).is_err(),
+                "{args} was accepted"
+            );
+            let picked = resolve(claude(), &[harness], None, Some("pi")).unwrap();
+            assert_eq!(picked.prompt_args, None, "{args} was used");
+        }
     }
 
     #[test]
@@ -622,6 +727,45 @@ mod tests {
         assert_eq!(harnesses.len(), 2);
         assert_eq!(harnesses[0].kind, HarnessKind::Pi);
         assert_eq!(harnesses[1].kind, HarnessKind::Custom);
+    }
+
+    #[test]
+    fn validate_rejects_a_secret_variable_listed_twice() {
+        let mut harness = stored("c2", HarnessKind::ClaudeCode, "claude");
+        harness.secret_env = vec!["KEY".into(), "KEY".into()];
+        assert!(validate(&[harness], None).unwrap_err().contains("twice"));
+    }
+
+    #[test]
+    fn dropped_secrets_covers_removed_harnesses_and_removed_variables() {
+        let mut a = stored("a", HarnessKind::Pi, "pi");
+        a.secret_env = vec!["K1".into(), "K2".into()];
+        let mut b = stored("b", HarnessKind::Pi, "pi");
+        b.secret_env = vec!["K".into()];
+        let mut a_after = a.clone();
+        a_after.secret_env = vec!["K1".into()];
+        assert_eq!(
+            dropped_secrets(&[a, b], &[a_after]),
+            vec![
+                ("a".to_string(), "K2".to_string()),
+                ("b".to_string(), "K".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_secrets_removes_only_what_was_dropped() {
+        let mut subtree = serde_json::json!({
+            "a": { "K1": "x", "K2": "y" },
+            "b": { "K": "z" }
+        });
+        let dropped = vec![
+            ("a".to_string(), "K2".to_string()),
+            ("b".to_string(), "K".to_string()),
+        ];
+        assert!(prune_secrets(&mut subtree, &dropped));
+        assert_eq!(subtree, serde_json::json!({ "a": { "K1": "x" } }));
+        assert!(!prune_secrets(&mut subtree, &dropped));
     }
 
     #[test]

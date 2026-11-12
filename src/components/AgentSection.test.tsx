@@ -204,6 +204,38 @@ describe("AgentSection", () => {
     cleanup();
   });
 
+  it("falls back to the built-in default when the default harness is removed", async () => {
+    stored = {
+      ...defaultSettings(),
+      agentHarnesses: [
+        {
+          id: "pi",
+          name: "Pi",
+          kind: "pi",
+          command: "pi",
+          promptArgs: null,
+          env: {},
+          secretEnv: [],
+        },
+      ],
+      defaultAgentHarness: "pi",
+    };
+    const { host, cleanup } = await mount();
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    await waitFor(() => button("Remove") !== undefined);
+    button("Remove")?.click();
+    await waitFor(() => !host.innerHTML.includes('value="pi"'));
+    button("Save harnesses")?.click();
+    await waitFor(() => invoked.some((i) => i.command === "set_agent_harnesses"));
+
+    expect(invoked).toContainEqual({
+      command: "set_agent_harnesses",
+      args: { harnesses: [], defaultHarness: "claude" },
+    });
+    cleanup();
+  });
+
   it("writes a saved harness's secret variable straight to the secret store", async () => {
     stored = {
       ...defaultSettings(),

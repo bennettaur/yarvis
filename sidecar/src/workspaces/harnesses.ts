@@ -12,6 +12,10 @@ import { readSection } from "../settings/store.ts";
 /** Id of the harness built from `agentName`/`agentCommand`. Mirrors the core. */
 export const BUILTIN_HARNESS_ID = "claude";
 
+/** The built-in harness's name while `agentName` is unset. Mirrors the core's
+ *  `DEFAULT_AGENT_NAME`. */
+const DEFAULT_AGENT_NAME = "Claude";
+
 /** Mirrors the core's id rule, so a malformed id fails here with a clear error. */
 export const harnessIdSchema = z
   .string()
@@ -20,7 +24,7 @@ export const harnessIdSchema = z
     "Id of the agent harness to run, from list_agent_harnesses. Omit for the user's default. Only pass one the user asked for.",
   );
 
-export interface HarnessListing {
+interface HarnessListing {
   id: string;
   name: string;
   kind: string;
@@ -57,7 +61,7 @@ export async function listAgentHarnesses(): Promise<HarnessListing[]> {
   const effectiveDefault =
     typeof defaultId === "string" && ids.has(defaultId) ? defaultId : BUILTIN_HARNESS_ID;
   const builtinName =
-    typeof agentName === "string" && agentName.trim() ? agentName.trim() : "Claude";
+    typeof agentName === "string" && agentName.trim() ? agentName.trim() : DEFAULT_AGENT_NAME;
   return [
     {
       id: BUILTIN_HARNESS_ID,

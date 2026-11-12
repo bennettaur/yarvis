@@ -1188,6 +1188,10 @@ function WorkspaceDetailView({
   const launchHarnessId = pickedHarness ?? agent.defaultHarness;
   const launchHarnessName =
     agent.harnesses.find((h) => h.id === launchHarnessId)?.name ?? agent.name;
+  const liveHarnessName = sessionHarnessName ?? agent.name;
+  // A live but hidden session is shown again rather than replaced, so the
+  // button names what is running there.
+  const startButtonHarnessName = agentActive ? liveHarnessName : launchHarnessName;
   // A background teardown that couldn't remove a worktree parks the workspace
   // in `archiving` with the failure recorded, so the button becomes the retry.
   const archiveBlocked = detail.status === "archiving" && detail.error !== null;
@@ -1228,7 +1232,7 @@ function WorkspaceDetailView({
               onClick={() => void showAgent()}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
-              Start {agentActive ? (sessionHarnessName ?? agent.name) : launchHarnessName} session
+              Start {startButtonHarnessName} session
             </button>
           )}
           {detail.status !== "archived" && (
@@ -1450,7 +1454,7 @@ function WorkspaceDetailView({
               dismissed: agentDismissed,
               workspaceId: detail.id,
               cwd: agentCwd,
-              agentName: sessionHarnessName ?? agent.name,
+              agentName: liveHarnessName,
             });
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">

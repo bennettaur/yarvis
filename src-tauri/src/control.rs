@@ -8,14 +8,14 @@
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
 //! reachable over the network. The protocol is deliberately narrow — the sidecar
-//! can only start, stop, or talk to a Claude session for a workspace, and chooses
-//! only whether to launch the configured agent, not what runs: the command comes
-//! from settings, which only the webview can write. The sidecar's `name` does
+//! can only start, stop, or talk to an agent session for a workspace, and chooses
+//! only whether to launch one and which saved harness, by id — never what runs:
+//! the command comes from settings, which only the webview can write. The sidecar's `name` does
 //! reach the launch line, and that line is typed into an interactive shell rather
 //! than exec'd, so `pty::sanitize_session_name` strips it — see that function for
 //! why quoting alone is not enough. `claude.send` types free text at a prompt
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
-//! unless the configured agent itself is what reads that prompt, and refuses
+//! unless the session's own agent is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
 //! than a request. `claude.slash` is how a slash command reaches a session: the
 //! sidecar names a command, and `pty::send_session_slash_command` types it only

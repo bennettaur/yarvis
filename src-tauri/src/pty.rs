@@ -369,6 +369,13 @@ fn session_token(signing_key: &str, session_key: &str) -> String {
     hmac_sha256_hex(signing_key, &format!("session:{session_key}"))
 }
 
+/// Proves which harness the core launched in PTY `session_key`. Signed like
+/// `session_token`, under a prefix of its own so neither token can stand in
+/// for the other.
+fn harness_token(signing_key: &str, session_key: &str, harness_id: &str) -> String {
+    hmac_sha256_hex(signing_key, &format!("harness:{session_key}:{harness_id}"))
+}
+
 fn hmac_sha256_hex(key: &str, message: &str) -> String {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC accepts a key of any length");
@@ -401,7 +408,8 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
             cmd.env(key, value);
         }
         // Read back by the SessionStart hook, so a relaunch after a restart
-        // resumes with the harness the session started with.
+        // resumes with the harness the session started with. Signed below, once
+        // the bearer is in reach.
         cmd.env(AGENT_HARNESS_ENV, &agent.identity.harness_id);
     }
     // Every session carries the sidecar port + the two scoped tokens, so whatever
@@ -421,6 +429,15 @@ fn spawn_session(app: &AppHandle, id: &str, spec: &SpawnSpec) -> Result<PtySessi
             mcp.as_ref().map(|m| m.0.as_str()),
         ) {
             cmd.env(key, value);
+        }
+        // Without it, anything running in the terminal could register the
+        // session under another saved harness and have it relaunched with that
+        // one after a restart.
+        if let Some(agent) = &spec.agent {
+            cmd.env(
+                AGENT_HARNESS_TOKEN_ENV,
+                harness_token(&info.token, id, &agent.identity.harness_id),
+            );
         }
     }
     if let Some(dir) = spec
@@ -563,10 +580,10 @@ pub fn kill_session(state: &PtyState, id: &str) {
 
 /// Base command a workspace's agent session is launched from. Configurable in
 /// Settings as `agentCommand`, and overridable per-launch via the
-/// `YARVIS_CLAUDE_COMMAND` env var. Remote-control sessions append
-/// `--remote-control <name>` to whatever this resolves to, which is a Claude
-/// Code flag — an agent that doesn't take it can still be launched, but won't
-/// be remote-controllable.
+/// `YARVIS_CLAUDE_COMMAND` env var. This is the built-in harness's command;
+/// see `harness.rs` for the others. Remote-control sessions append
+/// `--remote-control <name>`, a Claude Code flag, so `check_remote_control`
+/// refuses Remote Control for any harness that isn't Claude Code.
 pub const DEFAULT_AGENT_COMMAND: &str = "claude --permission-mode auto";
 
 /// Display name for a workspace's agent, used as its tab title. Configurable in
@@ -575,6 +592,8 @@ pub const DEFAULT_AGENT_NAME: &str = "Claude";
 
 /// Variable carrying an agent session's harness id into its shell.
 const AGENT_HARNESS_ENV: &str = "YARVIS_AGENT_HARNESS";
+/// Variable carrying `harness_token` for that id.
+const AGENT_HARNESS_TOKEN_ENV: &str = "YARVIS_AGENT_HARNESS_TOKEN";
 
 /// Env override for the agent command, kept for the case where a command has to
 /// be injected without the app's settings file — it outranks the stored value.
@@ -616,7 +635,8 @@ fn resolve_agent_command(env: Option<String>, configured: Option<String>) -> Str
         .unwrap_or_else(|| DEFAULT_AGENT_COMMAND.to_string())
 }
 
-/// The built-in harness and the stored ones, as they stand now.
+/// The built-in harness, the stored ones, and the stored default id, as they
+/// stand now.
 fn harness_settings(
     app: &AppHandle,
 ) -> (
@@ -635,9 +655,10 @@ fn harness_settings(
     )
 }
 
-/// The harness a launch runs: `requested` when given, otherwise the default.
-/// Its secret variables are read here, at launch, so the secret store is only
-/// touched for a harness that declares some.
+/// The harness a launch runs (`requested` when given, otherwise the default)
+/// and the full environment it gets: its plain variables plus its secret ones.
+/// The secrets are read here, at launch, so the secret store is only touched
+/// for a harness that declares some.
 fn launch_harness(
     app: &AppHandle,
     requested: Option<&str>,
@@ -714,8 +735,8 @@ const MAX_INSTRUCTION_CHARS: usize = 4000;
 /// of them is a tool call — so the foreground check below, which only decides
 /// *who* reads the line, cannot stop them.
 ///
-/// The set is a property of the configured agent, and `resolve_agent_command`
-/// lets that be swapped, so an instruction is rejected rather than stripped:
+/// The set is a property of the session's harness, which the user can swap
+/// for another agent, so an instruction is rejected rather than stripped:
 /// deleting a leading character silently changes what was asked for, and no
 /// legitimate instruction needs to open with punctuation.
 const INSTRUCTION_PREFIXES_REJECTED: [char; 4] = ['!', '/', '#', '@'];
@@ -779,7 +800,8 @@ fn prepare_instruction(text: &str) -> Result<String, String> {
 /// submits it, exactly as if the user had typed it there.
 ///
 /// Refused unless the agent holds the PTY's foreground: a registered Claude
-/// process, or the configured agent command (see `foreground_is_agent`). The session is a real terminal: its agent can be
+/// process, or the program of the harness the session was launched with (see
+/// `foreground_is_agent`). The session is a real terminal: its agent can be
 /// interrupted, leaving the bare shell — where the text would run as a command
 /// line — or replaced by whatever the user ran next, and text plus a carriage
 /// return typed into `vim` or a REPL is no better. The check needs the
@@ -1067,8 +1089,9 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 ///   executable is called on disk. Only the leader counts: a registered
 ///   `claude -p` run as a child of a script in the foreground is in the
 ///   script's group, and the script is what reads the terminal.
-/// - Otherwise, the foreground executable's file name against the launch
-///   command's first word. This covers an agent that registers nothing (a
+/// - Otherwise, the foreground executable's file name against the program of
+///   the harness the session was launched with (past any leading `VAR=value`).
+///   This covers an agent that registers nothing (a
 ///   non-Claude agent, or a session started before the hook was installed).
 ///   Claude Code's native installer fails it: `claude` links to
 ///   `versions/<version>`, and that version-numbered file is what the OS
@@ -1081,7 +1104,7 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 ///
 /// It fails closed, and an unregistered agent installed as a script rather than
 /// a binary fails with it: the foreground executable is then the interpreter
-/// (`node`, `bun`), which doesn't match the command's first word, so the send is
+/// (`node`, `bun`), which doesn't match the harness's program, so the send is
 /// refused rather than delivered to a process this can't identify.
 fn foreground_is_agent(session: &PtySession, agent_pids: &[u32]) -> bool {
     let Some(pid) = foreground_pid(session) else {
@@ -1111,7 +1134,7 @@ fn foreground_is_agent(session: &PtySession, agent_pids: &[u32]) -> bool {
         // The command itself isn't logged: it is user-written and can carry an
         // inline `VAR=secret` assignment.
         eprintln!(
-            "[pty] refused instruction: foreground executable {exe} is not the configured agent, and none of the {} registered agent pid(s) leads the foreground process group",
+            "[pty] refused instruction: foreground executable {exe} is not the session's agent, and none of the {} registered agent pid(s) leads the foreground process group",
             agent_pids.len()
         );
     }
@@ -1212,8 +1235,9 @@ fn check_remote_control(kind: HarnessKind, remote_control: bool) -> Result<(), S
 
 /// The launch line for an agent session: the base command, with Remote Control
 /// added only when asked for, `--resume` when it continues an earlier Claude
-/// Code session, and an `instruction` the session should start on appended as
-/// a single argument. Extracted from `spawn_claude_session` alongside
+/// Code session, and an `instruction` the session should start on, quoted as a
+/// single argument and placed where the harness's `prompt_args` put `{prompt}`
+/// (appended at the end without them). Extracted from `spawn_claude_session` alongside
 /// `remote_control_command` so the choice is unit-testable without app state.
 ///
 /// The instruction carries issue text, which an outside party writes, so it is
@@ -1265,9 +1289,9 @@ fn shell_single_quote(s: &str) -> String {
 /// the session keeps running until killed or the app exits.
 ///
 /// The launch line is built here rather than taken from the caller, so a caller
-/// (including the control channel) chooses only *whether* to start the configured
-/// agent, not what runs. The command itself comes from settings, which only the
-/// webview can write; the one caller-supplied value that reaches the line is
+/// (including the control channel) chooses only *whether* to start an agent and
+/// which saved harness, by id — never what runs. The command itself comes from
+/// settings, which only the webview can write; the one caller-supplied value that reaches the line is
 /// `name`, which `sanitize_session_name` strips before it is quoted. This is not
 /// argv safety — the line is typed into an interactive shell — so both of those
 /// matter.
@@ -1279,6 +1303,9 @@ fn shell_single_quote(s: &str) -> String {
 ///
 /// `resume` is the id of a Claude Code session to continue, which the sidecar
 /// passes when it relaunches a workspace's agent after the app restarted.
+///
+/// `harness` is the id of a saved harness; `None` means the default. An id
+/// that names no saved harness is refused rather than replaced by the default.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_session(
     app: &AppHandle,
@@ -1535,14 +1562,14 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: String) -> Result<(), Str
 mod tests {
     use super::{
         agent_launch_command, attention_workspace_id, check_remote_control, check_resume,
-        hmac_sha256_hex, is_unsafe_name_char, is_valid_resume_id, lock_scrollback,
+        harness_token, hmac_sha256_hex, is_unsafe_name_char, is_valid_resume_id, lock_scrollback,
         merge_allowed_slash_commands, prepare_instruction, prepare_slash_command,
         remote_control_command, resolve_agent_command, resolve_max_sessions, session_env,
         session_token, snapshot, Scrollback, DEFAULT_AGENT_COMMAND, DEFAULT_ALLOWED_SLASH_COMMANDS,
         DEFAULT_MAX_SESSIONS, MAX_CONFIGURABLE_SESSIONS, MAX_INSTRUCTION_CHARS, MAX_SCROLLBACK,
         MAX_SESSION_NAME_CHARS, MAX_SLASH_COMMAND_CHARS, REFUSED_SLASH_COMMANDS,
     };
-    use crate::harness::{runs_claude_code, HarnessKind};
+    use crate::harness::HarnessKind;
     use std::sync::Mutex;
 
     #[test]
@@ -1982,18 +2009,6 @@ mod tests {
     }
 
     #[test]
-    fn runs_claude_code_matches_only_the_claude_program() {
-        assert!(runs_claude_code("claude --permission-mode auto"));
-        assert!(runs_claude_code("/opt/homebrew/bin/claude"));
-        assert!(runs_claude_code("CLAUDE_CONFIG_DIR=/tmp/c claude"));
-        assert!(!runs_claude_code("codex"));
-        assert!(!runs_claude_code("aider --model sonnet"));
-        assert!(!runs_claude_code("npx claude-code"));
-        assert!(!runs_claude_code("echo claude"));
-        assert!(!runs_claude_code(""));
-    }
-
-    #[test]
     fn check_resume_refuses_a_resume_the_agent_cannot_take() {
         let id = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
         assert!(check_resume(HarnessKind::ClaudeCode, Some(id)).is_ok());
@@ -2177,6 +2192,22 @@ mod tests {
         assert_eq!(
             session_token("bearer", "ws-claude:a"),
             hmac_sha256_hex("bearer", "session:ws-claude:a")
+        );
+    }
+
+    #[test]
+    fn harness_token_is_bound_to_the_session_and_the_harness() {
+        assert_eq!(
+            harness_token("bearer", "ws-claude:a", "pi"),
+            hmac_sha256_hex("bearer", "harness:ws-claude:a:pi")
+        );
+        assert_ne!(
+            harness_token("bearer", "ws-claude:a", "pi"),
+            harness_token("bearer", "ws-claude:a", "claude")
+        );
+        assert_ne!(
+            harness_token("bearer", "ws-claude:a", "pi"),
+            harness_token("bearer", "ws-claude:b", "pi")
         );
     }
 
