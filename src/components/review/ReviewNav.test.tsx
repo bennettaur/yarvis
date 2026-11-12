@@ -1,11 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { prDetailKey } from "../../lib/pr/cache";
-import type { PrDetail } from "../../lib/pr/types";
+import { prDetailKey, prStackKey } from "../../lib/pr/cache";
+import type { PrDetail, PrRef, PrStack, StackEntry } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../lib/reviewWorkspaces/cache";
-import { renderToHtml } from "../../test/render";
+import { mountForInteraction, renderToHtml, waitFor } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import { PR_COLORS, prColor } from "./prColors";
 import ReviewNav, { cloneStatusText, navGroups, prLabel } from "./ReviewNav";
 
@@ -85,6 +86,7 @@ describe("ReviewNav", () => {
   const render = (prs: ReviewWorkspacePr[]) => {
     for (const p of prs) {
       primeCache(prDetailKey(p.ref), { title: p.title, reviewThreads: [] } as unknown as PrDetail);
+      primeCache(prStackKey(p.ref), null);
       const key = changedFilesKey(p);
       if (key) primeCache(key, { headSha: p.headSha, mergeBaseSha: p.mergeBaseSha, files: [] });
     }
@@ -96,6 +98,7 @@ describe("ReviewNav", () => {
         progress: new Map([["b", "Receiving objects: 40%"]]),
         openTab: () => {},
         onSetup: () => {},
+        onAddStackLayers: async () => {},
       }),
     );
   };
@@ -140,5 +143,172 @@ describe("ReviewNav", () => {
     expect(
       prLabel({ ref: { provider: "azure", org: "o", project: "p", repo: "svc", prId: 12 } }),
     ).toBe("svc#12");
+  });
+});
+
+describe("ReviewNav's stack picker", () => {
+  let unmount = () => {};
+  afterEach(() => unmount());
+  afterAll(resetSidecarApi);
+
+  const layerRef = (number: number): PrRef => ({
+    provider: "github",
+    owner: "acme",
+    repo: "stacked",
+    number,
+  });
+  const layer = (number: number, extra: Partial<StackEntry> = {}) =>
+    ({
+      ref: layerRef(number),
+      number,
+      title: `Layer ${number}`,
+      state: "open",
+      merged: false,
+      draft: false,
+      reviewDecision: null,
+      ...extra,
+    }) as StackEntry;
+  const held = (number: number, position: number) =>
+    pr({
+      id: `pr-${number}`,
+      refKey: `gh:acme/stacked/${number}`,
+      ref: layerRef(number),
+      position,
+    });
+
+  it("offers each stack's other layers once, above the PRs, and holds every picker while adding", async () => {
+    const stack = {
+      trunk: "main",
+      entries: [layer(1, { reviewDecision: "approved" }), layer(2), layer(3), layer(4), layer(5)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    const other = {
+      trunk: "main",
+      entries: [layer(8), layer(9)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    const prs = [held(2, 0), held(4, 1), held(8, 2)];
+    for (const p of prs) {
+      primeCache(prDetailKey(p.ref), { title: p.title, reviewThreads: [] } as unknown as PrDetail);
+    }
+    primeCache(prStackKey(layerRef(2)), stack);
+    primeCache(prStackKey(layerRef(8)), other);
+    let release = () => {};
+    const added: PrRef[][] = [];
+    const mounted = await mountForInteraction(
+      createElement(ReviewNav, {
+        workspaceId: "ws-1",
+        prs,
+        active: null,
+        progress: new Map(),
+        openTab: () => {},
+        onSetup: () => {},
+        onAddStackLayers: (refs) => {
+          added.push(refs);
+          return new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        },
+      }),
+    );
+    unmount = mounted.unmount;
+    const nav = mounted.host.querySelector("nav")!;
+    await waitFor(
+      () => nav.querySelectorAll(':scope > section[aria-label="Stack"]').length === 2,
+      "a picker per stack",
+    );
+    const sections = [...nav.querySelectorAll(":scope > section")];
+    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual([
+      "Stack",
+      "Stack",
+      "stacked#2",
+      "stacked#4",
+      "stacked#8",
+    ]);
+    const [picker, otherPicker] = sections as [Element, Element];
+    expect(
+      [...picker.querySelectorAll("li")].map((li) => li.textContent?.match(/#\d+/)?.[0]),
+    ).toEqual(["#1", "#3", "#5"]);
+    const boxes = [...picker.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
+    expect(boxes.map((b) => b.checked)).toEqual([false, true, true]);
+
+    const button = (section: Element, label: string) =>
+      [...section.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label))!;
+    button(picker, "Add selected").click();
+    await waitFor(() => button(otherPicker, "Add all").disabled, "the other picker to lock");
+    expect(added).toEqual([[layerRef(3), layerRef(5)]]);
+    expect(button(picker, "Add all").disabled).toBe(true);
+    expect(boxes.every((b) => b.disabled)).toBe(true);
+    release();
+    await waitFor(() => !button(otherPicker, "Add all").disabled, "the pickers to unlock");
+  });
+
+  it("keeps the reviewer's ticks and looks no stack up again when the workspace's PRs change", async () => {
+    const stack = {
+      trunk: "main",
+      entries: [layer(21), layer(22), layer(23), layer(24), layer(25)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    const other = {
+      trunk: "main",
+      entries: [layer(28), layer(29)],
+      stackNumber: null,
+      truncated: false,
+    } as PrStack;
+    // Stacks are served rather than primed, so every lookup the nav makes is counted.
+    const asked: number[] = [];
+    stubSidecarApi({
+      sidecarFetch: async (path: string) => {
+        const url = new URL(path, "http://x");
+        // The rest of the nav's reads aren't what this test is about.
+        if (url.pathname !== "/api/pr/stack") {
+          return Response.json({ error: "not served here" }, { status: 404 });
+        }
+        const number = Number(url.searchParams.get("number"));
+        asked.push(number);
+        return Response.json({ stack: number === 28 ? other : stack });
+      },
+    });
+    const navWith = (prs: ReviewWorkspacePr[]) => {
+      for (const p of prs) {
+        primeCache(prDetailKey(p.ref), {
+          title: p.title,
+          reviewThreads: [],
+        } as unknown as PrDetail);
+      }
+      return createElement(ReviewNav, {
+        workspaceId: "ws-1",
+        prs,
+        active: null,
+        progress: new Map(),
+        openTab: () => {},
+        onSetup: () => {},
+        onAddStackLayers: async () => {},
+      });
+    };
+    const mounted = await mountForInteraction(navWith([held(22, 0)]));
+    unmount = mounted.unmount;
+    const nav = mounted.host.querySelector("nav")!;
+    const picker = () => nav.querySelectorAll('section[aria-label="Stack"]');
+    const ticks = (section: Element) =>
+      Object.fromEntries(
+        [...section.querySelectorAll("li")].map((li) => [
+          li.textContent?.match(/#\d+/)?.[0],
+          li.querySelector<HTMLInputElement>("input")!.checked,
+        ]),
+      );
+    await waitFor(() => picker().length === 1, "the picker");
+    nav.querySelector<HTMLInputElement>("li:nth-child(2) input")!.click();
+    await waitFor(() => ticks(picker()[0]!)["#23"] === false, "#23 unticked");
+
+    // The reviewer added #24, and a PR from another stack arrived.
+    mounted.rerender(navWith([held(22, 0), held(24, 1), held(28, 2)]));
+    await waitFor(() => picker().length === 2, "the second stack's picker");
+    expect(ticks(picker()[0]!)).toEqual({ "#21": true, "#23": false, "#25": true });
+    expect(ticks(picker()[1]!)).toEqual({ "#29": true });
+    expect(asked).toEqual([22, 28]);
   });
 });

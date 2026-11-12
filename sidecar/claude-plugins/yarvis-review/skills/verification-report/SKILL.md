@@ -77,7 +77,8 @@ together, still without rewording anything:
   severe; `status` is `issues` when any finding is left, else `pass`;
 - `risk`: the highest `level` any group gave, with that group's
   `clientImpact`; every group's `mitigations`, the first three; every group's
-  `concerns`, the first five, from the highest-level group first.
+  `concerns`, the first five, from the highest-level group first; every
+  group's `changes`, all of them, since Yarvis scores the whole list.
 
 The one exception: if an agent's reply isn't valid JSON of its shape, start
 that one agent again once, with the same prompt. An approach reply whose

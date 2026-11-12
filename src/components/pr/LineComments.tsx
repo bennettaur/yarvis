@@ -49,6 +49,12 @@ export interface LineComments {
   /** Where the open composer will post, or null when none is open. */
   composer: CommentTarget | null;
   /**
+   * The lines of the last comment GitHub put on the whole file because they
+   * aren't part of the diff, so the line can say where the comment went.
+   */
+  movedToFile: CommentTarget | null;
+  dismissMovedToFile: () => void;
+  /**
    * Opens the composer on a line. `extend` grows an open composer on the same
    * side to cover every line between it and this one instead.
    */
@@ -80,6 +86,7 @@ export function useLineComments(
   const byAnchor = useMemo(() => threadsByAnchor(threads), [threads]);
   const threadActions = useThreadActions(prRef, threads);
   const [composer, setComposer] = useState<CommentTarget | null>(null);
+  const [movedToFile, setMovedToFile] = useState<CommentTarget | null>(null);
   // Every comment posted this session; `pending` below narrows it to the ones
   // the server hasn't echoed back yet.
   const [posted, setPosted] = useState<PostedComment[]>([]);
@@ -111,7 +118,7 @@ export function useLineComments(
   }, [pending, posted.length]);
 
   const submit = async (target: CommentTarget, body: string) => {
-    await postPrComment(
+    const { placement } = await postPrComment(
       prRef,
       {
         path: file.filename,
@@ -124,9 +131,15 @@ export function useLineComments(
       seen,
     );
     invalidateLastReview(prRef);
-    // Read the counter outside the updater, which React may call more than once.
-    const id = nextId.current++;
-    setPosted((p) => [...p, { ...target, id, body }]);
+    // A comment GitHub moved onto the whole file never comes back on this
+    // line, so an optimistic copy here would never be cleared.
+    if (placement === "file") {
+      setMovedToFile(target);
+    } else {
+      // Read the counter outside the updater, which React may call more than once.
+      const id = nextId.current++;
+      setPosted((p) => [...p, { ...target, id, body }]);
+    }
     setComposer(null);
     // Drop the cached detail so the real thread arrives and supersedes the
     // optimistic copy. This wakes every mounted subscriber, so the refetch can
@@ -134,15 +147,20 @@ export function useLineComments(
     invalidate(prDetailKey(prRef));
   };
 
-  const openComposer = (side: DiffSide, line: number, extend = false) =>
+  const openComposer = (side: DiffSide, line: number, extend = false) => {
+    // The note is about the last post only; starting another comment moves on from it.
+    setMovedToFile(null);
     setComposer((current) =>
       extend && current?.side === side ? extendTarget(current, line) : { side, line },
     );
+  };
 
   return {
     threadsAt: (side, line) => byAnchor.get(anchorKey(side, line)),
     pending,
     composer,
+    movedToFile,
+    dismissMovedToFile: () => setMovedToFile(null),
     openComposer,
     closeComposer: () => setComposer(null),
     submit,
@@ -164,13 +182,15 @@ export function hasLineComments(
   return (
     comments.threadsAt(side, line) != null ||
     (comments.composer?.side === side && comments.composer.line === line) ||
+    (comments.movedToFile?.side === side && comments.movedToFile.line === line) ||
     comments.pending.some((p) => p.side === side && p.line === line)
   );
 }
 
 /**
  * Everything hanging below one diff line on one side: its threads, this
- * session's optimistic comments, and the composer when open. Renders nothing
+ * session's optimistic comments, a note when GitHub moved this session's
+ * comment onto the whole file, and the composer when open. Renders nothing
  * when the line has none of those — an empty container's padding would
  * otherwise show up as a blank gap between consecutive rows.
  */
@@ -190,6 +210,10 @@ export function LineCommentBlock({
   const pending = comments.pending.filter((p) => p.side === side && p.line === line);
   const target =
     comments.composer?.side === side && comments.composer.line === line ? comments.composer : null;
+  const moved =
+    comments.movedToFile?.side === side && comments.movedToFile.line === line
+      ? comments.movedToFile
+      : null;
 
   return (
     <div className="space-y-2 px-3 py-2 font-sans">
@@ -207,6 +231,24 @@ export function LineCommentBlock({
           {p.body}
         </div>
       ))}
+      {moved && (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-lg border border-amber-900/60 bg-amber-950/30 p-3 text-sm text-amber-200"
+        >
+          <span>
+            Posted on the whole file instead. GitHub only takes line comments on lines inside the
+            diff, so the comment names {describeLines(moved)} at the top.
+          </span>
+          <button
+            type="button"
+            onClick={comments.dismissMovedToFile}
+            className="shrink-0 text-xs text-amber-300 hover:text-amber-100"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {target && (
         <CommentComposer
           label={needsLineLabel(target) ? `Commenting on ${describeLines(target)}` : undefined}

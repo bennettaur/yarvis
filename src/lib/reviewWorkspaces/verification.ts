@@ -30,6 +30,43 @@ export interface VerificationConcern {
   line?: number;
 }
 
+export type ChangeKind =
+  | "passive"
+  | "reorganization"
+  | "addition"
+  | "removal"
+  | "interface"
+  | "logic";
+
+export type ImpactBand = 1 | 2 | 3 | 4 | 5;
+
+/** Mirrors a scored change from the sidecar's `verify/impact.ts`. */
+export interface VerificationChange {
+  title: string;
+  kind: ChangeKind;
+  reach: "leaf" | "local" | "shared" | "core";
+  evidence: "proven" | "partial" | "unproven";
+  sensitive: boolean;
+  count: number;
+  /** What a reviewer should confirm; empty below the attention band. */
+  check: string;
+  path?: string;
+  line?: number;
+  band: ImpactBand;
+}
+
+/** Mirrors the risk section's `impact`: the score of the agent's classified changes. */
+export interface VerificationImpact {
+  band: ImpactBand;
+  /** The highest band any one change has; below `band` when volume raised it. */
+  highestChangeBand: ImpactBand;
+  load: number;
+  raisedByVolume: number;
+  counts: Record<ChangeKind, number>;
+  /** Highest band first. */
+  changes: VerificationChange[];
+}
+
 /** Something in a must-read file that already looks off or unclear. */
 export interface VerificationMustReadFlag {
   note: string;
@@ -102,6 +139,8 @@ export interface VerificationReport {
     clientImpact: string;
     mitigations: string[];
     concerns: VerificationConcern[];
+    /** Absent on a report from before changes were scored, or one whose agent listed none. */
+    impact?: VerificationImpact;
   };
   completeness?: VerificationCheck;
   tests?: VerificationCheck;

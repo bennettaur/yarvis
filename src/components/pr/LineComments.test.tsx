@@ -2,12 +2,24 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bu
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import * as sidecar from "../../lib/api";
-import type { DiffSide, NewComment, PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
+import type {
+  DiffSide,
+  NewComment,
+  PostedCommentResult,
+  PrFile,
+  PrRef,
+  ReviewThread,
+} from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { mountForInteraction } from "../../test/render";
 import { reviewThread } from "../../test/reviewThread";
-import { LineCommentBlock, type LineComments, useLineComments } from "./LineComments";
+import {
+  hasLineComments,
+  LineCommentBlock,
+  type LineComments,
+  useLineComments,
+} from "./LineComments";
 import { DiffBody } from "./PrFileDiffs";
 
 const sent: NewComment[] = [];
@@ -20,7 +32,7 @@ const record = async (comment: NewComment) => {
 };
 
 /** Swapped per-test rather than re-mocking, since `mock.module` is global. */
-let post: (comment: NewComment) => Promise<{ ok: boolean }> = record;
+let post: (comment: NewComment) => Promise<PostedCommentResult> = record;
 /** The status the sidecar answers thread writes with. */
 let threadWriteStatus = 200;
 
@@ -182,6 +194,38 @@ describe("useLineComments", () => {
     ]);
   });
 
+  it("adds no optimistic copy when GitHub moved the comment onto the file", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    const comments = await view.render([]);
+    await comments.submit(right(4), "looks off");
+
+    const after = await view.render([]);
+    expect(after.pending).toEqual([]);
+    expect(after.composer).toBeNull();
+    expect(after.movedToFile).toEqual(right(4));
+    // The diff renderers only mount a line's block when it has something to show.
+    expect(hasLineComments("RIGHT", 4, after)).toBe(true);
+    expect(hasLineComments("LEFT", 4, after)).toBe(false);
+    expect(hasLineComments("RIGHT", 5, after)).toBe(false);
+  });
+
+  it("moves the composer, rather than growing it, on a plain click", async () => {
+    (await view.render([])).openComposer("RIGHT", 4);
+    (await view.render([])).openComposer("RIGHT", 9);
+    expect((await view.render([])).composer).toEqual({ side: "RIGHT", line: 9 });
+  });
+
+  it("forgets where a comment moved once another composer opens", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    const comments = await view.render([]);
+    await comments.submit(right(4), "looks off");
+    const moved = await view.render([]);
+    expect(moved.movedToFile).toEqual(right(4));
+
+    moved.openComposer("RIGHT", 9);
+    expect((await view.render([])).movedToFile).toBeNull();
+  });
+
   it("adds no optimistic copy when the post fails", async () => {
     post = async () => {
       throw new Error("nope");
@@ -233,6 +277,38 @@ describe("LineCommentBlock", () => {
 
     await view.render([thread(4, "looks off")]);
     expect(view.html.split("looks off")).toHaveLength(2);
+  });
+
+  it("says on the line that the comment went on the whole file", async () => {
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    await view.render([]);
+    expect(view.html).toContain("Posted on the whole file instead");
+    expect(view.host.querySelector('[role="status"]')?.textContent).toContain("line 4");
+
+    Array.from(view.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Dismiss")
+      ?.click();
+    await view.render([]);
+    expect(view.html).not.toContain("Posted on the whole file instead");
+  });
+
+  it("shows the note only under the line it is about", async () => {
+    view.dispose();
+    view = mount(5);
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    expect((await view.render([])).movedToFile).toEqual(right(4));
+    expect(view.html).not.toContain("Posted on the whole file instead");
+  });
+
+  it("shows the note only on the side it is about", async () => {
+    view.dispose();
+    view = mount(4, "LEFT");
+    post = async () => ({ ok: true, placement: "file" });
+    await (await view.render([])).submit(right(4), "looks off");
+    expect((await view.render([])).movedToFile).toEqual(right(4));
+    expect(view.html).not.toContain("Posted on the whole file instead");
   });
 
   it("renders only the threads on its own side", async () => {

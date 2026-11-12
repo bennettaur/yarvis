@@ -1639,6 +1639,221 @@ describe("github review threads", () => {
     expect(calls[1]!.body.side).toBe("RIGHT");
   });
 
+  /** A client whose comment POSTs answer with `replies` in turn; the PR read always succeeds. */
+  function commentReplies(...replies: { status: number; body: unknown }[]) {
+    const calls: { url: string; body: any }[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (init?.method !== "POST") {
+        return new Response(JSON.stringify({ head: { sha: "abc" } }), { status: 200 });
+      }
+      const reply = replies.shift() ?? { status: 201, body: {} };
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }) as unknown as typeof fetch;
+    return { calls, gh: new GitHubClient("t", fetchImpl) };
+  }
+
+  const outsideDiff = {
+    status: 422,
+    body: {
+      message: "Validation Failed",
+      errors: ["pull_request_review_thread.line must be part of the diff"],
+    },
+  };
+
+  it("says a comment landed on its line when GitHub takes it", async () => {
+    const { gh } = commentReplies({ status: 201, body: {} });
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result).toEqual({ commitId: "abc", placement: "line" });
+  });
+
+  it("moves a comment onto the file when its line is outside the diff", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    const result = await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      side: "LEFT",
+      body: "x",
+    });
+    expect(result).toEqual({ commitId: "abc", placement: "file" });
+    expect(calls[2]!.body).toEqual({
+      commit_id: "abc",
+      path: "a.ts",
+      subject_type: "file",
+      body: "**Line 12 of the old file**\n\nx",
+    });
+  });
+
+  it("names a range's lines in the file-level fallback", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, startLine: 9, body: "x" });
+    expect(calls[2]!.body.body).toBe("**Lines 9-12**\n\nx");
+  });
+
+  it("moves a comment onto the file when GitHub says its line could not be resolved", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [
+            {
+              resource: "PullRequestReviewComment",
+              code: "custom",
+              field: "pull_request_review_thread.line",
+              message: "could not be resolved",
+            },
+          ],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("moves a comment onto the file when GitHub finds no diff hunk for it", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [{ field: "pull_request_review_thread.diff_hunk", code: "missing_field" }],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("anchors a comment to the head the reviewer viewed, without reading the PR", async () => {
+    const { calls, gh } = commentReplies({ status: 201, body: {} });
+    const result = await gh.postComment(
+      "o",
+      "r",
+      4,
+      { path: "a.ts", line: 12, body: "x" },
+      "d".repeat(40),
+    );
+    expect(result.commitId).toBe("d".repeat(40));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body.commit_id).toBe("d".repeat(40));
+  });
+
+  it("says so when the viewed head is no longer part of the PR", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ field: "commit_id", code: "invalid" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" }, "d".repeat(40))
+      .catch((e: unknown) => e);
+    expect((error as GitHubError).explanation).toContain("no longer part of the pull request");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rethrows a token failure on the fallback as it is", async () => {
+    const { gh } = commentReplies(outsideDiff, {
+      status: 401,
+      body: { message: "Bad credentials" },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect((error as GitHubError).reason).toBe("unauthorized");
+    expect((error as GitHubError).explanation).not.toContain("isn't part of the diff");
+  });
+
+  it("falls back when one of several 422 reasons is about the line", async () => {
+    const { calls, gh } = commentReplies(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: [
+            "pull_request_review_thread.line must be part of the diff",
+            { field: "subject", code: "custom" },
+          ],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const result = await gh.postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" });
+    expect(result.placement).toBe("file");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("names a range that crosses from the old file to the new one", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, { status: 201, body: {} });
+    await gh.postComment("o", "r", 4, {
+      path: "a.ts",
+      line: 12,
+      startLine: 9,
+      startSide: "LEFT",
+      body: "x",
+    });
+    expect(calls[2]!.body.body).toBe("**Line 9 of the old file to line 12**\n\nx");
+  });
+
+  it("throws when GitHub refuses the file-level fallback too", async () => {
+    const { calls, gh } = commentReplies(outsideDiff, {
+      status: 422,
+      body: { message: "Validation Failed" },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).explanation).toStartWith("The line isn't part of the diff");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("does not fall back when the path could not be resolved", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ field: "pull_request_review_thread.path", message: "could not be resolved" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("falls back only on a 422", async () => {
+    const { calls, gh } = commentReplies({ ...outsideDiff, status: 403 });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("throws other validation failures with GitHub's reason, without a fallback", async () => {
+    const { calls, gh } = commentReplies({
+      status: 422,
+      body: {
+        message: "Validation Failed",
+        errors: [{ resource: "PullRequestReviewComment", field: "path", code: "invalid" }],
+      },
+    });
+    const error = await gh
+      .postComment("o", "r", 4, { path: "a.ts", line: 12, body: "x" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).message).toContain("Validation Failed (path invalid)");
+    expect(calls).toHaveLength(2);
+  });
+
   it("replies through the thread reply mutation", async () => {
     const { calls, gh } = capture();
     await gh.replyToThread("T1", "agreed");

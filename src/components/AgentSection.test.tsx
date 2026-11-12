@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Settings } from "../lib/settings";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { renderToHtml } from "../test/render";
+import { renderToHtml, waitFor } from "../test/render";
 
 /**
  * Covers the agent fields end to end through `invoke`, rather than stubbing
@@ -39,6 +39,7 @@ function defaultSettings(): Settings {
     attentionAnimation: null,
     allowedSlashCommands: null,
     defaultAllowedSlashCommands: ["compact"],
+    channelMessaging: null,
   };
 }
 
@@ -58,6 +59,11 @@ mock.module("@tauri-apps/api/core", () => ({
         allowedSlashCommands:
           commands.length > 0 ? commands.map((c) => c.replace(/^\//, "")) : null,
       };
+      return stored;
+    }
+    if (command === "set_channel_messaging") {
+      const { enabled } = args as { enabled: boolean };
+      stored = { ...stored, channelMessaging: enabled ? true : null };
       return stored;
     }
     if (command === "get_settings" || command === "set_agent") return stored;
@@ -283,6 +289,21 @@ describe("AgentSection", () => {
     await clickSaveCommands(host);
     expect(host.innerHTML).not.toContain("so it can't be allowed");
     expect(host.innerHTML).toContain("Saved.");
+    cleanup();
+  });
+
+  it("turns channel messaging on and off through the core", async () => {
+    const { host, cleanup } = await mount();
+    const box = () => host.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box().checked).toBe(false);
+
+    box().click();
+    await waitFor(() => box().checked && !box().disabled, "the switch to save on");
+    expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: true } });
+
+    box().click();
+    await waitFor(() => !box().checked && !box().disabled, "the switch to save off");
+    expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: false } });
     cleanup();
   });
 });

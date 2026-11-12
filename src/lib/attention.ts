@@ -23,7 +23,9 @@ export type AttentionNavTarget =
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string }
-  | { type: "heads-down" };
+  | { type: "heads-down" }
+  /** A PR in a review workspace, opened on one of its tabs. */
+  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
 
 export interface AttentionItem {
   id: string;

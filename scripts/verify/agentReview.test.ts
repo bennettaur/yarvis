@@ -101,6 +101,18 @@ describe("a report from the gate's side", () => {
         verdict: "agent",
         verdictReason: "r",
         risk: { tier: "standard", reasons: ["Changes how recall ranks memories"] },
+        changes: [
+          {
+            title: "Rank recall by decayed strength",
+            location: "sidecar/src/memory/ranking.ts:12",
+            kind: "logic",
+            reach: "local",
+            evidence: "proven",
+            sensitive: false,
+            count: 1,
+            check: "",
+          },
+        ],
         assessed: [],
         dimensions: Object.fromEntries(
           [
@@ -138,6 +150,8 @@ describe("a report from the gate's side", () => {
       },
       { repo: "bennettaur/yarvis", pr: 7 },
     );
+    // The gate signs the impact band; the sidecar's reader ignores fields it doesn't use.
+    expect(data.impactBand).toBe(3);
     const parsed = parseReport(withSignature(body, "c2ln"));
     expect(parsed?.payload).toBe(payload);
     expect(parsed?.data).toMatchObject({

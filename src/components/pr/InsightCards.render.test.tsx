@@ -97,6 +97,16 @@ describe("InsightBlock", () => {
     expect(html).toContain("Posted to the PR");
   });
 
+  it("says when GitHub put a posted insight on the whole file", async () => {
+    const onFile = await render(
+      controller([insight({ postedAt: "2026-01-01", placement: "file" })]),
+      12,
+    );
+    expect(onFile).toContain("Posted on the whole file instead");
+    const onLine = await render(controller([insight({ postedAt: "2026-01-01" })]), 12);
+    expect(onLine).not.toContain("Posted on the whole file instead");
+  });
+
   // An answer written against an older commit describes lines that have since
   // moved, so it says so rather than being quietly trusted.
   it("flags an answer the pull request has moved past", async () => {

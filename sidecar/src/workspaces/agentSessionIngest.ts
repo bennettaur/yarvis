@@ -35,7 +35,7 @@ const querySchema = z.object({
  * the chat model by `list_workspaces`, so they are held to plain identifiers
  * rather than free text.
  */
-const sessionKeySchema = z
+export const sessionKeySchema = z
   .string()
   .min(1)
   .max(MAX_SESSION_KEY)

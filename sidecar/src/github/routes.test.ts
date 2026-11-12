@@ -147,6 +147,49 @@ describe("github comment thread routes", () => {
     expect(res.status).toBe(400);
   });
 
+  /** Stubs GitHub's REST API: the PR read, then each comment POST in turn. */
+  function commentPosts(...replies: { status: number; body: unknown }[]) {
+    const sent: { url: string; body: any }[] = [];
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      sent.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (init?.method !== "POST") {
+        return new Response(JSON.stringify({ head: { sha: "c".repeat(40) } }), { status: 200 });
+      }
+      const reply = replies.shift() ?? { status: 201, body: {} };
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }) as unknown as typeof fetch;
+    return sent;
+  }
+
+  it("says the comment went on the file when its line is outside the diff", async () => {
+    const sent = commentPosts(
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: ["pull_request_review_thread.line must be part of the diff"],
+        },
+      },
+      { status: 201, body: {} },
+    );
+    const headSha = "a".repeat(40);
+    const res = await post("/comments", { path: "a.ts", line: 4, body: "x", headSha });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true, placement: "file" });
+    // Anchored to the head the reviewer saw, so no PR read is needed.
+    expect(sent.map((s) => s.body?.commit_id)).toEqual([headSha, headSha]);
+  });
+
+  it("answers a refused comment with GitHub's reason", async () => {
+    commentPosts({
+      status: 422,
+      body: { message: "Validation Failed", errors: [{ field: "path", code: "invalid" }] },
+    });
+    const res = await post("/comments", { path: "a.ts", line: 4, body: "x" });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("path invalid");
+  });
+
   it("rejects a thread id carrying path characters with 400", async () => {
     const res = await post(`/threads/${encodeURIComponent("T1/../x")}/resolve`);
     expect(res.status).toBe(400);

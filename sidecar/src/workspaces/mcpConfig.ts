@@ -1,4 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { CHANNEL_RELAY_ARG } from "../channel/protocol.ts";
+import { CHANNEL_SERVER_NAME } from "../channel/send.ts";
 import { MCP_SERVER_NAME, WORKSPACE_HEADER } from "../mcpServer/server.ts";
 import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 
@@ -38,24 +40,85 @@ function yarvisServerEntry(workspaceId: string): Record<string, unknown> {
   };
 }
 
+/** How Claude Code starts the channel relay: a program and its arguments. */
+export interface RelayCommand {
+  command: string;
+  args: string[];
+}
+
 /**
- * Merges our server entry into any existing `.mcp.json`. Other servers the user
- * configured are preserved, as are unrelated top-level keys; our own entry is
- * recomputed every time, so a re-provision refreshes it rather than stacking.
+ * The relay is this same sidecar run with `CHANNEL_RELAY_ARG`. A packaged build
+ * is one compiled binary, whose bundled entry lives under Bun's virtual
+ * `/$bunfs/` root; in development it is Bun running the entry file.
+ */
+export function currentRelayCommand(): RelayCommand {
+  const compiled = Bun.main.startsWith("/$bunfs/");
+  return {
+    command: process.execPath,
+    args: compiled ? [CHANNEL_RELAY_ARG] : [Bun.main, CHANNEL_RELAY_ARG],
+  };
+}
+
+/**
+ * The channel relay's entry (see `channel/relay.ts`). Its environment is listed
+ * rather than inherited because Claude Code doesn't promise to pass its own
+ * environment to a stdio server. The values are the same per-PTY ones the
+ * session hooks use, expanded by Claude Code at launch, so nothing secret is
+ * written to disk.
+ */
+function channelRelayEntry(relay: RelayCommand): Record<string, unknown> {
+  return {
+    command: relay.command,
+    args: relay.args,
+    env: {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_SIDECAR_PORT: "${YARVIS_SIDECAR_PORT:-}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_ATTENTION_TOKEN: "${YARVIS_ATTENTION_TOKEN:-}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_SESSION_KEY: "${YARVIS_SESSION_KEY:-}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_SESSION_TOKEN: "${YARVIS_SESSION_TOKEN:-}",
+      // The relay compares its session's command line with the agent
+      // command, and this override wins over the stored one, as in the core.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code expands these, not JS.
+      YARVIS_CLAUDE_COMMAND: "${YARVIS_CLAUDE_COMMAND:-}",
+    },
+  };
+}
+
+/**
+ * Merges our server entries into any existing `.mcp.json`. Other servers the
+ * user configured are preserved, as are unrelated top-level keys; our own
+ * entries are recomputed every time, so a re-provision refreshes them rather
+ * than stacking.
  */
 export function buildMcpConfig(
   workspaceId: string,
   existing: Record<string, unknown> = {},
+  { channelMessaging = false, relay = currentRelayCommand() }: McpConfigOptions = {},
 ): Record<string, unknown> {
-  const servers =
+  const { [CHANNEL_SERVER_NAME]: _previousRelay, ...servers } =
     existing.mcpServers && typeof existing.mcpServers === "object"
       ? (existing.mcpServers as Record<string, unknown>)
       : {};
 
   return {
     ...existing,
-    mcpServers: { ...servers, [MCP_SERVER_NAME]: yarvisServerEntry(workspaceId) },
+    mcpServers: {
+      ...servers,
+      [MCP_SERVER_NAME]: yarvisServerEntry(workspaceId),
+      // Only while the Settings switch is on, so a workspace without it has
+      // no relay to approve or run.
+      ...(channelMessaging ? { [CHANNEL_SERVER_NAME]: channelRelayEntry(relay) } : {}),
+    },
   };
+}
+
+export interface McpConfigOptions {
+  /** Whether channel messaging is on (`channelMessagingEnabled`). */
+  channelMessaging?: boolean;
+  relay?: RelayCommand;
 }
 
 /**
@@ -65,7 +128,11 @@ export function buildMcpConfig(
  * Best-effort: a corrupt existing file is overwritten and any failure is logged,
  * never fatal to provisioning.
  */
-export function writeMcpConfig(rootPath: string, workspaceId: string): void {
+export function writeMcpConfig(
+  rootPath: string,
+  workspaceId: string,
+  options: McpConfigOptions = {},
+): void {
   try {
     const file = `${rootPath}/.mcp.json`;
     let existing: Record<string, unknown> = {};
@@ -80,7 +147,10 @@ export function writeMcpConfig(rootPath: string, workspaceId: string): void {
       }
     }
 
-    writeFileSync(file, `${JSON.stringify(buildMcpConfig(workspaceId, existing), null, 2)}\n`);
+    writeFileSync(
+      file,
+      `${JSON.stringify(buildMcpConfig(workspaceId, existing, options), null, 2)}\n`,
+    );
   } catch (e) {
     console.error("[workspaces] failed to write .mcp.json:", e);
   }

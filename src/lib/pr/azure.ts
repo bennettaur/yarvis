@@ -3,6 +3,7 @@ import { refApiPath } from "./ref";
 import type {
   AzFilter,
   NewComment,
+  PostedCommentResult,
   PrDetail,
   PrFile,
   PrRef,
@@ -121,7 +122,7 @@ export const azFileContent = (ref: PrRef, path: string, sha: string) =>
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
   );
 export const azPostComment = (ref: PrRef, comment: NewComment & Record<string, unknown>) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+  send<PostedCommentResult>(`${refApiPath(ref)}/comments`, "POST", comment);
 export const azReplyToThread = (
   ref: PrRef,
   threadId: string,

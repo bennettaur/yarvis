@@ -1,12 +1,14 @@
 import { type ReactNode, useState } from "react";
 import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
+import type { PrRef } from "../../lib/pr/types";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { useReviewChangedFiles } from "../../lib/reviewWorkspaces/cache";
 import { useCommitsSinceLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import AllFilesTree from "./nav/AllFilesTree";
 import ChangedFilesTree from "./nav/ChangedFilesTree";
 import CommitsList from "./nav/CommitsList";
+import StackLayers from "./nav/StackLayers";
 import { prColor } from "./prColors";
 import { STATIC_TAB_LABEL } from "./tabs/registry";
 import type { PrColor, StaticTabKind, TabSpec } from "./tabs/types";
@@ -248,6 +250,7 @@ export default function ReviewNav({
   progress,
   openTab,
   onSetup,
+  onAddStackLayers,
 }: {
   workspaceId: string;
   prs: ReviewWorkspacePr[];
@@ -256,13 +259,41 @@ export default function ReviewNav({
   progress: ReadonlyMap<string, string>;
   openTab: (spec: TabSpec) => void;
   onSetup: (pr: ReviewWorkspacePr) => void;
+  /** Adds PRs from a stack the reviewer picked, in the order given. */
+  onAddStackLayers: (refs: PrRef[]) => Promise<void>;
 }) {
+  const groups = navGroups(prs);
+  const heldRefKeys = new Set(prs.map((pr) => pr.refKey));
+  // Held here rather than per picker, so no picker can start a second add and
+  // a picker that remounts while the stacks reload keeps the reviewer's ticks.
+  const [addingStack, setAddingStack] = useState(false);
+  const [stackPickOverrides, setStackPickOverrides] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
+  const addWhileLocked = async (refs: PrRef[]) => {
+    setAddingStack(true);
+    try {
+      await onAddStackLayers(refs);
+    } finally {
+      setAddingStack(false);
+    }
+  };
   return (
     <nav className="h-full overflow-y-auto bg-zinc-950" aria-label="Pull requests">
       {prs.length === 0 && (
         <p className="p-3 text-xs text-zinc-500">Paste a PR link above to start reviewing.</p>
       )}
-      {navGroups(prs).map(({ pr, color }) => (
+      {/* Keyed by the PR it looks up first, so a new first PR never shows the old one's stack. */}
+      <StackLayers
+        key={groups[0]?.pr.refKey ?? "none"}
+        refs={groups.map(({ pr }) => pr.ref)}
+        heldRefKeys={heldRefKeys}
+        adding={addingStack}
+        overrides={stackPickOverrides}
+        onToggle={(key, picked) => setStackPickOverrides((prev) => new Map(prev).set(key, picked))}
+        onAdd={addWhileLocked}
+      />
+      {groups.map(({ pr, color }) => (
         <PrGroup
           key={pr.id}
           workspaceId={workspaceId}

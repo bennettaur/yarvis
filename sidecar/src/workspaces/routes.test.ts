@@ -1727,6 +1727,37 @@ describe("provision + archive (injected git runner)", () => {
     expect(JSON.stringify(mcp)).toContain("YARVIS_MCP_TOKEN");
   });
 
+  it("adds the channel relay to .mcp.json only while channel messaging is on", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "channel ws", repoIds: [repo.id] });
+    const servers = async () => {
+      const detail = await getWorkspace(db, ws.id);
+      const mcp = JSON.parse(readFileSync(join(detail?.rootPath ?? "", ".mcp.json"), "utf-8"));
+      return Object.keys(mcp.mcpServers).sort();
+    };
+
+    // The suite's own settings file leaves it unset.
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    expect(await servers()).toEqual(["yarvis"]);
+
+    const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-channel-settings-"));
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, JSON.stringify({ channelMessaging: true }));
+    process.env.YARVIS_SETTINGS_PATH = settings;
+    try {
+      await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+      expect(await servers()).toEqual(["yarvis", "yarvis-channel"]);
+    } finally {
+      process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    expect(await servers()).toEqual(["yarvis"]);
+  });
+
   it("copies nothing when a repo has no .claude directory", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

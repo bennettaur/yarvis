@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { getSettings, type Settings, setAgent, setAllowedSlashCommands } from "../lib/settings";
+import {
+  getSettings,
+  type Settings,
+  setAgent,
+  setAllowedSlashCommands,
+  setChannelMessaging,
+} from "../lib/settings";
 
 /**
  * The agent every workspace opens with: its tab title and the command its
@@ -120,6 +126,7 @@ export default function AgentSection() {
       )}
 
       {settings && <SlashCommandsField settings={settings} onSaved={setSettings} />}
+      {settings && <ChannelMessagingField settings={settings} onSaved={setSettings} />}
     </section>
   );
 }
@@ -201,6 +208,52 @@ function SlashCommandsField({
         Only add ones that are safe to run unasked: the assistant also chooses the text after the
         command. Commands that change what the session may do, like <code>/permissions</code>,{" "}
         <code>/hooks</code>, <code>/mcp</code> or <code>/login</code>, are refused.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The experimental switch for messaging sessions over a Claude Code channel.
+ * Saves as it is toggled, so it keeps its own busy state and messages.
+ */
+function ChannelMessagingField({
+  settings,
+  onSaved,
+}: {
+  settings: Settings;
+  onSaved: (next: Settings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = settings.channelMessaging === true;
+
+  const toggle = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      onSaved(await setChannelMessaging(!enabled));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [enabled, onSaved]);
+
+  return (
+    <div className="mt-5">
+      {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      <label className="flex items-center gap-2 text-sm text-zinc-300">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        Message sessions over a channel (experimental)
+      </label>
+      <p className="mt-2 text-xs text-zinc-500">
+        Lets the assistant send a workspace session a message it can answer, instead of typing at
+        its prompt, and read the answer. It also needs{" "}
+        <code>--dangerously-load-development-channels server:yarvis-channel</code> in the command
+        above (channels are a Claude Code research preview). A workspace gets the channel's MCP
+        server when it is provisioned, or a repo is added, while this is on, and loses it when that
+        happens while this is off. Turning it off stops channel messages from the next one.
       </p>
     </div>
   );

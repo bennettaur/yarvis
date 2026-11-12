@@ -412,7 +412,7 @@ fn build_command(app: &AppHandle, port: u16, token: &str) -> Result<Command, Str
 #[cfg(debug_assertions)]
 fn command_base(_app: &AppHandle) -> Result<Command, String> {
     // Dev: run the TypeScript entrypoint directly with Bun (no build step).
-    let entry = concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/src/server.ts");
+    let entry = concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/src/main.ts");
     let mut cmd = Command::new("bun");
     cmd.arg("run").arg(entry);
     Ok(cmd)

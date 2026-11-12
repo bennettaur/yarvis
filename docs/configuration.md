@@ -192,6 +192,7 @@ has written your providers and MCP servers into it.
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
 | `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
 | `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
+| `channelMessaging` | unset (off) | Experimental: lets the assistant message a workspace's agent session over a Claude Code channel and read its replies, instead of typing at its prompt. Also needs the channel flag in `agentCommand`. Set from Settings → Repositories → Agent; see [Workspaces](features/workspaces.md#messaging-a-session-over-a-channel-experimental). |
 | `attentionAnimation` | `true` | `false` stops the amber band sweeping across the top bar and the bell shaking while the bell has something pending. The count badge still shows. |
 
 `null` and a missing key both mean "use the default".

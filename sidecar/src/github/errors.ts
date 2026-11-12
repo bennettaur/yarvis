@@ -23,6 +23,8 @@ export class GitHubError extends Error {
     readonly reason: GitHubFailureReason,
     readonly explanation: string,
     request: string,
+    /** GitHub's per-field reasons on a 422, such as a line outside the diff. */
+    readonly details: string[] = [],
   ) {
     super(`github ${request} -> ${status}: ${explanation}`);
     this.name = "GitHubError";
@@ -36,27 +38,70 @@ export class GitHubError extends Error {
  * https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api
  */
 export async function githubErrorFrom(res: Response, request: string): Promise<GitHubError> {
-  const message = await readGitHubMessage(res);
-  const { reason, explanation } = classify(res.status, res.headers, message);
-  return new GitHubError(res.status, reason, explanation, request);
+  const { message, details } = await readGitHubMessage(res);
+  // "Validation Failed" is GitHub's own wording for a 422, used when the body has none.
+  const summary = message ?? (res.status === 422 ? "Validation Failed" : null);
+  const detailText = details.join("; ");
+  let fullMessage = message;
+  if (details.length > 0) fullMessage = summary ? `${summary} (${detailText})` : detailText;
+  const { reason, explanation } = classify(res.status, res.headers, message, fullMessage);
+  return new GitHubError(res.status, reason, explanation, request, details);
 }
 
 /** A proxy error or outage page can be a whole HTML document, so plain text is cut short. */
 const MAX_PLAIN_MESSAGE_LENGTH = 200;
 
-async function readGitHubMessage(res: Response): Promise<string | null> {
+interface GitHubMessage {
+  message: string | null;
+  /** The entries of GitHub's `errors` array, which carry the real reason behind a 422. */
+  details: string[];
+}
+
+/**
+ * Details can echo text other people wrote, such as a branch or label name, and
+ * reach logs, the UI and the assistant's tool results, so they are kept short.
+ */
+const MAX_ERROR_DETAILS = 5;
+const MAX_ERROR_DETAIL_LENGTH = 200;
+
+const NO_MESSAGE: GitHubMessage = { message: null, details: [] };
+
+async function readGitHubMessage(res: Response): Promise<GitHubMessage> {
   try {
     const text = await res.text();
     try {
-      const body = JSON.parse(text) as { message?: unknown };
-      return typeof body.message === "string" ? body.message : null;
+      const body = JSON.parse(text) as { message?: unknown; errors?: unknown };
+      return {
+        message: typeof body.message === "string" ? body.message : null,
+        details: Array.isArray(body.errors)
+          ? body.errors
+              .flatMap(describeErrorEntry)
+              .slice(0, MAX_ERROR_DETAILS)
+              .map((d) => d.slice(0, MAX_ERROR_DETAIL_LENGTH))
+          : [],
+      };
     } catch {
-      if (/html/i.test(res.headers.get("content-type") ?? "")) return null;
-      return text.trim().slice(0, MAX_PLAIN_MESSAGE_LENGTH) || null;
+      if (/html/i.test(res.headers.get("content-type") ?? "")) return NO_MESSAGE;
+      return { message: text.trim().slice(0, MAX_PLAIN_MESSAGE_LENGTH) || null, details: [] };
     }
   } catch {
-    return null;
+    return NO_MESSAGE;
   }
+}
+
+/**
+ * GitHub sends an `errors` entry either as a plain string or as
+ * `{ field, code, message }`. An entry with none of those gives `[]`.
+ */
+function describeErrorEntry(entry: unknown): string[] {
+  if (typeof entry === "string") return [entry];
+  if (!entry || typeof entry !== "object") return [];
+  const { field, code, message } = entry as { field?: unknown; code?: unknown; message?: unknown };
+  if (typeof message === "string") {
+    return [typeof field === "string" ? `${field}: ${message}` : message];
+  }
+  if (typeof field === "string") return [typeof code === "string" ? `${field} ${code}` : field];
+  return [];
 }
 
 /** Used when GitHub signals a rate limit but gives no time to wait. */
@@ -86,10 +131,16 @@ export function rateLimitWaitMs(
   return null;
 }
 
+/**
+ * `message` is GitHub's own top-level message, the only text trusted to decide
+ * the reason. `shown` adds the `errors` details, which can echo text other
+ * people wrote, so it only goes into the explanation.
+ */
 function classify(
   status: number,
   headers: Headers,
   message: string | null,
+  shown: string | null = message,
 ): { reason: GitHubFailureReason; explanation: string } {
   if (status === 401) {
     return {
@@ -138,9 +189,7 @@ function classify(
     // similar refusals carry no header, only GitHub's own message.
     return {
       reason: "forbidden",
-      explanation: message
-        ? `GitHub refused the request: ${message}`
-        : "GitHub refused the request.",
+      explanation: shown ? `GitHub refused the request: ${shown}` : "GitHub refused the request.",
     };
   }
 
@@ -154,7 +203,7 @@ function classify(
 
   return {
     reason: "upstream_error",
-    explanation: message ? `GitHub returned an error: ${message}` : "GitHub returned an error.",
+    explanation: shown ? `GitHub returned an error: ${shown}` : "GitHub returned an error.",
   };
 }
 

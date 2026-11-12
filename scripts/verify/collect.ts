@@ -34,6 +34,7 @@ import {
 } from "./diffCoverage.ts";
 import { run } from "./exec.ts";
 import { type MutationResult, mergeMutation, runMutation } from "./mutation.ts";
+import { type FileReach, fileReader, measureReach } from "./reach.ts";
 import { type ChangedFile, classify, isTestFile, type TierResult } from "./tier.ts";
 
 export interface Facts {
@@ -47,6 +48,8 @@ export interface Facts {
   suites: string[];
   /** Mutation testing on the changed lines, when `--mutation` was passed and anything ran. */
   mutation?: MutationResult;
+  /** How much of the codebase imports each changed source file. Absent from older facts. */
+  reach?: FileReach[];
 }
 
 function git(root: string, args: string[]): string {
@@ -218,6 +221,11 @@ if (import.meta.main) {
       ? runBaseline(root, base, addedOrModified, parseChangedRanges(unified))
       : { detecting: 0, notDetecting: [], failingOnHead: [] },
     suites: measuredRun?.suites ?? [],
+    reach: measureReach(
+      files.map((file) => file.path),
+      git(root, ["ls-files"]).split("\n").filter(Boolean),
+      fileReader(root),
+    ),
   };
   // Mutants are judged by whether tests fail, which means nothing while some already do.
   if (values.mutation && measuredRun && facts.baseline.failingOnHead.length === 0) {

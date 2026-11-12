@@ -11,11 +11,7 @@ import { workspaceAgentSessions, workspaces } from "../db/schema.ts";
  * `send_workspace_instruction` prove Claude is the one reading the prompt.
  */
 
-/** Header carrying the PTY id, from the session's `YARVIS_SESSION_KEY`. */
-export const SESSION_KEY_HEADER = "X-Yarvis-Session-Key";
-
-/** Header carrying the PTY's `YARVIS_SESSION_TOKEN`; see `sessionTokenMatches`. */
-export const SESSION_TOKEN_HEADER = "X-Yarvis-Session-Token";
+export { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./sessionHeaders.ts";
 
 // A row's `endReason` is either the reason Claude Code's SessionEnd hook sent
 // or one of Yarvis's own below. Only Claude's `other` leaves it resumable.

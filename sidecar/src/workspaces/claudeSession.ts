@@ -19,6 +19,12 @@
  * inside the session itself.
  */
 
+import { channelHub } from "../channel/hub.ts";
+import {
+  type ChannelSendOptions,
+  channelMessagingEnabled,
+  sendOverChannel,
+} from "../channel/send.ts";
 import {
   killClaudeSession,
   sendClaudeInstruction,
@@ -87,12 +93,17 @@ export function sessionStartedMessage(name: string, remoteControl: boolean): str
     : `Started a Claude Code session in workspace "${name}". View it live in the Workspaces tab. It is not remotely controllable — say so if the user asks to drive it from elsewhere.`;
 }
 
+/** The PTY id of a workspace's agent tab, which the core and the channel both key by. */
+export function agentTabSessionKey(workspaceId: string): string {
+  return `ws-claude:${workspaceId}`;
+}
+
 /** Asks the core to start the session; returns the key the frontend attaches to. */
 export async function startClaudeSession(
   input: StartClaudeSessionInput,
 ): Promise<ClaudeSessionResult> {
   await spawnClaudeSession(input);
-  return { sessionKey: `ws-claude:${input.workspaceId}` };
+  return { sessionKey: agentTabSessionKey(input.workspaceId) };
 }
 
 /**
@@ -102,12 +113,14 @@ export async function startClaudeSession(
  * attempted when that write fails.
  */
 export async function stopClaudeSession(db: Db, workspaceId: string): Promise<void> {
+  // The session's replies go with it, so an archived workspace's don't linger.
+  channelHub.forget(agentTabSessionKey(workspaceId));
   try {
     await endWorkspaceAgentSessions(
       db,
       workspaceId,
       STOPPED_END_REASON,
-      `ws-claude:${workspaceId}`,
+      agentTabSessionKey(workspaceId),
     );
   } finally {
     await killClaudeSession(workspaceId);
@@ -261,7 +274,7 @@ export async function sendSessionSlashCommand(input: SendSessionSlashCommandInpu
 
 /** Pids of the Claude sessions registered in a workspace's agent tab, oldest first. */
 export async function agentTabPids(db: Db, workspaceId: string): Promise<number[]> {
-  const sessionKey = `ws-claude:${workspaceId}`;
+  const sessionKey = agentTabSessionKey(workspaceId);
   const sessions = (await reapAndListAgentSessions(db, [workspaceId])).get(workspaceId) ?? [];
   return sessions.filter((s) => s.sessionKey === sessionKey).map((s) => s.pid);
 }
@@ -277,19 +290,39 @@ export type AgentSendFailure =
   | "error";
 
 export type AgentSendResult =
-  | { delivered: true }
+  | { delivered: true; via: "pty" }
+  /** Handed to the session's channel relay; replies come back under `messageId`. */
+  | { delivered: true; via: "channel"; messageId: string }
   | { delivered: false; failure: AgentSendFailure; error: string };
 
 /**
- * Types an instruction at a workspace's agent tab and records that it did,
- * shared by every caller that forwards text into a session so they all keep
- * the same rules. The event logs the instruction's length, not its text: it
- * can be composed from data an outside party influenced, and the event log is
- * read back into later prompts.
+ * Characters the core turns into spaces before it checks an instruction's first
+ * character (`is_unsafe_name_char` in pty.rs): control characters, line and
+ * paragraph separators, and bidi marks, overrides and isolates.
+ */
+const LEADING_IGNORED = /^[\s\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/u;
+
+/**
+ * True when the core would refuse `text` as opening with a command prefix.
+ * Mirrors `INSTRUCTION_PREFIXES_REJECTED` in pty.rs: `!` is bash mode, `/` a
+ * slash command, `#` a memory write and `@` a file mention.
+ */
+export function opensWithCommandPrefix(text: string): boolean {
+  return /^[!#/@]/.test(text.replace(LEADING_IGNORED, ""));
+}
+
+/**
+ * Gives an instruction to a workspace's agent and records that it did, shared
+ * by every caller that forwards text into a session so they all keep the same
+ * rules. It goes over the session's channel when one is listening, where it
+ * arrives as its own turn and can't land in a dialog or a half-typed prompt,
+ * and is typed at the agent tab otherwise. The event logs the instruction's
+ * length, not its text: it can be composed from data an outside party
+ * influenced, and the event log is read back into later prompts.
  *
- * When the core can't tell what holds the prompt and nothing has registered,
- * the agent most likely predates the workspace's registration hooks; writing
- * them now means a restarted session registers.
+ * On the typed path, when the core can't tell what holds the prompt and
+ * nothing has registered, the agent most likely predates the workspace's
+ * registration hooks; writing them now means a restarted session registers.
  */
 export async function sendToWorkspaceAgent(
   db: Db,
@@ -298,16 +331,46 @@ export async function sendToWorkspaceAgent(
   {
     agentPids,
     send = sendSessionInstruction,
+    channel,
+    typedOnly = false,
     eventSource,
     eventPayload = {},
   }: {
     /** From {@link agentTabPids}, which the caller has usually read already. */
     agentPids: number[];
     send?: ClaudeSessionMessenger;
+    channel?: ChannelSendOptions;
+    /** Skips the channel, for text that has to be typed (a slash command). */
+    typedOnly?: boolean;
     eventSource: string;
     eventPayload?: Record<string, unknown>;
   },
 ): Promise<AgentSendResult> {
+  const recordSent = (result: Extract<AgentSendResult, { delivered: true }>) => {
+    void emitEvent(db, {
+      type: "workspace.instruction_sent",
+      source: eventSource,
+      payload: {
+        workspaceId: workspace.id,
+        name: workspace.name,
+        chars: instruction.length,
+        via: result.via,
+        ...eventPayload,
+      },
+    });
+    return result;
+  };
+
+  // Text the prompt would read as a command stays on the typed path, where the
+  // core refuses it, so a channel message can't carry a command the typed path
+  // would refuse.
+  const mustBeTyped = typedOnly || opensWithCommandPrefix(instruction);
+  const tryChannel = !mustBeTyped && (await (channel?.enabled ?? channelMessagingEnabled)());
+  const message = tryChannel
+    ? sendOverChannel(agentTabSessionKey(workspace.id), instruction, agentPids, channel)
+    : null;
+  if (message) return recordSent({ delivered: true, via: "channel", messageId: message.id });
+
   try {
     await send({ workspaceId: workspace.id, instruction, agentPids });
   } catch (e) {
@@ -321,15 +384,5 @@ export async function sendToWorkspaceAgent(
     }
     return { delivered: false, failure, error };
   }
-  void emitEvent(db, {
-    type: "workspace.instruction_sent",
-    source: eventSource,
-    payload: {
-      workspaceId: workspace.id,
-      name: workspace.name,
-      chars: instruction.length,
-      ...eventPayload,
-    },
-  });
-  return { delivered: true };
+  return recordSent({ delivered: true, via: "pty" });
 }

@@ -223,6 +223,18 @@ export interface NewComment {
   startLine?: number;
 }
 
+/** Where a posted review comment landed: on its lines, or on the whole file. */
+export type CommentPlacement = "line" | "file";
+
+export interface PostedCommentResult {
+  ok: boolean;
+  /**
+   * "file" when GitHub refused the lines because they aren't part of the diff,
+   * and the comment went on the whole file instead. Azure never sets it.
+   */
+  placement?: CommentPlacement;
+}
+
 /** A saved GitHub search (free-text query). */
 export interface GhFilter {
   id: string;
