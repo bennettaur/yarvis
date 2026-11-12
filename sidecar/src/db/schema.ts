@@ -649,6 +649,10 @@ export const workspaces = pgTable(
     // back. Cleared once the agent session is live. The column name is narrower
     // than what it holds; widening it would be a migration for no behaviour.
     pendingBrief: text("pending_issue_prompt"),
+    // The agent harness that kick-off should run, kept beside the brief so a
+    // launch retried after a failure or a restart runs the harness that was
+    // asked for rather than the default. Null means the default.
+    pendingHarness: text("pending_harness"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),

@@ -93,6 +93,9 @@ export interface AgentHarness {
   env: Record<string, string>;
   /** Names of variables whose values are kept in the secret store. */
   secretEnv: string[];
+  /** Whether the assistant may start this harness by name. The core refuses
+   *  one it names otherwise, unless it is the default. */
+  assistantMayUse: boolean;
 }
 
 /** Whether one declared secret variable has a value stored. */

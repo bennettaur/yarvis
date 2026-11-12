@@ -584,12 +584,12 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             body: issue.body,
             sourceKey,
           }),
+          harness,
         });
         await provisionWorkspace(db, ws.id, () => undefined, {
           runner: gitRunner,
           startSession: startClaude,
           remoteControl,
-          harness,
         });
 
         const detail = await getWorkspace(db, ws.id);
@@ -681,6 +681,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           repoIds,
           taskId,
           brief: kickOffBrief,
+          harness,
         });
         // Provisioning streams progress over SSE in the route; here we just drive
         // it to completion and inspect the resulting status. Given a brief, it
@@ -689,7 +690,6 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           runner: gitRunner,
           startSession: startClaude,
           remoteControl,
-          harness,
         });
 
         const detail = await getWorkspace(db, ws.id);
@@ -739,12 +739,12 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           repoIds: [],
           taskId,
           brief: kickOffBrief,
+          harness,
         });
         await provisionWorkspace(db, ws.id, () => undefined, {
           runner: gitRunner,
           startSession: startClaude,
           remoteControl,
-          harness,
         });
 
         const detail = await getWorkspace(db, ws.id);
@@ -875,7 +875,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     list_agent_harnesses: tool({
       description:
-        "List the agent harnesses the user configured (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user asked for that agent. Remote Control needs a claude-code or built-in harness.",
+        "List the agent harnesses you may start (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user named that agent. Remote Control needs a claude-code harness.",
       inputSchema: z.object({}),
       execute: async () => listAgentHarnesses(),
     }),

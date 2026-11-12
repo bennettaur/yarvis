@@ -66,8 +66,10 @@ export interface StartClaudeSessionInput {
    */
   resumeSessionId?: string;
   /**
-   * Id of the agent harness to launch (Settings → Agent harnesses). Omitted
-   * means the user's default. The core refuses an id it doesn't have.
+   * Id of the agent harness to launch (Settings → Repositories → Agent).
+   * Omitted means the user's default; a resume passes the stored id. The core
+   * refuses an id it doesn't have, or one the user hasn't let the assistant
+   * start.
    */
   harness?: string;
 }

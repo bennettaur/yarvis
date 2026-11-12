@@ -842,25 +842,26 @@ pub fn set_agent_harness_secret(
     value: Option<String>,
 ) -> Result<(), String> {
     let value = value.filter(|v| !v.is_empty());
-    if value.is_some() {
-        // From disk: a harness saved by another instance counts too.
-        let declared = from_disk()
-            .agent_harnesses
-            .unwrap_or_default()
-            .iter()
-            .any(|h| h.id == harness_id && h.secret_env.contains(&key));
-        if !declared {
-            return Err(format!(
-                "harness \"{harness_id}\" declares no secret variable {key}; save the harness first"
-            ));
-        }
-    }
     keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
         let obj = subtree
             .as_object_mut()
             .expect("update_subtree passes an object");
         match value {
             Some(value) => {
+                // Checked under the secret-store lock, against the file: a
+                // harness save that drops this variable prunes under the same
+                // lock, so the two can't interleave and leave a value behind.
+                // From disk also counts a harness another instance saved.
+                let declared = from_disk()
+                    .agent_harnesses
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|h| h.id == harness_id && h.secret_env.contains(&key));
+                if !declared {
+                    return Err(format!(
+                        "harness \"{harness_id}\" declares no secret variable {key}; save the harness first"
+                    ));
+                }
                 let values = obj
                     .entry(harness_id.clone())
                     .or_insert_with(|| Value::Object(serde_json::Map::new()));

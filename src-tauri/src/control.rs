@@ -10,9 +10,10 @@
 //! reachable over the network. The protocol is deliberately narrow — the sidecar
 //! can only start, stop, or talk to an agent session for a workspace, and chooses
 //! only whether to launch one and which saved harness, by id — never what runs:
-//! the command comes from settings, which only the webview can write. The sidecar's `name` does
-//! reach the launch line, and that line is typed into an interactive shell rather
-//! than exec'd, so `pty::sanitize_session_name` strips it — see that function for
+//! the command comes from settings, which only the webview can write, and a
+//! harness is refused unless the user allowed the assistant to start it. The
+//! sidecar's `name` does reach the launch line, and that line is typed into an
+//! interactive shell rather than exec'd, so `pty::sanitize_session_name` strips it — see that function for
 //! why quoting alone is not enough. `claude.send` types free text at a prompt
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
 //! unless the session's own agent is what reads that prompt, and refuses
@@ -51,8 +52,8 @@ mod unix_impl {
 
     use super::ControlSocketPath;
     use crate::pty::{
-        kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
-        PtyState,
+        check_sidecar_harness, kill_session, send_session_instruction, send_session_slash_command,
+        spawn_claude_session, PtyState,
     };
 
     /// Cap on a single request line, bounding what one message can buffer.
@@ -287,6 +288,9 @@ mod unix_impl {
             "claude.spawn" => {
                 let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
+                // The UI's own launches don't come through here, so this is
+                // where a harness the assistant chose is checked.
+                check_sidecar_harness(app, p.harness.as_deref(), p.resume.is_some())?;
                 spawn_claude_session(
                     app,
                     state.inner(),

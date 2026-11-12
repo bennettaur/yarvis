@@ -241,8 +241,10 @@ struct SpawnSpec {
     cwd: Option<String>,
     /// Typed into the fresh shell to run once on startup (e.g. launching `claude`).
     initial_command: Option<String>,
-    /// Drop `ANTHROPIC_API_KEY` from the child env so a Claude Code session uses
-    /// the user's subscription login (Remote Control does not support API-key auth).
+    /// Drop `ANTHROPIC_API_KEY` from the inherited env so a Claude Code session
+    /// uses the user's subscription login (Remote Control does not support
+    /// API-key auth). A harness that sets the key itself still gets it: its
+    /// variables are applied after the strip.
     strip_provider_secrets: bool,
     /// The harness an agent session runs and the environment it adds. `None`
     /// for a plain terminal.
@@ -260,8 +262,8 @@ struct SpawnSpec {
 /// What an agent session's spawn needs from its harness.
 struct SpawnAgent {
     identity: SessionAgent,
-    /// The harness's plain and secret variables, set before the core's own
-    /// session variables so neither can replace those.
+    /// The harness's plain and secret variables. Set before the core's session
+    /// variables, so a harness variable can't override them.
     env: Vec<(String, String)>,
 }
 
@@ -644,10 +646,10 @@ fn harness_settings(
     Vec<crate::harness::AgentHarness>,
     Option<String>,
 ) {
-    let settings = app
-        .try_state::<SettingsState>()
-        .map(|state| state.snapshot())
-        .unwrap_or_default();
+    // From disk rather than this instance's snapshot: the sidecar lists
+    // harnesses from the file, so a harness another instance saved must be
+    // launchable here too.
+    let settings = crate::settings::from_disk();
     (
         crate::harness::builtin(agent_name(app), agent_command(app)),
         settings.agent_harnesses.unwrap_or_default(),
@@ -671,6 +673,23 @@ fn launch_harness(
         env.extend(crate::harness::secret_env_from_root(&root, &harness)?);
     }
     Ok((harness, env))
+}
+
+/// Refuses a harness the sidecar names on the assistant's behalf that the user
+/// hasn't allowed it to start. See `harness::check_assistant_may_launch`.
+pub fn check_sidecar_harness(
+    app: &AppHandle,
+    requested: Option<&str>,
+    resuming: bool,
+) -> Result<(), String> {
+    let (builtin, stored, default_id) = harness_settings(app);
+    crate::harness::check_assistant_may_launch(
+        builtin,
+        &stored,
+        default_id.as_deref(),
+        requested,
+        resuming,
+    )
 }
 
 /// The configured (or default) display name for a workspace's agent.
@@ -1237,8 +1256,10 @@ fn check_remote_control(kind: HarnessKind, remote_control: bool) -> Result<(), S
 /// added only when asked for, `--resume` when it continues an earlier Claude
 /// Code session, and an `instruction` the session should start on, quoted as a
 /// single argument and placed where the harness's `prompt_args` put `{prompt}`
-/// (appended at the end without them). Extracted from `spawn_claude_session` alongside
-/// `remote_control_command` so the choice is unit-testable without app state.
+/// (appended at the end without them).
+///
+/// Extracted from `spawn_claude_session` alongside `remote_control_command` so
+/// the choice is unit-testable without app state.
 ///
 /// The instruction carries issue text, which an outside party writes, so it is
 /// quoted like the session name rather than interpolated raw.
@@ -1423,7 +1444,9 @@ pub fn pty_exists(state: tauri::State<'_, PtyState>, id: String) -> Result<bool,
 /// Starts an agent session for an existing workspace, so the frontend can open
 /// one on entering a workspace. Mirrors what the control channel does for the
 /// sidecar/agent; both go through `spawn_claude_session`.
-#[tauri::command]
+// Async so a harness whose secrets come from 1Password doesn't block the
+// window while `op` waits on the user.
+#[tauri::command(async)]
 pub fn pty_start_claude(
     app: AppHandle,
     state: tauri::State<'_, PtyState>,
@@ -2192,6 +2215,16 @@ mod tests {
         assert_eq!(
             session_token("bearer", "ws-claude:a"),
             hmac_sha256_hex("bearer", "session:ws-claude:a")
+        );
+    }
+
+    #[test]
+    fn harness_token_matches_the_sidecars_known_answer() {
+        // The same value is pinned in the sidecar's agentSessionIngest tests,
+        // so a change to the signed string on either side fails both.
+        assert_eq!(
+            harness_token("bearer", "ws-claude:a", "pi"),
+            "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd"
         );
     }
 

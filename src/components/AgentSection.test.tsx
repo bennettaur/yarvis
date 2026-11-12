@@ -92,6 +92,7 @@ mock.module("@tauri-apps/api/core", () => ({
 }));
 
 const AgentSection = (await import("./AgentSection")).default;
+const { fromDraft, idFor, parseEnv } = await import("./AgentHarnessesField");
 
 async function mount(): Promise<{ host: HTMLElement; cleanup: () => void }> {
   const host = document.createElement("div");
@@ -196,6 +197,7 @@ describe("AgentSection", () => {
             promptArgs: null,
             env: {},
             secretEnv: [],
+            assistantMayUse: false,
           },
         ],
         defaultHarness: "claude",
@@ -216,6 +218,7 @@ describe("AgentSection", () => {
           promptArgs: null,
           env: {},
           secretEnv: [],
+          assistantMayUse: false,
         },
       ],
       defaultAgentHarness: "pi",
@@ -248,6 +251,7 @@ describe("AgentSection", () => {
           promptArgs: null,
           env: { CLAUDE_CODE_USE_BEDROCK: "1" },
           secretEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+          assistantMayUse: false,
         },
       ],
     };
@@ -424,5 +428,68 @@ describe("AgentSection", () => {
     await waitFor(() => !box().checked && !box().disabled, "the switch to save off");
     expect(invoked).toContainEqual({ command: "set_channel_messaging", args: { enabled: false } });
     cleanup();
+  });
+
+  it("locks a saved harness's id, since its secrets are stored under it", async () => {
+    stored = {
+      ...defaultSettings(),
+      agentHarnesses: [
+        {
+          id: "pi",
+          name: "Pi",
+          kind: "pi",
+          command: "pi",
+          promptArgs: null,
+          env: {},
+          secretEnv: [],
+          assistantMayUse: false,
+        },
+      ],
+    };
+    const { host, cleanup } = await mount();
+    await waitFor(() => host.innerHTML.includes('value="pi"'));
+    const idInput = Array.from(host.querySelectorAll("input")).find((i) => i.value === "pi");
+    expect(idInput?.readOnly).toBe(true);
+    cleanup();
+  });
+});
+
+describe("harness draft helpers", () => {
+  it("parses KEY=value lines, keeping = in values and a bare name as empty", () => {
+    expect(parseEnv("A=1\n\n  B = x=y  \nNAKED\n")).toEqual({ A: "1", B: " x=y", NAKED: "" });
+  });
+
+  it("derives a unique id from a name, never the built-in's", () => {
+    expect(idFor("Claude (Bedrock)!", [])).toBe("claude-bedrock");
+    expect(idFor("Pi", ["pi"])).toBe("pi-2");
+    expect(idFor("Pi", ["pi", "pi-2"])).toBe("pi-3");
+    expect(idFor("Claude", [])).toBe("claude-2");
+    expect(idFor("!!!", [])).toBe("harness");
+  });
+
+  it("turns a draft into what the core stores", () => {
+    expect(
+      fromDraft({
+        rowKey: 0,
+        savedId: null,
+        id: " box ",
+        name: " Box ",
+        kind: "custom",
+        command: " cloudbox run ",
+        promptArgs: "  ",
+        envText: "A=1",
+        secretEnvText: "K1, K2  K3",
+        assistantMayUse: true,
+      }),
+    ).toEqual({
+      id: "box",
+      name: "Box",
+      kind: "custom",
+      command: "cloudbox run",
+      promptArgs: null,
+      env: { A: "1" },
+      secretEnv: ["K1", "K2", "K3"],
+      assistantMayUse: true,
+    });
   });
 });
