@@ -232,8 +232,17 @@ function readManifest(file: string): CopiedAssets {
 /**
  * What in a workspace root's `.claude` is the user's rather than Yarvis's, as
  * paths relative to `.claude`: anything but the generated settings, the
- * manifest, Claude Code's own `.cc-writes`, and the copies the manifest lists.
+ * manifest, the copies the manifest lists, and what Claude Code writes itself:
+ * `.cc-writes`, and `settings.local.json` for "don't ask again" answers, which
+ * only apply to this workspace.
  */
+const CLAUDE_OWN_FILES = new Set([
+  MANIFEST_FILE,
+  "settings.json",
+  "settings.local.json",
+  ".cc-writes",
+]);
+
 export function userClaudeEntries(rootPath: string): string[] {
   const claudeDir = `${rootPath}/.claude`;
   let names: string[];
@@ -245,7 +254,7 @@ export function userClaudeEntries(rootPath: string): string[] {
   const copied = readManifest(`${claudeDir}/${MANIFEST_FILE}`);
   const found: string[] = [];
   for (const name of names) {
-    if (name === MANIFEST_FILE || name === "settings.json" || name === ".cc-writes") continue;
+    if (CLAUDE_OWN_FILES.has(name)) continue;
     const kind = KINDS.find((k) => k === name);
     if (!kind) {
       found.push(name);

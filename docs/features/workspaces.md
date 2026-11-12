@@ -727,7 +727,9 @@ the folder. **Force remove** deletes it.
 The archive also removes any other worktree of the workspace's repos that sits
 inside the workspace folder, such as one an agent added for another branch of a
 stack. These follow the same rule: uncommitted work stops the archive until you
-force it. Their branches are kept.
+force it. Once they're gone, each branch an agent made with `add_worktree` is
+deleted if the base branch already contains it, unless another workspace uses
+it. Other branches, such as a squash-merged one, are kept.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
 landed: the base branch already contains it, or its PR merged and the remote
@@ -745,7 +747,8 @@ first records it.
 
 Last, the archive deletes the workspace folder. If anything other than the
 files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,
-and the settings and copied skills and agents in `.claude`) is left, such as
+and the settings and copied skills and agents in `.claude`, plus the
+`settings.local.json` Claude Code writes there) is left, such as
 notes, your own skills, or a checkout made outside Yarvis, the archive stops
 and lists them. Finder's `.DS_Store` doesn't count. **Force remove** deletes the folder with them.
 

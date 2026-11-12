@@ -34,7 +34,7 @@ import { createTask } from "../tasks/service.ts";
 import type { StartClaudeSessionInput } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import type { RunResult } from "./exec.ts";
-import { canonicalPath, defaultGitRunner, type GitRunner } from "./git.ts";
+import { canonicalPath, defaultGitRunner, type GitRunner, listLocalBranches } from "./git.ts";
 import { isDueForRefresh, resetWorkspaceViews } from "./poller.ts";
 import { resolveAdminName } from "./sandboxPaths.ts";
 import {
@@ -586,6 +586,27 @@ describe("workspace worktrees", () => {
       await expect(
         addExtraWorktree(db, workspaceId, { repo: "widget", branch: "fresh" }, runner),
       ).rejects.toThrow("archiving, not active");
+    });
+
+    it("deletes the landed branches on archive and keeps one with new work", async () => {
+      const { workspaceId, wr, clone, git, runner } = await withRealClone();
+      const add = (branch: string) =>
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch }, runner);
+      await add("stack/landed");
+      const working = await add("stack/working");
+      writeFileSync(join(working.path, "new.ts"), "new");
+      await git(working.path, "add", "new.ts");
+      await git(working.path, "commit", "-m", "new");
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result).toMatchObject({ status: "archived", errors: [] });
+      const branches = await listLocalBranches(runner, clone);
+      // The workspace's own branch and stack/landed have nothing main lacks.
+      expect(branches).not.toContain(wr.branch);
+      expect(branches).not.toContain("stack/landed");
+      expect(branches).toContain("stack/working");
+      expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
     });
   });
 

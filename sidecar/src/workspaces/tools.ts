@@ -1243,7 +1243,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     archive_workspace: tool({
       description:
-        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status and any errors.",
+        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. It also deletes the workspace folder and each local branch whose work has landed. The archive is refused and stays in 'archiving' when a worktree has uncommitted changes, a folder git no longer tracks still has files, a landed branch has commits no remote has, or the workspace folder holds files Yarvis didn't write. Report the errors to the user. Never pass force=true on a first attempt, and only after the user agrees to lose what the errors list. Report back the returned status and any errors.",
       inputSchema: z.object({
         workspaceId: z
           .string()
@@ -1254,7 +1254,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .boolean()
           .default(false)
           .describe(
-            "Discard uncommitted changes in the worktrees, and leftover files in folders git no longer tracks, so teardown can proceed",
+            "Deletes what a refused archive listed: uncommitted changes, leftover files, unpushed commits on landed branches, and the user's files in the workspace folder. Only after a refused attempt and the user's OK",
           ),
       }),
       execute: async ({ workspaceId, summary, force }) => {

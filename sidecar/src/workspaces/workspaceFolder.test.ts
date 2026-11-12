@@ -44,7 +44,7 @@ describe("removeWorkspaceFolder", () => {
     expect(existsSync(root)).toBe(false);
   });
 
-  it("counts the user's own entries in .claude as leftover, but not Yarvis's copies", async () => {
+  it("counts the user's own entries in .claude as leftover, but not Yarvis's or Claude Code's files", async () => {
     const root = workspaceFolder();
     mkdirSync(join(root, ".claude", "skills", "copied"));
     mkdirSync(join(root, ".claude", "skills", "mine"));
@@ -54,9 +54,11 @@ describe("removeWorkspaceFolder", () => {
     );
     writeFileSync(join(root, ".claude", "settings.json"), "{}");
     writeFileSync(join(root, ".claude", "settings.local.json"), "{}");
+    mkdirSync(join(root, ".claude", ".cc-writes"));
+    writeFileSync(join(root, ".claude", "notes.md"), "");
 
     await expect(removeWorkspaceFolder(root, "my-work", { force: false })).rejects.toThrow(
-      "(.claude/settings.local.json, .claude/skills/mine)",
+      "(.claude/notes.md, .claude/skills/mine)",
     );
   });
 

@@ -2549,6 +2549,39 @@ async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail
   }
 }
 
+/**
+ * Deletes the local branches `add_worktree` made for a repo once their
+ * worktrees are gone, and forgets the worktrees. Only a branch the base
+ * already contains goes, so nothing deleted is lost. The names come from the
+ * table, not from git, since the agent can write git's record of a worktree.
+ * Best-effort, like the workspace's own branch.
+ */
+async function deleteLandedExtraBranches(
+  db: Db,
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+): Promise<void> {
+  const rows = await db
+    .select()
+    .from(workspaceExtraWorktrees)
+    .where(eq(workspaceExtraWorktrees.workspaceRepoId, wr.id));
+  const inUse = new Set((await branchesInUse(db, wr)).map((b) => b.toLowerCase()));
+  for (const row of rows) {
+    if (inUse.has(row.branch.toLowerCase())) continue;
+    try {
+      const clone = wr.repo.primaryClonePath;
+      if (await branchLanded(runner, clone, row.branch, wr.baseBranch, false)) {
+        await deleteBranch(runner, clone, row.branch);
+      }
+    } catch (e) {
+      console.warn(`[workspaces] couldn't delete extra worktree branch ${row.branch}:`, e);
+    }
+  }
+  await db
+    .delete(workspaceExtraWorktrees)
+    .where(eq(workspaceExtraWorktrees.workspaceRepoId, wr.id));
+}
+
 async function removeWorktreesAndFinish(
   db: Db,
   detail: WorkspaceDetail,
@@ -2612,6 +2645,7 @@ async function removeWorktreesAndFinish(
           if (!unpushedCommitsError) throw e;
           throw new Error(`${errorMessage(e)}; ${errorMessage(unpushedCommitsError)}`);
         }
+        await deleteLandedExtraBranches(db, runner, wr);
         if (unpushedCommitsError) throw unpushedCommitsError;
         if (wr.status === "removed") return;
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {

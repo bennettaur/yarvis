@@ -203,7 +203,7 @@ describe("WorkspacesPanel", () => {
     // The recently used one is neither.
     expect(html).toContain("Rename the API");
     expect(html).not.toMatch(/opacity-60">Rename the API</);
-    expect(html.match(/idle \d+d/g)).toEqual(["idle 10d"]);
+    expect(html.match(/>idle [^<]*</g)).toEqual([">idle 10d<"]);
   });
 
   it("hides the right column while an archive is deleting the worktrees", async () => {
