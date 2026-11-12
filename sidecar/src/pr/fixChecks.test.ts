@@ -137,9 +137,12 @@ describe("buildFixChecksInstructions", () => {
         check({ name: "d", url: "https://github.com/acme/widget/../../mallory/x" }),
         check({ name: "e", url: "https://github.com/acme/widget-fork/runs/3" }),
         check({ name: "f", url: "https://github.com/Acme/Widget/runs/4" }),
+        check({ name: "g", url: `https://github.com/acme/widget/runs/${"9".repeat(200)}` }),
       ],
     });
-    expect(text).toContain("- a\n- b\n- c\n- d\n- e\n- f https://github.com/Acme/Widget/runs/4\n");
+    expect(text).toContain(
+      "- a\n- b\n- c\n- d\n- e\n- f https://github.com/Acme/Widget/runs/4\n- g\n",
+    );
   });
 
   it("lists the first fifteen failing checks and counts the rest", () => {

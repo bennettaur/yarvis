@@ -122,6 +122,11 @@ describe("WorkspaceFailingChecks", () => {
     expect(button(host, "Fix with Claude")?.disabled).toBe(true);
   });
 
+  it("offers the button on an active Azure DevOps PR", async () => {
+    const host = await mount(detail([check({ conclusion: "FAILURE" })], { state: "active" }));
+    expect(button(host, "Fix with Claude")?.disabled).toBe(false);
+  });
+
   it("holds the button while the request is out, so a second click can't send twice", async () => {
     let release = () => {};
     hold = new Promise<void>((resolve) => {
@@ -145,9 +150,11 @@ describe("WorkspaceFailingChecks", () => {
     const host = await mount(detail([check({ conclusion: "FAILURE" })]));
     button(host, "Fix with Claude")?.click();
     await waitFor(() => button(host, "Send again") !== undefined, "the result");
+    expect(button(host, "Fix with Claude")).toBeUndefined();
 
     button(host, "Send again")?.click();
     await waitFor(() => button(host, "Cancel") !== undefined, "the second-send prompt");
+    expect(button(host, "Fix with Claude")).toBeUndefined();
     button(host, "Cancel")?.click();
     await waitFor(() => button(host, "Send again") !== undefined, "the result again");
     expect(sent).toHaveLength(1);
