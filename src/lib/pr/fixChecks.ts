@@ -20,10 +20,8 @@ export function isFailingCheck(check: CheckItem): boolean {
   return FAILED_CONCLUSIONS.has((check.conclusion ?? "").toUpperCase());
 }
 
-export type FixChecksResult = AgentHandOffResult;
-
 /** Hands the PR's failing checks to a coding agent; see `POST /api/pr/fix-checks`. */
-export async function fixPrChecks(ref: PrRef, confirm = false): Promise<FixChecksResult> {
+export async function fixPrChecks(ref: PrRef, confirm = false): Promise<AgentHandOffResult> {
   const res = await sidecarFetch("/api/pr/fix-checks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

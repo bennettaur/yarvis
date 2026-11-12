@@ -14,7 +14,7 @@ import {
   prWebUrl,
 } from "./resolveConflicts.ts";
 import type { PrCodeSource } from "./source.ts";
-import { type CheckItem, refKey } from "./types.ts";
+import { type CheckItem, type PrRef, refKey } from "./types.ts";
 import { locatorForRef, PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
 
 /**
@@ -25,6 +25,7 @@ import { locatorForRef, PrWorkspaceRefusal, startWorkspaceForPr } from "./worksp
 
 /** Where an existing workspace's agent is pointed when it is started on the instructions. */
 export const FIX_CHECKS_FILE = ".yarvis/fix-checks.md";
+/** What that agent is started with. */
 export const FIX_CHECKS_KICKOFF = `Read the instructions in ${FIX_CHECKS_FILE} and carry them out, following the conventions of the repository you are working in.`;
 
 const FIX_CHECKS_HANDOFF: AgentHandOff = {
@@ -44,9 +45,6 @@ const MAX_CHECK_NAME_CHARS = 80;
 /** Longer links are left off, so one link can't crowd out every other check. */
 const MAX_CHECK_URL_CHARS = 200;
 
-export type FixChecksResult = AgentHandOffResult;
-export type FixChecksOptions = AgentHandOffOptions;
-
 /** A second request for a PR whose first is still being handled. */
 export class FixChecksInFlight extends PrWorkspaceRefusal {}
 
@@ -59,28 +57,44 @@ const charCount = (text: string): number => Array.from(text).length;
 
 /**
  * One check as a list line. Whitespace is collapsed so a name can't start a
- * line of its own, and a link is kept only on the PR's own host, since anyone
- * who posts a commit status picks its URL and the agent may open it.
+ * line of its own, and a link is kept only inside the PR's own repository,
+ * since anyone who posts a commit status picks its URL and the agent may open it.
  */
-function checkLine(check: CheckItem, prHost: string): string {
+function checkLine(check: CheckItem, linkRoot: string): string {
   const name = Array.from(sanitizeIssueText(check.name).replace(/\s+/g, " "))
     .slice(0, MAX_CHECK_NAME_CHARS)
     .join("");
-  return `- ${name}${linkOnHost(check.url, prHost)}`;
+  const link = linkUnder(check.url, linkRoot);
+  return link ? `- ${name} ${link}` : `- ${name}`;
 }
 
-function linkOnHost(url: string | null, host: string): string {
-  if (!url || url.length > MAX_CHECK_URL_CHARS || !/^https:\/\/\S+$/.test(url)) return "";
+/** The link, normalized, when it is https and under `root`; otherwise null. */
+function linkUnder(url: string | null, root: string): string | null {
+  if (!url || url.length > MAX_CHECK_URL_CHARS || !/^https:\/\/\S+$/.test(url)) return null;
   try {
-    return new URL(url).host === host ? ` ${url}` : "";
+    // Parsing resolves `..` segments, so the prefix check sees the real path.
+    const href = new URL(url).href;
+    return href.toLowerCase().startsWith(root.toLowerCase()) ? href : null;
   } catch {
-    return "";
+    return null;
   }
+}
+
+/**
+ * The web address every page of the PR's repository sits under: the repo on
+ * GitHub, the project on Azure DevOps, where pipelines live beside the repos.
+ */
+export function checkLinkRoot(ref: PrRef, azureOrgUrl?: string): string {
+  const prUrl = prWebUrl(ref, azureOrgUrl);
+  const end = ref.provider === "github" ? prUrl.lastIndexOf("/pull/") : prUrl.indexOf("/_git/");
+  return prUrl.slice(0, end + 1);
 }
 
 export interface FixChecksInstructionsInput {
   number: number;
   url: string;
+  /** Check links outside this prefix are left off; see {@link checkLinkRoot}. */
+  linkRoot: string;
   headRef: string;
   failing: CheckItem[];
 }
@@ -91,11 +105,10 @@ export interface FixChecksInstructionsInput {
  * along with the head branch under one nonce.
  */
 export function buildFixChecksInstructions(input: FixChecksInstructionsInput): string {
-  const { number, url, headRef, failing } = input;
+  const { number, url, linkRoot, headRef, failing } = input;
   const nonce = newNonce();
   const tag = "pr-data";
-  const prHost = new URL(url).host;
-  const lines = failing.slice(0, MAX_LISTED_CHECKS).map((check) => checkLine(check, prHost));
+  const lines = failing.slice(0, MAX_LISTED_CHECKS).map((check) => checkLine(check, linkRoot));
 
   const assemble = (listed: string[]) => {
     const omitted = failing.length - listed.length;
@@ -103,7 +116,11 @@ export function buildFixChecksInstructions(input: FixChecksInstructionsInput): s
       `Fix the failing CI checks on pull request #${number} (${url}). ${untrustedWarning(nonce, tag)}`,
       `Head branch: ${fence(headRef, nonce, tag)}`,
       `Failing checks: ${fence(listed.join("\n"), nonce, tag)}`,
-      ...(omitted > 0 ? [`${omitted} more failing checks are not listed here.`] : []),
+      ...(omitted > 0
+        ? [
+            `${omitted} more failing checks are not listed here; find them as in step 2 and handle them the same way.`,
+          ]
+        : []),
       "1. Work in the worktree checked out on the head branch. Check that it is on that branch, then run `git fetch origin` and pull if the remote branch is ahead. If it has uncommitted changes, stop and ask rather than stashing, committing or discarding them.",
       "2. Read each failing check's log to find out why it failed. For a GitHub pull request, `gh pr checks <number>` lists the runs and `gh run view <run-id> --log-failed` shows the failure.",
       "3. Decide whether each failure is caused by this pull request's changes. Fix those. A failure that is not (a flaky test, an outage, or one that also fails on the base branch) gets no code change for its own sake; say so in your report instead.",
@@ -140,8 +157,8 @@ export async function fixFailingChecksForPr(
   db: Db,
   config: Config,
   source: PrCodeSource,
-  options: FixChecksOptions = {},
-): Promise<FixChecksResult> {
+  options: AgentHandOffOptions = {},
+): Promise<AgentHandOffResult> {
   const key = refKey(source.ref);
   if (inFlight.has(key)) {
     throw new FixChecksInFlight(
@@ -160,8 +177,8 @@ async function fix(
   db: Db,
   config: Config,
   source: PrCodeSource,
-  options: FixChecksOptions,
-): Promise<FixChecksResult> {
+  options: AgentHandOffOptions,
+): Promise<AgentHandOffResult> {
   const detail = await source.detail();
   if (detail.fromFork) {
     throw new PrWorkspaceRefusal(
@@ -179,9 +196,11 @@ async function fix(
   }
 
   const locator = locatorForRef(source.ref);
+  const azureOrgUrl = config.secrets.azureDevopsOrgUrl;
   const instructions = buildFixChecksInstructions({
     number: locator.number,
-    url: prWebUrl(source.ref, config.secrets.azureDevopsOrgUrl),
+    url: prWebUrl(source.ref, azureOrgUrl),
+    linkRoot: checkLinkRoot(source.ref, azureOrgUrl),
     headRef: detail.headRef,
     failing,
   });

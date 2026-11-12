@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
+import { refKey } from "../lib/pr/ref";
 import type { PrSummary } from "../lib/pr/types";
 import { repoPrRef } from "../lib/repos";
 import { openExternal } from "../lib/url";
@@ -649,7 +650,7 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
       )}
       {pr.mergeable && <div className="text-zinc-500">mergeable: {pr.mergeable}</div>}
       {pr.lastError && <div className="text-red-400">{pr.lastError}</div>}
-      {summary && <WorkspaceFailingChecks key={summary.url} prRef={summary.ref} />}
+      {summary && <WorkspaceFailingChecks key={refKey(summary.ref)} prRef={summary.ref} />}
     </div>
   );
 }
