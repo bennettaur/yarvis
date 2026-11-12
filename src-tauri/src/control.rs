@@ -94,6 +94,11 @@ mod unix_impl {
         /// sidecar relaunches a workspace's agent after the app restarted.
         #[serde(default)]
         resume: Option<String>,
+        /// Id of the agent harness to launch. Absent means the configured
+        /// default. The core resolves it against the harnesses the user saved,
+        /// so a caller picks among those and never supplies a command.
+        #[serde(default)]
+        harness: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -291,6 +296,7 @@ mod unix_impl {
                     p.remote_control,
                     p.resume.as_deref(),
                     p.instruction.as_deref(),
+                    p.harness.as_deref(),
                 )
             }
             "claude.kill" => {
@@ -303,7 +309,6 @@ mod unix_impl {
                 let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
                 send_session_instruction(
-                    app,
                     state.inner(),
                     &p.workspace_id,
                     &p.instruction,

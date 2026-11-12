@@ -56,6 +56,8 @@ export interface AgentSessionStart {
   sessionKey: string;
   claudeSessionId: string;
   pid: number;
+  /** The harness the PTY was launched with; omitted means unknown. */
+  harness?: string | null;
   source: string | null;
 }
 
@@ -114,6 +116,7 @@ export async function recordAgentSessionStart(db: Db, start: AgentSessionStart):
       target: [workspaceAgentSessions.sessionKey, workspaceAgentSessions.claudeSessionId],
       set: {
         pid: start.pid,
+        harness: start.harness ?? null,
         source: start.source,
         startedAt: sql`now()`,
         endedAt: null,
@@ -165,6 +168,8 @@ export interface ResumableAgentSession {
   rootPath: string;
   claudeSessionId: string;
   pid: number;
+  /** The harness to relaunch with; null means the default. */
+  harness: string | null;
 }
 
 /**
@@ -193,6 +198,7 @@ export async function findResumableAgentSessions(
       sessionKey: workspaceAgentSessions.sessionKey,
       claudeSessionId: workspaceAgentSessions.claudeSessionId,
       pid: workspaceAgentSessions.pid,
+      harness: workspaceAgentSessions.harness,
       unfinished: UNFINISHED,
     })
     .from(workspaceAgentSessions)
@@ -220,6 +226,7 @@ export async function findResumableAgentSessions(
       rootPath: r.rootPath,
       claudeSessionId: r.claudeSessionId,
       pid: r.pid,
+      harness: r.harness,
     });
   }
   return resumable;

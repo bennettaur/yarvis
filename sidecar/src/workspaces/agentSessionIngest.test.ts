@@ -71,12 +71,14 @@ function hook(
     sessionKey = AGENT_TAB,
     sessionToken = tokenFor(sessionKey ?? AGENT_TAB),
     bearer = ATTENTION_TOKEN,
+    harness,
   }: {
     workspaceId?: string;
     pid?: string;
     sessionKey?: string | null;
     sessionToken?: string;
     bearer?: string;
+    harness?: string;
   } = {},
 ) {
   const headers: Record<string, string> = {
@@ -85,7 +87,8 @@ function hook(
     [SESSION_TOKEN_HEADER]: sessionToken,
   };
   if (sessionKey !== null) headers[SESSION_KEY_HEADER] = sessionKey;
-  return app.request(`/ingest/agent-session?workspaceId=${workspaceId}&pid=${pid}`, {
+  const harnessParam = harness === undefined ? "" : `&harness=${encodeURIComponent(harness)}`;
+  return app.request(`/ingest/agent-session?workspaceId=${workspaceId}&pid=${pid}${harnessParam}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -293,12 +296,14 @@ const resumableIn = (
   workspaceName: string,
   claudeSessionId: string,
   pid: number,
+  harness: string | null = null,
 ) => ({
   workspaceId,
   workspaceName,
   rootPath: "/tmp/ws",
   claudeSessionId,
   pid,
+  harness,
 });
 
 describe("findResumableAgentSessions", () => {
@@ -310,6 +315,25 @@ describe("findResumableAgentSessions", () => {
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
       resumableIn(WORKSPACE, "ws", S1, 999_999),
     ]);
+  });
+
+  it("resumes with the harness the session was launched with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999, "claude-bedrock"),
+    ]);
+  });
+
+  it("reads an empty harness, from a terminal that carries none, as the default", async () => {
+    await hook(start(S1), { pid: "999999", harness: "" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999, null),
+    ]);
+  });
+
+  it("rejects a harness id the core could never have launched", async () => {
+    const res = await hook(start(S1), { pid: "999999", harness: "Bad Id&x=1" });
+    expect(res.status).toBe(400);
   });
 
   it("resumes a session whose SessionEnd says a signal stopped it, as the app quitting does", async () => {

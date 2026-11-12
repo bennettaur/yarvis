@@ -25,6 +25,8 @@ function defaultSettings(): Settings {
     defaultAgentName: "Claude",
     defaultAgentCommand: "claude --permission-mode auto",
     agentCommandOverriddenByEnv: false,
+    agentHarnesses: null,
+    defaultAgentHarness: null,
     azureDevopsOrgUrl: null,
     jiraBaseUrl: null,
     jiraEmail: null,
@@ -61,6 +63,24 @@ mock.module("@tauri-apps/api/core", () => ({
       };
       return stored;
     }
+    if (command === "set_agent_harnesses") {
+      const { harnesses, defaultHarness } = args as {
+        harnesses: Settings["agentHarnesses"];
+        defaultHarness: string | null;
+      };
+      stored = {
+        ...stored,
+        agentHarnesses: harnesses?.length ? harnesses : null,
+        defaultAgentHarness: defaultHarness === "claude" ? null : defaultHarness,
+      };
+      return stored;
+    }
+    if (command === "list_agent_harness_secret_status") {
+      return (stored.agentHarnesses ?? []).flatMap((h) =>
+        h.secretEnv.map((key) => ({ harnessId: h.id, key, present: false })),
+      );
+    }
+    if (command === "set_agent_harness_secret") return null;
     if (command === "set_channel_messaging") {
       const { enabled } = args as { enabled: boolean };
       stored = { ...stored, channelMessaging: enabled ? true : null };
@@ -152,6 +172,73 @@ describe("AgentSection", () => {
     await clickSave(host);
 
     expect(invoked).toContainEqual({ command: "set_agent", args: { name: null, command: null } });
+    cleanup();
+  });
+
+  it("adds a harness from a preset and saves the list with the default", async () => {
+    const { host, cleanup } = await mount();
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    button("Pi")?.click();
+    await waitFor(() => host.innerHTML.includes('value="pi"'));
+    button("Save harnesses")?.click();
+    await waitFor(() => invoked.some((i) => i.command === "set_agent_harnesses"));
+
+    expect(invoked).toContainEqual({
+      command: "set_agent_harnesses",
+      args: {
+        harnesses: [
+          {
+            id: "pi",
+            name: "Pi",
+            kind: "pi",
+            command: "pi",
+            promptArgs: null,
+            env: {},
+            secretEnv: [],
+          },
+        ],
+        defaultHarness: "claude",
+      },
+    });
+    cleanup();
+  });
+
+  it("writes a saved harness's secret variable straight to the secret store", async () => {
+    stored = {
+      ...defaultSettings(),
+      agentHarnesses: [
+        {
+          id: "claude-bedrock",
+          name: "Claude (Bedrock)",
+          kind: "claude-code",
+          command: "claude",
+          promptArgs: null,
+          env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+          secretEnv: ["AWS_BEARER_TOKEN_BEDROCK"],
+        },
+      ],
+    };
+    const { host, cleanup } = await mount();
+    await waitFor(() => host.innerHTML.includes("AWS_BEARER_TOKEN_BEDROCK"));
+    const secret = host.querySelector('input[type="password"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(secret, "tok-123");
+    secret.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() =>
+      Array.from(host.querySelectorAll("button")).some(
+        (b) => b.textContent === "Set" && !b.disabled,
+      ),
+    );
+    Array.from(host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Set")
+      ?.click();
+    await waitFor(() => invoked.some((i) => i.command === "set_agent_harness_secret"));
+
+    expect(invoked).toContainEqual({
+      command: "set_agent_harness_secret",
+      args: { harnessId: "claude-bedrock", key: "AWS_BEARER_TOKEN_BEDROCK", value: "tok-123" },
+    });
     cleanup();
   });
 

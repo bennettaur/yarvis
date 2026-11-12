@@ -121,8 +121,8 @@ async function rpc(method: string, params: Record<string, unknown>): Promise<voi
 }
 
 /** Asks the core to start an agent session in `cwd`, optionally with Remote
- *  Control enabled, resuming an earlier Claude Code session, or starting on an
- *  instruction. */
+ *  Control enabled, resuming an earlier Claude Code session, starting on an
+ *  instruction, or with a harness other than the default. */
 export async function spawnClaudeSession(input: {
   workspaceId: string;
   cwd: string;
@@ -130,8 +130,10 @@ export async function spawnClaudeSession(input: {
   remoteControl: boolean;
   resumeSessionId?: string;
   instruction?: string;
+  harness?: string;
 }): Promise<void> {
   await rpc("claude.spawn", {
+    harness: input.harness,
     workspaceId: input.workspaceId,
     cwd: input.cwd,
     name: input.name,
