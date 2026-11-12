@@ -267,6 +267,8 @@ export interface AzureBranchPr {
   draft: boolean;
   /** Normalized to the poller's stored PR-state vocabulary. */
   state: "open" | "closed" | "merged";
+  /** The source branch's commit the PR last merged from; null when Azure leaves it out. */
+  headSha: string | null;
   /** Azure mergeStatus mapped onto the shared mergeable enum. */
   mergeable: MergeableEnum;
   /** Collective verdict from the reviewers' votes carried on the PR payload. */
@@ -434,6 +436,7 @@ export class AzureDevOpsClient {
       url: this.prWebUrl(pr),
       draft: Boolean(pr.isDraft),
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
+      headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
       reviewDecision: summarizeReviewDecision(pr.reviewers ?? []),
       projectId: pr.repository?.project?.id ?? "",

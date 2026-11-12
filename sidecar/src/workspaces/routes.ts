@@ -267,7 +267,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
   // what lets the poller spend provider requests on them.
   router.get("/", async (c) => {
     if (c.req.query("badges") === "1") markWorkspaceListViewed();
-    return c.json(await listWorkspaces(db()));
+    return c.json(await listWorkspaces(db(), { withActivity: true }));
   });
 
   // The active workspace (if any) a PR was raised from, so the PR view can link

@@ -131,7 +131,7 @@ writes these files into the root:
 | `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), register each Claude Code session with the workspace, and let the session's sandbox write to each repo's clone |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
-| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory and work through this workspace's review comments. See [MCP](mcp.md). |
+| `.mcp.json` | Points the session at Yarvis's MCP endpoint, so it can read and write Yarvis memory, work through this workspace's review comments, and add worktrees. See [MCP](mcp.md). |
 | `.yarvis/brief.md` | The work the session was started on, when there is one |
 
 Some details:
@@ -154,10 +154,12 @@ Some details:
   doesn't let a session write to by default. Yarvis adds what this workspace's
   commits need to `sandbox.filesystem.allowWrite`: its worktree's folder under
   `.git/worktrees`, the object store, and its own branch and that branch's
-  remote-tracking ref. Commits, rebases and pushes on the workspace's branch
-  then run inside the sandbox instead of asking you each time. Paths you added
-  yourself stay. Yarvis also turns off fetching tags on each clone
-  (`remote.origin.tagOpt`), since nothing in Yarvis uses them.
+  remote-tracking ref. A worktree added with `add_worktree` gets the same
+  (see [Other worktrees](#other-worktrees-in-the-workspace)). Commits, rebases
+  and pushes on those branches then run inside the sandbox instead of asking
+  you each time. Paths you added yourself stay. Yarvis also turns off fetching
+  tags on each clone (`remote.origin.tagOpt`), since nothing in Yarvis uses
+  them.
 - **What still asks.** The clone is shared by every workspace on that repo, and
   parts of its `.git` decide what git runs, so these stay out of the sandbox's
   reach (`sandbox.filesystem.denyWrite`): the git config, hooks, submodule git
@@ -167,8 +169,9 @@ Some details:
   command that writes any of these, like `git push -u` (which records the
   upstream in the config), creating or deleting a branch or a tag, a fetch that
   updates other branches' remote-tracking refs (a plain `git fetch` usually
-  does), or adding a worktree (including the ones Claude Code makes for
-  subagents), asks as before. Git packs refs on its own
+  does), or running `git worktree add` (including the worktrees Claude Code
+  makes for subagents), asks as before. The agent adds a worktree with
+  `add_worktree` instead, which doesn't ask. Git packs refs on its own
   after some commits; inside the sandbox that step fails with a warning, and
   the commit itself still goes through.
 - **No symlinks in a clone's git data.** Yarvis's own git runs outside the
@@ -469,6 +472,38 @@ by repo. The line under it always names the branch you are looking at.
 - In the **Stack** tab, a layer checked out in another worktree has a **View**
   button that switches the column to it.
 
+The workspace's `AGENTS.md` tells the agent to add a worktree with the Yarvis
+MCP tool `add_worktree` ([MCP](mcp.md#adding-a-worktree)). Yarvis runs `git
+worktree add` itself, at `<workspace>/<repo folder>-<branch>`. It records the
+branch, and adds that worktree's folder under `.git/worktrees` and its branch
+to the sandbox's grants. The agent then commits, rebases and pushes there
+without leaving the sandbox.
+
+- **The branch must be new to the clone.** One that already exists locally
+  could be another workspace's branch, or the base branch you merge into, and
+  the sandbox would get write access to it. Names are compared without letter
+  case, since the clone's ref files usually sit on a case-insensitive disk,
+  where `MAIN` is the same file as `main`. A branch any active workspace on the
+  repo works on or stacks on is refused too, even when it's only on the remote.
+- The branch is checked out from the remote if it's there, and otherwise cut
+  from the workspace's base branch.
+- **No hooks or setup script run** in the new worktree. The checkout can be a
+  branch the agent pushed, so a post-checkout hook would run its code outside
+  the sandbox. The agent installs what it needs there.
+- **It is checked out beside the workspace folders, then moved in.** The agent
+  can write the workspace folder, so a checkout straight into it could follow
+  a symlink the agent put there. The move is a single rename, which refuses
+  anything but an empty folder in its way.
+- **At most 10 extra worktrees per repo.**
+- **The grant follows the worktree.** Once the worktree is removed, the next
+  write of `.claude/settings.json` drops its branch too. Yarvis writes it when
+  it provisions the workspace, starts its agent, or adds a worktree. Archiving
+  removes the worktree with the rest of the workspace.
+- **A worktree made any other way** still shows in the column, but git there
+  asks you to approve leaving the sandbox. Approving a commit or a checkout
+  there also runs the repo's git hooks outside the sandbox, and the agent can
+  edit their config (for example `lefthook.yml`).
+
 ### Stacked pull requests
 
 The **Stack** tab shows the chain of PRs the picked branch belongs to. Each
@@ -684,11 +719,12 @@ The assistant can also tell you:
 
 Press **Archive** in the workspace header when the work is done. The dialog
 asks for a short summary and the PR link, prefilled from the PR the poller
-saw. Archiving stops the session, removes the worktrees, and marks linked
-tasks complete. Every Claude Code session registered in the workspace is
-marked ended, so none is resumed after a restart. It runs in the background.
-While it runs, the right column is replaced by a "Removing worktrees…" note,
-since the worktrees it reads are being deleted. If the archive stops on a worktree, the right column comes back so you
+saw. Archiving stops the session, removes the worktrees, the workspace folder
+and any branch whose work has landed, and marks linked tasks complete. Every
+Claude Code session registered in the workspace is marked ended, so none is
+resumed after a restart. It runs in the background. While it runs, the right
+column is replaced by a "Removing worktrees…" note, since the worktrees it reads
+are being deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
 
 A worktree with uncommitted work won't remove. The workspace stays in
@@ -698,6 +734,39 @@ A worktree with uncommitted work won't remove. The workspace stays in
 A worktree whose folder is already gone counts as removed. If git has let go of
 a worktree but its folder still has files in it, the archive stops and names
 the folder. **Force remove** deletes it.
+
+The archive also removes any other worktree of the workspace's repos that sits
+inside the workspace folder, such as one an agent added for another branch of a
+stack. These follow the same rule: uncommitted work stops the archive until you
+force it. Once they're gone, each branch an agent made with `add_worktree` is
+deleted if the base branch already contains it, unless another workspace works
+on or stacks on it. Other branches, such as a squash-merged one, are kept.
+
+Once a repo's worktrees are gone, its local branch is deleted if the work has
+landed: the base branch already contains it, or its PR merged and the remote
+branch, if it's still there, has every local commit. Any other branch is kept
+in the shared clone. If a landed branch has commits past what its PR merged
+that no remote has, such as work added after the merge once the remote branch
+was deleted, the archive stops before removing any worktree and says how many,
+and whether the worktree also has uncommitted changes. It says so even when
+another worktree's uncommitted changes stop the archive too, since **Force
+remove** doesn't check again. Push them, or **Force remove** to delete them
+with the branch. A branch whose PR merged before Yarvis
+recorded the PR's head commit is kept unless you force the archive, since
+there's no telling which of its commits the merge took. Opening the workspace
+first records it.
+
+Last, the archive deletes the workspace folder. If anything other than the
+files Yarvis wrote there (`.yarvis`, `AGENTS.md`, `CLAUDE.md`, `.mcp.json`,
+and the settings and copied skills and agents in `.claude`, plus the
+`settings.local.json` Claude Code writes there) is left, such as
+notes, your own skills, or a checkout made outside Yarvis, the archive stops
+and lists them. Finder's `.DS_Store` doesn't count. **Force remove** deletes the folder with them.
+
+An active workspace that hasn't been opened, and whose agent session hasn't
+done anything, for 7 days is dimmed in the list with an "idle" label giving the
+number of days. It's a hint that the work may be done and the workspace can be
+archived to free its disk space.
 
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.

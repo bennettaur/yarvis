@@ -686,6 +686,26 @@ export const workspaceRepos = pgTable(
 );
 
 /**
+ * Worktrees Yarvis added beside a workspace repo's own, at an agent's request
+ * (`addExtraWorktree`). The branch is recorded here rather than read back from
+ * git, because the workspace's sandbox may write to its grants, and git's
+ * record of what a worktree has checked out is a file inside it.
+ */
+export const workspaceExtraWorktrees = pgTable(
+  "workspace_extra_worktrees",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceRepoId: uuid("workspace_repo_id")
+      .notNull()
+      .references(() => workspaceRepos.id, { onDelete: "cascade" }),
+    branch: text("branch").notNull(),
+    worktreePath: text("worktree_path").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("workspace_extra_worktrees_path_idx").on(t.workspaceRepoId, t.worktreePath)],
+);
+
+/**
  * Claude Code sessions that have announced themselves in a workspace, written by
  * the SessionStart/SessionEnd hooks in its `.claude/settings.json`
  * (`workspaces/claudeSettings.ts`). One row per Claude session id and PTY: a
@@ -737,6 +757,10 @@ export const workspaceRepoPr = pgTable(
     prNumber: integer("pr_number"), // null = no PR found yet
     prUrl: text("pr_url"),
     prState: text("pr_state"), // open | closed | merged
+    // The PR's head commit as last polled; for a merged PR, what it merged.
+    // Archive deletes a merged branch only up to here, since a squash merge
+    // leaves the branch's own commits on no remote once its branch is gone.
+    headSha: text("head_sha"),
     isDraft: boolean("is_draft"),
     mergeable: text("mergeable"), // MERGEABLE | CONFLICTING | UNKNOWN
     // Null when unknown: no PR, not polled, or a provider that can't answer.
@@ -1342,6 +1366,7 @@ export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
 export type WorkspaceRepo = typeof workspaceRepos.$inferSelect;
 export type NewWorkspaceRepo = typeof workspaceRepos.$inferInsert;
+export type WorkspaceExtraWorktree = typeof workspaceExtraWorktrees.$inferSelect;
 export type WorkspaceRepoPr = typeof workspaceRepoPr.$inferSelect;
 export type NewWorkspaceRepoPr = typeof workspaceRepoPr.$inferInsert;
 export type WorkspaceReviewComment = typeof workspaceReviewComments.$inferSelect;

@@ -1243,7 +1243,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     archive_workspace: tool({
       description:
-        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status and any errors.",
+        "Archive a workspace: stop its Claude session, tear down its git worktrees, and mark it archived (completing any linked task). Resolve the workspace id with list_workspaces first. It also deletes the workspace folder and each local branch whose work has landed. The archive is refused and stays in 'archiving' when a worktree has uncommitted changes, a folder git no longer tracks still has files, a landed branch has commits no remote has, or the workspace folder holds files Yarvis didn't write. Try without force first, even when the user asks for force. Pass force=true only after a refused attempt, once the user agrees to lose what the errors list. Report back the returned status and any errors.",
       inputSchema: z.object({
         workspaceId: z
           .string()
@@ -1254,7 +1254,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .boolean()
           .default(false)
           .describe(
-            "Discard uncommitted changes in the worktrees, and leftover files in folders git no longer tracks, so teardown can proceed",
+            "Deletes the kinds of work a refused archive lists, including any added since: uncommitted changes, leftover files, unpushed commits on landed branches, and the user's files in the workspace folder. Only after a refused attempt and the user's OK",
           ),
       }),
       execute: async ({ workspaceId, summary, force }) => {
@@ -1273,7 +1273,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive incomplete; some worktrees could not be removed (often uncommitted changes). Retry with force=true to discard them.",
+                : "Archive refused; the errors say what is in the way. Tell the user. Retry with force=true only if they agree to lose it.",
           };
         } catch (e) {
           return { error: errorMessage(e) };

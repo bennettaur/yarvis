@@ -257,6 +257,7 @@ describe("pollOnce", () => {
     expect(askedForReviews).toBe(false); // nothing is waiting on review any more
     expect(row?.reviewDecision).toBeNull();
     expect(row?.prState).toBe("merged");
+    expect(row?.headSha).toBe("z"); // what archive measures unpushed work from
     expect(row?.checkRollup).toBe("none");
   });
 
@@ -364,6 +365,7 @@ describe("pollOnce", () => {
                 status: "active",
                 isDraft: false,
                 mergeStatus: "succeeded",
+                lastMergeSourceCommit: { commitId: "d".repeat(40) },
                 reviewers: [{ displayName: "Ada", vote: 10 }],
                 repository: {
                   name: "web",
@@ -382,6 +384,7 @@ describe("pollOnce", () => {
     expect(row?.prNumber).toBe(55);
     expect(row?.prState).toBe("open");
     expect(row?.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
+    expect(row?.headSha).toBe("d".repeat(40));
     expect(row?.checkRollup).toBe("none");
     expect(row?.reviewDecision).toBe("approved");
     expect(row?.lastError).toBeNull();
@@ -805,7 +808,12 @@ describe("batched GitHub reads", () => {
     expect(branchRow).toMatchObject({ prNumber: 5, prState: "open", checkRollup: "failure" });
     expect(branchRow?.reviewDecision).toBe("review_required");
     const [knownRow] = await db.select().from(workspaceRepoPr).where(eqWr(knownWr));
-    expect(knownRow).toMatchObject({ prNumber: 12, prState: "merged", reviewDecision: null });
+    expect(knownRow).toMatchObject({
+      prNumber: 12,
+      prState: "merged",
+      headSha: "abc",
+      reviewDecision: null,
+    });
   });
 
   it("records one repo's error without failing the rest of the batch", async () => {
