@@ -3,6 +3,7 @@ mod clipboard;
 mod control;
 mod custom_providers;
 mod embeddings_secrets;
+mod harness;
 mod instance;
 mod keychain;
 // Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
@@ -182,10 +183,14 @@ pub fn run() {
             pty::pty_start_claude,
             pty::pty_is_busy,
             pty::get_agent_config,
+            pty::pty_session_harness,
             focus_main_window,
             settings::get_settings,
             settings::set_max_pty_sessions,
             settings::set_agent,
+            settings::set_agent_harnesses,
+            settings::list_agent_harness_secret_status,
+            settings::set_agent_harness_secret,
             settings::set_allowed_slash_commands,
             settings::set_azure_devops_org_url,
             settings::set_jira_base_url,

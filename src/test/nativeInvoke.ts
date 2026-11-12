@@ -15,7 +15,21 @@
 const DEFAULTS: Record<string, unknown> = {
   // The core always resolves an agent with non-empty fields, and the workspace
   // view renders its name unguarded.
-  get_agent_config: { name: "Claude", command: "claude --permission-mode auto" },
+  get_agent_config: {
+    name: "Claude",
+    command: "claude --permission-mode auto",
+    harnesses: [
+      {
+        id: "claude",
+        name: "Claude",
+        kind: "claude-code",
+        command: "claude --permission-mode auto",
+      },
+    ],
+    defaultHarness: "claude",
+  },
+  pty_session_harness: null,
+  list_agent_harness_secret_status: [],
   // A session with nothing captured yet. TerminalPanel destructures this to
   // splice the replay against live output, so an `undefined` answer throws.
   pty_attach: { scrollback: [], endOffset: 0 },

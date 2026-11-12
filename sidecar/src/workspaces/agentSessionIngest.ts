@@ -8,6 +8,8 @@ import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
 import {
+  HARNESS_TOKEN_HEADER,
+  harnessTokenMatches,
   recordAgentSessionEnd,
   recordAgentSessionStart,
   SESSION_KEY_HEADER,
@@ -15,6 +17,7 @@ import {
   sessionKeyBelongsTo,
   sessionTokenMatches,
 } from "./agentSessions.ts";
+import { harnessIdSchema } from "./harnesses.ts";
 import { checkWorkspaceIntegrity, getWorkspace } from "./service.ts";
 
 /** Claude's hook input is a few hundred bytes; this only bounds a token holder. */
@@ -28,6 +31,12 @@ const MAX_BODY_BYTES = 64 * 1024;
 const querySchema = z.object({
   workspaceId: UUID,
   pid: z.coerce.number().int().positive().max(2_147_483_647),
+  // Empty when the session's terminal carries no harness (a session started
+  // by hand in a workspace pane).
+  harness: harnessIdSchema
+    .or(z.literal(""))
+    .optional()
+    .transform((v) => v || null),
 });
 
 /**
@@ -98,7 +107,18 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
     const input = hookInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!input.success) return c.json({ error: input.error.flatten() }, 400);
 
-    const { workspaceId, pid } = query.data;
+    const { workspaceId, pid, harness } = query.data;
+    if (
+      harness !== null &&
+      !harnessTokenMatches(
+        config.token,
+        sessionKey,
+        harness,
+        c.req.header(HARNESS_TOKEN_HEADER) ?? "",
+      )
+    ) {
+      return c.json({ error: "harness token does not match the session's harness" }, 403);
+    }
     if (!sessionKeyBelongsTo(sessionKey, workspaceId)) {
       return c.json({ error: "session key does not belong to that workspace" }, 400);
     }
@@ -115,6 +135,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         sessionKey,
         claudeSessionId: session_id,
         pid,
+        harness,
         source: source ?? null,
       });
     } else {

@@ -11,7 +11,11 @@ import { workspaceAgentSessions, workspaces } from "../db/schema.ts";
  * `send_workspace_instruction` prove Claude is the one reading the prompt.
  */
 
-export { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./sessionHeaders.ts";
+export {
+  HARNESS_TOKEN_HEADER,
+  SESSION_KEY_HEADER,
+  SESSION_TOKEN_HEADER,
+} from "./sessionHeaders.ts";
 
 // A row's `endReason` is either the reason Claude Code's SessionEnd hook sent
 // or one of Yarvis's own below. Only Claude's `other` leaves it resumable.
@@ -56,6 +60,9 @@ export interface AgentSessionStart {
   sessionKey: string;
   claudeSessionId: string;
   pid: number;
+  /** The harness the PTY was launched with. Omitted means unknown and is
+   *  stored as null. */
+  harness?: string | null;
   source: string | null;
 }
 
@@ -91,6 +98,26 @@ export function sessionTokenMatches(bearer: string, sessionKey: string, token: s
 }
 
 /**
+ * True when `token` is the core's signature of `harnessId` for PTY
+ * `sessionKey` (`harness_token` in `pty.rs`). The harness decides what a
+ * restart relaunches the session with, so it is taken only from the core: a
+ * process in the terminal holds this token for the harness it was launched
+ * with and can't mint one for another.
+ */
+export function harnessTokenMatches(
+  bearer: string,
+  sessionKey: string,
+  harnessId: string,
+  token: string,
+): boolean {
+  if (!/^[0-9a-f]{64}$/.test(token)) return false;
+  const expected = createHmac("sha256", bearer)
+    .update(`harness:${sessionKey}:${harnessId}`)
+    .digest();
+  return timingSafeEqual(Buffer.from(token, "hex"), expected);
+}
+
+/**
  * True when `key` names a PTY that belongs to `workspaceId`. The hooks bake in
  * the workspace id of the settings file they came from, while the key comes
  * from the terminal, so the two disagree when a Claude started in one
@@ -113,6 +140,10 @@ export async function recordAgentSessionStart(db: Db, start: AgentSessionStart):
     .onConflictDoUpdate({
       target: [workspaceAgentSessions.sessionKey, workspaceAgentSessions.claudeSessionId],
       set: {
+        // `harness` is left as first registered. A re-registration may come
+        // without one (the empty value needs no signature), and taking that
+        // would let a process in the terminal choose the built-in agent for
+        // the session's next relaunch.
         pid: start.pid,
         source: start.source,
         startedAt: sql`now()`,
@@ -165,6 +196,9 @@ export interface ResumableAgentSession {
   rootPath: string;
   claudeSessionId: string;
   pid: number;
+  /** The harness to relaunch with. Null for a row from before harnesses
+   *  existed, which resumes as the built-in agent. */
+  harness: string | null;
 }
 
 /**
@@ -193,6 +227,7 @@ export async function findResumableAgentSessions(
       sessionKey: workspaceAgentSessions.sessionKey,
       claudeSessionId: workspaceAgentSessions.claudeSessionId,
       pid: workspaceAgentSessions.pid,
+      harness: workspaceAgentSessions.harness,
       unfinished: UNFINISHED,
     })
     .from(workspaceAgentSessions)
@@ -220,6 +255,7 @@ export async function findResumableAgentSessions(
       rootPath: r.rootPath,
       claudeSessionId: r.claudeSessionId,
       pid: r.pid,
+      harness: r.harness,
     });
   }
   return resumable;

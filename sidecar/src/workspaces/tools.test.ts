@@ -624,6 +624,75 @@ describe("workspace tools", () => {
     expect(startedCwds[1]).toContain("existing-ws");
   });
 
+  it("create_scratch_workspace_session hands its harness to the kick-off and to a plain launch", async () => {
+    const started: { harness?: string; instruction?: string }[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started.push({ harness: input.harness, instruction: input.instruction });
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Kick-off", brief: "Do the thing.", startWork: true, harness: "pi" },
+      opts,
+    );
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Plain", startWork: true, harness: "opencode" },
+      opts,
+    );
+    expect(started).toEqual([
+      { harness: "pi", instruction: AGENT_KICKOFF_INSTRUCTION },
+      { harness: "opencode", instruction: undefined },
+    ]);
+  });
+
+  it("refuses a harness id the core could never launch before starting anything", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.start_workspace_session.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = crypto.randomUUID();
+    expect(schema.safeParse({ workspaceId, harness: "Bad Id" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, harness: "pi" }).success).toBe(true);
+  });
+
+  it("start_workspace_session launches the harness it was asked for", async () => {
+    const created = await activeWorkspace("Harness WS");
+    // Creating the workspace logged a session start of its own.
+    await sql`TRUNCATE events RESTART IDENTITY`;
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.start_workspace_session.execute!(
+      { workspaceId: created.workspaceId, harness: "pi" },
+      opts,
+    );
+    await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
+    // Without one the core picks the default, so none is sent.
+    expect(harnesses).toEqual(["pi", undefined]);
+    // The activity log says which harness the user (or assistant) picked.
+    // emitEvent is fire-and-forget, so wait for both rows rather than a delay.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const [{ n }] =
+        await sql`SELECT count(*)::int AS n FROM events WHERE type = 'workspace.session_started' AND source = 'chat'`;
+      if (n >= 2) break;
+      await Bun.sleep(20);
+    }
+    const events =
+      await sql`SELECT payload FROM events WHERE type = 'workspace.session_started' AND source = 'chat' ORDER BY created_at`;
+    expect(events.map((e) => (e.payload as { harness: string | null }).harness)).toEqual([
+      "pi",
+      null,
+    ]);
+  });
+
   it("start_workspace_session gives a workspace that lacks them the registration hooks", async () => {
     const created = await activeWorkspace("Older WS");
     const detail = await getWorkspace(db, created.workspaceId);

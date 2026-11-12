@@ -51,6 +51,50 @@ it runs. The defaults are `Claude` and `claude --permission-mode auto`. Add
 flags there, such as a model or a different permission mode. The
 `YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command.
 
+### Agent harnesses
+
+The same section can add other **agent harnesses**: Pi, OpenCode, a custom
+command (such as a sandbox launcher), or a second Claude Code with its own
+environment, for example one pointed at another model provider. Each harness
+has a name, an id, a kind, a command and, optionally:
+
+- **Prompt arguments**, which say how an instruction is passed when the
+  session starts on one (an issue's **Start work**, or the assistant handing
+  it a brief). Put `{prompt}` where the instruction goes, as in
+  `--task {prompt} --interactive`. Left blank, the instruction is added at the
+  end, except for OpenCode, which gets `--prompt {prompt}`.
+- **Environment variables**, set for the session as written. They are not
+  shell-expanded, so `~` and `$HOME` stay literal.
+- **Secret variables**: names whose values are stored with your other secrets
+  (Keychain or 1Password) rather than in `settings.json`. Save the harness
+  first, then enter each value. A session won't start while one is missing.
+
+Pick the **default** harness there too. Opening a workspace starts the
+default. When more than one harness is configured, the workspace header has a
+picker beside the start-session button, and the agent tab is titled after the
+harness that session runs.
+
+The assistant can start a session with a named harness when you ask it to, but
+only the default, the built-in agent, and harnesses you tick **The assistant may
+start this harness** for. A harness can run with fewer guardrails than your
+default, and what steers the assistant's choice can be text it read in an issue
+or a PR, so each one is off until you turn it on. The Rust core enforces this,
+not only the assistant's instructions.
+
+Only Claude Code harnesses can be resumed after a restart or started with
+Remote Control. Asking for Remote Control with another kind fails rather than
+starting a session you can't reach.
+
+Things that come from Claude Code's hooks in the workspace's
+`.claude/settings.json` don't work for other kinds yet: their sessions don't
+register with the workspace, raise attention-bell items, or show on the Agent
+Field page. The assistant can still type an instruction into one, once it
+recognises the harness's program holding the prompt. Channel messaging only
+works for the built-in agent's command.
+
+A harness's variables, secret ones included, are set in the terminal's shell,
+so every command the agent runs there can read them.
+
 The same section lists the **allowed slash commands**: the commands and skills
 the assistant may run in a workspace's session (see
 [Running a slash command in a session](#running-a-slash-command-in-a-session)).
@@ -277,7 +321,8 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
   tab on, one Yarvis stopped, and any in an archived workspace stay ended.
   The relaunched session doesn't have Remote Control on. This needs the
   workspace's registration hooks (see [Sending an instruction to a running session](#sending-an-instruction-to-a-running-session)),
-  and an agent command that runs `claude`: another agent isn't relaunched.
+  and a Claude Code harness: another agent isn't relaunched. The session is
+  relaunched with the harness it was started with.
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file
@@ -293,7 +338,7 @@ command, since you're away from the machine then.
 Sessions you start at the laptop (by opening a workspace, pressing **Start
 work**, or asking the in-app assistant) don't get it. They open in a tab you
 are already looking at. Turn on Remote Control from inside the session if you need it
-later. Leaving it off by default also means a non-Claude agent command isn't
+later. Leaving it off by default also means a non-Claude harness isn't
 handed a flag it doesn't know.
 
 ## The workspace list
@@ -552,7 +597,7 @@ the background.
 
 Safety rules:
 
-- **The send is refused unless the configured agent is what's reading the
+- **The send is refused unless the session's agent is what's reading the
   prompt.** If the agent exited, or something else is running in that
   terminal, nothing is typed. Yarvis knows which process is Claude because
   each Claude Code session registers itself with the workspace when it starts.

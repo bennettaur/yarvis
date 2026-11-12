@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { HarnessKind } from "./settings";
 
 /**
  * Client for the Rust PTY sessions (`src-tauri/src/pty.rs`). Sessions are keyed
@@ -56,19 +57,32 @@ export const startClaudeSession = (
   cwd: string,
   name: string,
   remoteControl: boolean,
-) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl });
+  harness?: string,
+) => invoke("pty_start_claude", { workspaceId, cwd, name, remoteControl, harness });
 
-/** The agent a workspace surfaces: its tab title and the base command its
- *  launches are built from. */
-export interface AgentConfig {
+/** A harness a session can be started with, as the picker lists it. */
+export interface HarnessSummary {
+  id: string;
   name: string;
+  kind: HarnessKind;
   command: string;
 }
 
-/** The configured agent (default `Claude` / `claude --permission-mode auto`, set
- * in Settings and overridable via YARVIS_CLAUDE_COMMAND). The frontend builds its
- * own launches (e.g. the issue terminal) on top of this so they match
- * remote-control sessions. */
+/** The agent a workspace surfaces: the default harness's tab title and base
+ *  command, and every harness a session can be started with. */
+export interface AgentConfig {
+  name: string;
+  command: string;
+  harnesses: HarnessSummary[];
+  defaultHarness: string;
+}
+
+/** The harness a live agent session runs, or null when none is running. */
+export const getSessionHarness = (id: string) =>
+  invoke<{ id: string; name: string } | null>("pty_session_harness", { id });
+
+/** The default harness's name and command, plus every harness a session can be
+ * started with (Settings → Repositories → Agent). */
 export const getAgentConfig = () => invoke<AgentConfig>("get_agent_config");
 
 /** True when a non-shell foreground process is running in the session — used to

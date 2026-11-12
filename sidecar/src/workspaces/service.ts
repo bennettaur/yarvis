@@ -437,6 +437,9 @@ export interface CreateWorkspaceInput {
    * launch survives the UI navigating away — see `workspaces.pendingBrief`.
    */
   brief?: string | null;
+  /** The agent harness the brief's session runs; omitted means the default.
+   *  Ignored without a brief. See `workspaces.pendingHarness`. */
+  harness?: string;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
@@ -515,12 +518,20 @@ export async function createWorkspace(
   // tasks) gets the same defense against hidden instructions surviving into the
   // auto-approved agent session. Sanitizing sanitized text is a no-op.
   const pendingBrief = input.brief?.trim() ? sanitizeIssueText(input.brief) : null;
+  const pendingHarness = pendingBrief ? (input.harness ?? null) : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingBrief })
+      .values({
+        name: input.name.trim(),
+        slug,
+        rootPath,
+        status: "creating",
+        pendingBrief,
+        pendingHarness,
+      })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -623,7 +634,7 @@ export async function addRepoToWorkspace(
  * brief, which holds a whole ticket body and is wanted only by the one
  * workspace being opened — this list is polled, and for every workspace at once.
  */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
+export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief" | "pendingHarness"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
   /**
@@ -646,7 +657,11 @@ export interface WorkspaceSummaryPr {
 }
 
 export async function listWorkspaces(db: Db): Promise<WorkspaceSummary[]> {
-  const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const {
+    pendingBrief: _omitted,
+    pendingHarness: _omittedHarness,
+    ...listColumns
+  } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
@@ -1752,6 +1767,7 @@ async function launchKickOffSession(
       name: detail.name,
       remoteControl,
       instruction: AGENT_KICKOFF_INSTRUCTION,
+      harness: detail.pendingHarness ?? undefined,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
@@ -1773,7 +1789,7 @@ async function launchKickOffSession(
 export async function clearPendingBrief(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ pendingBrief: null, updatedAt: new Date() })
+    .set({ pendingBrief: null, pendingHarness: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
 }
 
@@ -2194,6 +2210,7 @@ async function removeWorktreesAndFinish(
       // brief still pending on it is only a copy of the work kept alive for
       // nobody.
       pendingBrief: fullyRemoved ? null : detail.pendingBrief,
+      pendingHarness: fullyRemoved ? null : detail.pendingHarness,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })

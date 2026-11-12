@@ -42,6 +42,7 @@ import {
   STOPPED_END_REASON,
 } from "./agentSessions.ts";
 import { type WorkspaceForSettings, writeClaudeSettings } from "./claudeSettings.ts";
+import { BUILTIN_HARNESS_ID } from "./harnesses.ts";
 
 export interface StartClaudeSessionInput {
   /** Workspace the session belongs to; forms the PTY session key. */
@@ -64,6 +65,13 @@ export interface StartClaudeSessionInput {
    * workspace's agent is relaunched after the app restarted.
    */
   resumeSessionId?: string;
+  /**
+   * Id of the agent harness to launch (Settings → Repositories → Agent).
+   * Omitted means the user's default; a resume passes the stored id. The core
+   * refuses an id it doesn't have, or one the user hasn't let the assistant
+   * start.
+   */
+  harness?: string;
 }
 
 export interface ClaudeSessionResult {
@@ -171,6 +179,9 @@ async function resumeAgentSession(
       name: session.workspaceName,
       remoteControl: false,
       resumeSessionId: session.claudeSessionId,
+      // A row from before harnesses existed was the built-in agent, whatever
+      // the default is now.
+      harness: session.harness ?? BUILTIN_HARNESS_ID,
     });
     launched = true;
   } catch (e) {

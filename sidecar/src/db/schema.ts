@@ -649,6 +649,10 @@ export const workspaces = pgTable(
     // back. Cleared once the agent session is live. The column name is narrower
     // than what it holds; widening it would be a migration for no behaviour.
     pendingBrief: text("pending_issue_prompt"),
+    // The agent harness that kick-off should run, kept beside the brief so a
+    // launch retried after a failure or a restart runs the harness that was
+    // asked for rather than the default. Null means the default.
+    pendingHarness: text("pending_harness"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -709,6 +713,10 @@ export const workspaceAgentSessions = pgTable(
     sessionKey: text("session_key").notNull(),
     claudeSessionId: text("claude_session_id").notNull(),
     pid: integer("pid").notNull(),
+    // The agent harness the PTY was launched with (`YARVIS_AGENT_HARNESS`), so
+    // a resume relaunches the same one. Null for a session registered before
+    // harnesses existed, which was the built-in agent and resumes as it.
+    harness: text("harness"),
     // Claude's SessionStart `source` (startup, resume, clear, compact) the last
     // time this session started, and SessionEnd's `reason` once it has ended, or
     // `process-gone` when the sidecar found the pid dead without a SessionEnd.

@@ -26,6 +26,11 @@ export interface Settings {
   defaultAgentCommand: string;
   /** True while `YARVIS_CLAUDE_COMMAND` is set, which outranks `agentCommand`. */
   agentCommandOverriddenByEnv: boolean;
+  /** Agent harnesses beyond the built-in one; null means none added. */
+  agentHarnesses: AgentHarness[] | null;
+  /** Id of the harness a launch gets when it names none; null means the
+   *  built-in one (`BUILTIN_HARNESS_ID`). */
+  defaultAgentHarness: string | null;
   /** Azure DevOps organization base URL for the PR dashboard. */
   azureDevopsOrgUrl: string | null;
   /** Atlassian Cloud site base URL for the Issues dashboard. */
@@ -65,6 +70,54 @@ export interface Settings {
    *  Claude Code channel and read their replies; null means off. */
   channelMessaging: boolean | null;
 }
+
+/** The agent programs a harness can run; mirrors `HarnessKind` in `harness.rs`.
+ *  `claude-code` is the only kind that takes `--resume` and Remote Control. */
+export type HarnessKind = "claude-code" | "pi" | "opencode" | "custom";
+
+/** Id of the harness built from `agentName`/`agentCommand`. */
+export const BUILTIN_HARNESS_ID = "claude";
+
+/** One configured harness, as the core stores it (`src-tauri/src/harness.rs`). */
+export interface AgentHarness {
+  /** Lower-case letters, digits and dashes. */
+  id: string;
+  name: string;
+  kind: HarnessKind;
+  /** Typed into a shell at the workspace root, like `agentCommand`. */
+  command: string;
+  /** How an instruction is passed, with `{prompt}` where it goes, e.g.
+   *  `--prompt {prompt}`. Null or blank means the kind's default. */
+  promptArgs: string | null;
+  /** Plain environment variables, stored in `settings.json`. */
+  env: Record<string, string>;
+  /** Names of variables whose values are kept in the secret store. */
+  secretEnv: string[];
+  /** Whether the assistant may start this harness by name. The core refuses
+   *  one it names otherwise, unless it is the default. */
+  assistantMayUse: boolean;
+}
+
+/** Whether one declared secret variable has a value stored. */
+export interface HarnessSecretStatus {
+  harnessId: string;
+  key: string;
+  present: boolean;
+}
+
+/** Replaces the configured harnesses and the default. Rejected as a whole when
+ * any entry is invalid. Takes effect on the next session started. */
+export const setAgentHarnesses = (harnesses: AgentHarness[], defaultHarness: string | null) =>
+  invoke<Settings>("set_agent_harnesses", { harnesses, defaultHarness });
+
+/** Which declared harness secrets have a stored value. Never returns values. */
+export const listAgentHarnessSecretStatus = () =>
+  invoke<HarnessSecretStatus[]>("list_agent_harness_secret_status");
+
+/** Stores one harness secret, or removes it with `null`. Only a variable the
+ * saved harness declares in `secretEnv` can be written. */
+export const setAgentHarnessSecret = (harnessId: string, key: string, value: string | null) =>
+  invoke<void>("set_agent_harness_secret", { harnessId, key, value });
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
 export type SecretBackend = "keychain" | "onepassword";
