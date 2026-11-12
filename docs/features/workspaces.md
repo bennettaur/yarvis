@@ -72,8 +72,14 @@ has a name, an id, a kind, a command and, optionally:
 Pick the **default** harness there too. Opening a workspace starts the
 default. When more than one harness is configured, the workspace header has a
 picker beside the start-session button, and the agent tab is titled after the
-harness that session runs. The assistant can start a session with a named
-harness when you ask it to.
+harness that session runs.
+
+The assistant can start a session with a named harness when you ask it to, but
+only the default, the built-in agent, and harnesses you tick **The assistant may
+start this harness** for. A harness can run with fewer guardrails than your
+default, and what steers the assistant's choice can be text it read in an issue
+or a PR, so each one is off until you turn it on. The Rust core enforces this,
+not only the assistant's instructions.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than

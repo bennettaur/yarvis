@@ -60,7 +60,8 @@ export interface AgentSessionStart {
   sessionKey: string;
   claudeSessionId: string;
   pid: number;
-  /** The harness the PTY was launched with; omitted means unknown. */
+  /** The harness the PTY was launched with. Omitted means unknown and is
+   *  stored as null. */
   harness?: string | null;
   source: string | null;
 }
@@ -139,8 +140,11 @@ export async function recordAgentSessionStart(db: Db, start: AgentSessionStart):
     .onConflictDoUpdate({
       target: [workspaceAgentSessions.sessionKey, workspaceAgentSessions.claudeSessionId],
       set: {
+        // `harness` is left as first registered. A re-registration may come
+        // without one (the empty value needs no signature), and taking that
+        // would let a process in the terminal choose the built-in agent for
+        // the session's next relaunch.
         pid: start.pid,
-        harness: start.harness ?? null,
         source: start.source,
         startedAt: sql`now()`,
         endedAt: null,
@@ -192,7 +196,8 @@ export interface ResumableAgentSession {
   rootPath: string;
   claudeSessionId: string;
   pid: number;
-  /** The harness to relaunch with; null means the default. */
+  /** The harness to relaunch with. Null for a row from before harnesses
+   *  existed, which resumes as the built-in agent. */
   harness: string | null;
 }
 

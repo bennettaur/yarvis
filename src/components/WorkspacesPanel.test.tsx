@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun
 import { clearResourceCache } from "../lib/resourceCache";
 import type { WorkspaceSummary } from "../lib/workspaces";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { mountForInteraction, renderToHtml } from "../test/render";
+import { mountForInteraction, renderToHtml, waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const EXISTING = {
@@ -138,10 +138,28 @@ let writes: { path: string; method: string }[] = [];
 /** Makes the sidecar refuse the agent-tab stop, as when its database write fails. */
 let stopFails = false;
 
+/** Harnesses the core reports beyond the built-in one; empty for most tests. */
+let extraHarnesses: { id: string; name: string; kind: string; command: string }[] = [];
+/** The harness the core says the live agent session runs, or null. */
+let liveHarness: { id: string; name: string } | null = null;
+/** Every `pty_start_claude` the panel sent. */
+let started: unknown[] = [];
+
 // The agent tab shows only while the core reports its session alive.
 mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args?: { id?: string }) =>
-    command === "pty_exists" ? args?.id === `ws-claude:${JUST_CREATED.id}` : nativeInvoke(command),
+  invoke: async (command: string, args?: { id?: string }) => {
+    if (command === "pty_exists") return args?.id === `ws-claude:${JUST_CREATED.id}`;
+    if (command === "pty_session_harness") return liveHarness;
+    if (command === "pty_start_claude") {
+      started.push(args);
+      return null;
+    }
+    if (command === "get_agent_config") {
+      const config = (await nativeInvoke(command)) as { harnesses: unknown[] };
+      return { ...config, harnesses: [...config.harnesses, ...extraHarnesses] };
+    }
+    return nativeInvoke(command);
+  },
 }));
 
 // Imported after the mock so the panel binds to it.
@@ -249,6 +267,49 @@ describe("WorkspacesPanel agent tab", () => {
       path: `/api/workspaces/${JUST_CREATED.id}/agent/stop`,
       method: "POST",
     });
+  });
+
+  it("titles the agent tab after the harness the live session runs", async () => {
+    liveHarness = { id: "pi", name: "Pi" };
+    try {
+      const mounted = await mountForInteraction(
+        <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
+        200,
+      );
+      unmount = mounted.unmount;
+      await waitFor(() => mounted.host.querySelector('[aria-label="End Pi"]') !== null);
+    } finally {
+      liveHarness = null;
+    }
+  });
+
+  it("starts the harness picked in the header", async () => {
+    extraHarnesses = [{ id: "pi", name: "Pi", kind: "pi", command: "pi" }];
+    started = [];
+    try {
+      const host = await closeAgentTab();
+      const picker = await (async () => {
+        await waitFor(() => host.querySelector('select[aria-label="Agent harness"]') !== null);
+        return host.querySelector<HTMLSelectElement>('select[aria-label="Agent harness"]')!;
+      })();
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(picker, "pi");
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => host.textContent?.includes("Start Pi session") ?? false);
+      Array.from(host.querySelectorAll("button"))
+        .find((b) => b.textContent === "Start Pi session")
+        ?.click();
+      await waitFor(() => started.length > 0);
+      expect(started[0]).toMatchObject({ workspaceId: JUST_CREATED.id, harness: "pi" });
+    } finally {
+      extraHarnesses = [];
+    }
+  });
+
+  it("offers no picker when only the built-in harness exists", async () => {
+    const host = await closeAgentTab();
+    expect(host.querySelector('select[aria-label="Agent harness"]')).toBeNull();
+    expect(host.textContent).toContain("Start Claude session");
   });
 
   it("says so when the sidecar couldn't record the close", async () => {

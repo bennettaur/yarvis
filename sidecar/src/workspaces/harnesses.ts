@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { z } from "zod";
 import { readSection } from "../settings/store.ts";
 
@@ -27,6 +28,7 @@ export const harnessIdSchema = z
 interface HarnessListing {
   id: string;
   name: string;
+  /** `claude-code`, `pi`, `opencode` or `custom`, as the core reads it. */
   kind: string;
   isDefault: boolean;
 }
@@ -36,16 +38,40 @@ interface StoredHarness {
   name?: unknown;
   kind?: unknown;
   command?: unknown;
+  assistantMayUse?: unknown;
 }
 
+/** Kinds the core knows; anything else it reads as `custom` (`HarnessKind::parse`). */
 const KNOWN_KINDS = new Set(["claude-code", "pi", "opencode"]);
 
-/** The configured harnesses, the built-in one first. */
-export async function listAgentHarnesses(): Promise<HarnessListing[]> {
-  const [stored, defaultId, agentName] = await Promise.all([
+/** The built-in agent's command, as `pty::agent_command` resolves it. */
+const DEFAULT_AGENT_COMMAND = "claude --permission-mode auto";
+
+/**
+ * The kind the core gives the built-in harness: Claude Code when its command
+ * runs `claude` (past any `VAR=value` words), custom otherwise. Mirrors
+ * `harness::runs_claude_code`, since only Claude Code takes Remote Control.
+ */
+function builtinKind(command: string): string {
+  const program = command.split(/\s+/).find((word) => word && !word.includes("="));
+  return program && basename(program) === "claude" ? "claude-code" : "custom";
+}
+
+/**
+ * The harnesses the assistant may start: the built-in one, the default, and
+ * any the user marked "assistant may use". The core refuses the rest
+ * (`harness::check_assistant_may_launch`), so listing them would only invite a
+ * call that fails. Entries are filtered the way the core's `resolve_stored`
+ * filters them, so an id listed here is one the core will launch.
+ */
+export async function listAgentHarnesses(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HarnessListing[]> {
+  const [stored, defaultId, agentName, agentCommand] = await Promise.all([
     readSection<unknown>("agentHarnesses").catch(() => undefined),
     readSection<unknown>("defaultAgentHarness").catch(() => undefined),
     readSection<unknown>("agentName").catch(() => undefined),
+    readSection<unknown>("agentCommand").catch(() => undefined),
   ]);
   const entries = (Array.isArray(stored) ? stored : []).filter(
     (h): h is StoredHarness & { id: string; command: string } =>
@@ -62,18 +88,24 @@ export async function listAgentHarnesses(): Promise<HarnessListing[]> {
     typeof defaultId === "string" && ids.has(defaultId) ? defaultId : BUILTIN_HARNESS_ID;
   const builtinName =
     typeof agentName === "string" && agentName.trim() ? agentName.trim() : DEFAULT_AGENT_NAME;
+  const builtinCommand =
+    env.YARVIS_CLAUDE_COMMAND?.trim() ||
+    (typeof agentCommand === "string" && agentCommand.trim()) ||
+    DEFAULT_AGENT_COMMAND;
   return [
     {
       id: BUILTIN_HARNESS_ID,
       name: builtinName,
-      kind: "built-in",
+      kind: builtinKind(builtinCommand),
       isDefault: effectiveDefault === BUILTIN_HARNESS_ID,
     },
-    ...entries.map((h) => ({
-      id: h.id,
-      name: typeof h.name === "string" && h.name.trim() ? h.name.trim() : h.id,
-      kind: typeof h.kind === "string" && KNOWN_KINDS.has(h.kind) ? h.kind : "custom",
-      isDefault: effectiveDefault === h.id,
-    })),
+    ...entries
+      .filter((h) => h.id === effectiveDefault || h.assistantMayUse === true)
+      .map((h) => ({
+        id: h.id,
+        name: typeof h.name === "string" && h.name.trim() ? h.name.trim() : h.id,
+        kind: typeof h.kind === "string" && KNOWN_KINDS.has(h.kind) ? h.kind : "custom",
+        isDefault: effectiveDefault === h.id,
+      })),
   ];
 }

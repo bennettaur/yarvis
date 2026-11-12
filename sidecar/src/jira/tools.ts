@@ -414,13 +414,13 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
             body: issue.body,
             sourceKey: issue.sourceKey,
           }),
+          harness,
         });
 
         await provisionWorkspace(db, ws.id, () => undefined, {
           runner: gitRunner,
           startSession: startClaude,
           remoteControl,
-          harness,
         });
 
         const detail = await getWorkspace(db, ws.id);

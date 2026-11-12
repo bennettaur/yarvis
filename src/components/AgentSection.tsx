@@ -10,8 +10,8 @@ import AgentHarnessesField from "./AgentHarnessesField";
 
 /**
  * The built-in agent: its tab title and the command its session is launched
- * from, plus the other harnesses a session can run instead. Sits beside Repositories because workspaces are what
- * start agents.
+ * from, plus the other harnesses a session can run instead. Sits beside
+ * Repositories because workspaces are what start agents.
  */
 export default function AgentSection() {
   const [settings, setSettings] = useState<Settings | null>(null);

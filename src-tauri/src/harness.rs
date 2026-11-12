@@ -39,7 +39,7 @@ pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
 /// instruction for the shell to expand.
 const PROMPT_ARGS_REFUSED: [char; 5] = ['\'', '"', '`', '$', '\\'];
 
-fn prompt_args_are_safe(args: &str) -> bool {
+fn prompt_args_are_valid(args: &str) -> bool {
     args.matches(PROMPT_PLACEHOLDER).count() == 1
         && !args.chars().any(|c| PROMPT_ARGS_REFUSED.contains(&c))
 }
@@ -112,6 +112,11 @@ pub struct AgentHarness {
     pub env: BTreeMap<String, String>,
     /// Names of variables whose values are in the secret store.
     pub secret_env: Vec<String>,
+    /// Whether the assistant may start this harness by name. Off unless the
+    /// user turns it on: a harness can run with fewer guardrails than the
+    /// default, and the text that steers the assistant's choice can come from
+    /// an issue or a PR.
+    pub assistant_may_use: bool,
 }
 
 /// Parses `agentHarnesses` one entry at a time, dropping any entry that isn't
@@ -155,11 +160,22 @@ pub struct ResolvedHarness {
     pub prompt_args: Option<String>,
     pub env: Vec<(String, String)>,
     pub secret_env: Vec<String>,
+    /// See [`AgentHarness::assistant_may_use`]. Always true for the built-in
+    /// harness, which was the only agent the assistant could start before
+    /// harnesses existed.
+    pub assistant_may_use: bool,
 }
 
 impl ResolvedHarness {
-    /// What the foreground check compares the session's process to.
+    /// What the foreground check compares the session's process to. `None`
+    /// for a saved custom harness: its command is often a wrapper (`docker`,
+    /// `ssh`, a sandbox launcher) that stays in the foreground after the agent
+    /// inside it exits to a shell, so its name proves nothing about who reads
+    /// the prompt. The built-in harness keeps the check it always had.
     pub fn program(&self) -> Option<String> {
+        if self.kind == HarnessKind::Custom && self.id != BUILTIN_HARNESS_ID {
+            return None;
+        }
         program_of(&self.command)
     }
 }
@@ -208,6 +224,7 @@ pub fn builtin(name: String, command: String) -> ResolvedHarness {
         prompt_args: None,
         env: Vec::new(),
         secret_env: Vec::new(),
+        assistant_may_use: true,
     }
 }
 
@@ -234,7 +251,7 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
         .cloned()
         .collect();
     let prompt_args = non_blank(harness.prompt_args.as_deref())
-        .filter(|args| prompt_args_are_safe(args))
+        .filter(|args| prompt_args_are_valid(args))
         .or_else(|| harness.kind.default_prompt_args().map(str::to_string));
     Some(ResolvedHarness {
         id: harness.id.clone(),
@@ -244,7 +261,36 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
         prompt_args,
         env,
         secret_env,
+        assistant_may_use: harness.assistant_may_use,
     })
+}
+
+/// Refuses a harness the assistant named but may not start. The default and
+/// the built-in harness are always allowed, as is a relaunch with `--resume`:
+/// that continues a session the core itself launched with this harness, and
+/// no assistant tool can ask for one.
+pub fn check_assistant_may_launch(
+    builtin: ResolvedHarness,
+    stored: &[AgentHarness],
+    configured_default: Option<&str>,
+    requested: Option<&str>,
+    resuming: bool,
+) -> Result<(), String> {
+    let Some(requested) = requested.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    if resuming || requested == default_id(stored, configured_default) {
+        return Ok(());
+    }
+    let harness = resolve(builtin, stored, configured_default, Some(requested))?;
+    if harness.assistant_may_use {
+        Ok(())
+    } else {
+        Err(format!(
+            "the assistant may not start the \"{}\" harness; the user can allow it in Settings",
+            harness.name
+        ))
+    }
 }
 
 /// Every launchable harness, the built-in one first.
@@ -381,7 +427,7 @@ pub fn validate(harnesses: &[AgentHarness], default_id: Option<&str>) -> Result<
                     "harness \"{label}\"'s prompt arguments must contain {PROMPT_PLACEHOLDER} exactly once"
                 ));
             }
-            if !prompt_args_are_safe(args) {
+            if !prompt_args_are_valid(args) {
                 return Err(format!(
                     "harness \"{label}\"'s prompt arguments may not contain quotes, $, ` or \\; {PROMPT_PLACEHOLDER} is quoted for you"
                 ));
@@ -547,6 +593,39 @@ mod tests {
             builtin("C".into(), "FOO=1 /opt/bin/claude".into()).kind,
             HarnessKind::ClaudeCode
         );
+    }
+
+    #[test]
+    fn the_assistant_may_start_only_the_default_the_builtin_and_opted_in_harnesses() {
+        let mut opted_in = stored("pi", HarnessKind::Pi, "pi");
+        opted_in.assistant_may_use = true;
+        let not_opted_in = stored(
+            "yolo",
+            HarnessKind::ClaudeCode,
+            "claude --dangerously-skip-permissions",
+        );
+        let harnesses = [opted_in, not_opted_in];
+        let check = |default: Option<&str>, requested: Option<&str>, resuming: bool| {
+            check_assistant_may_launch(claude(), &harnesses, default, requested, resuming)
+        };
+        assert!(check(None, None, false).is_ok());
+        assert!(check(None, Some("claude"), false).is_ok());
+        assert!(check(None, Some("pi"), false).is_ok());
+        assert!(check(None, Some("yolo"), false).is_err());
+        // The user made it the default, so a launch by name is no wider.
+        assert!(check(Some("yolo"), Some("yolo"), false).is_ok());
+        // A resume relaunches what the core launched; no tool can ask for one.
+        assert!(check(None, Some("yolo"), true).is_ok());
+        assert!(check(None, Some("missing"), false).is_err());
+    }
+
+    #[test]
+    fn a_stored_custom_harness_has_no_program_for_the_foreground_check() {
+        let custom = stored("box", HarnessKind::Custom, "docker run -it agent");
+        let picked = resolve(claude(), &[custom], None, Some("box")).unwrap();
+        assert_eq!(picked.program(), None);
+        let codex = builtin("Codex".into(), "codex --yolo".into());
+        assert_eq!(codex.program().as_deref(), Some("codex"));
     }
 
     #[test]

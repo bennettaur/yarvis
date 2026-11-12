@@ -10,6 +10,7 @@ import {
   endWorkspaceAgentSessions,
   findResumableAgentSessions,
   HARNESS_TOKEN_HEADER,
+  harnessTokenMatches,
   PROCESS_GONE_END_REASON,
   pidIsAlive,
   reapAndListAgentSessions,
@@ -334,6 +335,51 @@ describe("findResumableAgentSessions", () => {
     await hook(start(S1), { pid: "999999", harness: "" });
     expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
       resumableIn(WORKSPACE, "ws", S1, 999_999, null),
+    ]);
+  });
+
+  it("checks harness tokens the way the core signs them", () => {
+    // Pinned in pty.rs's tests too, so the two sides can't drift apart.
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:a",
+        "pi",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(true);
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:a",
+        "claude",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(false);
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:b",
+        "pi",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses a harness token of the wrong shape", async () => {
+    const valid = harnessTokenFor(AGENT_TAB, "pi");
+    for (const harnessToken of [`${valid}0`, `x${valid}`, valid.slice(1), valid.toUpperCase()]) {
+      const res = await hook(start(S1), { pid: "999999", harness: "pi", harnessToken });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("keeps the harness a session first registered with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    // An unsigned re-registration with no harness can't move it to the built-in.
+    await hook(start(S1, "resume"), { pid: "999998" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_998, "claude-bedrock"),
     ]);
   });
 

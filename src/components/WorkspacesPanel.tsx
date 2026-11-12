@@ -872,6 +872,9 @@ function WorkspaceDetailView({
   // The name of the harness the live agent session runs, which titles its tab.
   // Null until the core answers, or when it couldn't say.
   const [sessionHarnessName, setSessionHarnessName] = useState<string | null>(null);
+  // Bumped after each launch from here, so the title is read again even when
+  // the session stayed "active" throughout (one replaced between polls).
+  const [launchCount, setLaunchCount] = useState(0);
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
@@ -1109,6 +1112,7 @@ function WorkspaceDetailView({
         await startClaudeSession(id, agentCwdForWorkspace(detail), detail.name, false, harness);
         // The session now exists; reflect it immediately (the poll would catch up).
         setAgentActive(true);
+        setLaunchCount((n) => n + 1);
       } catch (e) {
         setAgentError(e instanceof Error ? e.message : String(e));
       }
@@ -1119,6 +1123,7 @@ function WorkspaceDetailView({
   // Titles the agent tab after the harness the live session runs, which can
   // differ from the default: it may have been started with another one here,
   // by the assistant, or before the default changed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: launchCount only triggers the re-read
   useEffect(() => {
     if (!agentActive) {
       setSessionHarnessName(null);
@@ -1135,7 +1140,7 @@ function WorkspaceDetailView({
     return () => {
       cancelled = true;
     };
-  }, [agentActive, id]);
+  }, [agentActive, id, launchCount]);
 
   // Every provisioned workspace surfaces an agent session, so opening one is
   // enough to get a tab you can drive. The pinned tab that appears is

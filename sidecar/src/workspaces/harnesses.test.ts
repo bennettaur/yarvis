@@ -23,39 +23,54 @@ const writeSettings = (doc: Record<string, unknown>) =>
   writeFile(process.env.YARVIS_SETTINGS_PATH as string, JSON.stringify(doc));
 
 describe("listAgentHarnesses", () => {
+  const noEnv = {};
+
   it("lists only the built-in agent when nothing is configured", async () => {
-    expect(await listAgentHarnesses()).toEqual([
-      { id: "claude", name: "Claude", kind: "built-in", isDefault: true },
+    expect(await listAgentHarnesses(noEnv)).toEqual([
+      { id: "claude", name: "Claude", kind: "claude-code", isDefault: true },
     ]);
   });
 
-  it("lists configured harnesses and marks the default, without their commands or env", async () => {
+  it("lists the default and opted-in harnesses, without their commands or env", async () => {
     await writeSettings({
-      agentName: "Claude",
+      agentName: "  ",
       agentHarnesses: [
         { id: "pi", name: "Pi", kind: "pi", command: "pi", env: { PI_KEY: "x" } },
-        { id: "box", name: "CloudBox", kind: "sandboxy", command: "cloudbox run" },
+        { id: "box", name: " ", kind: "sandboxy", command: "cloudbox run", assistantMayUse: true },
+        { id: "yolo", name: "Yolo", kind: "claude-code", command: "claude --yolo" },
       ],
       defaultAgentHarness: "pi",
     });
-    expect(await listAgentHarnesses()).toEqual([
-      { id: "claude", name: "Claude", kind: "built-in", isDefault: false },
+    expect(await listAgentHarnesses(noEnv)).toEqual([
+      { id: "claude", name: "Claude", kind: "claude-code", isDefault: false },
       { id: "pi", name: "Pi", kind: "pi", isDefault: true },
-      { id: "box", name: "CloudBox", kind: "custom", isDefault: false },
+      { id: "box", name: "box", kind: "custom", isDefault: false },
     ]);
+  });
+
+  it("gives the built-in agent the kind its command makes it", async () => {
+    await writeSettings({ agentCommand: "codex --yolo" });
+    expect((await listAgentHarnesses(noEnv))[0]?.kind).toBe("custom");
+    await writeSettings({ agentCommand: "FOO=1 /opt/bin/claude" });
+    expect((await listAgentHarnesses(noEnv))[0]?.kind).toBe("claude-code");
+    // The env override outranks the setting, as in the core.
+    expect((await listAgentHarnesses({ YARVIS_CLAUDE_COMMAND: "aider" }))[0]?.kind).toBe("custom");
   });
 
   it("skips entries the core would not launch and falls back to the built-in default", async () => {
     await writeSettings({
       agentHarnesses: [
-        { id: "Bad Id", command: "x" },
-        { id: "nocmd", command: "  " },
-        { id: "claude", command: "claude" },
+        "pi",
+        null,
+        { id: 3, command: "x", assistantMayUse: true },
+        { id: "Bad Id", command: "x", assistantMayUse: true },
+        { id: "nocmd", command: "  ", assistantMayUse: true },
+        { id: "claude", command: "claude", assistantMayUse: true },
       ],
       defaultAgentHarness: "nocmd",
     });
-    expect(await listAgentHarnesses()).toEqual([
-      { id: "claude", name: "Claude", kind: "built-in", isDefault: true },
+    expect(await listAgentHarnesses(noEnv)).toEqual([
+      { id: "claude", name: "Claude", kind: "claude-code", isDefault: true },
     ]);
   });
 });

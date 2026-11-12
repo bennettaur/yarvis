@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type AgentHarness,
   BUILTIN_HARNESS_ID,
+  getSettings,
   type HarnessKind,
   type HarnessSecretStatus,
   listAgentHarnessSecretStatus,
@@ -26,6 +27,10 @@ interface Draft {
   /** Client-only React key. Rows can't be keyed by id, which is editable, or by
    *  index, which hands a removed row's half-typed secret to the row below. */
   rowKey: number;
+  /** The id this row was saved under, or null for a row not saved yet. A saved
+   *  id can't be edited: its secret values are stored under it, and a save
+   *  would treat the renamed harness as a removed one and clear them. */
+  savedId: string | null;
   id: string;
   name: string;
   kind: HarnessKind;
@@ -33,12 +38,16 @@ interface Draft {
   promptArgs: string;
   envText: string;
   secretEnvText: string;
+  assistantMayUse: boolean;
 }
 
 let nextRowKey = 0;
 
-const toDraft = (h: AgentHarness): Draft => ({
-  rowKey: nextRowKey++,
+/** `rowKey` carries a saved row's key over a save, so its React subtree (and
+ *  any secret value typed but not yet set) survives. */
+const toDraft = (h: AgentHarness, rowKey: number = nextRowKey++): Draft => ({
+  rowKey,
+  savedId: h.id,
   id: h.id,
   name: h.name,
   kind: h.kind,
@@ -48,11 +57,12 @@ const toDraft = (h: AgentHarness): Draft => ({
     .map(([k, v]) => `${k}=${v}`)
     .join("\n"),
   secretEnvText: (h.secretEnv ?? []).join(" "),
+  assistantMayUse: h.assistantMayUse === true,
 });
 
 /** Parses `KEY=value` lines. A line without `=` is kept as a key with an empty
  *  value, so the core reports the bad name instead of it vanishing. */
-const parseEnv = (text: string): Record<string, string> => {
+export const parseEnv = (text: string): Record<string, string> => {
   const env: Record<string, string> = {};
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -64,7 +74,7 @@ const parseEnv = (text: string): Record<string, string> => {
   return env;
 };
 
-const fromDraft = (d: Draft): AgentHarness => ({
+export const fromDraft = (d: Draft): AgentHarness => ({
   id: d.id.trim(),
   name: d.name.trim(),
   kind: d.kind,
@@ -72,10 +82,11 @@ const fromDraft = (d: Draft): AgentHarness => ({
   promptArgs: d.promptArgs.trim() || null,
   env: parseEnv(d.envText),
   secretEnv: d.secretEnvText.split(/[\s,]+/).filter(Boolean),
+  assistantMayUse: d.assistantMayUse,
 });
 
 /** An id derived from a name, made unique against the ids already taken. */
-const idFor = (name: string, taken: string[]): string => {
+export const idFor = (name: string, taken: string[]): string => {
   const base =
     name
       .toLowerCase()
@@ -103,7 +114,7 @@ export default function AgentHarnessesField({
   onSaved: (next: Settings) => void;
 }) {
   const stored = settings.agentHarnesses ?? [];
-  const [drafts, setDrafts] = useState<Draft[]>(() => stored.map(toDraft));
+  const [drafts, setDrafts] = useState<Draft[]>(() => stored.map((h) => toDraft(h)));
   const [defaultId, setDefaultId] = useState(settings.defaultAgentHarness ?? BUILTIN_HARNESS_ID);
   const [secrets, setSecrets] = useState<HarnessSecretStatus[]>([]);
   const [busy, setBusy] = useState(false);
@@ -138,6 +149,7 @@ export default function AgentHarnessesField({
         ...current,
         {
           rowKey: nextRowKey++,
+          savedId: null,
           id: idFor(
             name,
             current.map((d) => d.id),
@@ -148,6 +160,7 @@ export default function AgentHarnessesField({
           promptArgs: "",
           envText: "",
           secretEnvText: "",
+          assistantMayUse: false,
         },
       ];
     });
@@ -170,12 +183,18 @@ export default function AgentHarnessesField({
     try {
       const next = await setAgentHarnesses(drafts.map(fromDraft), defaultId);
       onSaved(next);
-      setDrafts((next.agentHarnesses ?? []).map(toDraft));
+      const keyFor = new Map(drafts.map((d) => [d.id.trim(), d.rowKey]));
+      setDrafts((next.agentHarnesses ?? []).map((h) => toDraft(h, keyFor.get(h.id))));
       setDefaultId(next.defaultAgentHarness ?? BUILTIN_HARNESS_ID);
       refreshSecrets();
       setNotice("Saved. Applies to the next agent session started.");
     } catch (e) {
       setError(errorText(e));
+      // A save can land and then fail clearing removed secrets, so what is
+      // stored may already have changed: read it back rather than assume.
+      getSettings()
+        .then(onSaved)
+        .catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -216,13 +235,13 @@ export default function AgentHarnessesField({
       </label>
 
       {drafts.map((d, i) => {
-        const saved = stored.find((h) => h.id === d.id);
+        const saved = d.savedId === null ? undefined : stored.find((h) => h.id === d.savedId);
         return (
           <HarnessRow
             key={d.rowKey}
             draft={d}
             savedSecretEnv={saved?.secretEnv ?? []}
-            secrets={secrets.filter((s) => s.harnessId === d.id)}
+            secrets={secrets.filter((s) => s.harnessId === d.savedId)}
             onChange={(patch) => update(i, patch)}
             onRemove={() => remove(i)}
             onSecretsChanged={refreshSecrets}
@@ -271,6 +290,7 @@ function HarnessRow({
   onRemove: () => void;
   onSecretsChanged: () => void;
 }) {
+  const savedId = draft.savedId;
   const inputClass =
     "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500";
   return (
@@ -290,6 +310,8 @@ function HarnessRow({
           <input
             type="text"
             value={draft.id}
+            readOnly={draft.savedId !== null}
+            title={draft.savedId !== null ? "A saved harness's id can't change" : undefined}
             onChange={(e) => onChange({ id: e.target.value })}
             className={`${inputClass} font-mono`}
           />
@@ -361,15 +383,30 @@ function HarnessRow({
           />
         </label>
       </div>
-      {savedSecretEnv.map((key) => (
-        <SecretValue
-          key={key}
-          harnessId={draft.id}
-          name={key}
-          present={secrets.some((s) => s.key === key && s.present)}
-          onChanged={onSecretsChanged}
+      <label className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
+        <input
+          type="checkbox"
+          checked={draft.assistantMayUse}
+          onChange={(e) => onChange({ assistantMayUse: e.target.checked })}
         />
-      ))}
+        The assistant may start this harness when asked (always true for the default)
+      </label>
+      {savedSecretEnv.length > 0 && savedId !== null && (
+        <p className="mt-2 text-xs text-amber-400">
+          Secret values are set in the session's shell, so every command the agent runs can read
+          them.
+        </p>
+      )}
+      {savedId !== null &&
+        savedSecretEnv.map((key) => (
+          <SecretValue
+            key={key}
+            harnessId={savedId}
+            name={key}
+            present={secrets.some((s) => s.key === key && s.present)}
+            onChanged={onSecretsChanged}
+          />
+        ))}
     </div>
   );
 }
