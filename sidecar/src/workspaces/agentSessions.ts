@@ -11,7 +11,11 @@ import { workspaceAgentSessions, workspaces } from "../db/schema.ts";
  * `send_workspace_instruction` prove Claude is the one reading the prompt.
  */
 
-export { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./sessionHeaders.ts";
+export {
+  HARNESS_TOKEN_HEADER,
+  SESSION_KEY_HEADER,
+  SESSION_TOKEN_HEADER,
+} from "./sessionHeaders.ts";
 
 // A row's `endReason` is either the reason Claude Code's SessionEnd hook sent
 // or one of Yarvis's own below. Only Claude's `other` leaves it resumable.
@@ -89,6 +93,26 @@ export function sessionTokenMatches(bearer: string, sessionKey: string, token: s
   // shape is checked first.
   if (!/^[0-9a-f]{64}$/.test(token)) return false;
   const expected = createHmac("sha256", bearer).update(`session:${sessionKey}`).digest();
+  return timingSafeEqual(Buffer.from(token, "hex"), expected);
+}
+
+/**
+ * True when `token` is the core's signature of `harnessId` for PTY
+ * `sessionKey` (`harness_token` in `pty.rs`). The harness decides what a
+ * restart relaunches the session with, so it is taken only from the core: a
+ * process in the terminal holds this token for the harness it was launched
+ * with and can't mint one for another.
+ */
+export function harnessTokenMatches(
+  bearer: string,
+  sessionKey: string,
+  harnessId: string,
+  token: string,
+): boolean {
+  if (!/^[0-9a-f]{64}$/.test(token)) return false;
+  const expected = createHmac("sha256", bearer)
+    .update(`harness:${sessionKey}:${harnessId}`)
+    .digest();
   return timingSafeEqual(Buffer.from(token, "hex"), expected);
 }
 

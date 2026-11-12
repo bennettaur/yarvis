@@ -711,7 +711,7 @@ export const workspaceAgentSessions = pgTable(
     pid: integer("pid").notNull(),
     // The agent harness the PTY was launched with (`YARVIS_AGENT_HARNESS`), so
     // a resume relaunches the same one. Null for a session registered before
-    // harnesses existed, which resumes with the default.
+    // harnesses existed, which was the built-in agent and resumes as it.
     harness: text("harness"),
     // Claude's SessionStart `source` (startup, resume, clear, compact) the last
     // time this session started, and SessionEnd's `reason` once it has ended, or

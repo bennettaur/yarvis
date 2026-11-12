@@ -624,6 +624,39 @@ describe("workspace tools", () => {
     expect(startedCwds[1]).toContain("existing-ws");
   });
 
+  it("create_scratch_workspace_session hands its harness to the kick-off and to a plain launch", async () => {
+    const started: { harness?: string; instruction?: string }[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started.push({ harness: input.harness, instruction: input.instruction });
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Kick-off", brief: "Do the thing.", startWork: true, harness: "pi" },
+      opts,
+    );
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Plain", startWork: true, harness: "opencode" },
+      opts,
+    );
+    expect(started).toEqual([
+      { harness: "pi", instruction: AGENT_KICKOFF_INSTRUCTION },
+      { harness: "opencode", instruction: undefined },
+    ]);
+  });
+
+  it("refuses a harness id the core could never launch before starting anything", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.start_workspace_session.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = crypto.randomUUID();
+    expect(schema.safeParse({ workspaceId, harness: "Bad Id" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, harness: "pi" }).success).toBe(true);
+  });
+
   it("start_workspace_session launches the harness it was asked for", async () => {
     const created = await activeWorkspace("Harness WS");
     const harnesses: (string | undefined)[] = [];

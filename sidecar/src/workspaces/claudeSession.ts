@@ -42,6 +42,7 @@ import {
   STOPPED_END_REASON,
 } from "./agentSessions.ts";
 import { type WorkspaceForSettings, writeClaudeSettings } from "./claudeSettings.ts";
+import { BUILTIN_HARNESS_ID } from "./harnesses.ts";
 
 export interface StartClaudeSessionInput {
   /** Workspace the session belongs to; forms the PTY session key. */
@@ -176,7 +177,9 @@ async function resumeAgentSession(
       name: session.workspaceName,
       remoteControl: false,
       resumeSessionId: session.claudeSessionId,
-      harness: session.harness ?? undefined,
+      // A row from before harnesses existed was the built-in agent, whatever
+      // the default is now.
+      harness: session.harness ?? BUILTIN_HARNESS_ID,
     });
     launched = true;
   } catch (e) {

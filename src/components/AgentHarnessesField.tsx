@@ -23,6 +23,9 @@ const KINDS = Object.keys(PRESETS) as HarnessKind[];
 /** A harness as edited: env and secret names as text, so a half-typed line
  *  doesn't get dropped before the user finishes it. */
 interface Draft {
+  /** Client-only React key. Rows can't be keyed by id, which is editable, or by
+   *  index, which hands a removed row's half-typed secret to the row below. */
+  rowKey: number;
   id: string;
   name: string;
   kind: HarnessKind;
@@ -32,7 +35,10 @@ interface Draft {
   secretEnvText: string;
 }
 
+let nextRowKey = 0;
+
 const toDraft = (h: AgentHarness): Draft => ({
+  rowKey: nextRowKey++,
   id: h.id,
   name: h.name,
   kind: h.kind,
@@ -112,11 +118,18 @@ export default function AgentHarnessesField({
 
   useEffect(() => refreshSecrets(), [refreshSecrets]);
 
-  const update = useCallback((index: number, patch: Partial<Draft>) => {
-    setDrafts((current) => current.map((d, i) => (i === index ? { ...d, ...patch } : d)));
-    setNotice(null);
-    setError(null);
-  }, []);
+  const update = useCallback(
+    (index: number, patch: Partial<Draft>) => {
+      // The default follows its harness through an id edit, or Save would send
+      // an id that no longer exists.
+      const renamed = drafts[index];
+      if (patch.id !== undefined && renamed && renamed.id === defaultId) setDefaultId(patch.id);
+      setDrafts((current) => current.map((d, i) => (i === index ? { ...d, ...patch } : d)));
+      setNotice(null);
+      setError(null);
+    },
+    [defaultId, drafts],
+  );
 
   const add = useCallback((kind: HarnessKind) => {
     setDrafts((current) => {
@@ -124,6 +137,7 @@ export default function AgentHarnessesField({
       return [
         ...current,
         {
+          rowKey: nextRowKey++,
           id: idFor(
             name,
             current.map((d) => d.id),
@@ -140,10 +154,14 @@ export default function AgentHarnessesField({
     setNotice(null);
   }, []);
 
-  const remove = useCallback((index: number) => {
-    setDrafts((current) => current.filter((_, i) => i !== index));
-    setNotice(null);
-  }, []);
+  const remove = useCallback(
+    (index: number) => {
+      if (drafts[index]?.id === defaultId) setDefaultId(BUILTIN_HARNESS_ID);
+      setDrafts((current) => current.filter((_, i) => i !== index));
+      setNotice(null);
+    },
+    [defaultId, drafts],
+  );
 
   const save = useCallback(async () => {
     setError(null);
@@ -172,7 +190,8 @@ export default function AgentHarnessesField({
         Other agents a workspace session can run, such as Pi, OpenCode, a sandbox command, or a
         second Claude Code pointed at another provider through its environment. Pick one when
         starting a session, or ask the assistant to use it. Only Claude Code harnesses can resume
-        after a restart or take Remote Control.
+        after a restart or take Remote Control. In prompt arguments, <code>{"{prompt}"}</code> marks
+        where an instruction goes; it is quoted for you, so don't add quotes around it.
       </p>
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
       {notice && <p className="mb-3 text-sm text-emerald-400">{notice}</p>}
@@ -189,7 +208,7 @@ export default function AgentHarnessesField({
         >
           <option value={BUILTIN_HARNESS_ID}>{builtinName} (built-in)</option>
           {drafts.map((d) => (
-            <option key={d.id} value={d.id}>
+            <option key={d.rowKey} value={d.id}>
               {d.name || d.id}
             </option>
           ))}
@@ -200,8 +219,7 @@ export default function AgentHarnessesField({
         const saved = stored.find((h) => h.id === d.id);
         return (
           <HarnessRow
-            // biome-ignore lint/suspicious/noArrayIndexKey: an id can be edited, so it can't key the row
-            key={i}
+            key={d.rowKey}
             draft={d}
             savedSecretEnv={saved?.secretEnv ?? []}
             secrets={secrets.filter((s) => s.harnessId === d.id)}
@@ -253,7 +271,7 @@ function HarnessRow({
   onRemove: () => void;
   onSecretsChanged: () => void;
 }) {
-  const input =
+  const inputClass =
     "w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm outline-none focus:border-zinc-500";
   return (
     <div className="mb-3 rounded-lg border border-zinc-800 p-3">
@@ -264,7 +282,7 @@ function HarnessRow({
             type="text"
             value={draft.name}
             onChange={(e) => onChange({ name: e.target.value })}
-            className={input}
+            className={inputClass}
           />
         </label>
         <label className="w-32 text-xs text-zinc-400">
@@ -273,7 +291,7 @@ function HarnessRow({
             type="text"
             value={draft.id}
             onChange={(e) => onChange({ id: e.target.value })}
-            className={`${input} font-mono`}
+            className={`${inputClass} font-mono`}
           />
         </label>
         <label className="text-xs text-zinc-400">
@@ -305,7 +323,7 @@ function HarnessRow({
             type="text"
             value={draft.command}
             onChange={(e) => onChange({ command: e.target.value })}
-            className={`${input} font-mono`}
+            className={`${inputClass} font-mono`}
           />
         </label>
         <label className="w-56 text-xs text-zinc-400">
@@ -315,7 +333,7 @@ function HarnessRow({
             value={draft.promptArgs}
             placeholder={draft.kind === "opencode" ? "--prompt {prompt}" : "{prompt}"}
             onChange={(e) => onChange({ promptArgs: e.target.value })}
-            className={`${input} font-mono`}
+            className={`${inputClass} font-mono`}
           />
         </label>
       </div>
@@ -329,7 +347,7 @@ function HarnessRow({
             rows={2}
             placeholder="CLAUDE_CODE_USE_BEDROCK=1"
             onChange={(e) => onChange({ envText: e.target.value })}
-            className={`${input} font-mono`}
+            className={`${inputClass} font-mono`}
           />
         </label>
         <label className="w-56 text-xs text-zinc-400">
@@ -339,7 +357,7 @@ function HarnessRow({
             value={draft.secretEnvText}
             placeholder="ANTHROPIC_API_KEY"
             onChange={(e) => onChange({ secretEnvText: e.target.value })}
-            className={`${input} font-mono`}
+            className={`${inputClass} font-mono`}
           />
         </label>
       </div>

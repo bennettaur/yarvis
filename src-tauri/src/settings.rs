@@ -59,6 +59,10 @@ pub struct Settings {
     pub agent_harnesses: Option<Vec<crate::harness::AgentHarness>>,
     /// Id of the harness a launch gets when it names none. Unset means the
     /// built-in one.
+    #[serde(
+        default,
+        deserialize_with = "crate::harness::deserialize_default_lenient"
+    )]
     pub default_agent_harness: Option<String>,
     /// Azure DevOps organization base URL for the PR dashboard; see
     /// `sidecar::build_command`.
@@ -376,22 +380,27 @@ impl SettingsState {
 
     /// Replaces the stored harness list and default. Rejected as a whole when
     /// any entry is invalid (see `harness::validate`), so a save never keeps
-    /// half of what the user submitted.
+    /// half of what the user submitted. Returns the secret variables the save
+    /// dropped, whose stored values the caller clears.
     fn set_agent_harnesses(
         &self,
         harnesses: Vec<crate::harness::AgentHarness>,
         default_id: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<(String, String)>, String> {
         let default_id = non_blank(default_id);
         crate::harness::validate(&harnesses, default_id.as_deref())?;
-        {
+        let dropped = {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
+            let before = settings.agent_harnesses.take().unwrap_or_default();
+            let dropped = crate::harness::dropped_secrets(&before, &harnesses);
             settings.agent_harnesses = (!harnesses.is_empty()).then_some(harnesses);
             settings.default_agent_harness =
                 default_id.filter(|id| id != crate::harness::BUILTIN_HARNESS_ID);
-        }
-        self.save()
+            dropped
+        };
+        self.save()?;
+        Ok(dropped)
     }
 
     /// Stores the user's extra allowed slash commands, or clears them with an
@@ -761,15 +770,23 @@ pub fn set_agent(
     Ok(state.snapshot().into())
 }
 
-/// Replaces the configured agent harnesses and the default one. See
-/// `SettingsState::set_agent_harnesses`.
-#[tauri::command]
+/// Replaces the configured agent harnesses and the default one, then clears
+/// the stored values of any secret variable the save dropped. See
+/// `SettingsState::set_agent_harnesses`. The secret store is touched only when
+/// something was dropped, so an ordinary save never prompts 1Password.
+#[tauri::command(async)]
 pub fn set_agent_harnesses(
     state: tauri::State<'_, SettingsState>,
     harnesses: Vec<crate::harness::AgentHarness>,
     default_harness: Option<String>,
 ) -> Result<SettingsView, String> {
-    state.set_agent_harnesses(harnesses, default_harness)?;
+    let dropped = state.set_agent_harnesses(harnesses, default_harness)?;
+    if !dropped.is_empty() {
+        keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
+            Ok(crate::harness::prune_secrets(subtree, &dropped))
+        })
+        .map_err(|e| format!("Saved, but the removed secret values could not be cleared: {e}"))?;
+    }
     Ok(state.snapshot().into())
 }
 
@@ -820,15 +837,14 @@ pub fn list_agent_harness_secret_status(
 /// have its old value cleared.
 #[tauri::command(async)]
 pub fn set_agent_harness_secret(
-    state: tauri::State<'_, SettingsState>,
     harness_id: String,
     key: String,
     value: Option<String>,
 ) -> Result<(), String> {
     let value = value.filter(|v| !v.is_empty());
     if value.is_some() {
-        let declared = state
-            .snapshot()
+        // From disk: a harness saved by another instance counts too.
+        let declared = from_disk()
             .agent_harnesses
             .unwrap_or_default()
             .iter()

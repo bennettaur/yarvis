@@ -51,6 +51,11 @@ assistant tells you the session name.
 Sessions started at the laptop don't get the flag, because they open in a tab
 you're already looking at. See [Workspaces](workspaces.md).
 
+Remote Control is a Claude Code feature, so it needs a Claude Code harness. If
+your default [agent harness](workspaces.md#agent-harnesses) is another kind
+(Pi, OpenCode, a custom command), a session started from Telegram fails to
+start. Ask the assistant for a Claude Code harness by name.
+
 ## Who can reach the bot
 
 Access is limited to **private** chats on the allowlist. The bot ignores

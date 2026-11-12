@@ -441,8 +441,8 @@ report there and leaves the fixes to the author.
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
-  `foreground_is_agent` refuses to type at all unless the configured agent is
-  what's reading the prompt, and the chat agent's system prompt forbids
+  `foreground_is_agent` refuses to type at all unless the agent the session was
+  launched with (its harness, `harness.rs`) is what's reading the prompt, and the chat agent's system prompt forbids
   relaying third-party text as an instruction. Text the core would refuse that
   way is never sent over the channel (`opensWithCommandPrefix` in
   `workspaces/claudeSession.ts`), so the same refusal applies. `claude.slash` is the one way a line opening with `/`

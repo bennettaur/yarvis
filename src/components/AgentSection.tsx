@@ -9,8 +9,8 @@ import {
 import AgentHarnessesField from "./AgentHarnessesField";
 
 /**
- * The agent every workspace opens with: its tab title and the command its
- * session is launched from. Sits beside Repositories because workspaces are what
+ * The built-in agent: its tab title and the command its session is launched
+ * from, plus the other harnesses a session can run instead. Sits beside Repositories because workspaces are what
  * start agents.
  */
 export default function AgentSection() {
