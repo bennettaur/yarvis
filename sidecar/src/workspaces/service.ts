@@ -2659,7 +2659,10 @@ async function removeWorktreesAndFinish(
           if (!unpushedCommitsError) throw e;
           throw new Error(`${errorMessage(e)}; ${errorMessage(unpushedCommitsError)}`);
         }
-        await deleteLandedExtraBranches(db, runner, wr);
+        // Logged, not thrown: an error here mustn't hide the unpushed-commits warning.
+        await deleteLandedExtraBranches(db, runner, wr).catch((e) =>
+          console.warn("[workspaces] couldn't clean up extra worktree branches:", e),
+        );
         if (unpushedCommitsError) throw unpushedCommitsError;
         if (wr.status === "removed") return;
         await removeWorktree(runner, primaryClonePath, wr.worktreePath, {

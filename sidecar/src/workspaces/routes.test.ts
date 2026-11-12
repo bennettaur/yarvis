@@ -652,7 +652,8 @@ describe("workspace worktrees", () => {
       await expect(
         addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/theirs" }, runner),
       ).rejects.toThrow("collides with the existing branch stack/theirs");
-      await archiveWorkspace(db, workspaceId, {}, runner);
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+      expect(result).toMatchObject({ status: "archived", errors: [] });
       expect(await listLocalBranches(runner, clone)).toContain("stack/mine");
     });
   });

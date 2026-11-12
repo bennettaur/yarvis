@@ -1273,7 +1273,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive incomplete; some worktrees could not be removed (often uncommitted changes). Retry with force=true to discard them.",
+                : "Archive refused; the errors say what is in the way. Tell the user. Retry with force=true only if they agree to lose it.",
           };
         } catch (e) {
           return { error: errorMessage(e) };
