@@ -20,7 +20,7 @@ function doneMessage(result: Delivered): string {
     case "sent":
       return `Sent to the agent in “${result.name}”.`;
     case "started":
-      return `Started an agent in “${result.name}” on them.`;
+      return `Started an agent in “${result.name}” to fix the failing checks.`;
     case "created":
       return `Created “${result.name}”; its agent starts on the checks once it is set up.`;
   }
@@ -44,6 +44,12 @@ export default function WorkspaceFailingChecks({ prRef }: { prRef: PrRef }) {
 
   const failing = data.checks.filter(isFailingCheck);
   const fork = data.fromFork;
+  const fixLabel =
+    step.kind === "pending"
+      ? "Handing off…"
+      : step.kind === "done"
+        ? "Send again"
+        : "Fix with Claude";
 
   const run = async (confirm: boolean) => {
     setStep({ kind: "pending" });
@@ -94,11 +100,7 @@ export default function WorkspaceFailingChecks({ prRef }: { prRef: PrRef }) {
                 }
                 className="rounded-md bg-red-600 px-2 py-1 font-medium text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {step.kind === "pending"
-                  ? "Handing off…"
-                  : step.kind === "done"
-                    ? "Send again"
-                    : "Fix with Claude"}
+                {fixLabel}
               </button>
             )}
             {step.kind === "done" && (

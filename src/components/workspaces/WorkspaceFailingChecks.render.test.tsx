@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { type OpenWorkspaceRequest, onOpenWorkspace } from "../../lib/nav";
 import { prDetailKey } from "../../lib/pr/cache";
 import type { CheckItem, PrDetail, PrRef } from "../../lib/pr/types";
 import { invalidate, primeCache } from "../../lib/resourceCache";
@@ -54,14 +55,19 @@ const detail = (checks: CheckItem[], over: Partial<PrDetail> = {}) =>
   ({ state: "OPEN", headRef: "feat", fromFork: false, checks, ...over }) as PrDetail;
 
 let unmount = () => {};
+let unsubscribe = () => {};
+const opened: OpenWorkspaceRequest[] = [];
 
 beforeEach(() => {
   sent.length = 0;
   replies = [];
+  opened.length = 0;
+  unsubscribe = onOpenWorkspace((r) => opened.push(r));
 });
 
 afterEach(() => {
   unmount();
+  unsubscribe();
   invalidate(prDetailKey(ref));
 });
 
@@ -90,6 +96,7 @@ describe("WorkspaceFailingChecks", () => {
     expect(failing?.textContent).toContain("1 failing check");
     expect(failing?.textContent).toContain("lint");
     expect(failing?.textContent).not.toContain("unit");
+    expect(failing?.textContent).not.toContain("e2e");
     expect(host.textContent).toContain("All checks");
     expect(host.textContent).toContain("e2e");
     expect(button(host, "Fix with Claude")).toBeDefined();
@@ -115,6 +122,31 @@ describe("WorkspaceFailingChecks", () => {
 
     expect(sent).toEqual([{ path: "/api/pr/fix-checks", body: { ref, confirm: false } }]);
     expect(host.textContent).toContain("Sent to the agent in “Payments”.");
+  });
+
+  it("opens a workspace created for the checks", async () => {
+    replies = [{ status: 201, body: { outcome: "created", workspaceId: "w9", name: "PR #3" } }];
+    const host = await mount(detail([check({ conclusion: "FAILURE" })]));
+
+    button(host, "Fix with Claude")?.click();
+    await waitFor(() => (host.textContent ?? "").includes("Created"), "the result");
+    expect(opened).toEqual([{ id: "w9" }]);
+  });
+
+  it("returns to the button when the busy prompt is cancelled", async () => {
+    replies = [
+      {
+        status: 200,
+        body: { outcome: "needs_confirm", workspaceId: "w1", name: "Payments", reason: "Busy." },
+      },
+    ];
+    const host = await mount(detail([check({ conclusion: "FAILURE" })]));
+
+    button(host, "Fix with Claude")?.click();
+    await waitFor(() => button(host, "Cancel") !== undefined, "the confirmation");
+    button(host, "Cancel")?.click();
+    await waitFor(() => button(host, "Fix with Claude") !== undefined, "the button");
+    expect(sent).toHaveLength(1);
   });
 
   it("asks before interrupting a busy agent, then sends with confirm", async () => {

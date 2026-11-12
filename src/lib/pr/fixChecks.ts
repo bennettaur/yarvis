@@ -1,8 +1,12 @@
 import { ensureOk, sidecarFetch } from "../api";
-import type { ResolveConflictsResult } from "./conflicts";
+import type { AgentHandOffResult } from "./conflicts";
 import type { CheckItem, PrRef } from "./types";
 
-/** Conclusions the sidecar hands to an agent as failures (`failingChecks` there). */
+/**
+ * Conclusions the sidecar hands to an agent as failures: the "failed" case of
+ * `checkOutcome` in sidecar/src/reviewWorkspaces/verification.ts. The two are
+ * kept in step by hand, and both sides' tests check the same table.
+ */
 const FAILED_CONCLUSIONS = new Set([
   "FAILURE",
   "ERROR",
@@ -16,8 +20,7 @@ export function isFailingCheck(check: CheckItem): boolean {
   return FAILED_CONCLUSIONS.has((check.conclusion ?? "").toUpperCase());
 }
 
-/** Same outcomes as resolving conflicts: sent, started, created, or needs_confirm. */
-export type FixChecksResult = ResolveConflictsResult;
+export type FixChecksResult = AgentHandOffResult;
 
 /** Hands the PR's failing checks to a coding agent; see `POST /api/pr/fix-checks`. */
 export async function fixPrChecks(ref: PrRef, confirm = false): Promise<FixChecksResult> {

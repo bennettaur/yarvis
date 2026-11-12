@@ -118,7 +118,8 @@ export function prWebUrl(ref: PrRef, azureOrgUrl?: string): string {
   return `${org}/${seg(ref.project)}/_git/${seg(ref.repo)}/pullrequest/${ref.prId}`;
 }
 
-export type ResolveConflictsResult =
+/** What became of handing instructions to a workspace agent; see `deliverToWorkspace`. */
+export type AgentHandOffResult =
   | {
       /** Typed at the prompt of the agent already running in the workspace. */
       outcome: "sent";
@@ -145,10 +146,13 @@ export type ResolveConflictsResult =
       reason: string;
     };
 
+export type ResolveConflictsResult = AgentHandOffResult;
+export type ResolveConflictsOptions = AgentHandOffOptions;
+
 /** A second request for a PR whose first is still being handled. */
 export class ResolveConflictsInFlight extends PrWorkspaceRefusal {}
 
-export interface ResolveConflictsOptions {
+export interface AgentHandOffOptions {
   /** Send even when the agent looks busy. Never overrides a pending permission prompt. */
   confirm?: boolean;
   send?: ClaudeSessionMessenger;
@@ -290,8 +294,8 @@ export async function deliverToWorkspace(
     startSession = startClaudeSession,
     stopSession = (id) => stopClaudeSession(db, id),
     busyReason = workspaceAgentBusyReason,
-  }: ResolveConflictsOptions,
-): Promise<ResolveConflictsResult> {
+  }: AgentHandOffOptions,
+): Promise<AgentHandOffResult> {
   const workspace = await getWorkspace(db, workspaceId);
   if (!workspace) throw new PrWorkspaceRefusal("the pull request's workspace no longer exists");
   const { id, name, rootPath } = workspace;
