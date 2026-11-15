@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
@@ -32,7 +32,6 @@ import VerificationReportView, {
   type FindingPoster,
   type OpenLocation,
 } from "./VerificationReportView";
-import { initialProgress, type RunProgress, reduceProgress } from "./verificationProgress";
 
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
@@ -91,7 +90,7 @@ export function findingPoster(
   };
 }
 
-const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
+const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
 type Tone = "good" | "warn" | "bad" | "muted";
 
@@ -160,99 +159,59 @@ function Chip({ text, tone }: { text: string; tone: Tone }) {
   );
 }
 
-/**
- * Follows one run's events into its progress, from the start (the stream
- * replays what already happened) to its `done`. When it ends the checklist is
- * re-read, which is where the finished result comes from.
- */
-export function useVerificationRun(
-  prId: string,
-  runId: string | null,
-  section: ReportSection,
-): RunProgress | null {
-  const [progress, setProgress] = useState<RunProgress | null>(null);
-  useEffect(() => {
-    const initial = () => initialProgress([section]);
-    setProgress(runId ? initial() : null);
-    if (!runId) return;
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const event of streamAgentRun(runId, abort.signal)) {
-          setProgress((p) => reduceProgress(p ?? initial(), event));
-        }
-      } catch (e) {
-        if (abort.signal.aborted) return;
-        setProgress((p) => ({
-          ...(p ?? initial()),
-          error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
-        }));
-      }
-      if (!abort.signal.aborted) invalidate(verificationKey(prId));
-    })();
-    return () => abort.abort();
-  }, [prId, runId, section]);
-  return progress;
-}
+/** How often the checklist is re-read while a check runs. */
+const POLL_MS = 3000;
 
-/**
- * One section on the checklist: whether it has run, what its newest result
- * says, and a button to run it. A run going in this window is followed live.
- */
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** One section on the checklist: whether it has run, what its newest result says, and a button to run it. */
 function ChecklistRow({
   item,
-  prId,
   report,
-  startedRunId,
   picked,
   onToggle,
   onRun,
+  onCancel,
   canRun,
   starting,
 }: {
   item: ChecklistItem;
-  prId: string;
   report: VerificationReport | null;
-  /** A run this window just started, before the checklist is re-read. */
-  startedRunId: string | null;
   picked: boolean;
   onToggle: () => void;
   onRun: () => void;
+  onCancel: (runId: string) => Promise<void>;
   canRun: boolean;
   starting: boolean;
 }) {
   const { latest, result } = item;
-  const runningHere = latest?.status === "running" && latest.live ? latest.id : null;
-  const followId = startedRunId ?? runningHere;
-  const progress = useVerificationRun(prId, followId, item.section);
-  const running = followId !== null && progress !== null && progress.finished === null;
-  const runningElsewhere = !running && latest?.status === "running" && !latest.live;
+  // A run another Yarvis instance is doing can't be cancelled from here.
+  const running = latest?.status === "running";
+  const runningHere = running && latest.live;
   const [actionError, setActionError] = useState<string | null>(null);
   const verdict = report && result ? resultVerdict(item.section, report) : null;
-  const activity =
-    progress?.checks.find((c) => c.state === "running")?.activity ?? progress?.activity;
+  const cost = result?.costUsd ?? latest?.costUsd ?? null;
 
   const cancel = async () => {
-    if (!followId) return;
+    if (!latest) return;
     setActionError(null);
     try {
-      await cancelAgentRun(followId);
+      await onCancel(latest.id);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     }
   };
 
   let state: React.ReactNode;
-  if (running) {
+  if (runningHere) {
     state = (
-      <span className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-400">
+      <span className="flex items-center gap-1.5 text-xs text-zinc-400">
         <Loader />
-        <span className="shrink-0">Running</span>
-        {activity && <span className="min-w-0 truncate font-mono text-[11px]">{activity}</span>}
+        Running
       </span>
     );
-  } else if (runningElsewhere) {
-    state = <span className="text-xs text-zinc-400">Running in another window</span>;
+  } else if (running) {
+    state = <span className="text-xs text-zinc-400">Running in another Yarvis instance</span>;
   } else {
     state = (
       <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -264,8 +223,11 @@ function ChecklistRow({
         {latest?.status === "cancelled" && <Chip text="Last run cancelled" tone="muted" />}
         {verdict && <Chip {...verdict} />}
         {result && !result.current && (
-          <span className="text-[11px] text-amber-300">older head ({short(result.headSha)})</span>
+          <span className="text-[11px] text-amber-300">
+            older head ({shortSha(result.headSha)})
+          </span>
         )}
+        {cost !== null && <span className="text-[11px] text-zinc-500">{usd(cost)}</span>}
         {!latest && <span className="text-xs text-zinc-500">Not run</span>}
       </span>
     );
@@ -278,14 +240,14 @@ function ChecklistRow({
         aria-label={`Pick ${item.label}`}
         checked={picked}
         onChange={onToggle}
-        disabled={running || runningElsewhere}
+        disabled={running}
       />
       <span className="shrink-0 text-zinc-200" title={item.description}>
         {item.label}
       </span>
       <span className="min-w-0 flex-1">{state}</span>
       {actionError && <span className="text-xs text-red-400">{actionError}</span>}
-      {running ? (
+      {runningHere ? (
         <button
           type="button"
           onClick={() => void cancel()}
@@ -294,7 +256,7 @@ function ChecklistRow({
           Cancel
         </button>
       ) : (
-        !runningElsewhere && (
+        !running && (
           <button
             type="button"
             onClick={onRun}
@@ -310,7 +272,7 @@ function ChecklistRow({
 }
 
 /** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
-function suggested(items: ChecklistItem[]): ReportSection[] {
+function suggestedSections(items: ChecklistItem[]): ReportSection[] {
   return items
     .filter(
       (i) =>
@@ -321,19 +283,31 @@ function suggested(items: ChecklistItem[]): ReportSection[] {
     .map((i) => i.section);
 }
 
+const NO_ITEMS: ChecklistItem[] = [];
+
 /**
  * The verification checklist: every section of the report, grouped by theme,
  * each run on its own when the reviewer chooses, with the report its newest
  * results make below. Every file and line in the report opens the diff there.
+ *
+ * While a check runs, the checklist is re-read every few seconds rather than
+ * each run's event stream followed: one long stream per check would take up
+ * the webview's few connections to the sidecar, and every other request
+ * would wait behind them.
  */
 export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
   const checklist = useVerificationChecklist(workspaceId, pr.id);
-  const items = checklist.data?.items ?? [];
-  // Runs this window started, by section, followed before the checklist is re-read.
-  const [started, setStarted] = useState<Partial<Record<ReportSection, string>>>({});
+  const items = checklist.data?.items ?? NO_ITEMS;
   const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
-  const picked = pickedSections ?? suggested(items);
+  const picked = pickedSections ?? suggestedSections(items);
+  const anyRunning = items.some((i) => i.latest?.status === "running");
+  const { refresh } = checklist;
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = setInterval(() => void refresh(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
@@ -362,17 +336,18 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { runs } = await startVerification(workspaceId, pr.id, sections);
-      setStarted((prev) => ({
-        ...prev,
-        ...Object.fromEntries(runs.filter((r) => !r.existing).map((r) => [r.section, r.runId])),
-      }));
+      const { failed } = await startVerification(workspaceId, pr.id, sections);
       setPickedSections((prev) => (prev ?? picked).filter((s) => !sections.includes(s)));
-      invalidate(verificationKey(pr.id));
+      if (failed.length > 0) {
+        const labels = failed.map((f) => items.find((i) => i.section === f.section)?.label);
+        setActionError(`Couldn't start ${labels.join(", ")}: ${failed[0]?.error}`);
+      }
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setStarting(false);
+      // Even after a failure some checks may have started.
+      invalidate(verificationKey(pr.id));
     }
   };
 
@@ -447,12 +422,14 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                   <ChecklistRow
                     key={item.section}
                     item={item}
-                    prId={pr.id}
                     report={report}
-                    startedRunId={started[item.section] ?? null}
                     picked={picked.includes(item.section)}
                     onToggle={() => toggle(item.section)}
                     onRun={() => void run([item.section])}
+                    onCancel={async (runId) => {
+                      await cancelAgentRun(runId);
+                      await refresh();
+                    }}
                     canRun={!notReady}
                     starting={starting}
                   />

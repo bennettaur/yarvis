@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { findingCommentBody } from "./verification";
+import { afterAll, describe, expect, it } from "bun:test";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
+import { findingCommentBody, verificationChecklist } from "./verification";
+
+afterAll(resetSidecarApi);
 
 describe("findingCommentBody", () => {
   it("names the report and section, and quotes what it said", () => {
@@ -36,5 +39,24 @@ describe("findingCommentBody", () => {
   it("keeps the title to one line, so a command in it can't start a line", () => {
     const body = findingCommentBody({ title: "Stale\n/approve  now\n", detail: "Fine." }, "Risk");
     expect(body.split("\n")[0]).toBe("**Stale /approve now** (verification report: Risk)");
+  });
+});
+
+describe("verificationChecklist", () => {
+  const answer = (report: unknown) =>
+    stubSidecarApi({
+      sidecarFetch: async () =>
+        new Response(JSON.stringify({ headSha: "h", themes: [], items: [], report, size: null })),
+    });
+
+  it("gives a report with no summary result an empty must-read list", async () => {
+    answer({ tests: { status: "pass", findings: [] } });
+    const { report } = await verificationChecklist("ws", "pr");
+    expect(report).toEqual({ tests: { status: "pass", findings: [] }, mustRead: [] });
+  });
+
+  it("passes a missing report through as none", async () => {
+    answer(null);
+    expect((await verificationChecklist("ws", "pr")).report).toBeNull();
   });
 });

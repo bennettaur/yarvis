@@ -157,27 +157,17 @@ export interface VerificationReport {
   coverage?: VerificationCoverage | UnknownCoverage;
 }
 
-/** Mirrors the sidecar's `VerificationSize`: the facts a warning before a run states. */
+/**
+ * The part of the sidecar's `VerificationSize` the tab shows: what the
+ * agents won't read whole.
+ */
 export interface VerificationSize {
-  files: number;
-  changedLines: number;
-  /** Past the size of a usual run; the assistant asks before starting one. */
-  large: boolean;
   /** Changed files with no text diff, so no patch for the agents. */
   binary: string[];
   /** Changed files whose diff is too large, so the agents see only its start. */
   truncated: string[];
   /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
   skimmed: string[];
-  /** A rough estimate for the configured model and the default sections. */
-  estimatedCostUsd: number;
-  /** About what one section adds to the estimate, or takes off it. */
-  sectionCostUsd: number;
-  /** The sections `estimatedCostUsd` assumes. */
-  defaultSections: ReportSection[];
-  budgetUsd: number;
-  /** The estimate is over the budget: the assistant asks before starting. */
-  overBudget: boolean;
 }
 
 /** The checks shown as one row each, in the order the report lists them. */
@@ -291,7 +281,7 @@ export async function verificationChecklist(
   await ensureOk(res, "read verification checklist");
   const checklist = (await res.json()) as VerificationChecklist;
   const { report } = checklist;
-  // The sidecar leaves must-reads out with the summary; an empty list reads the same everywhere.
+  // The sidecar omits `mustRead` when no summary result exists; the tab treats that as an empty list.
   return report
     ? { ...checklist, report: { ...report, mustRead: report.mustRead ?? [] } }
     : checklist;
@@ -306,13 +296,14 @@ export interface StartedCheck {
 
 /**
  * Starts a run for each of `sections`; a section with a run already going
- * joins it. Follow each with `streamAgentRun(runId)`.
+ * joins it. `failed` names the sections whose run couldn't start; it throws
+ * only when none started or joined a run.
  */
 export async function startVerification(
   workspaceId: string,
   prId: string,
   sections: readonly ReportSection[],
-): Promise<{ runs: StartedCheck[] }> {
+): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },

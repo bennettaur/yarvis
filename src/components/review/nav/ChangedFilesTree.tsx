@@ -81,14 +81,14 @@ export default function ChangedFilesTree({
   const changed = useReviewChangedFiles(workspaceId, pr);
   const viewed = useReviewViewed(pr.ref);
   const detail = usePrDetail(pr.ref);
-  const latest = useVerificationChecklist(workspaceId, pr.id);
+  const checklist = useVerificationChecklist(workspaceId, pr.id);
 
   const files = changed.data?.files;
   const tree = useMemo(() => (files ? buildFileTree(files, (f) => f.path) : []), [files]);
   const threads = detail.data?.reviewThreads;
   const counts = useMemo(() => commentCountsByPath(threads ?? []), [threads]);
   const open = useMemo(() => openThreadsByPath(threads ?? []), [threads]);
-  const report = reportOf(latest.data);
+  const report = reportOf(checklist.data);
   const mustRead = useMemo(() => mustReadByPath(report), [report]);
 
   if (!pr.headSha) return <p className="px-2 text-xs text-zinc-500">Fetching the pull request…</p>;

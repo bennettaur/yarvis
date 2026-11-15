@@ -999,6 +999,54 @@ cat "${fakeDir}/result.jsonl"`,
     expect(report?.coverage?.examined).toBe(2);
   });
 
+  it("joins a section already running and starts the rest", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const tests = await insertRun("verification-report", "gh:o/r/1", headSha, 1, {
+      status: "running",
+      sections: ["tests"],
+    });
+    // An old whole-report run still going covers risk, not the approach.
+    const legacy = await insertRun("verification-report", "gh:o/r/1", headSha, 2, {
+      status: "running",
+    });
+    const res = await verify("POST", wsId, prId, ["risk", "tests", "approach"]);
+    expect(res.status).toBe(202);
+    const { runs, failed } = (await res.json()) as {
+      runs: { section: string; runId: string; existing: boolean }[];
+      failed: unknown[];
+    };
+    expect(failed).toEqual([]);
+    expect(runs.map(({ section, existing }) => [section, existing])).toEqual([
+      ["risk", true],
+      ["tests", true],
+      ["approach", false],
+    ]);
+    expect(runs[0]?.runId).toBe(legacy);
+    expect(runs[1]?.runId).toBe(tests);
+    const fresh = await db
+      .select()
+      .from(agentRuns)
+      .where(eq(agentRuns.id, runs[2]?.runId as string));
+    expect(fresh[0]?.meta).toMatchObject({ sections: ["approach"], format: 2 });
+  });
+
+  it("passes over a result stored in an older shape for an older one that reads", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", headSha, 20, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+    await insertRun("verification-report", "gh:o/r/1", headSha, 10, {
+      sections: ["tests"],
+      result: { tests: { status: "pass" } },
+    });
+    const list = await checklist(wsId, prId);
+    expect(item(list, "tests")?.result?.id).toBe(good);
+    expect(list.report?.tests).toEqual({ status: "pass", findings: [] });
+  });
+
   it("serves each section's newest result, ignoring other kinds and other PRs", async () => {
     const { wsId, prId } = await readyWorkspace();
     const headSha = (await prRow(prId)).headSha as string;

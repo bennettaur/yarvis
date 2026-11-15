@@ -15,6 +15,7 @@ import type { Coverage, UnknownCoverage } from "./coverage.ts";
 import { PATCH_LIMITS } from "./patchFiles.ts";
 import { getReviewPr, type ReviewDeps, reviewDiffFacts } from "./service.ts";
 import {
+  CHECK_SECTIONS,
   type CoveredReport,
   crossCheck,
   emptyAudit,
@@ -195,34 +196,26 @@ export async function verificationChecklist(
     };
   };
 
-  const results = await loadResults(
-    db,
-    rows.filter((r) => r.status === "succeeded").map((r) => r.id),
-  );
+  const results = await newestAnswers(db, rows);
   const items: ChecklistItem[] = [];
   const answers: SectionAnswer[] = [];
   for (const section of REPORT_SECTIONS) {
-    const covering = rows.filter((r) => runSections(r.meta).includes(section));
-    const latest = covering[0];
-    // A run older than the section's field (or one whose answer was cut short) has nothing for it.
-    const answered = covering.find(
-      (r) => r.status === "succeeded" && results.get(r.id)?.[section] !== undefined,
-    );
-    const result = answered ? toRun(answered) : null;
+    const latest = rows.find((r) => runSections(r.meta).includes(section));
+    const answer = results.get(section);
+    const result = answer ? toRun(answer.row) : null;
     items.push({
       section,
       ...CHECKLIST_ENTRIES[section],
       latest: latest ? toRun(latest) : null,
       result,
     });
-    const stored = answered && results.get(answered.id);
-    if (result && stored) {
+    if (answer && result) {
       answers.push({
         section,
         headSha: result.headSha,
         runId: result.id,
         startedAt: result.startedAt,
-        stored,
+        report: answer.report,
       });
     }
   }
@@ -250,15 +243,62 @@ export async function verificationChecklist(
   };
 }
 
-async function loadResults(db: Db, ids: string[]): Promise<Map<string, CoveredReport>> {
-  if (ids.length === 0) return new Map();
-  const rows = await db
-    .select({ id: agentRuns.id, result: agentRuns.result })
-    .from(agentRuns)
-    .where(inArray(agentRuns.id, ids));
-  return new Map(
-    rows.filter((r) => r.result !== null).map((r) => [r.id, r.result as CoveredReport]),
+/**
+ * Whether a stored report has an answer for `section` in the shape the report
+ * view reads. A run that succeeded without one (an older run, or an answer
+ * cut short) is passed over, and so is one stored under an older shape.
+ */
+function hasAnswer(report: CoveredReport, section: ReportSection): boolean {
+  const value: unknown = report[section];
+  if (section === "summary") return typeof value === "string";
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    !(CHECK_SECTIONS as readonly string[]).includes(section) ||
+    Array.isArray((value as { findings?: unknown }).findings)
   );
+}
+
+/**
+ * Each section's newest succeeded run with an answer for it. Stored reports
+ * are big, so they are loaded a round at a time: each section's next
+ * candidate, newest first, until every section has an answer or runs out.
+ */
+async function newestAnswers(
+  db: Db,
+  rows: RunRow[],
+): Promise<Map<ReportSection, { row: RunRow; report: CoveredReport }>> {
+  const candidates = REPORT_SECTIONS.map((section) => ({
+    section,
+    runs: rows.filter((r) => r.status === "succeeded" && runSections(r.meta).includes(section)),
+    next: 0,
+  }));
+  const loaded = new Map<string, CoveredReport | null>();
+  const found = new Map<ReportSection, { row: RunRow; report: CoveredReport }>();
+  for (;;) {
+    const wanted = new Set<string>();
+    for (const candidate of candidates) {
+      const { section, runs } = candidate;
+      while (!found.has(section) && candidate.next < runs.length) {
+        const row = runs[candidate.next] as RunRow;
+        if (!loaded.has(row.id)) {
+          wanted.add(row.id);
+          break;
+        }
+        const report = loaded.get(row.id);
+        if (report && hasAnswer(report, section)) found.set(section, { row, report });
+        else candidate.next++;
+      }
+    }
+    if (wanted.size === 0) return found;
+    const fetched = await db
+      .select({ id: agentRuns.id, result: agentRuns.result })
+      .from(agentRuns)
+      .where(inArray(agentRuns.id, [...wanted]));
+    for (const id of wanted) {
+      const row = fetched.find((r) => r.id === id);
+      loaded.set(id, (row?.result as CoveredReport | null | undefined) ?? null);
+    }
+  }
 }
 
 export interface SectionAnswer {
@@ -266,7 +306,14 @@ export interface SectionAnswer {
   headSha: string | null;
   runId: string;
   startedAt: Date;
-  stored: CoveredReport;
+  /** The run's stored report, which has an answer for `section`. */
+  report: CoveredReport;
+}
+
+/** A stored report's answer for one section, as the report's fields. */
+function sectionOf(stored: CoveredReport, section: ReportSection): VerificationReport {
+  if (section === "summary") return { summary: stored.summary, mustRead: stored.mustRead ?? [] };
+  return { [section]: stored[section] };
 }
 
 /**
@@ -282,16 +329,9 @@ export function assembleReport(
 ): ChecklistReport | null {
   if (answers.length === 0) return null;
   const byHead = new Map<string | null, VerificationReport>();
-  for (const { section, headSha: at, stored } of answers) {
-    const part = byHead.get(at) ?? {};
-    if (section === "summary") {
-      part.summary = stored.summary;
-      part.mustRead = stored.mustRead ?? [];
-    } else {
-      // The stored answer was validated for this section when its run ended.
-      (part as Record<string, unknown>)[section] = stored[section];
-    }
-    byHead.set(at, part);
+  for (const { section, headSha: answeredAt, report: stored } of answers) {
+    const part = byHead.get(answeredAt) ?? {};
+    byHead.set(answeredAt, { ...part, ...sectionOf(stored, section) });
   }
   let report: VerificationReport = {};
   for (const part of byHead.values()) {
@@ -303,11 +343,9 @@ export function assembleReport(
     ? headSha
     : answers.reduce((a, b) => (b.startedAt > a.startedAt ? b : a)).headSha;
   const counted = answers.filter((a) => a.headSha === countedAt);
-  const coverage = mergeCoverage(
-    [...new Set(counted.map((a) => a.runId))].map(
-      (id) => counted.find((a) => a.runId === id)?.stored.coverage,
-    ),
-  );
+  // One coverage per run: an old run can answer for several sections.
+  const coverageByRun = new Map(counted.map((a) => [a.runId, a.report.coverage]));
+  const coverage = mergeCoverage([...coverageByRun.values()]);
   return { ...report, ...(coverage && { coverage }) };
 }
 

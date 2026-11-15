@@ -229,8 +229,18 @@ describe("kickOffVerification", () => {
     // One run per default section.
     expect(started.runIds).toHaveLength(DEFAULT_SECTIONS.length);
     // Confirming again doesn't start a second run of any of them.
+    expect(started.sections).toEqual({
+      started: [...DEFAULT_SECTIONS],
+      running: [],
+      current: [],
+      failed: [],
+    });
     const joined = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
-    expect(joined).toEqual({ ...started, status: "already-running" });
+    expect(joined).toEqual({
+      ...started,
+      status: "already-running",
+      sections: { started: [], running: [...DEFAULT_SECTIONS], current: [], failed: [] },
+    });
 
     release();
     await until(
@@ -248,7 +258,44 @@ describe("kickOffVerification", () => {
     expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toEqual({
       ...started,
       status: "exists",
+      sections: { started: [], running: [], current: [...DEFAULT_SECTIONS], failed: [] },
     });
+
+    // Asking for a current section and a new one starts only the new one.
+    const more = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, sections: ["tests", "flow"] },
+      kickoff,
+    );
+    expect(more).toMatchObject({
+      status: "started",
+      sections: { started: ["flow"], running: [], current: ["tests"], failed: [] },
+    });
+    await until(async () => {
+      const rows = await db.select().from(agentRuns);
+      return (
+        rows.length === DEFAULT_SECTIONS.length + 1 && rows.every((r) => r.status !== "running")
+      );
+    }, "the flow run");
+
+    // A re-run starts a section even with a current result.
+    const again = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, rerun: true, sections: ["tests"] },
+      kickoff,
+    );
+    expect(again).toMatchObject({
+      status: "started",
+      sections: { started: ["tests"], current: [] },
+    });
+    await until(
+      async () => (await db.select().from(agentRuns)).every((r) => r.status !== "running"),
+      "the re-run",
+    );
   });
 
   // Through the tool, so the arguments the model sends are the ones that count.

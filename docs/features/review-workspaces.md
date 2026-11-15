@@ -191,12 +191,13 @@ row runs that one; tick several and press **Run picked** to start them
 together. The boxes start ticked on the checks with no result for the PR's
 current head, except the flow diagram, which runs only when you ask. Each
 row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
-whether that result is from an older head, and whether its last run failed or
-was cancelled. A failed or cancelled run leaves the check's last good result
-in place. A running check shows what it is reading, and **Cancel** on its row
-stops it. A check another Yarvis window is running says so, and can't be
-started twice. Nothing asks about cost first: which checks you run is the
-budget.
+what its last run cost, whether that result is from an older head, and whether
+its last run failed or was cancelled. A failed or cancelled run leaves the
+check's last good result in place. While checks run, the tab checks on them
+every few seconds, and **Cancel** on a running check's row stops it. A check
+another Yarvis instance is running says so, and can't be started twice. If
+some picked checks can't start, the tab names them and the rest still run.
+Nothing asks about cost first: which checks you run is the budget.
 
 Below the checklist, the report shows each check's newest result. A section
 whose result is from an older head is marked "older head". Every file and

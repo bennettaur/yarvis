@@ -1,10 +1,10 @@
 /**
- * The verification report: a headless Claude Code run over a review PR's
- * checkout that summarises the change, picks the files that must be read, and
- * runs the risk, completeness, test, complexity, performance, comment,
- * observability and quality checks, plus a whole-PR rating of whether a
- * simpler approach exists — each a subagent of the `yarvis-review` plugin,
- * fanned out by its `verification-report` skill.
+ * The verification report's runs: each section (the summary and must-read
+ * files, risk, the completeness, test, complexity, performance, comment,
+ * observability and quality checks, the simpler-approach rating and the flow
+ * diagram) is a headless Claude Code run of its own over a review PR's
+ * checkout, through the `yarvis-review` plugin's `verification-report` skill.
+ * `checklist.ts` puts the report together from each section's newest result.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a
@@ -650,7 +650,7 @@ const MAX_COMMENTS_PER_THREAD = 5;
 
 /**
  * Past this many changed lines or files a run reads a lot and costs more, so
- * the UI says so before starting one.
+ * the assistant asks before starting one.
  */
 const LARGE_PR = { changedLines: 4_000, files: 150 };
 
@@ -688,12 +688,6 @@ const MODEL_IDS: Record<VerificationModel, string> = {
   sonnet: "claude-sonnet-5",
   opus: "claude-opus-5-5",
 };
-/**
- * Agents that read every file: one per section. A bulk file's first page is
- * read by one. Each section is its own run, so each also pays a coordinator's
- * fixed overhead, which BASE_TOKENS counts once: the estimate runs low.
- */
-export const fileReaders = (sections: readonly ReportSection[]) => sections.length;
 const BULK_READERS = 1;
 /** A numbered patch line is about this long, its share of context lines included. */
 const BYTES_PER_CHANGED_LINE = 115;
@@ -745,11 +739,6 @@ const roundToCents = (usd: number) => Math.round(usd * 100) / 100;
 /** About what a run whose agents read `readBytes` of patch costs with `model`, in USD. */
 export function estimateRunCostUsd(model: VerificationModel, readBytes: number): number {
   return roundToCents((BASE_TOKENS + readBytes / BYTES_PER_TOKEN) * perTokenUsd(model));
-}
-
-/** About what one more agent reading every file adds, in USD, unrounded so a client can sum it. */
-export function readerCostUsd(model: VerificationModel, perReaderBytes: number): number {
-  return (perReaderBytes / BYTES_PER_TOKEN) * perTokenUsd(model);
 }
 
 export interface VerificationInput {
@@ -1100,8 +1089,13 @@ export interface StartedCheck {
 }
 
 export interface StartedVerification {
-  /** One per section asked for, in report order. */
+  /** One per section that started or joined a run, in report order. */
   runs: StartedCheck[];
+  /**
+   * Sections whose run couldn't start. The others still run, so a failure
+   * part way through doesn't leave runs going that nobody follows.
+   */
+  failed: { section: ReportSection; error: string }[];
 }
 
 export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
@@ -1125,8 +1119,9 @@ interface RunInputs {
 /**
  * Starts a run for each picked section of a review PR's report, each on its
  * own so one can be re-run, or fail, without the others. A section that
- * already has a run going (whatever head it was started at) joins that run.
- * Needs the worktree checked out, since the agents read the files themselves.
+ * already has a run going (whatever head it was started at, in any instance)
+ * joins that run. Needs the worktree checked out, since the agents read the
+ * files themselves. Throws only when no section started or joined a run.
  *
  * The PR row is read once, inside the lock, and that one row supplies the
  * diff's head, the target key and the working directory, so they can't
@@ -1150,6 +1145,8 @@ export async function startVerification(
     const headSha = requireCheckout(config, pr);
     const running = await runningSections(db, refKey);
     const runs: StartedCheck[] = [];
+    const failed: StartedVerification["failed"] = [];
+    let firstError: unknown;
     const toStart: ReportSection[] = [];
     for (const section of sections) {
       const runId = running.get(section);
@@ -1168,16 +1165,31 @@ export async function startVerification(
         }),
         deps.settings(),
       ]);
-      const inputs: RunInputs = { pr, headSha, sources, detail, settings };
+      // Each run writes its own copy of the patches, so read each diff once.
+      const once = sources.map((source) => {
+        let text: ReturnType<typeof source.read> | undefined;
+        return { ...source, read: () => (text ??= source.read()) };
+      });
+      const inputs: RunInputs = { pr, headSha, sources: once, detail, settings };
       for (const section of toStart) {
-        runs.push({
-          section,
-          runId: await startSectionRun(db, inputs, section, deps),
-          existing: false,
-        });
+        try {
+          runs.push({
+            section,
+            runId: await startSectionRun(db, inputs, section, deps),
+            existing: false,
+          });
+        } catch (e) {
+          console.error(`[verification] could not start ${section}:`, describeError(e));
+          firstError ??= e;
+          failed.push({ section, error: e instanceof Error ? e.message : String(e) });
+        }
       }
     }
-    return { runs: sections.map((s) => runs.find((r) => r.section === s) as StartedCheck) };
+    if (runs.length === 0 && firstError !== undefined) throw firstError;
+    return {
+      runs: REPORT_SECTIONS.flatMap((s) => runs.filter((r) => r.section === s)),
+      failed,
+    };
   });
 }
 
@@ -1285,24 +1297,27 @@ export interface VerificationSize {
   truncated: string[];
   /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
   skimmed: string[];
-  /** A rough figure from {@link estimateRunCostUsd}, for the configured model and the default sections. */
+  /** {@link checksCostUsd} for the default sections. */
   estimatedCostUsd: number;
   /**
-   * About what one section adds: one more agent reading every file. The
-   * estimate moves by this much per section added to or taken from the
-   * defaults. It leaves out the agent's own fixed overhead and, for the flow
-   * diagram and the approach rating, their reads of the checkout, so it runs
-   * low.
+   * About what one section's run costs with the configured model: an agent
+   * reading every file plus a coordinator's fixed overhead. BASE_TOKENS was
+   * measured on a run of eight agents, so charging it to every section rounds
+   * up rather than down.
    */
-  sectionCostUsd: number;
-  /** The sections {@link estimatedCostUsd} assumes. */
-  defaultSections: readonly ReportSection[];
+  checkCostUsd: number;
+  /** What the summary's run adds to {@link checkCostUsd}: the first page of each bulk file. */
+  summaryExtraUsd: number;
   /** The configured budget. It only warns: past it the assistant asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
 }
 
-/** The facts a warning before a run states, from the PR's files and the run settings. */
+/**
+ * What the checklist says the agents won't read whole, and the size and cost
+ * the assistant weighs before starting a run, from the PR's files and the run
+ * settings.
+ */
 export function verificationSize(
   files: SizedFile[],
   truncated: string[],
@@ -1311,10 +1326,10 @@ export function verificationSize(
 ): VerificationSize {
   const changedLines = files.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0);
   const read = estimateReadBytes(files, new Set(truncated), bulk);
-  const estimatedCostUsd = estimateRunCostUsd(
-    settings.model,
-    read.perReader * fileReaders(DEFAULT_SECTIONS) + read.bulk,
-  );
+  const checkCostUsd = estimateRunCostUsd(settings.model, read.perReader);
+  const summaryExtraUsd =
+    estimateRunCostUsd(settings.model, read.perReader + read.bulk) - checkCostUsd;
+  const estimatedCostUsd = checksCostUsd({ checkCostUsd, summaryExtraUsd }, DEFAULT_SECTIONS);
   return {
     files: files.length,
     changedLines,
@@ -1323,9 +1338,18 @@ export function verificationSize(
     truncated,
     skimmed: files.filter((f) => !f.binary && bulk.get(f.path)?.skim).map((f) => f.path),
     estimatedCostUsd,
-    sectionCostUsd: readerCostUsd(settings.model, read.perReader),
-    defaultSections: DEFAULT_SECTIONS,
+    checkCostUsd,
+    summaryExtraUsd,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
   };
+}
+
+/** About what running `sections` costs, each as its own run, in USD. */
+export function checksCostUsd(
+  size: Pick<VerificationSize, "checkCostUsd" | "summaryExtraUsd">,
+  sections: readonly ReportSection[],
+): number {
+  const extra = sections.includes("summary") ? size.summaryExtraUsd : 0;
+  return roundToCents(sections.length * size.checkCostUsd + extra);
 }

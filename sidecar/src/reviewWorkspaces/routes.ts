@@ -486,7 +486,7 @@ export function createReviewWorkspaceRoutes(
         options.verification ?? defaultVerificationDeps(config),
         parsed.data?.sections,
       );
-      return c.json(started, started.runs.every((r) => r.existing) ? 200 : 202);
+      return c.json(started, started.runs.some((r) => !r.existing) ? 202 : 200);
     } catch (e) {
       return fail(c, e);
     }

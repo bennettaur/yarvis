@@ -18,9 +18,10 @@ writes the PR's context, an `index.md` of every changed file and one numbered
 patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a
 directory the run may read, marks bulk to skim, and splits the rest into
 reading groups no bigger than one agent can hold; on a big PR the skill runs
-each check once per group. Once the run answers it removes duplicate
-findings across sections and adds which changed files no agent read
-(`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+each check once per group. Once the run answers it adds which changed files
+no agent read (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+Duplicate findings across sections are removed when `checklist.ts` puts the
+report together, among results for the same head.
 
 The "What's changed" re-review summary is the `rereviewer` agent alone, run as
 the main thread (`--agent yarvis-review:rereviewer`). Its run starts from

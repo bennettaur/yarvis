@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { assembleReport, mergeCoverage, type SectionAnswer } from "./checklist.ts";
 import type { Coverage } from "./coverage.ts";
-import { runSections } from "./verification.ts";
+import { CHECK_SECTIONS, runSections } from "./verification.ts";
 
 const coverage = (overrides: Partial<Coverage> = {}): Coverage => ({
   examined: 0,
@@ -53,14 +53,14 @@ describe("putting a report together from each section's answer", () => {
   const answer = (
     section: SectionAnswer["section"],
     headSha: string,
-    stored: SectionAnswer["stored"],
+    report: SectionAnswer["report"],
     minutesAgo = 0,
   ): SectionAnswer => ({
     section,
     headSha,
     runId: `${section}@${headSha}`,
     startedAt: new Date(Date.now() - minutesAgo * 60_000),
-    stored,
+    report,
   });
 
   it("shows a problem once when both answers are from the same commit", () => {
@@ -121,7 +121,7 @@ describe("which sections a run wrote", () => {
     expect(runSections({ sections: ["tests"], format: 2 })).toEqual(["tests"]);
     expect(runSections({ sections: ["flow", "tests"] })).toEqual(["summary", "tests", "flow"]);
     // Before sections could be picked, a run wrote the summary, risk and the checks.
-    expect(runSections({})).toContain("risk");
-    expect(runSections({})).not.toContain("approach");
+    expect(runSections({})).toEqual(["summary", "risk", ...CHECK_SECTIONS]);
+    expect(runSections({ sections: ["tests"] })).toEqual(["summary", "tests"]);
   });
 });

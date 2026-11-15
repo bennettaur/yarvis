@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import type { AgentRunEvent } from "../../../lib/agentRuns";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
@@ -23,7 +22,7 @@ import { resetReviewComments, stubReviewComments } from "../../../test/reviewCom
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { treeKey, verificationKey } from "./reviewData";
 import type { TabContext } from "./types";
-import VerificationTab, { findingPoster } from "./VerificationTab";
+import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab";
 
 const pr = {
   id: "pr1",
@@ -46,24 +45,25 @@ const ctx: TabContext = {
 let started: string[] = [];
 let startedSections: (readonly ReportSection[])[] = [];
 let cancelled: string[] = [];
+// What the checklist reads as after the cache is invalidated.
+let reread: VerificationChecklist;
 
 beforeEach(() => {
   started = [];
   startedSections = [];
   cancelled = [];
+  reread = checklist();
   stubReviewApi({
     startVerification: async (_ws, prId, sections) => {
       started.push(prId);
       startedSections.push(sections);
       return {
         runs: sections.map((section) => ({ section, runId: `r9-${section}`, existing: false })),
+        failed: [],
       };
     },
-    // A live run that never ends on its own, so it stays "running".
-    streamAgentRun: async function* (_id, signal) {
-      yield { type: "status", message: "reading the diff" } as AgentRunEvent;
-      await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve()));
-    },
+    // The checklist read again after a start or a cancel.
+    verificationChecklist: async () => reread,
     cancelAgentRun: async (id) => {
       cancelled.push(id);
     },
@@ -246,25 +246,24 @@ describe("VerificationTab", () => {
     expect(button(stale, "Post to PR")).toBeUndefined();
   });
 
-  it("follows a run going here and cancels it", async () => {
+  it("cancels a run going here", async () => {
     const host = await mount(
       checklist({ items: { tests: { latest: run({ id: "r7", status: "running", live: true }) } } }),
     );
-    await waitFor(() => button(row(host, "Test quality"), "Cancel") !== undefined, "Cancel");
     expect(textOf(row(host, "Test quality").innerHTML)).toContain("Running");
     button(row(host, "Test quality"), "Cancel")?.click();
     await waitFor(() => cancelled.length > 0, "the cancel");
     expect(cancelled).toEqual(["r7"]);
   });
 
-  it("says when another window is running a check, and offers no second run of it", async () => {
+  it("says when another instance is running a check, and offers no second run of it", async () => {
     const host = await mount(
       checklist({
         items: { tests: { latest: run({ id: "r7", status: "running", live: false }) } },
       }),
     );
     const testRow = row(host, "Test quality");
-    expect(textOf(testRow.innerHTML)).toContain("Running in another window");
+    expect(textOf(testRow.innerHTML)).toContain("Running in another Yarvis instance");
     expect(testRow.querySelector("button")).toBeNull();
     expect(pick(host, "Test quality").disabled).toBe(true);
   });
@@ -298,30 +297,51 @@ describe("VerificationTab", () => {
     expect(startedSections[0]).not.toContain("summary");
   });
 
-  it("runs one check from its row and follows the run it started", async () => {
+  it("runs one check from its row and shows it running once the checklist is read again", async () => {
+    reread = checklist({
+      items: {
+        performance: { latest: run({ id: "r9-performance", status: "running", live: true }) },
+      },
+    });
     const host = await mount(checklist());
     button(row(host, "Performance"), "Run")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(startedSections).toEqual([["performance"]]);
-    // Followed at once, before the checklist is read again.
     await waitFor(() => button(row(host, "Performance"), "Cancel") !== undefined, "Cancel");
     button(row(host, "Performance"), "Cancel")?.click();
     await waitFor(() => cancelled.length > 0, "the cancel");
     expect(cancelled).toEqual(["r9-performance"]);
   });
 
+  it("names the checks that couldn't start, while the others run", async () => {
+    stubReviewApi({
+      startVerification: async () => ({
+        runs: [{ section: "risk", runId: "r1", existing: false }],
+        failed: [{ section: "tests", error: "no Claude Code here" }],
+      }),
+    });
+    const host = await mount(checklist());
+    button(host, `Run picked (${DEFAULT_SECTIONS.length})`)?.click();
+    await waitFor(
+      () => textOf(host.innerHTML).includes("Couldn't start Test quality: no Claude Code here"),
+      "the partial failure",
+    );
+  });
+
+  it("shows what each check's last run cost", async () => {
+    const host = await mount(
+      checklist({
+        items: { tests: { latest: run({ costUsd: 0.4242 }), result: run({ costUsd: 0.4242 }) } },
+        report: { mustRead: [], tests: check },
+      }),
+    );
+    expect(textOf(row(host, "Test quality").innerHTML)).toContain("$0.42");
+  });
+
   const size = (over: Partial<VerificationSize> = {}): VerificationSize => ({
-    files: 240,
-    changedLines: 9000,
-    large: true,
     binary: [],
     truncated: [],
     skimmed: [],
-    estimatedCostUsd: 1.4,
-    sectionCostUsd: 0.1,
-    defaultSections: [...DEFAULT_SECTIONS],
-    budgetUsd: 2,
-    overBudget: true,
     ...over,
   });
 
@@ -339,7 +359,7 @@ describe("VerificationTab", () => {
     expect(notices).toContain(
       "1 file is bulk (a lockfile, or generated, vendored or minified code)",
     );
-    // A large PR over the budget still starts at once: picking the checks is the budget.
+    // Nothing asks first: picking the checks is the budget.
     button(row(host, "Risk"), "Run")?.click();
     await waitFor(() => started.length > 0, "the run to start");
     expect(textOf(host.innerHTML)).not.toContain("Run anyway");
@@ -432,5 +452,84 @@ describe("findingPoster", () => {
 
   it("offers no workspace target for a PR no workspace raised", () => {
     expect(findingPoster(pr.ref, seen, null).toWorkspace).toBeUndefined();
+  });
+});
+
+describe("resultVerdict", () => {
+  const finding = (severity: "high" | "medium" | "low") => ({ title: "t", detail: "d", severity });
+  const base: VerificationReport = { mustRead: [] };
+
+  it("says what each kind of section found, and how worrying it is", () => {
+    const cases: [ReportSection, VerificationReport, { text: string; tone: string } | null][] = [
+      ["summary", { summary: "s", mustRead: [] }, { text: "Summary", tone: "muted" }],
+      [
+        "summary",
+        { summary: "s", mustRead: [{ path: "a.ts", reason: "r" }] },
+        { text: "1 must-read file", tone: "muted" },
+      ],
+      [
+        "risk",
+        {
+          ...base,
+          risk: { level: "high", clientImpact: "", mitigations: [], concerns: [] },
+        },
+        { text: "high risk", tone: "bad" },
+      ],
+      [
+        "risk",
+        {
+          ...base,
+          risk: {
+            level: "medium",
+            clientImpact: "",
+            mitigations: [],
+            concerns: [],
+            impact: { band: 3 } as never,
+          },
+        },
+        { text: "Impact 3/5", tone: "warn" },
+      ],
+      [
+        "approach",
+        { ...base, approach: { rating: "no-simpler", reason: "", alternative: "" } },
+        { text: "No simpler way", tone: "good" },
+      ],
+      [
+        "approach",
+        { ...base, approach: { rating: "much-simpler", reason: "", alternative: "" } },
+        { text: "Much simpler way", tone: "bad" },
+      ],
+      [
+        "approach",
+        { ...base, approach: { rating: "unrated", reason: "", alternative: "" } },
+        { text: "Not rated", tone: "muted" },
+      ],
+      [
+        "flow",
+        { ...base, flow: { title: "", explanation: "", mermaid: "flowchart TD" } },
+        { text: "Drawn", tone: "muted" },
+      ],
+      [
+        "flow",
+        { ...base, flow: { title: "", explanation: "", mermaid: "" } },
+        { text: "Not drawn", tone: "muted" },
+      ],
+      ["tests", { ...base, tests: check }, { text: "Pass", tone: "good" }],
+      [
+        "tests",
+        { ...base, tests: { status: "issues", findings: [finding("low"), finding("high")] } },
+        { text: "2 findings", tone: "bad" },
+      ],
+      [
+        "tests",
+        { ...base, tests: { status: "issues", findings: [finding("medium")] } },
+        { text: "1 finding", tone: "warn" },
+      ],
+      ["tests", base, null],
+      ["summary", base, null],
+    ];
+    for (const [section, report, verdict] of cases) {
+      expect(resultVerdict(section, report)).toEqual(verdict as never);
+    }
   });
 });

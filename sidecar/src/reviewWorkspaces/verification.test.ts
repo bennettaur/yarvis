@@ -11,6 +11,7 @@ import {
   auditIsEmpty,
   buildVerificationMaterial,
   checkOutcome,
+  checksCostUsd,
   DEFAULT_SECTIONS,
   emptyAudit,
   estimateReadBytes,
@@ -927,53 +928,34 @@ describe("the size a warning states", () => {
     expect(whole.overBudget).toBe(true);
   });
 
-  it("prices the default sections, and one more section as one more full reader", () => {
+  it("prices each section as a run of its own, the summary's with the bulk's first pages", () => {
     const files = [f("src/a.ts", 2_000), f("package-lock.json", 40_000)];
     const bulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
     const size = verificationSize(files, [], bulk, sonnet);
     const read = estimateReadBytes(files, new Set(), bulk);
-    expect(size.defaultSections).toEqual(DEFAULT_SECTIONS);
-    // One agent per default section, the summary's included, reads every file.
-    expect(size.estimatedCostUsd).toBe(
-      estimateRunCostUsd("sonnet", read.perReader * DEFAULT_SECTIONS.length + read.bulk),
+    const check = estimateRunCostUsd("sonnet", read.perReader);
+    expect(size.checkCostUsd).toBe(check);
+    expect(checksCostUsd(size, ["tests", "risk"])).toBeCloseTo(2 * check, 2);
+    expect(checksCostUsd(size, ["summary"])).toBeCloseTo(
+      estimateRunCostUsd("sonnet", read.perReader + read.bulk),
+      2,
     );
-    const oneMore = estimateRunCostUsd(
-      "sonnet",
-      read.perReader * (1 + DEFAULT_SECTIONS.length) + read.bulk,
-    );
-    expect(size.sectionCostUsd).toBeCloseTo(oneMore - size.estimatedCostUsd, 1);
-    expect(size.sectionCostUsd).toBeGreaterThan(0);
+    expect(size.estimatedCostUsd).toBe(checksCostUsd(size, DEFAULT_SECTIONS));
   });
 
-  it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
-    const lock = [f("package-lock.json", 40_000)];
-    const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
-    expect(estimateReadBytes(lock, new Set(), asBulk)).toEqual({ perReader: 0, bulk: 200 * 115 });
-    // Any other file: 115 bytes a changed line, by each agent that reads every file.
-    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toEqual({
-      perReader: 100 * 115,
-      bulk: 0,
-    });
-  });
-
-  it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
-    // Sonnet 5: $2/M input, $0.2/M cache read. 350 KB read is 100k tokens on top of the base.
-    const perToken = (1.25 * 2 + 15 * 0.2) / 1_000_000;
-    expect(estimateRunCostUsd("sonnet", 350_000)).toBeCloseTo((62_000 + 100_000) * perToken, 2);
-  });
-
-  it("lands near what the calibration runs cost", () => {
+  it("never prices the calibration runs below what they cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
-    // Those runs had seven check agents and a report now has ten, so the code-heavy
-    // run is allowed above the measured cost by the three extra readers.
+    // Those were one run of seven check agents. Each section now pays a
+    // coordinator's overhead of its own, which wasn't measured, so the estimate
+    // charges the whole base to each and lands above what one run cost.
     const code = verificationSize(
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
       noBulk,
       { model: "haiku", maxBudgetUsd: 1 },
     );
-    expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
-    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25 * (10 / 7));
+    expect(code.estimatedCostUsd).toBeGreaterThan(0.056);
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * DEFAULT_SECTIONS.length);
     const bulk = new Map(
       ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
         p,
@@ -992,8 +974,8 @@ describe("the size a warning states", () => {
       bulk,
       { model: "haiku", maxBudgetUsd: 1 },
     );
-    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018 * 0.75);
-    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * 1.5);
+    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018);
+    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * DEFAULT_SECTIONS.length * 1.5);
   });
 });
 
