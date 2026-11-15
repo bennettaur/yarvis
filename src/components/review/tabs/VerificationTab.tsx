@@ -7,13 +7,12 @@ import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
 import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
+  type ChecklistItem,
+  DEFAULT_SECTIONS,
   findingCommentBody,
-  REPORT_SECTIONS,
   type ReportSection,
-  runSections,
-  sizeFor,
   startVerification,
-  type VerificationSize,
+  type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
@@ -21,64 +20,19 @@ import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
 import {
   reportOf,
-  useLatestVerification,
   useReviewChangedFiles,
   useReviewTree,
   useReviewViewed,
+  useVerificationChecklist,
   verificationKey,
 } from "./reviewData";
-import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
+import { FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 import VerificationReportView, {
-  CHECK_LABEL,
   type FindingPoster,
   type OpenLocation,
 } from "./VerificationReportView";
-import {
-  type CheckProgress,
-  initialProgress,
-  type RunProgress,
-  reduceProgress,
-} from "./verificationProgress";
-
-/**
- * Follows one run's events into its progress, from the start (the stream
- * replays what already happened) to its `done`. When it ends the PR's latest
- * report is re-read, which is where the finished report comes from.
- */
-export function useVerificationRun(
-  prId: string,
-  runId: string | null,
-  sections: readonly ReportSection[],
-): RunProgress | null {
-  const [progress, setProgress] = useState<RunProgress | null>(null);
-  // Keyed by value: a run's sections are fixed, so a re-render with an equal
-  // list must not restart the stream.
-  const sectionsKey = sections.join(",");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sections is read through its key
-  useEffect(() => {
-    const initial = () => initialProgress(sections);
-    setProgress(runId ? initial() : null);
-    if (!runId) return;
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const event of streamAgentRun(runId, abort.signal)) {
-          setProgress((p) => reduceProgress(p ?? initial(), event));
-        }
-      } catch (e) {
-        if (abort.signal.aborted) return;
-        setProgress((p) => ({
-          ...(p ?? initial()),
-          error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
-        }));
-      }
-      if (!abort.signal.aborted) invalidate(verificationKey(prId));
-    })();
-    return () => abort.abort();
-  }, [prId, runId, sectionsKey]);
-  return progress;
-}
+import { initialProgress, type RunProgress, reduceProgress } from "./verificationProgress";
 
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
@@ -139,129 +93,252 @@ export function findingPoster(
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
-/**
- * What a run on this PR will and won't see, and what it may cost, asked
- * before a large or over-budget run starts.
- */
-function SizeWarning({ size }: { size: VerificationSize }) {
-  return (
-    <div className="space-y-1">
-      {size.large && (
-        <div>
-          This PR is large: {size.files} files, {size.changedLines} changed lines. The checks read
-          every file's diff, so the run takes longer and costs more than usual.
-        </div>
-      )}
-      <FileNotices notices={fileNotices(size)} />
-      <CostLine {...size} />
-    </div>
-  );
-}
+type Tone = "good" | "warn" | "bad" | "muted";
 
-const SECTION_LABEL: Record<ReportSection, string> = {
-  risk: "Risk",
-  ...CHECK_LABEL,
-  approach: "Simpler approach",
-  flow: "Flow diagram",
+const TONE_CLASS: Record<Tone, string> = {
+  good: "border-emerald-800 text-emerald-300",
+  warn: "border-amber-800 text-amber-300",
+  bad: "border-red-800 text-red-300",
+  muted: "border-zinc-700 text-zinc-400",
 };
 
-/** Which sections the next run writes. The summary and must-read files always come with it. */
-function SectionPicker({
-  picked,
-  onChange,
-  disabled,
-}: {
-  picked: readonly ReportSection[];
-  onChange: (sections: ReportSection[]) => void;
-  disabled: boolean;
-}) {
-  const toggle = (section: ReportSection) =>
-    onChange(
-      REPORT_SECTIONS.filter((s) => (s === section ? !picked.includes(s) : picked.includes(s))),
-    );
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** What a section's result says, in a few words, for its checklist row. */
+export function resultVerdict(
+  section: ReportSection,
+  report: VerificationReport,
+): { text: string; tone: Tone } | null {
+  switch (section) {
+    case "summary": {
+      if (report.summary === undefined) return null;
+      const n = report.mustRead.length;
+      return {
+        text: n ? plural(n, "must-read file", "must-read files") : "Summary",
+        tone: "muted",
+      };
+    }
+    case "risk": {
+      const { risk } = report;
+      if (!risk) return null;
+      const tone: Tone = risk.level === "high" ? "bad" : risk.level === "medium" ? "warn" : "good";
+      return { text: risk.impact ? `Impact ${risk.impact.band}/5` : `${risk.level} risk`, tone };
+    }
+    case "approach": {
+      const { approach } = report;
+      if (!approach) return null;
+      if (approach.rating === "no-simpler") return { text: "No simpler way", tone: "good" };
+      if (approach.rating === "unrated") return { text: "Not rated", tone: "muted" };
+      return {
+        text: approach.rating === "much-simpler" ? "Much simpler way" : "Simpler way",
+        tone: approach.rating === "much-simpler" ? "bad" : "warn",
+      };
+    }
+    case "flow":
+      if (!report.flow) return null;
+      return report.flow.mermaid
+        ? { text: "Drawn", tone: "muted" }
+        : { text: "Not drawn", tone: "muted" };
+    default: {
+      const check = report[section];
+      if (!check) return null;
+      if (check.findings.length === 0) return { text: "Pass", tone: "good" };
+      const high = check.findings.some((f) => f.severity === "high");
+      return {
+        text: plural(check.findings.length, "finding", "findings"),
+        tone: high ? "bad" : "warn",
+      };
+    }
+  }
+}
+
+function Chip({ text, tone }: { text: string; tone: Tone }) {
   return (
-    <fieldset className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
-      <legend className="sr-only">Sections to run</legend>
-      <span className="text-zinc-500">Run:</span>
-      {REPORT_SECTIONS.map((section) => (
-        <label key={section} className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={picked.includes(section)}
-            onChange={() => toggle(section)}
-            disabled={disabled}
-          />
-          {SECTION_LABEL[section]}
-        </label>
-      ))}
-    </fieldset>
+    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${TONE_CLASS[tone]}`}>
+      {text}
+    </span>
   );
 }
 
-function CheckLine({ check }: { check: CheckProgress }) {
-  const icon =
-    check.state === "running" ? (
-      <Loader />
-    ) : check.state === "done" ? (
-      <span className="text-emerald-400">✓</span>
-    ) : check.state === "failed" ? (
-      <span className="text-red-400">✕</span>
-    ) : (
-      <span className="text-zinc-600">○</span>
-    );
-  return (
-    <li className="flex items-center gap-2 text-sm">
-      <span className="flex w-4 justify-center">{icon}</span>
-      <span className={check.state === "waiting" ? "text-zinc-500" : "text-zinc-200"}>
-        {check.label}
+/**
+ * Follows one run's events into its progress, from the start (the stream
+ * replays what already happened) to its `done`. When it ends the checklist is
+ * re-read, which is where the finished result comes from.
+ */
+export function useVerificationRun(
+  prId: string,
+  runId: string | null,
+  section: ReportSection,
+): RunProgress | null {
+  const [progress, setProgress] = useState<RunProgress | null>(null);
+  useEffect(() => {
+    const initial = () => initialProgress([section]);
+    setProgress(runId ? initial() : null);
+    if (!runId) return;
+    const abort = new AbortController();
+    void (async () => {
+      try {
+        for await (const event of streamAgentRun(runId, abort.signal)) {
+          setProgress((p) => reduceProgress(p ?? initial(), event));
+        }
+      } catch (e) {
+        if (abort.signal.aborted) return;
+        setProgress((p) => ({
+          ...(p ?? initial()),
+          error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
+        }));
+      }
+      if (!abort.signal.aborted) invalidate(verificationKey(prId));
+    })();
+    return () => abort.abort();
+  }, [prId, runId, section]);
+  return progress;
+}
+
+/**
+ * One section on the checklist: whether it has run, what its newest result
+ * says, and a button to run it. A run going in this window is followed live.
+ */
+function ChecklistRow({
+  item,
+  prId,
+  report,
+  startedRunId,
+  picked,
+  onToggle,
+  onRun,
+  canRun,
+  starting,
+}: {
+  item: ChecklistItem;
+  prId: string;
+  report: VerificationReport | null;
+  /** A run this window just started, before the checklist is re-read. */
+  startedRunId: string | null;
+  picked: boolean;
+  onToggle: () => void;
+  onRun: () => void;
+  canRun: boolean;
+  starting: boolean;
+}) {
+  const { latest, result } = item;
+  const runningHere = latest?.status === "running" && latest.live ? latest.id : null;
+  const followId = startedRunId ?? runningHere;
+  const progress = useVerificationRun(prId, followId, item.section);
+  const running = followId !== null && progress !== null && progress.finished === null;
+  const runningElsewhere = !running && latest?.status === "running" && !latest.live;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const verdict = report && result ? resultVerdict(item.section, report) : null;
+  const activity =
+    progress?.checks.find((c) => c.state === "running")?.activity ?? progress?.activity;
+
+  const cancel = async () => {
+    if (!followId) return;
+    setActionError(null);
+    try {
+      await cancelAgentRun(followId);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  let state: React.ReactNode;
+  if (running) {
+    state = (
+      <span className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-400">
+        <Loader />
+        <span className="shrink-0">Running</span>
+        {activity && <span className="min-w-0 truncate font-mono text-[11px]">{activity}</span>}
       </span>
-      {check.activity && check.state === "running" && (
-        <span className="min-w-0 truncate font-mono text-[11px] text-zinc-500">
-          {check.activity}
-        </span>
+    );
+  } else if (runningElsewhere) {
+    state = <span className="text-xs text-zinc-400">Running in another window</span>;
+  } else {
+    state = (
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {latest?.status === "failed" && (
+          <span title={latest.error ?? undefined}>
+            <Chip text="Last run failed" tone="bad" />
+          </span>
+        )}
+        {latest?.status === "cancelled" && <Chip text="Last run cancelled" tone="muted" />}
+        {verdict && <Chip {...verdict} />}
+        {result && !result.current && (
+          <span className="text-[11px] text-amber-300">older head ({short(result.headSha)})</span>
+        )}
+        {!latest && <span className="text-xs text-zinc-500">Not run</span>}
+      </span>
+    );
+  }
+
+  return (
+    <li className="flex items-center gap-2 py-1 text-sm">
+      <input
+        type="checkbox"
+        aria-label={`Pick ${item.label}`}
+        checked={picked}
+        onChange={onToggle}
+        disabled={running || runningElsewhere}
+      />
+      <span className="shrink-0 text-zinc-200" title={item.description}>
+        {item.label}
+      </span>
+      <span className="min-w-0 flex-1">{state}</span>
+      {actionError && <span className="text-xs text-red-400">{actionError}</span>}
+      {running ? (
+        <button
+          type="button"
+          onClick={() => void cancel()}
+          className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Cancel
+        </button>
+      ) : (
+        !runningElsewhere && (
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={!canRun || starting}
+            className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {latest ? "Re-run" : "Run"}
+          </button>
+        )
       )}
     </li>
   );
 }
 
+/** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
+function suggested(items: ChecklistItem[]): ReportSection[] {
+  return items
+    .filter(
+      (i) =>
+        DEFAULT_SECTIONS.includes(i.section) &&
+        !i.result?.current &&
+        i.latest?.status !== "running",
+    )
+    .map((i) => i.section);
+}
+
 /**
- * The verification report: an agent review of the whole change — summary,
- * the files that must be read, risk, and the completeness, test, complexity,
- * performance, comment, observability and quality checks — run on the PR's
- * checkout. Shows the run's progress while it works and the report once it
- * is done; every location in it opens the file's diff at that line.
+ * The verification checklist: every section of the report, grouped by theme,
+ * each run on its own when the reviewer chooses, with the report its newest
+ * results make below. Every file and line in the report opens the diff there.
  */
 export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
-  const latest = useLatestVerification(workspaceId, pr.id);
-  // The run this window started, with the sections it was asked for.
-  const [started, setStarted] = useState<{
-    id: string;
-    sections: readonly ReportSection[];
-  } | null>(null);
-  const [joined, setJoined] = useState(false);
+  const checklist = useVerificationChecklist(workspaceId, pr.id);
+  const items = checklist.data?.items ?? [];
+  // Runs this window started, by section, followed before the checklist is re-read.
+  const [started, setStarted] = useState<Partial<Record<ReportSection, string>>>({});
+  const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
+  const picked = pickedSections ?? suggested(items);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  // A large PR, or one the estimate says will outrun the budget, asks first.
-  const [confirmingLarge, setConfirmingLarge] = useState(false);
 
-  const run = latest.data?.run ?? null;
-  // The last run's sections until the reviewer changes them.
-  const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
-  const lastSections = runSections(run?.meta);
-  const sections = pickedSections ?? lastSections;
-  const runningHere = run?.status === "running" && run.live ? run.id : null;
-  const followId = started?.id ?? runningHere;
-  // A run followed but not started here lists the sections its own meta records.
-  const progress = useVerificationRun(pr.id, followId, started?.sections ?? lastSections);
-  const running = followId !== null && progress !== null && progress.finished === null;
-  const runningElsewhere = !running && run?.status === "running" && !run.live;
-  const report = reportOf(latest.data);
-  const good = latest.data?.lastSucceeded ?? null;
-  const size = useMemo(() => {
-    const facts = latest.data?.size;
-    return facts ? sizeFor(facts, sections) : null;
-  }, [latest.data?.size, sections]);
+  const report = reportOf(checklist.data);
+  const size = checklist.data?.size ?? null;
   const viewed = useReviewViewed(ctx.prRef);
   const linked = useLinkedWorkspace(ctx.prRef);
   const poster = useMemo(
@@ -273,22 +350,24 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       ),
     [ctx.prRef, ctx.pr.headSha, ctx.pr.mergeBaseSha, linked],
   );
+  // An older head's line numbers may point at different code now, so only a
+  // section whose result is for the current head can post.
+  const currentSections = useMemo(
+    () => new Set(items.filter((i) => i.result?.current).map((i) => i.section)),
+    [items],
+  );
 
-  const start = async (confirmed = false) => {
-    if ((size?.large || size?.overBudget) && !confirmed) {
-      setConfirmingLarge(true);
-      return;
-    }
-    setConfirmingLarge(false);
+  const run = async (sections: ReportSection[]) => {
+    if (sections.length === 0) return;
     setStarting(true);
     setActionError(null);
-    setJoined(false);
     try {
-      const { runId, existing } = await startVerification(workspaceId, pr.id, sections);
-      // A run already going was started with its own sections, not these; it
-      // is followed as `runningHere` once the latest run is re-read.
-      if (existing) setJoined(true);
-      else setStarted({ id: runId, sections });
+      const { runs } = await startVerification(workspaceId, pr.id, sections);
+      setStarted((prev) => ({
+        ...prev,
+        ...Object.fromEntries(runs.filter((r) => !r.existing).map((r) => [r.section, r.runId])),
+      }));
+      setPickedSections((prev) => (prev ?? picked).filter((s) => !sections.includes(s)));
       invalidate(verificationKey(pr.id));
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
@@ -297,15 +376,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     }
   };
 
-  const cancel = async () => {
-    if (!followId) return;
-    setActionError(null);
-    try {
-      await cancelAgentRun(followId);
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const toggle = (section: ReportSection) =>
+    setPickedSections(
+      picked.includes(section) ? picked.filter((s) => s !== section) : [...picked, section],
+    );
 
   // The report is model-written, so only a path the PR actually has is a link.
   const changed = useReviewChangedFiles(workspaceId, pr);
@@ -321,14 +395,11 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   };
 
   const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
-  const finishedRun = running ? null : run;
-  const failed = finishedRun?.status === "failed";
-  const cancelled = finishedRun?.status === "cancelled";
 
-  if (latest.loading) {
+  if (checklist.loading) {
     return (
       <div className="p-4">
-        <LoadingIndicator label="Loading the verification report…" />
+        <LoadingIndicator label="Loading the verification checklist…" />
       </div>
     );
   }
@@ -338,81 +409,61 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       {/* 80% so diagrams grow with the window; never narrower than 48rem unless the pane is. */}
       <div className="mx-auto w-4/5 min-w-[min(100%,48rem)] space-y-4 p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-zinc-200">Verification report</h2>
-          {good && report && !running && (
-            <span className="text-xs text-zinc-500">
-              at {short(good.headSha)}
-              {good.run.costUsd != null ? ` · $${good.run.costUsd.toFixed(2)}` : ""}
-            </span>
-          )}
-          <span className="ml-auto flex gap-2">
-            {running ? (
-              <button
-                type="button"
-                onClick={() => void cancel()}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
-                Cancel
-              </button>
-            ) : (
-              !runningElsewhere && (
-                <button
-                  type="button"
-                  onClick={() => void start()}
-                  disabled={starting || notReady || sections.length === 0}
-                  title={
-                    notReady
-                      ? "Waiting for the checkout"
-                      : sections.length === 0
-                        ? "Pick at least one section"
-                        : undefined
-                  }
-                  className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
-                >
-                  {starting ? "Starting…" : run ? "Re-run" : "Run verification"}
-                </button>
-              )
-            )}
+          <h2 className="text-sm font-semibold text-zinc-200">Verification</h2>
+          <span className="ml-auto">
+            <button
+              type="button"
+              onClick={() => void run(picked)}
+              disabled={starting || notReady || picked.length === 0}
+              title={
+                notReady
+                  ? "Waiting for the checkout"
+                  : picked.length === 0
+                    ? "Pick at least one check"
+                    : undefined
+              }
+              className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
+            >
+              {starting ? "Starting…" : `Run picked (${picked.length})`}
+            </button>
           </span>
         </div>
 
-        {!running && !runningElsewhere && (
-          <SectionPicker
-            picked={sections}
-            onChange={(next) => {
-              setPickedSections(next);
-              setConfirmingLarge(false);
-            }}
-            disabled={starting}
-          />
-        )}
+        <p className="text-xs text-zinc-500">
+          Each check is an agent that reads every changed file's diff. Run the ones you want; each
+          runs on its own, and the report below shows each check's newest result.
+        </p>
 
-        {confirmingLarge && size && !running && (
-          <div
-            role="alert"
-            className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"
-          >
-            <SizeWarning size={size} />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => void start(true)}
-                className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600"
-              >
-                Run anyway
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmingLarge(false)}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-        {!confirmingLarge && size && !running && (
-          // Even on a small PR, say up front what the run won't read whole.
+        {(checklist.data?.themes ?? []).map((theme) => {
+          const rows = items.filter((i) => i.theme === theme.id);
+          if (rows.length === 0) return null;
+          return (
+            <section key={theme.id} className="space-y-1">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {theme.label}
+              </h3>
+              <ul className="divide-y divide-zinc-800/60">
+                {rows.map((item) => (
+                  <ChecklistRow
+                    key={item.section}
+                    item={item}
+                    prId={pr.id}
+                    report={report}
+                    startedRunId={started[item.section] ?? null}
+                    picked={picked.includes(item.section)}
+                    onToggle={() => toggle(item.section)}
+                    onRun={() => void run([item.section])}
+                    canRun={!notReady}
+                    starting={starting}
+                  />
+                ))}
+              </ul>
+            </section>
+          );
+        })}
+
+        {size && (
+          // Say up front what the checks won't read whole.
           <div className="text-xs text-zinc-400" data-testid="file-notices">
             <FileNotices notices={fileNotices(size)} />
           </div>
@@ -423,97 +474,15 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             {actionError}
           </p>
         )}
-        {joined && (
-          <p className="text-xs text-zinc-400">
-            A report was already being written for this PR, so no new run started. Below is that
-            run, with the sections it was started with.
-          </p>
-        )}
-        {latest.error && <p className="text-xs text-red-400">{latest.error}</p>}
+        {checklist.error && <p className="text-xs text-red-400">{checklist.error}</p>}
 
-        {!run && !running && (
-          <p className="text-sm text-zinc-400">
-            Agents read every changed file's diff and report what the change does, which files must
-            be read, how risky it is, and whether it is complete, tested, simple, fast, well
-            commented, observable and well written, and whether there is a simpler way to do what
-            the PR does. Checks that pass say so in a line, and the report lists any file the checks
-            didn't read. Pick the sections above; the flow diagram traces the whole flow the change
-            sits in and is off unless you ask for it.
-          </p>
-        )}
-
-        {running && progress && (
-          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-            <ul className="space-y-1">
-              {progress.checks.map((c) => (
-                <CheckLine key={c.agent} check={c} />
-              ))}
-            </ul>
-            {progress.activity && (
-              <p className="truncate font-mono text-[11px] text-zinc-500">{progress.activity}</p>
-            )}
-          </div>
-        )}
-        {progress?.error && !running && !failed && (
-          <p className="text-xs text-red-400">{progress.error}</p>
-        )}
-
-        {runningElsewhere && (
-          <p className="text-sm text-zinc-400">
-            A report is being written by another Yarvis window.{" "}
-            <button
-              type="button"
-              onClick={() => void latest.refresh()}
-              className="text-sky-400 hover:text-sky-300"
-            >
-              Check again
-            </button>
-          </p>
-        )}
-
-        {failed && (
-          <div
-            role="alert"
-            className="rounded-lg border border-red-900 bg-red-950/30 p-3 text-sm text-red-300"
-          >
-            {report ? "The re-run failed" : "The last run failed"}:{" "}
-            {finishedRun?.error ?? progress?.error ?? "no reason given"}
-            {report && good && (
-              <span className="block text-xs text-red-300/80">
-                Below is the last good report, from {short(good.headSha)}.
-              </span>
-            )}
-          </div>
-        )}
-        {cancelled && (
-          <p className="text-sm text-zinc-500">
-            The last run was cancelled.
-            {report && good && ` Below is the last good report, from ${short(good.headSha)}.`}
-          </p>
-        )}
-
-        {report && good && !good.current && !running && (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-800 bg-amber-950/30 p-2 text-xs text-amber-200">
-            This report is for an older head; the pull request has moved to{" "}
-            {short(latest.data?.headSha)}.
-            <button
-              type="button"
-              onClick={() => void start()}
-              disabled={starting || notReady}
-              className="ml-auto rounded border border-amber-700 px-2 py-0.5 hover:bg-amber-900/40 disabled:opacity-50"
-            >
-              Re-run
-            </button>
-          </div>
-        )}
-
-        {report && !running && (
+        {report && (
           <VerificationReportView
             report={report}
             onOpen={open}
             viewed={viewed.viewed}
-            // An older head's line numbers may point at different code now.
-            poster={good?.current ? poster : undefined}
+            poster={poster}
+            currentSections={currentSections}
           />
         )}
       </div>

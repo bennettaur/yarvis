@@ -29,16 +29,13 @@ export interface RunProgress {
   delegations: Record<string, string>;
 }
 
-/**
- * The agents the report's skill fans out, in the order the report shows them,
- * with the section each writes. The summary agent always runs.
- */
+/** The agents the report's skill fans out, in the order the report shows them, with the section each writes. */
 export const VERIFICATION_AGENTS: readonly {
   agent: string;
   label: string;
-  section: ReportSection | null;
+  section: ReportSection;
 }[] = [
-  { agent: "change-summary", label: "Summary and must-read files", section: null },
+  { agent: "change-summary", label: "Summary and must-read files", section: "summary" },
   { agent: "risk-reviewer", label: "Risk", section: "risk" },
   { agent: "completeness-reviewer", label: "Completeness", section: "completeness" },
   { agent: "test-reviewer", label: "Test quality", section: "tests" },
@@ -56,9 +53,9 @@ export function initialProgress(
   sections: readonly ReportSection[] = DEFAULT_SECTIONS,
 ): RunProgress {
   return {
-    checks: VERIFICATION_AGENTS.filter(
-      (a) => a.section === null || sections.includes(a.section),
-    ).map(({ agent, label }) => ({ agent, label, state: "waiting", activity: null })),
+    checks: VERIFICATION_AGENTS.filter((a) => sections.includes(a.section)).map(
+      ({ agent, label }) => ({ agent, label, state: "waiting", activity: null }),
+    ),
     activity: null,
     finished: null,
     error: null,

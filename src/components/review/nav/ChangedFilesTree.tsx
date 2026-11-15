@@ -9,9 +9,9 @@ import { commentCountsByPath, openThreadsByPath } from "../tabs/annotations";
 import {
   mustReadByPath,
   reportOf,
-  useLatestVerification,
   useReviewChangedFiles,
   useReviewViewed,
+  useVerificationChecklist,
 } from "../tabs/reviewData";
 import type { PrColor, TabSpec } from "../tabs/types";
 
@@ -81,7 +81,7 @@ export default function ChangedFilesTree({
   const changed = useReviewChangedFiles(workspaceId, pr);
   const viewed = useReviewViewed(pr.ref);
   const detail = usePrDetail(pr.ref);
-  const latest = useLatestVerification(workspaceId, pr.id);
+  const latest = useVerificationChecklist(workspaceId, pr.id);
 
   const files = changed.data?.files;
   const tree = useMemo(() => (files ? buildFileTree(files, (f) => f.path) : []), [files]);

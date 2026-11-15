@@ -8,10 +8,12 @@ This folder is the source. The sidecar embeds every file listed in
 private temp directory for each run, removed when the run ends.
 
 The verification report is the `verification-report` skill, which runs the
-summary agent and whichever of the others the reviewer picked (risk,
-completeness, tests, complexity, performance, comments, observability,
-quality, approach, and the flow diagram) in parallel and assembles their
-answers. Its run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
+agents for the sections it is given (summary, risk, completeness, tests,
+complexity, performance, comments, observability, quality, approach, and the
+flow diagram) in parallel and assembles their answers. Yarvis starts one run
+per section, so each can be re-run on its own, and
+`sidecar/src/reviewWorkspaces/checklist.ts` puts the report together from each
+section's newest answer. A run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context, an `index.md` of every changed file and one numbered
 patch per file (`patches/<path>.diff`, `reviewWorkspaces/patchFiles.ts`) to a
 directory the run may read, marks bulk to skim, and splits the rest into

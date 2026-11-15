@@ -7,6 +7,7 @@ import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { findRepoForPr } from "../workspaces/service.ts";
+import { verificationChecklist } from "./checklist.ts";
 import {
   createReviewWorkspace,
   getReviewPr,
@@ -16,7 +17,7 @@ import {
   resumeIfStalled,
 } from "./service.ts";
 import {
-  latestVerification,
+  normalizeSections,
   type ReportSection,
   startVerification,
   type VerificationDeps,
@@ -59,7 +60,7 @@ export interface KickoffOptions {
   sections?: readonly ReportSection[];
   /** The user agreed, after being told why, to a run that needs their go-ahead. */
   confirmed?: boolean;
-  /** Run again even though a report for the PR's current head exists. */
+  /** Run the sections again even where they have a result for the PR's current head. */
   rerun?: boolean;
 }
 
@@ -81,11 +82,13 @@ export interface KickoffDeps {
  */
 export type ConfirmReason = "large" | "over-budget" | "unsized" | "unregistered-repo";
 
+/** One run per section of the report; a section can share a run with others only on an old report. */
 export type KickoffResult =
-  | { status: "started"; workspaceId: string; prId: string; runId: string }
-  | { status: "already-running"; workspaceId: string; prId: string; runId: string }
-  /** A report for the PR's current head is already there. */
-  | { status: "exists"; workspaceId: string; prId: string; runId: string }
+  | { status: "started"; workspaceId: string; prId: string; runIds: string[] }
+  /** Every section asked for already has a run going. */
+  | { status: "already-running"; workspaceId: string; prId: string; runIds: string[] }
+  /** Every section asked for already has a result for the PR's current head. */
+  | { status: "exists"; workspaceId: string; prId: string; runIds: string[] }
   /** The checkout isn't ready yet; the report starts on its own once it is. */
   | { status: "waiting-for-checkout"; workspaceId: string; prId: string; createdWorkspace: boolean }
   | {
@@ -200,7 +203,7 @@ async function startReport(
   deps: KickoffDeps,
 ): Promise<KickoffResult> {
   const { workspaceId, id: prId } = pr;
-  const latest = await latestVerification(
+  const checklist = await verificationChecklist(
     db,
     config,
     workspaceId,
@@ -209,14 +212,28 @@ async function startReport(
     (id) => registryFor(deps).isLive(id),
     deps.verification.settings,
   );
-  if (latest.run?.live) {
-    return { status: "already-running", workspaceId, prId, runId: latest.run.id };
-  }
-  if (!options.rerun && latest.lastSucceeded?.current) {
-    return { status: "exists", workspaceId, prId, runId: latest.lastSucceeded.run.id };
+  const sections = normalizeSections(options.sections);
+  const items = checklist.items.filter((item) => sections.includes(item.section));
+  const isRunning = (item: (typeof items)[number]) =>
+    item.latest?.status === "running" && item.latest.live;
+  const toRun = items.filter(
+    (item) => !isRunning(item) && (options.rerun || !item.result?.current),
+  );
+  const unique = (ids: (string | undefined)[]) =>
+    [...new Set(ids)].filter((id): id is string => id !== undefined);
+  if (toRun.length === 0) {
+    const running = items.filter(isRunning);
+    return running.length > 0
+      ? {
+          status: "already-running",
+          workspaceId,
+          prId,
+          runIds: unique(running.map((i) => i.latest?.id)),
+        }
+      : { status: "exists", workspaceId, prId, runIds: unique(items.map((i) => i.result?.id)) };
   }
   if (!options.confirmed) {
-    const { size } = latest;
+    const { size } = checklist;
     let reason: ConfirmReason | null = null;
     if (!size) reason = "unsized";
     else if (size.large) reason = "large";
@@ -235,16 +252,17 @@ async function startReport(
     prId,
     deps.review,
     deps.verification,
-    options.sections,
+    toRun.map((item) => item.section),
   );
-  // Only follow a run this call started. One already going was started by an
+  // Only follow runs this call started. One already going was started by an
   // earlier ask, which follows it, or from the tab, where the user is watching.
-  if (!started.existing) void notifyWhenDone(db, pr, started.runId, deps);
+  const fresh = started.runs.filter((r) => !r.existing).map((r) => r.runId);
+  if (fresh.length > 0) void notifyWhenDone(db, pr, fresh, deps);
   return {
-    status: started.existing ? "already-running" : "started",
+    status: fresh.length > 0 ? "started" : "already-running",
     workspaceId,
     prId,
-    runId: started.runId,
+    runIds: unique(started.runs.map((r) => r.runId)),
   };
 }
 
@@ -317,35 +335,38 @@ function goAheadDetail(result: Extract<KickoffResult, { status: "needs-confirmat
   return `${why}: ${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
 }
 
-/** Rings the bell once a run this module started ends; whoever asked has usually moved on. */
+/** Rings the bell once every run this module started has ended; whoever asked has usually moved on. */
 async function notifyWhenDone(
   db: Db,
   pr: ReviewWorkspacePr,
-  runId: string,
+  runIds: string[],
   deps: KickoffDeps,
 ): Promise<void> {
   try {
-    // The run's row is written before the registry lets it go.
-    await registryFor(deps).follow(runId, () => undefined);
-    const run = await getAgentRunSummary(db, runId);
-    if (run?.status === "succeeded") {
+    // A run's row is written before the registry lets it go.
+    await Promise.all(runIds.map((id) => registryFor(deps).follow(id, () => undefined)));
+    const runs = await Promise.all(runIds.map((id) => getAgentRunSummary(db, id)));
+    const statuses = runs.map((run) => run?.status ?? "missing");
+    const failed = statuses.filter((s) => s === "failed").length;
+    if (statuses.every((s) => s === "succeeded")) {
       await notify(db, pr, "completed", "Verification report ready", null);
-    } else if (run?.status === "failed") {
-      // The run's error can quote what the agent read, so the bell gets a fixed line.
+    } else if (failed > 0) {
+      // A run's error can quote what the agent read, so the bell gets a fixed line.
+      const which = runIds.length === 1 ? "The run" : `${failed} of the ${runIds.length} checks`;
       await notify(
         db,
         pr,
         "error",
         "Verification report failed",
-        "The run failed. Open the review workspace to see why.",
+        `${which} failed. Open the review workspace to see why.`,
       );
-    } else if (run?.status !== "cancelled") {
+    } else if (!statuses.every((s) => s === "cancelled" || s === "succeeded")) {
       console.error(
-        `[verification] run ${runId} ended as ${run?.status ?? "missing"}; not notifying`,
+        `[verification] runs ${runIds.join(", ")} ended as ${statuses.join(", ")}; not notifying`,
       );
     }
   } catch (e) {
-    console.error("[verification] could not report the run's end:", describeError(e));
+    console.error("[verification] could not report the runs' end:", describeError(e));
   }
 }
 

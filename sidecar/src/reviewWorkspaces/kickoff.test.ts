@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
@@ -16,6 +16,7 @@ import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
+import { DEFAULT_SECTIONS } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -216,7 +217,7 @@ describe("kickOffVerification", () => {
     });
   });
 
-  it("starts once confirmed, joins the running report, and rings the bell when it ends", async () => {
+  it("starts once confirmed, joins the running checks, and rings the bell when they all end", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
     await until(async () => (await attention()).length > 0, "the checkout");
     await sql`TRUNCATE attention_items`;
@@ -225,7 +226,9 @@ describe("kickOffVerification", () => {
     expect(started).toMatchObject({ status: "started" });
     if (started.status !== "started") throw new Error("unreachable");
 
-    // Confirming again doesn't start a second run.
+    // One run per default section.
+    expect(started.runIds).toHaveLength(DEFAULT_SECTIONS.length);
+    // Confirming again doesn't start a second run of any of them.
     const joined = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
     expect(joined).toEqual({ ...started, status: "already-running" });
 
@@ -234,9 +237,10 @@ describe("kickOffVerification", () => {
       async () => (await attention()).some((a) => a.title === "Verification report ready"),
       "the ready notice",
     );
-    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, started.runId));
-    expect(run?.status).toBe("succeeded");
-    // One run, and one notice for it, though it was asked for twice.
+    const runs = await db.select().from(agentRuns).where(inArray(agentRuns.id, started.runIds));
+    expect(runs.map((r) => r.status)).toEqual(started.runIds.map(() => "succeeded"));
+    expect(await db.select().from(agentRuns)).toHaveLength(DEFAULT_SECTIONS.length);
+    // One notice once every run has ended, though the report was asked for twice.
     const ready = (await attention()).filter((a) => a.title === "Verification report ready");
     expect(ready).toHaveLength(1);
 

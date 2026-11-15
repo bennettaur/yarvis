@@ -8,6 +8,7 @@ import { clientError, describeError } from "../llm/errors.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
+import { verificationChecklist } from "./checklist.ts";
 import { isValidSymbol } from "./definitions.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
@@ -52,7 +53,6 @@ import {
 } from "./service.ts";
 import {
   defaultVerificationDeps,
-  latestVerification,
   REPORT_SECTIONS,
   startVerification,
   type VerificationDeps,
@@ -470,8 +470,9 @@ export function createReviewWorkspaceRoutes(
     }
   });
 
-  // Starts the PR's verification report, or answers with the run already
-  // going for it. The run is followed on `/api/agent-runs/:runId/events`.
+  // Starts a run for each picked section of the PR's verification report; a
+  // section with a run already going joins it. Each run is followed on
+  // `/api/agent-runs/:runId/events`.
   router.post("/:id/prs/:prId/verification", async (c) => {
     const parsed = startVerificationSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -485,19 +486,19 @@ export function createReviewWorkspaceRoutes(
         options.verification ?? defaultVerificationDeps(config),
         parsed.data?.sections,
       );
-      return c.json(started, started.existing ? 200 : 202);
+      return c.json(started, started.runs.every((r) => r.existing) ? 200 : 202);
     } catch (e) {
       return fail(c, e);
     }
   });
 
-  // The PR's latest verification run (any head), and whether it was made
-  // against the head the PR is at now.
+  // The PR's verification checklist: each section's latest run and newest
+  // result, and the report those results make.
   router.get("/:id/prs/:prId/verification", async (c) => {
     const registry = options.verification?.run?.registry ?? agentRunRegistry;
     try {
       return c.json(
-        await latestVerification(
+        await verificationChecklist(
           db(),
           config,
           c.req.param("id"),

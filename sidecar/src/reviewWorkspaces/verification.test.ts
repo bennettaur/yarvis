@@ -107,7 +107,7 @@ describe("the report schema", () => {
         ],
       }),
     );
-    expect(parsed.mustRead[0]?.flags).toEqual([
+    expect(parsed.mustRead?.[0]?.flags).toEqual([
       { note: "retries never decremented", line: 17 },
       { note: "no line", line: undefined },
       { note: "third", line: undefined },
@@ -118,7 +118,7 @@ describe("the report schema", () => {
     const parsed = schema.parse(
       report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
     );
-    expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(parsed.mustRead?.[0]?.flags).toEqual([]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {
@@ -130,7 +130,7 @@ describe("the report schema", () => {
         ],
       }),
     );
-    expect(parsed.mustRead.map((m) => m.lines)).toEqual([{ start: 12, end: 12 }, undefined]);
+    expect(parsed.mustRead?.map((m) => m.lines)).toEqual([{ start: 12, end: 12 }, undefined]);
   });
 
   it("derives a check's status from its findings, most severe first, capped", () => {
@@ -282,13 +282,22 @@ describe("the report schema", () => {
       mermaid: "flowchart TD\n a --> b",
     };
     const parsed = picked.parse({ ...report(), flow });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect(Object.keys(parsed).sort()).toEqual(["flow", "tests"]);
     expect(parsed.flow).toEqual(flow);
     const { flow: _f, ...withoutFlow } = { ...report(), flow };
     expect(picked.safeParse(withoutFlow).success).toBe(false);
-    // Only the summary and the picked sections are required of the answer.
+    // Only the picked sections are required of the answer.
     const required = JSON.parse(jsonSchemaArg(picked)).required;
-    expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect([...required].sort()).toEqual(["flow", "tests"]);
+  });
+
+  it("asks for the summary and must-reads together, as one section", () => {
+    const picked = verificationReportSchema({ ...limits, sections: ["summary"] });
+    const parsed = picked.parse(report({ mustRead: [{ path: "src/a.ts", reason: "core" }] }));
+    expect(Object.keys(parsed).sort()).toEqual(["mustRead", "summary"]);
+    expect(parsed.mustRead?.map((m) => m.path)).toEqual(["src/a.ts"]);
+    const required = JSON.parse(jsonSchemaArg(picked)).required;
+    expect([...required].sort()).toEqual(["mustRead", "summary"]);
   });
 
   it("keeps the simpler way only when the rating says there is one", () => {
@@ -365,10 +374,10 @@ describe("the report schema", () => {
       tests: { status: "ok", findings: "not a list" },
       risk: { level: "extreme" },
     });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(parsed)).toEqual(["flow"]);
     // Claude Code is shown only the fields to write.
     const sent = JSON.parse(jsonSchemaArg(picked));
-    expect(Object.keys(sent.properties).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(sent.properties)).toEqual(["flow"]);
   });
 
   it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
@@ -400,7 +409,7 @@ describe("dropping must-read flags a finding already reports", () => {
   const keptNotes = (overrides: Record<string, unknown>, sections = limits.sections) =>
     verificationReportSchema({ ...limits, sections })
       .parse(report(overrides))
-      .mustRead[0]?.flags.map((f) => f.note);
+      .mustRead?.[0]?.flags.map((f) => f.note);
 
   it("drops one a check finding reports within a few lines, and records it", () => {
     const audit = emptyAudit();
@@ -413,7 +422,9 @@ describe("dropping must-read flags a finding already reports", () => {
         quality: quality("Retry count is never decremented", 17),
       }),
     );
-    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(parsed.mustRead?.[0]?.flags.map((f) => f.note)).toEqual([
+      "cache key ignores the locale",
+    ]);
     expect(audit.droppedFlags).toEqual([{ path: "src/a.ts", line: 20, note: retry }]);
   });
 
@@ -464,7 +475,7 @@ describe("dropping must-read flags a finding already reports", () => {
         ...flagged([{ note: retry, line: 18 }]),
         quality: quality("Retry count is never decremented", 17),
       },
-      ["quality"],
+      ["summary", "quality"],
     );
     expect(notes).toEqual([]);
   });
@@ -663,9 +674,9 @@ describe("paths an agent cites", () => {
         },
       }),
     );
-    expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
+    expect(parsed.mustRead?.map((m) => m.path)).toEqual(["src/a.ts"]);
     // The concern's absolute path still matches the must-read's flag.
-    expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(parsed.mustRead?.[0]?.flags).toEqual([]);
     expect(audit.droppedFlags).toEqual([
       { path: "src/a.ts", line: 9, note: "uploads retried forever, check the limit" },
     ]);
@@ -922,13 +933,13 @@ describe("the size a warning states", () => {
     const size = verificationSize(files, [], bulk, sonnet);
     const read = estimateReadBytes(files, new Set(), bulk);
     expect(size.defaultSections).toEqual(DEFAULT_SECTIONS);
-    // The summary agent plus one per default section reads every file.
+    // One agent per default section, the summary's included, reads every file.
     expect(size.estimatedCostUsd).toBe(
-      estimateRunCostUsd("sonnet", read.perReader * (1 + DEFAULT_SECTIONS.length) + read.bulk),
+      estimateRunCostUsd("sonnet", read.perReader * DEFAULT_SECTIONS.length + read.bulk),
     );
     const oneMore = estimateRunCostUsd(
       "sonnet",
-      read.perReader * (2 + DEFAULT_SECTIONS.length) + read.bulk,
+      read.perReader * (1 + DEFAULT_SECTIONS.length) + read.bulk,
     );
     expect(size.sectionCostUsd).toBeCloseTo(oneMore - size.estimatedCostUsd, 1);
     expect(size.sectionCostUsd).toBeGreaterThan(0);

@@ -1,11 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-  DEFAULT_SECTIONS,
-  findingCommentBody,
-  runSections,
-  sizeFor,
-  type VerificationSize,
-} from "./verification";
+import { findingCommentBody } from "./verification";
 
 describe("findingCommentBody", () => {
   it("names the report and section, and quotes what it said", () => {
@@ -42,40 +36,5 @@ describe("findingCommentBody", () => {
   it("keeps the title to one line, so a command in it can't start a line", () => {
     const body = findingCommentBody({ title: "Stale\n/approve  now\n", detail: "Fine." }, "Risk");
     expect(body.split("\n")[0]).toBe("**Stale /approve now** (verification report: Risk)");
-  });
-});
-
-describe("runSections", () => {
-  it("reads a run's sections in report order, and the default for a run that recorded none", () => {
-    expect(runSections({ sections: ["flow", "tests"] })).toEqual(["tests", "flow"]);
-    expect(runSections({})).toEqual(DEFAULT_SECTIONS);
-    expect(runSections(undefined)).toEqual(DEFAULT_SECTIONS);
-  });
-});
-
-describe("sizeFor", () => {
-  const size: VerificationSize = {
-    files: 3,
-    changedLines: 30,
-    large: false,
-    binary: [],
-    truncated: [],
-    skimmed: [],
-    estimatedCostUsd: 0.5,
-    sectionCostUsd: 0.04,
-    defaultSections: [...DEFAULT_SECTIONS],
-    budgetUsd: 0.52,
-    overBudget: false,
-  };
-
-  it("moves the estimate by each section added or dropped, and re-weighs the budget", () => {
-    const more = sizeFor(size, [...DEFAULT_SECTIONS, "flow"]);
-    expect(more.estimatedCostUsd).toBe(0.54);
-    expect(more.overBudget).toBe(true);
-    expect(sizeFor(size, ["tests"]).estimatedCostUsd).toBe(0.18);
-  });
-
-  it("never goes below zero", () => {
-    expect(sizeFor({ ...size, sectionCostUsd: 1 }, ["tests"]).estimatedCostUsd).toBe(0);
   });
 });

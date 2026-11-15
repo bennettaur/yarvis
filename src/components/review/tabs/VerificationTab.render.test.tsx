@@ -6,9 +6,14 @@ import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
 import {
+  type ChecklistItem,
+  type ChecklistRun,
+  type ChecklistThemeId,
   DEFAULT_SECTIONS,
-  type LatestVerification,
+  REPORT_SECTIONS,
   type ReportSection,
+  type VerificationChecklist,
+  type VerificationReport,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
@@ -50,7 +55,9 @@ beforeEach(() => {
     startVerification: async (_ws, prId, sections) => {
       started.push(prId);
       startedSections.push(sections);
-      return { runId: "r9", existing: false };
+      return {
+        runs: sections.map((section) => ({ section, runId: `r9-${section}`, existing: false })),
+      };
     },
     // A live run that never ends on its own, so it stays "running".
     streamAgentRun: async function* (_id, signal) {
@@ -70,32 +77,81 @@ afterEach(() => {
 });
 
 const check = { status: "pass" as const, findings: [] };
-const goodRun = {
+const goodReport: VerificationReport = {
+  summary: "Adds a cache in front of the user lookup.",
+  mustRead: [],
+  risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
+  completeness: check,
+  tests: check,
+};
+
+const THEMES: VerificationChecklist["themes"] = [
+  { id: "understand", label: "Understand the change" },
+  { id: "correctness", label: "Correctness and tests" },
+  { id: "risk", label: "Risk and impact" },
+  { id: "maintainability", label: "Maintainability" },
+];
+
+const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> = {
+  summary: { theme: "understand", label: "Summary and must-read files" },
+  flow: { theme: "understand", label: "Flow diagram" },
+  completeness: { theme: "correctness", label: "Completeness" },
+  tests: { theme: "correctness", label: "Test quality" },
+  performance: { theme: "correctness", label: "Performance" },
+  observability: { theme: "correctness", label: "Observability" },
+  risk: { theme: "risk", label: "Risk" },
+  complexity: { theme: "maintainability", label: "Complexity" },
+  quality: { theme: "maintainability", label: "Code quality" },
+  comments: { theme: "maintainability", label: "Comment quality" },
+  approach: { theme: "maintainability", label: "Simpler approach" },
+};
+
+const run = (over: Partial<ChecklistRun> = {}): ChecklistRun => ({
   id: "r1",
   status: "succeeded",
-  costUsd: 0.42,
-  result: {
-    summary: "Adds a cache in front of the user lookup.",
-    mustRead: [],
-    risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
-    completeness: check,
-    tests: check,
-    complexity: check,
-    performance: check,
-    comments: check,
-  },
-} as never;
-
-const latest = (over: Partial<LatestVerification>): LatestVerification => ({
-  run: null,
+  live: false,
   headSha: pr.headSha,
-  current: false,
-  lastSucceeded: null,
-  size: null,
+  current: true,
+  error: null,
+  costUsd: null,
+  startedAt: "2026-11-15T00:00:00Z",
+  finishedAt: null,
   ...over,
 });
 
-async function mount(state: LatestVerification) {
+const older = "g".repeat(40);
+
+/** A checklist with every section, none run unless `items` says otherwise. */
+const checklist = ({
+  items = {},
+  report = null,
+  size = null,
+}: {
+  items?: Partial<Record<ReportSection, Partial<ChecklistItem>>>;
+  report?: VerificationReport | null;
+  size?: VerificationSize | null;
+} = {}): VerificationChecklist => ({
+  headSha: pr.headSha,
+  themes: THEMES,
+  items: REPORT_SECTIONS.map((section) => ({
+    section,
+    ...ENTRY[section],
+    description: `What ${section} checks.`,
+    latest: null,
+    result: null,
+    ...items[section],
+  })),
+  report,
+  size,
+});
+
+/** Every section in `report` answered by one current run. */
+const answered = (report: VerificationReport) =>
+  Object.fromEntries(
+    REPORT_SECTIONS.filter((s) => s in report).map((s) => [s, { latest: run(), result: run() }]),
+  );
+
+async function mount(state: VerificationChecklist) {
   // Every read the tab makes comes from the cache, so none reaches a client.
   primeCache(verificationKey(pr.id), state);
   primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
@@ -105,102 +161,153 @@ async function mount(state: LatestVerification) {
   return mounted.host;
 }
 
-const button = (host: HTMLElement, label: string) =>
+const button = (host: Element, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === label);
 
+/** The checklist row for a section, by its label. */
+const row = (host: HTMLElement, label: string) =>
+  [...host.querySelectorAll("li")].find((li) =>
+    [...li.querySelectorAll("span")].some((s) => s.textContent === label),
+  ) as HTMLElement;
+
+const pick = (host: HTMLElement, label: string) =>
+  host.querySelector(`input[aria-label="Pick ${label}"]`) as HTMLInputElement;
+
 describe("VerificationTab", () => {
-  it("keeps the last good report on screen under a failed re-run", async () => {
-    const host = await mount(
-      latest({
-        run: { id: "r2", status: "failed", error: "budget exceeded", live: false } as never,
-        current: true,
-        lastSucceeded: { run: goodRun, headSha: "g".repeat(40), current: false },
-      }),
-    );
+  it("groups the checks by theme and says what each one's result found", async () => {
+    const report: VerificationReport = {
+      ...goodReport,
+      tests: {
+        status: "issues",
+        findings: [
+          { title: "No test for eviction", detail: "d", severity: "high" },
+          { title: "Mocks the cache", detail: "d", severity: "low" },
+        ],
+      },
+    };
+    const host = await mount(checklist({ items: answered(report), report }));
     const text = textOf(host.innerHTML);
-    expect(text).toContain("The re-run failed: budget exceeded");
-    expect(text).toContain("Below is the last good report, from ggggggg.");
+    for (const theme of THEMES) expect(text).toContain(theme.label);
+    expect(textOf(row(host, "Test quality").innerHTML)).toContain("2 findings");
+    expect(textOf(row(host, "Completeness").innerHTML)).toContain("Pass");
+    expect(textOf(row(host, "Flow diagram").innerHTML)).toContain("Not run");
+    expect(button(row(host, "Flow diagram"), "Run")).toBeDefined();
+    expect(button(row(host, "Test quality"), "Re-run")).toBeDefined();
     expect(text).toContain("Adds a cache in front of the user lookup.");
-    expect(text).toContain("This report is for an older head");
+    expect(text).toContain("No test for eviction");
   });
 
-  it("says a run was cancelled and keeps the last good report", async () => {
+  it("keeps a section's last result under a failed re-run, marked as from an older head", async () => {
     const host = await mount(
-      latest({
-        run: { id: "r2", status: "cancelled", live: false } as never,
-        lastSucceeded: { run: goodRun, headSha: pr.headSha, current: true },
+      checklist({
+        items: {
+          tests: {
+            latest: run({ id: "r2", status: "failed", error: "budget exceeded" }),
+            result: run({ headSha: older, current: false }),
+          },
+        },
+        report: { mustRead: [], tests: check },
       }),
     );
-    const text = textOf(host.innerHTML);
-    expect(text).toContain("The last run was cancelled.");
-    expect(text).toContain("Adds a cache in front of the user lookup.");
-    expect(text).not.toContain("older head");
-  });
-
-  it("offers a re-run when the report is for an older head", async () => {
-    const host = await mount(
-      latest({
-        run: goodRun,
-        lastSucceeded: { run: goodRun, headSha: "g".repeat(40), current: false },
-      }),
-    );
-    expect(textOf(host.innerHTML)).toContain("This report is for an older head");
-    button(host, "Re-run")?.click();
-    await waitFor(() => started.length > 0, "the re-run to start");
-    expect(started).toEqual(["pr1"]);
+    const testRow = textOf(row(host, "Test quality").innerHTML);
+    expect(testRow).toContain("Last run failed");
+    expect(testRow).toContain("Pass");
+    expect(testRow).toContain("older head (ggggggg)");
+    expect(textOf(host.innerHTML)).toContain("Test quality · older head");
   });
 
   // Its line numbers are for the head it read, which may be different code now.
-  it("offers posting a finding only from a report on the current head", async () => {
-    const located = {
-      ...(goodRun as { result: object }),
-      result: {
-        ...(goodRun as { result: { risk: object } }).result,
-        risk: {
-          level: "medium",
-          clientImpact: "None.",
-          mitigations: [],
-          concerns: [
-            { title: "Stale reads", detail: "Edits stay stale.", path: "src/cache.ts", line: 3 },
-          ],
-        },
+  it("offers posting a finding only from a section whose result is on the current head", async () => {
+    const report: VerificationReport = {
+      ...goodReport,
+      risk: {
+        level: "medium",
+        clientImpact: "None.",
+        mitigations: [],
+        concerns: [
+          { title: "Stale reads", detail: "Edits stay stale.", path: "src/cache.ts", line: 3 },
+        ],
       },
-    } as never;
-    const current = await mount(
-      latest({
-        run: located,
-        current: true,
-        lastSucceeded: { run: located, headSha: pr.headSha, current: true },
-      }),
-    );
+    };
+    const current = await mount(checklist({ items: answered(report), report }));
     expect(button(current, "Post to PR")).toBeDefined();
     unmount();
 
-    const older = await mount(
-      latest({
-        run: located,
-        lastSucceeded: { run: located, headSha: "g".repeat(40), current: false },
+    const stale = await mount(
+      checklist({
+        items: {
+          ...answered(report),
+          risk: { latest: run(), result: run({ headSha: older, current: false }) },
+        },
+        report,
       }),
     );
-    expect(textOf(older.innerHTML)).toContain("Stale reads");
-    expect(button(older, "Post to PR")).toBeUndefined();
+    expect(textOf(stale.innerHTML)).toContain("Stale reads");
+    expect(button(stale, "Post to PR")).toBeUndefined();
   });
 
   it("follows a run going here and cancels it", async () => {
-    const host = await mount(latest({ run: { id: "r7", status: "running", live: true } as never }));
-    await waitFor(() => button(host, "Cancel") !== undefined, "the Cancel button");
-    button(host, "Cancel")?.click();
+    const host = await mount(
+      checklist({ items: { tests: { latest: run({ id: "r7", status: "running", live: true }) } } }),
+    );
+    await waitFor(() => button(row(host, "Test quality"), "Cancel") !== undefined, "Cancel");
+    expect(textOf(row(host, "Test quality").innerHTML)).toContain("Running");
+    button(row(host, "Test quality"), "Cancel")?.click();
     await waitFor(() => cancelled.length > 0, "the cancel");
     expect(cancelled).toEqual(["r7"]);
   });
 
-  it("says when another window is writing the report, and offers no second run", async () => {
+  it("says when another window is running a check, and offers no second run of it", async () => {
     const host = await mount(
-      latest({ run: { id: "r7", status: "running", live: false } as never }),
+      checklist({
+        items: { tests: { latest: run({ id: "r7", status: "running", live: false }) } },
+      }),
     );
-    expect(textOf(host.innerHTML)).toContain("being written by another Yarvis window");
-    expect(button(host, "Run verification")).toBeUndefined();
-    expect(button(host, "Re-run")).toBeUndefined();
+    const testRow = row(host, "Test quality");
+    expect(textOf(testRow.innerHTML)).toContain("Running in another window");
+    expect(testRow.querySelector("button")).toBeNull();
+    expect(pick(host, "Test quality").disabled).toBe(true);
+  });
+
+  it("picks the default checks with nothing for the current head, and runs what is picked", async () => {
+    const host = await mount(
+      checklist({
+        items: {
+          summary: { latest: run(), result: run() },
+          risk: { latest: run(), result: run({ headSha: older, current: false }) },
+        },
+        report: { summary: "s", mustRead: [] },
+      }),
+    );
+    // The summary has a current result and the diagram is off unless asked for.
+    expect(pick(host, "Summary and must-read files").checked).toBe(false);
+    expect(pick(host, "Flow diagram").checked).toBe(false);
+    // A result for an older head is worth running again.
+    expect(pick(host, "Risk").checked).toBe(true);
+    const defaults = DEFAULT_SECTIONS.length - 1;
+    expect(button(host, `Run picked (${defaults})`)).toBeDefined();
+
+    pick(host, "Flow diagram").click();
+    pick(host, "Performance").click();
+    await waitFor(() => !pick(host, "Performance").checked, "the picks to change");
+    button(host, `Run picked (${defaults})`)?.click();
+    await waitFor(() => started.length > 0, "the runs to start");
+    expect(startedSections[0]).toContain("flow");
+    expect(startedSections[0]).toContain("risk");
+    expect(startedSections[0]).not.toContain("performance");
+    expect(startedSections[0]).not.toContain("summary");
+  });
+
+  it("runs one check from its row and follows the run it started", async () => {
+    const host = await mount(checklist());
+    button(row(host, "Performance"), "Run")?.click();
+    await waitFor(() => started.length > 0, "the run to start");
+    expect(startedSections).toEqual([["performance"]]);
+    // Followed at once, before the checklist is read again.
+    await waitFor(() => button(row(host, "Performance"), "Cancel") !== undefined, "Cancel");
+    button(row(host, "Performance"), "Cancel")?.click();
+    await waitFor(() => cancelled.length > 0, "the cancel");
+    expect(cancelled).toEqual(["r9-performance"]);
   });
 
   const size = (over: Partial<VerificationSize> = {}): VerificationSize => ({
@@ -214,131 +321,38 @@ describe("VerificationTab", () => {
     sectionCostUsd: 0.1,
     defaultSections: [...DEFAULT_SECTIONS],
     budgetUsd: 2,
-    overBudget: false,
+    overBudget: true,
     ...over,
   });
 
-  it("runs the sections picked, with the estimate moved to match", async () => {
-    const host = await mount(latest({ size: size() }));
-    const box = (label: string) =>
-      [...host.querySelectorAll("label")]
-        .find((l) => l.textContent === label)
-        ?.querySelector("input") as HTMLInputElement;
-    // The diagram is off by default.
-    expect(box("Flow diagram").checked).toBe(false);
-    expect(box("Risk").checked).toBe(true);
-    expect(box("Simpler approach").checked).toBe(true);
-    box("Flow diagram").click();
-    await waitFor(() => box("Flow diagram").checked, "the diagram to be picked");
-    box("Risk").click();
-    box("Performance").click();
-    await waitFor(() => !box("Performance").checked, "two sections to be dropped");
-    button(host, "Run verification")?.click();
-    await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
-    // One section more and two fewer than the default: $1.40 less $0.10.
-    expect(textOf(host.innerHTML)).toContain("about $1.30");
-    button(host, "Run anyway")?.click();
-    await waitFor(() => started.length > 0, "the run to start");
-    expect(startedSections[0]).not.toContain("risk");
-    expect(startedSections[0]).not.toContain("performance");
-    expect(startedSections[0]).toContain("flow");
-    expect(startedSections[0]).toContain("tests");
-    expect(startedSections[0]).toContain("approach");
-  });
-
-  it("asks before starting a run on a large PR, and Cancel starts nothing", async () => {
-    const host = await mount(latest({ size: size() }));
-    button(host, "Run verification")?.click();
-    await waitFor(() => button(host, "Run anyway") !== undefined, "the large-PR warning");
-    const text = textOf(host.innerHTML);
-    expect(text).toContain("This PR is large: 240 files, 9000 changed lines.");
-    expect(text).toContain("The checks read every file's diff");
-    expect(text).toContain("Estimated cost: about $1.40, against a budget of $2.00.");
-    // Nothing is left out any more, so the warning never says so.
-    expect(text).not.toContain("leave some files out");
-    expect(text).not.toContain("over the budget");
-
-    const cancel = [...host.querySelectorAll('[role="alert"] button')].find(
-      (b) => b.textContent === "Cancel",
-    ) as HTMLButtonElement;
-    cancel.click();
-    await waitFor(() => button(host, "Run anyway") === undefined, "the warning to close");
-    expect(started).toEqual([]);
-
-    button(host, "Run verification")?.click();
-    await waitFor(() => button(host, "Run anyway") !== undefined, "the warning again");
-    button(host, "Run anyway")?.click();
-    await waitFor(() => started.length > 0, "the run to start");
-    expect(started).toEqual(["pr1"]);
-  });
-
-  it("names the binary and cut-off files, folding a long list, and warns of the budget", async () => {
+  it("says up front what the checks won't read whole, and starts without asking", async () => {
     const binary = ["a.png", "b.png", "c.png", "d.png", "e.png"];
     const host = await mount(
-      latest({
-        size: size({
-          large: false,
-          binary,
-          truncated: ["package-lock.json"],
-          estimatedCostUsd: 3.2,
-          overBudget: true,
-        }),
-      }),
-    );
-    // Over budget alone is reason to ask.
-    button(host, "Run verification")?.click();
-    await waitFor(() => button(host, "Run anyway") !== undefined, "the warning");
-    const text = textOf(host.innerHTML);
-    expect(text).not.toContain("This PR is large");
-    expect(text).toContain("5 binary files have no diff to read: a.png, b.png, c.png");
-    expect(text).toContain("and 2 more");
-    expect(host.querySelector('[role="alert"] details')?.textContent).toContain("d.png, e.png");
-    expect(text).toContain(
-      "1 diff is too large and will be cut off, so the agents see only the start: package-lock.json",
-    );
-    expect(text).toContain("about $3.20, against a budget of $2.00");
-    expect(text).toContain("That's over the budget, and the run won't stop when it reaches it");
-    // A list that folds sits in a block, not inside a paragraph.
-    expect(host.querySelector("p details")).toBeNull();
-  });
-
-  it("says up front what a small PR's run won't read whole, and starts at once", async () => {
-    const host = await mount(
-      latest({ size: size({ large: false, binary: ["a.png"], skimmed: ["yarn.lock"] }) }),
+      checklist({ size: size({ binary, skimmed: ["yarn.lock"], truncated: ["big.json"] }) }),
     );
     const notices = textOf(host.querySelector('[data-testid="file-notices"]')?.innerHTML ?? "");
-    expect(notices).toContain("1 binary file has no diff to read: a.png");
+    expect(notices).toContain("5 binary files have no diff to read: a.png, b.png, c.png");
+    expect(notices).toContain("and 2 more");
+    expect(notices).toContain(
+      "1 diff is too large and will be cut off, so the agents see only the start: big.json",
+    );
     expect(notices).toContain(
       "1 file is bulk (a lockfile, or generated, vendored or minified code)",
     );
-    button(host, "Run verification")?.click();
+    // A large PR over the budget still starts at once: picking the checks is the budget.
+    button(row(host, "Risk"), "Run")?.click();
     await waitFor(() => started.length > 0, "the run to start");
-    expect(button(host, "Run anyway")).toBeUndefined();
-  });
-
-  it("says so when starting joins a run already going, rather than claiming the pick ran", async () => {
-    stubReviewApi({
-      startVerification: async (_ws, prId) => {
-        started.push(prId);
-        return { runId: "r7", existing: true };
-      },
-    });
-    const host = await mount(latest({}));
-    button(host, "Run verification")?.click();
-    await waitFor(
-      () => textOf(host.innerHTML).includes("already being written for this PR"),
-      "the joined notice",
-    );
+    expect(textOf(host.innerHTML)).not.toContain("Run anyway");
   });
 
   it("shows why a run couldn't start", async () => {
     stubReviewApi({
       startVerification: async () => {
-        throw new Error("start verification report failed (409): setup hasn't run");
+        throw new Error("start verification checks failed (409): setup hasn't run");
       },
     });
-    const host = await mount(latest({}));
-    button(host, "Run verification")?.click();
+    const host = await mount(checklist());
+    button(row(host, "Risk"), "Run")?.click();
     await waitFor(() => textOf(host.innerHTML).includes("setup hasn't run"), "the start error");
   });
 });

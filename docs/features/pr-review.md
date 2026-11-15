@@ -190,10 +190,11 @@ the background, and the attention bell tells you when they're done.
 - **Verification report**: the report needs a local checkout, so the assistant
   uses the [review workspace](review-workspaces.md) already holding the PR,
   or creates one named after it. It waits for the clone, then starts the
-  report with the default sections unless you name others. The setup script
-  never runs: that still needs your answer in the review workspace. If a
-  report for the PR's current commit already exists, it says so instead of
-  running another, unless you ask for a fresh one.
+  report's checks, the defaults unless you name others, each as its own run.
+  The setup script never runs: that still needs your answer in the review
+  workspace. A check that already has a result for the PR's current commit,
+  or is already running, isn't started again unless you ask for a fresh one.
+  The bell rings once every check it started has finished.
 
 The assistant asks before it starts a report in four cases: the PR is large,
 its estimate is over your budget, its size couldn't be worked out, or its repo
