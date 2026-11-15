@@ -389,6 +389,10 @@ impl SettingsState {
     ) -> Result<(), String> {
         let default_id = non_blank(default_id);
         crate::harness::validate(&harnesses, default_id.as_deref())?;
+        // The secret-store lock is held from reading the old list until the new
+        // one is saved. `set_agent_harness_secret` checks the list under the
+        // same lock, so it can't store a value for a variable this save drops.
+        let secrets_guard = keychain::lock_for_write()?;
         let before = Self::read_from_disk(&self.path)
             .agent_harnesses
             .unwrap_or_default();
@@ -399,9 +403,11 @@ impl SettingsState {
         // the settings lock, since 1Password can take a while to answer, and
         // only when something was dropped, so an ordinary save never prompts.
         if !dropped.is_empty() {
-            keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
-                Ok(crate::harness::prune_secrets(subtree, &dropped))
-            })
+            keychain::update_subtree_locked(
+                &secrets_guard,
+                crate::harness::SECRET_ENV_SUBTREE,
+                |subtree| Ok(crate::harness::prune_secrets(subtree, &dropped)),
+            )
             .map_err(|e| {
                 format!("the removed secret values could not be cleared, so nothing was saved: {e}")
             })?;
@@ -413,7 +419,9 @@ impl SettingsState {
             settings.default_agent_harness =
                 default_id.filter(|id| id != crate::harness::BUILTIN_HARNESS_ID);
         }
-        self.save()
+        let saved = self.save();
+        drop(secrets_guard);
+        saved
     }
 
     /// Stores the user's extra allowed slash commands, or clears them with an
