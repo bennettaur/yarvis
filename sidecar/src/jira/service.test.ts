@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { JiraClient } from "./client.ts";
-import { applyJiraStartWorkSideEffects, pickStartWorkTransition } from "./service.ts";
+import {
+  applyJiraStartWorkSideEffects,
+  pickCloseTransition,
+  pickStartWorkTransition,
+} from "./service.ts";
 import type { JiraTransition } from "./types.ts";
 
 interface Recorded {
@@ -148,5 +152,21 @@ describe("applyJiraStartWorkSideEffects", () => {
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("could not transition issue");
+  });
+});
+
+describe("pickCloseTransition", () => {
+  it("prefers a status named Done over other done statuses", () => {
+    const wontDo: JiraTransition = {
+      id: "41",
+      name: "Won't Do",
+      toStatusName: "Won't Do",
+      toStatusCategory: "done",
+    };
+    expect(pickCloseTransition([inProgress, wontDo, done])?.id).toBe("31");
+  });
+
+  it("returns null when no transition reaches a done status", () => {
+    expect(pickCloseTransition([inProgress, blocked])).toBeNull();
   });
 });

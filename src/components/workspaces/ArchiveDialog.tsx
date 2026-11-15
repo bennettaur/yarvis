@@ -1,5 +1,13 @@
 import { useState } from "react";
+import type { IssueLink } from "../../lib/issues/types";
 import { archiveWorkspace, type WorkspaceDetail } from "../../lib/workspaces";
+
+/** The label a tracker shows for an issue: "owner/repo#12", "PROJ-45", "#678". */
+function issueLabel(link: IssueLink): string {
+  if (link.provider === "github") return `${link.sourceKey}#${link.externalId}`;
+  if (link.provider === "azure") return `#${link.externalId}`;
+  return link.externalId;
+}
 
 /**
  * Confirms archiving a workspace: captures a summary + PR URL (prefilled from a
@@ -8,7 +16,8 @@ import { archiveWorkspace, type WorkspaceDetail } from "../../lib/workspaces";
  * as the workspace reads `archiving` rather than waiting for the worktrees to
  * go. A worktree that wouldn't remove (uncommitted work) leaves the workspace
  * in `archiving` with the repo's error, which reopening this dialog shows
- * alongside a Force remove.
+ * alongside a Force remove. Linked issues not yet done are listed, all ticked,
+ * and the ticked ones are closed on their tracker once the archive finishes.
  */
 export default function ArchiveDialog({
   detail,
@@ -29,6 +38,14 @@ export default function ArchiveDialog({
   const [busy, setBusy] = useState(false);
 
   const openTaskCount = detail.tasks.filter((t) => t.status === "open").length;
+  const openIssues = detail.issues.filter((i) => i.localStatus !== "done");
+  const [closeIssueIds, setCloseIssueIds] = useState(() => new Set(openIssues.map((i) => i.id)));
+  const toggleIssue = (id: string) =>
+    setCloseIssueIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   // A previous attempt that couldn't remove a worktree left the workspace in
   // `archiving` with the failure recorded (and cleared again the moment a retry
@@ -46,6 +63,7 @@ export default function ArchiveDialog({
         summary: summary.trim() || null,
         mergedPrUrl: prUrl.trim() || null,
         force,
+        closeIssueIds: [...closeIssueIds],
       });
       await onArchived();
     } catch (e) {
@@ -85,6 +103,30 @@ export default function ArchiveDialog({
             className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
           />
         </label>
+
+        {openIssues.length > 0 && (
+          <fieldset className="text-xs text-zinc-400">
+            <legend className="mb-1 uppercase tracking-wide">Close linked issues</legend>
+            <ul className="max-h-40 space-y-1 overflow-y-auto">
+              {openIssues.map((issue) => (
+                <li key={issue.id}>
+                  <label className="flex items-start gap-2 text-sm text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={closeIssueIds.has(issue.id)}
+                      disabled={busy}
+                      onChange={() => toggleIssue(issue.id)}
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="text-zinc-500">{issueLabel(issue)}</span> {issue.title ?? ""}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </fieldset>
+        )}
 
         {needsForce && <p className="text-xs text-red-400">{blockedError || detail.error}</p>}
 

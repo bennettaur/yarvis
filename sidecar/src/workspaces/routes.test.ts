@@ -1818,6 +1818,79 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos[0]?.status).toBe("removed");
   });
 
+  it("closes only the picked linked issues once the workspace is archived", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-issues", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const link = (externalId: string, workspaceId: string) => ({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId,
+      workspaceId,
+      localStatus: "in_progress" as const,
+    });
+    const other = await createWorkspace(db, config, { name: "elsewhere", repoIds: [] });
+    const [picked, kept, failing, foreign] = await db
+      .insert(issueLinks)
+      .values([link("1", ws.id), link("2", ws.id), link("3", ws.id), link("4", other.id)])
+      .returning();
+
+    const closeCalls: string[] = [];
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [picked!.id, failing!.id, foreign!.id] },
+      fakeGit,
+      async ({ externalId }) => {
+        closeCalls.push(externalId);
+        if (externalId === "3") throw new Error("tracker said no");
+      },
+    );
+
+    expect(result.status).toBe("archived");
+    expect(result.closedIssues).toBe(1);
+    // The issue linked to another workspace is never closed from this one.
+    expect(closeCalls.sort()).toEqual(["1", "3"]);
+    const status = async (id: string) =>
+      (await db.select().from(issueLinks).where(eq(issueLinks.id, id)))[0]?.localStatus;
+    expect(await status(picked!.id)).toBe("done");
+    expect(await status(kept!.id)).toBe("in_progress");
+    expect(await status(failing!.id)).toBe("in_progress");
+    const flagged = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(flagged.map((i) => i.body)).toEqual([
+      "Archived, but could not close acme/widget#3: tracker said no",
+    ]);
+  });
+
+  it("leaves linked issues open when the archive stops on a dirty worktree", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "dirty-issues", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [row] = await db
+      .insert(issueLinks)
+      .values({ provider: "github", sourceKey: "acme/widget", externalId: "9", workspaceId: ws.id })
+      .returning();
+    const closeCalls: string[] = [];
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [row!.id] },
+      dirtyGit,
+      async ({ externalId }) => {
+        closeCalls.push(externalId);
+      },
+    );
+
+    expect(result.status).toBe("archiving");
+    expect(result.closedIssues).toBe(0);
+    expect(closeCalls).toEqual([]);
+  });
+
   it("ends every registered agent session in the workspace it archives", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

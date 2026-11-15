@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AzureBoardsClient } from "./client.ts";
-import { applyBoardsStartWorkSideEffects, pickStartWorkState } from "./service.ts";
+import { applyBoardsStartWorkSideEffects, pickCloseState, pickStartWorkState } from "./service.ts";
 import type { BoardsState } from "./types.ts";
 
 const agile: BoardsState[] = [
@@ -115,5 +115,19 @@ describe("applyBoardsStartWorkSideEffects", () => {
     });
     expect(warnings).toEqual(['"Doing" is not a state this work item type allows']);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("pickCloseState", () => {
+  it("picks Closed in the Agile process", () => {
+    expect(pickCloseState(agile)?.name).toBe("Closed");
+  });
+
+  it("never picks Removed, which means the work was dropped", () => {
+    const states: BoardsState[] = [
+      { name: "To Do", category: "todo" },
+      { name: "Removed", category: "done" },
+    ];
+    expect(pickCloseState(states)).toBeNull();
   });
 });

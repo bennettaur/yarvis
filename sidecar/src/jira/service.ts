@@ -81,3 +81,12 @@ export async function applyJiraStartWorkSideEffects(
   }
   return warnings;
 }
+
+/**
+ * Chooses the transition that closes an issue: a done-category status, with
+ * one named "Done" preferred over other done statuses such as "Won't Do".
+ */
+export function pickCloseTransition(transitions: JiraTransition[]): JiraTransition | null {
+  const done = transitions.filter((t) => t.toStatusCategory === "done");
+  return done.find((t) => /^done$/i.test(t.toStatusName.trim())) ?? done[0] ?? null;
+}

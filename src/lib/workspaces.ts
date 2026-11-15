@@ -137,12 +137,15 @@ export interface ArchiveWorkspaceInput {
   summary?: string | null;
   mergedPrUrl?: string | null;
   force?: boolean;
+  /** Linked issues to close on their tracker once the archive finishes. */
+  closeIssueIds?: string[];
 }
 
 export interface ArchiveResult {
   status: WorkspaceStatus;
   errors: { repo: string; message: string }[];
   completedTasks: number;
+  closedIssues: number;
 }
 
 /** A progress event emitted while a workspace's worktrees are provisioned. */

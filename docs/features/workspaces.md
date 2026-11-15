@@ -694,6 +694,14 @@ While it runs, the right column is replaced by a "Removing worktrees…" note,
 since the worktrees it reads are being deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
 
+When the workspace has linked issues (GitHub, JIRA or Azure Boards) that aren't
+done yet, the dialog lists them under **Close linked issues**, all ticked.
+Untick any you want to leave open. The ticked ones are closed on their tracker
+once the worktrees are gone: a GitHub issue is closed, a JIRA issue moves to a
+done status ("Done" when the workflow has one), and an Azure Boards work item
+moves to a done state ("Done", then "Closed", never "Removed"). An issue that
+won't close stays open, and an alert names it and the tracker's reason.
+
 A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use
 **Force remove** only if the uncommitted work can go.

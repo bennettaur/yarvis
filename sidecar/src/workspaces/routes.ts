@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
+import { createIssueCloser } from "../issues/close.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
@@ -117,6 +118,7 @@ const archiveSchema = z.object({
   summary: z.string().nullish(),
   mergedPrUrl: z.string().nullish(),
   force: z.boolean().optional(),
+  closeIssueIds: z.array(z.string().uuid()).max(100).optional(),
 });
 
 // The source-agnostic triple identifying an issue across providers.
@@ -719,7 +721,16 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const parsed = archiveSchema.safeParse(body ?? {});
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      return c.json(await startArchiveWorkspace(db(), c.req.param("id"), parsed.data), 202);
+      return c.json(
+        await startArchiveWorkspace(
+          db(),
+          c.req.param("id"),
+          parsed.data,
+          defaultGitRunner,
+          createIssueCloser(config),
+        ),
+        202,
+      );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
