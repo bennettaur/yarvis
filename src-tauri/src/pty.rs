@@ -1110,11 +1110,12 @@ fn foreground_pid(session: &PtySession) -> Option<u32> {
 ///   script's group, and the script is what reads the terminal.
 /// - Otherwise, the foreground executable's file name against the program of
 ///   the harness the session was launched with (past any leading `VAR=value`).
-///   This covers an agent that registers nothing (a
-///   non-Claude agent, or a session started before the hook was installed).
-///   Claude Code's native installer fails it: `claude` links to
+///   This covers an agent that registers nothing: Pi, OpenCode, a built-in
+///   command that isn't Claude Code, or a session started before the hook was
+///   installed. Claude Code's native installer fails it: `claude` links to
 ///   `versions/<version>`, and that version-numbered file is what the OS
-///   reports.
+///   reports. A saved custom harness has no program to match (see
+///   `ResolvedHarness::program`), so it passes only through a registered pid.
 ///
 /// Matching on the process rather than on "anything that isn't the shell" is
 /// what makes this a gate: `vim`, a language REPL, or a test run left in the
@@ -1144,7 +1145,9 @@ fn foreground_is_agent(session: &PtySession, agent_pids: &[u32]) -> bool {
         .as_ref()
         .and_then(|agent| agent.program.as_deref())
     else {
-        eprintln!("[pty] refused instruction: the session was not launched as an agent");
+        eprintln!(
+            "[pty] refused instruction: the session has no program to compare the foreground against (a plain terminal, or a custom harness)"
+        );
         return false;
     };
     let expected = Path::new(argv0).file_name().unwrap_or(argv0.as_ref());
@@ -1312,10 +1315,10 @@ fn shell_single_quote(s: &str) -> String {
 /// The launch line is built here rather than taken from the caller, so a caller
 /// (including the control channel) chooses only *whether* to start an agent and
 /// which saved harness, by id — never what runs. The command itself comes from
-/// settings, which only the webview can write; the one caller-supplied value that reaches the line is
-/// `name`, which `sanitize_session_name` strips before it is quoted. This is not
-/// argv safety — the line is typed into an interactive shell — so both of those
-/// matter.
+/// settings, which only the webview can write; the one caller-supplied value
+/// that reaches the line is `name`, which `sanitize_session_name` strips before
+/// it is quoted. This is not argv safety — the line is typed into an
+/// interactive shell — so both of those matter.
 ///
 /// `remote_control` adds Claude Code's `--remote-control`, which is only wanted
 /// when the launch came from somewhere the user isn't at the machine — a

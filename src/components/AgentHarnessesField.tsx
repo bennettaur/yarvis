@@ -142,30 +142,32 @@ export default function AgentHarnessesField({
     [defaultId, drafts],
   );
 
-  const add = useCallback((kind: HarnessKind) => {
-    setDrafts((current) => {
-      const name = PRESETS[kind].label;
-      return [
-        ...current,
-        {
-          rowKey: nextRowKey++,
-          savedId: null,
-          id: idFor(
+  const add = useCallback(
+    (kind: HarnessKind) => {
+      setDrafts((current) => {
+        const name = PRESETS[kind].label;
+        return [
+          ...current,
+          {
+            rowKey: nextRowKey++,
+            savedId: null,
+            // Saved ids count as taken even once their row is removed: until the
+            // next save, a new harness under one would keep the old one's secrets.
+            id: idFor(name, [...current.map((d) => d.id), ...stored.map((h) => h.id)]),
             name,
-            current.map((d) => d.id),
-          ),
-          name,
-          kind,
-          command: PRESETS[kind].command,
-          promptArgs: "",
-          envText: "",
-          secretEnvText: "",
-          assistantMayUse: false,
-        },
-      ];
-    });
-    setNotice(null);
-  }, []);
+            kind,
+            command: PRESETS[kind].command,
+            promptArgs: "",
+            envText: "",
+            secretEnvText: "",
+            assistantMayUse: false,
+          },
+        ];
+      });
+      setNotice(null);
+    },
+    [stored],
+  );
 
   const remove = useCallback(
     (index: number) => {
@@ -193,7 +195,15 @@ export default function AgentHarnessesField({
       // A save can land and then fail clearing removed secrets, so what is
       // stored may already have changed: read it back rather than assume.
       getSettings()
-        .then(onSaved)
+        .then((next) => {
+          onSaved(next);
+          const saved = new Set((next.agentHarnesses ?? []).map((h) => h.id));
+          setDrafts((current) =>
+            current.map((d) =>
+              d.savedId === null && saved.has(d.id.trim()) ? { ...d, savedId: d.id.trim() } : d,
+            ),
+          );
+        })
         .catch(() => undefined);
     } finally {
       setBusy(false);

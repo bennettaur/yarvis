@@ -167,16 +167,24 @@ pub struct ResolvedHarness {
 }
 
 impl ResolvedHarness {
-    /// What the foreground check compares the session's process to. `None`
-    /// for a saved custom harness: its command is often a wrapper (`docker`,
-    /// `ssh`, a sandbox launcher) that stays in the foreground after the agent
-    /// inside it exits to a shell, so its name proves nothing about who reads
-    /// the prompt. The built-in harness keeps the check it always had.
+    /// What the foreground check compares the session's process to. For a
+    /// saved harness, only the kind's own binary counts: a command that runs
+    /// a wrapper (`ssh host opencode`, `docker run … pi`, any custom command)
+    /// leaves the wrapper in the foreground after the agent inside it exits
+    /// to a shell, so its name proves nothing about who reads the prompt. The
+    /// built-in harness keeps the check it always had.
     pub fn program(&self) -> Option<String> {
-        if self.kind == HarnessKind::Custom && self.id != BUILTIN_HARNESS_ID {
-            return None;
+        let program = program_of(&self.command)?;
+        if self.id == BUILTIN_HARNESS_ID {
+            return Some(program);
         }
-        program_of(&self.command)
+        let binary = match self.kind {
+            HarnessKind::ClaudeCode => "claude",
+            HarnessKind::Pi => "pi",
+            HarnessKind::Opencode => "opencode",
+            HarnessKind::Custom => return None,
+        };
+        (Path::new(&program).file_name() == Some(OsStr::new(binary))).then_some(program)
     }
 }
 
@@ -279,11 +287,12 @@ pub fn check_assistant_may_launch(
     let Some(requested) = requested.map(str::trim).filter(|id| !id.is_empty()) else {
         return Ok(());
     };
-    if resuming || requested == default_id(stored, configured_default) {
+    if requested == default_id(stored, configured_default) {
         return Ok(());
     }
     let harness = resolve(builtin, stored, configured_default, Some(requested))?;
-    if harness.assistant_may_use {
+    // Only Claude Code resumes, so a resume of anything else is no relaunch.
+    if harness.assistant_may_use || (resuming && harness.kind == HarnessKind::ClaudeCode) {
         Ok(())
     } else {
         Err(format!(
@@ -616,6 +625,10 @@ mod tests {
         assert!(check(Some("yolo"), Some("yolo"), false).is_ok());
         // A resume relaunches what the core launched; no tool can ask for one.
         assert!(check(None, Some("yolo"), true).is_ok());
+        let mut pi_only = harnesses.clone();
+        pi_only[0].assistant_may_use = false;
+        // Only Claude Code resumes, so a "resume" of Pi gets no pass.
+        assert!(check_assistant_may_launch(claude(), &pi_only, None, Some("pi"), true).is_err());
         assert!(check(None, Some("missing"), false).is_err());
     }
 
@@ -626,6 +639,26 @@ mod tests {
         assert_eq!(picked.program(), None);
         let codex = builtin("Codex".into(), "codex --yolo".into());
         assert_eq!(codex.program().as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn a_wrapper_command_has_no_program_whatever_its_kind() {
+        let wrapped = [
+            stored("a", HarnessKind::Opencode, "ssh devbox opencode"),
+            stored("b", HarnessKind::Pi, "docker run -it img pi"),
+            stored("c", HarnessKind::ClaudeCode, "nix develop -c claude"),
+        ];
+        for harness in &wrapped {
+            let picked = resolve(claude(), &wrapped, None, Some(&harness.id)).unwrap();
+            assert_eq!(picked.program(), None, "{} kept a program", harness.command);
+        }
+        let direct = [stored(
+            "oc",
+            HarnessKind::Opencode,
+            "OC_X=1 /usr/local/bin/opencode --x",
+        )];
+        let picked = resolve(claude(), &direct, None, Some("oc")).unwrap();
+        assert_eq!(picked.program().as_deref(), Some("/usr/local/bin/opencode"));
     }
 
     #[test]

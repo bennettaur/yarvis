@@ -18,7 +18,7 @@ import {
   sessionStartedMessage,
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
-import { harnessIdSchema } from "../workspaces/harnesses.ts";
+import { harnessChoiceError, harnessIdSchema } from "../workspaces/harnesses.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
 import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
@@ -391,6 +391,8 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
         harness: harnessIdSchema.optional(),
       }),
       execute: async ({ key, repoIds, assignSelf, transitionToInProgress, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         if (!jira) return { error: "JIRA not configured in Settings" };
 
         let issue: JiraIssueDetail;

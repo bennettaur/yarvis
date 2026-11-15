@@ -283,7 +283,12 @@ describe("WorkspacesPanel agent tab", () => {
     }
   });
 
-  it("starts the harness picked in the header", async () => {
+  it("starts the harness picked in the header, offering a picker only when there is a choice", async () => {
+    const builtinOnly = await closeAgentTab();
+    expect(builtinOnly.querySelector('select[aria-label="Agent harness"]')).toBeNull();
+    unmount?.();
+    unmount = null;
+
     extraHarnesses = [{ id: "pi", name: "Pi", kind: "pi", command: "pi" }];
     started = [];
     try {
@@ -304,12 +309,6 @@ describe("WorkspacesPanel agent tab", () => {
     } finally {
       extraHarnesses = [];
     }
-  });
-
-  it("offers no picker when only the built-in harness exists", async () => {
-    const host = await closeAgentTab();
-    expect(host.querySelector('select[aria-label="Agent harness"]')).toBeNull();
-    expect(host.textContent).toContain("Start Claude session");
   });
 
   it("says so when the sidecar couldn't record the close", async () => {

@@ -1776,7 +1776,13 @@ async function launchKickOffSession(
   void emitEvent(db, {
     type: "workspace.session_started",
     source: "workspaces",
-    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      kickOff: true,
+      remoteControl,
+      harness: detail.pendingHarness ?? null,
+    },
   });
   await clearPendingBrief(db, detail.id).catch(() => undefined);
 }

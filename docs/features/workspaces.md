@@ -79,7 +79,9 @@ only the default, the built-in agent, and harnesses you tick **The assistant may
 start this harness** for. A harness can run with fewer guardrails than your
 default, and what steers the assistant's choice can be text it read in an issue
 or a PR, so each one is off until you turn it on. The Rust core enforces this,
-not only the assistant's instructions.
+not only the assistant's instructions. That list is the whole boundary: an
+unattended [heads-down](heads-down.md) pass that starts work on a planned
+ticket can also pick any harness on it, without asking.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than

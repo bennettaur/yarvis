@@ -386,21 +386,34 @@ impl SettingsState {
         &self,
         harnesses: Vec<crate::harness::AgentHarness>,
         default_id: Option<String>,
-    ) -> Result<Vec<(String, String)>, String> {
+    ) -> Result<(), String> {
         let default_id = non_blank(default_id);
         crate::harness::validate(&harnesses, default_id.as_deref())?;
-        let dropped = {
+        let before = Self::read_from_disk(&self.path)
+            .agent_harnesses
+            .unwrap_or_default();
+        let dropped = crate::harness::dropped_secrets(&before, &harnesses);
+        // Cleared before the list is saved: once it no longer declares them, no
+        // later save would see them as dropped, and a harness reusing the id
+        // and variable would inherit a key meant for the old one. Done outside
+        // the settings lock, since 1Password can take a while to answer, and
+        // only when something was dropped, so an ordinary save never prompts.
+        if !dropped.is_empty() {
+            keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
+                Ok(crate::harness::prune_secrets(subtree, &dropped))
+            })
+            .map_err(|e| {
+                format!("the removed secret values could not be cleared, so nothing was saved: {e}")
+            })?;
+        }
+        {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
-            let before = settings.agent_harnesses.take().unwrap_or_default();
-            let dropped = crate::harness::dropped_secrets(&before, &harnesses);
             settings.agent_harnesses = (!harnesses.is_empty()).then_some(harnesses);
             settings.default_agent_harness =
                 default_id.filter(|id| id != crate::harness::BUILTIN_HARNESS_ID);
-            dropped
-        };
-        self.save()?;
-        Ok(dropped)
+        }
+        self.save()
     }
 
     /// Stores the user's extra allowed slash commands, or clears them with an
@@ -770,23 +783,16 @@ pub fn set_agent(
     Ok(state.snapshot().into())
 }
 
-/// Replaces the configured agent harnesses and the default one, then clears
-/// the stored values of any secret variable the save dropped. See
-/// `SettingsState::set_agent_harnesses`. The secret store is touched only when
-/// something was dropped, so an ordinary save never prompts 1Password.
+/// Replaces the configured agent harnesses and the default one, clearing the
+/// stored values of any secret variable the save drops. See
+/// `SettingsState::set_agent_harnesses`.
 #[tauri::command(async)]
 pub fn set_agent_harnesses(
     state: tauri::State<'_, SettingsState>,
     harnesses: Vec<crate::harness::AgentHarness>,
     default_harness: Option<String>,
 ) -> Result<SettingsView, String> {
-    let dropped = state.set_agent_harnesses(harnesses, default_harness)?;
-    if !dropped.is_empty() {
-        keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
-            Ok(crate::harness::prune_secrets(subtree, &dropped))
-        })
-        .map_err(|e| format!("Saved, but the removed secret values could not be cleared: {e}"))?;
-    }
+    state.set_agent_harnesses(harnesses, default_harness)?;
     Ok(state.snapshot().into())
 }
 
@@ -802,10 +808,10 @@ pub struct HarnessSecretStatus {
 /// Lists which declared harness secrets are stored, in one secret-store read.
 /// Values are never returned: the webview writes secrets and never reads them.
 #[tauri::command(async)]
-pub fn list_agent_harness_secret_status(
-    state: tauri::State<'_, SettingsState>,
-) -> Result<Vec<HarnessSecretStatus>, String> {
-    let harnesses = state.snapshot().agent_harnesses.unwrap_or_default();
+pub fn list_agent_harness_secret_status() -> Result<Vec<HarnessSecretStatus>, String> {
+    // From disk, like the launch and the secret write, so a harness another
+    // instance saved shows its secrets here too.
+    let harnesses = from_disk().agent_harnesses.unwrap_or_default();
     if harnesses.iter().all(|h| h.secret_env.is_empty()) {
         return Ok(Vec::new());
     }

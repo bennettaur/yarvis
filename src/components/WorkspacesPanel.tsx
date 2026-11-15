@@ -1180,9 +1180,15 @@ function WorkspaceDetailView({
   // start first: showing the tab before the session exists would let it attach to
   // a bare shell of its own, and re-run the prompt in the issue flow.
   const showAgent = useCallback(async () => {
-    if (!agentActive) await startAgent(pickedHarness ?? undefined);
+    // A pick removed in Settings since this view loaded falls back to the
+    // default, as the picker itself shows.
+    const pick =
+      pickedHarness && agent.harnesses.some((h) => h.id === pickedHarness)
+        ? pickedHarness
+        : undefined;
+    if (!agentActive) await startAgent(pick);
     setAgentDismissed(false);
-  }, [agentActive, startAgent, pickedHarness]);
+  }, [agentActive, startAgent, pickedHarness, agent.harnesses]);
 
   if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
   if (!detail) return <LoadingIndicator className="p-6 text-sm text-zinc-500" />;
@@ -1190,7 +1196,10 @@ function WorkspaceDetailView({
   const provisioned = detail.status === "active";
   const actions = provisionActions(detail);
   const agentCwd = agentCwdForWorkspace(detail);
-  const launchHarnessId = pickedHarness ?? agent.defaultHarness;
+  const launchHarnessId =
+    pickedHarness && agent.harnesses.some((h) => h.id === pickedHarness)
+      ? pickedHarness
+      : agent.defaultHarness;
   const launchHarnessName =
     agent.harnesses.find((h) => h.id === launchHarnessId)?.name ?? agent.name;
   const liveHarnessName = sessionHarnessName ?? agent.name;

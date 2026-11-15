@@ -109,3 +109,25 @@ export async function listAgentHarnesses(
       })),
   ];
 }
+
+/**
+ * Why a session tool can't launch with `harness` (or the default, when it is
+ * omitted), or null when it can. Checked before a workspace is built: the core
+ * would refuse the same launch, but on a kick-off that refusal comes after
+ * provisioning, is only logged, and is retried on every restart.
+ */
+export async function harnessChoiceError(
+  harness: string | undefined,
+  remoteControl: boolean,
+): Promise<string | null> {
+  if (!harness && !remoteControl) return null;
+  const listed = await listAgentHarnesses();
+  const pick = harness ? listed.find((h) => h.id === harness) : listed.find((h) => h.isDefault);
+  if (!pick) {
+    return `"${harness}" is not a harness you may start; call list_agent_harnesses, or leave harness out for the default`;
+  }
+  if (remoteControl && pick.kind !== "claude-code") {
+    return `Remote Control needs a Claude Code harness, and "${pick.name}" isn't one; pass a claude-code harness from list_agent_harnesses`;
+  }
+  return null;
+}

@@ -120,6 +120,47 @@ function fakeGitHub(overrides: Partial<WorkspaceGitHubClient> = {}) {
  * provisioning settled on, which the sync refuses to proceed without seeing
  * checked out.
  */
+/** Restores the suite's settings file after `useHarnessSettings`; null when unchanged. */
+let restoreHarnessSettings: (() => void) | null = null;
+
+/**
+ * Points the sidecar at a settings file with Pi and OpenCode saved and opened
+ * to the assistant, for a test that starts a session with one. Undone in the
+ * suite's `afterEach`.
+ */
+function useHarnessSettings(extra: Record<string, unknown> = {}): void {
+  const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "yarvis-harnesses-"));
+  const settings = join(dir, "settings.json");
+  writeFileSync(
+    settings,
+    JSON.stringify({
+      agentHarnesses: [
+        { id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse: true },
+        {
+          id: "opencode",
+          name: "OpenCode",
+          kind: "opencode",
+          command: "opencode",
+          assistantMayUse: true,
+        },
+        { id: "locked", name: "Locked", kind: "claude-code", command: "claude --yolo" },
+      ],
+      ...extra,
+    }),
+  );
+  process.env.YARVIS_SETTINGS_PATH = settings;
+  restoreHarnessSettings = () => {
+    process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+    rmSync(dir, { recursive: true, force: true });
+  };
+}
+
+afterEach(() => {
+  restoreHarnessSettings?.();
+  restoreHarnessSettings = null;
+});
+
 async function activeWorkspace(
   name: string,
   cloneUrls = ["https://github.com/acme/widget.git"],
@@ -625,6 +666,7 @@ describe("workspace tools", () => {
   });
 
   it("create_scratch_workspace_session hands its harness to the kick-off and to a plain launch", async () => {
+    useHarnessSettings();
     const started: { harness?: string; instruction?: string }[] = [];
     const tools = buildWorkspaceTools(db, config, {
       gitRunner: okRunner,
@@ -647,6 +689,65 @@ describe("workspace tools", () => {
     ]);
   });
 
+  it("create_workspace_session hands its harness to the kick-off", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/harness.git" });
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_workspace_session.execute!(
+      {
+        name: "Repo kick-off",
+        repoIds: [repo.id],
+        brief: "Do it.",
+        startWork: true,
+        harness: "pi",
+      },
+      opts,
+    );
+    expect(harnesses).toEqual(["pi"]);
+  });
+
+  it("refuses a harness the assistant may not start before building anything", async () => {
+    useHarnessSettings();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Locked out", brief: "Do it.", startWork: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect((await sql`SELECT id FROM workspaces WHERE name = 'Locked out'`).length).toBe(0);
+  });
+
+  it("refuses Remote Control on a default harness that can't take it", async () => {
+    useHarnessSettings({ defaultAgentHarness: "pi" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("Remote Control needs a Claude Code harness");
+  });
+
+  it("offers the model the harness list as a tool", async () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const listed = (await tools.list_agent_harnesses.execute!({}, opts)) as { id: string }[];
+    expect(listed.map((h) => h.id)).toContain("claude");
+  });
+
   it("refuses a harness id the core could never launch before starting anything", () => {
     const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
     const schema = tools.start_workspace_session.inputSchema as unknown as {
@@ -658,6 +759,7 @@ describe("workspace tools", () => {
   });
 
   it("start_workspace_session launches the harness it was asked for", async () => {
+    useHarnessSettings();
     const created = await activeWorkspace("Harness WS");
     // Creating the workspace logged a session start of its own.
     await sql`TRUNCATE events RESTART IDENTITY`;

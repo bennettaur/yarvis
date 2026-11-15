@@ -102,6 +102,14 @@ mod unix_impl {
         harness: Option<String>,
     }
 
+    impl SpawnParams {
+        /// What the assistant-harness gate checks: the harness asked for, and
+        /// whether this relaunches a session the core itself launched.
+        fn harness_gate(&self) -> (Option<&str>, bool) {
+            (self.harness.as_deref(), self.resume.is_some())
+        }
+    }
+
     #[derive(Deserialize)]
     struct KillParams {
         #[serde(rename = "workspaceId")]
@@ -290,7 +298,8 @@ mod unix_impl {
                 validate_workspace_id(&p.workspace_id)?;
                 // The UI's own launches don't come through here, so this is
                 // where a harness the assistant chose is checked.
-                check_sidecar_harness(app, p.harness.as_deref(), p.resume.is_some())?;
+                let (requested, resuming) = p.harness_gate();
+                check_sidecar_harness(app, requested, resuming)?;
                 spawn_claude_session(
                     app,
                     state.inner(),
@@ -422,7 +431,38 @@ mod unix_impl {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::harness::{self, AgentHarness, HarnessKind};
         use serde_json::json;
+
+        #[test]
+        fn a_spawn_naming_a_harness_the_assistant_may_not_start_is_refused() {
+            let yolo = AgentHarness {
+                id: "yolo".into(),
+                name: "Yolo".into(),
+                kind: HarnessKind::ClaudeCode,
+                command: "claude --dangerously-skip-permissions".into(),
+                ..AgentHarness::default()
+            };
+            let gate = |params: Value| {
+                let p: SpawnParams = serde_json::from_value(params).unwrap();
+                let (requested, resuming) = p.harness_gate();
+                harness::check_assistant_may_launch(
+                    harness::builtin("Claude".into(), "claude".into()),
+                    std::slice::from_ref(&yolo),
+                    None,
+                    requested,
+                    resuming,
+                )
+            };
+            let base = json!({ "workspaceId": "w", "cwd": "/tmp", "name": "n" });
+            assert!(gate(base.clone()).is_ok());
+            let mut fresh = base.clone();
+            fresh["harness"] = json!("yolo");
+            assert!(gate(fresh.clone()).is_err());
+            // A resume relaunches what the core already launched there.
+            fresh["resume"] = json!("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70");
+            assert!(gate(fresh).is_ok());
+        }
 
         /// Shaped exactly like `toAlarm()` in `sidecar/src/alarms/service.ts`.
         fn sidecar_payload(meet_link: Value, label: &str) -> Value {

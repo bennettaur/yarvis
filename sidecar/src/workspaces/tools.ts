@@ -39,7 +39,7 @@ import {
 } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
-import { harnessIdSchema, listAgentHarnesses } from "./harnesses.ts";
+import { harnessChoiceError, harnessIdSchema, listAgentHarnesses } from "./harnesses.ts";
 import { FRESH_ENOUGH_MS, pollerClients, refreshWorkspacePrs } from "./poller.ts";
 import {
   addRepoToWorkspace,
@@ -558,6 +558,8 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         harness: harnessIdSchema.optional(),
       }),
       execute: async ({ repoId, issueNumber, assignSelf, applyLabel, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         if (!github) return { error: "GitHub token not configured; cannot start work on an issue" };
         const repo = await getRepo(db, repoId);
         if (!repo) return { error: "repo not found; call list_repos to get a valid id" };
@@ -668,6 +670,8 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         harness: harnessIdSchema.optional(),
       }),
       execute: async ({ name, repoIds, taskId, brief, startWork, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const resolved = await resolveWorkspaceBrief(db, {
           workspaceName: name,
           taskId,
@@ -726,6 +730,8 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         harness: harnessIdSchema.optional(),
       }),
       execute: async ({ name, taskId, brief, startWork, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const resolved = await resolveWorkspaceBrief(db, {
           workspaceName: name,
           taskId,
@@ -860,6 +866,8 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         harness: harnessIdSchema.optional(),
       }),
       execute: async ({ workspaceId, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const detail = await getWorkspace(db, workspaceId);
         if (!detail) return { error: "workspace not found" };
         if (detail.status !== "active") {

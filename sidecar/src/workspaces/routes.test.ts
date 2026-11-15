@@ -2801,6 +2801,24 @@ describe("resumable start-work kick-off", () => {
     expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
   });
 
+  it("keeps a harness only for a workspace that has a kick-off to run", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const plain = await createWorkspace(db, config, {
+      name: "no brief",
+      repoIds: [repo.id],
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, plain.id))?.pendingHarness).toBeNull();
+    const kickOff = await createWorkspace(db, config, {
+      name: "with brief",
+      repoIds: [repo.id],
+      brief: "do it",
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, kickOff.id))?.pendingHarness).toBe("pi");
+  });
+
   it("retries a failed kick-off with the harness it was asked for", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
