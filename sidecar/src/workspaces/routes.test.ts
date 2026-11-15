@@ -2119,6 +2119,18 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos.map((r) => r.status).sort()).toEqual(["error", "removed"]);
   });
 
+  it("rejects an archive request whose issues to close aren't link ids", async () => {
+    const ws = await createWorkspace(db, config, { name: "bad-close-ids", repoIds: [] });
+    const res = await app.request(`/api/workspaces/${ws.id}/archive`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ closeIssueIds: ["acme/widget#1"] }),
+    });
+    expect(res.status).toBe(400);
+    // Refused before the archive starts, so the workspace is untouched.
+    expect((await getWorkspace(db, ws.id))?.status).toBe(ws.status);
+  });
+
   it("returns from a background archive before the worktrees are gone", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bg-archive", repoIds: [repo.id] });

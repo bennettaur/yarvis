@@ -2263,23 +2263,23 @@ async function closeLinkedIssues(
   input: ArchiveWorkspaceInput,
   closeIssue: IssueCloser,
 ): Promise<number> {
-  const wanted = new Set(input.closeIssueIds ?? []);
-  const picked = detail.issues.filter((link) => wanted.has(link.id));
-  const closed: string[] = [];
+  const requestedIds = new Set(input.closeIssueIds ?? []);
+  const linksToClose = detail.issues.filter((link) => requestedIds.has(link.id));
+  const closedLinkIds: string[] = [];
   const failures: { issue: string; message: string }[] = [];
-  for (const link of picked) {
+  for (const link of linksToClose) {
     try {
       await closeIssue(link);
-      closed.push(link.id);
+      closedLinkIds.push(link.id);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`[workspaces] failed to close ${link.provider} issue ${link.externalId}:`, e);
       failures.push({ issue: `${link.sourceKey}#${link.externalId}`, message });
     }
   }
-  await markLinksDone(db, closed);
+  await markLinksDone(db, closedLinkIds);
   if (failures.length > 0) await raiseIssueCloseFailure(db, detail, failures);
-  return closed.length;
+  return closedLinkIds.length;
 }
 
 /** Tells the user which linked issues stayed open after the archive. Best-effort. */

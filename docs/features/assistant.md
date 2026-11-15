@@ -150,7 +150,8 @@ The assistant can act on your workspaces in bulk:
   tier, so check the details.
 - **"Archive the billing-api workspace."** It stops the session, removes the
   worktrees, and completes any linked task. If there are uncommitted changes,
-  it asks before throwing them away.
+  it asks before throwing them away. It doesn't close linked issues on their
+  tracker; the archive dialog does that.
 
 ### Scheduled tasks
 

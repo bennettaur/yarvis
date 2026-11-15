@@ -38,12 +38,15 @@ export default function ArchiveDialog({
   const [busy, setBusy] = useState(false);
 
   const openTaskCount = detail.tasks.filter((t) => t.status === "open").length;
-  const openIssues = detail.issues.filter((i) => i.localStatus !== "done");
-  const [closeIssueIds, setCloseIssueIds] = useState(() => new Set(openIssues.map((i) => i.id)));
+  const unfinishedIssues = detail.issues.filter((i) => i.localStatus !== "done");
+  const [closeIssueIds, setCloseIssueIds] = useState(
+    () => new Set(unfinishedIssues.map((i) => i.id)),
+  );
   const toggleIssue = (id: string) =>
     setCloseIssueIds((prev) => {
       const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -104,11 +107,11 @@ export default function ArchiveDialog({
           />
         </label>
 
-        {openIssues.length > 0 && (
+        {unfinishedIssues.length > 0 && (
           <fieldset className="text-xs text-zinc-400">
             <legend className="mb-1 uppercase tracking-wide">Close linked issues</legend>
             <ul className="max-h-40 space-y-1 overflow-y-auto">
-              {openIssues.map((issue) => (
+              {unfinishedIssues.map((issue) => (
                 <li key={issue.id}>
                   <label className="flex items-start gap-2 text-sm text-zinc-300">
                     <input

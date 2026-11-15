@@ -1,11 +1,14 @@
 import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import { AzureBoardsClient } from "../azureBoards/client.ts";
 import { pickCloseState } from "../azureBoards/service.ts";
+import { workItemId } from "../azureBoards/validation.ts";
 import type { Config } from "../config.ts";
 import type { IssueLink } from "../db/schema.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { isAllowedJiraBaseUrl, JiraClient } from "../jira/client.ts";
 import { pickCloseTransition } from "../jira/service.ts";
+import { issueKey } from "../jira/validation.ts";
+import { ownerName, repoName } from "./validation.ts";
 
 /** Closes a linked issue on its tracker. Throws with a reason the user can act on. */
 export type IssueCloser = (
@@ -23,12 +26,19 @@ export function createIssueCloser(config: Config): IssueCloser {
       case "github": {
         const token = config.secrets.githubToken;
         if (!token) throw new Error("GitHub is not configured");
-        const [owner, repo, ...rest] = sourceKey.split("/");
-        const number = Number(externalId);
-        if (!owner || !repo || rest.length > 0 || !Number.isInteger(number) || number < 1) {
+        // Both parts go into the API path with the token attached.
+        const [owner = "", repo = "", ...rest] = sourceKey.split("/");
+        const issueNumber = Number(externalId);
+        if (
+          rest.length > 0 ||
+          !ownerName.safeParse(owner).success ||
+          !repoName.safeParse(repo).success ||
+          !Number.isInteger(issueNumber) ||
+          issueNumber < 1
+        ) {
           throw new Error(`not a GitHub issue: ${sourceKey}#${externalId}`);
         }
-        await createGitHubClient(config, token).updateIssue(owner, repo, number, {
+        await createGitHubClient(config, token).updateIssue(owner, repo, issueNumber, {
           state: "closed",
         });
         return;
@@ -38,7 +48,13 @@ export function createIssueCloser(config: Config): IssueCloser {
         if (!jiraBaseUrl || !jiraEmail || !jiraApiToken) throw new Error("JIRA is not configured");
         // The API token is sent to this host, so it must be Atlassian's.
         if (!isAllowedJiraBaseUrl(jiraBaseUrl)) throw new Error("JIRA base URL is not allowed");
+        if (!issueKey.safeParse(externalId).success) {
+          throw new Error(`not a JIRA issue key: ${externalId}`);
+        }
         const jira = new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken);
+        // Already done: a done-to-done transition would only change its resolution.
+        const { statusCategory } = await jira.issueSummaryByKey(externalId);
+        if (statusCategory === "done") return;
         const target = pickCloseTransition(await jira.transitions(externalId));
         if (!target) throw new Error("no transition to a done status from the current status");
         await jira.transitionIssue(externalId, target.id);
@@ -53,14 +69,16 @@ export function createIssueCloser(config: Config): IssueCloser {
         if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) {
           throw new Error("Azure DevOps org URL is not allowed");
         }
-        const id = Number(externalId);
-        if (!Number.isInteger(id) || id < 1) throw new Error(`not a work item id: ${externalId}`);
+        const parsedId = workItemId.safeParse(externalId);
+        if (!parsedId.success) throw new Error(`not a work item id: ${externalId}`);
         const boards = new AzureBoardsClient(azureDevopsToken, azureDevopsOrgUrl);
-        const { state, states } = await boards.stateInfo(id);
-        if (states.find((s) => s.name === state)?.category === "done") return;
+        const { state, states } = await boards.stateInfo(parsedId.data);
+        // Already closed on the board: moving it would only swap one done state for another.
+        const currentCategory = states.find((s) => s.name === state)?.category;
+        if (currentCategory === "done") return;
         const target = pickCloseState(states);
         if (!target) throw new Error("no done state available for this work item type");
-        await boards.setState(id, target.name);
+        await boards.setState(parsedId.data, target.name);
         return;
       }
       default:
