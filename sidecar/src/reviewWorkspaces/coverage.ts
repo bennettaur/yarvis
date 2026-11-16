@@ -72,7 +72,6 @@ export interface ReadVolume {
 /** The verification checks that read every patch, by their subagent type. */
 export const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:risk-reviewer": "Risk",
-  "yarvis-review:completeness-reviewer": "Completeness",
   "yarvis-review:test-reviewer": "Test quality",
   "yarvis-review:complexity-reviewer": "Complexity",
   "yarvis-review:performance-reviewer": "Performance",

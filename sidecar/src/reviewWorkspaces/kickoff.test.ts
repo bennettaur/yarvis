@@ -43,8 +43,9 @@ const pass = { status: "pass", findings: [] };
 const report = {
   summary: "A small change.",
   mustRead: [],
+  changeMap: { intent: "A small change.", themes: [] },
+  claims: { claims: [], gaps: [] },
   risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
-  completeness: pass,
   tests: pass,
   complexity: pass,
   performance: pass,
@@ -137,6 +138,7 @@ exit 1`,
           checks: [],
           reviewThreads: [],
         }) as unknown as PrDetail,
+      loadTickets: async () => ({ tickets: [], notes: [] }),
       settings: async () => ({ model: "haiku", maxBudgetUsd: 100 }),
       run: {
         program,

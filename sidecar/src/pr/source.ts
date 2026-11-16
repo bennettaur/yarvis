@@ -11,6 +11,7 @@ import {
   type PrFile,
   type PrRef,
   type ScanAlert,
+  type TicketRef,
 } from "./types.ts";
 
 /**
@@ -59,6 +60,8 @@ export interface PrCodeSource {
    * offer; `EvidenceUnavailable` when it has but won't show them.
    */
   codeScanningAlerts(): Promise<ScanAlert[] | null>;
+  /** The tickets the PR links itself: issues it closes on GitHub, linked work items on Azure. */
+  linkedTickets(): Promise<TicketRef[]>;
 }
 
 export interface CodeHit {
@@ -131,6 +134,10 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
         }
         throw e;
       }),
+    linkedTickets: async () =>
+      (await client.prClosingIssues(owner, repo, number)).map(
+        (issue): TicketRef => ({ kind: "github", ...issue }),
+      ),
   };
 }
 
@@ -155,6 +162,8 @@ export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSour
     // Never asked, since there are no check runs to annotate.
     checkRunAnnotations: async () => [],
     codeScanningAlerts: async () => null,
+    linkedTickets: async () =>
+      (await client.prWorkItemIds(azRef)).map((id): TicketRef => ({ kind: "azure", id })),
   };
 }
 

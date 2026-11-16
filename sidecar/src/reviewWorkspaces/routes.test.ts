@@ -685,6 +685,7 @@ describe("CI evidence", () => {
         checkRunOutputs: async () => [],
         checkRunAnnotations: async () => [],
         codeScanningAlerts: async () => [],
+        linkedTickets: async () => [],
       };
     }).request(`/rw/${wsId}/prs/${prId}/evidence`);
     expect(res.status).toBe(200);
@@ -738,20 +739,40 @@ describe("verification report", () => {
       },
       { path: "src/elsewhere.ts", reason: "not changed by the PR" },
     ],
+    changeMap: {
+      intent: "Changes a.",
+      themes: [
+        {
+          title: "Change a",
+          description: "d",
+          risk: "low",
+          cohesion: "core",
+          question: "",
+          files: [{ path: "src/a.ts" }],
+        },
+      ],
+    },
+    claims: {
+      claims: [
+        { claim: "Changes a", source: "description", status: "verified", evidence: "src/a.ts" },
+      ],
+      gaps: [],
+    },
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
-    // The same problem from two checks: the server keeps the specialist's (tests).
-    completeness: { status: "issues", findings: [at("b is never read", 2)] },
+    // The same problem from two checks: the server keeps the first section's (tests).
     tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
     complexity: pass,
     performance: pass,
     comments: pass,
     observability: pass,
-    quality: pass,
+    quality: { status: "issues", findings: [at("b is never read", 2)] },
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
   };
   let budget: number;
   // Makes startClaudeRun throw before it records a run: it reads `program` first.
   let startFails: boolean;
+  // The tickets each run that read them was given by name.
+  let namedTickets: string[][];
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -811,6 +832,21 @@ cat "${fakeDir}/result.jsonl"`,
         deps,
         verification: {
           loadDetail: async () => detail,
+          loadTickets: async (_ref, _pr, named) => {
+            namedTickets.push([...named]);
+            return {
+              tickets: [
+                {
+                  key: "ABC-12",
+                  title: "Rename old",
+                  url: "https://example.atlassian.net/browse/ABC-12",
+                  body: "Rename old to new everywhere.",
+                  comments: [],
+                },
+              ],
+              notes: ["Couldn't read ABC-99: not found"],
+            };
+          },
           settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
           run: {
             get program(): string {
@@ -850,7 +886,8 @@ cat "${fakeDir}/result.jsonl"`,
       summary?: string;
       mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
       tests?: { status: string; findings: unknown[] };
-      completeness?: { status: string; findings: unknown[] };
+      quality?: { status: string; findings: unknown[] };
+      claims?: { claims: unknown[]; tickets?: unknown[]; ticketNotes?: string[] };
       coverage?: Coverage;
     } | null;
     size: VerificationSize | null;
@@ -897,6 +934,7 @@ cat "${fakeDir}/result.jsonl"`,
     await sql`TRUNCATE agent_runs`;
     budget = 0.5;
     startFails = false;
+    namedTickets = [];
     setUpFake();
   });
 
@@ -1057,23 +1095,66 @@ cat "${fakeDir}/result.jsonl"`,
     });
   });
 
+  it("gives a claims run the PR's tickets, and records what its claims were checked against", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const res = await verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sections: ["claims"], tickets: ["ABC-12"] }),
+    });
+    expect(res.status).toBe(202);
+    expect(namedTickets).toEqual([["ABC-12"]]);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(context).toContain("## ABC-12: Rename old");
+    expect(context).toContain("Rename old to new everywhere.");
+    expect(context).toContain("Couldn't read ABC-99: not found");
+
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "claims")?.result, "the claims");
+    const { report } = await checklist(wsId, prId);
+    expect(report?.claims?.tickets).toEqual([
+      { key: "ABC-12", title: "Rename old", url: "https://example.atlassian.net/browse/ABC-12" },
+    ]);
+    expect(report?.claims?.ticketNotes).toEqual(["Couldn't read ABC-99: not found"]);
+    expect(report?.claims?.claims).toHaveLength(1);
+  });
+
+  it("reads no tickets for sections that don't check against them", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["tests"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(namedTickets).toEqual([]);
+    expect(context).not.toContain("Linked tickets");
+    release();
+  });
+
   it("puts the report together from each section's run, showing a problem once", async () => {
     const { wsId, prId } = await readyWorkspace();
     release();
-    const res = await verify("POST", wsId, prId, ["summary", "completeness", "tests"]);
+    const res = await verify("POST", wsId, prId, ["summary", "quality", "tests"]);
     expect(res.status).toBe(202);
     const { runs } = (await res.json()) as { runs: { section: string; runId: string }[] };
-    expect(runs.map((r) => r.section)).toEqual(["summary", "tests", "completeness"]);
+    expect(runs.map((r) => r.section)).toEqual(["summary", "tests", "quality"]);
     expect(new Set(runs.map((r) => r.runId)).size).toBe(3);
     await until(async () => {
       const list = await checklist(wsId, prId);
-      return ["summary", "completeness", "tests"].every((s) => item(list, s)?.result);
+      return ["summary", "quality", "tests"].every((s) => item(list, s)?.result);
     }, "every result");
 
     const { report } = await checklist(wsId, prId);
-    // The same problem from two checks: the specialist's (tests) is kept.
+    // The same problem from two checks: the first section's (tests) is kept.
     expect(report?.tests?.findings).toHaveLength(1);
-    expect(report?.completeness).toEqual({ status: "pass", findings: [] });
+    expect(report?.quality).toEqual({ status: "pass", findings: [] });
     // The must-read flag repeats the tests finding, so it goes too.
     expect(report?.mustRead?.[0]?.flags).toEqual([]);
     // Each run read the same patch; together they still examined two files.

@@ -138,6 +138,30 @@ export function resultVerdict(
         tone: approach.rating === "much-simpler" ? "bad" : "warn",
       };
     }
+    case "changeMap": {
+      const { changeMap } = report;
+      if (!changeMap) return null;
+      const outliers = changeMap.themes.filter((t) => t.cohesion === "outlier").length;
+      const themes = plural(changeMap.themes.length, "theme", "themes");
+      return outliers > 0
+        ? { text: `${themes}, ${plural(outliers, "outlier", "outliers")}`, tone: "warn" }
+        : { text: themes, tone: "muted" };
+    }
+    case "claims": {
+      const { claims } = report;
+      if (!claims) return null;
+      const total = claims.claims.length;
+      const verified = claims.claims.filter((c) => c.status === "verified").length;
+      const failed = claims.claims.some(
+        (c) => c.status === "missing" || c.status === "contradicted",
+      );
+      const partial = claims.claims.some((c) => c.status === "partial") || claims.gaps.length > 0;
+      if (total === 0 && claims.gaps.length === 0) return { text: "No claims", tone: "muted" };
+      return {
+        text: `${verified} of ${total} verified`,
+        tone: failed ? "bad" : partial ? "warn" : "good",
+      };
+    }
     case "flow":
       if (!report.flow) return null;
       return report.flow.mermaid
@@ -396,6 +420,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Tickets the reviewer names for the claims, beside the ones the PR links.
+  const [ticketText, setTicketText] = useState("");
 
   const evidence = useVerificationEvidence(workspaceId, pr.id);
   const report = reportOf(checklist.data);
@@ -423,7 +449,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { failed } = await startVerification(workspaceId, pr.id, sections);
+      const tickets = ticketText.split(/[\s,]+/).filter(Boolean);
+      const { failed } = await startVerification(workspaceId, pr.id, sections, tickets);
       setPickedSections((prev) => (prev ?? picked).filter((s) => !sections.includes(s)));
       if (failed.length > 0) {
         const labels = failed.map((f) => items.find((i) => i.section === f.section)?.label);
@@ -555,6 +582,19 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             </section>
           );
         })}
+
+        <label className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+          <span title="Issues the PR closes, its linked work items, and Jira keys in its title or branch are read anyway.">
+            More tickets for the change map and claims
+          </span>
+          <input
+            type="text"
+            value={ticketText}
+            onChange={(e) => setTicketText(e.target.value)}
+            placeholder="ABC-123, #45 or a ticket link"
+            className="min-w-[16rem] flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600"
+          />
+        </label>
 
         {size && (
           // Say up front what the checks won't read whole.

@@ -42,8 +42,21 @@ function report(overrides: Record<string, unknown> = {}) {
   return {
     summary: "Retries failed uploads.",
     mustRead: [],
+    changeMap: {
+      intent: "Retry failed uploads.",
+      themes: [
+        {
+          title: "Retry uploads",
+          description: "d",
+          risk: "low",
+          cohesion: "core",
+          question: "",
+          files: [{ path: "src/a.ts" }],
+        },
+      ],
+    },
+    claims: { claims: [], gaps: [] },
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
-    completeness: pass,
     tests: pass,
     complexity: pass,
     performance: pass,
@@ -541,12 +554,12 @@ describe("the audit of what the server dropped", () => {
 });
 
 describe("removing duplicate findings across checks", () => {
-  it("keeps a finding in the specialist's section, completeness last, and records the rest", () => {
+  it("keeps a finding in the first section to report it, and records the rest", () => {
     const audit = emptyAudit();
     const at = (title: string, line: number, path = "src/a.ts") => finding(title, { path, line });
     const parsed = verificationReportSchema(limits, audit).parse(
       report({
-        completeness: {
+        quality: {
           status: "issues",
           findings: [at("rename does not validate the new label name", 38)],
         },
@@ -575,7 +588,7 @@ describe("removing duplicate findings across checks", () => {
     );
     const titles = (section: keyof typeof parsed) =>
       (parsed[section] as { findings: { title: string }[] }).findings.map((f) => f.title);
-    expect(titles("completeness")).toEqual([]);
+    expect(titles("quality")).toEqual([]);
     expect(titles("tests")).toEqual([
       "rename does not validate and has no test",
       "rename does not validate the new label name",
@@ -597,7 +610,7 @@ describe("removing duplicate findings across checks", () => {
         line: 46,
       },
       {
-        section: "completeness",
+        section: "quality",
         keptIn: "tests",
         title: "rename does not validate the new label name",
         path: "src/a.ts",
@@ -665,7 +678,7 @@ describe("paths an agent cites", () => {
             },
           ],
         },
-        completeness: {
+        quality: {
           status: "issues",
           findings: [finding("retry loop never stops", { path: "./src/a.ts", line: 5 })],
         },
@@ -682,8 +695,85 @@ describe("paths an agent cites", () => {
       { path: "src/a.ts", line: 9, note: "uploads retried forever, check the limit" },
     ]);
     expect(parsed.complexity?.findings[0]?.path).toBe("src/a.ts");
-    expect(parsed.completeness?.findings).toEqual([]);
+    expect(parsed.quality?.findings).toEqual([]);
     expect(audit.droppedDuplicates).toHaveLength(1);
+  });
+});
+
+describe("the change map", () => {
+  const theme = (title: string, cohesion: string, paths: string[], question = "") => ({
+    title,
+    description: "d",
+    risk: "medium",
+    cohesion,
+    question,
+    files: paths.map((path) => ({ path })),
+  });
+
+  it("keeps changed files once each, lists the ones no theme names, and asks only about outliers", () => {
+    const parsed = verificationReportSchema({
+      ...limits,
+      sections: ["changeMap"],
+      checkoutDir: "/work",
+    }).parse({
+      changeMap: {
+        intent: "Retry failed uploads.",
+        themes: [
+          theme("Retry uploads", "core", ["src/a.ts", "src/elsewhere.ts"], "Why?"),
+          // Already in the first theme, so it stays there.
+          theme("Tests", "supporting", ["src/a.ts"]),
+          theme("Bump the timeout", "outlier", ["/work/src/b.ts"], "Why change the timeout?"),
+        ],
+      },
+    });
+    expect(parsed.changeMap).toEqual({
+      intent: "Retry failed uploads.",
+      themes: [
+        {
+          title: "Retry uploads",
+          description: "d",
+          risk: "medium",
+          cohesion: "core",
+          question: "",
+          files: [{ path: "src/a.ts", lines: undefined }],
+        },
+        {
+          title: "Bump the timeout",
+          description: "d",
+          risk: "medium",
+          cohesion: "outlier",
+          question: "Why change the timeout?",
+          files: [{ path: "src/b.ts", lines: undefined }],
+        },
+      ],
+      unmapped: ["src/c.ts"],
+    });
+  });
+});
+
+describe("claims", () => {
+  it("makes cited paths relative to the checkout", () => {
+    const parsed = verificationReportSchema({
+      ...limits,
+      sections: ["claims"],
+      checkoutDir: "/work",
+    }).parse({
+      claims: {
+        claims: [
+          {
+            claim: "Retries uploads",
+            source: "ABC-12",
+            status: "partial",
+            evidence: "only for images",
+            path: "/work/src/a.ts",
+            line: 4,
+          },
+        ],
+        gaps: [finding("TODO left on the retry path", { path: "/work/src/b.ts", line: 9 })],
+      },
+    });
+    expect(parsed.claims?.claims[0]).toMatchObject({ source: "ABC-12", path: "src/a.ts" });
+    expect(parsed.claims?.gaps[0]?.path).toBe("src/b.ts");
   });
 });
 

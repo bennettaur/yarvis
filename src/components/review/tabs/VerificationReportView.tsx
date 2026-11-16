@@ -2,27 +2,31 @@ import { useState } from "react";
 import type { CommentPlacement } from "../../../lib/pr/types";
 import {
   type ChangeKind,
+  type ClaimStatus,
   coverageKnown,
   type ImpactBand,
   type Severity,
+  type ThemeCohesion,
   VERIFICATION_CHECKS,
   type VerificationApproach,
   type VerificationChange,
+  type VerificationChangeMap,
   type VerificationCheck,
   type VerificationCheckKey,
+  type VerificationClaims,
   type VerificationCoverage,
   type VerificationFinding,
   type VerificationImpact,
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { openExternal } from "../../../lib/url";
 import FlowDiagram from "./FlowDiagram";
 
 /** What a must-read's flags are called, in the report and on the diff. */
 export const FLAG_LABEL = "Looks off";
 
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
-  completeness: "Completeness",
   tests: "Test quality",
   complexity: "Complexity",
   performance: "Performance",
@@ -44,6 +48,38 @@ const RISK_CLASS: Record<VerificationRiskLevel, string> = {
   medium: "border-amber-700 bg-amber-950/40 text-amber-300",
   low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
 };
+
+const COHESION_LABEL: Record<ThemeCohesion, string> = {
+  core: "Core",
+  supporting: "Supporting",
+  outlier: "Outlier",
+};
+
+const COHESION_CLASS: Record<ThemeCohesion, string> = {
+  core: "border-sky-800 text-sky-300",
+  supporting: "border-zinc-700 text-zinc-400",
+  outlier: "border-amber-700 text-amber-300",
+};
+
+export const CLAIM_LABEL: Record<ClaimStatus, string> = {
+  verified: "Verified",
+  partial: "Partial",
+  missing: "Missing",
+  contradicted: "Contradicted",
+  unverifiable: "Can't tell",
+};
+
+const CLAIM_CLASS: Record<ClaimStatus, string> = {
+  verified: "border-emerald-800 text-emerald-300",
+  partial: "border-amber-700 text-amber-300",
+  missing: "border-red-700 text-red-300",
+  contradicted: "border-red-700 text-red-300",
+  unverifiable: "border-zinc-700 text-zinc-400",
+};
+
+/** Claims a reviewer may want to raise with the author: the code doesn't do what was said. */
+export const isUnmetClaim = (status: ClaimStatus) =>
+  status === "partial" || status === "missing" || status === "contradicted";
 
 // The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`, the
 // evidence text copies `scripts/verify/report.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
@@ -323,6 +359,175 @@ function CheckRow({
         ))}
       </ul>
     </details>
+  );
+}
+
+/**
+ * The change by theme, core first. An outlier carries the question for its
+ * author, which can go to the PR like a finding, anchored at its first file.
+ */
+function ChangeMap({
+  map,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  map: VerificationChangeMap;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  return (
+    <div className="space-y-2 text-sm">
+      <p className="text-zinc-200">{map.intent}</p>
+      <ul className="space-y-2.5">
+        {map.themes.map((theme) => {
+          const first = theme.files[0];
+          const done = theme.files.every((f) => isViewed(viewed, f.path));
+          return (
+            <li key={theme.title} className="space-y-1">
+              <div className={`flex flex-wrap items-center gap-2 ${viewedClass(done)}`}>
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] uppercase ${COHESION_CLASS[theme.cohesion]}`}
+                >
+                  {COHESION_LABEL[theme.cohesion]}
+                </span>
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] ${RISK_CLASS[theme.risk]}`}
+                >
+                  {theme.risk} risk
+                </span>
+                <span className="font-medium text-zinc-200">{theme.title}</span>
+              </div>
+              <p className="text-xs text-zinc-400">{theme.description}</p>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {theme.files.map((f) => (
+                  <Location
+                    key={f.path}
+                    path={f.path}
+                    line={f.lines?.start}
+                    label={f.lines ? `:${f.lines.start}-${f.lines.end}` : ""}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
+              {theme.cohesion === "outlier" && theme.question && first && (
+                <div className="space-y-1 rounded border border-amber-900/60 bg-amber-950/20 p-2 text-xs">
+                  <p className="text-amber-100">
+                    <span className="text-amber-400">Ask the author: </span>
+                    {theme.question}
+                  </p>
+                  <PostFinding
+                    finding={{
+                      title: theme.title,
+                      detail: theme.question,
+                      path: first.path,
+                      line: first.lines?.start ?? 1,
+                    }}
+                    section="Change map"
+                    poster={poster}
+                  />
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {map.unmapped.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-zinc-500">
+          <span>In no theme:</span>
+          {map.unmapped.map((path) => (
+            <Location key={path} path={path} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Each claim with its verdict and the code behind it, then the unfinished work no claim covers. */
+function Claims({
+  claims,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  claims: VerificationClaims;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  const { tickets } = claims;
+  return (
+    <div className="space-y-2 text-sm">
+      {tickets && (
+        <p className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+          {tickets.length === 0 ? (
+            "Checked against the title and description; no tickets were read."
+          ) : (
+            <>
+              Checked against the title, description and
+              {tickets.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  title={t.title}
+                  onClick={() => openExternal(t.url)}
+                  className="text-sky-400 hover:text-sky-300"
+                >
+                  {t.key}
+                </button>
+              ))}
+            </>
+          )}
+        </p>
+      )}
+      {claims.ticketNotes?.map((note) => (
+        <p key={note} className="text-[11px] text-amber-300">
+          {note}
+        </p>
+      ))}
+      {claims.claims.length === 0 ? (
+        <p className="text-zinc-500">No claims to check.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {claims.claims.map((c) => (
+            <li
+              key={`${c.source}:${c.claim}`}
+              className={`space-y-0.5 ${viewedClass(isViewed(viewed, c.path))}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] uppercase ${CLAIM_CLASS[c.status]}`}
+                >
+                  {CLAIM_LABEL[c.status]}
+                </span>
+                <span className="text-zinc-200">{c.claim}</span>
+                <span className="text-[11px] text-zinc-500">{c.source}</span>
+                <Location path={c.path} line={c.line} onOpen={onOpen} />
+              </div>
+              <p className="text-xs text-zinc-400">{c.evidence}</p>
+              {isUnmetClaim(c.status) && (
+                <PostFinding
+                  finding={{ title: c.claim, detail: c.evidence, path: c.path, line: c.line }}
+                  section={`Claims: ${CLAIM_LABEL[c.status].toLowerCase()}`}
+                  poster={poster}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {claims.gaps.length > 0 && (
+        <CheckRow
+          label="Unfinished work"
+          check={{ status: "issues", findings: claims.gaps }}
+          onOpen={onOpen}
+          viewed={viewed}
+          poster={poster}
+        />
+      )}
+    </div>
   );
 }
 
@@ -616,6 +821,28 @@ export default function VerificationReportView({
               <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
             ))}
           </ul>
+        </Section>
+      )}
+
+      {report.changeMap && (
+        <Section title={titled("Change map", "changeMap")}>
+          <ChangeMap
+            map={report.changeMap}
+            onOpen={onOpen}
+            viewed={viewed}
+            poster={posterFor("changeMap")}
+          />
+        </Section>
+      )}
+
+      {report.claims && (
+        <Section title={titled("Claims", "claims")}>
+          <Claims
+            claims={report.claims}
+            onOpen={onOpen}
+            viewed={viewed}
+            poster={posterFor("claims")}
+          />
         </Section>
       )}
 

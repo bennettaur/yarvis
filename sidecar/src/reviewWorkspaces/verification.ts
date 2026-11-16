@@ -23,13 +23,14 @@ import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
-import { describeError } from "../llm/errors.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import {
   getVerificationRunConfig,
   type VerificationModel,
   type VerificationRunConfig,
 } from "../pr/models.ts";
 import { prSourceFor } from "../pr/source.ts";
+import { type LinkedTickets, loadTickets, ticketReaders } from "../pr/tickets.ts";
 import type { CheckItem, PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import {
   ATTENTION_BAND,
@@ -278,6 +279,102 @@ const approachSchema = z
       : { ...approach, alternative: "", path: undefined, line: undefined },
   );
 
+/** Most themes a change map has; past this the themes stop helping a reader. */
+export const MAX_THEMES = 8;
+/** Most files listed under one theme. */
+const MAX_THEME_FILES = 40;
+/** Most claims checked; a description that makes more is read on the PR. */
+export const MAX_CLAIMS = 12;
+
+/**
+ * How a theme relates to what the PR is for. `core` delivers it, `supporting`
+ * is needed for it (tests, wiring, a refactor it depends on, docs), and
+ * `outlier` isn't needed for it, so the author is asked why it is here.
+ */
+export const COHESION = ["core", "supporting", "outlier"] as const;
+
+const themeFileSchema = z.object({
+  path: z.string().transform((p) => clip(p, 1000)),
+  lines: lineRangeSchema,
+});
+
+const themeSchema = z.object({
+  title: boundedText(TITLE_CHARS),
+  description: boundedText(DETAIL_CHARS),
+  risk: z.enum(["low", "medium", "high"]),
+  cohesion: z.enum(COHESION),
+  question: boundedText(DETAIL_CHARS)
+    .nullish()
+    .transform((q) => q ?? "")
+    .meta({ description: "For an outlier: what to ask the author. Empty otherwise." }),
+  files: boundedList(themeFileSchema, MAX_THEME_FILES),
+});
+
+/**
+ * The change map: what the PR is for, and its changes grouped into themes a
+ * reviewer can take one at a time. Only changed paths are kept, and any
+ * changed file no theme names is listed in `unmapped`, so a reader can see
+ * what the map leaves out.
+ */
+function changeMapSchema(limits: Pick<ReportLimits, "changedPaths" | "checkoutDir">) {
+  return z
+    .object({
+      intent: boundedText(300),
+      themes: boundedList(themeSchema, MAX_THEMES),
+    })
+    .transform(({ intent, themes }) => {
+      const mapped = new Set<string>();
+      const kept = themes.map((theme) => {
+        const files = theme.files
+          .map((f) => ({ ...f, path: repoPath(f.path, limits.checkoutDir) }))
+          .filter((f) => limits.changedPaths.has(f.path) && !mapped.has(f.path));
+        for (const f of files) mapped.add(f.path);
+        // Only an outlier is asked about.
+        return { ...theme, files, question: theme.cohesion === "outlier" ? theme.question : "" };
+      });
+      return {
+        intent,
+        themes: kept.filter((t) => t.files.length > 0),
+        unmapped: [...limits.changedPaths].filter((p) => !mapped.has(p)).sort(),
+      };
+    });
+}
+
+export const CLAIM_STATUSES = [
+  "verified",
+  "partial",
+  "missing",
+  "contradicted",
+  "unverifiable",
+] as const;
+
+const claimSchema = z.object({
+  claim: boundedText(200),
+  /** Where it was claimed: "title", "description", or a ticket's key as pr.md gives it. */
+  source: boundedText(80),
+  status: z.enum(CLAIM_STATUSES),
+  evidence: boundedText(DETAIL_CHARS),
+  path: optionalPath,
+  line: optionalLine,
+});
+
+/** A ticket a claims run was given, as the server read it rather than as an agent said. */
+export interface CheckedTicket {
+  key: string;
+  title: string;
+  url: string;
+}
+
+/**
+ * The PR's claims, from its title, description and linked tickets, each
+ * checked against the code; `gaps` is unfinished work the claims don't cover
+ * (a TODO on the main path, a review comment's request still not made).
+ */
+const claimsSchema = z.object({
+  claims: boundedList(claimSchema, MAX_CLAIMS),
+  gaps: boundedList(findingSchema, MAX_FINDINGS),
+});
+
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
   "tests",
@@ -286,9 +383,6 @@ export const CHECK_SECTIONS = [
   "comments",
   "observability",
   "quality",
-  // Last: a specialist's finding in its own lane beats completeness reporting
-  // the same problem, which it tends to when a review comment raised it.
-  "completeness",
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
@@ -297,7 +391,15 @@ type CheckSection = (typeof CHECK_SECTIONS)[number];
  * The sections a reviewer can pick, each run on its own. `summary` writes the
  * summary and the must-read files.
  */
-export const REPORT_SECTIONS = ["summary", "risk", ...CHECK_SECTIONS, "approach", "flow"] as const;
+export const REPORT_SECTIONS = [
+  "summary",
+  "changeMap",
+  "claims",
+  "risk",
+  ...CHECK_SECTIONS,
+  "approach",
+  "flow",
+] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
 /** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
@@ -308,8 +410,9 @@ export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter
 /** The agent that writes each section, for following its reads. */
 export const SECTION_AGENTS: Record<ReportSection, string> = {
   summary: "yarvis-review:change-summary",
+  changeMap: "yarvis-review:change-mapper",
+  claims: "yarvis-review:claims-verifier",
   risk: "yarvis-review:risk-reviewer",
-  completeness: "yarvis-review:completeness-reviewer",
   tests: "yarvis-review:test-reviewer",
   complexity: "yarvis-review:complexity-reviewer",
   performance: "yarvis-review:performance-reviewer",
@@ -502,8 +605,9 @@ function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string
  */
 export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
   const sectionSchemas = {
+    changeMap: changeMapSchema(limits),
+    claims: claimsSchema,
     risk: riskSchema,
-    completeness: checkSchema,
     tests: checkSchema,
     complexity: checkSchema,
     performance: checkSchema,
@@ -547,7 +651,8 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
   } & { summary?: string; mustRead?: MustRead[] };
   return z.object(askedSchemas).transform((answer) => {
     // The shape is built per run, so its type can't say which sections it has.
-    const { summary, mustRead, risk, approach, flow, ...answered } = answer as Answered;
+    const { summary, mustRead, changeMap, claims, risk, approach, flow, ...answered } =
+      answer as Answered;
     const checks: Partial<Record<CheckSection, Check>> = {};
     for (const name of CHECK_SECTIONS) {
       const check = answered[name];
@@ -560,6 +665,13 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     return crossCheck(
       {
         ...(summary !== undefined && { summary, mustRead: mustRead ?? [] }),
+        ...(changeMap && { changeMap }),
+        ...(claims && {
+          claims: {
+            claims: claims.claims.map((c) => withRepoPath(c, limits.checkoutDir)),
+            gaps: claims.gaps.map((g) => withRepoPath(g, limits.checkoutDir)),
+          },
+        }),
         ...(risk && {
           risk: {
             ...risk,
@@ -579,6 +691,9 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
   });
 }
 
+type ChangeMap = z.output<ReturnType<typeof changeMapSchema>>;
+/** The tickets are added by the server once the run ends; see {@link CheckedTicket}. */
+type Claims = z.output<typeof claimsSchema> & { tickets?: CheckedTicket[]; ticketNotes?: string[] };
 type Risk = z.output<typeof riskSchema>;
 type Approach = z.output<typeof approachSchema>;
 type Flow = z.output<typeof flowSchema>;
@@ -592,6 +707,8 @@ export type VerificationReport = {
   summary?: string;
   /** Present exactly when `summary` is. */
   mustRead?: MustRead[];
+  changeMap?: ChangeMap;
+  claims?: Claims;
   risk?: Risk;
   approach?: Approach;
   flow?: Flow;
@@ -604,7 +721,7 @@ export type VerificationReport = {
  * out goes into `audit`.
  */
 export function crossCheck(report: VerificationReport, audit: ReportAudit): VerificationReport {
-  const { summary, mustRead, risk, approach, flow } = report;
+  const { summary, mustRead, changeMap, claims, risk, approach, flow } = report;
   const deduped = dedupeChecks(report, audit);
   const cited = [
     ...(risk?.concerns ?? []),
@@ -616,6 +733,8 @@ export function crossCheck(report: VerificationReport, audit: ReportAudit): Veri
       summary,
       mustRead: dropCoveredFlags(mustRead ?? [], cited, audit),
     }),
+    ...(changeMap && { changeMap }),
+    ...(claims && { claims }),
     ...(risk && { risk }),
     ...deduped,
     ...(approach && { approach }),
@@ -756,6 +875,11 @@ export interface VerificationInput {
     | "checksUnavailable"
     | "reviewThreads"
   > | null;
+  /**
+   * The tickets the PR is for, read for the sections that check against them;
+   * absent for the others.
+   */
+  tickets?: LinkedTickets;
   /** The PR's title as cached on the row, for when `detail` is missing. */
   fallbackTitle: string;
   /** Every changed file and the patch written for it. */
@@ -836,6 +960,27 @@ function checksBlock(detail: VerificationInput["detail"]): string {
     .join(", ");
   const list = detail.checks.map((c) => `- ${c.name}: ${checkOutcome(c)}`).join("\n");
   return `CI checks (${tally}).${unavailable}\n${spotlight("ci-checks", list)}`;
+}
+
+/** Sections that read the PR's tickets: claims are checked against them, and the map judges cohesion by them. */
+export const TICKET_SECTIONS: readonly ReportSection[] = ["changeMap", "claims"];
+
+function ticketsBlock({ tickets, notes }: LinkedTickets): string {
+  const unread = notes.length > 0 ? `\n${spotlight("unread-tickets", notes.join("\n"))}` : "";
+  if (tickets.length === 0) return `Linked tickets: none read.${unread}`;
+  const text = tickets
+    .map((t) => {
+      const comments = t.comments.map((c) => `- ${c.author}: ${c.body.replace(/\s+/g, " ")}`);
+      return [
+        `## ${t.key}: ${t.title}`,
+        t.url,
+        "",
+        t.body.trim() || "(no description)",
+        ...(comments.length > 0 ? ["", "Latest comments:", ...comments] : []),
+      ].join("\n");
+    })
+    .join("\n\n");
+  return `Linked tickets (${tickets.length}), each under its key. A claim from one names that key as its source.\n${spotlight("tickets", text)}${unread}`;
 }
 
 function threadsBlock(threads: ReviewThread[]): string {
@@ -926,6 +1071,7 @@ export function buildVerificationMaterial(
     files,
     checksBlock(detail),
     threadsBlock(detail?.reviewThreads ?? []),
+    ...(input.tickets ? [ticketsBlock(input.tickets)] : []),
   ].join("\n\n");
 
   const prompt = [
@@ -972,6 +1118,12 @@ export const VERIFICATION_RUN_TIMEOUT_MS = 20 * 60 * 1000;
 export interface VerificationDeps {
   /** The PR's description, checks and threads from its provider. */
   loadDetail(ref: PrRef): Promise<PrDetail>;
+  /** The PR's tickets: those the reviewer `named`, then those the PR links. */
+  loadTickets(
+    ref: PrRef,
+    pr: { title: string; headRef: string },
+    named: readonly string[],
+  ): Promise<LinkedTickets>;
   settings(): Promise<VerificationRunConfig>;
   /** Passed to `startClaudeRun`; tests swap in a fake `claude`. */
   run?: ClaudeRunDeps;
@@ -983,6 +1135,12 @@ export function defaultVerificationDeps(config: Config): VerificationDeps {
       const source = prSourceFor(config, ref);
       if ("error" in source) throw new Error(source.error);
       return source.detail();
+    },
+    async loadTickets(ref, pr, named) {
+      const source = prSourceFor(config, ref);
+      if ("error" in source)
+        return { tickets: [], notes: [`Couldn't read tickets: ${source.error}`] };
+      return loadTickets(source, pr, named, ticketReaders(config));
     },
     settings: getVerificationRunConfig,
   };
@@ -1046,10 +1204,8 @@ const withPrLock = createKeyedLock();
  */
 const RUN_FORMAT = 2;
 
-/** What a run from before sections could be picked ran. */
-const LEGACY_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow" && s !== "approach",
-);
+/** What a run from before sections could be picked ran, of the sections there are now. */
+const LEGACY_SECTIONS: readonly ReportSection[] = ["summary", "risk", ...CHECK_SECTIONS];
 
 /** The sections a run was asked for, from its meta, in report order. */
 export function runSections(meta: Record<string, unknown>): ReportSection[] {
@@ -1113,6 +1269,10 @@ interface RunInputs {
   headSha: string;
   sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
   detail: VerificationInput["detail"];
+  /** Read only when a section that needs them is starting. */
+  tickets?: LinkedTickets;
+  /** The tickets the reviewer named, kept on the run so the next one can offer them again. */
+  namedTickets: readonly string[];
   settings: VerificationRunConfig;
 }
 
@@ -1135,6 +1295,8 @@ export async function startVerification(
   reviewDeps: ReviewDeps,
   deps: VerificationDeps,
   picked?: readonly ReportSection[],
+  /** Tickets the reviewer named for the claims, as keys or links. */
+  namedTickets: readonly string[] = [],
 ): Promise<StartedVerification> {
   const sections = normalizeSections(picked);
   // Read once for the lock key, which can't change; everything else comes
@@ -1170,7 +1332,27 @@ export async function startVerification(
         let text: ReturnType<typeof source.read> | undefined;
         return { ...source, read: () => (text ??= source.read()) };
       });
-      const inputs: RunInputs = { pr, headSha, sources: once, detail, settings };
+      const tickets = toStart.some((s) => TICKET_SECTIONS.includes(s))
+        ? await deps
+            .loadTickets(
+              pr.ref,
+              { title: detail?.title ?? pr.title, headRef: detail?.headRef ?? "" },
+              namedTickets,
+            )
+            .catch((e): LinkedTickets => {
+              console.error("[verification] could not load tickets:", describeError(e));
+              return { tickets: [], notes: [`Couldn't read tickets: ${clientError(e)}`] };
+            })
+        : undefined;
+      const inputs: RunInputs = {
+        pr,
+        headSha,
+        sources: once,
+        detail,
+        tickets,
+        namedTickets,
+        settings,
+      };
       for (const section of toStart) {
         try {
           runs.push({
@@ -1196,7 +1378,7 @@ export async function startVerification(
 /** Starts one section's run, with a context directory of its own that goes when the run ends. */
 async function startSectionRun(
   db: Db,
-  { pr, headSha, sources, detail, settings }: RunInputs,
+  { pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
   section: ReportSection,
   deps: VerificationDeps,
 ): Promise<string> {
@@ -1206,7 +1388,15 @@ async function startSectionRun(
   try {
     const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
     const material = buildVerificationMaterial(
-      { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index, sections },
+      {
+        ref: pr.ref,
+        headSha,
+        detail,
+        ...(TICKET_SECTIONS.includes(section) && tickets ? { tickets } : {}),
+        fallbackTitle: pr.title,
+        index,
+        sections,
+      },
       contextDir,
     );
     writeFileSync(join(contextDir, "pr.md"), material.contextFile);
@@ -1238,7 +1428,13 @@ async function startSectionRun(
             }),
           );
           volumes = counted.volumes;
-          return { ...report, coverage: counted.coverage };
+          // What the claims were checked against is the server's record, not the agent's.
+          const claims = report.claims && {
+            ...report.claims,
+            tickets: (tickets?.tickets ?? []).map(({ key, title, url }) => ({ key, title, url })),
+            ticketNotes: tickets?.notes ?? [],
+          };
+          return { ...report, ...(claims && { claims }), coverage: counted.coverage };
         },
         plugins: ["yarvis-review"],
         allowedTools: ALLOWED_TOOLS,
@@ -1258,6 +1454,7 @@ async function startSectionRun(
           patchBytes: index.reduce((n, e) => n + e.bytes, 0),
           readingGroups: material.groups,
           detailLoaded: detail !== null,
+          ...(section === "claims" && { namedTickets }),
           sections,
           format: RUN_FORMAT,
         },

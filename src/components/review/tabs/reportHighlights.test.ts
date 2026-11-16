@@ -16,7 +16,6 @@ const report: VerificationReport = {
       { title: "Whole-PR concern", detail: "No line." },
     ],
   },
-  completeness: pass,
   tests: pass,
   complexity: pass,
   performance: {
@@ -59,6 +58,42 @@ describe("fileNotes", () => {
       { source: "Risk", title: "No invalidation", detail: "Edits stay stale.", line: 22 },
     ]);
     expect(fileNotes(null, "src/cache.ts")).toEqual([]);
+  });
+});
+
+describe("fileNotes from the claims", () => {
+  it("notes a claim the code doesn't meet and unfinished work, but not a verified claim", () => {
+    const notes = fileNotes(
+      {
+        mustRead: [],
+        claims: {
+          claims: [
+            {
+              claim: "Caches users",
+              source: "description",
+              status: "verified",
+              evidence: "e",
+              path: "a.ts",
+              line: 2,
+            },
+            {
+              claim: "Invalidates",
+              source: "ABC-1",
+              status: "partial",
+              evidence: "only on delete",
+              path: "a.ts",
+              line: 9,
+            },
+          ],
+          gaps: [{ title: "TODO left", detail: "d", severity: "low", path: "a.ts", line: 5 }],
+        },
+      },
+      "a.ts",
+    );
+    expect(notes).toEqual([
+      { source: "Unfinished work", title: "TODO left", detail: "d", severity: "low", line: 5 },
+      { source: "Claim partial", title: "Invalidates", detail: "only on delete", line: 9 },
+    ]);
   });
 });
 

@@ -55,10 +55,17 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Flow diagram",
     description: "The whole flow the change sits in, from what starts it to where it ends.",
   },
-  completeness: {
+  changeMap: {
+    theme: "understand",
+    label: "Change map",
+    description:
+      "The change grouped into themes, each with its risk and how it fits the PR's goal; outliers come with a question for the author.",
+  },
+  claims: {
     theme: "correctness",
-    label: "Completeness",
-    description: "Whether the code does everything the PR says it does.",
+    label: "Claims",
+    description:
+      "What the title, description and linked tickets say the PR does, each checked against the code, and unfinished work.",
   },
   tests: {
     theme: "correctness",

@@ -660,6 +660,16 @@ export class AzureDevOpsClient {
       .filter((c): c is CheckItem => c !== null);
   }
 
+  /** The ids of the work items linked to a PR. */
+  async prWorkItemIds(ref: AzureRef): Promise<number[]> {
+    const data = await this.get<AzureList<{ id?: string | number }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/workitems`,
+    );
+    return (data.value ?? [])
+      .map((w) => Number(w.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+  }
+
   /** {@link prCiChecks} for a PR known only by its ref. */
   async prCiChecksFor(ref: AzureRef): Promise<CheckItem[]> {
     const pr = await this.prRaw(ref);

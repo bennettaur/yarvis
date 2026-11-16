@@ -80,7 +80,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
 
     start_pr_verification_report: tool({
       description:
-        "Start a verification report on a pull request: Claude Code agents read every changed file in a local checkout and report the summary, must-read files, risk and checks for tests, complexity and code quality. The report opens in the PR's review workspace, which is created and checked out if there isn't one. Runs in the background, can take a while and spends money. The attention bell says when it is done. Each section runs on its own, so a section already running is joined, not restarted, and one with a result for the PR's current commit is left alone unless rerun is set. The answer's sections lists which were started, already running, already current, or failed to start; say which. Posts nothing to the PR. Answers exists when every section asked for already has a result for the PR's current commit. Answers needs-confirmation with a reason: large or over-budget (give the user the size and estimated cost against their budget), unsized (the cost couldn't be estimated), or unregistered-repo (the repo isn't one the user registered; name it). Call again with confirmed: true only after the user agrees.",
+        "Start a verification report on a pull request: Claude Code agents read every changed file in a local checkout and report the summary, must-read files, a map of the change by theme (flagging outliers), the description's and linked tickets' claims checked against the code, risk, and checks for tests, complexity and code quality. The report opens in the PR's review workspace, which is created and checked out if there isn't one. Runs in the background, can take a while and spends money. The attention bell says when it is done. Each section runs on its own, so a section already running is joined, not restarted, and one with a result for the PR's current commit is left alone unless rerun is set. The answer's sections lists which were started, already running, already current, or failed to start; say which. Posts nothing to the PR. Answers exists when every section asked for already has a result for the PR's current commit. Answers needs-confirmation with a reason: large or over-budget (give the user the size and estimated cost against their budget), unsized (the cost couldn't be estimated), or unregistered-repo (the repo isn't one the user registered; name it). Call again with confirmed: true only after the user agrees.",
       inputSchema: z.object({
         pullRequest: PullRequest,
         sections: z
@@ -88,7 +88,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .max(REPORT_SECTIONS.length)
           .optional()
           .describe(
-            "Which sections to run; 'summary' is the summary and must-read files, and a list without it has none. Omit for the defaults; 'flow' (a flow diagram) is off unless named.",
+            "Which sections to run; 'summary' is the summary and must-read files, and a list without it has none. 'changeMap' groups the change into themes and flags outliers; 'claims' checks the title, description and linked tickets against the code. Omit for the defaults; 'flow' (a flow diagram) is off unless named.",
           ),
         confirmed: z
           .boolean()
