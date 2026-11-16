@@ -753,8 +753,17 @@ describe("verification report", () => {
       ],
     },
     claims: {
-      claims: [
-        { claim: "Changes a", source: "description", status: "verified", evidence: "src/a.ts" },
+      items: [
+        {
+          claim: "Changes a",
+          source: "description",
+          status: "verified",
+          evidence: "the new line",
+          path: "src/a.ts",
+          line: 2,
+        },
+        // A source the run wasn't given reads as the description.
+        { claim: "Is approved", source: "SEC-1", status: "missing", evidence: "nothing" },
       ],
       gaps: [],
     },
@@ -773,6 +782,7 @@ describe("verification report", () => {
   let startFails: boolean;
   // The tickets each run that read them was given by name.
   let namedTickets: string[][];
+  let ticketsFail: boolean;
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -834,6 +844,7 @@ cat "${fakeDir}/result.jsonl"`,
           loadDetail: async () => detail,
           loadTickets: async (_ref, _pr, named) => {
             namedTickets.push([...named]);
+            if (ticketsFail) throw new Error("Jira is down");
             return {
               tickets: [
                 {
@@ -887,10 +898,11 @@ cat "${fakeDir}/result.jsonl"`,
       mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
       tests?: { status: string; findings: unknown[] };
       quality?: { status: string; findings: unknown[] };
-      claims?: { claims: unknown[]; tickets?: unknown[]; ticketNotes?: string[] };
+      claims?: { items: { source: string }[]; tickets?: unknown[]; ticketNotes?: string[] };
       coverage?: Coverage;
     } | null;
     size: VerificationSize | null;
+    namedTickets: string[];
   };
 
   async function checklist(wsId: string, prId: string): Promise<Checklist> {
@@ -935,6 +947,7 @@ cat "${fakeDir}/result.jsonl"`,
     budget = 0.5;
     startFails = false;
     namedTickets = [];
+    ticketsFail = false;
     setUpFake();
   });
 
@@ -1100,7 +1113,7 @@ cat "${fakeDir}/result.jsonl"`,
     const res = await verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sections: ["claims"], tickets: ["ABC-12"] }),
+      body: JSON.stringify({ sections: ["claims"], namedTickets: ["ABC-12"] }),
     });
     expect(res.status).toBe(202);
     expect(namedTickets).toEqual([["ABC-12"]]);
@@ -1121,7 +1134,25 @@ cat "${fakeDir}/result.jsonl"`,
       { key: "ABC-12", title: "Rename old", url: "https://example.atlassian.net/browse/ABC-12" },
     ]);
     expect(report?.claims?.ticketNotes).toEqual(["Couldn't read ABC-99: not found"]);
-    expect(report?.claims?.claims).toHaveLength(1);
+    expect(report?.claims?.items.map((c) => c.source)).toEqual(["description", "description"]);
+    expect((await checklist(wsId, prId)).namedTickets).toEqual(["ABC-12"]);
+  });
+
+  it("gives the change map the tickets too, and still starts when they can't be read", async () => {
+    ticketsFail = true;
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["changeMap"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(namedTickets).toEqual([[]]);
+    expect(context).toContain("Linked tickets: none read.");
+    expect(context).toContain("Couldn't read tickets: Jira is down");
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "changeMap")?.result, "the map");
   });
 
   it("reads no tickets for sections that don't check against them", async () => {

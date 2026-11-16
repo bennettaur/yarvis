@@ -385,7 +385,7 @@ function ChangeMap({
           const first = theme.files[0];
           const done = theme.files.every((f) => isViewed(viewed, f.path));
           return (
-            <li key={theme.title} className="space-y-1">
+            <li key={`${theme.title}:${first?.path}`} className="space-y-1">
               <div className={`flex flex-wrap items-center gap-2 ${viewedClass(done)}`}>
                 <span
                   className={`rounded border px-1 py-0.5 text-[10px] uppercase ${COHESION_CLASS[theme.cohesion]}`}
@@ -411,7 +411,8 @@ function ChangeMap({
                   />
                 ))}
               </div>
-              {theme.cohesion === "outlier" && theme.question && first && (
+              {/* The server keeps a question only on an outlier. */}
+              {theme.question && first && (
                 <div className="space-y-1 rounded border border-amber-900/60 bg-amber-950/20 p-2 text-xs">
                   <p className="text-amber-100">
                     <span className="text-amber-400">Ask the author: </span>
@@ -467,16 +468,18 @@ function Claims({
           ) : (
             <>
               Checked against the title, description and
-              {tickets.map((t) => (
-                <button
-                  key={t.key}
-                  type="button"
-                  title={t.title}
-                  onClick={() => openExternal(t.url)}
-                  className="text-sky-400 hover:text-sky-300"
-                >
-                  {t.key}
-                </button>
+              {tickets.map((t, i) => (
+                <span key={t.key}>
+                  <button
+                    type="button"
+                    title={t.title}
+                    onClick={() => openExternal(t.url)}
+                    className="text-sky-400 hover:text-sky-300"
+                  >
+                    {t.key}
+                  </button>
+                  {i < tickets.length - 1 && ","}
+                </span>
               ))}
             </>
           )}
@@ -487,13 +490,13 @@ function Claims({
           {note}
         </p>
       ))}
-      {claims.claims.length === 0 ? (
+      {claims.items.length === 0 ? (
         <p className="text-zinc-500">No claims to check.</p>
       ) : (
         <ul className="space-y-1.5">
-          {claims.claims.map((c) => (
+          {claims.items.map((c) => (
             <li
-              key={`${c.source}:${c.claim}`}
+              key={`${c.source}:${c.claim}:${c.path}:${c.line}`}
               className={`space-y-0.5 ${viewedClass(isViewed(viewed, c.path))}`}
             >
               <div className="flex flex-wrap items-center gap-2">

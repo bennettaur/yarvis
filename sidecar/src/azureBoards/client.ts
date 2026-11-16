@@ -9,6 +9,8 @@
  * those take the project name read off the item.
  */
 
+import { isAllowedAzureOrgUrl } from "../azure/client.ts";
+import type { Config } from "../config.ts";
 import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts";
 import { htmlToMarkdown, textToHtml } from "./html.ts";
 import type {
@@ -629,4 +631,12 @@ export class AzureBoardsClient {
     );
     return this.toComment(c);
   }
+}
+
+/** Same gate the Boards routes apply: the PAT only ever goes to Azure's hosts. */
+export function boardsClientFromConfig(config: Pick<Config, "secrets">): AzureBoardsClient | null {
+  const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+  if (!azureDevopsToken || !azureDevopsOrgUrl) return null;
+  if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) return null;
+  return new AzureBoardsClient(azureDevopsToken, azureDevopsOrgUrl);
 }

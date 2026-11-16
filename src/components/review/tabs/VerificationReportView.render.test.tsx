@@ -670,7 +670,7 @@ describe("the change map and claims", () => {
       unmapped: ["README.md"],
     },
     claims: {
-      claims: [
+      items: [
         {
           claim: "Caches user lookups",
           source: "description",

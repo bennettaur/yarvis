@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { IssueDetail } from "../issues/types.ts";
-import { jiraKeysIn, loadTickets, parseTicket, type TicketReaders } from "./tickets.ts";
+import {
+  jiraKeysIn,
+  loadTickets,
+  parseTicket,
+  type TicketReaders,
+  ticketReaders,
+} from "./tickets.ts";
 import type { PrRef, TicketRef } from "./types.ts";
 
 const pr: PrRef = { provider: "github", owner: "o", repo: "r", number: 7 };
@@ -71,7 +77,7 @@ describe("reading a PR's tickets", () => {
     const linked: TicketRef[] = [{ kind: "github", owner: "o", repo: "r", number: 12 }];
     const { tickets, notes } = await loadTickets(
       { ref: pr, linkedTickets: async () => linked },
-      { title: "ABC-12: rename old", headRef: "feature/ABC-12-rename" },
+      { title: "ABC-12: rename old", headRef: "feature/ABC-12-rename", fromFork: false },
       ["#12", "nonsense"],
       readers(read),
     );
@@ -86,7 +92,7 @@ describe("reading a PR's tickets", () => {
   it("notes a ticket that can't be read and keeps the rest", async () => {
     const { tickets, notes } = await loadTickets(
       { ref: pr, linkedTickets: async () => [] },
-      { title: "Handle UTF-8 names (ABC-3)", headRef: "main" },
+      { title: "Handle UTF-8 names (ABC-3)", headRef: "main", fromFork: false },
       [],
       readers(),
     );
@@ -105,7 +111,7 @@ describe("reading a PR's tickets", () => {
             (number): TicketRef => ({ kind: "github", owner: "o", repo: "r", number }),
           ),
       },
-      { title: "ABC-12", headRef: "" },
+      { title: "ABC-12", headRef: "", fromFork: false },
       [],
       noJira,
     );
@@ -122,7 +128,7 @@ describe("reading a PR's tickets", () => {
           throw new Error("rate limited");
         },
       },
-      { title: "", headRef: "" },
+      { title: "", headRef: "", fromFork: false },
       ["AB#4"],
       readers(),
     );
@@ -135,5 +141,107 @@ describe("reading a PR's tickets", () => {
       "ABC-12",
       "XY-3",
     ]);
+  });
+});
+
+describe("what a PR's author can make Yarvis read", () => {
+  it("reads no Jira key from the title or branch of a PR from a fork, and says so", async () => {
+    const read: string[] = [];
+    const { tickets, notes } = await loadTickets(
+      { ref: pr, linkedTickets: async () => [] },
+      { title: "SEC-42 tweak", headRef: "fix/HR-7", fromFork: true },
+      [],
+      readers(read),
+    );
+    expect(tickets).toEqual([]);
+    expect(read).toEqual([]);
+    expect(notes).toEqual([
+      "Didn't look up SEC-42, HR-7 from the title or branch: the PR comes from a fork. Name them to read them.",
+    ]);
+  });
+
+  it("still reads a key the reviewer names on a PR from a fork", async () => {
+    const { tickets } = await loadTickets(
+      { ref: pr, linkedTickets: async () => [] },
+      { title: "SEC-42 tweak", headRef: "", fromFork: true },
+      ["SEC-42"],
+      readers(),
+    );
+    expect(tickets.map((t) => t.key)).toEqual(["SEC-42"]);
+  });
+
+  it("reads only the closed issues in the PR's own repository", async () => {
+    const read: string[] = [];
+    const { tickets, notes } = await loadTickets(
+      {
+        ref: pr,
+        linkedTickets: async () => [
+          { kind: "github", owner: "o", repo: "r", number: 1 },
+          { kind: "github", owner: "other", repo: "private", number: 9 },
+        ],
+      },
+      { title: "", headRef: "", fromFork: false },
+      [],
+      readers(read),
+    );
+    expect(read).toEqual(["gh:o/r#1"]);
+    expect(tickets.map((t) => t.key)).toEqual(["#1"]);
+    expect(notes).toEqual([
+      "Didn't read other/private#9: it's in another repository. Name it to read it.",
+    ]);
+  });
+});
+
+describe("naming a ticket, refused", () => {
+  it("refuses an owner or repo that isn't a plain name, and #12 on an Azure PR", () => {
+    expect(parseTicket("https://github.com/a%2F../b/issues/3", pr, readers())).toHaveProperty(
+      "error",
+    );
+    const azurePr: PrRef = { provider: "azure", org: "acme", project: "P", repo: "R", prId: 4 };
+    expect(parseTicket("#12", azurePr, readers())).toHaveProperty("error");
+  });
+
+  it("notes a Jira key when Jira isn't set up", async () => {
+    const { tickets, notes } = await loadTickets(
+      { ref: pr, linkedTickets: async () => [] },
+      { title: "", headRef: "", fromFork: false },
+      ["ABC-1"],
+      { ...readers(), jira: null },
+    );
+    expect(tickets).toEqual([]);
+    expect(notes).toEqual(["Couldn't read ABC-1: Jira isn't set up"]);
+  });
+});
+
+describe("the trackers Yarvis reads tickets from", () => {
+  const config = (secrets: Record<string, string>) =>
+    ({ secrets, endpoints: undefined }) as unknown as Parameters<typeof ticketReaders>[0];
+
+  it("reads only from trackers whose settings are complete and on an allowed host", () => {
+    expect(ticketReaders(config({}))).toEqual({ github: null, jira: null, azure: null });
+    const jiraOff = ticketReaders(
+      config({ jiraBaseUrl: "https://evil.example", jiraEmail: "e", jiraApiToken: "t" }),
+    );
+    expect(jiraOff.jira).toBeNull();
+    const azureOff = ticketReaders(
+      config({ azureDevopsToken: "t", azureDevopsOrgUrl: "https://evil.example/acme" }),
+    );
+    expect(azureOff.azure).toBeNull();
+  });
+
+  it("takes the Jira host and Azure org from the configured URLs", () => {
+    const on = ticketReaders(
+      config({
+        githubToken: "g",
+        jiraBaseUrl: "https://acme.atlassian.net",
+        jiraEmail: "e",
+        jiraApiToken: "t",
+        azureDevopsToken: "t",
+        azureDevopsOrgUrl: "https://legacy.visualstudio.com",
+      }),
+    );
+    expect(on.github).not.toBeNull();
+    expect(on.jira?.host).toBe("acme.atlassian.net");
+    expect(on.azure?.org).toBe("legacy");
   });
 });

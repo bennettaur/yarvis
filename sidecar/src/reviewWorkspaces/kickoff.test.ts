@@ -44,7 +44,7 @@ const report = {
   summary: "A small change.",
   mustRead: [],
   changeMap: { intent: "A small change.", themes: [] },
-  claims: { claims: [], gaps: [] },
+  claims: { items: [], gaps: [] },
   risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
   tests: pass,
   complexity: pass,

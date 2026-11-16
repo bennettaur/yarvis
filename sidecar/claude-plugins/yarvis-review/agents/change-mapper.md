@@ -19,9 +19,10 @@ You work from `index.md`, not from every patch. In this order:
    what they ask for is part of the PR's goal.
 2. Every patch `index.md` marks `SKIM`: its first 200 lines (one Read with
    `limit` 200), and no more.
-3. Enough of every other patch to say what it does: the first 200 lines of
-   each, and whole the ones a theme turns on, up to READ_BUDGET_KB (from your
-   task) by the sizes `index.md` gives.
+3. Enough of every other patch to say what it does, up to READ_BUDGET_KB
+   (from your task) in all by the sizes `index.md` gives: the first 200 lines
+   of each, and whole the patches a theme depends on. Past the budget, place
+   a file by its path, status and size in `index.md` without opening it.
 
 ## The map
 
@@ -32,10 +33,13 @@ You work from `index.md`, not from every patch. In this order:
   change code ("retry failed uploads", "rename `User` to `Account`", "tests
   for the retry", "bump eslint"), not a folder or a file type. Put a test with
   the behaviour it tests, unless the tests are a theme of their own (a new
-  suite, a test refactor). Every changed file in `index.md` belongs to exactly
-  one theme; for a rename (`old -> new`), use the new path.
+  suite, a test refactor). Every changed file in `index.md` belongs to a
+  theme. A file whose parts serve different themes goes under each, with the
+  `lines` of that theme's part. This is how a small outlier inside a file the
+  core also changes stays visible. For a rename (`old -> new`), use the new
+  path. A theme lists at most 40 files; Yarvis lists any file left out.
   - `title`: at most 8 words, naming the change, not the files.
-  - `description`: at most 40 words on what changes and why it matters to a
+  - `description`: at most 35 words on what changes and why it matters to a
     reviewer.
   - `risk`: `high` when a mistake here breaks users, data, money, security or a
     contract other code relies on; `medium` when it breaks a feature in a way
@@ -45,14 +49,15 @@ You work from `index.md`, not from every patch. In this order:
     - `core`: it is what the PR is for.
     - `supporting`: the core needs it, such as tests, wiring, docs, a type it
       uses, or a refactor that makes room for it.
-    - `outlier`: the PR's goal doesn't need it. Examples are an unrelated fix,
-      a drive-by refactor elsewhere, a behaviour change nobody mentioned, a
-      dependency bump nothing uses, or a change to CI, build or tooling that
-      the goal doesn't explain. Only call it an outlier when you checked that
-      nothing in the core relies on it (Grep for its uses). Formatting and
-      renames next to the change are supporting, not outliers.
+    - `outlier`: the core doesn't need it. Examples are an unrelated fix, a
+      drive-by refactor elsewhere, a behaviour change, a dependency bump
+      nothing uses, or a change to CI, build or tooling. It is an outlier even
+      when the description mentions it: listing a change doesn't make the
+      goal need it. Only call it an outlier when you checked that nothing in
+      the core relies on it (Grep for its uses). Formatting and renames next
+      to the change are supporting, not outliers.
   - `question`: for an outlier only, the question to ask the author, at most
-    40 words. Make it specific and neutral, naming the change, as in "Why
+    35 words. Make it specific and neutral, naming the change, as in "Why
     does this PR change the retry limit in `upload.ts` from 3 to 5? It isn't
     in the description." Otherwise `""`.
   - `files`: the theme's changed files, each with `lines`, the head line range

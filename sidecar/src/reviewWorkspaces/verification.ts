@@ -1,8 +1,8 @@
 /**
  * The verification report's runs: each section (the summary and must-read
- * files, risk, the completeness, test, complexity, performance, comment,
- * observability and quality checks, the simpler-approach rating and the flow
- * diagram) is a headless Claude Code run of its own over a review PR's
+ * files, the change map, the claims, risk, the test, complexity,
+ * performance, comment, observability and quality checks, the
+ * simpler-approach rating and the flow diagram) is a headless Claude Code run of its own over a review PR's
  * checkout, through the `yarvis-review` plugin's `verification-report` skill.
  * `checklist.ts` puts the report together from each section's newest result.
  *
@@ -30,7 +30,12 @@ import {
   type VerificationRunConfig,
 } from "../pr/models.ts";
 import { prSourceFor } from "../pr/source.ts";
-import { type LinkedTickets, loadTickets, ticketReaders } from "../pr/tickets.ts";
+import {
+  type LinkedTickets,
+  loadTickets as readPrTickets,
+  type TicketedPr,
+  ticketReaders,
+} from "../pr/tickets.ts";
 import type { CheckItem, PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import {
   ATTENTION_BAND,
@@ -280,18 +285,24 @@ const approachSchema = z
   );
 
 /** Most themes a change map has; past this the themes stop helping a reader. */
-export const MAX_THEMES = 8;
+const MAX_THEMES = 8;
 /** Most files listed under one theme. */
 const MAX_THEME_FILES = 40;
 /** Most claims checked; a description that makes more is read on the PR. */
-export const MAX_CLAIMS = 12;
+const MAX_CLAIMS = 12;
 
 /**
  * How a theme relates to what the PR is for. `core` delivers it, `supporting`
  * is needed for it (tests, wiring, a refactor it depends on, docs), and
  * `outlier` isn't needed for it, so the author is asked why it is here.
  */
-export const COHESION = ["core", "supporting", "outlier"] as const;
+const COHESION = ["core", "supporting", "outlier"] as const;
+const COHESION_ORDER: Record<(typeof COHESION)[number], number> = {
+  core: 0,
+  supporting: 1,
+  outlier: 2,
+};
+const RISK_ORDER: Record<"low" | "medium" | "high", number> = { high: 0, medium: 1, low: 2 };
 
 const themeFileSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
@@ -312,7 +323,9 @@ const themeSchema = z.object({
 
 /**
  * The change map: what the PR is for, and its changes grouped into themes a
- * reviewer can take one at a time. Only changed paths are kept, and any
+ * reviewer can take one at a time, core first and riskiest first within each.
+ * Only changed paths are kept. A file can sit under two themes, since an
+ * outlier is often a few lines in a file the core also changes, and any
  * changed file no theme names is listed in `unmapped`, so a reader can see
  * what the map leaves out.
  */
@@ -324,29 +337,40 @@ function changeMapSchema(limits: Pick<ReportLimits, "changedPaths" | "checkoutDi
     })
     .transform(({ intent, themes }) => {
       const mapped = new Set<string>();
-      const kept = themes.map((theme) => {
+      const kept = themes.flatMap((theme) => {
+        const seen = new Set<string>();
         const files = theme.files
           .map((f) => ({ ...f, path: repoPath(f.path, limits.checkoutDir) }))
-          .filter((f) => limits.changedPaths.has(f.path) && !mapped.has(f.path));
+          .filter((f) => {
+            const key = `${f.path}:${f.lines?.start}-${f.lines?.end}`;
+            if (!limits.changedPaths.has(f.path) || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        if (files.length === 0) return [];
         for (const f of files) mapped.add(f.path);
-        // Only an outlier is asked about.
-        return { ...theme, files, question: theme.cohesion === "outlier" ? theme.question : "" };
+        // A question on any other theme isn't one to put to the author; an
+        // outlier without one still gets one, so it can be asked about.
+        const question =
+          theme.cohesion !== "outlier"
+            ? ""
+            : theme.question || `Why is "${theme.title}" part of this PR?`;
+        return [{ ...theme, files, question }];
       });
+      kept.sort(
+        (a, b) =>
+          COHESION_ORDER[a.cohesion] - COHESION_ORDER[b.cohesion] ||
+          RISK_ORDER[a.risk] - RISK_ORDER[b.risk],
+      );
       return {
         intent,
-        themes: kept.filter((t) => t.files.length > 0),
+        themes: kept,
         unmapped: [...limits.changedPaths].filter((p) => !mapped.has(p)).sort(),
       };
     });
 }
 
-export const CLAIM_STATUSES = [
-  "verified",
-  "partial",
-  "missing",
-  "contradicted",
-  "unverifiable",
-] as const;
+const CLAIM_STATUSES = ["verified", "partial", "missing", "contradicted", "unverifiable"] as const;
 
 const claimSchema = z.object({
   claim: boundedText(200),
@@ -359,7 +383,7 @@ const claimSchema = z.object({
 });
 
 /** A ticket a claims run was given, as the server read it rather than as an agent said. */
-export interface CheckedTicket {
+interface CheckedTicket {
   key: string;
   title: string;
   url: string;
@@ -369,11 +393,28 @@ export interface CheckedTicket {
  * The PR's claims, from its title, description and linked tickets, each
  * checked against the code; `gaps` is unfinished work the claims don't cover
  * (a TODO on the main path, a review comment's request still not made).
+ *
+ * A verdict about the code has to say where in the code. One that doesn't
+ * becomes `unverifiable`, so a description that tells the agent everything is
+ * done can't turn into a list of green ticks with nothing to check.
  */
-const claimsSchema = z.object({
-  claims: boundedList(claimSchema, MAX_CLAIMS),
-  gaps: boundedList(findingSchema, MAX_FINDINGS),
-});
+function claimsSchema(audit: ReportAudit) {
+  return z
+    .object({
+      items: boundedList(claimSchema, MAX_CLAIMS),
+      gaps: boundedList(findingSchema, MAX_FINDINGS),
+    })
+    .transform(({ items, gaps }) => ({
+      items: items.map((c) => {
+        const needsCode =
+          c.status === "verified" || c.status === "partial" || c.status === "contradicted";
+        if (!needsCode || c.path) return c;
+        audit.unplacedClaims.push(c.claim);
+        return { ...c, status: "unverifiable" as const };
+      }),
+      gaps,
+    }));
+}
 
 /** The check sections, in the order that decides which keeps a finding two of them reported. */
 export const CHECK_SECTIONS = [
@@ -492,10 +533,12 @@ export interface ReportAudit {
   droppedMustReads: string[];
   /** Must-read flags a check finding or risk concern already reported. */
   droppedFlags: DroppedFlag[];
+  /** Claims given a verdict about the code without saying where, which became `unverifiable`. */
+  unplacedClaims: string[];
 }
 
 export function emptyAudit(): ReportAudit {
-  return { droppedDuplicates: [], droppedMustReads: [], droppedFlags: [] };
+  return { droppedDuplicates: [], droppedMustReads: [], droppedFlags: [], unplacedClaims: [] };
 }
 
 /**
@@ -606,7 +649,7 @@ function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string
 export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
   const sectionSchemas = {
     changeMap: changeMapSchema(limits),
-    claims: claimsSchema,
+    claims: claimsSchema(audit),
     risk: riskSchema,
     tests: checkSchema,
     complexity: checkSchema,
@@ -668,7 +711,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
         ...(changeMap && { changeMap }),
         ...(claims && {
           claims: {
-            claims: claims.claims.map((c) => withRepoPath(c, limits.checkoutDir)),
+            items: claims.items.map((c) => withRepoPath(c, limits.checkoutDir)),
             gaps: claims.gaps.map((g) => withRepoPath(g, limits.checkoutDir)),
           },
         }),
@@ -693,7 +736,10 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
 
 type ChangeMap = z.output<ReturnType<typeof changeMapSchema>>;
 /** The tickets are added by the server once the run ends; see {@link CheckedTicket}. */
-type Claims = z.output<typeof claimsSchema> & { tickets?: CheckedTicket[]; ticketNotes?: string[] };
+type Claims = z.output<ReturnType<typeof claimsSchema>> & {
+  tickets?: CheckedTicket[];
+  ticketNotes?: string[];
+};
 type Risk = z.output<typeof riskSchema>;
 type Approach = z.output<typeof approachSchema>;
 type Flow = z.output<typeof flowSchema>;
@@ -874,6 +920,7 @@ export interface VerificationInput {
     | "checks"
     | "checksUnavailable"
     | "reviewThreads"
+    | "fromFork"
   > | null;
   /**
    * The tickets the PR is for, read for the sections that check against them;
@@ -963,7 +1010,7 @@ function checksBlock(detail: VerificationInput["detail"]): string {
 }
 
 /** Sections that read the PR's tickets: claims are checked against them, and the map judges cohesion by them. */
-export const TICKET_SECTIONS: readonly ReportSection[] = ["changeMap", "claims"];
+const TICKET_SECTIONS: readonly ReportSection[] = ["changeMap", "claims"];
 
 function ticketsBlock({ tickets, notes }: LinkedTickets): string {
   const unread = notes.length > 0 ? `\n${spotlight("unread-tickets", notes.join("\n"))}` : "";
@@ -1119,11 +1166,7 @@ export interface VerificationDeps {
   /** The PR's description, checks and threads from its provider. */
   loadDetail(ref: PrRef): Promise<PrDetail>;
   /** The PR's tickets: those the reviewer `named`, then those the PR links. */
-  loadTickets(
-    ref: PrRef,
-    pr: { title: string; headRef: string },
-    named: readonly string[],
-  ): Promise<LinkedTickets>;
+  loadTickets(ref: PrRef, pr: TicketedPr, named: readonly string[]): Promise<LinkedTickets>;
   settings(): Promise<VerificationRunConfig>;
   /** Passed to `startClaudeRun`; tests swap in a fake `claude`. */
   run?: ClaudeRunDeps;
@@ -1140,7 +1183,7 @@ export function defaultVerificationDeps(config: Config): VerificationDeps {
       const source = prSourceFor(config, ref);
       if ("error" in source)
         return { tickets: [], notes: [`Couldn't read tickets: ${source.error}`] };
-      return loadTickets(source, pr, named, ticketReaders(config));
+      return readPrTickets(source, pr, named, ticketReaders(config));
     },
     settings: getVerificationRunConfig,
   };
@@ -1187,7 +1230,8 @@ async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<v
   console.log(
     `[verification] run ${runId}: dropped ${audit.droppedDuplicates.length} duplicate findings, ` +
       `${audit.droppedMustReads.length} must-reads for unchanged paths, ` +
-      `${audit.droppedFlags.length} must-read flags a finding or concern already reported`,
+      `${audit.droppedFlags.length} must-read flags a finding or concern already reported, ` +
+      `${audit.unplacedClaims.length} claim verdicts with no place in the code`,
   );
   await db
     .update(agentRuns)
@@ -1204,7 +1248,7 @@ const withPrLock = createKeyedLock();
  */
 const RUN_FORMAT = 2;
 
-/** What a run from before sections could be picked ran, of the sections there are now. */
+/** The sections a run from before sections could be picked ran, limited to ones that still exist. */
 const LEGACY_SECTIONS: readonly ReportSection[] = ["summary", "risk", ...CHECK_SECTIONS];
 
 /** The sections a run was asked for, from its meta, in report order. */
@@ -1271,7 +1315,7 @@ interface RunInputs {
   detail: VerificationInput["detail"];
   /** Read only when a section that needs them is starting. */
   tickets?: LinkedTickets;
-  /** The tickets the reviewer named, kept on the run so the next one can offer them again. */
+  /** The tickets the reviewer named, kept on the run so the tab can offer them again. */
   namedTickets: readonly string[];
   settings: VerificationRunConfig;
 }
@@ -1295,7 +1339,7 @@ export async function startVerification(
   reviewDeps: ReviewDeps,
   deps: VerificationDeps,
   picked?: readonly ReportSection[],
-  /** Tickets the reviewer named for the claims, as keys or links. */
+  /** Tickets the reviewer named for the change map and claims, as keys or links. */
   namedTickets: readonly string[] = [],
 ): Promise<StartedVerification> {
   const sections = normalizeSections(picked);
@@ -1333,16 +1377,7 @@ export async function startVerification(
         return { ...source, read: () => (text ??= source.read()) };
       });
       const tickets = toStart.some((s) => TICKET_SECTIONS.includes(s))
-        ? await deps
-            .loadTickets(
-              pr.ref,
-              { title: detail?.title ?? pr.title, headRef: detail?.headRef ?? "" },
-              namedTickets,
-            )
-            .catch((e): LinkedTickets => {
-              console.error("[verification] could not load tickets:", describeError(e));
-              return { tickets: [], notes: [`Couldn't read tickets: ${clientError(e)}`] };
-            })
+        ? await ticketsFor(deps, pr, detail, namedTickets)
         : undefined;
       const inputs: RunInputs = {
         pr,
@@ -1375,6 +1410,38 @@ export async function startVerification(
   });
 }
 
+/**
+ * The PR's tickets for the sections that read them. A failure is noted, not
+ * thrown: the description is still worth checking without them. Without the
+ * PR's details, whether it comes from a fork is unknown, so it is treated as
+ * one and no keys are taken from its title.
+ */
+function ticketsFor(
+  deps: VerificationDeps,
+  pr: ReviewWorkspacePr,
+  detail: VerificationInput["detail"],
+  namedTickets: readonly string[],
+): Promise<LinkedTickets> {
+  const ticketed: TicketedPr = {
+    title: detail?.title ?? pr.title,
+    headRef: detail?.headRef ?? "",
+    fromFork: detail?.fromFork ?? true,
+  };
+  return deps.loadTickets(pr.ref, ticketed, namedTickets).catch((e): LinkedTickets => {
+    console.error("[verification] could not load tickets:", describeError(e));
+    return { tickets: [], notes: [`Couldn't read tickets: ${clientError(e)}`] };
+  });
+}
+
+/**
+ * A claim's source as one the run was given: the title, the description, or
+ * a ticket it read. Anything else, such as a key the agent made up or one
+ * dressed up by injected text, reads as the description.
+ */
+function knownSource(source: string, tickets: readonly { key: string }[]): string {
+  return source === "title" || tickets.some((t) => t.key === source) ? source : "description";
+}
+
 /** Starts one section's run, with a context directory of its own that goes when the run ends. */
 async function startSectionRun(
   db: Db,
@@ -1392,7 +1459,7 @@ async function startSectionRun(
         ref: pr.ref,
         headSha,
         detail,
-        ...(TICKET_SECTIONS.includes(section) && tickets ? { tickets } : {}),
+        ...(TICKET_SECTIONS.includes(section) && tickets && { tickets }),
         fallbackTitle: pr.title,
         index,
         sections,
@@ -1429,9 +1496,11 @@ async function startSectionRun(
           );
           volumes = counted.volumes;
           // What the claims were checked against is the server's record, not the agent's.
+          const read = (tickets?.tickets ?? []).map(({ key, title, url }) => ({ key, title, url }));
           const claims = report.claims && {
             ...report.claims,
-            tickets: (tickets?.tickets ?? []).map(({ key, title, url }) => ({ key, title, url })),
+            items: report.claims.items.map((c) => ({ ...c, source: knownSource(c.source, read) })),
+            tickets: read,
             ticketNotes: tickets?.notes ?? [],
           };
           return { ...report, ...(claims && { claims }), coverage: counted.coverage };
@@ -1454,7 +1523,7 @@ async function startSectionRun(
           patchBytes: index.reduce((n, e) => n + e.bytes, 0),
           readingGroups: material.groups,
           detailLoaded: detail !== null,
-          ...(section === "claims" && { namedTickets }),
+          ...(TICKET_SECTIONS.includes(section) && { namedTickets }),
           sections,
           format: RUN_FORMAT,
         },

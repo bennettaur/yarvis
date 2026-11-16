@@ -1,33 +1,37 @@
 /**
  * The tickets a pull request is for: the issues it says it closes, the work
  * items linked to it, Jira keys in its title or branch, and any the reviewer
- * names. The claims check verifies what they ask for alongside what the
- * description says.
+ * names. The change map and claims checks read them alongside the
+ * description.
  *
- * A ticket is only read from a host Yarvis is already configured for, so a
- * link in a PR, or one pasted by mistake, never sends a request anywhere new.
+ * Every request goes to a tracker Yarvis is configured for, through the client
+ * built from its settings: a link only says which ticket, never where to ask.
+ * The PR's author picks what the PR links and its title, so what they can make
+ * Yarvis read with the reviewer's credentials is narrowed: an issue in another
+ * repository, or a Jira key on a PR from a fork, is read only when the
+ * reviewer names it.
  */
 
-import { isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
-import { AzureBoardsClient } from "../azureBoards/client.ts";
+import { orgFromOrgUrl } from "../azure/client.ts";
+import { boardsClientFromConfig } from "../azureBoards/client.ts";
 import type { Config } from "../config.ts";
 import { createGitHubClient } from "../github/client.ts";
 import type { IssueDetail } from "../issues/types.ts";
-import { isAllowedJiraBaseUrl, JiraClient } from "../jira/client.ts";
+import { jiraClientFromConfig } from "../jira/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import type { PrCodeSource } from "./source.ts";
 import type { PrRef, TicketRef } from "./types.ts";
 
-/** Most tickets one run reads; a PR tied to more is checked against its description and these. */
-export const MAX_TICKETS = 5;
-/** Most tickets a reviewer can name at once. */
-export const MAX_PASTED_TICKETS = 5;
+/** Most tickets one run reads. The rest are noted, and skipped. */
+const MAX_TICKETS = 5;
+/** Most tickets a reviewer can name for one run. */
+export const MAX_NAMED_TICKETS = 5;
 const MAX_BODY_CHARS = 4000;
 const MAX_COMMENTS = 3;
 const MAX_COMMENT_CHARS = 500;
 
 /** A ticket as read from its tracker. The title, body and comments are its authors', not ours. */
-export interface LoadedTicket {
+interface LoadedTicket {
   key: string;
   title: string;
   url: string;
@@ -37,7 +41,7 @@ export interface LoadedTicket {
 
 export interface LinkedTickets {
   tickets: LoadedTicket[];
-  /** Tickets named but not read, and why. */
+  /** Tickets named or linked but not read, and why. */
   notes: string[];
 }
 
@@ -49,19 +53,13 @@ export interface TicketReaders {
 }
 
 export function ticketReaders(config: Pick<Config, "secrets" | "endpoints">): TicketReaders {
-  const { githubToken, jiraBaseUrl, jiraEmail, jiraApiToken, azureDevopsToken, azureDevopsOrgUrl } =
-    config.secrets;
+  const { githubToken, jiraBaseUrl, azureDevopsOrgUrl } = config.secrets;
   const github = githubToken ? createGitHubClient(config, githubToken) : null;
-  const jira =
-    jiraBaseUrl && jiraEmail && jiraApiToken && isAllowedJiraBaseUrl(jiraBaseUrl)
-      ? new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken)
-      : null;
-  const boards =
-    azureDevopsToken && azureDevopsOrgUrl && isAllowedAzureOrgUrl(azureDevopsOrgUrl)
-      ? new AzureBoardsClient(azureDevopsToken, azureDevopsOrgUrl)
-      : null;
+  const jira = jiraClientFromConfig(config);
+  const boards = boardsClientFromConfig(config);
   return {
     github: github ? (owner, repo, number) => github.issueDetail(owner, repo, number) : null,
+    // A client exists only when its URL is set; the URL checks only narrow the types.
     jira:
       jira && jiraBaseUrl
         ? { host: new URL(jiraBaseUrl).hostname, read: (key) => jira.issueDetail(key) }
@@ -76,9 +74,11 @@ export function ticketReaders(config: Pick<Config, "secrets" | "endpoints">): Ti
 const JIRA_KEY = /^[A-Z][A-Z0-9_]{1,9}-\d{1,7}$/;
 /** In a title or branch name, where a key stands on its own between separators. */
 const JIRA_KEY_IN_TEXT = /(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9_]{1,9}-\d{1,7})(?![A-Za-z0-9])/g;
+/** A GitHub owner or repository name, so a link can't carry an encoded path into the API URL. */
+const GITHUB_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 
 /** How a ticket is named to the reviewer and the agents. */
-export function ticketKey(ref: TicketRef, pr?: PrRef): string {
+function ticketKey(ref: TicketRef, pr?: PrRef): string {
   switch (ref.kind) {
     case "github":
       return pr?.provider === "github" && pr.owner === ref.owner && pr.repo === ref.repo
@@ -92,9 +92,21 @@ export function ticketKey(ref: TicketRef, pr?: PrRef): string {
 }
 
 /**
- * A ticket the reviewer named: a GitHub issue link or `#12`, a Jira key or
- * link, or an Azure Boards work item link or `AB#123`. A link is accepted only
- * on a host Yarvis is configured for.
+ * The Azure DevOps organization a work item link is on, from either host
+ * form. Unlike `orgFromOrgUrl`, any other host gives nothing, so a link
+ * elsewhere is refused rather than read as some org.
+ */
+function azureOrgOf(url: URL, parts: string[]): string | undefined {
+  if (url.hostname.endsWith(".visualstudio.com")) return url.hostname.split(".")[0];
+  if (url.hostname === "dev.azure.com") return parts[0];
+  return undefined;
+}
+
+/**
+ * A ticket the reviewer named: a GitHub issue link (on github.com, read
+ * through whichever GitHub Yarvis is set up for) or `#12` on a GitHub PR, a
+ * Jira key or a link on the configured Jira site, or an Azure Boards work item
+ * link in the configured organization or `AB#123`.
  */
 export function parseTicket(
   input: string,
@@ -119,26 +131,26 @@ export function parseTicket(
   }
   if (url.protocol !== "https:") return refused;
   const parts = url.pathname.split("/").filter(Boolean);
-  if (url.hostname === "github.com" && parts[2] === "issues" && /^\d+$/.test(parts[3] ?? "")) {
-    return {
-      kind: "github",
-      owner: parts[0] as string,
-      repo: parts[1] as string,
-      number: Number(parts[3]),
-    };
+  const [owner, repo, kind, number] = parts;
+  if (
+    url.hostname === "github.com" &&
+    owner &&
+    repo &&
+    GITHUB_NAME.test(owner) &&
+    GITHUB_NAME.test(repo) &&
+    kind === "issues" &&
+    /^\d{1,9}$/.test(number ?? "")
+  ) {
+    return { kind: "github", owner, repo, number: Number(number) };
   }
   if (readers.jira && url.hostname === readers.jira.host) {
     const key = parts[0] === "browse" ? parts[1] : url.searchParams.get("selectedIssue");
     if (key && JIRA_KEY.test(key)) return { kind: "jira", key };
   }
-  const editAt = parts.indexOf("_workitems");
-  if (readers.azure && editAt >= 0 && parts[editAt + 1] === "edit") {
-    const org = url.hostname.endsWith(".visualstudio.com")
-      ? url.hostname.split(".")[0]
-      : url.hostname === "dev.azure.com"
-        ? parts[0]
-        : undefined;
-    const id = Number(parts[editAt + 2]);
+  const workItemsAt = parts.indexOf("_workitems");
+  if (readers.azure && workItemsAt >= 0 && parts[workItemsAt + 1] === "edit") {
+    const org = azureOrgOf(url, parts);
+    const id = Number(parts[workItemsAt + 2]);
     if (org?.toLowerCase() === readers.azure.org.toLowerCase() && Number.isInteger(id) && id > 0) {
       return { kind: "azure", id };
     }
@@ -172,6 +184,32 @@ async function readTicket(ref: TicketRef, readers: TicketReaders): Promise<Issue
   }
 }
 
+/** The PR as `loadTickets` needs it: where its author can put ticket keys, and whether it's from a fork. */
+export interface TicketedPr {
+  title: string;
+  headRef: string;
+  fromFork: boolean;
+}
+
+/**
+ * The PR's own links, less the ones its author could use to make Yarvis read
+ * something the reviewer can see and they can't: an issue in another
+ * repository. Those are noted, so the reviewer can name them.
+ */
+function ownRepoOnly(linked: TicketRef[], pr: PrRef, notes: string[]): TicketRef[] {
+  return linked.filter((ref) => {
+    const elsewhere =
+      ref.kind === "github" &&
+      (pr.provider !== "github" || ref.owner !== pr.owner || ref.repo !== pr.repo);
+    if (elsewhere) {
+      notes.push(
+        `Didn't read ${ticketKey(ref, pr)}: it's in another repository. Name it to read it.`,
+      );
+    }
+    return !elsewhere;
+  });
+}
+
 /**
  * Reads the PR's tickets: the ones the reviewer named first, then the ones the
  * PR links. A ticket that can't be read is noted rather than failing the run,
@@ -179,13 +217,13 @@ async function readTicket(ref: TicketRef, readers: TicketReaders): Promise<Issue
  */
 export async function loadTickets(
   source: Pick<PrCodeSource, "ref" | "linkedTickets">,
-  pr: { title: string; headRef: string },
+  pr: TicketedPr,
   named: readonly string[],
   readers: TicketReaders,
 ): Promise<LinkedTickets> {
   const notes: string[] = [];
   const refs: TicketRef[] = [];
-  for (const input of named.slice(0, MAX_PASTED_TICKETS)) {
+  for (const input of named.slice(0, MAX_NAMED_TICKETS)) {
     const parsed = parseTicket(input, source.ref, readers);
     if ("error" in parsed) notes.push(parsed.error);
     else refs.push(parsed);
@@ -195,9 +233,17 @@ export async function loadTickets(
     console.error("[tickets] could not read linked tickets:", describeError(e));
     return [] as TicketRef[];
   });
-  refs.push(...linked);
+  refs.push(...ownRepoOnly(linked, source.ref, notes));
   if (readers.jira) {
-    refs.push(...jiraKeysIn(pr.title, pr.headRef).map((key): TicketRef => ({ kind: "jira", key })));
+    const keys = jiraKeysIn(pr.title, pr.headRef);
+    if (pr.fromFork && keys.length > 0) {
+      // Anyone can open a PR from a fork and name any key.
+      notes.push(
+        `Didn't look up ${keys.join(", ")} from the title or branch: the PR comes from a fork. Name them to read them.`,
+      );
+    } else {
+      refs.push(...keys.map((key): TicketRef => ({ kind: "jira", key })));
+    }
   }
 
   const seen = new Set<string>();
@@ -211,7 +257,7 @@ export async function loadTickets(
     notes.push(`${unique.length - MAX_TICKETS} more linked tickets weren't read.`);
   }
 
-  const read = await Promise.all(
+  const loaded = await Promise.all(
     unique.slice(0, MAX_TICKETS).map(async (ref): Promise<LoadedTicket | null> => {
       const key = ticketKey(ref, source.ref);
       try {
@@ -227,11 +273,12 @@ export async function loadTickets(
           })),
         };
       } catch (e) {
-        // A Jira key found in a branch name may not be a ticket at all.
+        // Noted, not thrown: a key found in a branch name may not be a ticket
+        // at all, and the description is still worth checking.
         notes.push(`Couldn't read ${key}: ${clientError(e)}`);
         return null;
       }
     }),
   );
-  return { tickets: read.filter((t): t is LoadedTicket => t !== null), notes };
+  return { tickets: loaded.filter((t): t is LoadedTicket => t !== null), notes };
 }

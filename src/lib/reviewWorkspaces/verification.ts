@@ -149,6 +149,9 @@ export interface VerificationChangeMap {
   unmapped: string[];
 }
 
+/** Most tickets a reviewer can name for one run; mirrors the sidecar's `MAX_NAMED_TICKETS`. */
+export const MAX_NAMED_TICKETS = 5;
+
 export type ClaimStatus = "verified" | "partial" | "missing" | "contradicted" | "unverifiable";
 
 export interface VerificationClaim {
@@ -163,7 +166,7 @@ export interface VerificationClaim {
 
 /** The PR's claims checked against the code, and what they were checked against. */
 export interface VerificationClaims {
-  claims: VerificationClaim[];
+  items: VerificationClaim[];
   /** Unfinished work no claim covers. */
   gaps: VerificationFinding[];
   /** The tickets the claims run read; absent on a run that read none. */
@@ -314,6 +317,8 @@ export interface VerificationChecklist {
   report: VerificationReport | null;
   /** What the agents won't read whole. Null until the PR is ready to read. */
   size: VerificationSize | null;
+  /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
+  namedTickets: string[];
 }
 
 const path = (workspaceId: string, prId: string) =>
@@ -398,13 +403,13 @@ export async function startVerification(
   workspaceId: string,
   prId: string,
   sections: readonly ReportSection[],
-  /** Tickets to check the claims against, as keys or links, beside the ones the PR links. */
-  tickets: readonly string[] = [],
+  /** Tickets for the change map and claims, as keys or links, beside the ones the PR links. */
+  namedTickets: readonly string[] = [],
 ): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sections, ...(tickets.length > 0 && { tickets }) }),
+    body: JSON.stringify({ sections, ...(namedTickets.length > 0 && { namedTickets }) }),
   });
   await ensureOk(res, "start verification checks");
   return res.json();

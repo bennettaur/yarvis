@@ -19,7 +19,7 @@ import {
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
-import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
+import { type JiraClient, jiraClientFromConfig } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
 import type { JiraIssueDetail } from "./types.ts";
 
@@ -57,14 +57,6 @@ export interface JiraToolDeps {
   remoteControl?: boolean;
 }
 
-/** Builds a JIRA client from configured secrets, or null when unconfigured. */
-function clientFromConfig(config: Config): JiraClient | null {
-  const { jiraBaseUrl, jiraEmail, jiraApiToken } = config.secrets;
-  if (!jiraBaseUrl || !jiraEmail || !jiraApiToken) return null;
-  if (!isAllowedJiraBaseUrl(jiraBaseUrl)) return null;
-  return new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken);
-}
-
 /**
  * JIRA tools for the chat agent: search issues by JQL, read one issue, create an
  * issue, edit, transition, assign and comment on one, and start work on a
@@ -81,7 +73,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
   const gitRunner = deps.gitRunner ?? defaultGitRunner;
   const remoteControl = deps.remoteControl ?? false;
   const jira: JiraClient | null =
-    deps.jiraClient !== undefined ? deps.jiraClient : clientFromConfig(config);
+    deps.jiraClient !== undefined ? deps.jiraClient : jiraClientFromConfig(config);
 
   const _launchClaude = async (detail: Awaited<ReturnType<typeof getWorkspace>>) => {
     if (!detail) return { error: "workspace vanished after creation" };

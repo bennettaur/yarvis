@@ -67,7 +67,7 @@ describe("fileNotes from the claims", () => {
       {
         mustRead: [],
         claims: {
-          claims: [
+          items: [
             {
               claim: "Caches users",
               source: "description",

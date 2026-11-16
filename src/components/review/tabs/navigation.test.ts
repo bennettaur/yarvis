@@ -63,7 +63,14 @@ describe("must-read lookup", () => {
 
   it("reads the report the checklist put together, and nothing before there is one", () => {
     const checklist = (r: VerificationReport | null) =>
-      ({ headSha: "h", themes: [], items: [], report: r, size: null }) as VerificationChecklist;
+      ({
+        headSha: "h",
+        themes: [],
+        items: [],
+        report: r,
+        size: null,
+        namedTickets: [],
+      }) as VerificationChecklist;
     expect(reportOf(checklist(report))).toBe(report);
     expect(reportOf(checklist(null))).toBeNull();
     expect(reportOf(null)).toBeNull();

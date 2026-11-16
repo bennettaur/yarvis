@@ -146,6 +146,7 @@ const checklist = ({
   })),
   report,
   size,
+  namedTickets: [],
 });
 
 /** Every section in `report` answered by one current run. */
@@ -348,6 +349,28 @@ describe("VerificationTab", () => {
     button(row(host, "Claims"), "Run")?.click();
     await waitFor(() => named.length > 0, "the start");
     expect(named).toEqual(["ABC-12", "#45", "https://acme.atlassian.net/browse/XY-3"]);
+  });
+
+  it("offers the last run's tickets again, and sends at most five", async () => {
+    let named: readonly string[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, tickets = []) => {
+        named = tickets;
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount({ ...checklist(), namedTickets: ["ABC-12", "#45"] });
+    const input = host.querySelector(
+      'input[placeholder="ABC-123, #45 or a ticket link"]',
+    ) as HTMLInputElement;
+    expect(input.value).toBe("ABC-12, #45");
+    typeInto(input, "A-1 B-2 C-3 D-4 E-5 F-6");
+    button(row(host, "Claims"), "Run")?.click();
+    await waitFor(() => named.length > 0, "the start");
+    expect(named).toEqual(["A-1", "B-2", "C-3", "D-4", "E-5"]);
   });
 
   it("names the checks that couldn't start, while the others run", async () => {
@@ -602,7 +625,7 @@ describe("resultVerdict", () => {
         {
           ...base,
           claims: {
-            claims: [
+            items: [
               { claim: "a", source: "title", status: "verified", evidence: "" },
               { claim: "b", source: "title", status: "contradicted", evidence: "" },
             ],
@@ -616,7 +639,7 @@ describe("resultVerdict", () => {
         {
           ...base,
           claims: {
-            claims: [{ claim: "a", source: "title", status: "verified", evidence: "" }],
+            items: [{ claim: "a", source: "title", status: "verified", evidence: "" }],
             gaps: [finding("low")],
           },
         },
@@ -624,8 +647,18 @@ describe("resultVerdict", () => {
       ],
       [
         "claims",
-        { ...base, claims: { claims: [], gaps: [] } },
+        { ...base, claims: { items: [], gaps: [] } },
         { text: "No claims", tone: "muted" },
+      ],
+      [
+        "claims",
+        { ...base, claims: { items: [], gaps: [finding("high")] } },
+        { text: "1 gap", tone: "warn" },
+      ],
+      [
+        "changeMap",
+        { ...base, changeMap: { intent: "i", unmapped: ["a.ts"], themes: [] } },
+        { text: "Not mapped", tone: "warn" },
       ],
       ["summary", base, null],
     ];

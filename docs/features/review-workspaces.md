@@ -239,26 +239,33 @@ line in the report opens the diff there.
   - **Outlier** is something the PR's goal doesn't need, such as an unrelated
     fix, a drive-by refactor or an unexplained behaviour change.
 
-  An outlier comes with a question for the author, which **Post to PR** posts
-  as a comment on its first file. Changed files no theme names are listed
+  A change the description mentions can still be an outlier, if the goal
+  doesn't need it. An outlier inside a file the core also changes is its own
+  theme, with the lines it covers. An outlier comes with a question for the
+  author, which **Post to PR** posts as a comment on its first file. Changed files no theme names are listed
   under **In no theme**.
 - **Claims** lists what the PR's title, description and linked tickets say it
   does. Each claim is marked **Verified**, **Partial**, **Missing**,
   **Contradicted** or **Can't tell**, with the code behind the verdict. A
   claim the code doesn't meet can be posted to the PR, and it shows on its
-  line in the diff. Unfinished work no claim covers, such as a TODO on the
+  line in the diff. A verdict about the code has to name where in the code;
+  one that doesn't is shown as **Can't tell**. Unfinished work no claim covers, such as a TODO on the
   main path or a review comment's request the code still doesn't make, is
   listed under **Unfinished work**. The section names the tickets it read
   and any it couldn't.
 
   The tickets come from three places:
   - The issues the PR closes on GitHub, or its linked work items on Azure
-    DevOps.
-  - Jira keys in its title or branch name.
+    DevOps. An issue in a different repository is read only when you name
+    it, since the PR's author chose to link it.
+  - Jira keys in its title or branch name, when Jira is set up. On a PR from
+    a fork, these are listed but not read unless you name them, since
+    anyone can open one and name any key.
   - Any you add in **More tickets for the change map and claims** before you
     run them. That field takes a Jira key (`ABC-123`), a GitHub issue (`#45`
-    or its link), an Azure Boards work item (`AB#123` or its link), or a Jira
-    link.
+    on a GitHub PR, or its github.com link), an Azure Boards work item
+    (`AB#123` or its link), or a Jira link. It offers the tickets from your
+    last run again.
 
   Yarvis reads a ticket only from a GitHub, Jira or Azure DevOps account set
   up in Settings, and refuses a link to any other host. It reads at most five

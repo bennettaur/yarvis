@@ -23,7 +23,7 @@ themselves, so each verdict has to name the evidence.
 
 ## Claims
 
-1. List the claims: each thing the title, description or a ticket says the
+1. List the claims as `items`: each thing the title, description or a ticket says the
    change does, fixes, adds or guarantees, one behaviour per claim. Leave out
    claims about process ("tested locally", "discussed with the team") unless
    the code can show them. At most 12, the most important first. With no
@@ -39,18 +39,19 @@ themselves, so each verdict has to name the evidence.
    - `contradicted`: the code does something different, or the opposite.
    - `unverifiable`: the code can't show it either way, as with a claim about
      production data, a manual test or another service.
-   - `evidence`: at most 40 words naming the code, as in "`retryUpload` in
+   - `evidence`: at most 35 words naming the code, as in "`retryUpload` in
      `upload.ts` retries 3 times with backoff". For `partial`, `missing` and
      `contradicted`, say what is missing or different.
-   - `path` and head `line`: where the claim is (or should be) delivered, when
-     there is a place.
+   - `path` and head `line`: where the claim is (or should be) delivered.
+     `verified`, `partial` and `contradicted` need one: a verdict about the
+     code without a place in it is shown as `unverifiable`.
 3. `gaps`: unfinished work no claim covers, at most 5, most severe first.
    - A TODO, FIXME, stub, placeholder or empty error path this PR added on the
      main path.
    - A review comment in `pr.md` asking for a change in what the code does that
      the code still doesn't make.
 
-   Each gap is a finding with `title` (at most 12 words), `detail` (at most 40
+   Each gap is a finding with `title` (at most 12 words), `detail` (at most 35
    words), `severity` and `path` and head `line`. Use `high` for a broken main
    path, `medium` for a gap to close before merge and `low` for the rest.
 
@@ -65,7 +66,7 @@ Reply with one JSON object and nothing else:
 
 ```json
 {
-  "claims": [
+  "items": [
     {
       "claim": "…",
       "source": "description",

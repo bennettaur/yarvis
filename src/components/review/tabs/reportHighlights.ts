@@ -37,7 +37,7 @@ export function fileNotes(report: VerificationReport | null, path: string): File
       notes.push({ source: "Risk", title: c.title, detail: c.detail, line: c.line });
     }
   }
-  for (const c of report.claims?.claims ?? []) {
+  for (const c of report.claims?.items ?? []) {
     if (c.path === path && c.line && isUnmetClaim(c.status)) {
       notes.push({
         source: `Claim ${CLAIM_LABEL[c.status].toLowerCase()}`,
