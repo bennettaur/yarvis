@@ -122,7 +122,6 @@ exit 1`,
           : inner.local(args, opts);
       },
     }),
-    stackOf: async () => [],
   };
   kickoff = {
     review,

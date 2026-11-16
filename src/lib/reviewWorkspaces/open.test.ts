@@ -1,7 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { resetReviewApi, stubReviewApi } from "../../test/reviewWorkspacesApi";
 import { resolvePrLocator } from "../pr/locate";
-import type { ReviewWorkspaceSummary } from "./api";
-import { findWorkspaceWithPr, prWebUrl, shortPrName } from "./open";
+import type { PrRef } from "../pr/types";
+import { cachedFetch, primeCache } from "../resourceCache";
+import type { ReviewWorkspacePr, ReviewWorkspaceSummary } from "./api";
+import { reviewWorkspaceKey } from "./cache";
+import { addStackLayers, findWorkspaceWithPr, prWebUrl, shortPrName } from "./open";
 
 const ws = (
   id: string,
@@ -65,5 +69,51 @@ describe("prWebUrl and shortPrName", () => {
     expect(shortPrName({ provider: "github", owner: "acme", repo: "widgets", number: 7 })).toBe(
       "widgets#7",
     );
+  });
+});
+
+describe("addStackLayers", () => {
+  afterAll(resetReviewApi);
+  const layer = (number: number): PrRef => ({ provider: "github", owner: "o", repo: "r", number });
+
+  it("adds each layer in order, waiting for the one before it", async () => {
+    const order: string[] = [];
+    let inFlight = 0;
+    stubReviewApi({
+      addReviewPr: async (_ws, ref) => {
+        inFlight++;
+        expect(inFlight).toBe(1);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        order.push(shortPrName(ref));
+        inFlight--;
+        return {} as ReviewWorkspacePr;
+      },
+    });
+    await addStackLayers("ws", [layer(1), layer(2), layer(3)]);
+    expect(order).toEqual(["r#1", "r#2", "r#3"]);
+  });
+
+  it("keeps going past layers that fail, then names each one", async () => {
+    const added: string[] = [];
+    stubReviewApi({
+      addReviewPr: async (_ws, ref) => {
+        const name = shortPrName(ref);
+        if (name === "r#2") throw new Error("already in the workspace");
+        if (name === "r#4") {
+          // Cached after the adds before it, so only a refresh after this
+          // failing last layer drops it.
+          primeCache(reviewWorkspaceKey("ws"), "before the last layer");
+          throw new Error("not found");
+        }
+        added.push(name);
+        return {} as ReviewWorkspacePr;
+      },
+    });
+    await expect(addStackLayers("ws", [layer(1), layer(2), layer(3), layer(4)])).rejects.toThrow(
+      "Couldn't add r#2: already in the workspace; r#4: not found",
+    );
+    expect(added).toEqual(["r#1", "r#3"]);
+    // The cached workspace was dropped, so the nav reloads and shows the adds.
+    expect(await cachedFetch(reviewWorkspaceKey("ws"), async () => "reloaded")).toBe("reloaded");
   });
 });

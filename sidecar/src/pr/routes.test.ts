@@ -19,6 +19,14 @@ import type { PrRef } from "./types.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
+
+async function until(check: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
 const db = getDb(url).db;
 
 const config: Config = {
@@ -537,6 +545,90 @@ describe("POST /api/pr/workspace", () => {
       });
       expect(res.status).toBe(400);
       expect(((await res.json()) as any).error).toContain("github token");
+    });
+  });
+
+  describe("POST /api/pr/fix-checks", () => {
+    const fix = (body: unknown = { ref }) =>
+      withGithub.request("/api/pr/fix-checks", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const withChecks = (conclusion: string) => ({
+      ...openPr,
+      state: "OPEN",
+      baseRefName: "main",
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    it("creates a workspace that starts on the failing checks when the PR has none", async () => {
+      stubPrDetail(withChecks("FAILURE"));
+      const res = await fix();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { outcome: string; workspaceId: string };
+      expect(body.outcome).toBe("created");
+      const [row] =
+        await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
+      expect(row?.pending_issue_prompt).toContain("Fix the failing CI checks on pull request #1");
+    });
+
+    it("400s a pull request with nothing failing", async () => {
+      stubPrDetail(withChecks("SUCCESS"));
+      const res = await fix();
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("no failing checks");
+    });
+
+    it("rejects a confirm flag that isn't a boolean", async () => {
+      const res = await fix({ ref, confirm: "yes" });
+      expect(res.status).toBe(400);
+    });
+
+    it("502s when the provider read fails", async () => {
+      globalThis.fetch = (async () =>
+        new Response("rate limited", { status: 403 })) as unknown as typeof fetch;
+      const res = await fix();
+      expect(res.status).toBe(502);
+    });
+
+    // A second click while the first is still reading the PR must not hand the
+    // checks over twice.
+    it("409s a second request while the first is being handled", async () => {
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reads = 0;
+      globalThis.fetch = (async () => {
+        reads++;
+        await held;
+        return new Response(
+          JSON.stringify({ data: { repository: { pullRequest: withChecks("SUCCESS") } } }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch;
+
+      const first = fix();
+      await until(async () => reads > 0, "the first request reading the PR");
+      const second = await fix();
+      expect(second.status).toBe(409);
+      release();
+      expect((await first).status).toBe(400);
     });
   });
 });

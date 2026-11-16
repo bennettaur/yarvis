@@ -57,6 +57,7 @@ async function mount(
       progress: new Map(),
       openTab: (spec) => opened.push(spec),
       onSetup: () => {},
+      onAddStackLayers: async () => {},
     }),
   );
   unmount = mounted.unmount;
@@ -236,6 +237,7 @@ describe("ReviewNav's run buttons", () => {
         progress: new Map(),
         openTab: () => {},
         onSetup: () => {},
+        onAddStackLayers: async () => {},
       });
     }
     const mounted = await mountForInteraction(createElement(Host));
