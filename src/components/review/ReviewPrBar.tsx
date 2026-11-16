@@ -139,6 +139,11 @@ const NEW_COMMITS_POLL_MS = 2 * 60 * 1000;
 const AGENT_TABS: { kind: StaticTabKind; label: string; title: string }[] = [
   { kind: "guide", label: "Guided review", title: "Walk through the PR step by step" },
   {
+    kind: "story",
+    label: "Story",
+    title: "Read the PR theme by theme, the work that matters first",
+  },
+  {
     kind: "verification",
     label: "Verification",
     title: "Have an agent check the PR does what it says",

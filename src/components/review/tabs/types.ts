@@ -9,6 +9,7 @@ export type StaticTabKind =
   | "comments"
   | "since-review"
   | "guide"
+  | "story"
   | "verification"
   | "mutation";
 

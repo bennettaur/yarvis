@@ -11,9 +11,11 @@ import {
 } from "../../../lib/resourceCache";
 import {
   type ReviewFileContent,
+  type ReviewFileDiff,
   type ReviewTree,
   type ReviewWorkspacePr,
   reviewFile,
+  reviewFileDiff,
   reviewTree,
 } from "../../../lib/reviewWorkspaces/api";
 import {
@@ -55,6 +57,25 @@ export function fileKey(pr: PrShas, path: string | null, side: ModelSide): strin
 export function useReviewTree(workspaceId: string, pr: PrShas): Resource<ReviewTree> {
   const key = treeKey(pr);
   return useCachedResource(key, () => reviewTree(workspaceId, pr.id), AT_COMMIT);
+}
+
+export function fileDiffKey(pr: PrShas, path: string): string | null {
+  return pr.headSha && pr.mergeBaseSha
+    ? `${reviewWorkspacePrefix(pr.id)}diff:${pr.mergeBaseSha}..${pr.headSha}:${path}`
+    : null;
+}
+
+/** One file's patch, from the merge-base to the head. */
+export function useReviewFileDiff(
+  workspaceId: string,
+  pr: PrShas,
+  path: string,
+): Resource<ReviewFileDiff> {
+  return useCachedResource(
+    fileDiffKey(pr, path),
+    () => reviewFileDiff(workspaceId, pr.id, path),
+    AT_COMMIT,
+  );
 }
 
 /** One side of a file; `path` null skips the read (an added file has no base). */
