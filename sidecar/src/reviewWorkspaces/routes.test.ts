@@ -679,6 +679,9 @@ describe("CI evidence", () => {
         listDir: async () => [],
         searchCode: async () => [],
         searchScope: "",
+        ciChecks: async () => [
+          { name: "tests", status: "COMPLETED", conclusion: "FAILURE", url: null },
+        ],
         checkRunOutputs: async () => [],
         checkRunAnnotations: async () => [],
         codeScanningAlerts: async () => [],
@@ -697,12 +700,20 @@ describe("CI evidence", () => {
     ]);
   });
 
+  it("answers 404 for a PR the workspace doesn't have", async () => {
+    const { wsId } = await insertPr();
+    const res = await evidenceApp(() => ({ error: "unused" })).request(
+      `/rw/${wsId}/prs/00000000-0000-4000-8000-000000000000/evidence`,
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("says what is missing when the provider isn't set up", async () => {
     const { wsId, prId } = await insertPr();
     const res = await evidenceApp(() => ({ error: "github token not configured" })).request(
       `/rw/${wsId}/prs/${prId}/evidence`,
     );
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "github token not configured" });
   });
 });

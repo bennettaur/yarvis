@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
-import { primeCache } from "../../../lib/resourceCache";
+import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
 import {
@@ -9,6 +9,7 @@ import {
   type ChecklistRun,
   type ChecklistThemeId,
   DEFAULT_SECTIONS,
+  type EvidenceItem,
   REPORT_SECTIONS,
   type ReportSection,
   type VerificationChecklist,
@@ -602,6 +603,53 @@ describe("evidence from CI, scanners and bots", () => {
     await waitFor(() => textOf(ci.innerHTML).includes("expected 2, got 3"), "the entries");
     expect(textOf(ci.innerHTML)).toContain("src/order.test.ts:12");
     expect(button(ci, "Open")).toBeDefined();
+  });
+
+  it("opens the diff at a line an annotation points at, and counts what isn't shown", async () => {
+    const opened: unknown[] = [];
+    primeCache(verificationKey(pr.id), checklist());
+    primeCache(evidenceKey(pr.id), {
+      ...evidence,
+      items: [{ ...(evidence.items[0] as EvidenceItem), hiddenEntries: 3 }],
+    });
+    primeCache(changedFilesKey(pr) ?? "", {
+      headSha: "",
+      mergeBaseSha: "",
+      files: [{ path: "src/order.test.ts" }],
+    } as never);
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    const mounted = await mountForInteraction(
+      createElement(VerificationTab, { ctx: { ...ctx, openTab: (tab) => opened.push(tab) } }),
+    );
+    unmount = mounted.unmount;
+    const ci = row(mounted.host, "CI checks");
+    button(ci, "Show 5")?.click();
+    await waitFor(() => button(ci, "src/order.test.ts:12") !== undefined, "the location link");
+    expect(textOf(ci.innerHTML)).toContain("3 more not shown; see the PR.");
+    button(ci, "src/order.test.ts:12")?.click();
+    expect(opened).toEqual([
+      { kind: "diff", prId: pr.id, path: "src/order.test.ts", revealLine: 12 },
+    ]);
+  });
+
+  it("says why CI results couldn't be read, and still shows the checklist", async () => {
+    stubReviewApi({
+      verificationEvidence: async () => {
+        throw new Error("GitHub rate limit reached");
+      },
+    });
+    primeCache(verificationKey(pr.id), checklist());
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    invalidate(evidenceKey(pr.id));
+    const mounted = await mountForInteraction(createElement(VerificationTab, { ctx }));
+    unmount = mounted.unmount;
+    await waitFor(
+      () => textOf(mounted.host.innerHTML).includes("Couldn't read CI results"),
+      "the error",
+    );
+    expect(textOf(mounted.host.innerHTML)).toContain("GitHub rate limit reached");
+    expect(row(mounted.host, "Test quality")).toBeDefined();
   });
 
   it("says when CI ran on a different commit than the checkout", async () => {

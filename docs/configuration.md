@@ -78,10 +78,11 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
   offer fine-grained tokens a Checks permission, so CI check runs can't be
   read with one: the PR still opens, and its **Checks** section says the
-  token can't read them, and the review workspace's verification checklist
-  shows no check annotations. Its code scanning alerts need **Code scanning
-  alerts: Read** on a fine-grained token; `repo` already covers them for a
-  signed-in token or a classic PAT. A token used with an organization that enforces SAML
+  token can't read them. The review workspace's verification checklist then
+  shows no check annotations either. That checklist's code scanning row needs
+  **Code scanning alerts: Read** on a fine-grained token; `repo` (or
+  `security_events`) covers it for a signed-in token or a classic PAT. The row
+  says so when the token can't read the alerts. A token used with an organization that enforces SAML
   SSO also has to be authorized for that org on GitHub.
 
   When GitHub refuses a request, the app says why: an expired or revoked

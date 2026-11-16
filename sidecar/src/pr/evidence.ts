@@ -9,47 +9,18 @@
  * as plain text and never put into a prompt.
  */
 
-import { describeError } from "../llm/errors.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import { type CheckOutcome, checkOutcome } from "../reviewWorkspaces/verification.ts";
 import type { PrCodeSource } from "./source.ts";
-import type { CheckItem, ReviewComment } from "./types.ts";
-
-/** A check run's output on GitHub: its headline, summary and line annotations. */
-export interface CheckRunOutput {
-  id: number;
-  name: string;
-  /** The app that posted it, such as "github-actions" or "semgrep". */
-  app: string | null;
-  title: string | null;
-  summary: string | null;
-  annotationsCount: number;
-}
-
-export type AnnotationLevel = "failure" | "warning" | "notice";
-
-export interface CheckAnnotation {
-  path: string;
-  line: number | null;
-  level: AnnotationLevel;
-  title: string | null;
-  message: string;
-}
-
-export interface ScanAlert {
-  number: number;
-  tool: string;
-  rule: string;
-  /** "critical" | "high" | "medium" | "low" for security rules, else "error" | "warning" | "note". */
-  severity: string;
-  description: string;
-  path: string | null;
-  line: number | null;
-  message: string;
-  url: string | null;
-}
-
-/** What a provider can't show, as opposed to there being nothing to show. */
-export class EvidenceUnavailable extends Error {}
+import {
+  type AnnotationLevel,
+  type CheckAnnotation,
+  type CheckItem,
+  type CheckRunOutput,
+  EvidenceUnavailable,
+  type ReviewComment,
+  type ScanAlert,
+} from "./types.ts";
 
 export type EvidenceSeverity = "high" | "medium" | "low" | "info";
 
@@ -65,16 +36,16 @@ export interface EvidenceEntry {
   url: string | null;
 }
 
-export const EVIDENCE_IDS = [
-  "ci-checks",
-  "code-scanning",
-  "security-bots",
-  "coverage-bots",
-  "other-bots",
-] as const;
-export type EvidenceId = (typeof EVIDENCE_IDS)[number];
+export type EvidenceId =
+  | "ci-checks"
+  | "code-scanning"
+  | "security-bots"
+  | "coverage-bots"
+  | "other-bots";
 
 export type EvidenceTheme = "correctness" | "risk" | "maintainability";
+
+export type EvidenceTone = "good" | "warn" | "bad" | "muted";
 
 export interface EvidenceItem {
   id: EvidenceId;
@@ -83,9 +54,9 @@ export interface EvidenceItem {
   description: string;
   /** A short tally, such as "1 of 12 failing". */
   summary: string;
-  tone: "good" | "warn" | "bad" | "muted";
+  tone: EvidenceTone;
   entries: EvidenceEntry[];
-  /** Entries left off past the cap. */
+  /** Entries the provider has that aren't in `entries`, past a cap. */
   hiddenEntries: number;
   /** Why this couldn't be read in full, when it couldn't. */
   note: string | null;
@@ -99,14 +70,14 @@ export interface PrEvidence {
 
 /** Enough to show what is wrong; a long scanner report is read on the provider. */
 const MAX_TEXT_CHARS = 400;
-/** How much of a comment is cleaned up, which keeps the regexes cheap on a huge one. */
-const MAX_SCANNED_CHARS = 8000;
+/** A title is one line; the detail under it carries the rest. */
+const MAX_TITLE_CHARS = 120;
 /** Checks whose annotations are read, failing ones first. Each is one request. */
 const MAX_ANNOTATED_CHECKS = 10;
 /** Entries shown per item. */
 const MAX_ENTRIES = 50;
 
-const ENTRIES: Record<EvidenceId, Pick<EvidenceItem, "theme" | "label" | "description">> = {
+const ITEM_INFO: Record<EvidenceId, Pick<EvidenceItem, "theme" | "label" | "description">> = {
   "ci-checks": {
     theme: "correctness",
     label: "CI checks",
@@ -164,18 +135,23 @@ export function botKind(login: string): "security-bots" | "coverage-bots" | "oth
  * folded in (badges, `<details>`), none of which reads as plain text.
  */
 export function plainText(text: string, max = MAX_TEXT_CHARS): string {
-  // A comment can run to 64k characters; past this much nothing more is shown anyway.
+  // Anyone who opens a PR can write annotations, so the text may be built to
+  // be slow. Only a few times what is kept is read, and every repeat is
+  // bounded, so the cost stays linear in that.
   const flat = text
-    .slice(0, MAX_SCANNED_CHARS)
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .slice(0, max * 4)
+    .replace(/<!--[\s\S]{0,500}?-->/g, " ")
+    .replace(/!\[[^\]]{0,500}\]\([^)]{0,500}\)/g, " ")
+    .replace(/\[([^\]]{0,500})\]\([^)]{0,500}\)/g, "$1")
     .replace(/<\/?[a-zA-Z][^>]{0,500}>/g, " ")
     // Headings and quotes at a line's start, bold and code marks anywhere.
     .replace(/^[ \t]{0,3}(?:#{1,6}|>+)[ \t]*/gm, "")
     .replace(/\*\*|`/g, "")
+    // Control, zero-width and bidi characters can make text read as something else.
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+  if (flat.length <= max) return flat;
   const chars = Array.from(flat);
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : flat;
 }
@@ -198,7 +174,7 @@ const ANNOTATION_SEVERITY: Record<AnnotationLevel, EvidenceSeverity> = {
   notice: "info",
 };
 
-export function alertSeverity(severity: string): EvidenceSeverity {
+function alertSeverity(severity: string): EvidenceSeverity {
   switch (severity) {
     case "critical":
     case "high":
@@ -217,29 +193,38 @@ export function alertSeverity(severity: string): EvidenceSeverity {
 
 const SEVERITY_ORDER: EvidenceSeverity[] = ["high", "medium", "low", "info"];
 
-function toneOf(entries: EvidenceEntry[]): EvidenceItem["tone"] {
+function toneOf(entries: EvidenceEntry[]): EvidenceTone {
   if (entries.some((e) => e.severity === "high")) return "bad";
   if (entries.some((e) => e.severity === "medium")) return "warn";
   return entries.length === 0 ? "good" : "muted";
 }
 
-function item(
+function evidenceItem(
   id: EvidenceId,
   entries: EvidenceEntry[],
-  summary: string,
-  note: string | null = null,
-  tone: EvidenceItem["tone"] = toneOf(entries),
+  {
+    summary,
+    note = null,
+    tone = toneOf(entries),
+    unread = 0,
+  }: {
+    summary: string;
+    note?: string | null;
+    tone?: EvidenceTone;
+    /** Entries the provider has that were never read, such as annotations past a cap. */
+    unread?: number;
+  },
 ): EvidenceItem {
   const sorted = [...entries].sort(
     (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
   );
   return {
     id,
-    ...ENTRIES[id],
+    ...ITEM_INFO[id],
     summary,
     tone,
     entries: sorted.slice(0, MAX_ENTRIES),
-    hiddenEntries: Math.max(0, sorted.length - MAX_ENTRIES),
+    hiddenEntries: Math.max(0, sorted.length - MAX_ENTRIES) + unread,
     note,
   };
 }
@@ -248,9 +233,19 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** Why a read failed, for the item's note. */
 function unavailableNote(what: string, e: unknown): string {
-  return e instanceof EvidenceUnavailable
-    ? e.message
-    : `Couldn't read ${what}: ${describeError(e)}`;
+  if (e instanceof EvidenceUnavailable) return e.message;
+  console.error(`[evidence] could not read ${what}:`, describeError(e));
+  return `Couldn't read ${what}: ${clientError(e)}`;
+}
+
+/**
+ * The output a check posted. Matched on GitHub's run id, since two workflows
+ * can each have a job called "build"; by name only when one run has it.
+ */
+function outputFor(check: CheckItem, outputs: CheckRunOutput[]): CheckRunOutput | undefined {
+  if (check.checkRunId !== undefined) return outputs.find((o) => o.id === check.checkRunId);
+  const named = outputs.filter((o) => o.name === check.name);
+  return named.length === 1 ? named[0] : undefined;
 }
 
 /**
@@ -258,21 +253,23 @@ function unavailableNote(what: string, e: unknown): string {
  * pointed at. A passing check's warnings are listed too, since a linter that
  * only warns still passes.
  */
-export function ciChecksItem(
+function ciChecksItem(
   checks: CheckItem[],
-  outputs: CheckRunOutput[] | null,
+  outputs: CheckRunOutput[],
   annotations: Map<number, CheckAnnotation[]>,
   notes: string[],
 ): EvidenceItem {
   const entries: EvidenceEntry[] = [];
+  let unread = 0;
   const outcomes = checks.map((c) => ({ check: c, outcome: checkOutcome(c) }));
   for (const { check, outcome } of outcomes) {
-    const output = outputs?.find((o) => o.name === check.name);
+    const name = plainText(check.name, MAX_TITLE_CHARS);
+    const output = outputFor(check, outputs);
     const severity = OUTCOME_SEVERITY[outcome];
     if (severity) {
       entries.push({
-        source: check.name,
-        title: `${check.name}: ${outcome}`,
+        source: name,
+        title: `${name}: ${outcome}`,
         detail: plainText(output?.title ?? output?.summary ?? ""),
         severity,
         path: null,
@@ -280,10 +277,13 @@ export function ciChecksItem(
         url: httpsUrl(check.url),
       });
     }
-    for (const a of output ? (annotations.get(output.id) ?? []) : []) {
+    if (!output) continue;
+    const read = annotations.get(output.id) ?? [];
+    unread += Math.max(0, output.annotationsCount - read.length);
+    for (const a of read) {
       entries.push({
-        source: check.name,
-        title: plainText(a.title ?? `${check.name} ${a.level}`, 120),
+        source: name,
+        title: plainText(a.title ?? `${name} ${a.level}`, MAX_TITLE_CHARS),
         detail: plainText(a.message),
         severity: ANNOTATION_SEVERITY[a.level],
         path: a.path,
@@ -299,16 +299,23 @@ export function ciChecksItem(
   else if (failed > 0) summary = `${failed} of ${checks.length} failing`;
   else if (pending > 0) summary = `${pending} of ${checks.length} still running`;
   else summary = `All ${checks.length} passed`;
-  const tone = checks.length === 0 ? "muted" : toneOf(entries);
-  return item("ci-checks", entries, summary, notes.length > 0 ? notes.join(" ") : null, tone);
+  return evidenceItem("ci-checks", entries, {
+    summary,
+    note: notes.length > 0 ? notes.join(" ") : null,
+    // No checks at all isn't good news, though nothing failed.
+    ...(checks.length === 0 ? { tone: "muted" as const } : {}),
+    unread,
+  });
 }
 
-export function codeScanningItem(alerts: ScanAlert[] | null, note: string | null): EvidenceItem {
-  if (alerts === null) return item("code-scanning", [], "Not available", note, "muted");
+function codeScanningItem(alerts: ScanAlert[] | null, note: string | null): EvidenceItem {
+  if (alerts === null) {
+    return evidenceItem("code-scanning", [], { summary: "Not available", note, tone: "muted" });
+  }
   const entries = alerts.map(
     (a): EvidenceEntry => ({
-      source: a.tool,
-      title: plainText(a.description || a.rule, 120),
+      source: plainText(a.tool, MAX_TITLE_CHARS),
+      title: plainText(a.description || a.rule, MAX_TITLE_CHARS),
       detail: plainText(a.message),
       severity: alertSeverity(a.severity),
       path: a.path,
@@ -316,15 +323,14 @@ export function codeScanningItem(alerts: ScanAlert[] | null, note: string | null
       url: httpsUrl(a.url),
     }),
   );
-  return item(
-    "code-scanning",
-    entries,
-    alerts.length === 0 ? "No open alerts" : plural(alerts.length, "open alert"),
+  return evidenceItem("code-scanning", entries, {
+    summary: alerts.length === 0 ? "No open alerts" : plural(alerts.length, "open alert"),
     note,
-  );
+  });
 }
 
-interface BotNote {
+/** A comment with where it was left: a file and line for a review thread, none for the conversation. */
+interface PlacedComment {
   comment: ReviewComment;
   path: string | null;
   line: number | null;
@@ -336,9 +342,9 @@ interface BotNote {
  * someone already dealt with it. Severity is unknown from a comment alone, so a
  * security bot's comment reads as medium and the rest as low.
  */
-export function botItems(notes: BotNote[]): EvidenceItem[] {
+function botItems(placed: PlacedComment[]): EvidenceItem[] {
   const byKind = new Map<EvidenceId, EvidenceEntry[]>();
-  for (const { comment, path, line, resolved } of notes) {
+  for (const { comment, path, line, resolved } of placed) {
     if (resolved || !comment.isBot) continue;
     const kind = botKind(comment.author);
     const text = plainText(comment.body);
@@ -359,56 +365,64 @@ export function botItems(notes: BotNote[]): EvidenceItem[] {
     .filter((kind) => byKind.has(kind))
     .map((kind) => {
       const entries = byKind.get(kind) ?? [];
-      return item(kind, entries, plural(entries.length, "comment"));
+      return evidenceItem(kind, entries, { summary: plural(entries.length, "comment") });
     });
 }
 
 /**
  * Everything other tools said about the PR, read from its provider. Each part
  * is read on its own, so a token that can't see code scanning still gets the
- * CI checks.
+ * CI checks. Only the PR itself failing to load fails the whole read.
  */
 export async function prEvidence(source: PrCodeSource): Promise<PrEvidence> {
-  const detail = await source.detail();
+  // Alerts don't need the head commit, so they are read alongside the PR.
+  const alertsRead = source.codeScanningAlerts().then(
+    (list) => ({ list, note: list === null ? "This provider has no code scanning alerts." : null }),
+    (e) => ({ list: null, note: unavailableNote("code scanning alerts", e) }),
+  );
+  const [detail, checks] = await Promise.all([source.detail(), source.ciChecks()]);
   const notes: string[] = [];
   if (detail.checksUnavailable) {
     notes.push("Some checks are hidden from the configured token, so this list is incomplete.");
   }
 
-  const [outputs, alerts] = await Promise.all([
-    source.checkRunOutputs(detail.headSha).catch((e) => {
-      notes.push(unavailableNote("the checks' output", e));
-      return null;
-    }),
-    source.codeScanningAlerts().then(
-      (list) => ({
-        list,
-        note: list === null ? "This provider has no code scanning alerts." : null,
-      }),
-      (e) => ({ list: null, note: unavailableNote("code scanning alerts", e) }),
+  const [runs, alerts] = await Promise.all([
+    source.checkRunOutputs(detail.headSha).then(
+      (list) => ({ list: list ?? [], note: null }),
+      (e) => ({ list: [], note: unavailableNote("the checks' output", e) }),
     ),
+    alertsRead,
   ]);
+  if (runs.note) notes.push(runs.note);
 
-  // Failing checks first, so a cap leaves out the passing ones' notices.
-  const failing = new Set(
-    detail.checks.filter((c) => checkOutcome(c) === "failed").map((c) => c.name),
+  // Failing checks first, so the cap leaves out passing checks' notices rather than failures.
+  const failingRuns = new Set(
+    checks
+      .filter((c) => checkOutcome(c) === "failed")
+      .map((c) => outputFor(c, runs.list)?.id)
+      .filter((id) => id !== undefined),
   );
-  const annotated = (outputs ?? [])
+  const checksToAnnotate = runs.list
     .filter((o) => o.annotationsCount > 0)
-    .sort((a, b) => Number(failing.has(b.name)) - Number(failing.has(a.name)))
+    .sort((a, b) => Number(failingRuns.has(b.id)) - Number(failingRuns.has(a.id)))
     .slice(0, MAX_ANNOTATED_CHECKS);
   const annotations = new Map<number, CheckAnnotation[]>();
+  const unreadable: string[] = [];
   await Promise.all(
-    annotated.map(async (o) => {
+    checksToAnnotate.map(async (o) => {
       try {
         annotations.set(o.id, await source.checkRunAnnotations(o.id));
       } catch (e) {
         console.error(`[evidence] could not read annotations of ${o.name}:`, describeError(e));
+        unreadable.push(plainText(o.name, MAX_TITLE_CHARS));
       }
     }),
   );
+  if (unreadable.length > 0) {
+    notes.push(`Couldn't read the annotations of ${unreadable.join(", ")}.`);
+  }
 
-  const botNotes: BotNote[] = [
+  const placed: PlacedComment[] = [
     ...detail.reviewThreads.flatMap((t) =>
       t.comments.map((comment) => ({
         comment,
@@ -428,9 +442,9 @@ export async function prEvidence(source: PrCodeSource): Promise<PrEvidence> {
   return {
     headSha: detail.headSha,
     items: [
-      ciChecksItem(detail.checks, outputs, annotations, notes),
+      ciChecksItem(checks, runs.list, annotations, notes),
       codeScanningItem(alerts.list, alerts.note),
-      ...botItems(botNotes),
+      ...botItems(placed),
     ],
   };
 }

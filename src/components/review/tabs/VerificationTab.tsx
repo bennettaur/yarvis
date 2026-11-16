@@ -291,7 +291,7 @@ const SEVERITY_CLASS: Record<EvidenceSeverity, string> = {
  */
 function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocation }) {
   const [expanded, setExpanded] = useState(false);
-  const count = item.entries.length + item.hiddenEntries;
+  const totalEntries = item.entries.length + item.hiddenEntries;
   return (
     <li className="py-1 text-sm">
       <div className="flex items-center gap-2">
@@ -304,14 +304,14 @@ function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocatio
           <Chip text={item.summary} tone={item.tone} />
           <span className="text-[11px] text-zinc-500">reported on the PR</span>
         </span>
-        {count > 0 && (
+        {totalEntries > 0 && (
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
             className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
           >
-            {expanded ? "Hide" : `Show ${count}`}
+            {expanded ? "Hide" : `Show ${totalEntries}`}
           </button>
         )}
       </div>
@@ -325,6 +325,10 @@ function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocatio
                 <span className={`uppercase text-[10px] ${SEVERITY_CLASS[entry.severity]}`}>
                   {entry.severity}
                 </span>
+                {/* Check names already lead their titles; a scanner's name doesn't. */}
+                {!entry.title.startsWith(entry.source) && (
+                  <span className="text-[11px] text-zinc-500">{entry.source}</span>
+                )}
                 <span className="text-zinc-200">{entry.title}</span>
                 {entry.path && (
                   <Location path={entry.path} line={entry.line ?? undefined} onOpen={onOpen} />
@@ -500,7 +504,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             evidence.data.headSha !== checklist.data.headSha && (
               <span className="text-amber-300">
                 CI results are for {shortSha(evidence.data.headSha)}; the checkout is at{" "}
-                {shortSha(checklist.data?.headSha)}.
+                {shortSha(checklist.data.headSha)}.
               </span>
             )}
           {evidence.error && (
@@ -520,8 +524,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
         {(checklist.data?.themes ?? []).map((theme) => {
           const rows = items.filter((i) => i.theme === theme.id);
-          const found = evidence.data?.items.filter((i) => i.theme === theme.id) ?? [];
-          if (rows.length === 0 && found.length === 0) return null;
+          const evidenceRows = evidence.data?.items.filter((i) => i.theme === theme.id) ?? [];
+          if (rows.length === 0 && evidenceRows.length === 0) return null;
           return (
             <section key={theme.id} className="space-y-1">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -544,7 +548,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                     starting={starting}
                   />
                 ))}
-                {found.map((item) => (
+                {evidenceRows.map((item) => (
                   <EvidenceRow key={item.id} item={item} onOpen={open} />
                 ))}
               </ul>

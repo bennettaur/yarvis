@@ -5,9 +5,10 @@
 
 import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
-import type { CheckAnnotation, CheckRunOutput, ScanAlert } from "../pr/evidence.ts";
 import type {
+  CheckAnnotation,
   CheckItem,
+  CheckRunOutput,
   ChecksSummary,
   CommitsSince,
   MergeMethod,
@@ -23,6 +24,7 @@ import type {
   Reviewer,
   ReviewerState,
   ReviewThread,
+  ScanAlert,
   StackEntry,
   ViewerReview,
 } from "../pr/types.ts";
@@ -287,6 +289,7 @@ function toCheckItem(node: any): CheckItem {
       status: node.status ?? "COMPLETED",
       conclusion: node.conclusion ?? null,
       url: node.detailsUrl ?? null,
+      ...(typeof node.databaseId === "number" ? { checkRunId: node.databaseId } : {}),
     };
   }
   // StatusContext (legacy commit status): map its state onto the same shape.
@@ -926,7 +929,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
           __typename
-          ... on CheckRun { name status conclusion detailsUrl }
+          ... on CheckRun { databaseId name status conclusion detailsUrl }
           ... on StatusContext { context state targetUrl }
         }}}}}
       }
@@ -2004,16 +2007,23 @@ export class GitHubClient {
     return (data.check_runs ?? []).map((run) => ({
       id: Number(run.id),
       name: run.name ?? "check",
-      app: run.app?.slug ?? null,
       title: run.output?.title ?? null,
       summary: run.output?.summary ?? null,
       annotationsCount: Number(run.output?.annotations_count ?? 0),
     }));
   }
 
-  async checkRunAnnotations(owner: string, repo: string, id: number): Promise<CheckAnnotation[]> {
+  /**
+   * A check run's line annotations: one page of 50, enough to point at what
+   * broke. The rest of a run with more is counted as not shown.
+   */
+  async checkRunAnnotations(
+    owner: string,
+    repo: string,
+    checkRunId: number,
+  ): Promise<CheckAnnotation[]> {
     const data = await this.api<any[]>(
-      `/repos/${owner}/${repo}/check-runs/${id}/annotations?per_page=50`,
+      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=50`,
     );
     return data.map((a) => ({
       path: a.path ?? "",
@@ -2038,7 +2048,6 @@ export class GitHubClient {
     return data.map((a) => {
       const location = a.most_recent_instance?.location;
       return {
-        number: Number(a.number),
         tool: a.tool?.name ?? "code scanning",
         rule: a.rule?.id ?? "",
         severity: a.rule?.security_severity_level ?? a.rule?.severity ?? "",

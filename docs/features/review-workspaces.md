@@ -204,9 +204,9 @@ read from GitHub or Azure DevOps. They need no run, so they have no box to
 tick:
 
 - **CI checks** (under correctness): how many failed or are still running.
-  **Show** lists each check that didn't pass, plus the lines its run pointed
-  at, such as a failing test or a linter warning. These lines come from
-  GitHub check run annotations.
+  **Show** lists each check that didn't pass, plus the lines any check's run
+  pointed at (GitHub check run annotations), such as a failing test or a
+  linter warning on a check that passed.
 - **Code scanning alerts** (under risk): open alerts from CodeQL, Semgrep or
   any other scanner that uploads to GitHub code scanning, worst first. The row
   says when code scanning isn't set up or the token can't read the alerts.
@@ -218,7 +218,8 @@ tick:
 
 A file and line in these rows opens the diff there, and **Open** goes to the
 check or alert on the provider. The text is the tool's own, shown as plain
-text. **Re-read CI results** fetches them again; otherwise they are read
+text and shortened. Long lists are capped, failing checks' annotations first,
+and the row counts what it left out; the rest is on the PR. **Re-read CI results** fetches them again; otherwise they are read
 again after a minute. If CI ran on a different commit than the checkout, the
 tab says so. Azure DevOps PRs show their build and policy checks; Azure has no
 annotations, code scanning alerts or bot comments to show.

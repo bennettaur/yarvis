@@ -522,7 +522,7 @@ export function createReviewWorkspaceRoutes(
     try {
       const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
       const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
-      if ("error" in source) return c.json({ error: source.error }, 409);
+      if ("error" in source) return c.json({ error: source.error }, 400);
       return c.json(await prEvidence(source));
     } catch (e) {
       return fail(c, e);

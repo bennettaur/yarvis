@@ -1,16 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { GitHubError } from "../github/errors.ts";
-import {
-  botKind,
-  type CheckRunOutput,
-  type EvidenceItem,
-  EvidenceUnavailable,
-  plainText,
-  prEvidence,
-  type ScanAlert,
-} from "./evidence.ts";
+import { botKind, type EvidenceItem, plainText, prEvidence } from "./evidence.ts";
 import { githubPrSource, type PrCodeSource } from "./source.ts";
-import type { CheckItem, PrDetail, ReviewComment, ReviewThread } from "./types.ts";
+import {
+  type CheckAnnotation,
+  type CheckItem,
+  type CheckRunOutput,
+  EvidenceUnavailable,
+  type PrDetail,
+  type ReviewComment,
+  type ReviewThread,
+  type ScanAlert,
+} from "./types.ts";
 
 const HEAD = "a".repeat(40);
 
@@ -45,6 +46,8 @@ const thread = (comments: ReviewComment[], over: Partial<ReviewThread> = {}): Re
 
 function source(over: {
   checks?: CheckItem[];
+  /** The CI checks, when they differ from the PR detail's list (Azure's policies). */
+  ciChecks?: CheckItem[];
   checksUnavailable?: boolean;
   threads?: ReviewThread[];
   conversation?: ReviewComment[];
@@ -70,6 +73,7 @@ function source(over: {
     listDir: async () => [],
     searchCode: async () => [],
     searchScope: "",
+    ciChecks: async () => over.ciChecks ?? over.checks ?? [],
     checkRunOutputs: over.outputs ?? (async () => []),
     checkRunAnnotations: over.annotations ?? (async () => []),
     codeScanningAlerts: over.alerts ?? (async () => []),
@@ -87,7 +91,6 @@ describe("CI checks as evidence", () => {
           {
             id: 1,
             name: "tests",
-            app: "github-actions",
             title: "2 tests failed",
             summary: null,
             annotationsCount: 1,
@@ -95,7 +98,6 @@ describe("CI checks as evidence", () => {
           {
             id: 2,
             name: "lint",
-            app: "github-actions",
             title: null,
             summary: null,
             annotationsCount: 1,
@@ -103,7 +105,6 @@ describe("CI checks as evidence", () => {
           {
             id: 3,
             name: "build",
-            app: "github-actions",
             title: null,
             summary: null,
             annotationsCount: 0,
@@ -148,7 +149,7 @@ describe("CI checks as evidence", () => {
       source({
         checks: [check("build", "SUCCESS")],
         outputs: async () => [
-          { id: 3, name: "build", app: null, title: null, summary: null, annotationsCount: 0 },
+          { id: 3, name: "build", title: null, summary: null, annotationsCount: 0 },
         ],
         annotations: async (id) => {
           asked.push(id);
@@ -210,9 +211,110 @@ describe("CI checks as evidence", () => {
   });
 });
 
+describe("CI checks as evidence, matched and capped", () => {
+  const output = (id: number, name: string, annotationsCount = 1): CheckRunOutput => ({
+    id,
+    name,
+    title: null,
+    summary: null,
+    annotationsCount,
+  });
+  const annotation = (message: string): CheckAnnotation => ({
+    path: "src/a.ts",
+    line: 1,
+    level: "failure",
+    title: null,
+    message,
+  });
+
+  it("gives each of two same-named checks its own run's annotations", async () => {
+    const { items } = await prEvidence(
+      source({
+        checks: [
+          { ...check("build", "FAILURE"), checkRunId: 1 },
+          { ...check("build", "FAILURE"), checkRunId: 2 },
+        ],
+        outputs: async () => [output(1, "build"), output(2, "build")],
+        annotations: async (id) => [annotation(`from run ${id}`)],
+      }),
+    );
+    const details = byId(items, "ci-checks")
+      ?.entries.filter((e) => e.path)
+      .map((e) => e.detail);
+    expect(details?.sort()).toEqual(["from run 1", "from run 2"]);
+  });
+
+  it("reads a failing check's annotations before passing ones' when more checks posted some than are read", async () => {
+    const passing = Array.from({ length: 12 }, (_, i) => output(i + 1, `lint-${i}`));
+    const asked: number[] = [];
+    const { items } = await prEvidence(
+      source({
+        checks: [
+          ...passing.map((o) => ({ ...check(o.name, "SUCCESS"), checkRunId: o.id })),
+          { ...check("tests", "FAILURE"), checkRunId: 99 },
+        ],
+        outputs: async () => [...passing, output(99, "tests")],
+        annotations: async (id) => {
+          asked.push(id);
+          return [annotation(`run ${id}`)];
+        },
+      }),
+    );
+    expect(asked).toHaveLength(10);
+    expect(asked).toContain(99);
+    // The three runs left unread are counted as not shown.
+    expect(byId(items, "ci-checks")?.hiddenEntries).toBe(3);
+  });
+
+  it("says which check's annotations couldn't be read, and still lists the rest", async () => {
+    const { items } = await prEvidence(
+      source({
+        checks: [check("tests", "FAILURE"), check("lint", "SUCCESS")],
+        outputs: async () => [output(1, "tests"), output(2, "lint")],
+        annotations: async (id) => {
+          if (id === 1) throw new Error("socket hang up");
+          return [annotation("unused import")];
+        },
+      }),
+    );
+    const ci = byId(items, "ci-checks");
+    expect(ci?.note).toBe("Couldn't read the annotations of tests.");
+    expect(ci?.entries.map((e) => e.detail)).toContain("unused import");
+  });
+
+  it("counts a run's annotations past the one page read as not shown", async () => {
+    const { items } = await prEvidence(
+      source({
+        checks: [check("lint", "SUCCESS")],
+        outputs: async () => [output(1, "lint", 75)],
+        annotations: async () => Array.from({ length: 50 }, (_, i) => annotation(`w${i}`)),
+      }),
+    );
+    expect(byId(items, "ci-checks")?.hiddenEntries).toBe(25);
+  });
+
+  it("lists only the CI checks, not every check the PR detail carries", async () => {
+    const { items } = await prEvidence(
+      source({
+        // An Azure minimum-reviewers policy reads as rejected until someone approves.
+        checks: [check("Minimum reviewers", "FAILURE"), check("CI build", "SUCCESS")],
+        ciChecks: [check("CI build", "SUCCESS")],
+      }),
+    );
+    expect(byId(items, "ci-checks")?.summary).toBe("All 1 passed");
+  });
+
+  it("calls a PR with no checks muted, not good", async () => {
+    const { items } = await prEvidence(source({ checks: [] }));
+    expect(byId(items, "ci-checks")).toMatchObject({
+      summary: "No checks reported",
+      tone: "muted",
+    });
+  });
+});
+
 describe("code scanning alerts as evidence", () => {
   const alert = (severity: string, over: Partial<ScanAlert> = {}): ScanAlert => ({
-    number: 1,
     tool: "CodeQL",
     rule: "js/sql-injection",
     severity,
@@ -226,13 +328,22 @@ describe("code scanning alerts as evidence", () => {
 
   it("lists open alerts, worst first", async () => {
     const { items } = await prEvidence(
-      source({ alerts: async () => [alert("note", { number: 2 }), alert("critical")] }),
+      source({ alerts: async () => [alert("note", { rule: "js/unused" }), alert("critical")] }),
     );
     const scanning = byId(items, "code-scanning");
     expect(scanning?.summary).toBe("2 open alerts");
     expect(scanning?.tone).toBe("bad");
     expect(scanning?.entries.map((e) => e.severity)).toEqual(["high", "low"]);
     expect(scanning?.entries[0]).toMatchObject({ source: "CodeQL", path: "src/db.ts", line: 10 });
+  });
+
+  it("shows the worst 50 and counts the rest", async () => {
+    const many = Array.from({ length: 53 }, () => alert("low"));
+    const { items } = await prEvidence(source({ alerts: async () => [alert("high"), ...many] }));
+    const scanning = byId(items, "code-scanning");
+    expect(scanning?.entries).toHaveLength(50);
+    expect(scanning?.entries[0]?.severity).toBe("high");
+    expect(scanning?.hiddenEntries).toBe(4);
   });
 
   it("tells a provider without alerts apart from a token that can't read them", async () => {
@@ -303,6 +414,23 @@ describe("bot comments as evidence", () => {
     ]);
   });
 
+  it("skips a comment that is only markup, and keeps a link only when it is https", async () => {
+    const { items } = await prEvidence(
+      source({
+        conversation: [
+          comment("codecov", "<!-- report --> ![badge](https://x/b.svg)"),
+          { ...comment("renovate", "Update deps"), url: "javascript:alert(1)" },
+          { ...comment("copilot", "Looks fine"), url: "https://github.com/o/r/pull/1#c" },
+        ],
+      }),
+    );
+    expect(byId(items, "coverage-bots")).toBeUndefined();
+    expect(byId(items, "other-bots")?.entries.map((e) => e.url)).toEqual([
+      null,
+      "https://github.com/o/r/pull/1#c",
+    ]);
+  });
+
   it("knows the common security and coverage bots by name", () => {
     expect(botKind("github-advanced-security")).toBe("security-bots");
     expect(botKind("Snyk-bot")).toBe("security-bots");
@@ -319,6 +447,25 @@ describe("plain text from what a tool wrote", () => {
       ),
     ).toBe("Report See the docs for fix");
     expect(plainText("x".repeat(500), 10)).toBe(`${"x".repeat(9)}…`);
+  });
+});
+
+describe("plain text from hostile input", () => {
+  it("stays fast on text built to make the cleanup backtrack", () => {
+    const hostile = [
+      "[".repeat(60_000),
+      "![".repeat(30_000),
+      "[a](".repeat(15_000),
+      "<!--".repeat(15_000),
+    ];
+    const started = performance.now();
+    for (let i = 0; i < 100; i++) for (const text of hostile) plainText(text);
+    // Hundreds of annotations are cleaned per read; this is that many and then some.
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("drops control, zero-width and bidi characters", () => {
+    expect(plainText("src/\u202Eevil\u200B.ts\u0007 ok")).toBe("src/ evil .ts ok");
   });
 });
 

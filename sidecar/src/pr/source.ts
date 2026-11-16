@@ -4,11 +4,14 @@ import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { GitHubError } from "../github/errors.ts";
 import {
   type CheckAnnotation,
+  type CheckItem,
   type CheckRunOutput,
   EvidenceUnavailable,
+  type PrDetail,
+  type PrFile,
+  type PrRef,
   type ScanAlert,
-} from "./evidence.ts";
-import type { PrDetail, PrFile, PrRef } from "./types.ts";
+} from "./types.ts";
 
 /**
  * Read-only access to the code a pull request lives in, with the hosting
@@ -39,6 +42,11 @@ export interface PrCodeSource {
   searchCode(query: string, limit?: number): Promise<CodeHit[] | null>;
   /** What `searchCode` covers, so a caller can qualify its results. */
   readonly searchScope: string;
+  /**
+   * The PR's CI checks. Narrower than `detail().checks` on Azure, whose detail
+   * lists every branch policy, reviewer policies included.
+   */
+  ciChecks(): Promise<CheckItem[]>;
   /**
    * The output each check run at `headSha` posted. Null when the provider has
    * no such thing; Azure's policy checks carry only a status.
@@ -98,6 +106,7 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
     listDir: async (path) => client.listDir(owner, repo, path, await head()),
     searchCode: (query, limit) => client.searchCode(owner, repo, query, limit),
     searchScope: "the repository's default branch (not this pull request's head)",
+    ciChecks: async () => (await detail()).checks,
     checkRunOutputs: (headSha) =>
       client.commitCheckRuns(owner, repo, headSha).catch((e) => {
         // A fine-grained token can't be granted the Checks permission.
@@ -108,7 +117,7 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
         }
         throw e;
       }),
-    checkRunAnnotations: (id) => client.checkRunAnnotations(owner, repo, id),
+    checkRunAnnotations: (checkRunId) => client.checkRunAnnotations(owner, repo, checkRunId),
     codeScanningAlerts: () =>
       client.prCodeScanningAlerts(owner, repo, number).catch((e) => {
         if (e instanceof GitHubError && e.status === 403) {
@@ -140,7 +149,10 @@ export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSour
     listDir: async (path) => client.listDir(azRef, path, await head()),
     searchCode: async (query, limit) => client.searchCode(azRef, query, limit),
     searchScope: "the repository, via Azure DevOps code search",
+    // A minimum-reviewers policy reads as rejected until someone approves, which isn't CI failing.
+    ciChecks: () => client.prCiChecksFor(azRef),
     checkRunOutputs: async () => null,
+    // Never asked, since there are no check runs to annotate.
     checkRunAnnotations: async () => [],
     codeScanningAlerts: async () => null,
   };

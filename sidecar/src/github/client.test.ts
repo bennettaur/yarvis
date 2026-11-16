@@ -314,7 +314,6 @@ describe("github client", () => {
           {
             id: 7,
             name: "tests",
-            app: { slug: "github-actions" },
             output: { title: "1 failed", summary: "s", annotations_count: 2 },
           },
         ],
@@ -325,7 +324,6 @@ describe("github client", () => {
       ],
       "/repos/o/r/code-scanning/alerts": [
         {
-          number: 4,
           html_url: "https://github.com/o/r/security/code-scanning/4",
           tool: { name: "CodeQL" },
           rule: {
@@ -354,7 +352,6 @@ describe("github client", () => {
       {
         id: 7,
         name: "tests",
-        app: "github-actions",
         title: "1 failed",
         summary: "s",
         annotationsCount: 2,
@@ -366,7 +363,6 @@ describe("github client", () => {
     ]);
     expect(await gh.prCodeScanningAlerts("o", "r", 12)).toEqual([
       {
-        number: 4,
         tool: "CodeQL",
         rule: "js/xss",
         severity: "high",
@@ -415,6 +411,7 @@ describe("github client", () => {
                   nodes: [
                     {
                       __typename: "CheckRun",
+                      databaseId: 41,
                       name: "build",
                       status: "COMPLETED",
                       conclusion: "SUCCESS",
@@ -443,7 +440,13 @@ describe("github client", () => {
       mergeable: "MERGEABLE",
     });
     expect(detail.checks).toEqual([
-      { name: "build", status: "COMPLETED", conclusion: "SUCCESS", url: "https://ci/build" },
+      {
+        name: "build",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        url: "https://ci/build",
+        checkRunId: 41,
+      },
       { name: "legacy", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci/legacy" },
     ]);
     expect(detail.reviewThreads[0]).toMatchObject({

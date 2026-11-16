@@ -300,9 +300,16 @@ export interface EvidenceEntry {
   url: string | null;
 }
 
+export type EvidenceId =
+  | "ci-checks"
+  | "code-scanning"
+  | "security-bots"
+  | "coverage-bots"
+  | "other-bots";
+
 /** What other tools said about the PR, shown on the checklist under its theme. */
 export interface EvidenceItem {
-  id: string;
+  id: EvidenceId;
   theme: ChecklistThemeId;
   label: string;
   description: string;
