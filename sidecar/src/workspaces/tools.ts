@@ -1270,7 +1270,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     archive_workspace: tool({
       description:
-        "Archive a workspace: stop its Claude session, tear down its git worktrees, mark it archived (completing any linked task), and close its linked issues that aren't done yet on their tracker. Resolve the workspace id with list_workspaces first. To leave some linked issues open, look them up with list_workspace_issues and pass their ids in keepOpenIssueIds. Issues are only closed once the archive finishes, so a retry with force=true must pass the same keepOpenIssueIds again. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status, the issues closed, and any errors.",
+        "Archive a workspace: stop its Claude session, tear down its git worktrees, mark it archived (completing any linked task), and close its linked issues that aren't done yet on their tracker. Resolve the workspace id with list_workspaces first. It also deletes the workspace folder and each local branch whose work has landed. To leave some linked issues open, look them up with list_workspace_issues and pass their ids in keepOpenIssueIds. Issues are only closed once the archive finishes, so a retry with force=true must pass the same keepOpenIssueIds again. The archive is refused and stays in 'archiving' when a worktree has uncommitted changes, a folder git no longer tracks still has files, a landed branch has commits no remote has, or the workspace folder holds files Yarvis didn't write. Try without force first, even when the user asks for force. Pass force=true only after a refused attempt, once the user agrees to lose what the errors list. Report back the returned status, the issues closed, and any errors.",
       inputSchema: z.object({
         workspaceId: z
           .string()
@@ -1281,7 +1281,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .boolean()
           .default(false)
           .describe(
-            "Discard uncommitted changes in the worktrees, and leftover files in folders git no longer tracks, so teardown can proceed",
+            "Deletes the kinds of work a refused archive lists, including any added since: uncommitted changes, leftover files, unpushed commits on landed branches, and the user's files in the workspace folder. Only after a refused attempt and the user's OK",
           ),
         keepOpenIssueIds: z
           .array(z.string().uuid())
@@ -1331,7 +1331,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive incomplete; some worktrees could not be removed (often uncommitted changes), and no issues were closed. Retry with force=true to discard them, passing the same keepOpenIssueIds.",
+                : "Archive refused; the errors say what is in the way, and no issues were closed. Tell the user. Retry with force=true only if they agree to lose it, passing the same keepOpenIssueIds.",
           };
         } catch (e) {
           return { error: errorMessage(e) };

@@ -366,7 +366,10 @@ report there and leaves the fixes to the author.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments. Bodies
+  workspace, listing and resolving that workspace's review comments and
+  `add_worktree`. The header is not a boundary. So `add_worktree` may only
+  check out a branch not yet in the clone, inside that workspace's folder, and
+  widen the sandbox to that one branch (`addExtraWorktree`). Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,
   because the user wrote them. Any other source (a verification finding the
   user chose to add) is fenced there and kept out of the event log; a new
@@ -421,8 +424,9 @@ report there and leaves the fixes to the author.
     overwriting one of the user's files). Anything new that spawns git owes the
     same call. It is checked right before each command, so a session that is
     still running can still plant one in between; the narrow grants in
-    `sandboxPaths.ts` (only the workspace's own refs' leaves, never a folder in
-    `refs`) are what keep it from making directory links there at all.
+    `sandboxPaths.ts` (only the leaves of the refs of the workspace's own and
+    added worktrees, never a folder in `refs`) are what keep it from making
+    directory links there at all.
   - The object store is the accepted gap. A session has to write it to commit,
     so it can also overwrite an object every workspace on the repo shares, and
     git doesn't re-hash an object when it checks it out. Nothing here detects
