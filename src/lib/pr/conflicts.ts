@@ -22,13 +22,15 @@ export function prConflictState(detail: PrDetail | null): PrConflictState {
 }
 
 /**
- * What became of a request to resolve a PR's conflicts. `needs_confirm` means
- * nothing was sent: the agent looked busy, and the request must be repeated
- * with `confirm` to interrupt it.
+ * What became of a request to hand a PR to its workspace's agent. `needs_confirm`
+ * means nothing was sent: the agent looked busy, and the request must be
+ * repeated with `confirm` to interrupt it.
  */
-export type ResolveConflictsResult =
+export type AgentHandOffResult =
   | { outcome: "sent" | "started" | "created"; workspaceId: string; name: string }
   | { outcome: "needs_confirm"; workspaceId: string; name: string; reason: string };
+
+export type ResolveConflictsResult = AgentHandOffResult;
 
 /** Hands the PR's conflicts to a coding agent; see `POST /api/pr/resolve-conflicts`. */
 export async function resolvePrConflicts(

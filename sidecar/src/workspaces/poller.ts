@@ -190,6 +190,7 @@ const NO_PR = {
   prNumber: null,
   prUrl: null,
   prState: null,
+  headSha: null,
   isDraft: null,
   mergeable: null,
   checkRollup: "none",
@@ -203,6 +204,7 @@ export type BranchPr = Pick<
   | "prNumber"
   | "prUrl"
   | "prState"
+  | "headSha"
   | "isDraft"
   | "mergeable"
   | "checkRollup"
@@ -219,6 +221,7 @@ function toBranchPr(pr: PolledPr | null): BranchPr {
     prNumber: pr.number,
     prUrl: pr.url,
     prState: pr.status.merged ? "merged" : pr.status.state,
+    headSha: pr.status.headSha,
     isDraft: pr.draft,
     mergeable: pr.status.mergeableState,
     checkRollup: deriveRollup(pr.status.checks),
@@ -277,6 +280,7 @@ async function azureBranchPr(
     prNumber: pr.number,
     prUrl: pr.url,
     prState: pr.state,
+    headSha: pr.headSha,
     isDraft: pr.draft,
     mergeable: pr.mergeable,
     checkRollup: checks ? deriveRollup(checks) : "none",

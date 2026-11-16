@@ -1,5 +1,5 @@
 {
-  "id": "26bcefeb-3194-4958-b7f7-28e41b21b0cb",
+  "id": "ad0072cf-6ba4-4fae-b677-cf3b41d93924",
   "prevId": "494cebc5-dba1-4dea-864e-e493f7c33822",
   "version": "7",
   "dialect": "postgresql",
@@ -5195,12 +5195,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "harness": {
-          "name": "harness",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "source": {
           "name": "source",
           "type": "text",
@@ -5293,6 +5287,87 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.workspace_extra_worktrees": {
+      "name": "workspace_extra_worktrees",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_repo_id": {
+          "name": "workspace_repo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "branch": {
+          "name": "branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worktree_path": {
+          "name": "worktree_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workspace_extra_worktrees_path_idx": {
+          "name": "workspace_extra_worktrees_path_idx",
+          "columns": [
+            {
+              "expression": "workspace_repo_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "worktree_path",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workspace_extra_worktrees_workspace_repo_id_workspace_repos_id_fk": {
+          "name": "workspace_extra_worktrees_workspace_repo_id_workspace_repos_id_fk",
+          "tableFrom": "workspace_extra_worktrees",
+          "tableTo": "workspace_repos",
+          "columnsFrom": [
+            "workspace_repo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.workspace_repo_pr": {
       "name": "workspace_repo_pr",
       "schema": "",
@@ -5324,6 +5399,12 @@
         },
         "pr_state": {
           "name": "pr_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "head_sha": {
+          "name": "head_sha",
           "type": "text",
           "primaryKey": false,
           "notNull": false
