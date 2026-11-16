@@ -75,6 +75,7 @@ mock.module("../lib/reviewWorkspaces/verification", () => ({
   ...verification,
   startVerification: through(verification, "startVerification"),
   verificationChecklist: through(verification, "verificationChecklist"),
+  verificationEvidence: through(verification, "verificationEvidence"),
 }));
 
 mock.module("../lib/agentRuns", () => ({

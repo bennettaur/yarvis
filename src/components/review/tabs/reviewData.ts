@@ -25,9 +25,11 @@ import {
 import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
   type VerificationChecklist,
+  type VerificationEvidence,
   type VerificationMustRead,
   type VerificationReport,
   verificationChecklist,
+  verificationEvidence,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type ModelSide, reviewUri } from "../editor";
 
@@ -80,6 +82,20 @@ export function useVerificationChecklist(
     verificationKey(prId),
     () => verificationChecklist(workspaceId, prId),
     SIDECAR_FRESHNESS,
+  );
+}
+
+/** What CI, scanners and bots said about the PR. A provider call, so held longer. */
+export const evidenceKey = (prId: string) => `${reviewWorkspacePrefix(prId)}evidence`;
+
+export function useVerificationEvidence(
+  workspaceId: string,
+  prId: string,
+): Resource<VerificationEvidence> {
+  return useCachedResource(
+    evidenceKey(prId),
+    () => verificationEvidence(workspaceId, prId),
+    PROVIDER_FRESHNESS,
   );
 }
 

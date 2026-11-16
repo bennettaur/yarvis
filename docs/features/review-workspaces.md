@@ -199,6 +199,30 @@ another Yarvis instance is running says so, and can't be started twice. If
 some picked checks can't start, the tab names them and the rest still run.
 Nothing asks about cost first: which checks you run is the budget.
 
+Beside the checks are rows for what other tools already reported on the PR,
+read from GitHub or Azure DevOps. They need no run, so they have no box to
+tick:
+
+- **CI checks** (under correctness): how many failed or are still running.
+  **Show** lists each check that didn't pass, plus the lines its run pointed
+  at, such as a failing test or a linter warning. These lines come from
+  GitHub check run annotations.
+- **Code scanning alerts** (under risk): open alerts from CodeQL, Semgrep or
+  any other scanner that uploads to GitHub code scanning, worst first. The row
+  says when code scanning isn't set up or the token can't read the alerts.
+- **Bot comments**: open comments bots left on the PR, grouped by kind.
+  Security and dependency scanners (Semgrep, Snyk, Socket, Dependabot and
+  similar) go under risk, coverage reporters under correctness, and other bots,
+  such as review bots, under maintainability. A comment in a resolved thread is
+  left out.
+
+A file and line in these rows opens the diff there, and **Open** goes to the
+check or alert on the provider. The text is the tool's own, shown as plain
+text. **Re-read CI results** fetches them again; otherwise they are read
+again after a minute. If CI ran on a different commit than the checkout, the
+tab says so. Azure DevOps PRs show their build and policy checks; Azure has no
+annotations, code scanning alerts or bot comments to show.
+
 Below the checklist, the report shows each check's newest result. A section
 whose result is from an older head is marked "older head". Every file and
 line in the report opens the diff there.

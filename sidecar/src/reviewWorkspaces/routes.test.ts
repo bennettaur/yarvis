@@ -19,6 +19,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
+import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import type { Coverage } from "./coverage.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
@@ -634,6 +635,75 @@ describe("removing and archiving", () => {
     await Bun.sleep(100);
     expect((await prRow(pr?.id as string)).status).toBe("cloning");
     expect(existsSync(join(config.workspacesRoot, ".review", ws?.id as string))).toBe(false);
+  });
+});
+
+describe("CI evidence", () => {
+  const evidenceApp = (source: (r: PrRef) => PrCodeSource | { error: string }) =>
+    new Hono().route("/rw", createReviewWorkspaceRoutes(config, { deps, evidenceSource: source }));
+
+  const insertPr = async () => {
+    const [ws] = await db.insert(reviewWorkspaces).values({ name: "Evidence" }).returning();
+    const [pr] = await db
+      .insert(reviewWorkspacePrs)
+      .values({
+        workspaceId: ws?.id as string,
+        refKey: "gh:o/r/1",
+        ref,
+        colorIndex: 0,
+        position: 0,
+        status: "ready",
+        worktreePath: join(config.workspacesRoot, ".review", ws?.id as string, "gh-o-r-1"),
+      })
+      .returning();
+    return { wsId: ws?.id as string, prId: pr?.id as string };
+  };
+
+  it("reads the PR's checks, alerts and bot comments from its provider", async () => {
+    const { wsId, prId } = await insertPr();
+    const asked: PrRef[] = [];
+    const res = await evidenceApp((r) => {
+      asked.push(r);
+      return {
+        ref: r,
+        detail: async () =>
+          ({
+            headSha: "f".repeat(40),
+            checks: [{ name: "tests", status: "COMPLETED", conclusion: "FAILURE", url: null }],
+            reviewThreads: [],
+            conversation: [],
+          }) as unknown as PrDetail,
+        files: async () => [],
+        fileDiff: async () => ({}) as never,
+        readFile: async () => "",
+        listDir: async () => [],
+        searchCode: async () => [],
+        searchScope: "",
+        checkRunOutputs: async () => [],
+        checkRunAnnotations: async () => [],
+        codeScanningAlerts: async () => [],
+      };
+    }).request(`/rw/${wsId}/prs/${prId}/evidence`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      headSha: string;
+      items: { id: string; summary: string }[];
+    };
+    expect(asked).toEqual([ref]);
+    expect(body.headSha).toBe("f".repeat(40));
+    expect(body.items.map((i) => [i.id, i.summary])).toEqual([
+      ["ci-checks", "1 of 1 failing"],
+      ["code-scanning", "No open alerts"],
+    ]);
+  });
+
+  it("says what is missing when the provider isn't set up", async () => {
+    const { wsId, prId } = await insertPr();
+    const res = await evidenceApp(() => ({ error: "github token not configured" })).request(
+      `/rw/${wsId}/prs/${prId}/evidence`,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "github token not configured" });
   });
 });
 

@@ -5,6 +5,8 @@ import { agentRunRegistry } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { prEvidence } from "../pr/evidence.ts";
+import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
@@ -127,6 +129,8 @@ export interface ReviewWorkspaceRouteOptions {
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
+  /** Replaces the provider the CI evidence is read from, for tests. */
+  evidenceSource?: (ref: PrRef) => PrCodeSource | { error: string };
 }
 
 /**
@@ -512,6 +516,19 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+  // What other tools already said about the PR: CI checks and their
+  // annotations, code scanning alerts and bot comments, read from its provider.
+  router.get("/:id/prs/:prId/evidence", async (c) => {
+    try {
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
+      if ("error" in source) return c.json({ error: source.error }, 409);
+      return c.json(await prEvidence(source));
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
   // Starts the "What's changed" re-review over what changed since the last
   // review (or `?from=<sha>`), or answers with the run already going over the
   // same range. Followed on `/api/agent-runs/:runId/events`.

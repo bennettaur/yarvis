@@ -151,6 +151,8 @@ export interface ReviewComment {
    * unknown, which counts as untrusted.
    */
   trusted?: boolean;
+  /** True when a GitHub App or other bot account wrote it, such as a code scanner or coverage reporter. */
+  isBot?: boolean;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */

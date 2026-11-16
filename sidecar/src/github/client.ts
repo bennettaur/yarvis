@@ -5,6 +5,7 @@
 
 import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
+import type { CheckAnnotation, CheckRunOutput, ScanAlert } from "../pr/evidence.ts";
 import type {
   CheckItem,
   ChecksSummary,
@@ -437,6 +438,7 @@ export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail 
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
       author: c.author?.login ?? "ghost",
+      ...(c.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: c.body ?? "",
       createdAt: c.createdAt ?? "",
       url: c.url ?? undefined,
@@ -480,6 +482,7 @@ export function toReviewThread(thread: any): ReviewThread {
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
       trusted: isRepoMember(comment.authorAssociation),
+      ...(comment.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -864,7 +867,7 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ totalCount nodes{ id author{login} authorAssociation body createdAt url } }`;
+  comments(first:100){ totalCount nodes{ id author{__typename login} authorAssociation body createdAt url } }`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
@@ -918,7 +921,7 @@ query($owner:String!,$repo:String!,$number:Int!){
       }
       comments(last:${CONVERSATION_PAGE_SIZE}){
         totalCount
-        nodes{ id author{login} body createdAt url }
+        nodes{ id author{__typename login} body createdAt url }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
@@ -1991,6 +1994,61 @@ export class GitHubClient {
     } catch (e) {
       console.error("[github] could not compare stack layers:", e);
     }
+  }
+
+  /** The check runs on a commit, with the output each posted. */
+  async commitCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRunOutput[]> {
+    const data = await this.api<{ check_runs?: any[] }>(
+      `/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
+    );
+    return (data.check_runs ?? []).map((run) => ({
+      id: Number(run.id),
+      name: run.name ?? "check",
+      app: run.app?.slug ?? null,
+      title: run.output?.title ?? null,
+      summary: run.output?.summary ?? null,
+      annotationsCount: Number(run.output?.annotations_count ?? 0),
+    }));
+  }
+
+  async checkRunAnnotations(owner: string, repo: string, id: number): Promise<CheckAnnotation[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/check-runs/${id}/annotations?per_page=50`,
+    );
+    return data.map((a) => ({
+      path: a.path ?? "",
+      line: typeof a.start_line === "number" ? a.start_line : null,
+      level:
+        a.annotation_level === "failure" || a.annotation_level === "warning"
+          ? a.annotation_level
+          : "notice",
+      title: a.title ?? null,
+      message: a.message ?? "",
+    }));
+  }
+
+  /**
+   * Open code-scanning alerts found on the PR. Scanners analyse a PR at its
+   * merge ref, so that is the ref asked about.
+   */
+  async prCodeScanningAlerts(owner: string, repo: string, number: number): Promise<ScanAlert[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&state=open&per_page=100`,
+    );
+    return data.map((a) => {
+      const location = a.most_recent_instance?.location;
+      return {
+        number: Number(a.number),
+        tool: a.tool?.name ?? "code scanning",
+        rule: a.rule?.id ?? "",
+        severity: a.rule?.security_severity_level ?? a.rule?.severity ?? "",
+        description: a.rule?.description ?? "",
+        path: location?.path ?? null,
+        line: typeof location?.start_line === "number" ? location.start_line : null,
+        message: a.most_recent_instance?.message?.text ?? "",
+        url: a.html_url ?? null,
+      };
+    });
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
