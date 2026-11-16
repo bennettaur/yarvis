@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { flushSync } from "react-dom";
 import { CHAT_TABS_KEY, LEGACY_CHAT_SESSION_KEY } from "../lib/chatTabs";
 import { resetChatApi, stubChatApi } from "../test/chatApi";
 import { mountForInteraction, waitFor } from "../test/render";
@@ -44,6 +45,10 @@ let holdCreate: Promise<void> | null = null;
 let createRequested = false;
 /** How many more times listing the chats fails. */
 let listFailures = 0;
+/** How many times the chats were listed. */
+let listCalls = 0;
+/** How many times a panel checked its MCP connections. */
+let mcpChecks = 0;
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -62,6 +67,7 @@ stubSidecarApi({
       return json(created);
     }
     if (path === "/api/chat/sessions") {
+      listCalls += 1;
       if (listFailures > 0) {
         listFailures -= 1;
         return new Response("database is down", { status: 500 });
@@ -77,6 +83,10 @@ stubSidecarApi({
     if (approval) {
       answered.push(decodeURIComponent(approval[1]!));
       return json({ ok: true });
+    }
+    if (path === "/api/mcp/servers") {
+      mcpChecks += 1;
+      return json([]);
     }
     if (path === "/api/voice/config") return new Response("none", { status: 404 });
     return new Response("unexpected request", { status: 404 });
@@ -122,6 +132,8 @@ afterEach(() => {
   holdCreate = null;
   createRequested = false;
   listFailures = 0;
+  listCalls = 0;
+  mcpChecks = 0;
   unmount?.();
   unmount = null;
   sessions = [];
@@ -218,6 +230,9 @@ describe("ChatTabs", () => {
     historyButton(host, "Dentist")!.click();
     await waitFor(() => selectedTab(host) === "Dentist", "the new tab to be selected");
     expect(tabLabels(host)).toEqual(["Plan my week", "Dentist"]);
+    // The history marks the chat on screen.
+    expect(historyButton(host, "Dentist")!.getAttribute("aria-current")).toBe("true");
+    expect(historyButton(host, "Plan my week")!.hasAttribute("aria-current")).toBe(false);
     await waitFor(() => loaded.includes("s2"), "the chat to load in its tab");
 
     historyButton(host, "Plan my week")!.click();
@@ -260,6 +275,96 @@ describe("ChatTabs", () => {
       () => historyButton(host, "Book a dentist visit") !== undefined,
       "the chat in the history",
     );
+  });
+
+  it("names a listed chat that had no title once a reply in it finishes", async () => {
+    sessions = [session("s1", null)];
+    localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "s1");
+    const { host } = await mount();
+    await waitFor(() => loaded.includes("s1"), "the chat to load");
+    await waitFor(() => tabLabels(host)[0] === "Untitled chat", "the untitled tab");
+
+    await say(host, "Plan my week");
+    await waitFor(() => selectedTab(host) === "Plan my week", "the tab to take its title");
+  });
+
+  it("doesn't re-read the history after a reply in a chat that has a name", async () => {
+    sessions = [session("s1", "Plan my week")];
+    localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "s1");
+    const props = {
+      active: true,
+      requestedSessionId: null,
+      onRequestConsumed: noop,
+      requestedArtifactId: null,
+      onArtifactRequestConsumed: noop,
+    };
+    const { host, rerender } = await mount(props);
+    await waitFor(() => loaded.includes("s1"), "the chat to load");
+    await waitFor(() => tabLabels(host)[0] === "Plan my week", "the history to load");
+    const before = listCalls;
+
+    await say(host, "and next week?");
+    await waitFor(
+      () => visiblePanel(host).textContent?.includes("ok") ?? false,
+      "the reply to arrive",
+    );
+    await waitFor(
+      () => tabs(host)[0]!.querySelector(".animate-pulse") === null,
+      "the reply to end",
+    );
+    // Coming back to the Chat tab re-reads the history once, which also gives
+    // an unwanted re-read after the reply time to land.
+    // Each render commits on its own, as a real tab switch would.
+    flushSync(() => rerender(createElement(ChatTabs, { ...props, active: false })));
+    flushSync(() => rerender(createElement(ChatTabs, props)));
+    await waitFor(() => listCalls > before, "the history to be re-read");
+    expect(listCalls).toBe(before + 1);
+  });
+
+  it("lists a chat a tab starts while its first reply is still running", async () => {
+    scripted = [{ type: "delta", text: "before " }, { type: "wait" }, { type: "done" }];
+    const { host } = await mount();
+    await say(host, "Write a long answer");
+    await waitFor(
+      () => host.querySelectorAll("aside li").length === 1,
+      "the new chat in the history",
+    );
+    expect(tabs(host)[0]!.querySelector(".animate-pulse")).not.toBeNull();
+  });
+
+  it("re-reads the history when the Chat tab comes back on screen", async () => {
+    const props = {
+      active: true,
+      requestedSessionId: null,
+      onRequestConsumed: noop,
+      requestedArtifactId: null,
+      onArtifactRequestConsumed: noop,
+    };
+    const { host, rerender } = await mount(props);
+    await waitFor(() => listCalls === 1, "the history to load");
+
+    flushSync(() => rerender(createElement(ChatTabs, { ...props, active: false })));
+    sessions = [session("s9", "From Telegram")];
+    flushSync(() => rerender(createElement(ChatTabs, props)));
+    await waitFor(() => historyButton(host, "From Telegram") !== undefined, "the new chat");
+  });
+
+  it("checks MCP connections only from the tab on screen", async () => {
+    sessions = [session("s1", "Plan my week"), session("s2", "Dentist")];
+    localStorage.setItem(
+      CHAT_TABS_KEY,
+      JSON.stringify({
+        tabs: [
+          { id: "a", sessionId: "s1" },
+          { id: "b", sessionId: "s2" },
+        ],
+        activeId: "b",
+      }),
+    );
+    await mount();
+    await waitFor(() => loaded.includes("s1") && loaded.includes("s2"), "both chats to load");
+    await waitFor(() => mcpChecks > 0, "the on-screen tab's check");
+    expect(mcpChecks).toBe(1);
   });
 
   it("keeps a reply streaming in a tab the user has left", async () => {
@@ -410,6 +515,8 @@ describe("ChatTabs", () => {
     localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "s1");
     const first = await mount();
     await waitFor(() => loaded.includes("s1"), "the chat to load");
+    buttonLabelled(first.host, "New chat")!.click();
+    await waitFor(() => tabs(first.host).length === 2, "a second tab");
     buttonLabelled(first.host, "Hide chat history")!.click();
     await waitFor(() => first.host.querySelector("aside") === null, "the history to hide");
     first.unmount();
@@ -417,7 +524,9 @@ describe("ChatTabs", () => {
     const second = await mount();
     expect(second.host.querySelector("aside")).toBeNull();
     expect(buttonLabelled(second.host, "Show chat history")).not.toBeNull();
-    expect(JSON.parse(localStorage.getItem(CHAT_TABS_KEY)!).tabs[0].sessionId).toBe("s1");
+    const saved = JSON.parse(localStorage.getItem(CHAT_TABS_KEY)!);
+    expect(saved.tabs).toHaveLength(2);
+    expect(saved.tabs[0].sessionId).toBe("s1");
     await waitFor(() => tabLabels(second.host).includes("Plan my week"), "the restored tab");
   });
 });

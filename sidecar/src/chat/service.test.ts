@@ -41,8 +41,9 @@ describe("titleFromPrompt", () => {
   });
 
   it("drops a space left at the cut", () => {
-    const line = `${"x".repeat(PROMPT_TITLE_MAX - 2)} yz`;
-    expect(titleFromPrompt(line)).toBe(`${"x".repeat(PROMPT_TITLE_MAX - 2)}…`);
+    // The space inside the kept text stays; only the one at the cut goes.
+    const kept = `Plan ${"x".repeat(PROMPT_TITLE_MAX - 7)}`;
+    expect(titleFromPrompt(`${kept} yz`)).toBe(`${kept}…`);
   });
 
   it("counts an emoji as one character and never splits it", () => {
