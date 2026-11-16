@@ -5,7 +5,6 @@ import { resetChatApi, stubChatApi } from "../test/chatApi";
 import { mountForInteraction, waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatTabs from "./ChatTabs";
-import { ARMING_MS } from "./ToolApprovalBar";
 
 /**
  * The Chat tab's tabs over a stubbed sidecar, each tab a real `ChatPanel`.
@@ -40,6 +39,11 @@ let answered: string[] = [];
 let scripted: unknown[] = [];
 /** Lets a turn scripted with `{ type: "wait" }` go on. */
 let release: () => void = () => {};
+/** While set, creating a session waits on it, as a slow sidecar would. */
+let holdCreate: Promise<void> | null = null;
+let createRequested = false;
+/** How many more times listing the chats fails. */
+let listFailures = 0;
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -51,11 +55,19 @@ stubSidecarApi({
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path.startsWith("/api/chat/providers")) return json(providers);
     if (path === "/api/chat/sessions" && init?.method === "POST") {
+      createRequested = true;
+      if (holdCreate) await holdCreate;
       const created = session(`new-${sessions.length + 1}`, null);
       sessions = [created, ...sessions];
       return json(created);
     }
-    if (path === "/api/chat/sessions") return json(sessions);
+    if (path === "/api/chat/sessions") {
+      if (listFailures > 0) {
+        listFailures -= 1;
+        return new Response("database is down", { status: 500 });
+      }
+      return json(sessions);
+    }
     const messages = path.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/);
     if (messages) {
       loaded.push(messages[1]!);
@@ -107,6 +119,9 @@ afterAll(() => {
 
 afterEach(() => {
   release();
+  holdCreate = null;
+  createRequested = false;
+  listFailures = 0;
   unmount?.();
   unmount = null;
   sessions = [];
@@ -194,7 +209,7 @@ describe("ChatTabs", () => {
   });
 
   it("opens a chat from the history in a new tab, and focuses it when already open", async () => {
-    sessions = [session("s1", "Plan my week"), session("s2", "Dentist")];
+    sessions = [session("s1", "Plan my week"), session("s2", "Dentist"), session("s3", "Taxes")];
     localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "s1");
     const { host } = await mount();
     await waitFor(() => historyButton(host, "Dentist") !== undefined, "the history to load");
@@ -208,6 +223,9 @@ describe("ChatTabs", () => {
     historyButton(host, "Plan my week")!.click();
     await waitFor(() => selectedTab(host) === "Plan my week", "the open tab to be focused");
     expect(tabLabels(host)).toHaveLength(2);
+    // A later load proves an unwanted re-read of the first chat had its chance to land.
+    historyButton(host, "Taxes")!.click();
+    await waitFor(() => loaded.includes("s3"), "a third chat to load");
     // Focusing a chat that is already open doesn't read it again.
     expect(loaded.filter((id) => id === "s1")).toHaveLength(1);
   });
@@ -289,12 +307,25 @@ describe("ChatTabs", () => {
       () => tabs(host)[0]!.title.includes("needs your approval"),
       "the waiting tab to be marked",
     );
-    // Past the bar's arming delay, so a key it ignores is ignored for being
-    // off screen, not for being too early.
-    await new Promise((resolve) => setTimeout(resolve, ARMING_MS * 2));
-    pressA();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(answered).toEqual([]);
+    // The second tab waits on its own approval. Its bar arms after the hidden
+    // one had, so a hidden bar that still listened would answer first.
+    scripted = [
+      {
+        type: "tool_approval_request",
+        id: "call-2",
+        toolId: "mcp:server-uuid:create_page",
+        name: "create_page",
+        server: "Notion",
+        args: { title: "notes" },
+      },
+      { type: "hang" },
+    ];
+    await say(host, "make a page");
+    await waitFor(() => {
+      pressA();
+      return answered.includes("call-2");
+    }, "the on-screen tab's approval to be answered");
+    expect(answered).not.toContain("call-1");
 
     tabs(host)[0]!.click();
     await waitFor(() => {
@@ -316,6 +347,62 @@ describe("ChatTabs", () => {
     await waitFor(() => selectedTab(host) === "From a link", "the requested chat's tab");
     await waitFor(() => loaded.includes("s7"), "the requested chat to load");
     expect(consumed).toBeGreaterThan(0);
+  });
+
+  it("opens a chat clicked while the empty tab's first message waits for its session", async () => {
+    sessions = [session("s1", "Plan my week")];
+    let releaseCreate: () => void = () => {};
+    holdCreate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const { host } = await mount();
+    await waitFor(() => historyButton(host, "Plan my week") !== undefined, "the history to load");
+    await say(host, "Book a dentist visit");
+    await waitFor(() => createRequested, "the new chat's session to be requested");
+
+    historyButton(host, "Plan my week")!.click();
+    await waitFor(() => selectedTab(host) === "Plan my week", "the clicked chat's tab");
+    expect(tabs(host)).toHaveLength(2);
+
+    releaseCreate();
+    await waitFor(
+      () => tabLabels(host).includes("Book a dentist visit"),
+      "the first tab to keep the chat it was starting",
+    );
+  });
+
+  it("re-reads a requested chat that is already open, in its own tab", async () => {
+    sessions = [session("s1", "Plan my week")];
+    localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "s1");
+    const props = {
+      active: true,
+      requestedSessionId: null as string | null,
+      onRequestConsumed: noop,
+      requestedArtifactId: null,
+      onArtifactRequestConsumed: noop,
+    };
+    const { host, rerender } = await mount(props);
+    await waitFor(() => loaded.includes("s1"), "the chat to load");
+
+    rerender(createElement(ChatTabs, { ...props, requestedSessionId: "s1" }));
+    await waitFor(() => loaded.filter((id) => id === "s1").length === 2, "the chat to re-load");
+    expect(tabLabels(host)).toEqual(["Plan my week"]);
+  });
+
+  it("shows a failed history load, and clears it once a later load works", async () => {
+    listFailures = 1;
+    const { host } = await mount();
+    await waitFor(
+      () => host.querySelector('aside [role="alert"]') !== null,
+      "the history's error notice",
+    );
+
+    await say(host, "Book a dentist visit");
+    await waitFor(
+      () => historyButton(host, "Book a dentist visit") !== undefined,
+      "the history to load",
+    );
+    expect(host.querySelector('aside [role="alert"]')).toBeNull();
   });
 
   it("remembers open tabs and whether the history is hidden", async () => {

@@ -42,9 +42,9 @@ const EMPTY_HINT =
  * belongs to `useChatThread`, so both chat surfaces behave identically.
  *
  * `active` is false while the host keeps the panel mounted but off screen, so a
- * turn keeps streaming after the user switches away. `focusOnShow` moves focus to the composer
- * each time the panel comes on screen; it is for the Chat tab, not for a panel
- * that appears beside other inputs, such as an Omni widget.
+ * turn keeps streaming after the user switches away. `focusOnShow` moves focus
+ * to the composer each time the panel comes on screen; it is for the Chat tab,
+ * not for a panel that appears beside other inputs, such as an Omni widget.
  * `requestedSessionId` opens that chat, re-reading it even when it is already
  * open, since a scheduled task may have added to it in the background; the
  * panel calls `onRequestConsumed` once it has. `requestedArtifactId` opens that
@@ -161,10 +161,11 @@ export default function ChatPanel({
     if (focusOnShow && active && !overlayOpen) composerRef.current?.focus();
   }, [focusOnShow, active, overlayOpen]);
 
-  // Refetched on each return to the panel: sessions other surfaces created, and
-  // titles the sidecar assigned, arrive while it sits hidden. Merged rather than
-  // replaced, so a session this panel created while the fetch was in flight
-  // stays in the picker.
+  // The session picker's list, refetched on each return to the panel: sessions
+  // other surfaces created, and titles the sidecar assigned, arrive while it
+  // sits hidden. Merged rather than replaced, so a session this panel created
+  // while the fetch was in flight stays in the picker. A host that hides the
+  // picker keeps its own list.
   useEffect(() => {
     if (!active || !showSessionControls) return;
     void (async () => {
@@ -266,7 +267,8 @@ export default function ChatPanel({
         />
       )}
 
-      <McpConnectionBar />
+      {/* Every open chat keeps its panel mounted, so only the one on screen polls. */}
+      <McpConnectionBar visible={active && !overlayOpen} />
 
       <QueuedMessages
         queued={queued.map((q) => q.text)}

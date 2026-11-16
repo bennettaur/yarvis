@@ -53,6 +53,11 @@ describe("titleFromPrompt", () => {
   it("gives no title for a blank prompt", () => {
     expect(titleFromPrompt("  \n\t ")).toBeNull();
   });
+
+  it("treats only ASCII whitespace as blank, as the backfill's SQL does", () => {
+    expect(titleFromPrompt("\u00a0\nPlan")).toBe("\u00a0");
+    expect(titleFromPrompt("Plan\r\nmore")).toBe("Plan");
+  });
 });
 
 describe("chat service", () => {
@@ -107,7 +112,7 @@ describe("chat service", () => {
     expect(listed!.title).toBe("Planning");
   });
 
-  it("does not name a chat after a scheduled task's prompt", async () => {
+  it("names a chat after the user's prompt, never a scheduled task's", async () => {
     const session = await createSession(db);
     await addMessage(db, {
       sessionId: session.id,
@@ -115,9 +120,41 @@ describe("chat service", () => {
       content: "Check CI on #12",
       metadata: { scheduledTask: { id: "t1", attempt: 1, origin: "chat" } },
     });
+    expect((await listSessions(db))[0]!.title).toBeNull();
 
-    const [listed] = await listSessions(db);
-    expect(listed!.title).toBeNull();
+    const prompt = await addMessage(db, {
+      sessionId: session.id,
+      role: "user",
+      content: "Ship it",
+    });
+    expect((await listSessions(db))[0]!.title).toBe("Ship it");
+
+    // The rewind looks past the scheduled task for the prompt that named the chat.
+    await rewindToMessage(db, session.id, prompt.id);
+    expect((await listSessions(db))[0]!.title).toBeNull();
+  });
+
+  it("does not name a chat after a heads-down pass's prompt", async () => {
+    const session = await createSession(db);
+    await addMessage(db, {
+      sessionId: session.id,
+      role: "user",
+      content: "Run your routines",
+      metadata: { source: "heads-down" },
+    });
+
+    expect((await listSessions(db))[0]!.title).toBeNull();
+  });
+
+  it("forgets a name from a later prompt when a blank first prompt left the chat unnamed", async () => {
+    const session = await createSession(db);
+    await addMessage(db, { sessionId: session.id, role: "user", content: "   " });
+    const named = await addMessage(db, { sessionId: session.id, role: "user", content: "Oops" });
+    expect((await listSessions(db))[0]!.title).toBe("Oops");
+
+    await rewindToMessage(db, session.id, named.id);
+
+    expect((await listSessions(db))[0]!.title).toBeNull();
   });
 
   it("creates a session and stores ordered messages", async () => {
@@ -231,6 +268,8 @@ describe("migration 0053", () => {
       "x".repeat(PROMPT_TITLE_MAX + 1),
       `${"x".repeat(PROMPT_TITLE_MAX - 2)} yz`,
       `${"x".repeat(PROMPT_TITLE_MAX - 2)}🙂🙂🙂`,
+      "\u00a0Plan\u2028 a  trip\r\nmore",
+      "\t\fLine\vwith\rodd spaces  ",
     ];
     const ids = [];
     for (const content of prompts) ids.push(await oldChat([{ content }]));
@@ -242,13 +281,17 @@ describe("migration 0053", () => {
     }
   });
 
-  it("uses the first user message and leaves chats it can't or mustn't name", async () => {
+  it("uses the first user message with text and leaves chats it can't or mustn't name", async () => {
     const named = await oldChat([
       { role: "assistant", content: "Hi there" },
+      { content: " \n " },
       { content: "First prompt" },
       { content: "Second prompt" },
     ]);
     const blank = await oldChat([{ content: "   " }]);
+    const headsDown = await oldChat([
+      { content: "Run routines", metadata: { source: "heads-down" } },
+    ]);
     const scheduled = await oldChat([
       {
         content: "Check CI",
@@ -262,6 +305,7 @@ describe("migration 0053", () => {
 
     expect(await titleOf(named)).toBe("First prompt");
     expect(await titleOf(blank)).toBeNull();
+    expect(await titleOf(headsDown)).toBeNull();
     expect(await titleOf(scheduled)).toBeNull();
     expect(await titleOf(titled)).toBe("Kept");
   });

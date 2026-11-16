@@ -49,6 +49,13 @@ describe("loadChatTabs", () => {
     );
     expect(loadChatTabs()).toEqual({ tabs: [{ id: "x", sessionId: "s" }], activeId: "x" });
   });
+
+  it("falls back to the pre-tabs chat when no saved tab is usable", () => {
+    localStorage.setItem(CHAT_TABS_KEY, JSON.stringify({ tabs: [{ id: 3 }], activeId: 3 }));
+    localStorage.setItem(LEGACY_CHAT_SESSION_KEY, "old-session");
+    const state = loadChatTabs();
+    expect(state.tabs).toEqual([{ id: state.activeId, sessionId: "old-session" }]);
+  });
 });
 
 describe("loadHistoryOpen", () => {
