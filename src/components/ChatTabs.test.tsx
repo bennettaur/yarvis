@@ -349,6 +349,39 @@ describe("ChatTabs", () => {
     await waitFor(() => historyButton(host, "From Telegram") !== undefined, "the new chat");
   });
 
+  it("doesn't re-read the history when opening a chat it already lists", async () => {
+    sessions = [session("s1", "Plan my week"), session("s2", "Dentist"), session("s3", "Taxes")];
+    const { host } = await mount();
+    await waitFor(() => historyButton(host, "Dentist") !== undefined, "the history to load");
+
+    historyButton(host, "Dentist")!.click();
+    await waitFor(() => loaded.includes("s2"), "the chat to load");
+    // A later load gives an unwanted re-read from the first one time to land.
+    historyButton(host, "Taxes")!.click();
+    await waitFor(() => loaded.includes("s3"), "a second chat to load");
+    expect(listCalls).toBe(1);
+  });
+
+  it("names the untitled chat whose reply finished, not another tab's", async () => {
+    sessions = [session("s1", "Plan my week"), session("s2", null)];
+    localStorage.setItem(
+      CHAT_TABS_KEY,
+      JSON.stringify({
+        tabs: [
+          { id: "a", sessionId: "s1" },
+          { id: "b", sessionId: "s2" },
+        ],
+        activeId: "b",
+      }),
+    );
+    const { host } = await mount();
+    await waitFor(() => loaded.includes("s2"), "the chat to load");
+    await waitFor(() => selectedTab(host) === "Untitled chat", "the untitled tab");
+
+    await say(host, "Book a dentist visit");
+    await waitFor(() => selectedTab(host) === "Book a dentist visit", "the tab to take its title");
+  });
+
   it("checks MCP connections only from the tab on screen", async () => {
     sessions = [session("s1", "Plan my week"), session("s2", "Dentist")];
     localStorage.setItem(

@@ -64,6 +64,24 @@ describe("loadHistoryOpen", () => {
     saveHistoryOpen(false);
     expect(loadHistoryOpen()).toBe(false);
   });
+
+  it("shows the history when storage can't be read", () => {
+    saveHistoryOpen(false);
+    const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage")!;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: () => {
+          throw new Error("storage is blocked");
+        },
+      },
+    });
+    try {
+      expect(loadHistoryOpen()).toBe(true);
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", real);
+    }
+  });
 });
 
 describe("openSessionInTabs", () => {
