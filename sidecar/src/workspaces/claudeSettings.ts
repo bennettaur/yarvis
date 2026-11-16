@@ -375,21 +375,33 @@ export interface WorkspaceForSettings {
     branch: string;
     worktreePath: string;
     repo: { primaryClonePath: string };
+    /** Worktrees Yarvis added beside this one, each on its own branch. */
+    extraWorktrees: readonly { branch: string; worktreePath: string }[];
   }[];
 }
 
 /**
- * The workspace's repos as the sandbox needs them. A worktree's admin
- * directory is looked up in its clone, since git may have suffixed the name.
+ * The workspace's worktrees as the sandbox needs them, one entry each. A
+ * worktree's admin directory is looked up in its clone, since git may have
+ * suffixed the name. An added worktree that is gone gets no grant at all, not
+ * even its branch, since nothing in the workspace commits to it any more.
  */
 function sandboxReposOf(detail: WorkspaceForSettings): SandboxRepo[] {
   return detail.repos
     .filter((wr) => wr.status !== "removed")
-    .map((wr) => ({
-      clonePath: wr.repo.primaryClonePath,
-      branch: wr.branch,
-      adminName: resolveAdminName(wr.repo.primaryClonePath, wr.worktreePath),
-    }));
+    .flatMap((wr) => {
+      const clonePath = wr.repo.primaryClonePath;
+      const own: SandboxRepo = {
+        clonePath,
+        branch: wr.branch,
+        adminName: resolveAdminName(clonePath, wr.worktreePath),
+      };
+      const extras = wr.extraWorktrees.flatMap(({ branch, worktreePath }) => {
+        const adminName = resolveAdminName(clonePath, worktreePath);
+        return adminName ? [{ clonePath, branch, adminName }] : [];
+      });
+      return [own, ...extras];
+    });
 }
 
 /**

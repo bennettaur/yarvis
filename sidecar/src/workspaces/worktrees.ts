@@ -19,7 +19,14 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type Repo, repos, type WorkspaceRepo, workspaceRepos, workspaces } from "../db/schema.ts";
 import { redactSecrets } from "../llm/errors.ts";
-import { canonicalPath, type GitRunner, listWorktrees, nearestBaseRef, remoteRef } from "./git.ts";
+import {
+  canonicalPath,
+  type GitRunner,
+  git,
+  listWorktrees,
+  nearestBaseRef,
+  remoteRef,
+} from "./git.ts";
 
 export interface WorkspaceWorktree {
   path: string;
@@ -87,6 +94,25 @@ async function discoverWorktrees(
     found.push({ path: entry.path, branch: entry.branch, primary: false });
   }
   return found;
+}
+
+/**
+ * The clone's worktrees inside `workspaceRoot` other than the workspace's own,
+ * for an archive to remove. Held to the same containment rules as the views'
+ * listing, since an agent can write the listing git reads.
+ */
+export async function extraWorktrees(
+  runner: GitRunner,
+  primaryClonePath: string,
+  workspaceRoot: string,
+  primaryWorktreePath: string,
+): Promise<string[]> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  const root = canonicalPath(workspaceRoot);
+  const primaryPath = canonicalPath(primaryWorktreePath);
+  return (await listWorktrees(runner, primaryClonePath))
+    .map((entry) => canonicalPath(entry.path))
+    .filter((path) => path !== primaryPath && isInside(path, root) && !underGitDir(path, root));
 }
 
 const primaryOnly = (wr: WorkspaceRepo): WorkspaceWorktree[] => [

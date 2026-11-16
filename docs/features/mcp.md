@@ -183,8 +183,9 @@ Memory tools:
 | `list_memories` | Lists memories, newest first, optionally by `kind` (`fact`, `note`, `session-summary`, …), with the same validity fields |
 | `forget` | Deletes a memory |
 
-A session that Yarvis launched in a workspace gets two more tools. See
-[Workspace review comments](#workspace-review-comments).
+A session that Yarvis launched in a workspace gets three more tools. See
+[Workspace review comments](#workspace-review-comments) and
+[Adding a worktree](#adding-a-worktree).
 
 Confirming or correcting a memory is in-app only for now, so a coding session
 can see that a memory has expired but can't re-validate it. It can tell you, or
@@ -259,6 +260,32 @@ findings the same way in the text it copies.
 A workspace provisioned before this header existed gets it the next time it
 is provisioned.
 
+### Adding a worktree
+
+A workspace session also gets `add_worktree`, for working on another branch in
+a worktree of its own (one per layer of a stack, say). The session's sandbox
+can't run `git worktree add`, because that writes to the repo's shared clone.
+So Yarvis runs it, at `<workspace>/<repo folder>-<branch>` (a `/` in the
+branch becomes `-`), and then lets the sandbox commit, rebase and push in that
+worktree. See [Workspaces](workspaces.md#other-worktrees-in-the-workspace).
+
+| Argument | What it is |
+| --- | --- |
+| `repo` | The repo's folder in the workspace, or its name |
+| `branch` | The branch to check out. It must not be in the local clone yet, in any letter case |
+| `base` | Optional. The remote branch a new branch starts from. Leave it out to check out a branch that is already on the remote. Without it, a new branch is cut from the workspace's base branch |
+
+It answers with the worktree's `path`, its `branch`, and `startedFrom`, the
+remote branch it came from. It refuses, with a reason the agent can act on, a
+name git would read as something else (`origin/main`, `HEAD`), a branch an
+active workspace on the repo works on or stacks on, a path something already
+holds, and more than 10 extra worktrees for one repo.
+
+Like the review comment tools, it acts on the workspace the header names, and
+any caller holding the token can name any workspace. What a caller gets from
+that is a checkout of a branch not yet in the clone, inside that workspace's
+folder, and sandbox write access to that one branch.
+
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
@@ -298,8 +325,9 @@ pointing by hand.
 3. Run it in your terminal.
 
 The command puts the token in your shell history, and Claude Code saves it in
-`~/.claude.json`. That exposure is limited: the token only grants the memory
-and review comment and question tools, and it changes every time Yarvis relaunches.
+`~/.claude.json`. That exposure is limited: the token only grants the memory,
+review comment, question and `add_worktree` tools, and it changes every time
+Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
 saving a secret does) keeps them. Relaunching Yarvis picks new ones, so copy
@@ -311,9 +339,9 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory, review comment and
-  question tools and nothing else. The rest of the sidecar API keeps its own
-  bearer token.
+- It uses a **scoped token** that grants the memory, review comment, question
+  and `add_worktree` tools and nothing else. The rest of the sidecar API keeps
+  its own bearer token.
 - The session and workspace headers are the caller's claim, the same trust
   attention hooks get. They decide where a question is shown, and
   `wait_for_answer` only returns a question to the session that asked it. A

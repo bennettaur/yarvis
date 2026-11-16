@@ -773,6 +773,7 @@ export function checkOutcome(check: CheckItem): CheckOutcome {
   switch (conclusion) {
     case "SUCCESS":
       return "passed";
+    // src/lib/pr/fixChecks.ts copies this list for the workspace's failing-checks button.
     case "FAILURE":
     case "ERROR":
     case "TIMED_OUT":
