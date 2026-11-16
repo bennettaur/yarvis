@@ -130,4 +130,19 @@ describe("pickCloseState", () => {
     ];
     expect(pickCloseState(states)).toBeNull();
   });
+
+  it("prefers Done, then Closed, matching the whole name", () => {
+    const state = (name: string): BoardsState => ({ name, category: "done" });
+    expect(pickCloseState([state("Closed"), state(" Done ")])?.name).toBe(" Done ");
+    expect(pickCloseState([state("Not Done"), state("Done Later"), state("Closed")])?.name).toBe(
+      "Closed",
+    );
+    expect(pickCloseState([state("Reclosed"), state("Closed Out"), state(" closed")])?.name).toBe(
+      " closed",
+    );
+    // Only the state named exactly Removed is ruled out.
+    expect(pickCloseState([state("Removed Duplicate")])?.name).toBe("Removed Duplicate");
+    expect(pickCloseState([state("Unremoved")])?.name).toBe("Unremoved");
+    expect(pickCloseState([state(" Removed ")])).toBeNull();
+  });
 });

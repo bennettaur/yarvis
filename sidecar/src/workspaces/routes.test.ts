@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -2278,27 +2278,37 @@ describe("provision + archive (injected git runner)", () => {
       localStatus: "in_progress" as const,
     });
     const other = await createWorkspace(db, config, { name: "elsewhere", repoIds: [] });
-    const [picked, kept, failing, foreign] = await db
+    const [picked, kept, failing, foreign, alreadyDone] = await db
       .insert(issueLinks)
-      .values([link("1", ws.id), link("2", ws.id), link("3", ws.id), link("4", other.id)])
+      .values([
+        link("1", ws.id),
+        link("2", ws.id),
+        link("3", ws.id),
+        link("4", other.id),
+        { ...link("5", ws.id), localStatus: "done" as const },
+      ])
       .returning();
 
     const closeCalls: string[] = [];
     const result = await archiveWorkspace(
       db,
       ws.id,
-      { closeIssueIds: [picked!.id, failing!.id, foreign!.id] },
+      { closeIssueIds: [picked!.id, failing!.id, foreign!.id, alreadyDone!.id] },
       fakeGit,
       async ({ externalId }) => {
         closeCalls.push(externalId);
-        if (externalId === "3") throw new Error("tracker said no");
+        if (externalId === "3") throw new Error(`tracker said no${"!".repeat(1000)}`);
       },
     );
 
     expect(result.status).toBe("archived");
-    expect(result.closedIssues).toBe(1);
-    // The issue linked to another workspace is never closed from this one.
+    expect(result.closedIssues).toEqual(["acme/widget#1"]);
+    // Neither an issue linked to another workspace nor one already done is closed.
     expect(closeCalls.sort()).toEqual(["1", "3"]);
+    // The tracker's reason is capped before it reaches the user or the chat model.
+    expect(result.issueCloseErrors).toHaveLength(1);
+    expect(result.issueCloseErrors[0]?.issue).toBe("acme/widget#3");
+    expect(result.issueCloseErrors[0]?.message.length).toBe(300);
     const status = async (id: string) =>
       (await db.select().from(issueLinks).where(eq(issueLinks.id, id)))[0]?.localStatus;
     expect(await status(picked!.id)).toBe("done");
@@ -2308,9 +2318,36 @@ describe("provision + archive (injected git runner)", () => {
       .select()
       .from(attentionItems)
       .where(eq(attentionItems.workspaceId, ws.id));
-    expect(flagged.map((i) => i.body)).toEqual([
-      "Archived, but could not close acme/widget#3: tracker said no",
-    ]);
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]?.kind).toBe("error");
+    expect(flagged[0]?.body).toStartWith(
+      "Archived, but could not close acme/widget#3: tracker said no!",
+    );
+    expect(flagged[0]?.navTarget).toEqual({ type: "workspace", workspaceId: ws.id });
+  });
+
+  it("raises nothing when every picked issue closes", async () => {
+    const db = getDb(url).db;
+    const ws = await createWorkspace(db, config, { name: "clean-close", repoIds: [] });
+    const [row] = await db
+      .insert(issueLinks)
+      .values({ provider: "github", sourceKey: "acme/widget", externalId: "6", workspaceId: ws.id })
+      .returning();
+
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [row!.id] },
+      fakeGit,
+      async () => {},
+    );
+
+    expect(result.closedIssues).toEqual(["acme/widget#6"]);
+    const flagged = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(flagged.filter((i) => i.kind === "error")).toEqual([]);
   });
 
   it("leaves linked issues open when the archive stops on a dirty worktree", async () => {
@@ -2334,7 +2371,7 @@ describe("provision + archive (injected git runner)", () => {
     );
 
     expect(result.status).toBe("archiving");
-    expect(result.closedIssues).toBe(0);
+    expect(result.closedIssues).toEqual([]);
     expect(closeCalls).toEqual([]);
   });
 
@@ -2579,6 +2616,66 @@ describe("provision + archive (injected git runner)", () => {
     expect(res.status).toBe(400);
     // Refused before the archive starts, so the workspace is untouched.
     expect((await getWorkspace(db, ws.id))?.status).toBe(ws.status);
+  });
+
+  it("closes the picked issues on GitHub after an archive started over HTTP", async () => {
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+      (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+    );
+    try {
+      const withGitHub = createApp({ ...config, secrets: { githubToken: "gh-token" } });
+      const ws = await createWorkspace(db, config, { name: "http-close", repoIds: [] });
+      const [picked, kept] = await db
+        .insert(issueLinks)
+        .values([
+          { provider: "github", sourceKey: "acme/widget", externalId: "21", workspaceId: ws.id },
+          { provider: "github", sourceKey: "acme/widget", externalId: "22", workspaceId: ws.id },
+        ])
+        .returning();
+
+      const res = await withGitHub.request(`/api/workspaces/${ws.id}/archive`, {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ closeIssueIds: [picked!.id] }),
+      });
+      expect(res.status).toBe(202);
+      await waitForStatus(ws.id, "archived");
+      const status = async (id: string) =>
+        (await db.select().from(issueLinks).where(eq(issueLinks.id, id)))[0]?.localStatus;
+      // The issues close after the status flips, so wait on the link itself.
+      for (let attempt = 0; attempt < 200 && (await status(picked!.id)) !== "done"; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(await status(picked!.id)).toBe("done");
+
+      const calls = fetchSpy.mock.calls.map(([input, init]) => ({
+        url: String(input),
+        method: init?.method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      }));
+      expect(calls).toEqual([
+        {
+          url: expect.stringContaining("/repos/acme/widget/issues/21"),
+          method: "PATCH",
+          body: { state: "closed" },
+        },
+      ]);
+      expect(await status(kept!.id)).toBe("todo");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("refuses more than 100 issues to close", async () => {
+    const ws = await createWorkspace(db, config, { name: "too-many-close", repoIds: [] });
+    const res = await app.request(`/api/workspaces/${ws.id}/archive`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        closeIssueIds: Array.from({ length: 101 }, () => crypto.randomUUID()),
+      }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("returns from a background archive before the worktrees are gone", async () => {

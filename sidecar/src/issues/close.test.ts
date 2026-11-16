@@ -138,6 +138,74 @@ describe("createIssueCloser", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("closes GitHub issue #1", async () => {
+    await createIssueCloser(github)({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId: "1",
+    });
+    expect(sent.map((r) => r.url)).toEqual([
+      expect.stringContaining("/repos/acme/widget/issues/1"),
+    ]);
+  });
+
+  it("treats a partly configured tracker as not configured and sends nothing", async () => {
+    const partial = [
+      config({ jiraBaseUrl: "https://acme.atlassian.net", jiraEmail: "me@example.com" }),
+      config({ jiraBaseUrl: "https://acme.atlassian.net", jiraApiToken: "t" }),
+      config({ jiraEmail: "me@example.com", jiraApiToken: "t" }),
+    ];
+    for (const c of partial) {
+      await expect(
+        createIssueCloser(c)({ provider: "jira", sourceKey: "P", externalId: "P-1" }),
+      ).rejects.toThrow("JIRA is not configured");
+    }
+    for (const c of [
+      config({ azureDevopsToken: "t" }),
+      config({ azureDevopsOrgUrl: "https://dev.azure.com/acme" }),
+    ]) {
+      await expect(
+        createIssueCloser(c)({ provider: "azure", sourceKey: "P", externalId: "1" }),
+      ).rejects.toThrow("Azure Boards is not configured");
+    }
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an Azure id that isn't a work item number", async () => {
+    await expect(
+      createIssueCloser(azure)({ provider: "azure", sourceKey: "P", externalId: "7/../8" }),
+    ).rejects.toThrow("not a work item id: 7/../8");
+    expect(sent).toEqual([]);
+  });
+
+  it("fails an Azure work item whose type has no done state but Removed", async () => {
+    replies = [
+      [
+        "/_apis/wit/workitems/9?",
+        {
+          fields: {
+            "System.State": "Active",
+            "System.TeamProject": "close-test-c",
+            "System.WorkItemType": "Bug",
+          },
+        },
+      ],
+      [
+        "/states",
+        {
+          value: [
+            { name: "Active", category: "InProgress" },
+            { name: "Removed", category: "Removed" },
+          ],
+        },
+      ],
+    ];
+    await expect(
+      createIssueCloser(azure)({ provider: "azure", sourceKey: "close-test-c", externalId: "9" }),
+    ).rejects.toThrow("no done state available for this work item type");
+    expect(sent.some((r) => r.method === "PATCH")).toBe(false);
+  });
+
   it("names the tracker that isn't configured", async () => {
     const none = createIssueCloser(config({}));
     await expect(none({ provider: "github", sourceKey: "a/b", externalId: "1" })).rejects.toThrow(

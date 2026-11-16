@@ -2274,8 +2274,8 @@ export interface ArchiveResult {
   errors: { repo: string; message: string }[];
   /** Number of linked tasks completed (only when fully archived). */
   completedTasks: number;
-  /** Number of linked issues closed on their tracker (only when fully archived). */
-  closedIssues: number;
+  /** Linked issues closed on their tracker, as `issueLabel` names them (only when fully archived). */
+  closedIssues: string[];
   /** Picked linked issues their tracker refused to close, left open. */
   issueCloseErrors: IssueCloseError[];
 }
@@ -2283,13 +2283,22 @@ export interface ArchiveResult {
 export interface IssueCloseError {
   /** The issue, as `issueLabel` names it. */
   issue: string;
+  /** The tracker's reason, sanitized and capped: it is shown to the user and the chat model. */
   message: string;
 }
 
-/** How an issue is named to the user: `owner/repo#12` on GitHub, the key or id elsewhere. */
+/**
+ * How an issue is named to the user, matching the archive dialog:
+ * `owner/repo#12` on GitHub, `PROJ-45` on JIRA, `#678` on Azure Boards.
+ */
 export function issueLabel(link: Pick<IssueLink, "provider" | "sourceKey" | "externalId">): string {
-  return link.provider === "github" ? `${link.sourceKey}#${link.externalId}` : link.externalId;
+  if (link.provider === "github") return `${link.sourceKey}#${link.externalId}`;
+  if (link.provider === "azure") return `#${link.externalId}`;
+  return link.externalId;
 }
+
+/** Tracker error bodies can be long; the reason fits well inside this. */
+const ISSUE_CLOSE_ERROR_CAP = 300;
 
 /**
  * The URL of a PR raised from this workspace, so archival can record it even
@@ -2517,7 +2526,7 @@ export async function startArchiveWorkspace(
     status: "archiving",
     errors: [],
     completedTasks: 0,
-    closedIssues: 0,
+    closedIssues: [],
     issueCloseErrors: [],
   };
 }
@@ -2769,7 +2778,7 @@ async function removeWorktreesAndFinish(
   const { closed: closedIssues, failures: issueCloseErrors } =
     fullyRemoved && closeIssue
       ? await closeLinkedIssues(db, detail, input, closeIssue)
-      : { closed: 0, failures: [] };
+      : { closed: [], failures: [] };
 
   if (fullyRemoved) {
     void emitEvent(db, {
@@ -2781,7 +2790,7 @@ async function removeWorktreesAndFinish(
         summary: input.summary ?? detail.summary,
         mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
         completedTasks: completedTasks.length,
-        closedIssues,
+        closedIssues: closedIssues.length,
       },
     });
   }
@@ -2799,31 +2808,44 @@ async function removeWorktreesAndFinish(
  * Closes the linked issues the user picked when archiving, and marks the ones
  * that closed `done` locally. Best-effort: the archive has already finished, so a
  * tracker that refuses only raises an attention item naming the issues left open.
- * Returns how many closed and which failed.
+ * Issues already done locally are skipped. Returns which closed and which failed.
  */
 async function closeLinkedIssues(
   db: Db,
   detail: WorkspaceDetail,
   input: ArchiveWorkspaceInput,
   closeIssue: IssueCloser,
-): Promise<{ closed: number; failures: IssueCloseError[] }> {
+): Promise<{ closed: string[]; failures: IssueCloseError[] }> {
   const requestedIds = new Set(input.closeIssueIds ?? []);
-  const linksToClose = detail.issues.filter((link) => requestedIds.has(link.id));
-  const closedLinkIds: string[] = [];
+  const linksToClose = detail.issues.filter(
+    (link) => requestedIds.has(link.id) && link.localStatus !== "done",
+  );
+  const closedLinks: typeof linksToClose = [];
   const failures: IssueCloseError[] = [];
   for (const link of linksToClose) {
     try {
       await closeIssue(link);
-      closedLinkIds.push(link.id);
+      closedLinks.push(link);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`[workspaces] failed to close ${link.provider} issue ${link.externalId}:`, e);
-      failures.push({ issue: issueLabel(link), message });
+      failures.push({
+        issue: issueLabel(link),
+        message: sanitizeIssueText(message).slice(0, ISSUE_CLOSE_ERROR_CAP),
+      });
     }
   }
-  await markLinksDone(db, closedLinkIds);
+  try {
+    await markLinksDone(
+      db,
+      closedLinks.map((link) => link.id),
+    );
+  } catch (e) {
+    // The archive already succeeded; a stale local status mustn't report it as failed.
+    console.warn("[workspaces] failed to mark closed issues done:", e);
+  }
   if (failures.length > 0) await raiseIssueCloseFailure(db, detail, failures);
-  return { closed: closedLinkIds.length, failures };
+  return { closed: closedLinks.map(issueLabel), failures };
 }
 
 /** Tells the user which linked issues stayed open after the archive. Best-effort. */

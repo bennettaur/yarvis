@@ -171,8 +171,6 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
 
 /** Bounds a reviewer or check name; nothing upstream caps a CI job's name. */
 const MAX_PR_NAME_CHARS = 200;
-/** Tracker error bodies can be long; the reason fits well inside this. */
-const MAX_ISSUE_CLOSE_ERROR_CHARS = 300;
 
 /** Most reply text one read_workspace_replies call returns; about two full-length replies. */
 const MAX_REPLY_CHARS_RETURNED = 16_000;
@@ -1314,20 +1312,13 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             gitRunner,
             closeIssue,
           );
-          const refused = new Set(result.issueCloseErrors.map((f) => f.issue));
           return {
             workspaceId,
             status: result.status,
             errors: result.errors,
             completedTasks: result.completedTasks,
-            closedIssues:
-              result.status === "archived"
-                ? toClose.map(issueLabel).filter((label) => !refused.has(label))
-                : [],
-            issueCloseErrors: result.issueCloseErrors.map((f) => ({
-              issue: f.issue,
-              message: sanitizeIssueText(f.message).slice(0, MAX_ISSUE_CLOSE_ERROR_CHARS),
-            })),
+            closedIssues: result.closedIssues,
+            issueCloseErrors: result.issueCloseErrors,
             note:
               result.status === "archived"
                 ? "Workspace archived."

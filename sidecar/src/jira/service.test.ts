@@ -166,6 +166,22 @@ describe("pickCloseTransition", () => {
     expect(pickCloseTransition([inProgress, wontDo, done])?.id).toBe("31");
   });
 
+  it("matches the whole status name Done", () => {
+    const toDone = (id: string, toStatusName: string): JiraTransition => ({
+      id,
+      name: toStatusName,
+      toStatusName,
+      toStatusCategory: "done",
+    });
+    expect(
+      pickCloseTransition([
+        toDone("1", "Not Done"),
+        toDone("2", "Done Later"),
+        toDone("3", " Done "),
+      ])?.id,
+    ).toBe("3");
+  });
+
   it("returns null when no transition reaches a done status", () => {
     expect(pickCloseTransition([inProgress, blocked])).toBeNull();
   });

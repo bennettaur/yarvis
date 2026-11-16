@@ -39,11 +39,10 @@ export default function ArchiveDialog({
 
   const openTaskCount = detail.tasks.filter((t) => t.status === "open").length;
   const unfinishedIssues = detail.issues.filter((i) => i.localStatus !== "done");
-  const [closeIssueIds, setCloseIssueIds] = useState(
-    () => new Set(unfinishedIssues.map((i) => i.id)),
-  );
+  // Tracks the unticked ones, so an issue linked while the dialog is open starts ticked.
+  const [keepOpenIds, setKeepOpenIds] = useState<Set<string>>(() => new Set());
   const toggleIssue = (id: string) =>
-    setCloseIssueIds((prev) => {
+    setKeepOpenIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -66,7 +65,7 @@ export default function ArchiveDialog({
         summary: summary.trim() || null,
         mergedPrUrl: prUrl.trim() || null,
         force,
-        closeIssueIds: [...closeIssueIds],
+        closeIssueIds: unfinishedIssues.filter((i) => !keepOpenIds.has(i.id)).map((i) => i.id),
       });
       await onArchived();
     } catch (e) {
@@ -116,7 +115,7 @@ export default function ArchiveDialog({
                   <label className="flex items-start gap-2 text-sm text-zinc-300">
                     <input
                       type="checkbox"
-                      checked={closeIssueIds.has(issue.id)}
+                      checked={!keepOpenIds.has(issue.id)}
                       disabled={busy}
                       onChange={() => toggleIssue(issue.id)}
                       className="mt-1"

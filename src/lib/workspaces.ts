@@ -159,7 +159,6 @@ export interface ArchiveResult {
   status: WorkspaceStatus;
   errors: { repo: string; message: string }[];
   completedTasks: number;
-  closedIssues: number;
 }
 
 /** A progress event emitted while a workspace's worktrees are provisioned. */
