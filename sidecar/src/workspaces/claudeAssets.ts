@@ -229,6 +229,50 @@ function readManifest(file: string): CopiedAssets {
   return manifest;
 }
 
+const CLAUDE_OWN_FILES = new Set([
+  MANIFEST_FILE,
+  "settings.json",
+  "settings.local.json",
+  ".cc-writes",
+]);
+
+/**
+ * What in a workspace root's `.claude` is the user's rather than Yarvis's, as
+ * paths relative to `.claude`: anything but the generated settings, the
+ * manifest, the copies the manifest lists, and what Claude Code writes itself:
+ * `.cc-writes`, and `settings.local.json` for "don't ask again" answers, which
+ * only apply to this workspace.
+ */
+export function userClaudeEntries(rootPath: string): string[] {
+  const claudeDir = `${rootPath}/.claude`;
+  let names: string[];
+  try {
+    names = readdirSync(claudeDir);
+  } catch {
+    return [];
+  }
+  const copied = readManifest(`${claudeDir}/${MANIFEST_FILE}`);
+  const found: string[] = [];
+  for (const name of names) {
+    if (CLAUDE_OWN_FILES.has(name)) continue;
+    const kind = KINDS.find((k) => k === name);
+    if (!kind) {
+      found.push(name);
+      continue;
+    }
+    let entries: string[];
+    try {
+      entries = readdirSync(`${claudeDir}/${kind}`);
+    } catch {
+      found.push(name);
+      continue;
+    }
+    const listed = new Set(copied[kind]);
+    for (const entry of entries) if (!listed.has(entry)) found.push(`${kind}/${entry}`);
+  }
+  return found;
+}
+
 /**
  * Points a renamed copy's frontmatter `name` at the name it now answers to. A
  * skill is addressed by its directory name and an agent by its frontmatter

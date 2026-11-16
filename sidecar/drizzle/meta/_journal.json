@@ -376,8 +376,15 @@
     {
       "idx": 53,
       "version": "7",
+      "when": 1794271764930,
+      "tag": "0053_neat_ma_gnuci",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
       "when": 1794455975110,
-      "tag": "0053_chat_titles_from_first_prompt",
+      "tag": "0054_chat_titles_from_first_prompt",
       "breakpoints": true
     }
   ]

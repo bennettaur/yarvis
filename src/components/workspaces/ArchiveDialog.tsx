@@ -60,7 +60,7 @@ export default function ArchiveDialog({
       <div className="w-full max-w-md space-y-4 rounded-xl border border-zinc-700 bg-zinc-900 p-5">
         <h3 className="text-sm font-medium text-zinc-100">Archive “{detail.name}”</h3>
         <p className="text-xs text-zinc-500">
-          Removes the worktrees from disk
+          Removes the workspace folder and its worktrees from disk
           {openTaskCount > 0 && ` and marks ${openTaskCount} linked task(s) done`}. Runs in the
           background — you can keep working while it finishes.
         </p>
