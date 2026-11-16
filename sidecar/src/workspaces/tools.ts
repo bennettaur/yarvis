@@ -52,6 +52,7 @@ import {
   getRepo,
   getWorkspace,
   isSafePathSegment,
+  issueLabel,
   isUniqueViolation,
   listRepos,
   listWorkspaces,
@@ -170,6 +171,8 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
 
 /** Bounds a reviewer or check name; nothing upstream caps a CI job's name. */
 const MAX_PR_NAME_CHARS = 200;
+/** Tracker error bodies can be long; the reason fits well inside this. */
+const MAX_ISSUE_CLOSE_ERROR_CHARS = 300;
 
 /** Most reply text one read_workspace_replies call returns; about two full-length replies. */
 const MAX_REPLY_CHARS_RETURNED = 16_000;
@@ -286,9 +289,8 @@ export interface WorkspaceToolDeps {
  * work", or scratch) and start a Claude Code session in it, bulk-merge each
  * workspace's base branch into it and push, hand an instruction or an allowed
  * slash command to a running session, and archive a workspace (closing its
- * linked issues). Deliberately no
- * general shell access: every git action here is a fixed sequence the model
- * chooses only the targets of.
+ * linked issues). Deliberately no general shell access: every git action here
+ * is a fixed sequence the model chooses only the targets of.
  */
 export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolDeps = {}) {
   const startClaude = deps.startClaudeSession ?? defaultStartClaudeSession;
@@ -1258,7 +1260,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         return detail.issues.map((i) => ({
           id: i.id,
           provider: i.provider,
-          key: i.provider === "github" ? `${i.sourceKey}#${i.externalId}` : i.externalId,
+          key: issueLabel(i),
           title: i.title ? sanitizeIssueText(i.title) : null,
           url: i.url,
           status: i.localStatus,
@@ -1268,7 +1270,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     archive_workspace: tool({
       description:
-        "Archive a workspace: stop its Claude session, tear down its git worktrees, mark it archived (completing any linked task), and close its linked issues that aren't done yet on their tracker. Resolve the workspace id with list_workspaces first. To leave some linked issues open, look them up with list_workspace_issues and pass their ids in keepOpenIssueIds. Issues are only closed once the archive finishes. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status, the issues closed, and any errors.",
+        "Archive a workspace: stop its Claude session, tear down its git worktrees, mark it archived (completing any linked task), and close its linked issues that aren't done yet on their tracker. Resolve the workspace id with list_workspaces first. To leave some linked issues open, look them up with list_workspace_issues and pass their ids in keepOpenIssueIds. Issues are only closed once the archive finishes, so a retry with force=true must pass the same keepOpenIssueIds again. If a worktree has uncommitted changes, or git no longer tracks it but its folder still has files, the archive is refused and stays in 'archiving'; retry with force=true to discard that work. Report back the returned status, the issues closed, and any errors.",
       inputSchema: z.object({
         workspaceId: z
           .string()
@@ -1294,30 +1296,42 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           const detail = await getWorkspace(db, workspaceId);
           if (!detail) return { error: "workspace not found" };
           const keepOpen = new Set(keepOpenIssueIds ?? []);
-          const closeIssueIds = detail.issues
-            .filter((i) => i.localStatus !== "done" && !keepOpen.has(i.id))
-            .map((i) => i.id);
+          // A mistyped id would otherwise close the issue the user asked to keep.
+          const linkedIds = new Set(detail.issues.map((i) => i.id));
+          const unknown = [...keepOpen].filter((id) => !linkedIds.has(id));
+          if (unknown.length > 0) {
+            return {
+              error: `keepOpenIssueIds not linked to this workspace: ${unknown.join(", ")}. Use ids from list_workspace_issues.`,
+            };
+          }
+          const toClose = detail.issues.filter(
+            (i) => i.localStatus !== "done" && !keepOpen.has(i.id),
+          );
           const result = await archiveWorkspace(
             db,
             workspaceId,
-            { summary: summary ?? null, force, closeIssueIds },
+            { summary: summary ?? null, force, closeIssueIds: toClose.map((i) => i.id) },
             gitRunner,
             closeIssue,
           );
+          const refused = new Set(result.issueCloseErrors.map((f) => f.issue));
           return {
             workspaceId,
             status: result.status,
             errors: result.errors,
             completedTasks: result.completedTasks,
-            closedIssues: result.closedIssues,
+            closedIssues:
+              result.status === "archived"
+                ? toClose.map(issueLabel).filter((label) => !refused.has(label))
+                : [],
             issueCloseErrors: result.issueCloseErrors.map((f) => ({
               issue: f.issue,
-              message: sanitizeIssueText(f.message),
+              message: sanitizeIssueText(f.message).slice(0, MAX_ISSUE_CLOSE_ERROR_CHARS),
             })),
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive incomplete; some worktrees could not be removed (often uncommitted changes), and no issues were closed. Retry with force=true to discard them.",
+                : "Archive incomplete; some worktrees could not be removed (often uncommitted changes), and no issues were closed. Retry with force=true to discard them, passing the same keepOpenIssueIds.",
           };
         } catch (e) {
           return { error: errorMessage(e) };

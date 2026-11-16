@@ -1909,9 +1909,14 @@ export interface ArchiveResult {
 }
 
 export interface IssueCloseError {
-  /** The issue as `sourceKey#externalId`. */
+  /** The issue, as `issueLabel` names it. */
   issue: string;
   message: string;
+}
+
+/** How an issue is named to the user: `owner/repo#12` on GitHub, the key or id elsewhere. */
+export function issueLabel(link: Pick<IssueLink, "provider" | "sourceKey" | "externalId">): string {
+  return link.provider === "github" ? `${link.sourceKey}#${link.externalId}` : link.externalId;
 }
 
 /**
@@ -2296,7 +2301,7 @@ async function closeLinkedIssues(
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.warn(`[workspaces] failed to close ${link.provider} issue ${link.externalId}:`, e);
-      failures.push({ issue: `${link.sourceKey}#${link.externalId}`, message });
+      failures.push({ issue: issueLabel(link), message });
     }
   }
   await markLinksDone(db, closedLinkIds);
