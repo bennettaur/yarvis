@@ -278,8 +278,8 @@ worktree. See [Workspaces](workspaces.md#other-worktrees-in-the-workspace).
 It answers with the worktree's `path`, its `branch`, and `startedFrom`, the
 remote branch it came from. It refuses, with a reason the agent can act on, a
 name git would read as something else (`origin/main`, `HEAD`), a branch an
-active workspace on the repo works on or stacks on, a path something already
-holds, and more than 10 extra worktrees for one repo.
+active workspace on the repo works on or stacks on, and a path something
+already holds.
 
 Like the review comment tools, it acts on the workspace the header names, and
 any caller holding the token can name any workspace. What a caller gets from
