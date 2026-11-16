@@ -49,7 +49,7 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Irreversible, and the system prompt describes it as permanent and unlogged.
   "delete_task",
-  // Tears down worktrees on disk.
+  // Tears down worktrees on disk, and closes linked issues other people can see.
   "archive_workspace",
   // Assigns and labels an issue other people can see, then provisions for it.
   "start_work_on_issue",
@@ -276,6 +276,7 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_repos",
   "list_repo_issues",
   "list_workspaces",
+  "list_workspace_issues",
   "get_workspace_activity",
   "get_workspace_status",
   "read_workspace_replies",

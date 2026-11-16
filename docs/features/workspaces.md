@@ -702,7 +702,9 @@ done status ("Done" when the workflow has one), and an Azure Boards work item
 moves to a done state ("Done", then "Closed", never "Removed"). An issue that
 won't close stays open, and an alert names it and the tracker's reason. If the
 archive stops on a worktree, nothing is closed yet; the dialog lists the issues
-again when you retry.
+again when you retry. Closing an issue that's already closed changes nothing, so
+a retry is safe. Archiving from chat closes them the same way, unless you tell
+the assistant which to leave open.
 
 A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use

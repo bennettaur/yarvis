@@ -2973,3 +2973,89 @@ describe("add_repo_to_workspace", () => {
     expect(result.error).toBe("workspace not found");
   });
 });
+
+describe("archive_workspace and linked issues", () => {
+  /** Links issues to the workspace, one per `[externalId, localStatus]`. */
+  async function linkIssues(
+    workspaceId: string,
+    issues: [string, "todo" | "in_progress" | "done"][],
+  ) {
+    return db
+      .insert(schema.issueLinks)
+      .values(
+        issues.map(([externalId, localStatus]) => ({
+          provider: "github",
+          sourceKey: "acme/widget",
+          externalId,
+          title: `Issue ${externalId}`,
+          workspaceId,
+          localStatus,
+        })),
+      )
+      .returning();
+  }
+
+  it("list_workspace_issues lists the workspace's linked issues", async () => {
+    const { workspaceId } = await activeWorkspace("Linked");
+    await linkIssues(workspaceId, [["5", "in_progress"]]);
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = await tools.list_workspace_issues.execute!({ workspaceId }, opts);
+
+    expect(result).toEqual([
+      expect.objectContaining({ key: "acme/widget#5", title: "Issue 5", status: "in_progress" }),
+    ]);
+  });
+
+  it("closes every unfinished linked issue except the ones kept open", async () => {
+    const { workspaceId } = await activeWorkspace("Closing");
+    const [closes, kept] = await linkIssues(workspaceId, [
+      ["1", "in_progress"],
+      ["2", "todo"],
+      ["3", "done"],
+    ]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [kept!.id] },
+      opts,
+    )) as { status: string; closedIssues: number };
+
+    expect(result.status).toBe("archived");
+    expect(result.closedIssues).toBe(1);
+    // Already done locally, so it isn't sent to the tracker again.
+    expect(closed).toEqual(["1"]);
+    const [row] = await db
+      .select()
+      .from(schema.issueLinks)
+      .where(eq(schema.issueLinks.id, closes!.id));
+    expect(row?.localStatus).toBe("done");
+  });
+
+  it("reports the issues the tracker refused to close", async () => {
+    const { workspaceId } = await activeWorkspace("Refused");
+    await linkIssues(workspaceId, [["7", "todo"]]);
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async () => {
+        throw new Error("tracker said no");
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [] },
+      opts,
+    )) as { closedIssues: number; issueCloseErrors: unknown[] };
+
+    expect(result.closedIssues).toBe(0);
+    expect(result.issueCloseErrors).toEqual([
+      { issue: "acme/widget#7", message: "tracker said no" },
+    ]);
+  });
+});
