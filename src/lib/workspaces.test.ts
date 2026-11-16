@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
+import type { WorkspaceStatus, WorkspaceSummary } from "./workspaces";
 
 let response: Response = new Response("{}", { status: 200 });
 let requested: string[] = [];
@@ -13,7 +14,9 @@ stubSidecarApi({
 
 const {
   FileConflictError,
+  IDLE_AFTER_DAYS,
   getWorkspace,
+  idleDays,
   listWorkspaces,
   saveWorkspaceRepoFile,
   stopWorkspaceAgent,
@@ -101,6 +104,26 @@ describe("saveWorkspaceRepoFile", () => {
     );
 
     expect(result).toEqual({ hash: "b".repeat(64), size: 6 });
+  });
+});
+
+describe("idleDays", () => {
+  const now = Date.parse("2026-10-29T12:00:00Z");
+  const row = (status: WorkspaceStatus, lastActiveAt: string | null) =>
+    ({ status, lastActiveAt }) as WorkspaceSummary;
+
+  it("counts the whole days an active workspace has sat untouched past the threshold", () => {
+    expect(idleDays(row("active", "2026-10-19T11:00:00Z"), now)).toBe(10);
+    expect(idleDays(row("active", "2026-10-22T12:00:00Z"), now)).toBe(IDLE_AFTER_DAYS);
+  });
+
+  it("doesn't mark a recently used workspace", () => {
+    expect(idleDays(row("active", "2026-10-22T12:00:01Z"), now)).toBeNull();
+  });
+
+  it("only marks active workspaces", () => {
+    expect(idleDays(row("archiving", "2026-01-01T00:00:00Z"), now)).toBeNull();
+    expect(idleDays(row("archived", null), now)).toBeNull();
   });
 });
 

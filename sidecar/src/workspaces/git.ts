@@ -565,6 +565,63 @@ export async function addExistingBranchWorktree(
   await git(runner, args, primaryClonePath);
 }
 
+/** The names of the clone's local branches, packed ones included. */
+export async function listLocalBranches(
+  runner: GitRunner,
+  primaryClonePath: string,
+): Promise<string[]> {
+  const out = await git(
+    runner,
+    ["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads"],
+    primaryClonePath,
+  );
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Creates a worktree at `worktreePath` on a new local branch `branch`, started
+ * from `origin/<startPoint>` (tracking it when `track` is set). The repo's
+ * hooks and the LFS filter are switched off: the checkout can be a branch an
+ * agent pushed, and a post-checkout hook driven by its files would run outside
+ * the agent's sandbox.
+ */
+export async function addWorktreeWithoutHooks(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+  { branch, startPoint, track }: { branch: string; startPoint: string; track: boolean },
+): Promise<void> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  await git(
+    runner,
+    [
+      "-c",
+      "core.hooksPath=/dev/null",
+      // A branch's .gitattributes picks the filters, and git-lfs would fetch
+      // from a host the branch's .lfsconfig names, past the sandbox's network
+      // allowlist. Blank commands turn the filter off; `required=false` keeps
+      // the checkout from failing without it.
+      "-c",
+      "filter.lfs.process=",
+      "-c",
+      "filter.lfs.smudge=",
+      "-c",
+      "filter.lfs.required=false",
+      "worktree",
+      "add",
+      ...(track ? ["--track"] : []),
+      "-b",
+      branch,
+      worktreePath,
+      remoteRef(startPoint),
+    ],
+    primaryClonePath,
+  );
+}
+
 /**
  * Removes a worktree and prunes its metadata. `force` discards uncommitted work.
  *
@@ -599,6 +656,82 @@ export async function removeWorktree(
     return;
   }
   await git(runner, ["worktree", "prune"], primaryClonePath);
+}
+
+/**
+ * Whether a local branch's work has landed, so it is safe to delete: its PR
+ * merged (a squash merge leaves the branch's commits off the base), or
+ * `origin/<base>` as last fetched already contains its tip. A merged PR counts
+ * only while the remote branch, if it is still there, holds every local commit,
+ * so work added after the merge isn't deleted with the branch.
+ */
+export async function branchLanded(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  baseBranch: string,
+  prMerged: boolean,
+): Promise<boolean> {
+  if (!(await branchExists(runner, primaryClonePath, branch))) return false;
+  const contains = async (ref: string) =>
+    (
+      await runner(["merge-base", "--is-ancestor", `refs/heads/${branch}`, ref], {
+        cwd: primaryClonePath,
+      })
+    ).exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return true;
+  if (!prMerged) return false;
+  const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
+    cwd: primaryClonePath,
+  });
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
+}
+
+/**
+ * How many of a local branch's commits deleting it would lose: ones no
+ * remote-tracking ref has (any remote counts, a fork's included), and that
+ * aren't behind `mergedHead`, the head commit a merged PR took.
+ */
+export async function unpushedCommitCount(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  mergedHead: string | null = null,
+): Promise<number> {
+  const exclude = ["--remotes"];
+  if (mergedHead !== null) {
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(mergedHead)) {
+      throw new Error(`not a commit id: ${mergedHead}`);
+    }
+    exclude.push(mergedHead);
+  }
+  const out = await git(
+    runner,
+    ["rev-list", "--count", `refs/heads/${branch}`, "--not", ...exclude],
+    primaryClonePath,
+  );
+  // Thrown rather than read as 0, which would let the branch be deleted.
+  const count = Number.parseInt(out.trim(), 10);
+  if (!Number.isInteger(count)) throw new Error(`git rev-list gave no count: ${out.trim()}`);
+  return count;
+}
+
+/** Whether a worktree has changes `git worktree remove` would refuse to drop, untracked files included. */
+export async function hasUncommittedChanges(
+  runner: GitRunner,
+  worktreePath: string,
+): Promise<boolean> {
+  const out = await git(runner, ["status", "--porcelain", "--ignore-submodules=all"], worktreePath);
+  return out.trim() !== "";
+}
+
+/** Deletes a local branch. Git refuses while a worktree has it checked out. */
+export async function deleteBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+): Promise<void> {
+  await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
 }
 
 async function removeLeftover(
