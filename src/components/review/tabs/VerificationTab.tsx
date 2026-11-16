@@ -22,6 +22,7 @@ import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
+import DecisionPanel from "./DecisionPanel";
 import {
   reportOf,
   useReviewChangedFiles,
@@ -396,6 +397,7 @@ function suggestedSections(items: ChecklistItem[]): ReportSection[] {
 }
 
 const NO_ITEMS: ChecklistItem[] = [];
+const NO_EVIDENCE: EvidenceItem[] = [];
 
 /**
  * The verification checklist: every section of the report, grouped by theme,
@@ -524,6 +526,16 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             </button>
           </span>
         </div>
+
+        <DecisionPanel
+          prRef={ctx.prRef}
+          seen={{ headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha }}
+          report={report}
+          evidence={evidence.data?.items ?? NO_EVIDENCE}
+          items={items}
+          currentSections={currentSections}
+          onOpen={open}
+        />
 
         <p className="text-xs text-zinc-500">
           Each check is an agent that reads every changed file's diff. Run the ones you want; each

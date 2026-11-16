@@ -1,0 +1,349 @@
+import { useMemo, useState } from "react";
+import { applyReviewAction, postPrComment } from "../../../lib/pr/api";
+import { prDetailKey } from "../../../lib/pr/cache";
+import type { PrRef, SeenCommits } from "../../../lib/pr/types";
+import { invalidate } from "../../../lib/resourceCache";
+import {
+  type Assessment,
+  assessReview,
+  type DraftComment,
+  draftComments,
+  reviewSummary,
+  type Suggestion,
+  whereToLook,
+} from "../../../lib/reviewWorkspaces/decision";
+import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
+import type {
+  ChecklistItem,
+  EvidenceItem,
+  VerificationReport,
+} from "../../../lib/reviewWorkspaces/verification";
+import { Location, type OpenLocation } from "./VerificationReportView";
+
+const SUGGESTION: Record<Suggestion, { text: string; className: string }> = {
+  approve: { text: "Looks ready to approve", className: "border-emerald-800 text-emerald-300" },
+  request_changes: { text: "Changes needed", className: "border-red-800 text-red-300" },
+  review_deeper: { text: "Review deeper first", className: "border-amber-800 text-amber-300" },
+  run_checks: { text: "Run the checks first", className: "border-zinc-700 text-zinc-400" },
+};
+
+type Mode = "approve" | "request_changes" | "review_deeper" | null;
+
+const BUTTON =
+  "rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
+
+function Reasons({ assessment }: { assessment: Assessment }) {
+  const { blockers, concerns, notRun } = assessment;
+  if (blockers.length + concerns.length + notRun.length === 0) {
+    return (
+      <p className="text-xs text-zinc-400">
+        CI, the claims and the checks found nothing that blocks this PR.
+      </p>
+    );
+  }
+  return (
+    <ul className="space-y-0.5 text-xs">
+      {blockers.map((b) => (
+        <li key={`b:${b}`} className="text-red-300">
+          {b}
+        </li>
+      ))}
+      {concerns.map((c) => (
+        <li key={`c:${c}`} className="text-amber-300">
+          {c}
+        </li>
+      ))}
+      {notRun.length > 0 && (
+        <li className="text-zinc-400">Not run on this commit: {notRun.join(", ")}</li>
+      )}
+    </ul>
+  );
+}
+
+/** What the reviewer sends with an approval; nothing more than a note. */
+function ApproveForm({
+  assessment,
+  onSubmit,
+  busy,
+}: {
+  assessment: Assessment;
+  onSubmit: (body: string) => void;
+  busy: boolean;
+}) {
+  const [body, setBody] = useState("");
+  const against = assessment.blockers.length + assessment.concerns.length;
+  return (
+    <div className="space-y-2">
+      {against > 0 && (
+        <p className="text-xs text-amber-300">
+          The report raised {against === 1 ? "one thing" : `${against} things`} above. Approve only
+          if you've looked at {against === 1 ? "it" : "them"}.
+        </p>
+      )}
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder="Optional comment for the author"
+        rows={2}
+        className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+      />
+      <button type="button" disabled={busy} onClick={() => onSubmit(body)} className={BUTTON}>
+        {busy ? "Approving…" : "Submit approval"}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The comments a "request changes" review would carry, each to tick and edit,
+ * and the summary that goes with the verdict. Those with a line go on it; the
+ * rest are listed in the summary.
+ */
+function RequestChangesForm({
+  drafts,
+  posted,
+  onSubmit,
+  busy,
+}: {
+  drafts: DraftComment[];
+  /** Comments already posted by an earlier try, so a retry doesn't repeat them. */
+  posted: ReadonlySet<string>;
+  onSubmit: (picked: DraftComment[], summary: string) => void;
+  busy: boolean;
+}) {
+  const [picked, setPicked] = useState<ReadonlySet<string>>(
+    () => new Set(drafts.filter((d) => d.picked).map((d) => d.id)),
+  );
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [typedSummary, setTypedSummary] = useState<string | null>(null);
+  const chosen = drafts
+    .filter((d) => picked.has(d.id))
+    .map((d) => ({ ...d, body: edits[d.id] ?? d.body }));
+  // Drafted from what is ticked until the reviewer edits it.
+  const summary = typedSummary ?? reviewSummary(chosen);
+  const toggle = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <div className="space-y-2">
+      {drafts.length === 0 && (
+        <p className="text-xs text-zinc-400">The report has nothing to raise; write the summary.</p>
+      )}
+      <ul className="space-y-2">
+        {drafts.map((d) => (
+          <li key={d.id} className="space-y-1 text-xs">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                aria-label={`Include ${d.title}`}
+                checked={picked.has(d.id)}
+                onChange={() => toggle(d.id)}
+                disabled={posted.has(d.id)}
+              />
+              <span className="text-[10px] uppercase text-zinc-500">{d.severity}</span>
+              <span className="text-zinc-200">{d.title}</span>
+              <span className="text-zinc-500">{d.source}</span>
+              {d.path && d.line ? (
+                <span className="font-mono text-[11px] text-zinc-400">
+                  {d.path}:{d.line}
+                </span>
+              ) : (
+                <span className="text-[11px] text-zinc-500">in the summary</span>
+              )}
+              {posted.has(d.id) && <span className="text-emerald-400">posted</span>}
+            </label>
+            {picked.has(d.id) && d.path && d.line && !posted.has(d.id) && (
+              <textarea
+                aria-label={`Comment on ${d.title}`}
+                value={edits[d.id] ?? d.body}
+                onChange={(e) => setEdits((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                rows={3}
+                className="ml-5 w-[calc(100%-1.25rem)] rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-200"
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+      <textarea
+        aria-label="Review summary"
+        value={summary}
+        onChange={(e) => setTypedSummary(e.target.value)}
+        rows={4}
+        className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+      />
+      <button
+        type="button"
+        disabled={busy || !summary.trim()}
+        onClick={() => onSubmit(chosen, summary)}
+        className={BUTTON}
+      >
+        {busy
+          ? "Requesting changes…"
+          : `Request changes${chosen.length ? ` (${chosen.length})` : ""}`}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The checklist's verdict and what to do with it: the suggested decision and
+ * every reason for it, then approve, request changes with comments drafted
+ * from the report, or a list of where to review deeper. Nothing goes to the
+ * PR until the reviewer submits.
+ */
+export default function DecisionPanel({
+  prRef,
+  seen,
+  report,
+  evidence,
+  items,
+  currentSections,
+  onOpen,
+}: {
+  prRef: PrRef;
+  /** The head the review is of, recorded with each comment and the verdict. */
+  seen: SeenCommits;
+  report: VerificationReport | null;
+  evidence: readonly EvidenceItem[];
+  items: readonly ChecklistItem[];
+  /** Sections whose result is for the PR's head; only these comment on lines. */
+  currentSections: ReadonlySet<string>;
+  onOpen: OpenLocation;
+}) {
+  const assessment = useMemo(
+    () => assessReview(report, evidence, items),
+    [report, evidence, items],
+  );
+  const drafts = useMemo(
+    () => draftComments(report, evidence, currentSections),
+    [report, evidence, currentSections],
+  );
+  const places = useMemo(() => whereToLook(report), [report]);
+  const [mode, setMode] = useState<Mode>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [posted, setPosted] = useState<ReadonlySet<string>>(new Set());
+  const suggestion = SUGGESTION[assessment.suggestion];
+  const intent = report?.changeMap?.intent ?? report?.summary;
+
+  const finished = (message: string) => {
+    // So the PR's threads and the review mark the verdict recorded show.
+    invalidate(prDetailKey(prRef));
+    invalidateLastReview(prRef);
+    setDone(message);
+    setMode(null);
+  };
+
+  const approve = async (body: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await applyReviewAction(prRef, "approve", body.trim() || undefined, seen);
+      finished("Approved.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Line comments go first, one at a time; the verdict is sent only once all
+  // of them are up, so a failure never leaves a verdict pointing at comments
+  // that aren't there. A retry skips the ones already posted.
+  const requestChanges = async (picked: DraftComment[], summary: string) => {
+    setBusy(true);
+    setError(null);
+    const nowPosted = new Set(posted);
+    try {
+      for (const d of picked) {
+        if (!d.path || !d.line || nowPosted.has(d.id)) continue;
+        await postPrComment(prRef, { path: d.path, line: d.line, body: d.body }, seen);
+        nowPosted.add(d.id);
+      }
+      await applyReviewAction(prRef, "request_changes", summary, seen);
+      finished("Changes requested.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPosted(nowPosted);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-2 rounded border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Decision</h3>
+        <span className={`rounded border px-1.5 py-0.5 text-[11px] ${suggestion.className}`}>
+          {suggestion.text}
+        </span>
+        <span className="ml-auto flex gap-1.5">
+          {(["approve", "request_changes", "review_deeper"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              onClick={() => {
+                setDone(null);
+                setMode(mode === m ? null : m);
+              }}
+              className={`${BUTTON} ${mode === m ? "bg-zinc-800" : ""}`}
+            >
+              {m === "approve"
+                ? "Approve"
+                : m === "request_changes"
+                  ? "Request changes"
+                  : "Review deeper"}
+            </button>
+          ))}
+        </span>
+      </div>
+      {intent && <p className="text-sm text-zinc-200">{intent}</p>}
+      <Reasons assessment={assessment} />
+
+      {mode === "approve" && (
+        <ApproveForm assessment={assessment} onSubmit={(b) => void approve(b)} busy={busy} />
+      )}
+      {mode === "request_changes" && (
+        <RequestChangesForm
+          drafts={drafts}
+          posted={posted}
+          onSubmit={(p, s) => void requestChanges(p, s)}
+          busy={busy}
+        />
+      )}
+      {mode === "review_deeper" &&
+        (places.length === 0 ? (
+          <p className="text-xs text-zinc-400">
+            Run the change map and summary to see where to look first.
+          </p>
+        ) : (
+          <ul className="space-y-1 text-xs">
+            {places.map((p) => (
+              <li key={p.path} className="flex flex-wrap items-baseline gap-2">
+                <Location path={p.path} line={p.line} onOpen={onOpen} />
+                <span className="text-zinc-400">{p.reason}</span>
+              </li>
+            ))}
+          </ul>
+        ))}
+
+      {error && (
+        <p role="alert" className="text-xs text-red-400">
+          {error}
+        </p>
+      )}
+      {done && (
+        <p role="status" className="text-xs text-emerald-400">
+          {done}
+        </p>
+      )}
+    </section>
+  );
+}

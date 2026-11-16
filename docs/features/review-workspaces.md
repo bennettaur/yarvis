@@ -186,6 +186,36 @@ theme:
 - **Maintainability**: complexity, code quality, comment quality, and whether
   there is a simpler way to do what the PR does.
 
+At the top, **Decision** sums the checklist up. It opens with what the PR is
+for, suggests a decision, and lists every reason for it:
+
+- **Changes needed** when CI fails, a scanner raised a high alert, a claim is
+  missing or contradicted, or a check found something high.
+- **Review deeper first** for a high-risk change, an outlier, a claim only
+  partly met, a medium finding, a simpler approach, a security bot's comment,
+  or a check not yet run on the PR's current commit.
+- **Looks ready to approve** when the checks have run on this commit and none
+  of that is there.
+- **Run the checks first** when nothing has run on this commit.
+
+The suggestion is a summary, not a gate. Its three buttons work whatever it
+says:
+
+- **Approve** names anything the report raised, takes an optional comment,
+  and approves the PR when you submit it.
+- **Request changes** drafts the review from the report: unmet claims,
+  outlier questions, high and medium findings, unfinished work, risk concerns
+  and failing CI. The ones a reviewer almost always raises start ticked. Tick
+  or untick each one, and edit its text. Those with a line in a result for the
+  current commit are posted on that line, and the rest are listed in the
+  review's summary, which you can edit too. The line comments go first. If one
+  fails, nothing else is sent, and a retry skips the ones already posted.
+- **Review deeper** lists where to look first: outlier themes, high-risk
+  themes, the must-read files and the lines of high findings. Each opens the
+  diff there.
+
+Nothing is posted until you submit.
+
 Each check runs on its own, when you choose. **Run** (or **Re-run**) on a
 row runs that one; tick several and press **Run picked** to start them
 together. The boxes start ticked on the checks with no result for the PR's
