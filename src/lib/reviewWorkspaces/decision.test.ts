@@ -22,7 +22,7 @@ const run = (current: boolean): ChecklistRun => ({
 });
 
 /** Every default section, each with a current result unless listed in `notRun`. */
-const items = (notRun: ReportSection[] = []): ChecklistItem[] =>
+const items = (notRun: readonly ReportSection[] = []): ChecklistItem[] =>
   DEFAULT_SECTIONS.map((section) => ({
     section,
     theme: "correctness",
@@ -74,34 +74,54 @@ const clean: VerificationReport = {
   approach: { rating: "no-simpler", reason: "", alternative: "" },
 };
 
-const ci = (tone: EvidenceItem["tone"], summary: string): EvidenceItem => ({
-  id: "ci-checks",
+const evidenceItem = (over: Partial<EvidenceItem> & Pick<EvidenceItem, "id">): EvidenceItem => ({
   theme: "correctness",
-  label: "CI checks",
+  label: over.id,
   description: "",
-  summary,
-  tone,
-  entries:
-    tone === "bad"
-      ? [
-          {
-            source: "tests",
-            title: "tests: failed",
-            detail: "2 failed",
-            severity: "high",
-            path: null,
-            line: null,
-            url: null,
-          },
-        ]
-      : [],
+  summary: "",
+  tone: "good",
+  entries: [],
   hiddenEntries: 0,
   note: null,
+  ...over,
 });
 
+const ci = (tone: EvidenceItem["tone"], summary: string): EvidenceItem =>
+  evidenceItem({
+    id: "ci-checks",
+    summary,
+    tone,
+    entries:
+      tone === "bad"
+        ? [
+            {
+              source: "tests",
+              title: "tests: failed",
+              detail: "2 failed",
+              severity: "high",
+              path: null,
+              line: null,
+              url: null,
+            },
+            // An annotation shows on its line on the PR already.
+            {
+              source: "tests",
+              title: "orders > sorts",
+              detail: "expected 2",
+              severity: "high",
+              path: "src/a.test.ts",
+              line: 4,
+              url: null,
+            },
+          ]
+        : [],
+  });
+
+const green = [ci("good", "All 4 passed")];
+
 describe("the suggested decision", () => {
-  it("suggests approving when every check ran on this commit and nothing stands out", () => {
-    expect(assessReview(clean, [ci("good", "All 4 passed")], items())).toEqual({
+  it("suggests approving when CI passed and every check ran on this commit with nothing to raise", () => {
+    expect(assessReview(clean, green, items())).toEqual({
       suggestion: "approve",
       blockers: [],
       concerns: [],
@@ -109,70 +129,161 @@ describe("the suggested decision", () => {
     });
   });
 
-  it("asks for changes when CI fails, a claim isn't met or a check found something high", () => {
-    const report: VerificationReport = {
-      ...clean,
-      claims: {
-        items: [
-          { claim: "Invalidates on write", source: "ABC-1", status: "missing", evidence: "" },
-        ],
-        gaps: [],
-      },
-      tests: { status: "issues", findings: [{ title: "No test", detail: "", severity: "high" }] },
-    };
-    const { suggestion, blockers } = assessReview(report, [ci("bad", "1 of 4 failing")], items());
-    expect(suggestion).toBe("request_changes");
-    expect(blockers).toEqual([
-      "CI: 1 of 4 failing",
-      "Claim missing: Invalidates on write",
-      "1 high finding",
-    ]);
+  it("won't suggest approving until CI has passed on this commit", () => {
+    for (const [evidence, concern] of [
+      [null, "No CI results for this commit yet"],
+      [[], "No CI results for this commit yet"],
+      [[ci("muted", "2 of 4 still running")], "CI: 2 of 4 still running"],
+      [[ci("muted", "No checks reported")], "CI: No checks reported"],
+    ] as const) {
+      expect(assessReview(clean, evidence, items())).toMatchObject({
+        suggestion: "review_deeper",
+        concerns: [concern],
+      });
+    }
   });
 
-  it("suggests a closer look for risk, outliers, partial claims and medium findings", () => {
-    const report: VerificationReport = {
-      ...clean,
-      risk: { level: "high", clientImpact: "Stale profiles.", mitigations: [], concerns: [] },
-      changeMap: {
-        intent: "i",
-        unmapped: [],
-        themes: [
-          {
-            title: "Bump timeout",
-            description: "",
-            risk: "low",
-            cohesion: "outlier",
-            question: "Why?",
-            files: [{ path: "src/http.ts" }],
+  it("asks for changes for each thing that blocks on its own", () => {
+    const blocked = (report: VerificationReport, evidence: EvidenceItem[] = green) =>
+      assessReview(report, evidence, items()).blockers;
+    expect(blocked(clean, [ci("bad", "1 of 4 failing")])).toEqual(["CI: 1 of 4 failing"]);
+    expect(
+      blocked(clean, [
+        ...green,
+        evidenceItem({
+          id: "code-scanning",
+          entries: [
+            {
+              source: "CodeQL",
+              title: "XSS",
+              detail: "",
+              severity: "high",
+              path: "a.ts",
+              line: 1,
+              url: null,
+            },
+          ],
+        }),
+      ]),
+    ).toEqual(["1 high code scanning alert"]);
+    for (const status of ["missing", "contradicted"] as const) {
+      expect(
+        blocked({
+          ...clean,
+          claims: {
+            items: [{ claim: "Invalidates", source: "ABC-1", status, evidence: "" }],
+            gaps: [],
           },
-        ],
-      },
-      claims: {
-        items: [
-          { claim: "c", source: "title", status: "partial", evidence: "", path: "a", line: 1 },
-        ],
-        gaps: [],
-      },
-      quality: {
-        status: "issues",
-        findings: [{ title: "Naming", detail: "", severity: "medium" }],
-      },
+        }),
+      ).toEqual([`Claim ${status}: Invalidates`]);
+    }
+    expect(
+      blocked({
+        ...clean,
+        tests: { status: "issues", findings: [{ title: "t", detail: "", severity: "high" }] },
+      }),
+    ).toEqual(["1 high finding"]);
+    // Unfinished work the claims check found counts like a finding.
+    expect(
+      blocked({
+        ...clean,
+        claims: { items: [], gaps: [{ title: "TODO", detail: "", severity: "high" }] },
+      }),
+    ).toEqual(["1 high finding"]);
+  });
+
+  it("suggests a closer look for each thing that deserves one", () => {
+    const concerned = (report: VerificationReport, evidence: EvidenceItem[] = green) => {
+      const assessed = assessReview(report, evidence, items());
+      expect(assessed.suggestion).toBe("review_deeper");
+      return assessed.concerns;
     };
-    const { suggestion, concerns } = assessReview(report, [], items());
-    expect(suggestion).toBe("review_deeper");
-    expect(concerns).toEqual([
-      "1 claim only partly met",
-      "1 medium finding",
-      "High risk: Stale profiles.",
-      "1 change doesn't belong to the PR's goal: Bump timeout",
-    ]);
+    expect(
+      concerned({
+        ...clean,
+        risk: { level: "high", clientImpact: "Stale profiles.", mitigations: [], concerns: [] },
+      }),
+    ).toEqual(["High risk: Stale profiles."]);
+    expect(
+      concerned({
+        ...clean,
+        risk: {
+          level: "low",
+          clientImpact: "Wide.",
+          mitigations: [],
+          concerns: [],
+          impact: { band: 4 } as never,
+        },
+      }),
+    ).toEqual(["High risk: Wide."]);
+    expect(
+      concerned({
+        ...clean,
+        changeMap: {
+          intent: "i",
+          unmapped: [],
+          themes: [
+            {
+              title: "Bump timeout",
+              description: "",
+              risk: "low",
+              cohesion: "outlier",
+              question: "Why?",
+              files: [{ path: "src/http.ts" }],
+            },
+          ],
+        },
+      }),
+    ).toEqual(["1 change doesn't seem to belong to the PR's goal: Bump timeout"]);
+    expect(
+      concerned({
+        ...clean,
+        claims: {
+          items: [
+            { claim: "c", source: "title", status: "partial", evidence: "", path: "a", line: 1 },
+          ],
+          gaps: [],
+        },
+      }),
+    ).toEqual(["1 claim only partly met"]);
+    expect(
+      concerned({
+        ...clean,
+        quality: {
+          status: "issues",
+          findings: [{ title: "Naming", detail: "", severity: "medium" }],
+        },
+      }),
+    ).toEqual(["1 medium finding"]);
+    expect(
+      concerned({ ...clean, approach: { rating: "much-simpler", reason: "", alternative: "" } }),
+    ).toEqual(["A much simpler way exists"]);
+    expect(
+      concerned(clean, [
+        ...green,
+        evidenceItem({
+          id: "security-bots",
+          summary: "1 comment",
+          entries: [
+            {
+              source: "snyk",
+              title: "snyk",
+              detail: "",
+              severity: "medium",
+              path: null,
+              line: null,
+              url: null,
+            },
+          ],
+        }),
+      ]),
+    ).toEqual(["Security bots commented: 1 comment"]);
   });
 
   it("won't suggest approving while checks haven't run on this commit", () => {
-    const partly = assessReview(clean, [], items(["tests"]));
+    const partly = assessReview(clean, green, items(["tests"]));
     expect(partly).toMatchObject({ suggestion: "review_deeper", notRun: ["tests"] });
-    const none = assessReview(null, [], items([...DEFAULT_SECTIONS]));
-    expect(none.suggestion).toBe("run_checks");
+    expect(assessReview(null, green, items(DEFAULT_SECTIONS)).suggestion).toBe("run_checks");
   });
 });
 
@@ -190,6 +301,15 @@ describe("drafting a request for changes", () => {
           cohesion: "outlier",
           question: "Why the timeout?",
           files: [{ path: "src/http.ts" }],
+        },
+        // An outlier with nothing to ask has nothing to draft.
+        {
+          title: "Silent",
+          description: "",
+          risk: "low",
+          cohesion: "outlier",
+          question: "",
+          files: [{ path: "src/x.ts" }],
         },
       ],
     },
@@ -212,7 +332,22 @@ describe("drafting a request for changes", () => {
           line: 9,
         },
       ],
-      gaps: [],
+      gaps: [
+        {
+          title: "TODO in eviction",
+          detail: "d",
+          severity: "medium",
+          path: "src/cache.ts",
+          line: 50,
+        },
+        { title: "Tiny", detail: "d", severity: "low" },
+      ],
+    },
+    risk: {
+      level: "medium",
+      clientImpact: "",
+      mitigations: [],
+      concerns: [{ title: "Stale reads", detail: "d", path: "src/cache.ts", line: 70 }],
     },
     tests: {
       status: "issues",
@@ -228,30 +363,81 @@ describe("drafting a request for changes", () => {
       ],
     },
   };
+  const all = new Set(["claims", "changeMap", "tests", "risk"]);
 
-  it("ticks what a reviewer would almost always raise, and leaves low findings out", () => {
-    const drafts = draftComments(
-      report,
-      [ci("bad", "1 of 4 failing")],
-      new Set(["claims", "changeMap", "tests"]),
-    );
-    expect(drafts.map((d) => [d.title, d.severity, d.picked, d.path, d.line])).toEqual([
-      ["Invalidates on write", "high", true, "src/users.ts", 30],
-      ["Logs misses", "medium", false, "src/cache.ts", 9],
-      ["Bump timeout", "medium", true, "src/http.ts", 1],
-      ["No eviction test", "high", true, "src/cache.ts", 12],
-      ["tests: failed", "high", true, undefined, undefined],
+  it("ticks what a reviewer would almost always raise, and leaves low ones out", () => {
+    const drafts = draftComments(report, [ci("bad", "1 of 4 failing")], all);
+    expect(
+      drafts.map((d) => [d.source, d.title, d.severity, d.pickedByDefault, d.path, d.line]),
+    ).toEqual([
+      ["Claims: contradicted", "Invalidates on write", "high", true, "src/users.ts", 30],
+      ["Claims: partial", "Logs misses", "medium", false, "src/cache.ts", 9],
+      ["Change map", "Bump timeout", "medium", true, "src/http.ts", 1],
+      ["Unfinished work", "TODO in eviction", "medium", false, "src/cache.ts", 50],
+      ["Test quality", "No eviction test", "high", true, "src/cache.ts", 12],
+      ["Risk", "Stale reads", "medium", false, "src/cache.ts", 70],
+      ["CI", "tests: failed", "high", true, undefined, undefined],
     ]);
     expect(drafts[2]?.body).toContain("> Why the timeout?");
   });
 
-  it("puts a result from an older commit in the summary, not on a line", () => {
+  it("names each comment by what it's about, so the name holds when the report changes", () => {
+    const before = draftComments(report, [], all);
+    const after = draftComments({ ...report, claims: { ...report.claims!, items: [] } }, [], all);
+    const outlier = (ds: typeof before) => ds.find((d) => d.title === "Bump timeout")?.id;
+    expect(outlier(after)).toBe(outlier(before));
+    const twice = draftComments(
+      {
+        ...clean,
+        tests: {
+          status: "issues",
+          findings: [
+            { title: "Same", detail: "", severity: "high" },
+            { title: "Same", detail: "", severity: "high" },
+          ],
+        },
+      },
+      [],
+      all,
+    );
+    expect(new Set(twice.map((d) => d.id)).size).toBe(2);
+  });
+
+  it("puts a result from an older commit in the summary, in full, not on a line", () => {
     const drafts = draftComments(report, [], new Set(["claims", "changeMap"]));
     const test = drafts.find((d) => d.title === "No eviction test");
     expect(test?.path).toBeUndefined();
-    expect(reviewSummary(drafts.filter((d) => d.picked))).toBe(
-      "Requesting changes, from the verification report.\n\n- **No eviction test** (Test quality)\n\n2 comments are on the lines they're about.",
+    expect(reviewSummary(drafts.filter((d) => d.pickedByDefault))).toBe(
+      "Requesting changes based on the verification report.\n\n**No eviction test** (verification report: Test quality, high)\n\n> d\n\n2 more comments are on the diff.",
     );
+  });
+
+  it("makes text from a check or an agent safe in the summary", () => {
+    const drafts = draftComments(
+      null,
+      [
+        evidenceItem({
+          id: "ci-checks",
+          tone: "bad",
+          entries: [
+            {
+              source: "x",
+              title: "x\n/approve @org/team",
+              detail: "@admin merge",
+              severity: "high",
+              path: null,
+              line: null,
+              url: null,
+            },
+          ],
+        }),
+      ],
+      all,
+    );
+    const summary = reviewSummary(drafts);
+    expect(summary).not.toMatch(/^\/approve/m);
+    expect(summary).not.toContain("@org");
+    expect(summary).not.toContain("@admin");
   });
 });
 

@@ -229,6 +229,16 @@ export const VERIFICATION_CHECKS = [
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
+/** What each check is called, in the report, on the diff and in drafted comments. */
+export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
+  tests: "Test quality",
+  complexity: "Complexity",
+  performance: "Performance",
+  comments: "Comment quality",
+  observability: "Observability",
+  quality: "Code quality",
+};
+
 /**
  * The sections a reviewer can run, in report order; mirrors the sidecar's
  * `REPORT_SECTIONS`. `summary` is the summary and must-read files.

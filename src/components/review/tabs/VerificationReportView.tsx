@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CommentPlacement } from "../../../lib/pr/types";
 import {
+  CHECK_LABEL,
   type ChangeKind,
   type ClaimStatus,
   coverageKnown,
@@ -12,7 +13,6 @@ import {
   type VerificationChange,
   type VerificationChangeMap,
   type VerificationCheck,
-  type VerificationCheckKey,
   type VerificationClaims,
   type VerificationCoverage,
   type VerificationFinding,
@@ -25,15 +25,6 @@ import FlowDiagram from "./FlowDiagram";
 
 /** What a must-read's flags are called, in the report and on the diff. */
 export const FLAG_LABEL = "Looks off";
-
-export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
-  tests: "Test quality",
-  complexity: "Complexity",
-  performance: "Performance",
-  comments: "Comment quality",
-  observability: "Observability",
-  quality: "Code quality",
-};
 
 const SEVERITY_CLASS: Record<Severity, string> = {
   high: "border-red-800 text-red-300",

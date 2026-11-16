@@ -8,11 +8,11 @@
  */
 
 import {
+  CHECK_LABEL,
   type ChecklistItem,
   DEFAULT_SECTIONS,
   type EvidenceItem,
   findingCommentBody,
-  type ReportSection,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationReport,
@@ -30,12 +30,12 @@ export interface Assessment {
   notRun: string[];
 }
 
-/** Report sections that say something about whether to merge; the flow diagram doesn't. */
-const JUDGED: readonly ReportSection[] = DEFAULT_SECTIONS.filter((s) => s !== "flow");
+/** Impact bands run 1 to 5; 4 and 5 are the ones `verify/impact.ts` calls high. */
+const HIGH_IMPACT_BAND = 4;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-function findingsBy(report: VerificationReport, severity: Severity): number {
+function countFindings(report: VerificationReport, severity: Severity): number {
   const inChecks = VERIFICATION_CHECKS.reduce(
     (n, key) => n + (report[key]?.findings.filter((f) => f.severity === severity).length ?? 0),
     0,
@@ -44,31 +44,46 @@ function findingsBy(report: VerificationReport, severity: Severity): number {
   return inChecks + inGaps;
 }
 
+/** What CI says about approving: a blocker when it fails, a concern until it passes. */
+function ciReasons(
+  evidence: readonly EvidenceItem[] | null,
+  blockers: string[],
+  concerns: string[],
+) {
+  const ci = evidence?.find((e) => e.id === "ci-checks");
+  if (!ci) concerns.push("No CI results for this commit yet");
+  else if (ci.tone === "bad") blockers.push(`CI: ${ci.summary}`);
+  else if (ci.tone !== "good") concerns.push(`CI: ${ci.summary}`);
+}
+
 /**
  * The suggested decision. Changes are needed when CI fails, a scanner raised a
- * high alert, a claim isn't met, or a check found something high. A closer look
- * is due for a risky change, an outlier, a partial claim, a medium finding or a
- * simpler approach. Approving is suggested only when the checks that judge the
- * PR have run on its head and none of that is there.
+ * high alert, a claim isn't met, or a check found something high. A closer
+ * look is due for a risky change, an outlier, a partial claim, a medium
+ * finding, a simpler approach, a security bot's comment, CI that hasn't
+ * passed, or a check not run on the PR's head. Approving is suggested only
+ * when none of that is there.
+ *
+ * `evidence` is null when there is none for the PR's head: not loaded yet, or
+ * read at another commit.
  */
 export function assessReview(
   report: VerificationReport | null,
-  evidence: readonly EvidenceItem[],
+  evidence: readonly EvidenceItem[] | null,
   items: readonly ChecklistItem[],
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
-  const notRun = items
-    .filter((i) => JUDGED.includes(i.section) && !i.result?.current)
-    .map((i) => i.label);
+  const judged = items.filter((i) => DEFAULT_SECTIONS.includes(i.section));
+  const notRun = judged.filter((i) => !i.result?.current).map((i) => i.label);
 
-  const ci = evidence.find((e) => e.id === "ci-checks");
-  if (ci?.tone === "bad") blockers.push(`CI: ${ci.summary}`);
-  const scanning = evidence.find((e) => e.id === "code-scanning");
+  ciReasons(evidence, blockers, concerns);
+  const scanning = evidence?.find((e) => e.id === "code-scanning");
   const highAlerts = scanning?.entries.filter((e) => e.severity === "high").length ?? 0;
-  if (highAlerts > 0)
+  if (highAlerts > 0) {
     blockers.push(plural(highAlerts, "high code scanning alert", "high code scanning alerts"));
-  const securityBots = evidence.find((e) => e.id === "security-bots");
+  }
+  const securityBots = evidence?.find((e) => e.id === "security-bots");
   if (securityBots && securityBots.entries.length > 0) {
     concerns.push(`Security bots commented: ${securityBots.summary}`);
   }
@@ -80,22 +95,23 @@ export function assessReview(
       }
     }
     const partial = report.claims?.items.filter((c) => c.status === "partial").length ?? 0;
-    if (partial > 0)
+    if (partial > 0) {
       concerns.push(plural(partial, "claim only partly met", "claims only partly met"));
+    }
 
-    const high = findingsBy(report, "high");
+    const high = countFindings(report, "high");
     if (high > 0) blockers.push(plural(high, "high finding", "high findings"));
-    const medium = findingsBy(report, "medium");
+    const medium = countFindings(report, "medium");
     if (medium > 0) concerns.push(plural(medium, "medium finding", "medium findings"));
 
     const { risk } = report;
-    if (risk && (risk.level === "high" || (risk.impact?.band ?? 0) >= 4)) {
+    if (risk && (risk.level === "high" || (risk.impact?.band ?? 0) >= HIGH_IMPACT_BAND)) {
       concerns.push(`High risk: ${risk.clientImpact}`);
     }
     const outliers = report.changeMap?.themes.filter((t) => t.cohesion === "outlier") ?? [];
     if (outliers.length > 0) {
       concerns.push(
-        `${plural(outliers.length, "change doesn't", "changes don't")} belong to the PR's goal: ${outliers.map((t) => t.title).join(", ")}`,
+        `${plural(outliers.length, "change doesn't", "changes don't")} seem to belong to the PR's goal: ${outliers.map((t) => t.title).join(", ")}`,
       );
     }
     const rating = report.approach?.rating;
@@ -106,9 +122,10 @@ export function assessReview(
     }
   }
 
+  const nothingRun = judged.length > 0 && notRun.length === judged.length;
   let suggestion: Suggestion;
   if (blockers.length > 0) suggestion = "request_changes";
-  else if (notRun.length === JUDGED.length) suggestion = "run_checks";
+  else if (nothingRun) suggestion = "run_checks";
   else if (concerns.length > 0 || notRun.length > 0) suggestion = "review_deeper";
   else suggestion = "approve";
   return { suggestion, blockers, concerns, notRun };
@@ -116,47 +133,59 @@ export function assessReview(
 
 /** A comment a "request changes" review can carry, drafted from the report. */
 export interface DraftComment {
+  /** Built from what the comment is about, so it names the same comment when the report refreshes. */
   id: string;
   /** Where it came from, as the report labels it. */
   source: string;
   title: string;
-  /** The comment text; the reviewer can edit it before posting. */
+  /** The comment text, made safe to post; the reviewer can edit it. */
   body: string;
   severity: Severity;
   /** With both, it goes on its line; without, into the review's summary. */
   path?: string;
   line?: number;
   /** Ticked at first: the ones a reviewer would almost always raise. */
-  picked: boolean;
+  pickedByDefault: boolean;
+}
+
+interface DraftInput {
+  section: string;
+  source: string;
+  title: string;
+  detail: string;
+  severity: Severity;
+  path?: string;
+  line?: number;
+  pickedByDefault: boolean;
 }
 
 /**
  * Comments for a "request changes" review: unmet claims, outlier questions,
- * high and medium findings and risk concerns, failing CI and scanner alerts.
+ * unfinished work, high and medium findings, risk concerns, and failing CI.
  * Only results for the PR's head go on a line, since an older head's line
  * numbers may point at different code now; `currentSections` names those.
  */
 export function draftComments(
   report: VerificationReport | null,
-  evidence: readonly EvidenceItem[],
+  evidence: readonly EvidenceItem[] | null,
   currentSections: ReadonlySet<string>,
 ): DraftComment[] {
   const drafts: DraftComment[] = [];
-  const add = (
-    section: string,
-    source: string,
-    f: { title: string; detail: string; severity: Severity; path?: string; line?: number },
-    picked: boolean,
-  ) => {
-    const located = currentSections.has(section) && f.path && f.line;
+  const ids = new Set<string>();
+  const add = ({ section, source, path, line, pickedByDefault, ...f }: DraftInput) => {
+    const located = currentSections.has(section) && path && line;
+    let id = `${section}:${path ?? ""}:${line ?? ""}:${f.title}`;
+    // Two identical results would share an id; the second gets a suffix.
+    for (let n = 2; ids.has(id); n++) id = `${id}#${n}`;
+    ids.add(id);
     drafts.push({
-      id: `${section}:${drafts.length}`,
+      id,
       source,
       title: f.title,
       body: findingCommentBody(f, source),
       severity: f.severity,
-      ...(located && { path: f.path, line: f.line }),
-      picked,
+      ...(located && { path, line }),
+      pickedByDefault,
     });
   };
 
@@ -164,81 +193,90 @@ export function draftComments(
     for (const c of report.claims?.items ?? []) {
       if (c.status === "verified" || c.status === "unverifiable") continue;
       const severity: Severity = c.status === "partial" ? "medium" : "high";
-      add(
-        "claims",
-        `Claims: ${c.status}`,
-        { title: c.claim, detail: c.evidence, severity, path: c.path, line: c.line },
-        severity === "high",
-      );
+      add({
+        section: "claims",
+        source: `Claims: ${c.status}`,
+        title: c.claim,
+        detail: c.evidence,
+        severity,
+        path: c.path,
+        line: c.line,
+        pickedByDefault: severity === "high",
+      });
     }
     for (const t of report.changeMap?.themes ?? []) {
       const first = t.files[0];
       if (t.cohesion !== "outlier" || !t.question || !first) continue;
-      add(
-        "changeMap",
-        "Change map",
-        {
-          title: t.title,
-          detail: t.question,
-          severity: "medium",
-          path: first.path,
-          line: first.lines?.start ?? 1,
-        },
-        true,
-      );
+      add({
+        section: "changeMap",
+        source: "Change map",
+        title: t.title,
+        detail: t.question,
+        severity: "medium",
+        path: first.path,
+        line: first.lines?.start ?? 1,
+        pickedByDefault: true,
+      });
     }
     for (const g of report.claims?.gaps ?? []) {
-      if (g.severity !== "low") add("claims", "Unfinished work", g, g.severity === "high");
+      if (g.severity === "low") continue;
+      add({
+        ...g,
+        section: "claims",
+        source: "Unfinished work",
+        pickedByDefault: g.severity === "high",
+      });
     }
     for (const key of VERIFICATION_CHECKS) {
       for (const f of report[key]?.findings ?? []) {
-        if (f.severity !== "low") add(key, CHECK_SOURCE[key], f, f.severity === "high");
+        if (f.severity === "low") continue;
+        add({
+          ...f,
+          section: key,
+          source: CHECK_LABEL[key],
+          pickedByDefault: f.severity === "high",
+        });
       }
     }
     for (const c of report.risk?.concerns ?? []) {
-      add("risk", "Risk", { ...c, severity: "medium" }, false);
+      add({ ...c, section: "risk", source: "Risk", severity: "medium", pickedByDefault: false });
     }
   }
 
-  // The provider's own results carry no head of ours, so none goes on a line.
-  for (const e of evidence.find((i) => i.id === "ci-checks")?.entries ?? []) {
-    if (e.severity === "high" && !e.path) {
-      add("evidence", "CI", { title: e.title, detail: e.detail, severity: "high" }, true);
-    }
+  // A failing check, for the summary. Its annotations are left out: they
+  // already show on the PR's lines, where the check put them.
+  for (const e of evidence?.find((i) => i.id === "ci-checks")?.entries ?? []) {
+    if (e.severity !== "high" || e.path) continue;
+    add({
+      section: "evidence",
+      source: "CI",
+      title: e.title,
+      detail: e.detail,
+      severity: "high",
+      pickedByDefault: true,
+    });
   }
   return drafts;
 }
 
-const CHECK_SOURCE: Record<(typeof VERIFICATION_CHECKS)[number], string> = {
-  tests: "Test quality",
-  complexity: "Complexity",
-  performance: "Performance",
-  comments: "Comment quality",
-  observability: "Observability",
-  quality: "Code quality",
-};
-
 /**
- * The review's summary: the picked comments with no line, in full, and a
- * pointer to those posted on their lines.
+ * The review's summary: each picked comment with no line, whole, then how
+ * many went on the diff. Each one's text is its draft's, which
+ * `findingCommentBody` made safe to post, or the reviewer's own edit.
  */
 export function reviewSummary(picked: readonly DraftComment[]): string {
-  const onLines = picked.filter((d) => d.path && d.line);
+  const onDiff = picked.filter((d) => d.path && d.line);
   const general = picked.filter((d) => !(d.path && d.line));
-  const parts = ["Requesting changes, from the verification report."];
-  if (general.length > 0) {
-    parts.push(general.map((d) => `- **${d.title}** (${d.source})`).join("\n"));
-  }
-  if (onLines.length > 0) {
-    parts.push(
-      `${plural(onLines.length, "comment is", "comments are")} on the lines they're about.`,
-    );
+  const parts = ["Requesting changes based on the verification report."];
+  parts.push(...general.map((d) => d.body));
+  if (onDiff.length > 0) {
+    parts.push(`${plural(onDiff.length, "more comment is", "more comments are")} on the diff.`);
   }
   return parts.join("\n\n");
 }
 
 /** A place to read when the answer is "review deeper", most important first. */
-export interface Place {
+interface Place {
   path: string;
   line?: number;
   /** Why to look there. */
@@ -261,18 +299,20 @@ export function whereToLook(report: VerificationReport | null): Place[] {
   };
   const themes = report.changeMap?.themes ?? [];
   for (const t of themes.filter((t) => t.cohesion === "outlier")) {
-    for (const f of t.files)
+    for (const f of t.files) {
       add({ path: f.path, line: f.lines?.start, reason: `Outlier: ${t.title}` });
+    }
   }
   for (const t of themes.filter((t) => t.risk === "high" && t.cohesion !== "outlier")) {
-    for (const f of t.files)
+    for (const f of t.files) {
       add({ path: f.path, line: f.lines?.start, reason: `High risk: ${t.title}` });
+    }
   }
   for (const m of report.mustRead) add({ path: m.path, line: m.lines?.start, reason: m.reason });
   for (const key of VERIFICATION_CHECKS) {
     for (const f of report[key]?.findings ?? []) {
       if (f.severity === "high" && f.path) {
-        add({ path: f.path, line: f.line, reason: `${CHECK_SOURCE[key]}: ${f.title}` });
+        add({ path: f.path, line: f.line, reason: `${CHECK_LABEL[key]}: ${f.title}` });
       }
     }
   }

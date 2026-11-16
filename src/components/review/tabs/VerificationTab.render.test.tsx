@@ -801,3 +801,41 @@ describe("evidence from CI, scanners and bots", () => {
     expect(reads).toBe(1);
   });
 });
+
+describe("the decision panel on the tab", () => {
+  it("drafts a finding from an older commit into the summary, not onto its line", async () => {
+    const report: VerificationReport = {
+      mustRead: [],
+      tests: {
+        status: "issues",
+        findings: [
+          {
+            title: "No eviction test",
+            detail: "d",
+            severity: "high",
+            path: "src/cache.ts",
+            line: 12,
+          },
+        ],
+      },
+    };
+    const host = await mount(
+      checklist({
+        items: {
+          tests: {
+            latest: run({ current: false, headSha: older }),
+            result: run({ current: false, headSha: older }),
+          },
+        },
+        report,
+      }),
+    );
+    expect(textOf(host.innerHTML)).toContain("Changes needed");
+    button(host, "Request changes")?.click();
+    await waitFor(() => textOf(host.innerHTML).includes("No eviction test"), "the draft");
+    const draft = [...host.querySelectorAll("li")].find((li) =>
+      textOf(li.innerHTML).includes("No eviction test"),
+    ) as HTMLElement;
+    expect(textOf(draft.innerHTML)).toContain("in the summary");
+  });
+});

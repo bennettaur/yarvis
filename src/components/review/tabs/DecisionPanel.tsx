@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { applyReviewAction, postPrComment } from "../../../lib/pr/api";
-import { prDetailKey } from "../../../lib/pr/cache";
+import { prDetailKey, prStackKey } from "../../../lib/pr/cache";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
 import {
@@ -27,7 +27,13 @@ const SUGGESTION: Record<Suggestion, { text: string; className: string }> = {
   run_checks: { text: "Run the checks first", className: "border-zinc-700 text-zinc-400" },
 };
 
-type Mode = "approve" | "request_changes" | "review_deeper" | null;
+type Mode = Exclude<Suggestion, "run_checks">;
+
+const MODE_LABEL: Record<Mode, string> = {
+  approve: "Approve",
+  request_changes: "Request changes",
+  review_deeper: "Review deeper",
+};
 
 const BUTTON =
   "rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50";
@@ -37,19 +43,21 @@ function Reasons({ assessment }: { assessment: Assessment }) {
   if (blockers.length + concerns.length + notRun.length === 0) {
     return (
       <p className="text-xs text-zinc-400">
-        CI, the claims and the checks found nothing that blocks this PR.
+        CI passed, and the claims and checks found nothing that blocks this PR.
       </p>
     );
   }
   return (
     <ul className="space-y-0.5 text-xs">
-      {blockers.map((b) => (
-        <li key={`b:${b}`} className="text-red-300">
+      {blockers.map((b, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: two blockers can read the same, and the list is rebuilt whole
+        <li key={`b:${i}`} className="text-red-300">
           {b}
         </li>
       ))}
-      {concerns.map((c) => (
-        <li key={`c:${c}`} className="text-amber-300">
+      {concerns.map((c, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: as above
+        <li key={`c:${i}`} className="text-amber-300">
           {c}
         </li>
       ))}
@@ -71,16 +79,21 @@ function ApproveForm({
   busy: boolean;
 }) {
   const [body, setBody] = useState("");
-  const against = assessment.blockers.length + assessment.concerns.length;
+  const raisedCount = assessment.blockers.length + assessment.concerns.length;
+  const notRun = assessment.notRun.length;
   return (
     <div className="space-y-2">
-      {against > 0 && (
+      {raisedCount + notRun > 0 && (
         <p className="text-xs text-amber-300">
-          The report raised {against === 1 ? "one thing" : `${against} things`} above. Approve only
-          if you've looked at {against === 1 ? "it" : "them"}.
+          {raisedCount > 0 &&
+            `The report raised ${raisedCount === 1 ? "one thing" : `${raisedCount} things`} above. `}
+          {notRun > 0 &&
+            `${notRun === 1 ? "One check hasn't" : `${notRun} checks haven't`} run on this commit. `}
+          Approve only if you've looked for yourself.
         </p>
       )}
       <textarea
+        aria-label="Approval comment"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Optional comment for the author"
@@ -97,7 +110,11 @@ function ApproveForm({
 /**
  * The comments a "request changes" review would carry, each to tick and edit,
  * and the summary that goes with the verdict. Those with a line go on it; the
- * rest are listed in the summary.
+ * rest are written into the summary.
+ *
+ * Ticks and edits are kept by each comment's id, which names what it is about,
+ * so they stay with their comment when the report refreshes underneath; a
+ * comment that arrives later starts ticked or not by its own default.
  */
 function RequestChangesForm({
   drafts,
@@ -108,31 +125,23 @@ function RequestChangesForm({
   drafts: DraftComment[];
   /** Comments already posted by an earlier try, so a retry doesn't repeat them. */
   posted: ReadonlySet<string>;
-  onSubmit: (picked: DraftComment[], summary: string) => void;
+  onSubmit: (chosen: DraftComment[], summary: string) => void;
   busy: boolean;
 }) {
-  const [picked, setPicked] = useState<ReadonlySet<string>>(
-    () => new Set(drafts.filter((d) => d.picked).map((d) => d.id)),
-  );
+  const [ticks, setTicks] = useState<Record<string, boolean>>({});
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [typedSummary, setTypedSummary] = useState<string | null>(null);
-  const chosen = drafts
-    .filter((d) => picked.has(d.id))
-    .map((d) => ({ ...d, body: edits[d.id] ?? d.body }));
+  const isPicked = (d: DraftComment) => ticks[d.id] ?? d.pickedByDefault;
+  const chosen = drafts.filter(isPicked).map((d) => ({ ...d, body: edits[d.id] ?? d.body }));
   // Drafted from what is ticked until the reviewer edits it.
   const summary = typedSummary ?? reviewSummary(chosen);
-  const toggle = (id: string) =>
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
 
   return (
     <div className="space-y-2">
       {drafts.length === 0 && (
-        <p className="text-xs text-zinc-400">The report has nothing to raise; write the summary.</p>
+        <p className="text-xs text-zinc-400">
+          The report has nothing to raise. Say what needs changing in the summary below.
+        </p>
       )}
       <ul className="space-y-2">
         {drafts.map((d) => (
@@ -141,8 +150,8 @@ function RequestChangesForm({
               <input
                 type="checkbox"
                 aria-label={`Include ${d.title}`}
-                checked={picked.has(d.id)}
-                onChange={() => toggle(d.id)}
+                checked={isPicked(d)}
+                onChange={() => setTicks((prev) => ({ ...prev, [d.id]: !isPicked(d) }))}
                 disabled={posted.has(d.id)}
               />
               <span className="text-[10px] uppercase text-zinc-500">{d.severity}</span>
@@ -157,7 +166,7 @@ function RequestChangesForm({
               )}
               {posted.has(d.id) && <span className="text-emerald-400">posted</span>}
             </label>
-            {picked.has(d.id) && d.path && d.line && !posted.has(d.id) && (
+            {isPicked(d) && !posted.has(d.id) && (
               <textarea
                 aria-label={`Comment on ${d.title}`}
                 value={edits[d.id] ?? d.body}
@@ -176,6 +185,15 @@ function RequestChangesForm({
         rows={4}
         className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
       />
+      {typedSummary !== null && (
+        <button
+          type="button"
+          onClick={() => setTypedSummary(null)}
+          className="text-[11px] text-sky-400 hover:text-sky-300"
+        >
+          Draft the summary again from what's ticked
+        </button>
+      )}
       <button
         type="button"
         disabled={busy || !summary.trim()}
@@ -209,7 +227,8 @@ export default function DecisionPanel({
   /** The head the review is of, recorded with each comment and the verdict. */
   seen: SeenCommits;
   report: VerificationReport | null;
-  evidence: readonly EvidenceItem[];
+  /** CI and scanner results for the PR's head; null when there are none for it. */
+  evidence: readonly EvidenceItem[] | null;
   items: readonly ChecklistItem[];
   /** Sections whose result is for the PR's head; only these comment on lines. */
   currentSections: ReadonlySet<string>;
@@ -224,20 +243,25 @@ export default function DecisionPanel({
     [report, evidence, currentSections],
   );
   const places = useMemo(() => whereToLook(report), [report]);
-  const [mode, setMode] = useState<Mode>(null);
+  const [mode, setMode] = useState<Mode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
-  const [posted, setPosted] = useState<ReadonlySet<string>>(new Set());
+  const [doneMessage, setDoneMessage] = useState<string | null>(null);
+  // Kept per head: after a push, nothing posted at the old one counts.
+  const [postedAt, setPostedAt] = useState<{ head: string; ids: ReadonlySet<string> }>({
+    head: "",
+    ids: new Set(),
+  });
+  const posted = postedAt.head === seen.headSha ? postedAt.ids : new Set<string>();
   const suggestion = SUGGESTION[assessment.suggestion];
   const intent = report?.changeMap?.intent ?? report?.summary;
 
-  const finished = (message: string) => {
-    // So the PR's threads and the review mark the verdict recorded show.
+  // Refetch so the PR's threads, its vote in a stack, and the "last reviewed"
+  // mark show what was just sent.
+  const refreshPr = () => {
     invalidate(prDetailKey(prRef));
+    invalidate(prStackKey(prRef));
     invalidateLastReview(prRef);
-    setDone(message);
-    setMode(null);
   };
 
   const approve = async (body: string) => {
@@ -245,7 +269,9 @@ export default function DecisionPanel({
     setError(null);
     try {
       await applyReviewAction(prRef, "approve", body.trim() || undefined, seen);
-      finished("Approved.");
+      refreshPr();
+      setDoneMessage("Approved.");
+      setMode(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -256,22 +282,26 @@ export default function DecisionPanel({
   // Line comments go first, one at a time; the verdict is sent only once all
   // of them are up, so a failure never leaves a verdict pointing at comments
   // that aren't there. A retry skips the ones already posted.
-  const requestChanges = async (picked: DraftComment[], summary: string) => {
+  const requestChanges = async (chosen: DraftComment[], summary: string) => {
     setBusy(true);
     setError(null);
     const nowPosted = new Set(posted);
     try {
-      for (const d of picked) {
+      for (const d of chosen) {
         if (!d.path || !d.line || nowPosted.has(d.id)) continue;
         await postPrComment(prRef, { path: d.path, line: d.line, body: d.body }, seen);
         nowPosted.add(d.id);
       }
       await applyReviewAction(prRef, "request_changes", summary, seen);
-      finished("Changes requested.");
+      setDoneMessage("Changes requested.");
+      setMode(null);
+      nowPosted.clear();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setPosted(nowPosted);
+      // Whatever went up shows on the PR, even when the rest didn't.
+      refreshPr();
+      setPostedAt({ head: seen.headSha ?? "", ids: nowPosted });
       setBusy(false);
     }
   };
@@ -284,22 +314,18 @@ export default function DecisionPanel({
           {suggestion.text}
         </span>
         <span className="ml-auto flex gap-1.5">
-          {(["approve", "request_changes", "review_deeper"] as const).map((m) => (
+          {(Object.keys(MODE_LABEL) as Mode[]).map((m) => (
             <button
               key={m}
               type="button"
               aria-pressed={mode === m}
               onClick={() => {
-                setDone(null);
+                setDoneMessage(null);
                 setMode(mode === m ? null : m);
               }}
               className={`${BUTTON} ${mode === m ? "bg-zinc-800" : ""}`}
             >
-              {m === "approve"
-                ? "Approve"
-                : m === "request_changes"
-                  ? "Request changes"
-                  : "Review deeper"}
+              {MODE_LABEL[m]}
             </button>
           ))}
         </span>
@@ -314,14 +340,14 @@ export default function DecisionPanel({
         <RequestChangesForm
           drafts={drafts}
           posted={posted}
-          onSubmit={(p, s) => void requestChanges(p, s)}
+          onSubmit={(c, s) => void requestChanges(c, s)}
           busy={busy}
         />
       )}
       {mode === "review_deeper" &&
         (places.length === 0 ? (
           <p className="text-xs text-zinc-400">
-            Run the change map and summary to see where to look first.
+            Run the change map, summary or checks to see where to look first.
           </p>
         ) : (
           <ul className="space-y-1 text-xs">
@@ -339,9 +365,9 @@ export default function DecisionPanel({
           {error}
         </p>
       )}
-      {done && (
+      {doneMessage && (
         <p role="status" className="text-xs text-emerald-400">
-          {done}
+          {doneMessage}
         </p>
       )}
     </section>

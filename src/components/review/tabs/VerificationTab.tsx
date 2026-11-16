@@ -397,7 +397,6 @@ function suggestedSections(items: ChecklistItem[]): ReportSection[] {
 }
 
 const NO_ITEMS: ChecklistItem[] = [];
-const NO_EVIDENCE: EvidenceItem[] = [];
 
 /**
  * The verification checklist: every section of the report, grouped by theme,
@@ -531,7 +530,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           prRef={ctx.prRef}
           seen={{ headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha }}
           report={report}
-          evidence={evidence.data?.items ?? NO_EVIDENCE}
+          evidence={
+            // CI on another commit says nothing about this one.
+            evidence.data && evidence.data.headSha === checklist.data?.headSha
+              ? evidence.data.items
+              : null
+          }
           items={items}
           currentSections={currentSections}
           onOpen={open}
