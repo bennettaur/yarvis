@@ -151,6 +151,8 @@ export interface ReviewComment {
    * unknown, which counts as untrusted.
    */
   trusted?: boolean;
+  /** True when a GitHub App or other bot account wrote it, such as a code scanner or coverage reporter. */
+  isBot?: boolean;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */
@@ -240,6 +242,49 @@ export interface CheckItem {
   /** "SUCCESS" | "FAILURE" | "NEUTRAL" | null while pending. */
   conclusion: string | null;
   url: string | null;
+  /** GitHub's id for a check run, which tells two runs of the same name apart. */
+  checkRunId?: number;
+}
+
+/** A check run's output on GitHub: its headline, summary and how many line annotations it posted. */
+export interface CheckRunOutput {
+  id: number;
+  name: string;
+  title: string | null;
+  summary: string | null;
+  annotationsCount: number;
+}
+
+export type AnnotationLevel = "failure" | "warning" | "notice";
+
+/** A line a check run pointed at, such as a failing test or a lint warning. */
+export interface CheckAnnotation {
+  path: string;
+  line: number | null;
+  level: AnnotationLevel;
+  title: string | null;
+  message: string;
+}
+
+/** An open code-scanning alert on a PR. */
+export interface ScanAlert {
+  tool: string;
+  rule: string;
+  /** "critical" | "high" | "medium" | "low" for security rules, else "error" | "warning" | "note". */
+  severity: string;
+  description: string;
+  path: string | null;
+  line: number | null;
+  message: string;
+  url: string | null;
+}
+
+/**
+ * A provider that has a kind of evidence but won't show it, such as a token
+ * without the permission. Its message says why, for the reviewer to read.
+ */
+export class EvidenceUnavailable extends Error {
+  override name = "EvidenceUnavailable";
 }
 
 /** Rich detail for the in-app PR review view (description, checks, threads). */

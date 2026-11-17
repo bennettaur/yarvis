@@ -9,11 +9,14 @@ import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview"
 import {
   type ChecklistItem,
   DEFAULT_SECTIONS,
+  type EvidenceItem,
+  type EvidenceSeverity,
   findingCommentBody,
   type ReportSection,
   startVerification,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { openExternal } from "../../../lib/url";
 import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import { Loader } from "../../ai-elements/loader";
@@ -24,12 +27,14 @@ import {
   useReviewTree,
   useReviewViewed,
   useVerificationChecklist,
+  useVerificationEvidence,
   verificationKey,
 } from "./reviewData";
 import { FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 import VerificationReportView, {
   type FindingPoster,
+  Location,
   type OpenLocation,
 } from "./VerificationReportView";
 
@@ -271,6 +276,87 @@ function ChecklistRow({
   );
 }
 
+const SEVERITY_CLASS: Record<EvidenceSeverity, string> = {
+  high: "text-red-300",
+  medium: "text-amber-300",
+  low: "text-zinc-400",
+  info: "text-zinc-500",
+};
+
+/**
+ * What another tool already said, beside the checks Yarvis runs: CI checks,
+ * code scanning alerts or bot comments. Nothing to run, so no checkbox; the
+ * entries open on demand. Their text was written by the tool, so it is shown
+ * as plain text.
+ */
+function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocation }) {
+  const [expanded, setExpanded] = useState(false);
+  const totalEntries = item.entries.length + item.hiddenEntries;
+  return (
+    <li className="py-1 text-sm">
+      <div className="flex items-center gap-2">
+        {/* Lines the label up with the checkbox rows. */}
+        <span className="w-[13px] shrink-0" aria-hidden="true" />
+        <span className="shrink-0 text-zinc-200" title={item.description}>
+          {item.label}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          <Chip text={item.summary} tone={item.tone} />
+          <span className="text-[11px] text-zinc-500">reported on the PR</span>
+        </span>
+        {totalEntries > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+          >
+            {expanded ? "Hide" : `Show ${totalEntries}`}
+          </button>
+        )}
+      </div>
+      {item.note && <p className="ml-5 text-[11px] text-zinc-500">{item.note}</p>}
+      {expanded && (
+        <ul className="mt-1 ml-5 space-y-1.5">
+          {item.entries.map((entry, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id and never reorder while shown
+            <li key={i} className="text-xs">
+              <div className="flex flex-wrap items-baseline gap-1.5">
+                <span className={`uppercase text-[10px] ${SEVERITY_CLASS[entry.severity]}`}>
+                  {entry.severity}
+                </span>
+                {/* Check names already lead their titles; a scanner's name doesn't. */}
+                {!entry.title.startsWith(entry.source) && (
+                  <span className="text-[11px] text-zinc-500">{entry.source}</span>
+                )}
+                <span className="text-zinc-200">{entry.title}</span>
+                {entry.path && (
+                  <Location path={entry.path} line={entry.line ?? undefined} onOpen={onOpen} />
+                )}
+                {entry.url && (
+                  <button
+                    type="button"
+                    onClick={() => openExternal(entry.url)}
+                    className="text-[11px] text-sky-400 hover:text-sky-300"
+                  >
+                    Open
+                  </button>
+                )}
+              </div>
+              {entry.detail && <p className="text-zinc-400">{entry.detail}</p>}
+            </li>
+          ))}
+          {item.hiddenEntries > 0 && (
+            <li className="text-[11px] text-zinc-500">
+              {item.hiddenEntries} more not shown; see the PR.
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
+
 /** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
 function suggestedSections(items: ChecklistItem[]): ReportSection[] {
   return items
@@ -311,6 +397,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
+  const evidence = useVerificationEvidence(workspaceId, pr.id);
   const report = reportOf(checklist.data);
   const size = checklist.data?.size ?? null;
   const viewed = useReviewViewed(ctx.prRef);
@@ -413,12 +500,39 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
         <p className="text-xs text-zinc-500">
           Each check is an agent that reads every changed file's diff. Run the ones you want; each
-          runs on its own, and the report below shows each check's newest result.
+          runs on its own, and the report below shows each check's newest result. Beside them is
+          what CI, code scanners and bots already reported on the PR.
         </p>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+          {evidence.loading && <span>Reading CI checks and scanner results…</span>}
+          {evidence.data &&
+            checklist.data?.headSha &&
+            evidence.data.headSha !== checklist.data.headSha && (
+              <span className="text-amber-300">
+                CI results are for {shortSha(evidence.data.headSha)}; the checkout is at{" "}
+                {shortSha(checklist.data.headSha)}.
+              </span>
+            )}
+          {evidence.error && (
+            <span className="text-red-400">Couldn't read CI results: {evidence.error}</span>
+          )}
+          {!evidence.loading && (
+            <button
+              type="button"
+              onClick={() => void evidence.refresh()}
+              disabled={evidence.refreshing}
+              className="ml-auto text-sky-400 hover:text-sky-300 disabled:opacity-50"
+            >
+              {evidence.refreshing ? "Re-reading CI results…" : "Re-read CI results"}
+            </button>
+          )}
+        </div>
 
         {(checklist.data?.themes ?? []).map((theme) => {
           const rows = items.filter((i) => i.theme === theme.id);
-          if (rows.length === 0) return null;
+          const evidenceRows = evidence.data?.items.filter((i) => i.theme === theme.id) ?? [];
+          if (rows.length === 0 && evidenceRows.length === 0) return null;
           return (
             <section key={theme.id} className="space-y-1">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -440,6 +554,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                     canRun={!notReady}
                     starting={starting}
                   />
+                ))}
+                {evidenceRows.map((item) => (
+                  <EvidenceRow key={item.id} item={item} onOpen={open} />
                 ))}
               </ul>
             </section>

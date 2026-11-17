@@ -287,6 +287,55 @@ export async function verificationChecklist(
     : checklist;
 }
 
+export type EvidenceSeverity = "high" | "medium" | "low" | "info";
+
+/** One thing a CI check, scanner or bot reported. Every string is theirs, so it is shown as plain text. */
+export interface EvidenceEntry {
+  source: string;
+  title: string;
+  detail: string;
+  severity: EvidenceSeverity;
+  path: string | null;
+  line: number | null;
+  url: string | null;
+}
+
+export type EvidenceId =
+  | "ci-checks"
+  | "code-scanning"
+  | "security-bots"
+  | "coverage-bots"
+  | "other-bots";
+
+/** What other tools said about the PR, shown on the checklist under its theme. */
+export interface EvidenceItem {
+  id: EvidenceId;
+  theme: ChecklistThemeId;
+  label: string;
+  description: string;
+  summary: string;
+  tone: "good" | "warn" | "bad" | "muted";
+  entries: EvidenceEntry[];
+  hiddenEntries: number;
+  note: string | null;
+}
+
+export interface VerificationEvidence {
+  /** The commit the provider reports as the PR's head, which the checks ran on. */
+  headSha: string;
+  items: EvidenceItem[];
+}
+
+/** The PR's CI checks, code scanning alerts and bot comments, read from its provider. */
+export async function verificationEvidence(
+  workspaceId: string,
+  prId: string,
+): Promise<VerificationEvidence> {
+  const res = await sidecarFetch(`/api/review-workspaces/${workspaceId}/prs/${prId}/evidence`);
+  await ensureOk(res, "read CI evidence");
+  return (await res.json()) as VerificationEvidence;
+}
+
 export interface StartedCheck {
   section: ReportSection;
   runId: string;

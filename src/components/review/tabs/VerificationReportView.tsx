@@ -128,7 +128,7 @@ export interface OpenLocation {
   canOpen: (path: string) => boolean;
 }
 
-function Location({
+export function Location({
   path,
   line,
   onOpen,

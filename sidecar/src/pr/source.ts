@@ -1,7 +1,17 @@
 import { AzureDevOpsClient, isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { createGitHubClient, type GitHubClient } from "../github/client.ts";
-import type { PrDetail, PrFile, PrRef } from "./types.ts";
+import { GitHubError } from "../github/errors.ts";
+import {
+  type CheckAnnotation,
+  type CheckItem,
+  type CheckRunOutput,
+  EvidenceUnavailable,
+  type PrDetail,
+  type PrFile,
+  type PrRef,
+  type ScanAlert,
+} from "./types.ts";
 
 /**
  * Read-only access to the code a pull request lives in, with the hosting
@@ -32,6 +42,23 @@ export interface PrCodeSource {
   searchCode(query: string, limit?: number): Promise<CodeHit[] | null>;
   /** What `searchCode` covers, so a caller can qualify its results. */
   readonly searchScope: string;
+  /**
+   * The PR's CI checks. Narrower than `detail().checks` on Azure, whose detail
+   * lists every branch policy, reviewer policies included.
+   */
+  ciChecks(): Promise<CheckItem[]>;
+  /**
+   * The output each check run at `headSha` posted. Null when the provider has
+   * no such thing; Azure's policy checks carry only a status.
+   */
+  checkRunOutputs(headSha: string): Promise<CheckRunOutput[] | null>;
+  /** The line annotations of one run from `checkRunOutputs`. */
+  checkRunAnnotations(checkRunId: number): Promise<CheckAnnotation[]>;
+  /**
+   * Open code-scanning alerts on the PR. Null when the provider has none to
+   * offer; `EvidenceUnavailable` when it has but won't show them.
+   */
+  codeScanningAlerts(): Promise<ScanAlert[] | null>;
 }
 
 export interface CodeHit {
@@ -79,6 +106,31 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
     listDir: async (path) => client.listDir(owner, repo, path, await head()),
     searchCode: (query, limit) => client.searchCode(owner, repo, query, limit),
     searchScope: "the repository's default branch (not this pull request's head)",
+    ciChecks: async () => (await detail()).checks,
+    checkRunOutputs: (headSha) =>
+      client.commitCheckRuns(owner, repo, headSha).catch((e) => {
+        // A fine-grained token can't be granted the Checks permission.
+        if (e instanceof GitHubError && e.status === 403) {
+          throw new EvidenceUnavailable(
+            "The configured GitHub token can't read check runs, so their annotations aren't shown.",
+          );
+        }
+        throw e;
+      }),
+    checkRunAnnotations: (checkRunId) => client.checkRunAnnotations(owner, repo, checkRunId),
+    codeScanningAlerts: () =>
+      client.prCodeScanningAlerts(owner, repo, number).catch((e) => {
+        if (e instanceof GitHubError && e.status === 403) {
+          throw new EvidenceUnavailable(
+            'The configured GitHub token can\'t read code scanning alerts. A classic token needs the repo or security_events scope, a fine-grained one "Code scanning alerts: Read".',
+          );
+        }
+        // GitHub answers 404 when code scanning isn't set up for the repo.
+        if (e instanceof GitHubError && e.status === 404) {
+          throw new EvidenceUnavailable("Code scanning isn't set up for this repository.");
+        }
+        throw e;
+      }),
   };
 }
 
@@ -97,6 +149,12 @@ export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSour
     listDir: async (path) => client.listDir(azRef, path, await head()),
     searchCode: async (query, limit) => client.searchCode(azRef, query, limit),
     searchScope: "the repository, via Azure DevOps code search",
+    // A minimum-reviewers policy reads as rejected until someone approves, which isn't CI failing.
+    ciChecks: () => client.prCiChecksFor(azRef),
+    checkRunOutputs: async () => null,
+    // Never asked, since there are no check runs to annotate.
+    checkRunAnnotations: async () => [],
+    codeScanningAlerts: async () => null,
   };
 }
 

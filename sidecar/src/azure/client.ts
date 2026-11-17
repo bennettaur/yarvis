@@ -660,6 +660,12 @@ export class AzureDevOpsClient {
       .filter((c): c is CheckItem => c !== null);
   }
 
+  /** {@link prCiChecks} for a PR known only by its ref. */
+  async prCiChecksFor(ref: AzureRef): Promise<CheckItem[]> {
+    const pr = await this.prRaw(ref);
+    return this.prCiChecks(ref.project, pr.repository?.project?.id ?? "", ref.prId);
+  }
+
   /** `prUrl` is the PR's web page, which each thread links into. */
   private async threads(ref: AzureRef, prUrl: string): Promise<ReviewThread[]> {
     const data = await this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`);

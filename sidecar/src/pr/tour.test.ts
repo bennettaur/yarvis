@@ -57,6 +57,10 @@ function fakeSource(over: Partial<PrCodeSource> = {}): PrCodeSource {
     listDir: async () => [],
     searchCode: async () => [],
     searchScope: "the default branch",
+    ciChecks: async () => [],
+    checkRunOutputs: async () => null,
+    checkRunAnnotations: async () => [],
+    codeScanningAlerts: async () => null,
     ...over,
   };
 }

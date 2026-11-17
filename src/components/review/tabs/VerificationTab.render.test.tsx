@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
-import { primeCache } from "../../../lib/resourceCache";
+import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
 import {
@@ -9,9 +9,11 @@ import {
   type ChecklistRun,
   type ChecklistThemeId,
   DEFAULT_SECTIONS,
+  type EvidenceItem,
   REPORT_SECTIONS,
   type ReportSection,
   type VerificationChecklist,
+  type VerificationEvidence,
   type VerificationReport,
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
@@ -20,7 +22,7 @@ import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
-import { treeKey, verificationKey } from "./reviewData";
+import { evidenceKey, treeKey, verificationKey } from "./reviewData";
 import type { TabContext } from "./types";
 import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab";
 
@@ -151,9 +153,13 @@ const answered = (report: VerificationReport) =>
     REPORT_SECTIONS.filter((s) => s in report).map((s) => [s, { latest: run(), result: run() }]),
   );
 
-async function mount(state: VerificationChecklist) {
+const HEAD = pr.headSha as string;
+const NO_EVIDENCE: VerificationEvidence = { headSha: HEAD, items: [] };
+
+async function mount(state: VerificationChecklist, evidence: VerificationEvidence = NO_EVIDENCE) {
   // Every read the tab makes comes from the cache, so none reaches a client.
   primeCache(verificationKey(pr.id), state);
+  primeCache(evidenceKey(pr.id), evidence);
   primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
   primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
   const mounted = await mountForInteraction(createElement(VerificationTab, { ctx }));
@@ -590,5 +596,139 @@ describe("resultVerdict", () => {
     for (const [section, report, verdict] of cases) {
       expect(resultVerdict(section, report)).toEqual(verdict as never);
     }
+  });
+});
+
+describe("evidence from CI, scanners and bots", () => {
+  const evidence: VerificationEvidence = {
+    headSha: HEAD,
+    items: [
+      {
+        id: "ci-checks",
+        theme: "correctness",
+        label: "CI checks",
+        description: "The PR's CI checks.",
+        summary: "1 of 4 failing",
+        tone: "bad",
+        entries: [
+          {
+            source: "tests",
+            title: "tests: failed",
+            detail: "2 tests failed",
+            severity: "high",
+            path: null,
+            line: null,
+            url: "https://github.com/octo/repo/actions/runs/1",
+          },
+          {
+            source: "tests",
+            title: "orders > sorts",
+            detail: "expected 2, got 3",
+            severity: "high",
+            path: "src/order.test.ts",
+            line: 12,
+            url: null,
+          },
+        ],
+        hiddenEntries: 0,
+        note: null,
+      },
+      {
+        id: "code-scanning",
+        theme: "risk",
+        label: "Code scanning alerts",
+        description: "Open alerts.",
+        summary: "Not available",
+        tone: "muted",
+        entries: [],
+        hiddenEntries: 0,
+        note: "Code scanning isn't set up for this repository.",
+      },
+    ],
+  };
+
+  it("shows each tool's tally under its theme, and its entries on demand", async () => {
+    const host = await mount(checklist(), evidence);
+    const ci = row(host, "CI checks");
+    expect(textOf(ci.innerHTML)).toContain("1 of 4 failing");
+    expect(textOf(ci.innerHTML)).not.toContain("expected 2, got 3");
+    expect(textOf(row(host, "Code scanning alerts").innerHTML)).toContain(
+      "Code scanning isn't set up for this repository.",
+    );
+    // Nothing to run, so nothing to pick.
+    expect(ci.querySelector("input")).toBeNull();
+
+    button(ci, "Show 2")?.click();
+    await waitFor(() => textOf(ci.innerHTML).includes("expected 2, got 3"), "the entries");
+    expect(textOf(ci.innerHTML)).toContain("src/order.test.ts:12");
+    expect(button(ci, "Open")).toBeDefined();
+  });
+
+  it("opens the diff at a line an annotation points at, and counts what isn't shown", async () => {
+    const opened: unknown[] = [];
+    primeCache(verificationKey(pr.id), checklist());
+    primeCache(evidenceKey(pr.id), {
+      ...evidence,
+      items: [{ ...(evidence.items[0] as EvidenceItem), hiddenEntries: 3 }],
+    });
+    primeCache(changedFilesKey(pr) ?? "", {
+      headSha: "",
+      mergeBaseSha: "",
+      files: [{ path: "src/order.test.ts" }],
+    } as never);
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    const mounted = await mountForInteraction(
+      createElement(VerificationTab, { ctx: { ...ctx, openTab: (tab) => opened.push(tab) } }),
+    );
+    unmount = mounted.unmount;
+    const ci = row(mounted.host, "CI checks");
+    button(ci, "Show 5")?.click();
+    await waitFor(() => button(ci, "src/order.test.ts:12") !== undefined, "the location link");
+    expect(textOf(ci.innerHTML)).toContain("3 more not shown; see the PR.");
+    button(ci, "src/order.test.ts:12")?.click();
+    expect(opened).toEqual([
+      { kind: "diff", prId: pr.id, path: "src/order.test.ts", revealLine: 12 },
+    ]);
+  });
+
+  it("says why CI results couldn't be read, and still shows the checklist", async () => {
+    stubReviewApi({
+      verificationEvidence: async () => {
+        throw new Error("GitHub rate limit reached");
+      },
+    });
+    primeCache(verificationKey(pr.id), checklist());
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    invalidate(evidenceKey(pr.id));
+    const mounted = await mountForInteraction(createElement(VerificationTab, { ctx }));
+    unmount = mounted.unmount;
+    await waitFor(
+      () => textOf(mounted.host.innerHTML).includes("Couldn't read CI results"),
+      "the error",
+    );
+    expect(textOf(mounted.host.innerHTML)).toContain("GitHub rate limit reached");
+    expect(row(mounted.host, "Test quality")).toBeDefined();
+  });
+
+  it("says when CI ran on a different commit than the checkout", async () => {
+    const host = await mount(checklist(), { ...evidence, headSha: older });
+    expect(textOf(host.innerHTML)).toContain(
+      `CI results are for ${older.slice(0, 7)}; the checkout is at ${HEAD.slice(0, 7)}.`,
+    );
+  });
+
+  it("re-reads the evidence when asked", async () => {
+    let reads = 0;
+    stubReviewApi({
+      verificationEvidence: async () => {
+        reads++;
+        return evidence;
+      },
+    });
+    const host = await mount(checklist(), NO_EVIDENCE);
+    button(host, "Re-read CI results")?.click();
+    await waitFor(() => textOf(host.innerHTML).includes("1 of 4 failing"), "the re-read evidence");
+    expect(reads).toBe(1);
   });
 });

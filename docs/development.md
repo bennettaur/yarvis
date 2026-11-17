@@ -508,7 +508,7 @@ sidecar/        Bun + TS service (Hono)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
-  src/pr/          provider-neutral PR review: guides, insights, code tools,
+  src/pr/          provider-neutral PR review: guides, insights, code tools, CI evidence,
                    workspace-on-a-PR, stacks
   src/issues/      provider-neutral issue routes and start-work
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
