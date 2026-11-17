@@ -286,6 +286,28 @@ any caller holding the token can name any workspace. What a caller gets from
 that is a checkout of a branch not yet in the clone, inside that workspace's
 folder, and sandbox write access to that one branch.
 
+### Linking a pull request
+
+A workspace session also gets `link_pull_request`, for telling Yarvis which
+pull request it opened for a repo. Yarvis finds a PR on the worktree's own
+branch by itself, but not one on a branch the agent made with `add_worktree`.
+After the call, the workspace shows the PR's state and checks straight away.
+See [Workspaces](workspaces.md#linking-a-pull-request).
+
+| Argument | What it is |
+| --- | --- |
+| `repo` | The repo's folder in the workspace, or its name |
+| `number` | The pull request's number (its id on Azure DevOps) |
+
+It answers with the PR's `url` and `state`. It refuses a repo that isn't in
+the workspace and a number the repo has no PR for. Each repo has one linked PR,
+so a second call replaces the first.
+
+Like the other workspace tools, it acts on the workspace the header names. A
+caller can use it to change which of a repo's PRs a workspace shows, and so
+which workspace **Start workspace** on that PR opens. It can't reach a PR in a
+repo the workspace doesn't have.
+
 ### Sessions Yarvis launches need no setup
 
 When Yarvis provisions a workspace, it writes a `.mcp.json` at the workspace
@@ -326,7 +348,8 @@ pointing by hand.
 
 The command puts the token in your shell history, and Claude Code saves it in
 `~/.claude.json`. That exposure is limited: the token only grants the memory,
-review comment, question and `add_worktree` tools, and it changes every time
+review comment, question, `add_worktree` and `link_pull_request` tools, and it
+changes every time
 Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
@@ -339,8 +362,8 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory, review comment, question
-  and `add_worktree` tools and nothing else. The rest of the sidecar API keeps
+- It uses a **scoped token** that grants the memory, review comment, question,
+  `add_worktree` and `link_pull_request` tools and nothing else. The rest of the sidecar API keeps
   its own bearer token.
 - The session and workspace headers are the caller's claim, the same trust
   attention hooks get. They decide where a question is shown, and

@@ -367,8 +367,8 @@ report there and leaves the fixes to the author.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments and
-  `add_worktree`. The header is not a boundary. So `add_worktree` may only
+  workspace, listing and resolving that workspace's review comments,
+  `add_worktree` and `link_pull_request`. The header is not a boundary. So `add_worktree` may only
   check out a branch not yet in the clone, inside that workspace's folder, and
   widen the sandbox to that one branch (`addExtraWorktree`). Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,

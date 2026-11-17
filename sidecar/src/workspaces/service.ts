@@ -650,6 +650,28 @@ export async function addRepoToWorkspace(
 }
 
 /**
+ * A workspace's ready repo named by its folder in the workspace or by its
+ * name. Either is accepted: AGENTS.md names the folder, the user names the repo.
+ */
+export function findReadyRepo(
+  detail: WorkspaceDetail,
+  name: string,
+): WorkspaceDetail["repos"][number] | undefined {
+  const wanted = name.trim().toLowerCase();
+  return detail.repos.find(
+    (r) =>
+      r.status === "ready" &&
+      (basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted),
+  );
+}
+
+/** The folders of a workspace's ready repos, for naming them in a refusal. */
+export function readyRepoFolders(detail: WorkspaceDetail): string {
+  const ready = detail.repos.filter((r) => r.status === "ready");
+  return ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
+}
+
+/**
  * Adds a worktree for another branch of one of the workspace's repos, at
  * `<workspace>/<folder>-<branch>`, and grants the workspace's sandbox that
  * worktree and branch. Agents ask for this over MCP: inside the sandbox they
@@ -675,17 +697,10 @@ export async function addExtraWorktree(
   const detail = await getWorkspace(db, workspaceId);
   if (!detail) throw new WorktreeRefusal("workspace not found");
   assertOpenForWorktrees(detail);
-  const ready = detail.repos.filter((r) => r.status === "ready");
-  // Either is accepted: AGENTS.md names the folder, the user names the repo.
-  const wanted = input.repo.trim().toLowerCase();
-  const workspaceRepo = ready.find(
-    (r) =>
-      basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted,
-  );
+  const workspaceRepo = findReadyRepo(detail, input.repo);
   if (!workspaceRepo) {
-    const folders = ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
     throw new WorktreeRefusal(
-      `no ready repo "${input.repo}" in this workspace (repos: ${folders})`,
+      `no ready repo "${input.repo}" in this workspace (repos: ${readyRepoFolders(detail)})`,
     );
   }
 
@@ -1818,6 +1833,12 @@ async function writeWorkspaceFiles(detail: WorkspaceDetail): Promise<void> {
       "is archived. Don't create worktrees or clones anywhere else, such as a",
       "temp folder: nothing tracks those, and they stay on disk after the work",
       "is done.",
+      "",
+      "## Pull requests",
+      "",
+      "After you open a pull request, record it with the Yarvis MCP tool",
+      "`link_pull_request`, giving the repo's folder and the PR's number, so the",
+      "user sees its state and checks in Yarvis. Each repo has one linked PR.",
     );
   }
 

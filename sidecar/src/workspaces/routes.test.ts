@@ -797,6 +797,30 @@ describe("workspace worktrees", () => {
     expect([badId.status, badWorktree.status]).toEqual([400, 400]);
   });
 
+  it("refuses to link a PR when no provider can read the repo", async () => {
+    const { workspaceId, wr } = await provisioned();
+    const put = (body: unknown) =>
+      app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/pr`, {
+        method: "PUT",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const badNumber = await put({ number: -1 });
+    const noProvider = await put({ number: 42 });
+    expect([badNumber.status, noProvider.status]).toEqual([400, 400]);
+    expect(((await noProvider.json()) as { error: string }).error).toContain("token");
+  });
+
+  it("detects nothing when no provider is configured", async () => {
+    const { workspaceId } = await provisioned();
+    const res = await app.request(`/api/workspaces/${workspaceId}/prs/detect`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ repos: [] });
+  });
+
   it("rejects a worktree that isn't an absolute path before it reaches git", async () => {
     const { workspaceId, wr } = await provisioned();
     const res = await app.request(
@@ -2228,6 +2252,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("## Extra worktrees");
     expect(agents).toContain("create it with the Yarvis MCP tool `add_worktree`");
+    expect(agents).toContain("`link_pull_request`");
     expect(agents).not.toContain("outside the sandbox, which asks");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");

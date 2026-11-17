@@ -6,6 +6,8 @@ import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
 import {
   type CheckRollup,
+  detectWorkspacePrs,
+  linkWorkspacePr,
   type WorkspaceRepoDetail,
   type WorkspaceRepoSync,
   workspaceRepoSync,
@@ -119,6 +121,157 @@ function SyncChips({ sync }: { sync: WorkspaceRepoSync }) {
 }
 
 /**
+ * Looks for every repo's PR again now, rather than on the poller's schedule,
+ * and drops any PR linked by hand. Reports what it found, or why it couldn't.
+ */
+export function DetectPrsButton({
+  workspaceId,
+  onDetected,
+}: {
+  workspaceId: string;
+  onDetected: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null);
+
+  const detect = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const found = await detectWorkspacePrs(workspaceId);
+      const failed = found.find((r) => r.error);
+      const linked = found.filter((r) => r.prNumber !== null).length;
+      setNote(
+        failed
+          ? { text: `Couldn't read every repo: ${failed.error}`, failed: true }
+          : found.length === 0
+            ? { text: "No GitHub or Azure DevOps token can read these repos", failed: true }
+            : {
+                text: linked ? `Found ${linked} of ${found.length}` : "No PR found",
+                failed: false,
+              },
+      );
+      onDetected();
+    } catch (e) {
+      setNote({ text: e instanceof Error ? e.message : String(e), failed: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs">
+      <button
+        type="button"
+        onClick={() => void detect()}
+        disabled={busy}
+        title="Look for each repo's pull request on its branches again, replacing any linked by hand"
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+      >
+        {busy ? "Detecting…" : "Detect PRs again"}
+      </button>
+      {note && (
+        <span role="status" className={note.failed ? "text-red-400" : "text-zinc-500"}>
+          {note.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Links a PR by number, for one that isn't on the worktree's branch or that
+ * detection missed. Collapsed to a button until asked for.
+ */
+function LinkPrControl({
+  workspaceId,
+  repo,
+  onLinked,
+}: {
+  workspaceId: string;
+  repo: WorkspaceRepoDetail;
+  onLinked: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={`Link a pull request to ${repo.repo.name} by its number`}
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800"
+      >
+        {repo.pr?.prNumber ? "Change PR" : "Link PR"}
+      </button>
+    );
+  }
+
+  const number = Number(value.trim().replace(/^#/, ""));
+  const valid = Number.isInteger(number) && number > 0;
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await linkWorkspacePr(workspaceId, repo.id, number);
+      setOpen(false);
+      setValue("");
+      onLinked();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="flex items-center gap-1.5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <input
+        // biome-ignore lint/a11y/noAutofocus: opened by an explicit click, to type straight away
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+        placeholder="PR #"
+        aria-label={`Pull request number for ${repo.repo.name}`}
+        className="w-20 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-200"
+      />
+      <button
+        type="submit"
+        disabled={!valid || busy}
+        className="rounded border border-indigo-700/60 bg-indigo-900/30 px-1.5 py-0.5 text-indigo-200 hover:bg-indigo-900/60 disabled:opacity-50"
+      >
+        {busy ? "Linking…" : "Link"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="px-1 py-0.5 text-zinc-500 hover:text-zinc-300"
+      >
+        Cancel
+      </button>
+      {error && (
+        <span role="alert" className="text-red-400">
+          {error}
+        </span>
+      )}
+    </form>
+  );
+}
+
+/**
  * A prominent, always-visible PR + branch status line for one workspace repo:
  * PR state, check rollup, merge-conflict warning, and push/pull divergence —
  * surfaced on the workspace page rather than hidden inside the side-panel tab.
@@ -127,11 +280,14 @@ export default function WorkspacePrStatus({
   workspaceId,
   repo,
   showRepoName,
+  onPrLinked,
 }: {
   workspaceId: string;
   repo: WorkspaceRepoDetail;
   /** Prefix the row with the repo name (for multi-repo workspaces). */
   showRepoName: boolean;
+  /** Called after a PR is linked by hand, to re-read the workspace. */
+  onPrLinked: () => void;
 }) {
   const sync = useRepoSync(workspaceId, repo.id);
   const pr = repo.pr;
@@ -193,6 +349,8 @@ export default function WorkspacePrStatus({
           />
         </span>
       )}
+
+      <LinkPrControl workspaceId={workspaceId} repo={repo} onLinked={onPrLinked} />
     </div>
   );
 }

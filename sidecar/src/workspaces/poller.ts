@@ -15,14 +15,15 @@
  * doesn't trigger polling in the main instance.
  */
 
-import { and, eq, inArray, isNull, lt } from "drizzle-orm";
-import { AzureDevOpsClient, isAllowedAzureOrgUrl } from "../azure/client.ts";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { type AzureBranchPr, AzureDevOpsClient, isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import {
   type Repo,
   repos,
   type WorkspaceRepoPr,
+  workspaceExtraWorktrees,
   workspaceRepoPr,
   workspaceRepos,
   workspaces,
@@ -97,6 +98,8 @@ export interface PollCandidate {
   prNumber: number | null;
   prState: string | null;
   lastPolledAt: Date | null;
+  /** The PR was linked by number, so it is never looked up by branch. */
+  pinned?: boolean;
 }
 
 /**
@@ -132,9 +135,8 @@ export function dueRefresh(candidate: PollCandidate, now = Date.now()): RefreshM
   // The workspace the user has open is read by branch, so a PR opened on it
   // shows up within a minute. A settled PR there has little left to change.
   if (focused) {
-    return dueAfter(candidate, settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, now)
-      ? "branch"
-      : null;
+    if (!dueAfter(candidate, settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, now)) return null;
+    return candidate.pinned && candidate.prNumber !== null ? "number" : "branch";
   }
   // Every other known PR is re-read by number, whether or not anyone is
   // looking, so every badge stays current. A merged PR won't change again.
@@ -265,7 +267,15 @@ async function azureBranchPr(
   branch: string,
 ): Promise<BranchPr> {
   const pr = await az.findPrByBranch(project, repo, branch);
-  if (!pr) return NO_PR;
+  return pr ? azurePolledPr(az, project, pr) : NO_PR;
+}
+
+/** An Azure DevOps PR with where its CI policies stand, as the cache holds it. */
+async function azurePolledPr(
+  az: AzureDevOpsClient,
+  project: string,
+  pr: AzureBranchPr,
+): Promise<BranchPr> {
   const awaitingReview = pr.state === "open" && !pr.draft;
   // Policy evaluations are a separate read a PAT may lack the scope for. As
   // with GitHub's review verdict, any failure drops the checks rather than the
@@ -318,6 +328,33 @@ async function branchPr(
   if (!clients.github) return null;
   const { owner, repo: repoName } = githubRepoOf(repo);
   return githubBranchPr(clients.github, owner, repoName, branch);
+}
+
+/**
+ * One of a repo's PRs, read by number from whichever provider its clone URL
+ * names. Null when no client can reach that provider. Throws when the provider
+ * has no such PR.
+ */
+async function numberPr(
+  clients: PollerClients,
+  repo: Repo,
+  number: number,
+): Promise<BranchPr | null> {
+  const remote = parseRepoRemote(repo.cloneUrl);
+  if (remote?.provider === "azure") {
+    if (!clients.azure || clients.azure.org.toLowerCase() !== remote.org.toLowerCase()) return null;
+    const pr = await clients.azure.branchPrById({
+      project: remote.project,
+      repo: remote.repo,
+      prId: number,
+    });
+    return azurePolledPr(clients.azure, remote.project, pr);
+  }
+  if (!clients.github) return null;
+  const [result] = await clients.github.prStatusesByNumber([{ ...githubRepoOf(repo), number }]);
+  if (!result) return null;
+  if (!result.ok) throw result.error;
+  return toBranchPr(result.value);
 }
 
 /** The provider clients the configured tokens allow. */
@@ -374,10 +411,10 @@ async function recordError(db: Db, workspaceRepoId: string, e: unknown): Promise
  * Refreshes repos one at a time, stopping at the first rate limit. Returns
  * false when it stopped early.
  */
-async function refreshEach(
+async function refreshEach<T extends DueRepo>(
   db: Db,
-  due: DueRepo[],
-  read: (repo: DueRepo) => Promise<BranchPr | null>,
+  due: T[],
+  read: (repo: T) => Promise<BranchPr | null>,
 ): Promise<boolean> {
   for (const item of due) {
     try {
@@ -498,6 +535,7 @@ export async function pollOnce(
       prNumber: workspaceRepoPr.prNumber,
       prState: workspaceRepoPr.prState,
       lastPolledAt: workspaceRepoPr.lastPolledAt,
+      pinned: workspaceRepoPr.pinned,
     })
     .from(workspaceRepos)
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
@@ -507,25 +545,37 @@ export async function pollOnce(
 
   const byBranch: DueRepo[] = [];
   const byNumber: DueKnownPr[] = [];
-  const azure: DueRepo[] = [];
+  const azure: (DueRepo & { prNumber?: number })[] = [];
   for (const row of rows) {
-    const mode = refreshModeFor({
+    const pinned = row.pinned === true && row.prNumber !== null;
+    const requested = refreshModeFor({
       workspaceId: row.wr.workspaceId,
       prNumber: row.prNumber,
       prState: row.prState,
       lastPolledAt: row.lastPolledAt,
+      pinned,
     });
-    if (mode === null) continue;
+    if (requested === null) continue;
+    // A pinned PR's head may not be the worktree's branch, so a branch read
+    // would lose it.
+    const mode = pinned ? "number" : requested;
     const due = { wr: row.wr, repo: row.repo };
-    if (parseRepoRemote(row.repo.cloneUrl)?.provider === "azure") azure.push(due);
-    else if (mode === "number" && row.prNumber !== null)
-      byNumber.push({ ...due, prNumber: row.prNumber });
+    const known = mode === "number" && row.prNumber !== null ? row.prNumber : undefined;
+    if (parseRepoRemote(row.repo.cloneUrl)?.provider === "azure") {
+      azure.push({ ...due, prNumber: pinned ? known : undefined });
+    } else if (known !== undefined) byNumber.push({ ...due, prNumber: known });
     else byBranch.push(due);
   }
 
   // Each provider has its own rate limit, so one running out doesn't hold up the other.
   if (clients.github) await refreshGithub(db, clients.github, byBranch, byNumber);
-  if (azure.length) await refreshEach(db, azure, (d) => branchPr(clients, d.repo, d.wr.branch));
+  if (azure.length) {
+    await refreshEach(db, azure, (d) =>
+      d.prNumber !== undefined
+        ? numberPr(clients, d.repo, d.prNumber)
+        : branchPr(clients, d.repo, d.wr.branch),
+    );
+  }
 }
 
 /**
@@ -556,6 +606,161 @@ export function refreshWorkspacePrs(
       ? "branch"
       : null,
   );
+}
+
+/** A request to link or detect a PR that can't be met, as opposed to a provider failure. */
+export class PrLinkRefusal extends Error {}
+
+/** A workspace repo and its registered repo, checked to belong to `workspaceId`. */
+async function workspaceRepoIn(
+  db: Db,
+  workspaceId: string,
+  workspaceRepoId: string,
+): Promise<DueRepo> {
+  const [row] = await db
+    .select({ wr: workspaceRepos, repo: repos, status: workspaces.status })
+    .from(workspaceRepos)
+    .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .where(
+      and(eq(workspaceRepos.id, workspaceRepoId), eq(workspaceRepos.workspaceId, workspaceId)),
+    );
+  if (!row) throw new PrLinkRefusal("that repo is not part of this workspace");
+  if (row.status === "archived") throw new PrLinkRefusal("the workspace is archived");
+  return { wr: row.wr, repo: row.repo };
+}
+
+/**
+ * Records that a workspace repo's PR is `number` before anything has read it,
+ * for a workspace created for that PR. The poller fills in the rest on its next
+ * tick. A repo that already has a PR keeps it.
+ */
+export async function seedWorkspacePr(
+  db: Db,
+  workspaceRepoId: string,
+  number: number,
+): Promise<void> {
+  await db
+    .insert(workspaceRepoPr)
+    .values({ workspaceRepoId, prNumber: number, pinned: true })
+    .onConflictDoUpdate({
+      target: workspaceRepoPr.workspaceRepoId,
+      set: { prNumber: number, pinned: true, lastPolledAt: null, updatedAt: new Date() },
+      setWhere: isNull(workspaceRepoPr.prNumber),
+    });
+}
+
+/**
+ * Links one of a workspace repo's PRs by number, replacing whatever PR the
+ * repo had. Reads the PR first, so a number the provider doesn't know is
+ * refused rather than stored. The link is pinned: the poller re-reads that PR
+ * by number from then on, whatever branch it is on.
+ */
+export async function linkWorkspacePr(
+  db: Db,
+  clients: PollerClients,
+  workspaceId: string,
+  workspaceRepoId: string,
+  number: number,
+): Promise<BranchPr> {
+  const { wr, repo } = await workspaceRepoIn(db, workspaceId, workspaceRepoId);
+  let pr: BranchPr | null;
+  try {
+    pr = await numberPr(clients, repo, number);
+  } catch (e) {
+    // Azure's errors carry only the status, as `isRateLimited` reads them.
+    const missing =
+      e instanceof GitHubError
+        ? e.reason === "not_found"
+        : /-> 404$/.test(e instanceof Error ? e.message : String(e));
+    if (missing) {
+      throw new PrLinkRefusal(`${repo.name} has no pull request #${number}`);
+    }
+    throw e;
+  }
+  if (!pr) {
+    throw new PrLinkRefusal(
+      `no GitHub or Azure DevOps token can read ${repo.name}'s pull requests`,
+    );
+  }
+  await upsertPr(db, wr.id, { ...pr, pinned: true, lastPolledAt: new Date(), lastError: null });
+  return pr;
+}
+
+/** What detection found for one repo in a workspace. */
+export interface DetectedPr {
+  workspaceRepoId: string;
+  /** The branch the PR was found on; null when none was found. */
+  branch: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  /** Why this repo couldn't be read, when it couldn't. */
+  error?: string;
+}
+
+/**
+ * Looks for each of a workspace's repos' PR again, dropping any PR linked by
+ * hand. The worktree's own branch is tried first, then the branches of the
+ * worktrees an agent added beside it, newest first, since a stacked or
+ * renamed branch is where the PR then lives. A repo no configured provider can
+ * read is left as it was.
+ */
+export async function detectWorkspacePrs(
+  db: Db,
+  clients: PollerClients,
+  workspaceId: string,
+): Promise<DetectedPr[]> {
+  const rows = await db
+    .select({ wr: workspaceRepos, repo: repos })
+    .from(workspaceRepos)
+    .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
+    .where(and(eq(workspaceRepos.workspaceId, workspaceId), eq(workspaceRepos.status, "ready")));
+  const detected: DetectedPr[] = [];
+  for (const { wr, repo } of rows) {
+    const extras = await db
+      .select({ branch: workspaceExtraWorktrees.branch })
+      .from(workspaceExtraWorktrees)
+      .where(eq(workspaceExtraWorktrees.workspaceRepoId, wr.id))
+      .orderBy(desc(workspaceExtraWorktrees.createdAt));
+    const branches = [wr.branch, ...extras.map((e) => e.branch).filter((b) => b !== wr.branch)];
+    try {
+      let found: { branch: string; pr: BranchPr } | null = null;
+      let readable = false;
+      for (const branch of branches) {
+        const pr = await branchPr(clients, repo, branch);
+        if (!pr) break;
+        readable = true;
+        if (pr.prNumber !== null) {
+          found = { branch, pr };
+          break;
+        }
+      }
+      if (!readable) continue;
+      await upsertPr(db, wr.id, {
+        ...(found?.pr ?? NO_PR),
+        pinned: found !== null && found.branch !== wr.branch,
+        lastPolledAt: new Date(),
+        lastError: null,
+      });
+      detected.push({
+        workspaceRepoId: wr.id,
+        branch: found?.branch ?? null,
+        prNumber: found?.pr.prNumber ?? null,
+        prUrl: found?.pr.prUrl ?? null,
+      });
+    } catch (e) {
+      await recordError(db, wr.id, e);
+      detected.push({
+        workspaceRepoId: wr.id,
+        branch: null,
+        prNumber: null,
+        prUrl: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      if (isRateLimited(e)) break;
+    }
+  }
+  return detected;
 }
 
 /** Refreshes every repo whose cached PR is due, as of `now`. */

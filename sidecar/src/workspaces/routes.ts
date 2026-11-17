@@ -10,7 +10,15 @@ import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.t
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
-import { lookupBranchPr, markWorkspaceListViewed, markWorkspaceViewed } from "./poller.ts";
+import {
+  detectWorkspacePrs,
+  linkWorkspacePr,
+  lookupBranchPr,
+  markWorkspaceListViewed,
+  markWorkspaceViewed,
+  PrLinkRefusal,
+  pollerClients,
+} from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -453,6 +461,46 @@ export function createWorkspaceRoutes(config: Config): Hono {
       return c.json({ branch: target.branch, pr });
     } catch (e) {
       console.error("[workspaces] PR lookup failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Looks for each repo's PR again on its branches, dropping any linked by hand.
+  router.post("/:id/prs/detect", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    try {
+      return c.json({ repos: await detectWorkspacePrs(db(), pollerClients(config), id) });
+    } catch (e) {
+      console.error("[workspaces] PR detection failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Links one of a repo's PRs by number, for a PR that isn't on the worktree's branch.
+  router.put("/:id/repos/:wrId/pr", async (c) => {
+    const ids = z
+      .object({ id: z.string().uuid(), wrId: z.string().uuid() })
+      .safeParse({ id: c.req.param("id"), wrId: c.req.param("wrId") });
+    if (!ids.success) return c.json({ error: "invalid workspace or repo id" }, 400);
+    const body = z
+      .object({ number: z.number().int().positive() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: body.error.flatten() }, 400);
+    try {
+      const pr = await linkWorkspacePr(
+        db(),
+        pollerClients(config),
+        ids.data.id,
+        ids.data.wrId,
+        body.data.number,
+      );
+      return c.json({ pr });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      console.error("[workspaces] PR link failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
     }
   });

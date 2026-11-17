@@ -52,7 +52,7 @@ import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspaceNameHeading from "./workspaces/WorkspaceNameHeading";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
-import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
+import WorkspacePrStatus, { DetectPrsButton } from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
 import WorkspaceViewRecorder from "./workspaces/WorkspaceViewRecorder";
 
@@ -938,6 +938,12 @@ function WorkspaceDetailView({
     }
   }, [id, onChanged]);
 
+  // A PR linked or detected changes this view's status line and the list's badges.
+  const prLinked = useCallback(() => {
+    void load();
+    onChanged();
+  }, [load, onChanged]);
+
   // Initial fetch + polling combined: chained setTimeout in `finally` ensures a
   // slow load doesn't overlap the next tick (the setInterval shape did). Each
   // mount/id change increments the generation so any still-resolving call from
@@ -1243,8 +1249,10 @@ function WorkspaceDetailView({
                   workspaceId={detail.id}
                   repo={wr}
                   showRepoName={detail.repos.length > 1}
+                  onPrLinked={prLinked}
                 />
               ))}
+            <DetectPrsButton workspaceId={detail.id} onDetected={prLinked} />
           </div>
         )}
         {detail.tasks.length > 0 && (

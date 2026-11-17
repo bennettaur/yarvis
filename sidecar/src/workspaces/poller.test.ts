@@ -3,18 +3,28 @@ import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 import { AzureDevOpsClient } from "../azure/client.ts";
 import { getDb } from "../db/client.ts";
-import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
+import {
+  repos,
+  workspaceExtraWorktrees,
+  workspaceRepoPr,
+  workspaceRepos,
+  workspaces,
+} from "../db/schema.ts";
 import { GitHubClient } from "../github/client.ts";
 import {
+  detectWorkspacePrs,
   dueRefresh,
   isDueForRefresh,
+  linkWorkspacePr,
   markWorkspaceListViewed,
   markWorkspaceViewed,
+  PrLinkRefusal,
   pollDueRepos,
   pollOnce,
   reconcileOrphans,
   refreshWorkspacePrs,
   resetWorkspaceViews,
+  seedWorkspacePr,
 } from "./poller.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -1072,3 +1082,152 @@ describe("reconcileOrphans", () => {
 function eqWr(wrId: string) {
   return eq(workspaceRepoPr.workspaceRepoId, wrId);
 }
+
+/** The workspace id a seeded workspace repo belongs to. */
+async function workspaceOf(wrId: string): Promise<string> {
+  const [row] = await db
+    .select({ id: workspaceRepos.workspaceId })
+    .from(workspaceRepos)
+    .where(eq(workspaceRepos.id, wrId));
+  return row!.id;
+}
+
+describe("linked PRs", () => {
+  it("reads a pinned PR by number even when a branch read is asked for", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 12, prState: "open", pinned: true });
+    const { gh, queries } = graphqlClient(() => ({
+      data: { p0: { pullRequest: POLLED_PR(12) } },
+    }));
+
+    await pollOnce(db, { github: gh }, () => "branch");
+
+    expect(queries).toEqual([{ o0: "oa", r0: "ra", n0: 12 }]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ prNumber: 12, pinned: true, checkRollup: "failure" });
+  });
+
+  it("re-reads a pinned PR in the open workspace by number", () => {
+    const now = Date.now();
+    markWorkspaceViewed("ws", now);
+    const candidate = { workspaceId: "ws", prState: "open", lastPolledAt: null };
+    expect(dueRefresh({ ...candidate, prNumber: 12, pinned: true }, now)).toBe("number");
+    expect(dueRefresh({ ...candidate, prNumber: 12 }, now)).toBe("branch");
+  });
+
+  it("links a PR by number and pins it", async () => {
+    const wrId = await seedReadyRepo("a");
+    const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
+
+    const pr = await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42);
+
+    expect(pr.prNumber).toBe(42);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ prNumber: 42, pinned: true, lastError: null });
+  });
+
+  it("refuses a PR the provider doesn't have, and keeps the one linked", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 7 });
+    const { gh } = graphqlClient(() => ({
+      data: { p0: { pullRequest: null } },
+    }));
+
+    await expect(
+      linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42),
+    ).rejects.toBeInstanceOf(PrLinkRefusal);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(7);
+  });
+
+  it("refuses a repo from another workspace", async () => {
+    const wrId = await seedReadyRepo("a");
+    const otherWr = await seedReadyRepo("b");
+    const { gh, queries } = graphqlClient(() => ({}));
+
+    await expect(
+      linkWorkspacePr(db, { github: gh }, await workspaceOf(otherWr), wrId, 42),
+    ).rejects.toBeInstanceOf(PrLinkRefusal);
+    expect(queries).toEqual([]);
+  });
+
+  it("seeds a PR only where the repo has none", async () => {
+    const emptyWr = await seedReadyRepo("a");
+    const linkedWr = await seedReadyRepo("b");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: linkedWr, prNumber: 7 });
+
+    await seedWorkspacePr(db, emptyWr, 42);
+    await seedWorkspacePr(db, linkedWr, 42);
+
+    const [empty] = await db.select().from(workspaceRepoPr).where(eqWr(emptyWr));
+    expect(empty).toMatchObject({ prNumber: 42, pinned: true, lastPolledAt: null });
+    const [linked] = await db.select().from(workspaceRepoPr).where(eqWr(linkedWr));
+    expect(linked).toMatchObject({ prNumber: 7, pinned: false });
+  });
+});
+
+describe("detectWorkspacePrs", () => {
+  /** A REST-only client with a PR on each branch named in `prs`. */
+  function branchesClient(prs: Record<string, number>): GitHubClient {
+    return clientWith((path) => {
+      const head = decodeURIComponent(path).match(/head=[^:]+:([^&]+)/)?.[1];
+      if (head !== undefined) {
+        const number = prs[head];
+        return number === undefined ? [] : [pullItem(number, "open")];
+      }
+      if (path.includes("/reviews")) return REVIEWS();
+      if (path.includes("/check-runs")) return CHECKS([]);
+      if (/\/pulls\/\d+$/.test(path)) return { state: "open", merged: false, head: { sha: "abc" } };
+      return {};
+    });
+  }
+
+  it("finds the PR on an added worktree's branch and pins it", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceExtraWorktrees)
+      .values({ workspaceRepoId: wrId, branch: "stack-2", worktreePath: "/tmp/a/ra-stack-2" });
+
+    const detected = await detectWorkspacePrs(
+      db,
+      { github: branchesClient({ "stack-2": 9 }) },
+      await workspaceOf(wrId),
+    );
+
+    expect(detected).toEqual([
+      {
+        workspaceRepoId: wrId,
+        branch: "stack-2",
+        prNumber: 9,
+        prUrl: "https://github.com/acme/widget/pull/9",
+      },
+    ]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ prNumber: 9, pinned: true });
+  });
+
+  it("drops a hand-linked PR for the one on the worktree's own branch", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42, pinned: true });
+
+    await detectWorkspacePrs(
+      db,
+      { github: branchesClient({ "yarvis/a": 5 }) },
+      await workspaceOf(wrId),
+    );
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ prNumber: 5, pinned: false });
+  });
+
+  it("leaves a repo no provider can read as it was", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42 });
+
+    expect(await detectWorkspacePrs(db, {}, await workspaceOf(wrId))).toEqual([]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(42);
+  });
+});

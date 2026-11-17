@@ -430,7 +430,15 @@ export class AzureDevOpsClient {
       `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=1`,
     );
     const pr = data.value?.[0];
-    if (!pr) return null;
+    return pr ? this.toBranchPr(pr) : null;
+  }
+
+  /** One PR by id, in the shape {@link findPrByBranch} answers with. */
+  async branchPrById(ref: AzureRef): Promise<AzureBranchPr> {
+    return this.toBranchPr(await this.prRaw(ref));
+  }
+
+  private toBranchPr(pr: AzurePullRequest): AzureBranchPr {
     return {
       number: pr.pullRequestId,
       url: this.prWebUrl(pr),

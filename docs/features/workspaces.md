@@ -89,7 +89,9 @@ ticket, an Azure Boards work item, or a task. Yarvis creates the workspace, writ
 [Issues and tasks](issues-and-tasks.md).
 
 **From a pull request.** On a PR's page, press **Start workspace**. You get a
-workspace checked out on the PR's branch, with an agent at a blank prompt. See
+workspace checked out on the PR's branch, with an agent at a blank prompt. The
+workspace is linked to that PR from the start. If a workspace is already on
+the PR's branch, Yarvis opens that one and links the PR to it. See
 [PR review](pr-review.md#work-on-the-pr).
 
 **By asking the assistant.** Tell the assistant what you want, for example
@@ -357,6 +359,27 @@ and that read updates the badges too.
 
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).
+
+### Linking a pull request
+
+Yarvis finds a workspace's PR by looking for one on each repo's worktree
+branch. When it finds the wrong one, or none, the status line under the
+workspace's header has two fixes:
+
+- **Detect PRs again** looks now instead of waiting for the next poll. It
+  tries each repo's worktree branch first, then the branches of the worktrees
+  an agent added, newest first. It drops any PR you linked by hand.
+- **Link PR** (or **Change PR**) takes a PR number for that repo. Yarvis checks
+  the PR exists before it saves the link.
+
+A PR linked by number stays linked. Yarvis keeps refreshing it by number, even
+if its branch isn't the worktree's, and doesn't swap in another PR found on the
+branch. The same applies to a workspace started from a PR, and to a PR found on
+an added worktree's branch.
+
+The agent in the workspace can link a PR too, with the MCP tool
+`link_pull_request` ([MCP](mcp.md#linking-a-pull-request)). Its `AGENTS.md`
+tells it to do so after opening one.
 
 ## The right column
 

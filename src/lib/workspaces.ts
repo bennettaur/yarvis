@@ -36,6 +36,8 @@ export interface WorkspaceRepoPr {
   checks: { total: number; success: number; failure: number; pending: number } | null;
   /** Null when unknown: no PR, not polled, or a provider that can't answer. */
   reviewDecision: ReviewDecision | null;
+  /** The PR was linked by number, so it is kept whatever PR the worktree's branch has. */
+  pinned?: boolean;
   lastPolledAt: string | null;
   lastError: string | null;
 }
@@ -405,6 +407,37 @@ export async function workspaceRepoSync(
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/sync`);
   if (!res.ok) return readError(res, "load sync status");
   return res.json();
+}
+
+/** What looking for a workspace repo's PR again found. */
+export interface DetectedPr {
+  workspaceRepoId: string;
+  /** The branch the PR was found on; null when none was found. */
+  branch: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  error?: string;
+}
+
+/** Looks for each of the workspace's repos' PR again, dropping any linked by hand. */
+export async function detectWorkspacePrs(workspaceId: string): Promise<DetectedPr[]> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/prs/detect`, { method: "POST" });
+  if (!res.ok) return readError(res, "detect pull requests");
+  return (await res.json()).repos;
+}
+
+/** Links one of a workspace repo's PRs by number, replacing the PR it had. */
+export async function linkWorkspacePr(
+  workspaceId: string,
+  workspaceRepoId: string,
+  number: number,
+): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/pr`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ number }),
+  });
+  if (!res.ok) return readError(res, "link pull request");
 }
 
 export interface WorkspaceStack {
