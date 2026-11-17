@@ -34,9 +34,10 @@ import {
   assertWorktreeInWorkspace,
   getReviewWorkspace,
   ReviewWorkspaceError,
+  refDomKey,
   reviewClonePath,
   reviewSessionFolder,
-  withClaudeSessionLock,
+  withReviewWorkspaceLock,
 } from "./service.ts";
 
 /** The most checkouts one session reads; matches `MAX_REVIEW_DIRS` in `pty.rs`. */
@@ -44,8 +45,8 @@ const MAX_SESSION_PRS = 20;
 
 /**
  * Tools the session never needs. The edit tools because it answers questions.
- * `Skill` because a checkout added with `--add-dir` may ship its own skills,
- * whose frontmatter can pre-approve tools.
+ * `Skill` as a second layer behind `--setting-sources ''`, which already keeps
+ * a checkout's own skills out: their frontmatter can pre-approve tools.
  */
 const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
 
@@ -95,7 +96,10 @@ function freshSessionFolder(config: Config, workspaceId: string): string {
   // Checked again before anything is removed: a link swapped in for either
   // folder would point the emptying below at whatever it names.
   if (realpathSync(dir) !== real) {
-    throw new Error(`${dir} is not a plain folder; left in place`);
+    throw new ReviewWorkspaceError(
+      `${dir} is a link or under one; remove it so Ask Claude can start`,
+      409,
+    );
   }
   for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true });
   return real;
@@ -114,11 +118,13 @@ export const defaultReviewClaudeDeps: ReviewClaudeDeps = {
 };
 
 /**
- * Starts the workspace's session over every PR whose checkout is ready, or
- * leaves the one already running alone (the core discards a spawn whose id is
- * taken; its folder is still emptied, which a running session can't write to).
- * A PR checked out later joins on the next start. Runs under the workspace's session lock, so it can't start a session
- * between a removal ending the old one and deleting a checkout.
+ * Starts the workspace's session over every PR whose checkout is ready. If a
+ * session is already running, the core keeps it and ignores this start; the
+ * session folder is still emptied first, which is safe because a running
+ * session can't write to it and reads its settings from elsewhere. A PR
+ * checked out later joins on the next start. Runs under the workspace's lock,
+ * so it can't start a session between a removal ending the old one and
+ * deleting a checkout.
  */
 export async function startReviewClaudeSession(
   db: Db,
@@ -132,7 +138,7 @@ export async function startReviewClaudeSession(
       503,
     );
   }
-  return withClaudeSessionLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
+  return withReviewWorkspaceLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
 }
 
 async function startLocked(
@@ -165,9 +171,10 @@ async function startLocked(
   // doesn't leave the write deny naming a path the sandbox never sees.
   const checkouts = ready.map((pr) => realFolder(pr.worktreePath));
   const clones = [...new Set(ready.map((pr) => realFolder(reviewClonePath(config, pr.ref))))];
-  // Paths and ref keys only: titles are the authors' text.
+  // Paths and sanitized ref keys only: titles are the authors' text, and an
+  // Azure project or repo name is free text its owner chose.
   const context = `The pull requests are checked out at: ${ready
-    .map((pr, i) => `${pr.refKey} in ${checkouts[i]}`)
+    .map((pr, i) => `${refDomKey(pr.ref)} in ${checkouts[i]}`)
     .join("; ")}.`;
   try {
     await deps.spawn({

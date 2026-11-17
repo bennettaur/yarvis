@@ -109,8 +109,8 @@ export default function ClaudeTab({ ctx }: { ctx: TabContext }) {
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
         <span className="min-w-0 flex-1">
           Read-only: Claude Code reads every PR checked out here but can't edit them, and commands
-          run sandboxed with no network. Your own settings, hooks and MCP servers aren't loaded. A
-          PR added later joins on Restart.
+          run sandboxed and can't reach the network unless you approve it. Your own settings, hooks
+          and MCP servers aren't loaded. A PR added later joins on Restart.
         </span>
         <button
           type="button"

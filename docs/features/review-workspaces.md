@@ -367,16 +367,20 @@ the same way the verification report is:
   commands can't write to the repositories' clones either, where a planted git
   hook would run the next time Yarvis fetches. It
   doesn't load skills, which a checkout could ship to pre-approve tools.
-- Commands run in Claude Code's sandbox with no network, and can't read your
-  SSH, cloud or Yarvis credentials. Claude Code starts without common
-  credential variables your shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is off, so it can't act
-  in your browser. Claude asks you before running a command
-  or doing anything else beyond reading the checkouts.
+- Commands run in Claude Code's sandbox, which can't reach the network unless
+  you approve a host when it asks, and can't read your SSH, cloud or Yarvis
+  credentials. Claude Code starts without common credential variables your
+  shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is
+  off, so it can't act in your browser. Claude asks you before running a
+  command that isn't read-only, or doing anything else beyond reading the
+  checkouts.
 - It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
   the like) act on the folder a terminal opens in, so the session opens in an
   empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
   workspaces folder, and reaches the checkouts from there. Its commands can't
-  write to that folder either, and it's emptied before each start.
+  write to that folder either, and it's emptied before each start. Its
+  settings and instructions are written to `.ask-claude/` in the review
+  workspace's folder, which its commands can't write to either.
 - Its instructions tell it that what it reads in the checkouts is material to
   explain, not instructions to follow.
 

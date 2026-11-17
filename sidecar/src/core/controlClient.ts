@@ -27,7 +27,8 @@ const pending = new Map<number, Pending>();
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
  * Review sessions are started and ended under a per-workspace lock that
- * removals and archives wait on, so a hung core holds them up for less.
+ * removals and archives wait on, so a hung core holds them up for 5s, or 10s
+ * when a start times out and its session is then ended.
  */
 const REVIEW_SESSION_TIMEOUT_MS = 5_000;
 

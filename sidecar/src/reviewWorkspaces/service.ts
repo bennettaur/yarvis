@@ -236,7 +236,7 @@ export function defaultReviewDeps(db: Db, config: Config): ReviewDeps {
  * a start can't land between a removal ending the session and deleting the
  * checkout, and no clone or refresh starts on a PR being removed.
  */
-export const withClaudeSessionLock = createKeyedLock();
+export const withReviewWorkspaceLock = createKeyedLock();
 
 /**
  * Ends the workspace's Ask Claude session before a checkout it reads goes. A
@@ -297,6 +297,15 @@ export function reviewWorkspaceDir(config: Pick<Config, "workspacesRoot">, id: s
  */
 export function reviewSessionFolder(config: Pick<Config, "workspacesRoot">, id: string): string {
   return join(config.workspacesRoot, ".review-sessions", id);
+}
+
+/**
+ * Where the core writes the Ask Claude session's settings and prompt files,
+ * `.ask-claude` in the review workspace's folder; matches `review_files_dir`
+ * in `pty.rs`. Archiving removes it.
+ */
+export function reviewSessionFilesDir(config: Pick<Config, "workspacesRoot">, id: string): string {
+  return join(reviewWorkspaceDir(config, id), ".ask-claude");
 }
 
 /** A DOM-id-safe variant of `refKey`, matching the frontend's `refDomKey`. */
@@ -746,7 +755,7 @@ export async function resumeIfStalled(
   if (isRunning(pr.id)) return;
   // Checked again under the lock removals take, so a PR removed in the
   // meantime isn't cloned again.
-  await withClaudeSessionLock(pr.workspaceId, async () => {
+  await withReviewWorkspaceLock(pr.workspaceId, async () => {
     const [row] = await db
       .select()
       .from(reviewWorkspacePrs)
@@ -763,7 +772,7 @@ export async function resumeIfStalled(
 
 /**
  * Fetches the PR's current head and moves its worktree there. Started under
- * the session lock, so a removal either sees the run and refuses, or has
+ * the workspace's lock, so a removal either sees the run and refuses, or has
  * deleted the PR before it can start.
  */
 export async function refreshReviewPr(
@@ -773,7 +782,7 @@ export async function refreshReviewPr(
   prId: string,
   deps: ReviewDeps,
 ): Promise<ReviewWorkspacePr> {
-  return withClaudeSessionLock(workspaceId, async () => {
+  return withReviewWorkspaceLock(workspaceId, async () => {
     await requireActiveWorkspace(db, workspaceId);
     const pr = await getReviewPr(db, workspaceId, prId);
     const phase = pr.status === "ready" ? "refresh" : "clone";
@@ -819,7 +828,7 @@ export async function removeReviewPr(
 ): Promise<void> {
   // Read and checked under the lock refreshes start under, so a refresh is
   // either running here and refused, or starts after the PR is gone.
-  const pr = await withClaudeSessionLock(workspaceId, async () => {
+  const pr = await withReviewWorkspaceLock(workspaceId, async () => {
     const pr = await getReviewPr(db, workspaceId, prId);
     if (isRunning(pr.id)) {
       throw new ReviewWorkspaceError("this pull request is still being updated", 409);
@@ -848,9 +857,10 @@ export async function archiveReviewWorkspace(
   deps: ReviewDeps,
 ): Promise<ReviewWorkspaceDetail> {
   // Conditional, so of two archives racing only one gets the row back and
-  // goes on to remove anything. Under the session lock, so a start either ends
-  // before the claim (and is ended here) or sees the workspace archiving.
-  const claimed = await withClaudeSessionLock(id, async () => {
+  // goes on to remove anything. Under the workspace's lock, so a start either
+  // finishes before the claim, and the session it started is ended below, or
+  // runs after it and sees the workspace archiving.
+  const claimed = await withReviewWorkspaceLock(id, async () => {
     const [row] = await db
       .update(reviewWorkspaces)
       .set({ status: "archiving", updatedAt: new Date() })
@@ -878,16 +888,17 @@ export async function archiveReviewWorkspace(
       }
     }
     try {
-      // Only removes an empty folder; anything left in it is what a failure
-      // above kept, and is already reported.
-      rmdirSync(reviewWorkspaceDir(config, id));
-    } catch {}
-    try {
-      // The session ended above, and its sandbox couldn't write to the folder.
+      // The session ended above, and its sandbox couldn't write to either folder.
+      rmSync(reviewSessionFilesDir(config, id), { recursive: true, force: true });
       rmSync(reviewSessionFolder(config, id), { recursive: true, force: true });
     } catch (e) {
       failures.push(safeMessage(e));
     }
+    try {
+      // Only removes an empty folder; anything left in it is what a failure
+      // above kept, and is already reported.
+      rmdirSync(reviewWorkspaceDir(config, id));
+    } catch {}
     await db
       .update(reviewWorkspaces)
       .set({
