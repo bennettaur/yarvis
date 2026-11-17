@@ -2473,16 +2473,16 @@ function trackArchive(
 }
 
 /**
- * The tip to delete a repo's local branch at once its worktree is gone, so
- * archived workspaces don't pile up branches in the shared clone, or null to
- * keep it. Only a landed branch goes, and a git failure keeps it, since a
+ * The commit at which to delete a repo's local branch after its worktree is
+ * gone, so archived workspaces don't pile up branches in the shared clone, or
+ * null to keep the branch. Only a landed branch goes, and a git failure keeps it, since a
  * branch left behind costs nothing.
  *
  * Throws instead when a landed branch has commits that neither a remote nor
  * its merged PR has (work added after the merge) and `force` isn't set, so the
  * user hears about them while the worktree is still there to push from.
  */
-async function checkBranchForArchive(
+async function branchTipToDelete(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
@@ -2604,7 +2604,7 @@ async function removeWorktreesAndFinish(
         let unpushedCommitsError: unknown = null;
         if (wr.status !== "removed") {
           try {
-            branchTip = await checkBranchForArchive(runner, wr, force);
+            branchTip = await branchTipToDelete(runner, wr, force);
           } catch (e) {
             unpushedCommitsError = e;
           }

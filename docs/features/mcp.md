@@ -281,10 +281,11 @@ name git would read as something else (`origin/main`, `HEAD`), a branch an
 active workspace on the repo works on or stacks on, and a path something
 already holds.
 
-Like the review comment tools, it acts on the workspace the header names, and
-any caller holding the token can name any workspace. What a caller gets from
-that is a checkout of a branch not yet in the clone, inside that workspace's
-folder, and sandbox write access to that one branch.
+Unlike the review comment tools, it isn't offered on the workspace header
+alone. The caller also has to send the session key and token of one of that
+workspace's own terminals, so a client holding only the MCP token, or a session
+in another workspace, doesn't get it. A session started from a terminal Yarvis
+didn't open has no session token, so it doesn't get the tool either.
 
 ### Sessions Yarvis launches need no setup
 

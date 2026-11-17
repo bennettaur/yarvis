@@ -148,9 +148,13 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     // A malformed id is ignored rather than refused, so the memory tools still
     // work from a session whose header got mangled.
     const workspaceId = c.req.header(WORKSPACE_HEADER);
+    const origin = questionOrigin(c.req.raw.headers, config.token);
+    // The header alone is anyone's claim. add_worktree changes the workspace's
+    // sandbox, so it also needs the session token of one of that workspace's terminals.
+    const provenTerminal = origin.sessionKey !== null && origin.workspaceId === workspaceId;
     const workspace: WorkspaceContext | undefined =
       workspaceId && UUID.safeParse(workspaceId).success
-        ? { id: workspaceId, reviewComments, addWorktree }
+        ? { id: workspaceId, reviewComments, ...(provenTerminal ? { addWorktree } : {}) }
         : undefined;
     const db = () => getDb(config.databaseUrl as string).db;
     // Fires once the reply stream ends, the client cancels it, or the request
@@ -159,7 +163,7 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     const done = new AbortController();
     c.req.raw.signal.addEventListener("abort", () => done.abort(), { once: true });
     const server = createYarvisMcpServer(memory, workspace, {
-      origin: questionOrigin(c.req.raw.headers, config.token),
+      origin,
       ask: (input) => askQuestions(db(), input),
       getQuestion: (id) => getQuestion(db(), id),
       waitForReply: (id, timeoutMs) => waitForReply(db(), id, timeoutMs, done.signal),

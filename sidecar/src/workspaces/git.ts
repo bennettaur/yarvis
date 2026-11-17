@@ -678,6 +678,12 @@ export async function landedTip(
     cwd: primaryClonePath,
   });
   if (resolved.exitCode !== 0) return null;
+  // A branch that points at another branch is never landed: deleting it must
+  // not reach the branch it points to.
+  const symref = await runner(["symbolic-ref", "-q", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  if (symref.exitCode === 0) return null;
   const tip = resolved.stdout.trim();
   const contains = async (ref: string) =>
     (await runner(["merge-base", "--is-ancestor", tip, ref], { cwd: primaryClonePath }))
@@ -744,13 +750,19 @@ export async function deleteBranch(
     await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
     return;
   }
-  // `update-ref` skips the two things `branch -D` does beyond the ref: the
-  // checked-out refusal and dropping the branch's config.
+  // `update-ref` skips the two things `branch -D` does beyond the ref, so both
+  // are done here: the checked-out refusal and dropping the branch's config.
   const worktrees = await listWorktrees(runner, primaryClonePath);
   if (worktrees.some((entry) => entry.branch === branch)) {
     throw new Error(`branch ${branch} is checked out in a worktree`);
   }
-  await git(runner, ["update-ref", "-d", `refs/heads/${branch}`, expectedTip], primaryClonePath);
+  // --no-deref so a branch that is a symbolic ref deletes only itself.
+  await git(
+    runner,
+    ["update-ref", "--no-deref", "-d", `refs/heads/${branch}`, expectedTip],
+    primaryClonePath,
+  );
+  // Not checked: it fails when the branch has no config.
   await runner(["config", "--remove-section", `branch.${branch}`], { cwd: primaryClonePath });
 }
 

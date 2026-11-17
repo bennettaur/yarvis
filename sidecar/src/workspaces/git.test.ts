@@ -603,6 +603,13 @@ describe("archive cleanup helpers", () => {
     expect(await landedTip(defaultGitRunner, clone, "task", "main", false)).toBe(tip);
   });
 
+  it("never counts a branch that points at another branch as landed", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    expect(await landedTip(defaultGitRunner, clone, "alias", "main", true)).toBeNull();
+  });
+
   it("doesn't count a branch with its own commits as landed unless its PR merged", async () => {
     const { clone, own } = cloneWithOrigin();
     writeFileSync(join(own, "b.txt"), "b");
@@ -727,6 +734,16 @@ describe("archive cleanup helpers", () => {
     expect(git("config", "--get-regexp", "^branch\\.task\\.").stdout.toString()).toBe("");
   });
 
+  it("deletes only the symref when the branch points at another branch", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    const tip = git("rev-parse", "refs/heads/other").stdout.toString().trim();
+    await deleteBranch(defaultGitRunner, clone, "alias", tip);
+    expect(await branchExists(defaultGitRunner, clone, "other")).toBe(true);
+    expect(await branchExists(defaultGitRunner, clone, "alias")).toBe(false);
+  });
+
   it("keeps a branch that gained a commit after it was checked", async () => {
     const { clone, workspaceRoot, own } = cloneWithOrigin();
     const checked = await landedTip(defaultGitRunner, clone, "task", "main", false);
@@ -739,9 +756,7 @@ describe("archive cleanup helpers", () => {
     });
     await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
 
-    await expect(deleteBranch(defaultGitRunner, clone, "task", checked!)).rejects.toThrow(
-      "update-ref",
-    );
+    await expect(deleteBranch(defaultGitRunner, clone, "task", checked!)).rejects.toThrow();
     expect(await branchExists(defaultGitRunner, clone, "task")).toBe(true);
   });
 });

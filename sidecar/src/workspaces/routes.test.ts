@@ -86,6 +86,8 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "ls-remote")
     return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
+  if (args[0] === "symbolic-ref" && args[2]?.startsWith("refs/heads/"))
+    return { stdout: "", stderr: "", exitCode: 1 }; // a plain branch, not a symref
   if (args[0] === "rev-list" && args[1] === "--count")
     return { stdout: "0\n", stderr: "", exitCode: 0 };
   // Create the worktree dir like real git would, so setup scripts have a cwd.
@@ -616,7 +618,7 @@ describe("workspace worktrees", () => {
         addExtraWorktree(db, workspaceId, { repo: "widget", branch }, runner);
       const removed = await add("stack/removed");
       await git(clone, "worktree", "remove", removed.path);
-      // Adding another worktree once dropped the removed one's record, and with it the branch.
+      // Adding a worktree must not forget the removed one, or archive never sees its branch.
       await add("stack/later");
 
       const result = await archiveWorkspace(db, workspaceId, {}, runner);
@@ -2718,7 +2720,9 @@ describe("provision + archive (injected git runner)", () => {
     };
     const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
     expect(result.status).toBe("archived");
-    expect(tried).toEqual([["update-ref", "-d", `refs/heads/yarvis/${ws.slug}`, "d".repeat(40)]]);
+    expect(tried).toEqual([
+      ["update-ref", "--no-deref", "-d", `refs/heads/yarvis/${ws.slug}`, "d".repeat(40)],
+    ]);
   });
 
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
@@ -2776,8 +2780,8 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "update-ref" && args[1] === "-d")
-        deleted.push(args[2]?.slice("refs/heads/".length) ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
     await archiveWorkspace(db, ws.id, {}, branchGit);
@@ -2816,8 +2820,8 @@ describe("provision + archive (injected git runner)", () => {
       if (args[0] === "status" && opts?.cwd === wr!.worktreePath) {
         return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
       }
-      if (args[0] === "update-ref" && args[1] === "-d")
-        deleted.push(args[2]?.slice("refs/heads/".length) ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -2871,8 +2875,8 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
-      if (args[0] === "update-ref" && args[1] === "-d")
-        deleted.push(args[2]?.slice("refs/heads/".length) ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -2908,8 +2912,8 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "update-ref" && args[1] === "-d")
-        deleted.push(args[2]?.slice("refs/heads/".length) ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 

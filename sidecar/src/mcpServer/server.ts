@@ -43,7 +43,8 @@ const WORKSPACE_INSTRUCTIONS =
 export interface WorkspaceContext {
   id: string;
   reviewComments: () => ReviewCommentStore;
-  addWorktree: AddWorktree;
+  /** Only for a caller proven to be one of the workspace's own terminals; see `questionOrigin`. */
+  addWorktree?: AddWorktree;
 }
 
 /**
@@ -69,7 +70,7 @@ export function createYarvisMcpServer(
   if (questions) registerQuestionTools(server, questions);
   if (workspace) {
     registerReviewCommentTools(server, workspace.id, workspace.reviewComments);
-    registerWorktreeTools(server, workspace.id, workspace.addWorktree);
+    if (workspace.addWorktree) registerWorktreeTools(server, workspace.id, workspace.addWorktree);
   }
   return server;
 }
