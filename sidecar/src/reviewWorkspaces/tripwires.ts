@@ -72,7 +72,11 @@ const SENSITIVE_PATHS: { test: RegExp; note: string }[] = [
 
 const TEST_PATH =
   /(^|\/)(tests?|__tests__|specs?)\/|\.(test|spec)\.[a-z]+$|_(test|spec)\.(go|py|rs|rb)$|(^|\/)test_[^/]*\.py$|Tests?\.(java|kt|cs)$/;
-const SNAPSHOT_PATH = /(^|\/)__snapshots__\/|\.snap$/;
+const SNAPSHOT_DIR = /(^|\/)__snapshots__\//;
+
+function isSnapshot(path: string): boolean {
+  return SNAPSHOT_DIR.test(path) || path.endsWith(".snap");
+}
 /** A minified file the PR adds is only skimmed by the agents, so it is a place to hide. */
 const MINIFIED_PATH = /\.min\.(js|mjs|cjs|css)$/;
 
@@ -174,7 +178,7 @@ function pathTripwires(source: PatchSource): Tripwire[] {
   if (status === "deleted") {
     // Taking out a security workflow, an owner rule or a test is a way in too.
     if (sensitive) found.push({ kind: "build", path, note: `removed ${sensitive}` });
-    if (TEST_PATH.test(path) || SNAPSHOT_PATH.test(path)) {
+    if (TEST_PATH.test(path) || isSnapshot(path)) {
       found.push({ kind: "test-tampering", path, note: "test file deleted" });
     }
     return found;
@@ -191,7 +195,7 @@ function pathTripwires(source: PatchSource): Tripwire[] {
     }
   }
   if (source.binary) found.push({ kind: "binary", path, note: "binary file: no diff to review" });
-  if (SNAPSHOT_PATH.test(path)) {
+  if (isSnapshot(path)) {
     found.push({ kind: "test-tampering", path, note: "snapshot changed" });
   }
   if (status === "added" && MINIFIED_PATH.test(path)) {
