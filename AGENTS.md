@@ -788,8 +788,15 @@ report there and leaves the fixes to the author.
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`, then
   `spawn_review_claude_session` in `pty.rs`).
-  - **Settings.** The sidecar sends `lockedDownSettings` plus a deny on the
-    edit tools and `Skill`, and a sandbox `denyWrite` on every checkout, on
+  - **Settings.** The user drives the session, so their own config loads
+    (`--setting-sources user`, no `--strict-mcp-config`): skills, plugins,
+    hooks, allow rules, MCP servers. The repos' project config (skills from
+    the checkouts) and their `CLAUDE.md` load only when the user ticks the
+    workspace's `askClaudeRepoConfig` option in the tab, which a start's body
+    saves and restarting applies. On top of that the sidecar sends
+    `lockedDownSettings`, minus what only an unattended run needs (no hooks,
+    no auto-memory, the built-in plugins off), plus a deny on the edit tools
+    and a sandbox `denyWrite` on every checkout, on
     the clones they share a `.git` with, on the session's own folder and on
     the review workspace's folder, where its settings are written. One
     PR's code must not be able to rewrite another's, whose setup would then
@@ -803,16 +810,17 @@ report there and leaves the fixes to the author.
   - **Launch line.** The core types a short line into the user's login shell:
     the agent command's program, minus its own flags, under `exec` (so no
     shell outlives it, and `|| exit` covers an `exec` that fails), with
-    `--setting-sources ''`, `--settings <file>`, `--strict-mcp-config`,
-    `--no-chrome` (Claude in Chrome acts in the user's signed-in browser,
+    `--setting-sources user` (or `user,project,local` with the option on),
+    `--settings <file>`, `--no-chrome` (Claude in Chrome acts in the user's signed-in browser,
     outside the sandbox), `--permission-mode default` and
     `--append-system-prompt-file <file>`. Everything long goes in the files:
     a line typed before the shell's line editor starts is read in canonical
     mode, where macOS drops whatever passes 1024 bytes, and the core refuses
-    a line over `MAX_LAUNCH_LINE_BYTES`. `--setting-sources ''` keeps an
-    added folder's settings, skills, agents and `CLAUDE.md` out, except that
-    `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`,
-    so the core sets it to 0 after the user's own assignments. `env -u`
+    a line over `MAX_LAUNCH_LINE_BYTES`. Leaving `project` out of the
+    sources keeps an added folder's skills out, but
+    `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`
+    regardless, so the core sets it to 0, or 1 with the option on, after the
+    user's own assignments. `env -u`
     drops common credential variables the login shell may export (`GH_TOKEN`
     and the AWS keys; the full list is `REVIEW_SESSION_UNSET_ENV`) and
     Yarvis's session tokens. That is a denylist, and a command's shell may

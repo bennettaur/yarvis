@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement, useState } from "react";
-import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
+import type { ReviewWorkspace, ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { resetPtyApi, stubPtyApi } from "../../../test/ptyApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
@@ -29,6 +29,9 @@ let live: boolean;
 /** How many of the next `ptyExists` calls fail. */
 let existsFailures: number;
 let starts: string[];
+/** The repo-config choice each start sent, and the one saved for the workspace. */
+let startOptions: { loadRepoConfig?: boolean }[];
+let savedRepoConfig: boolean;
 let startFails: boolean;
 let attached: string[];
 let kills: string[];
@@ -60,6 +63,8 @@ beforeEach(() => {
   live = false;
   existsFailures = 0;
   starts = [];
+  startOptions = [];
+  savedRepoConfig = false;
   startFails = false;
   attached = [];
   kills = [];
@@ -67,8 +72,10 @@ beforeEach(() => {
   firstStartGate = null;
   firstStart = null;
   stubReviewApi({
-    startReviewClaudeSession: async (ws) => {
+    getReviewWorkspace: async () => ({ askClaudeRepoConfig: savedRepoConfig }) as ReviewWorkspace,
+    startReviewClaudeSession: async (ws, options = {}) => {
       starts.push(ws);
+      startOptions.push(options);
       if (firstStartGate && starts.length === 1) {
         const gate = firstStartGate;
         firstStart = gate.then(() => {});
@@ -76,7 +83,9 @@ beforeEach(() => {
         throw new Error("a stale start failed");
       }
       if (startFails) throw new Error("the configured agent is not Claude Code");
+      savedRepoConfig = options.loadRepoConfig ?? savedRepoConfig;
       live = true;
+      return { loadRepoConfig: savedRepoConfig };
     },
   });
   stubPtyApi({
@@ -177,6 +186,21 @@ describe("ClaudeTab", () => {
     expect(kills).toEqual(["review-claude:ws"]);
     expect(starts).toEqual(["ws"]);
     expect(attached).toEqual(["review-claude:ws", "review-claude:ws"]);
+  });
+
+  it("restarts the session with the repos' config when the box is ticked", async () => {
+    live = true;
+    const m = await mountForInteraction(createElement(ClaudeTab, { ctx: ctxFor(pr) }));
+    mounted = m;
+    const box = () => m.host.querySelector<HTMLInputElement>("input[type=checkbox]");
+    // A running session shows the workspace's saved choice.
+    await waitFor(() => box() !== null, "the checkbox");
+    expect(box()?.checked).toBe(false);
+    await act(async () => box()?.click());
+    await waitFor(() => attached.length === 2, "the terminal to reattach");
+    expect(kills).toEqual(["review-claude:ws"]);
+    expect(startOptions).toEqual([{ loadRepoConfig: true }]);
+    await waitFor(() => box()?.checked === true, "the box to show the new choice");
   });
 
   it("shows why a restart failed, without starting another session", async () => {

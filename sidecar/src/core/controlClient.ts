@@ -166,6 +166,8 @@ export async function spawnReviewClaudeSession(input: {
   addDirs: string[];
   settings: string;
   context: string;
+  /** Whether the session loads the repos' own skills and CLAUDE.md. */
+  loadRepoConfig: boolean;
 }): Promise<void> {
   await rpc("claude.spawnReview", input, REVIEW_SESSION_TIMEOUT_MS);
 }

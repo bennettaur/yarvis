@@ -80,6 +80,7 @@ describe("review sessions", () => {
       addDirs: ["/tmp/.review/w1/pr1"],
       settings: "{}",
       context: "gh:o/r/1 in /tmp/.review/w1/pr1.",
+      loadRepoConfig: false,
     };
     await spawnReviewClaudeSession(session);
     await killReviewClaudeSession("w1");

@@ -51,6 +51,8 @@ interface ReviewWorkspaceFields {
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string | null;
+  /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
+  askClaudeRepoConfig: boolean;
 }
 
 export interface ReviewWorkspace extends ReviewWorkspaceFields {
@@ -195,11 +197,15 @@ export const reviewClaudeSessionId = (workspaceId: string) => `review-claude:${w
 
 /**
  * Starts Claude Code over the workspace's checked-out PRs, or leaves the one
- * already running. Attach to it at {@link reviewClaudeSessionId}.
+ * already running. Attach to it at {@link reviewClaudeSessionId}. Passing
+ * `loadRepoConfig` saves that choice for the workspace; left out, the saved
+ * one applies. Answers with the choice the session started with.
  */
-export async function startReviewClaudeSession(workspaceId: string): Promise<void> {
-  const res = await sidecarFetch(`${BASE}/${workspaceId}/claude-session`, send("POST"));
-  await ensureOk(res, "start Claude Code");
+export function startReviewClaudeSession(
+  workspaceId: string,
+  options: { loadRepoConfig?: boolean } = {},
+): Promise<{ loadRepoConfig: boolean }> {
+  return json(`${BASE}/${workspaceId}/claude-session`, "start Claude Code", send("POST", options));
 }
 
 /**

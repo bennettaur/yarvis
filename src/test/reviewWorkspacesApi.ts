@@ -65,6 +65,7 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
   addReviewPr: through(review, "addReviewPr"),
   removeReviewPr: through(review, "removeReviewPr"),
   refreshReviewPr: through(review, "refreshReviewPr"),
+  getReviewWorkspace: through(review, "getReviewWorkspace"),
   startReviewClaudeSession: through(review, "startReviewClaudeSession"),
   followReviewPrProgress: through(review, "followReviewPrProgress"),
   archiveReviewWorkspace: through(review, "archiveReviewWorkspace"),

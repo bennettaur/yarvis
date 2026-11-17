@@ -116,6 +116,8 @@ const idSchema = z.string().uuid();
 const startVerificationSchema = z
   .object({ sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional() })
   .nullable();
+// No body starts with the workspace's saved choice.
+const startClaudeSessionSchema = z.object({ loadRepoConfig: z.boolean().optional() }).nullable();
 /** The path is checked as a repo path by the search itself; the symbol only here. */
 const symbolQuerySchema = z.object({
   path: z.string().min(1).max(4096),
@@ -478,16 +480,21 @@ export function createReviewWorkspaceRoutes(
   });
 
   // Starts Claude Code over the workspace's checked-out PRs for the user to ask
-  // questions in, or leaves the session already running.
+  // questions in, or leaves the session already running. A body may save
+  // whether sessions load the repos' own config; the answer says which applies.
   router.post("/:id/claude-session", async (c) => {
+    const parsed = startClaudeSessionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      await startReviewClaudeSession(
-        db(),
-        config,
-        c.req.param("id"),
-        options.claudeSession ?? defaultReviewClaudeDeps,
+      return c.json(
+        await startReviewClaudeSession(
+          db(),
+          config,
+          c.req.param("id"),
+          options.claudeSession ?? defaultReviewClaudeDeps,
+          parsed.data ?? {},
+        ),
       );
-      return c.body(null, 204);
     } catch (e) {
       return fail(c, e);
     }

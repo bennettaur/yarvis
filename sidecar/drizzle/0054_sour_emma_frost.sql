@@ -1,0 +1,1 @@
+ALTER TABLE "review_workspaces" ADD COLUMN "ask_claude_repo_config" boolean DEFAULT false NOT NULL;

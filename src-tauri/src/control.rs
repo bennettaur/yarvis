@@ -103,14 +103,17 @@ mod unix_impl {
         #[serde(rename = "workspaceId")]
         workspace_id: String,
         cwd: String,
-        /// The PR checkouts the session reads, each passed as `--add-dir`.
+        /// The PR checkouts the session reads, added as
+        /// `permissions.additionalDirectories`.
         #[serde(rename = "addDirs")]
         add_dirs: Vec<String>,
-        /// The session's settings as JSON text, passed to `--settings` inline
-        /// so there is no file a sandboxed command could rewrite.
+        /// The session's settings as JSON text, written to the file `--settings` reads.
         settings: String,
         /// Which PR is checked out where, appended to the session's guardrail.
         context: String,
+        /// Whether the user chose to load the repos' own skills and CLAUDE.md.
+        #[serde(rename = "loadRepoConfig", default)]
+        load_repo_config: bool,
     }
 
     #[derive(Deserialize)]
@@ -322,6 +325,7 @@ mod unix_impl {
                     &p.add_dirs,
                     &p.settings,
                     &p.context,
+                    p.load_repo_config,
                 )
             }
             "claude.killReview" => {
@@ -512,8 +516,10 @@ mod unix_impl {
                 "addDirs": ["/tmp/.review/w/pr1", "/tmp/.review/w/pr2"],
                 "settings": "{\"disableAllHooks\":true}",
                 "context": "github/o/r/1 in /tmp/.review/w/pr1.",
+                "loadRepoConfig": true,
             }))
             .expect("sidecar payload");
+            assert!(p.load_repo_config);
             assert!(validate_workspace_id(&p.workspace_id).is_ok());
             assert_eq!(p.add_dirs.len(), 2);
             assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);

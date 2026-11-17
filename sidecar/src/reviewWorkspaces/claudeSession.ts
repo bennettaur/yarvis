@@ -4,22 +4,25 @@
  * workspace, so it can answer across a stack. The user drives it in a tab; the
  * core owns the PTY.
  *
- * The checkouts are code the PRs' authors wrote, so the session gets the same
- * settings the headless review runs get (`lockedDownSettings`): no settings
- * file from a checkout or the user, no hooks, no MCP servers, Bash in a
- * sandbox with no network, and the home folder's credentials unreadable. On top
- * of that it can't edit files, since its job is answering questions. The core
- * adds `--setting-sources ''` and a guardrail prompt when it builds the launch
- * line (`spawn_review_claude_session` in `src-tauri/src/pty.rs`).
+ * The user drives the session, so their own Claude Code config loads: their
+ * settings, skills, plugins, hooks and MCP servers. The checkouts are code the
+ * PRs' authors wrote, so the repos' own skills and CLAUDE.md load only when the
+ * user ticks the workspace's option for it. Whatever loads, the session can't
+ * edit files, since its job is answering questions, and Bash runs in the
+ * review runs' sandbox: no network, no writes to the checkouts, and the home
+ * folder's credentials unreadable. The core picks the setting sources and adds
+ * a guardrail prompt when it builds the launch line
+ * (`spawn_review_claude_session` in `src-tauri/src/pty.rs`).
  *
  * The launch line is typed into the user's login shell, whose hooks (mise,
  * direnv, a dotenv plugin) act on the folder it starts in and that folder's
  * parents. So the shell starts in a folder of Yarvis's own, emptied before
- * every start, and the checkouts reach the session as `--add-dir`s.
+ * every start, and the checkouts reach the session as additional directories.
  */
 
 import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { eq } from "drizzle-orm";
 import { lockedDownSettings } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import {
@@ -29,6 +32,7 @@ import {
   spawnReviewClaudeSession,
 } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
+import { reviewWorkspaces } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import {
   assertWorktreeInWorkspace,
@@ -44,16 +48,14 @@ import {
 /** The most checkouts one session reads; matches `MAX_REVIEW_DIRS` in `pty.rs`. */
 const MAX_SESSION_PRS = 20;
 
-/**
- * Tools the session never needs. The edit tools because it answers questions.
- * `Skill` as a second layer behind `--setting-sources ''`, which already keeps
- * a checkout's own skills out: their frontmatter can pre-approve tools.
- */
-const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
+/** The edit tools, which a session that answers questions never needs. */
+const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit"];
 
 /**
- * The settings a review session runs with: the review runs' lockdown, minus
- * edits and skills. Sandboxed commands also can't write to any checkout, so
+ * The settings a review session runs with, on top of the user's own: the
+ * review runs' denies and sandbox, minus edits. What only an unattended run
+ * needs is left out (no hooks, no auto-memory, the built-in plugins off), so
+ * the user's own hooks and plugins work. Sandboxed commands also can't write to any checkout, so
  * one PR's code can't change another's, which a later setup run would execute,
  * nor to the clones the checkouts share a `.git` with, whose hooks and config
  * the sidecar's own git commands would run, nor to the session's own folder,
@@ -66,7 +68,12 @@ function reviewSessionSettings(
   checkouts: string[],
   clones: string[],
 ): Record<string, unknown> {
-  const settings = lockedDownSettings();
+  const {
+    disableAllHooks: _hooks,
+    autoMemoryEnabled: _memory,
+    enabledPlugins: _plugins,
+    ...settings
+  } = lockedDownSettings();
   const permissions = settings.permissions as { deny: string[] };
   const sandbox = settings.sandbox as { filesystem: Record<string, unknown> };
   return {
@@ -137,14 +144,31 @@ export async function startReviewClaudeSession(
   config: Config,
   workspaceId: string,
   deps: ReviewClaudeDeps = defaultReviewClaudeDeps,
-): Promise<void> {
+  options: StartOptions = {},
+): Promise<StartedSession> {
   if (!deps.hasCore()) {
     throw new ReviewWorkspaceError(
       "the app's core isn't running, so it can't start a session",
       503,
     );
   }
-  return withReviewWorkspaceLock(workspaceId, () => startLocked(db, config, workspaceId, deps));
+  return withReviewWorkspaceLock(workspaceId, () =>
+    startLocked(db, config, workspaceId, deps, options),
+  );
+}
+
+export interface StartOptions {
+  /**
+   * Saves whether the workspace's sessions load the repos' own skills and
+   * CLAUDE.md. Left out, the saved choice is used. A running session keeps
+   * the config it started with, so the caller ends it first to apply this.
+   */
+  loadRepoConfig?: boolean;
+}
+
+export interface StartedSession {
+  /** Whether a session started now loads the repos' own config. */
+  loadRepoConfig: boolean;
 }
 
 async function startLocked(
@@ -152,11 +176,19 @@ async function startLocked(
   config: Config,
   workspaceId: string,
   deps: ReviewClaudeDeps,
-): Promise<void> {
+  options: StartOptions,
+): Promise<StartedSession> {
   const ws = await getReviewWorkspace(db, workspaceId);
   if (!ws) throw new ReviewWorkspaceError("review workspace not found", 404);
   if (ws.status !== "active") {
     throw new ReviewWorkspaceError(`review workspace is ${ws.status}`, 409);
+  }
+  const loadRepoConfig = options.loadRepoConfig ?? ws.askClaudeRepoConfig;
+  if (loadRepoConfig !== ws.askClaudeRepoConfig) {
+    await db
+      .update(reviewWorkspaces)
+      .set({ askClaudeRepoConfig: loadRepoConfig, updatedAt: new Date() })
+      .where(eq(reviewWorkspaces.id, ws.id));
   }
   const ready = ws.prs.filter(
     (pr) => pr.status === "ready" && pr.worktreeStatus === "ready" && pr.headSha,
@@ -196,6 +228,7 @@ async function startLocked(
         ),
       ),
       context,
+      loadRepoConfig,
     });
   } catch (e) {
     // A spawn that timed out may still land in the core, after a removal queued
@@ -207,6 +240,7 @@ async function startLocked(
     // Code, too many terminals open), so its message is the answer.
     throw new ReviewWorkspaceError(describeError(e), 502);
   }
+  return { loadRepoConfig };
 }
 
 /** A checkout or clone's real path; a 409 when it went missing after it was marked ready. */

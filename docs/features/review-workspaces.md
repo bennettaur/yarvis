@@ -354,26 +354,32 @@ with it, and opening the tab again starts a new one. Removing a PR from the
 workspace, or archiving the workspace, ends it too, since a checkout it reads
 is going away.
 
-The checkouts are code the PRs' authors wrote, so the session is locked down
-the same way the verification report is:
+It's your session, so your own Claude Code setup loads: your `CLAUDE.md`,
+skills, agents, plugins, hooks, allow rules and MCP servers. The checkouts are
+code the PRs' authors wrote, so the rest is held down:
 
-- It reads no settings files: not a checkout's, whose hooks Claude Code would
-  run, and not your own. Your `CLAUDE.md`, hooks, plugins, allow rules and MCP
-  servers don't load in this session, and neither does a checkout's
-  `CLAUDE.md`, even if your shell sets
-  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`.
+- The repos' own skills and `CLAUDE.md` don't load, even if your shell sets
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. A repo's skill can
+  pre-approve tools and its `CLAUDE.md` reads as instructions. For a PR whose
+  author you trust, tick **Repo skills and CLAUDE.md** in the tab's header.
+  The session restarts with them, and the workspace remembers the choice.
+  A repo's own settings file and hooks never load, since the session doesn't
+  start inside a checkout.
 - It can read the checkouts but not change them, neither with its edit tools
   nor from a command it runs, so one PR's code can't rewrite another's. Its
   commands can't write to the repositories' clones either, where a planted git
-  hook would run the next time Yarvis fetches. It
-  doesn't load skills, which a checkout could ship to pre-approve tools.
+  hook would run the next time Yarvis fetches.
+- Your allow rules and MCP servers work as they do anywhere else, so a tool
+  you've allowed runs without asking here too, even when something in a
+  checkout is what suggested it.
 - Commands run in Claude Code's sandbox, which can't reach the network unless
   you approve a host when it asks, and can't read your SSH, cloud or Yarvis
   credentials. Claude Code starts without common credential variables your
   shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is
   off, so it can't act in your browser. Claude asks you before running a
   command that isn't read-only, or doing anything else beyond reading the
-  checkouts.
+  checkouts, unless your own allow rules already cover it. Domains your own
+  sandbox settings allow are allowed here too.
 - It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
   the like) act on the folder a terminal opens in, so the session opens in an
   empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
