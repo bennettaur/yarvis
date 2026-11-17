@@ -306,6 +306,37 @@ describe("github client", () => {
     expect(detail.conversation?.[0]?.isBot).toBe(true);
   });
 
+  it("reads the issues a PR closes, in any repository, skipping nodes it can't place", async () => {
+    let query = "";
+    const gh = new GitHubClient("t", (async (_url: string, init?: RequestInit) => {
+      query = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                closingIssuesReferences: {
+                  nodes: [
+                    { number: 3, repository: { nameWithOwner: "o/r" } },
+                    { number: 9, repository: { nameWithOwner: "other/repo" } },
+                    { number: 4, repository: null },
+                    null,
+                  ],
+                },
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch);
+    expect(await gh.prClosingIssues("o", "r", 12)).toEqual([
+      { owner: "o", repo: "r", number: 3 },
+      { owner: "other", repo: "repo", number: 9 },
+    ]);
+    expect(query).toContain("closingIssuesReferences");
+  });
+
   it("reads a commit's check runs, their annotations and the PR's open code scanning alerts", async () => {
     const asked: string[] = [];
     const routes: Record<string, unknown> = {

@@ -7,6 +7,7 @@ import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { prEvidence } from "../pr/evidence.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
+import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
@@ -116,7 +117,16 @@ const setupSchema = z.object({
 const idSchema = z.string().uuid();
 // No body, or no sections, runs the default set.
 const startVerificationSchema = z
-  .object({ sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional() })
+  .object({
+    sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional(),
+    // Keys or links the reviewer named for the change map and claims. Past the
+    // cap they are dropped, not refused, so the other sections still start.
+    namedTickets: z
+      .array(z.string().trim().min(1).max(300))
+      .max(50)
+      .transform((t) => t.slice(0, MAX_NAMED_TICKETS))
+      .optional(),
+  })
   .nullable();
 // No body starts with the workspace's saved choice.
 const startClaudeSessionSchema = z.object({ loadRepoConfig: z.boolean().optional() }).nullable();
@@ -519,6 +529,7 @@ export function createReviewWorkspaceRoutes(
         deps(),
         options.verification ?? defaultVerificationDeps(config),
         parsed.data?.sections,
+        parsed.data?.namedTickets,
       );
       return c.json(started, started.runs.some((r) => !r.existing) ? 202 : 200);
     } catch (e) {

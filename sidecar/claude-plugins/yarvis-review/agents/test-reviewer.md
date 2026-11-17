@@ -33,7 +33,7 @@ tests should cover.
    is already well covered.
 
 Only tests. Judge them against the code as written: code that is missing or
-wrong is the completeness check's finding, not yours.
+wrong is the claims check's finding, not yours.
 
 ## Output rules
 

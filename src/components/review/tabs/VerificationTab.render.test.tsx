@@ -83,7 +83,7 @@ const goodReport: VerificationReport = {
   summary: "Adds a cache in front of the user lookup.",
   mustRead: [],
   risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
-  completeness: check,
+  quality: check,
   tests: check,
 };
 
@@ -97,7 +97,8 @@ const THEMES: VerificationChecklist["themes"] = [
 const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> = {
   summary: { theme: "understand", label: "Summary and must-read files" },
   flow: { theme: "understand", label: "Flow diagram" },
-  completeness: { theme: "correctness", label: "Completeness" },
+  changeMap: { theme: "understand", label: "Change map" },
+  claims: { theme: "correctness", label: "Claims" },
   tests: { theme: "correctness", label: "Test quality" },
   performance: { theme: "correctness", label: "Performance" },
   observability: { theme: "correctness", label: "Observability" },
@@ -145,6 +146,7 @@ const checklist = ({
   })),
   report,
   size,
+  namedTickets: [],
 });
 
 /** Every section in `report` answered by one current run. */
@@ -176,6 +178,15 @@ const row = (host: HTMLElement, label: string) =>
     [...li.querySelectorAll("span")].some((s) => s.textContent === label),
   ) as HTMLElement;
 
+/**
+ * Types into a text field through the prototype's value setter, since React's
+ * value tracker swallows the change event when the property is assigned directly.
+ */
+function typeInto(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 const pick = (host: HTMLElement, label: string) =>
   host.querySelector(`input[aria-label="Pick ${label}"]`) as HTMLInputElement;
 
@@ -195,7 +206,7 @@ describe("VerificationTab", () => {
     const text = textOf(host.innerHTML);
     for (const theme of THEMES) expect(text).toContain(theme.label);
     expect(textOf(row(host, "Test quality").innerHTML)).toContain("2 findings");
-    expect(textOf(row(host, "Completeness").innerHTML)).toContain("Pass");
+    expect(textOf(row(host, "Code quality").innerHTML)).toContain("Pass");
     expect(textOf(row(host, "Flow diagram").innerHTML)).toContain("Not run");
     expect(button(row(host, "Flow diagram"), "Run")).toBeDefined();
     expect(button(row(host, "Test quality"), "Re-run")).toBeDefined();
@@ -260,7 +271,7 @@ describe("VerificationTab", () => {
     const mixed: VerificationReport = {
       mustRead: [],
       tests: located("No eviction test"),
-      completeness: located("Misses the delete path"),
+      performance: located("Misses the delete path"),
     };
     const checks = await mount(
       checklist({
@@ -345,6 +356,49 @@ describe("VerificationTab", () => {
     button(row(host, "Performance"), "Cancel")?.click();
     await waitFor(() => cancelled.length > 0, "the cancel");
     expect(cancelled).toEqual(["r9-performance"]);
+  });
+
+  it("sends the tickets the reviewer named with the checks it starts", async () => {
+    let named: readonly string[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, tickets = []) => {
+        named = tickets;
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount(checklist());
+    const input = host.querySelector(
+      'input[placeholder="ABC-123, #45 or a ticket link"]',
+    ) as HTMLInputElement;
+    typeInto(input, "ABC-12, #45  https://acme.atlassian.net/browse/XY-3");
+    button(row(host, "Claims"), "Run")?.click();
+    await waitFor(() => named.length > 0, "the start");
+    expect(named).toEqual(["ABC-12", "#45", "https://acme.atlassian.net/browse/XY-3"]);
+  });
+
+  it("offers the last run's tickets again, and sends at most five", async () => {
+    let named: readonly string[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, tickets = []) => {
+        named = tickets;
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount({ ...checklist(), namedTickets: ["ABC-12", "#45"] });
+    const input = host.querySelector(
+      'input[placeholder="ABC-123, #45 or a ticket link"]',
+    ) as HTMLInputElement;
+    expect(input.value).toBe("ABC-12, #45");
+    typeInto(input, "A-1 B-2 C-3 D-4 E-5 F-6");
+    button(row(host, "Claims"), "Run")?.click();
+    await waitFor(() => named.length > 0, "the start");
+    expect(named).toEqual(["A-1", "B-2", "C-3", "D-4", "E-5"]);
   });
 
   it("names the checks that couldn't start, while the others run", async () => {
@@ -591,6 +645,80 @@ describe("resultVerdict", () => {
         { text: "1 finding", tone: "warn" },
       ],
       ["tests", base, null],
+      [
+        "changeMap",
+        {
+          ...base,
+          changeMap: {
+            intent: "i",
+            unmapped: [],
+            themes: [
+              {
+                title: "a",
+                description: "",
+                risk: "low",
+                cohesion: "core",
+                question: "",
+                files: [],
+              },
+              {
+                title: "b",
+                description: "",
+                risk: "low",
+                cohesion: "outlier",
+                question: "?",
+                files: [],
+              },
+            ],
+          },
+        },
+        { text: "2 themes, 1 outlier", tone: "warn" },
+      ],
+      [
+        "changeMap",
+        { ...base, changeMap: { intent: "i", unmapped: [], themes: [] } },
+        { text: "0 themes", tone: "muted" },
+      ],
+      [
+        "claims",
+        {
+          ...base,
+          claims: {
+            items: [
+              { claim: "a", source: "title", status: "verified", evidence: "" },
+              { claim: "b", source: "title", status: "contradicted", evidence: "" },
+            ],
+            gaps: [],
+          },
+        },
+        { text: "1 of 2 verified", tone: "bad" },
+      ],
+      [
+        "claims",
+        {
+          ...base,
+          claims: {
+            items: [{ claim: "a", source: "title", status: "verified", evidence: "" }],
+            gaps: [finding("low")],
+          },
+        },
+        { text: "1 of 1 verified", tone: "warn" },
+      ],
+      [
+        "claims",
+        { ...base, claims: { items: [], gaps: [] } },
+        { text: "No claims", tone: "muted" },
+      ],
+      [
+        "claims",
+        { ...base, claims: { items: [], gaps: [finding("high")] } },
+        { text: "1 gap", tone: "warn" },
+      ],
+      [
+        "changeMap",
+        { ...base, changeMap: { intent: "i", unmapped: ["a.ts"], themes: [] } },
+        { text: "Not mapped", tone: "warn" },
+      ],
       ["summary", base, null],
     ];
     for (const [section, report, verdict] of cases) {

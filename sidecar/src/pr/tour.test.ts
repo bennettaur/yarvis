@@ -61,6 +61,7 @@ function fakeSource(over: Partial<PrCodeSource> = {}): PrCodeSource {
     checkRunOutputs: async () => null,
     checkRunAnnotations: async () => [],
     codeScanningAlerts: async () => null,
+    linkedTickets: async () => [],
     ...over,
   };
 }

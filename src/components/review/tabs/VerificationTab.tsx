@@ -12,6 +12,7 @@ import {
   type EvidenceItem,
   type EvidenceSeverity,
   findingCommentBody,
+  MAX_NAMED_TICKETS,
   type ReportSection,
   startVerification,
   type VerificationReport,
@@ -137,6 +138,31 @@ export function resultVerdict(
         text: approach.rating === "much-simpler" ? "Much simpler way" : "Simpler way",
         tone: approach.rating === "much-simpler" ? "bad" : "warn",
       };
+    }
+    case "changeMap": {
+      const { changeMap } = report;
+      if (!changeMap) return null;
+      // No themes but changed files means the map failed, which isn't a clean result.
+      if (changeMap.themes.length === 0 && changeMap.unmapped.length > 0) {
+        return { text: "Not mapped", tone: "warn" };
+      }
+      const outliers = changeMap.themes.filter((t) => t.cohesion === "outlier").length;
+      const themes = plural(changeMap.themes.length, "theme", "themes");
+      return outliers > 0
+        ? { text: `${themes}, ${plural(outliers, "outlier", "outliers")}`, tone: "warn" }
+        : { text: themes, tone: "muted" };
+    }
+    case "claims": {
+      const { claims } = report;
+      if (!claims) return null;
+      const { items, gaps } = claims;
+      const verified = items.filter((c) => c.status === "verified").length;
+      const anyUnmet = items.some((c) => c.status === "missing" || c.status === "contradicted");
+      const needsAttention = items.some((c) => c.status === "partial") || gaps.length > 0;
+      const tone: Tone = anyUnmet ? "bad" : needsAttention ? "warn" : "good";
+      if (items.length > 0) return { text: `${verified} of ${items.length} verified`, tone };
+      if (gaps.length > 0) return { text: plural(gaps.length, "gap", "gaps"), tone };
+      return { text: "No claims", tone: "muted" };
     }
     case "flow":
       if (!report.flow) return null;
@@ -396,6 +422,14 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Tickets the reviewer names for the change map and claims, beside the ones
+  // the PR links. Until they type, the last run's are offered again.
+  const [typedTickets, setTypedTickets] = useState<string | null>(null);
+  const ticketText = typedTickets ?? checklist.data?.namedTickets.join(", ") ?? "";
+  const namedTickets = ticketText
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .slice(0, MAX_NAMED_TICKETS);
 
   const evidence = useVerificationEvidence(workspaceId, pr.id);
   const report = reportOf(checklist.data);
@@ -423,7 +457,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { runs, failed } = await startVerification(workspaceId, pr.id, sections);
+      const { runs, failed } = await startVerification(workspaceId, pr.id, sections, namedTickets);
       // Untick only what started, so a check that failed to start stays picked
       // for another try. With nothing left ticked by hand, go back to the
       // suggestions, which follow the PR to its next head.
@@ -562,6 +596,19 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             </section>
           );
         })}
+
+        <label className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+          <span title="Issues the PR closes, its linked work items, and Jira keys in its title or branch are read anyway.">
+            More tickets for the change map and claims
+          </span>
+          <input
+            type="text"
+            value={ticketText}
+            onChange={(e) => setTypedTickets(e.target.value)}
+            placeholder="ABC-123, #45 or a ticket link"
+            className="min-w-[16rem] flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600"
+          />
+        </label>
 
         {size && (
           // Say up front what the checks won't read whole.

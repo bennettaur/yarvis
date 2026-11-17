@@ -55,10 +55,17 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Flow diagram",
     description: "The whole flow the change sits in, from what starts it to where it ends.",
   },
-  completeness: {
+  changeMap: {
+    theme: "understand",
+    label: "Change map",
+    description:
+      "The change grouped into themes, each with its risk and how it fits the PR's goal; outliers come with a question for the author.",
+  },
+  claims: {
     theme: "correctness",
-    label: "Completeness",
-    description: "Whether the code does everything the PR says it does.",
+    label: "Claims",
+    description:
+      "What the title, description and linked tickets say the PR does, each checked against the code, and unfinished work.",
   },
   tests: {
     theme: "correctness",
@@ -142,6 +149,8 @@ export interface VerificationChecklist {
    * PR is ready to read.
    */
   size: VerificationSize | null;
+  /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
+  namedTickets: string[];
 }
 
 /** More runs than any PR's checklist needs, so a PR re-run for months can't make the read unbounded. */
@@ -240,7 +249,17 @@ export async function verificationChecklist(
     items,
     report: assembleReport(answers, pr.headSha),
     size,
+    namedTickets: lastNamedTickets(rows),
   };
+}
+
+/** The tickets named for the newest run that recorded any, as the reviewer typed them. */
+function lastNamedTickets(rows: RunRow[]): string[] {
+  for (const row of rows) {
+    const named = row.meta.namedTickets;
+    if (Array.isArray(named)) return named.filter((t): t is string => typeof t === "string");
+  }
+  return [];
 }
 
 /**

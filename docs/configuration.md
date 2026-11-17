@@ -101,14 +101,17 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
   Add **Work Items (read & write)** to use Azure Boards on the Issues
-  tab. Set the organization URL (`https://dev.azure.com/your-org`) under
+  tab. **Work Items (read)** also lets a review workspace's change map and
+  claims checks read a PR's linked work items. Set the organization URL (`https://dev.azure.com/your-org`) under
   Settings → Credentials. The project is picked per search, so there is
   nothing else to set. Code search needs the **Code Search** extension
   installed in your organization. Without it, guided review still works, but
   the agent can't search the repo.
 - **JIRA.** Atlassian Cloud only. Create the token at id.atlassian.com →
   Security → API tokens. Set your site URL (`https://your-org.atlassian.net`)
-  and account email under Settings → Credentials.
+  and account email under Settings → Credentials. The same credentials let a
+  review workspace's change map and claims checks read the Jira tickets a PR
+  is for.
 
 ### Upgrading from an older build
 

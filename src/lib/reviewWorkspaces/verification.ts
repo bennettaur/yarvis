@@ -128,6 +128,53 @@ export interface VerificationApproach {
   line?: number;
 }
 
+export type ThemeCohesion = "core" | "supporting" | "outlier";
+
+/** One theme of the change: a reason the code changed, and the files it touched for it. */
+export interface ChangeTheme {
+  title: string;
+  description: string;
+  risk: "low" | "medium" | "high";
+  /** How it fits what the PR is for; an outlier isn't needed for it. */
+  cohesion: ThemeCohesion;
+  /** For an outlier, what to ask the author; empty otherwise. */
+  question: string;
+  files: { path: string; lines?: { start: number; end: number } }[];
+}
+
+/** The change grouped into themes. `unmapped` lists changed files no theme names. */
+export interface VerificationChangeMap {
+  intent: string;
+  themes: ChangeTheme[];
+  unmapped: string[];
+}
+
+/** Most tickets a reviewer can name for one run; mirrors the sidecar's `MAX_NAMED_TICKETS`. */
+export const MAX_NAMED_TICKETS = 5;
+
+export type ClaimStatus = "verified" | "partial" | "missing" | "contradicted" | "unverifiable";
+
+export interface VerificationClaim {
+  claim: string;
+  /** "title", "description", or a ticket's key. */
+  source: string;
+  status: ClaimStatus;
+  evidence: string;
+  path?: string;
+  line?: number;
+}
+
+/** The PR's claims checked against the code, and what they were checked against. */
+export interface VerificationClaims {
+  items: VerificationClaim[];
+  /** Unfinished work no claim covers. */
+  gaps: VerificationFinding[];
+  /** The tickets the claims run read; absent on a run that read none. */
+  tickets?: { key: string; title: string; url: string }[];
+  /** Tickets named but not read, and why. */
+  ticketNotes?: string[];
+}
+
 /**
  * Mirrors the sidecar's `ChecklistReport` (`reviewWorkspaces/checklist.ts`):
  * each section's newest result. A section with no result is absent; with no
@@ -136,6 +183,8 @@ export interface VerificationApproach {
 export interface VerificationReport {
   summary?: string;
   mustRead: VerificationMustRead[];
+  changeMap?: VerificationChangeMap;
+  claims?: VerificationClaims;
   risk?: {
     level: "low" | "medium" | "high";
     clientImpact: string;
@@ -144,7 +193,6 @@ export interface VerificationReport {
     /** Absent on a report from before changes were scored, or one whose agent listed none. */
     impact?: VerificationImpact;
   };
-  completeness?: VerificationCheck;
   tests?: VerificationCheck;
   complexity?: VerificationCheck;
   performance?: VerificationCheck;
@@ -172,7 +220,6 @@ export interface VerificationSize {
 
 /** The checks shown as one row each, in the order the report lists them. */
 export const VERIFICATION_CHECKS = [
-  "completeness",
   "tests",
   "complexity",
   "performance",
@@ -188,6 +235,8 @@ export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
  */
 export const REPORT_SECTIONS = [
   "summary",
+  "changeMap",
+  "claims",
   "risk",
   ...VERIFICATION_CHECKS,
   "approach",
@@ -268,6 +317,8 @@ export interface VerificationChecklist {
   report: VerificationReport | null;
   /** What the agents won't read whole. Null until the PR is ready to read. */
   size: VerificationSize | null;
+  /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
+  namedTickets: string[];
 }
 
 const path = (workspaceId: string, prId: string) =>
@@ -352,11 +403,13 @@ export async function startVerification(
   workspaceId: string,
   prId: string,
   sections: readonly ReportSection[],
+  /** Tickets for the change map and claims, as keys or links, beside the ones the PR links. */
+  namedTickets: readonly string[] = [],
 ): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sections }),
+    body: JSON.stringify({ sections, ...(namedTickets.length > 0 && { namedTickets }) }),
   });
   await ensureOk(res, "start verification checks");
   return res.json();

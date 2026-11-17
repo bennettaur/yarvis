@@ -246,6 +246,12 @@ export interface CheckItem {
   checkRunId?: number;
 }
 
+/** A ticket a PR is for, on one of the trackers Yarvis reads. */
+export type TicketRef =
+  | { kind: "github"; owner: string; repo: string; number: number }
+  | { kind: "jira"; key: string }
+  | { kind: "azure"; id: number };
+
 /** A check run's output on GitHub: its headline, summary and how many line annotations it posted. */
 export interface CheckRunOutput {
   id: number;

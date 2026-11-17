@@ -872,6 +872,15 @@ const REVIEW_THREAD_FIELDS = `
   viewerCanReply viewerCanResolve viewerCanUnresolve
   comments(first:100){ totalCount nodes{ id author{__typename login} authorAssociation body createdAt url } }`;
 
+const PR_CLOSING_ISSUES_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      closingIssuesReferences(first:10){ nodes{ number repository{ nameWithOwner } } }
+    }
+  }
+}`;
+
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$repo){
@@ -2001,6 +2010,29 @@ export class GitHubClient {
     } catch (e) {
       console.error("[github] could not compare stack layers:", e);
     }
+  }
+
+  /** The issues a PR says it closes ("Fixes #12"), as GitHub links them. */
+  async prClosingIssues(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ owner: string; repo: string; number: number }[]> {
+    const data = await this.graphql<{ repository?: { pullRequest?: any } }>(
+      PR_CLOSING_ISSUES_QUERY,
+      {
+        owner,
+        repo,
+        number,
+      },
+    );
+    const nodes: any[] = data.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
+    return nodes.flatMap((node) => {
+      const [issueOwner, issueRepo] = String(node?.repository?.nameWithOwner ?? "").split("/");
+      return issueOwner && issueRepo && typeof node.number === "number"
+        ? [{ owner: issueOwner, repo: issueRepo, number: node.number }]
+        : [];
+    });
   }
 
   /** The check runs on a commit, with the output each posted. */

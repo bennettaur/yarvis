@@ -70,15 +70,15 @@ describe("putting a report together from each section's answer", () => {
           tests: { status: "issues", findings: [{ ...finding, ...at }] },
           coverage: coverage(),
         }),
-        answer("completeness", "h1", {
-          completeness: { status: "issues", findings: [{ ...finding, ...at }] },
+        answer("quality", "h1", {
+          quality: { status: "issues", findings: [{ ...finding, ...at }] },
           coverage: coverage(),
         }),
       ],
       "h1",
     );
     expect(report?.tests?.findings).toHaveLength(1);
-    expect(report?.completeness).toEqual({ status: "pass", findings: [] });
+    expect(report?.quality).toEqual({ status: "pass", findings: [] });
   });
 
   it("keeps both when the answers are from different commits, whose lines may differ", () => {
@@ -88,15 +88,15 @@ describe("putting a report together from each section's answer", () => {
           tests: { status: "issues", findings: [{ ...finding, ...at }] },
           coverage: coverage(),
         }),
-        answer("completeness", "h1", {
-          completeness: { status: "issues", findings: [{ ...finding, ...at }] },
+        answer("quality", "h1", {
+          quality: { status: "issues", findings: [{ ...finding, ...at }] },
           coverage: coverage(),
         }),
       ],
       "h2",
     );
     expect(report?.tests?.findings).toHaveLength(1);
-    expect(report?.completeness?.findings).toHaveLength(1);
+    expect(report?.quality?.findings).toHaveLength(1);
   });
 
   it("counts coverage at the PR's head, or at the newest answer's commit when none is", () => {
