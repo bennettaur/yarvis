@@ -47,6 +47,7 @@ import {
   createWorkspace,
   getWorkspace,
   ignoreWorkspaceError,
+  issueLabel,
   listRepoBranches,
   type ProvisionEvent,
   provisionWorkspace,
@@ -1033,6 +1034,16 @@ async function waitForAttention(workspaceId: string, status: string) {
   }
   throw new Error(`workspace ${workspaceId}'s attention never reached ${status}`);
 }
+
+describe("issueLabel", () => {
+  it("names an issue the way its tracker does", () => {
+    const label = (provider: string, sourceKey: string, externalId: string) =>
+      issueLabel({ provider, sourceKey, externalId });
+    expect(label("github", "acme/widget", "12")).toBe("acme/widget#12");
+    expect(label("jira", "PROJ", "PROJ-45")).toBe("PROJ-45");
+    expect(label("azure", "org/project", "678")).toBe("#678");
+  });
+});
 
 describe("assertSafeBranchName", () => {
   it("accepts ordinary branch names", () => {

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { ArchiveWorkspaceInput, WorkspaceDetail } from "../../lib/workspaces";
-import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
+import { mountForInteraction, renderToHtml, waitFor } from "../../test/render";
 import { resetWorkspacesApi, stubWorkspacesApi } from "../../test/workspacesApi";
 
 const archiveCalls: ArchiveWorkspaceInput[] = [];
@@ -54,11 +54,11 @@ afterEach(() => {
   archiveCalls.length = 0;
 });
 
-/** Mounts the dialog, unticks the issues named, clicks Archive and returns what it sent. */
-const submit = async (d: WorkspaceDetail, untick: string[] = []) => {
+/** Mounts the dialog, clicks the issues named (in order), clicks Archive and returns what it sent. */
+const submit = async (d: WorkspaceDetail, toggle: string[] = []) => {
   mounted = await mountForInteraction(dialog(d));
   const { host } = mounted;
-  for (const label of untick) {
+  for (const label of toggle) {
     const row = [...host.querySelectorAll("li")].find((li) => li.textContent?.includes(label));
     row?.querySelector<HTMLInputElement>("input[type=checkbox]")?.click();
   }
@@ -106,9 +106,11 @@ describe("ArchiveDialog", () => {
       }),
     );
     expect(html).toContain("Close linked issues");
-    expect(html).toContain("acme/widget#12");
-    expect(html).toContain("PROJ-4");
-    expect(html).not.toContain("Issue 13");
+    const rows = [...new DOMParser().parseFromString(html, "text/html").querySelectorAll("li")];
+    expect(rows.map((li) => li.textContent)).toEqual([
+      "acme/widget#12 Issue 12",
+      "PROJ-4 Issue PROJ-4",
+    ]);
     expect(html.match(/type="checkbox"[^>]*checked/g)?.length).toBe(2);
   });
 
@@ -120,15 +122,8 @@ describe("ArchiveDialog", () => {
         ] as unknown as WorkspaceDetail["issues"],
       }),
     );
-    expect(textOf(html)).toContain("#678");
-    expect(textOf(html)).not.toContain("null");
-  });
-
-  it("shows no issue list when every linked issue is already done", async () => {
-    const html = await render(
-      detail({ issues: [issue("13", "done")] as unknown as WorkspaceDetail["issues"] }),
-    );
-    expect(html).not.toContain("Close linked issues");
+    const row = new DOMParser().parseFromString(html, "text/html").querySelector("li");
+    expect(row?.textContent).toBe("#678 ");
   });
 
   it("asks to close every unfinished linked issue by default", async () => {
@@ -155,5 +150,18 @@ describe("ArchiveDialog", () => {
       ["PROJ-4"],
     );
     expect(sent.closeIssueIds).toEqual(["link-12"]);
+  });
+
+  it("closes an issue again once it is ticked back", async () => {
+    const sent = await submit(
+      detail({
+        issues: [
+          issue("12", "in_progress"),
+          issue("PROJ-4", "todo", "jira"),
+        ] as unknown as WorkspaceDetail["issues"],
+      }),
+      ["PROJ-4", "PROJ-4"],
+    );
+    expect(sent.closeIssueIds).toEqual(["link-12", "link-PROJ-4"]);
   });
 });
