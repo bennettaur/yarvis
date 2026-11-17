@@ -196,6 +196,21 @@ the background, and the attention bell tells you when they're done.
   or is already running, isn't started again unless you ask for a fresh one.
   The bell rings once every check it started has finished.
 
+- **Several PRs, or a stack**: ask the assistant to verify a list of PRs
+  ("verify #610, #611 and #612") or a whole stack ("verify the stack #612 is
+  in"; GitHub only), up to ten at a time. It queues them and verifies one PR
+  after another, starting the next only when the last one's checks have
+  ended, so a dozen agent runs per PR don't all start at once. You can name a
+  preset: **quick** (summary, change map and risk), **security** (claims,
+  risk, malicious intent and tests), **standard** (the default: every check
+  but the flow diagram) or **full** (everything). The bell rings once when the
+  queue finishes, naming each PR and how it went, and you can ask the
+  assistant how the queue is going in the meantime. A PR that would need your
+  go-ahead (below) is skipped and named at the end, since agreeing to a queue
+  isn't agreeing to any one PR's cost; ask for that PR on its own to start
+  it. The queue lives in the running app, so restarting it drops the rest of
+  the queue.
+
 The assistant asks before it starts a report in four cases: the PR is large,
 its estimate is over your budget, its size couldn't be worked out, or its repo
 isn't one you registered under **Settings → Repositories** (the name may have

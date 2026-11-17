@@ -14,6 +14,7 @@ import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
+import { getVerificationQueue, startVerificationQueue } from "./queue.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
 import { DEFAULT_SECTIONS } from "./verification.ts";
@@ -405,5 +406,52 @@ describe("kickOffVerification", () => {
     expect(again).not.toHaveProperty("error", expect.stringContaining("exploded"));
     const [pr] = await db.select().from(reviewWorkspacePrs);
     expect(pr?.worktreeStatus).toBe("error");
+  });
+});
+
+describe("startVerificationQueue", () => {
+  const queueBell = async () =>
+    (await attention()).find((a) => a.title.startsWith("Verification queue finished"));
+
+  it("skips a PR that needs the user's go-ahead, and names it when the queue ends", async () => {
+    const queue = startVerificationQueue(db, config, [ref], ["summary"], kickoff);
+    expect(queue.items).toEqual([{ ref, name: "r#1", state: "running", note: null }]);
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(getVerificationQueue(queue.id)).toMatchObject({
+      finished: true,
+      items: [{ state: "needs-confirmation", note: "It's a large PR." }],
+    });
+    expect(await queueBell()).toMatchObject({
+      kind: "info",
+      title: "Verification queue finished: 0 of 1 checked",
+      body: "r#1: needs your go-ahead. It's a large PR.",
+    });
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("waits for a PR's checks to end before it calls the PR checked", async () => {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+    const started = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, sections: ["summary"] },
+      kickoff,
+    );
+    expect(started).toMatchObject({ status: "started" });
+
+    // The run is held open, so the queue joins it and waits.
+    const queue = startVerificationQueue(db, config, [ref], ["summary"], kickoff);
+    await Bun.sleep(100);
+    expect(getVerificationQueue(queue.id)?.items[0]?.state).toBe("running");
+    release();
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(getVerificationQueue(queue.id)?.items[0]).toMatchObject({ state: "done", note: null });
+    expect(await queueBell()).toMatchObject({
+      kind: "completed",
+      title: "Verification queue finished: 1 of 1 checked",
+    });
   });
 });

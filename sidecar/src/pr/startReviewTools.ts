@@ -3,13 +3,22 @@ import { z } from "zod";
 import { orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { type KickoffDeps, kickOffVerification } from "../reviewWorkspaces/kickoff.ts";
+import {
+  getVerificationQueue,
+  MAX_QUEUE_PRS,
+  startVerificationQueue,
+  VERIFICATION_PRESETS,
+  type VerificationPreset,
+  type VerificationQueue,
+} from "../reviewWorkspaces/queue.ts";
 import { githubNameSchema, prNumberSchema, refSegmentSchema } from "../reviewWorkspaces/routes.ts";
 import { defaultReviewDeps, ReviewWorkspaceError } from "../reviewWorkspaces/service.ts";
 import { defaultVerificationDeps, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
 import { kickOffGuide } from "./guideRun.ts";
-import type { PrRef } from "./types.ts";
+import { NO_PULL_REQUEST, type PrRef } from "./types.ts";
 
 /**
  * Tools that start the review agents the PRs tab and review workspaces run, so
@@ -46,7 +55,35 @@ function toRef(config: Config, pr: PullRequest): PrRef | { error: string } {
 export interface PrReviewStartDeps {
   /** Replaces the review and verification dependencies, for tests. */
   kickoff?: (db: Db) => KickoffDeps;
+  /** The open PRs in `ref`'s stack, bottom first; replaced in tests. */
+  loadStack?: (ref: PrRef) => Promise<PrRef[]>;
 }
+
+/** The open PRs of a GitHub stack, bottom layer first. */
+async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
+  if (ref.provider !== "github") throw new StackError("Only GitHub PRs can be stacked.");
+  const token = config.secrets.githubToken;
+  if (!token) throw new StackError("GitHub isn't signed in under Settings → Credentials.");
+  const stack = await createGitHubClient(config, token).prStack(ref.owner, ref.repo, ref.number);
+  return stack.entries
+    .filter((e) => e.state === "open" && e.number !== NO_PULL_REQUEST)
+    .map((e) => e.ref);
+}
+
+class StackError extends Error {}
+
+const PRESET_NAMES = Object.keys(VERIFICATION_PRESETS) as [
+  VerificationPreset,
+  ...VerificationPreset[],
+];
+
+/** What the model gets back about a queue: names from the refs, never the PRs' titles. */
+const queueView = (queue: VerificationQueue) => ({
+  queueId: queue.id,
+  sections: queue.sections,
+  finished: queue.finished,
+  prs: queue.items.map((i) => ({ pr: i.name, state: i.state, note: i.note })),
+});
 
 export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewStartDeps = {}) {
   const kickoffDeps = (): KickoffDeps =>
@@ -56,6 +93,73 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
     };
 
   return {
+    start_pr_verification_queue: tool({
+      description: `Verify several pull requests one after another: every open PR in a stack (stackOf, GitHub only), or a list the user named (pullRequests, at most ${MAX_QUEUE_PRS}). Each PR gets the same checks as start_pr_verification_report, in its review workspace, and the next PR starts only when the last one's checks have ended, so a queue can take a long time and spends money for every PR. A PR that would need the user's go-ahead (large, over budget, size unknown, or an unregistered repo) is skipped and named at the end; start it with start_pr_verification_report and confirmed once the user agrees. The attention bell rings once when the queue finishes. Answers with a queueId and each PR's state; check_pr_verification_queue reports progress. Posts nothing to any PR.`,
+      inputSchema: z.object({
+        pullRequests: z.array(PullRequest).max(MAX_QUEUE_PRS).optional(),
+        stackOf: PullRequest.optional().describe(
+          "Any PR in a GitHub stack: every open PR in that stack is verified, bottom layer first.",
+        ),
+        preset: z
+          .enum(PRESET_NAMES)
+          .optional()
+          .describe(
+            "quick: summary, change map and risk. security: claims, risk, malicious intent and tests. standard (the default): every check but the flow diagram. full: everything.",
+          ),
+        sections: z
+          .array(z.enum(REPORT_SECTIONS))
+          .max(REPORT_SECTIONS.length)
+          .optional()
+          .describe("Exact sections instead of a preset, when the user named them."),
+      }),
+      execute: async ({ pullRequests, stackOf, preset, sections }) => {
+        const listed = (pullRequests?.length ?? 0) > 0;
+        if (listed === (stackOf !== undefined)) {
+          return { status: "error", error: "Give either pullRequests or stackOf." };
+        }
+        try {
+          let refs: PrRef[];
+          if (stackOf) {
+            const ref = toRef(config, stackOf);
+            if ("error" in ref) return ref;
+            refs = await (deps.loadStack ?? ((r) => openStackRefs(config, r)))(ref);
+            if (refs.length === 0) return { status: "error", error: "The stack has no open PRs." };
+            if (refs.length > MAX_QUEUE_PRS) {
+              return {
+                status: "error",
+                error: `The stack has ${refs.length} open PRs; a queue takes at most ${MAX_QUEUE_PRS}. Name the ones to verify.`,
+              };
+            }
+          } else {
+            refs = [];
+            for (const pr of pullRequests ?? []) {
+              const ref = toRef(config, pr);
+              if ("error" in ref) return ref;
+              refs.push(ref);
+            }
+          }
+          const picked = sections?.length ? sections : VERIFICATION_PRESETS[preset ?? "standard"];
+          const queue = startVerificationQueue(db, config, refs, picked, kickoffDeps());
+          return { status: "queued", ...queueView(queue) };
+        } catch (e) {
+          if (e instanceof StackError) return { status: "error", error: e.message };
+          console.error("[verification] could not start a queue:", describeError(e));
+          return { status: "error", error: clientError(e) };
+        }
+      },
+    }),
+
+    check_pr_verification_queue: tool({
+      description:
+        "How a verification queue started with start_pr_verification_queue is going: each PR's state (waiting, running, done, failed or needs-confirmation) and why. Queues are kept while the app runs.",
+      inputSchema: z.object({ queueId: z.string().uuid() }),
+      execute: async ({ queueId }) => {
+        const queue = getVerificationQueue(queueId);
+        if (!queue) return { status: "error", error: "No such queue; it may predate a restart." };
+        return { status: "ok", ...queueView(queue) };
+      },
+    }),
+
     start_pr_guided_review: tool({
       description:
         "Start a guided review of a pull request: an agent reads the change and writes the order to review it in, which the user then reads in the PRs tab. Runs in the background, takes a few minutes and costs an LLM run. The attention bell says when it is ready. Posts nothing to the PR. Answers exists, with how far the user got and whether the PR has moved on since (stale), when the PR already has a guide; regenerate replaces it and throws that progress away.",

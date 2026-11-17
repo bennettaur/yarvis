@@ -105,6 +105,7 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // the PR's code to disk.
   "start_pr_guided_review",
   "start_pr_verification_report",
+  "start_pr_verification_queue",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */
