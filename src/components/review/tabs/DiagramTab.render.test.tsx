@@ -109,6 +109,7 @@ describe("DiagramTab", () => {
     expect(started).toEqual(["pr1"]);
     await waitFor(() => textOf(host.innerHTML).includes("How an order is saved"), "the diagram");
     expect(textOf(host.innerHTML)).not.toContain("older head");
+    expect(button(host, "Re-run")?.disabled).toBe(false);
   });
 
   it("follows a running diagram's activity, and cancels it", async () => {

@@ -256,6 +256,78 @@ describe("ReviewNav's run buttons", () => {
     );
   });
 
+  it("opens each item's tab from its name, without starting a run", async () => {
+    const started: string[] = [];
+    stubReviewApi({
+      startFlowDiagram: async (_ws, prId) => {
+        started.push(prId);
+        return { runId: "r1", existing: false };
+      },
+    });
+    const opened: TabSpec[] = [];
+    const host = await mount({}, opened);
+    const item = (label: string) =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent === label);
+    item("Verification")?.click();
+    item("Flow diagram")?.click();
+    expect(opened).toEqual([
+      { kind: "verification", prId: "pr1" },
+      { kind: "diagram", prId: "pr1" },
+    ]);
+    expect(started).toEqual([]);
+  });
+
+  it("follows a run it started itself, so the button is free again when it ends", async () => {
+    let started = false;
+    let ended = false;
+    let end = () => {};
+    const ending = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    stubReviewApi({
+      startFlowDiagram: async () => {
+        started = true;
+        return { runId: "r1", existing: false };
+      },
+      streamAgentRun: async function* () {
+        await ending;
+        ended = true;
+        yield { type: "done", status: "succeeded" } as AgentRunEvent;
+      },
+      latestFlowDiagram: async () => ({
+        ...none,
+        run: started
+          ? ({ id: "r1", status: ended ? "succeeded" : "running", live: !ended } as never)
+          : null,
+      }),
+    });
+    const opened: TabSpec[] = [];
+    const host = await mount({}, opened);
+    button(host, "Run flow diagram")?.click();
+    await waitFor(
+      () => button(host, "Re-run flow diagram")?.disabled === true,
+      "the button held while the run goes",
+    );
+    end();
+    await waitFor(
+      () => button(host, "Re-run flow diagram")?.disabled === false,
+      "the button once the run ends",
+    );
+  });
+
+  it("holds Run verification while a verification is live", async () => {
+    stubReviewApi({
+      // A live run that doesn't end while the test looks.
+      streamAgentRun: async function* (_id, signal) {
+        await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve()));
+        yield { type: "done", status: "cancelled" } as AgentRunEvent;
+      },
+    });
+    const host = await mount({ run: { id: "v1", status: "running", live: true } as never }, []);
+    expect(button(host, "Re-run verification")?.disabled).toBe(true);
+    expect(button(host, "Run flow diagram")?.disabled).toBe(false);
+  });
+
   it("can't run before the checkout is ready", async () => {
     const host = await mount({}, [], { worktreeStatus: "checking-out" });
     expect(button(host, "Run verification")?.disabled).toBe(true);

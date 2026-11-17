@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { followAgentRun } from "../../../lib/agentRunFollow";
+import { cancelAgentRun } from "../../../lib/agentRuns";
 import { invalidate } from "../../../lib/resourceCache";
 import { startFlowDiagram } from "../../../lib/reviewWorkspaces/flowDiagram";
 import { Loader } from "../../ai-elements/loader";
@@ -28,22 +29,18 @@ function useRunActivity(prId: string, runId: string | null) {
     if (!runId) return;
     setActivity(null);
     setError(null);
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const event of streamAgentRun(runId, abort.signal)) {
-          if (event.type === "tool") {
-            setActivity(event.summary ? `${event.name} ${event.summary}` : event.name);
-          } else if (event.type === "status") setActivity(event.message);
-          else if (event.type === "error") setError(event.message);
-        }
-      } catch (e) {
-        if (abort.signal.aborted) return;
-        setError(`Lost track of the run: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      if (!abort.signal.aborted) invalidate(flowDiagramKey(prId));
-    })();
-    return () => abort.abort();
+    return followAgentRun(runId, {
+      onEvent: (event) => {
+        if (event.type === "tool") {
+          setActivity(event.summary ? `${event.name} ${event.summary}` : event.name);
+        } else if (event.type === "status") setActivity(event.message);
+        else if (event.type === "error") setError(event.message);
+      },
+      onEnd: (e) => {
+        if (e) setError(`Lost track of the run: ${e instanceof Error ? e.message : String(e)}`);
+        invalidate(flowDiagramKey(prId));
+      },
+    });
   }, [prId, runId]);
   return { activity, error };
 }

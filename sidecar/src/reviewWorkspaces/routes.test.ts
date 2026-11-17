@@ -1097,6 +1097,10 @@ cat "${fakeDir}/result.jsonl"`,
     ]) {
       expect(disallowed).toContain(tool);
     }
+    // The agent named by --agent loads only from the shipped plugin.
+    const pluginDir = args[args.indexOf("--plugin-dir") + 1] as string;
+    expect(existsSync(join(pluginDir, "agents/flow-diagram.md"))).toBe(true);
+    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId, live: true } });
     const contextDir = args[args.indexOf("--add-dir") + 1] as string;
     expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
     expect(existsSync(join(contextDir, "patches/src/a.ts.diff"))).toBe(true);

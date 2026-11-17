@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { followAgentRun } from "../../../lib/agentRunFollow";
+import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
@@ -60,22 +61,18 @@ export function useVerificationRun(
     const initial = () => initialProgress(sections);
     setProgress(runId ? initial() : null);
     if (!runId) return;
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const event of streamAgentRun(runId, abort.signal)) {
-          setProgress((p) => reduceProgress(p ?? initial(), event));
+    return followAgentRun(runId, {
+      onEvent: (event) => setProgress((p) => reduceProgress(p ?? initial(), event)),
+      onEnd: (e) => {
+        if (e) {
+          setProgress((p) => ({
+            ...(p ?? initial()),
+            error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
+          }));
         }
-      } catch (e) {
-        if (abort.signal.aborted) return;
-        setProgress((p) => ({
-          ...(p ?? initial()),
-          error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
-        }));
-      }
-      if (!abort.signal.aborted) invalidate(verificationKey(prId));
-    })();
-    return () => abort.abort();
+        invalidate(verificationKey(prId));
+      },
+    });
   }, [prId, runId, sectionsKey]);
   return progress;
 }

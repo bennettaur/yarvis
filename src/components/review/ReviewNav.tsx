@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { streamAgentRun } from "../../lib/agentRuns";
+import { followAgentRun } from "../../lib/agentRunFollow";
 import { usePrDetail } from "../../lib/pr/cache";
 import { refNumber } from "../../lib/pr/ref";
 import type { PrRef } from "../../lib/pr/types";
@@ -163,18 +163,8 @@ function RunItem({
 function useRefreshWhenRunEnds(runId: string | null, key: string) {
   useEffect(() => {
     if (!runId) return;
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const _event of streamAgentRun(runId, abort.signal)) {
-          // Only the end of the stream matters here.
-        }
-      } catch {
-        // A lost stream still ends in a re-read, which says where the run got to.
-      }
-      if (!abort.signal.aborted) invalidate(key);
-    })();
-    return () => abort.abort();
+    // A lost stream still ends in a re-read, which says where the run got to.
+    return followAgentRun(runId, { onEnd: () => invalidate(key) });
   }, [runId, key]);
 }
 
@@ -344,9 +334,11 @@ function PrGroup({
             runHint={
               !checkedOut
                 ? "Waiting for the checkout"
-                : verificationNeedsConfirm
-                  ? "Opens the report first, to confirm a run on a large or costly PR"
-                  : "Have agents check the PR does what it says"
+                : !verificationSize
+                  ? "Opens the report first, to confirm the run once the PR is sized"
+                  : verificationNeedsConfirm
+                    ? "Opens the report first, to confirm a run on a large or costly PR"
+                    : "Have agents check the PR does what it says"
             }
             onOpen={() => open("verification")}
             onRun={async () => {

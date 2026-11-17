@@ -59,7 +59,7 @@ traced it.
 - `explanation`: at most 80 words. What starts the flow, the cases it handles,
   and what the change does to it. No praise, no restating the diagram line by
   line.
-- `mermaid`: the diagram source, at most 4000 characters.
+- `mermaid`: the diagram source, at most 6000 characters. A longer one is dropped, not cut.
 - If the change has no flow to draw (docs, config, a rename), return
   `{"title":"No flow to draw","explanation":"<one sentence on why>","mermaid":""}`.
 

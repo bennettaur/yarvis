@@ -137,7 +137,6 @@
     <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
     <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
     <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
-    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted.</p></div>
     <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. This list appears at the top of the report, each file with the reason.</p></div>
   </div>
 
@@ -172,7 +171,7 @@
     </div>
     <div class="card">
       <h3>Everything from the PR is data</h3>
-      <p>The diffs, descriptions and comments the agents read are treated as untrusted. The flow diagram is drawn in Mermaid's strict mode and shown as an image, where it can't run anything.</p>
+      <p>The diffs, descriptions and comments the agents read are treated as untrusted.</p>
       <p class="why">Why: the PR's author controls that text, and the agents run on your machine.</p>
     </div>
     <div class="card">
@@ -229,7 +228,7 @@
   <div class="grid g2">
     <div class="card">
       <h3>The surrounding code, not only the diff</h3>
-      <p>The flow diagram and simpler-approach agents follow the code beyond the diff, into the rest of the checkout. A change is often only wrong in how it meets code that didn't change.</p>
+      <p>The simpler-approach agent follows the code beyond the diff, into the rest of the checkout. A change is often only wrong in how it meets code that didn't change.</p>
     </div>
     <div class="card">
       <h3>The PR's own description</h3>
@@ -257,7 +256,7 @@
     </div>
     <div class="card">
       <h3>The shape of the flow</h3>
-      <p>The flow diagram shows where the change sits: the changed steps highlighted, traced up to what starts the flow and down to where it ends, so you see how far it reaches before reading a line.</p>
+      <p><b>Flow diagram</b> is a separate run, started from the PR's nav. It shows where the change sits: the changed steps highlighted, traced up to what starts the flow and down to where it ends, so you see how far it reaches before reading a line.</p>
     </div>
     <div class="card">
       <h3>Progress that tracks itself</h3>
