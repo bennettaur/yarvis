@@ -78,7 +78,11 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
   offer fine-grained tokens a Checks permission, so CI check runs can't be
   read with one: the PR still opens, and its **Checks** section says the
-  token can't read them. A token used with an organization that enforces SAML
+  token can't read them. The review workspace's verification checklist then
+  shows no check annotations either. That checklist's code scanning row needs
+  **Code scanning alerts: Read** on a fine-grained token; `repo` (or
+  `security_events`) covers it for a signed-in token or a classic PAT. The row
+  says so when the token can't read the alerts. A token used with an organization that enforces SAML
   SSO also has to be authorized for that org on GitHub.
 
   When GitHub refuses a request, the app says why: an expired or revoked
@@ -97,14 +101,17 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
   Add **Work Items (read & write)** to use Azure Boards on the Issues
-  tab. Set the organization URL (`https://dev.azure.com/your-org`) under
+  tab. **Work Items (read)** also lets a review workspace's change map and
+  claims checks read a PR's linked work items. Set the organization URL (`https://dev.azure.com/your-org`) under
   Settings → Credentials. The project is picked per search, so there is
   nothing else to set. Code search needs the **Code Search** extension
   installed in your organization. Without it, guided review still works, but
   the agent can't search the repo.
 - **JIRA.** Atlassian Cloud only. Create the token at id.atlassian.com →
   Security → API tokens. Set your site URL (`https://your-org.atlassian.net`)
-  and account email under Settings → Credentials.
+  and account email under Settings → Credentials. The same credentials let a
+  review workspace's change map and claims checks read the Jira tickets a PR
+  is for.
 
 ### Upgrading from an older build
 
@@ -209,7 +216,7 @@ has written your providers and MCP servers into it.
 | `decisionModel` | `model`, the provider and model tagged `decision` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
-| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: a report estimated over it asks before starting, and a run that goes over it still finishes | Settings → PR review |
+| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
 | `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
 | `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |

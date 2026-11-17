@@ -13,10 +13,10 @@ import {
   modelUri,
   mustReadFor,
   reportOf,
-  useLatestVerification,
   useReviewChangedFiles,
   useReviewFile,
   useReviewViewed,
+  useVerificationChecklist,
 } from "./reviewData";
 import type { TabContext } from "./types";
 import { useFileAnnotations } from "./useFileAnnotations";
@@ -126,8 +126,8 @@ function ChangedFileDiff({
     "head",
   );
   const viewed = useReviewViewed(ctx.prRef);
-  const latest = useLatestVerification(ctx.workspaceId, ctx.pr.id);
-  const report = reportOf(latest.data);
+  const checklist = useVerificationChecklist(ctx.workspaceId, ctx.pr.id);
+  const report = reportOf(checklist.data);
   const mustRead = mustReadFor(report, path);
   const notes = useMemo(() => fileNotes(report, path), [report, path]);
   const decorations = useMemo(() => reportDecorations(mustRead, notes), [mustRead, notes]);

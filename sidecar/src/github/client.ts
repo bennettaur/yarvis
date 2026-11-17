@@ -6,7 +6,9 @@
 import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
 import type {
+  CheckAnnotation,
   CheckItem,
+  CheckRunOutput,
   ChecksSummary,
   CommitsSince,
   MergeMethod,
@@ -22,6 +24,7 @@ import type {
   Reviewer,
   ReviewerState,
   ReviewThread,
+  ScanAlert,
   StackEntry,
   ViewerReview,
 } from "../pr/types.ts";
@@ -286,6 +289,7 @@ function toCheckItem(node: any): CheckItem {
       status: node.status ?? "COMPLETED",
       conclusion: node.conclusion ?? null,
       url: node.detailsUrl ?? null,
+      ...(typeof node.databaseId === "number" ? { checkRunId: node.databaseId } : {}),
     };
   }
   // StatusContext (legacy commit status): map its state onto the same shape.
@@ -437,6 +441,7 @@ export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail 
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
       author: c.author?.login ?? "ghost",
+      ...(c.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: c.body ?? "",
       createdAt: c.createdAt ?? "",
       url: c.url ?? undefined,
@@ -480,6 +485,7 @@ export function toReviewThread(thread: any): ReviewThread {
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
       trusted: isRepoMember(comment.authorAssociation),
+      ...(comment.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -864,7 +870,16 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ totalCount nodes{ id author{login} authorAssociation body createdAt url } }`;
+  comments(first:100){ totalCount nodes{ id author{__typename login} authorAssociation body createdAt url } }`;
+
+const PR_CLOSING_ISSUES_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      closingIssuesReferences(first:10){ nodes{ number repository{ nameWithOwner } } }
+    }
+  }
+}`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
@@ -918,12 +933,12 @@ query($owner:String!,$repo:String!,$number:Int!){
       }
       comments(last:${CONVERSATION_PAGE_SIZE}){
         totalCount
-        nodes{ id author{login} body createdAt url }
+        nodes{ id author{__typename login} body createdAt url }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
           __typename
-          ... on CheckRun { name status conclusion detailsUrl }
+          ... on CheckRun { databaseId name status conclusion detailsUrl }
           ... on StatusContext { context state targetUrl }
         }}}}}
       }
@@ -1273,8 +1288,12 @@ const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
 };
 
 /** A client for the GitHub the config points at: github.com unless overridden. */
-export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
-  return new GitHubClient(token, fetch, {
+export function createGitHubClient(
+  config: Pick<Config, "endpoints">,
+  token: string,
+  fetchImpl: FetchFn = fetch,
+): GitHubClient {
+  return new GitHubClient(token, fetchImpl, {
     api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
     graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
   });
@@ -1993,6 +2012,90 @@ export class GitHubClient {
     }
   }
 
+  /** The issues a PR says it closes ("Fixes #12"), as GitHub links them. */
+  async prClosingIssues(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ owner: string; repo: string; number: number }[]> {
+    const data = await this.graphql<{ repository?: { pullRequest?: any } }>(
+      PR_CLOSING_ISSUES_QUERY,
+      {
+        owner,
+        repo,
+        number,
+      },
+    );
+    const nodes: any[] = data.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
+    return nodes.flatMap((node) => {
+      const [issueOwner, issueRepo] = String(node?.repository?.nameWithOwner ?? "").split("/");
+      return issueOwner && issueRepo && typeof node.number === "number"
+        ? [{ owner: issueOwner, repo: issueRepo, number: node.number }]
+        : [];
+    });
+  }
+
+  /** The check runs on a commit, with the output each posted. */
+  async commitCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRunOutput[]> {
+    const data = await this.api<{ check_runs?: any[] }>(
+      `/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
+    );
+    return (data.check_runs ?? []).map((run) => ({
+      id: Number(run.id),
+      name: run.name ?? "check",
+      title: run.output?.title ?? null,
+      summary: run.output?.summary ?? null,
+      annotationsCount: Number(run.output?.annotations_count ?? 0),
+    }));
+  }
+
+  /**
+   * A check run's line annotations: one page of 50, enough to point at what
+   * broke. The rest of a run with more is counted as not shown.
+   */
+  async checkRunAnnotations(
+    owner: string,
+    repo: string,
+    checkRunId: number,
+  ): Promise<CheckAnnotation[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=50`,
+    );
+    return data.map((a) => ({
+      path: a.path ?? "",
+      line: typeof a.start_line === "number" ? a.start_line : null,
+      level:
+        a.annotation_level === "failure" || a.annotation_level === "warning"
+          ? a.annotation_level
+          : "notice",
+      title: a.title ?? null,
+      message: a.message ?? "",
+    }));
+  }
+
+  /**
+   * Open code-scanning alerts found on the PR. Scanners analyse a PR at its
+   * merge ref, so that is the ref asked about.
+   */
+  async prCodeScanningAlerts(owner: string, repo: string, number: number): Promise<ScanAlert[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&state=open&per_page=100`,
+    );
+    return data.map((a) => {
+      const location = a.most_recent_instance?.location;
+      return {
+        tool: a.tool?.name ?? "code scanning",
+        rule: a.rule?.id ?? "",
+        severity: a.rule?.security_severity_level ?? a.rule?.severity ?? "",
+        description: a.rule?.description ?? "",
+        path: location?.path ?? null,
+        line: typeof location?.start_line === "number" ? location.start_line : null,
+        message: a.most_recent_instance?.message?.text ?? "",
+        url: a.html_url ?? null,
+      };
+    });
+  }
+
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
     const files = await this.api<any[]>(
       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
@@ -2534,6 +2637,7 @@ export class GitHubClient {
       files.push(
         ...batch.map((f) => ({
           filename: f.filename,
+          ...(typeof f.previous_filename === "string" && { previousFilename: f.previous_filename }),
           status: f.status,
           additions: f.additions ?? 0,
           deletions: f.deletions ?? 0,

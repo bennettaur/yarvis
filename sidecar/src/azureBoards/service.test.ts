@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AzureBoardsClient } from "./client.ts";
-import { applyBoardsStartWorkSideEffects, pickStartWorkState } from "./service.ts";
+import { applyBoardsStartWorkSideEffects, pickCloseState, pickStartWorkState } from "./service.ts";
 import type { BoardsState } from "./types.ts";
 
 const agile: BoardsState[] = [
@@ -115,5 +115,34 @@ describe("applyBoardsStartWorkSideEffects", () => {
     });
     expect(warnings).toEqual(['"Doing" is not a state this work item type allows']);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("pickCloseState", () => {
+  it("picks Closed in the Agile process", () => {
+    expect(pickCloseState(agile)?.name).toBe("Closed");
+  });
+
+  it("never picks Removed, which means the work was dropped", () => {
+    const states: BoardsState[] = [
+      { name: "To Do", category: "todo" },
+      { name: "Removed", category: "done" },
+    ];
+    expect(pickCloseState(states)).toBeNull();
+  });
+
+  it("prefers Done, then Closed, matching the whole name", () => {
+    const state = (name: string): BoardsState => ({ name, category: "done" });
+    expect(pickCloseState([state("Closed"), state(" Done ")])?.name).toBe(" Done ");
+    expect(pickCloseState([state("Not Done"), state("Done Later"), state("Closed")])?.name).toBe(
+      "Closed",
+    );
+    expect(pickCloseState([state("Reclosed"), state("Closed Out"), state(" closed")])?.name).toBe(
+      " closed",
+    );
+    // Only the state named exactly Removed is ruled out.
+    expect(pickCloseState([state("Removed Duplicate")])?.name).toBe("Removed Duplicate");
+    expect(pickCloseState([state("Unremoved")])?.name).toBe("Unremoved");
+    expect(pickCloseState([state(" Removed ")])).toBeNull();
   });
 });

@@ -69,3 +69,17 @@ export async function applyBoardsStartWorkSideEffects(
   }
   return warnings;
 }
+
+/**
+ * Chooses the state that closes a work item. "Removed" shares the done
+ * category but means the work was dropped, so it is never picked.
+ */
+export function pickCloseState(states: BoardsState[]): BoardsState | null {
+  const done = states.filter((s) => s.category === "done" && !/^removed$/i.test(s.name.trim()));
+  return (
+    done.find((s) => /^done$/i.test(s.name.trim())) ??
+    done.find((s) => /^closed$/i.test(s.name.trim())) ??
+    done[0] ??
+    null
+  );
+}

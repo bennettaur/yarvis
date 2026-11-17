@@ -508,7 +508,7 @@ sidecar/        Bun + TS service (Hono)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
-  src/pr/          provider-neutral PR review: guides, insights, code tools,
+  src/pr/          provider-neutral PR review: guides, insights, code tools, CI evidence,
                    workspace-on-a-PR, stacks
   src/issues/      provider-neutral issue routes and start-work
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
@@ -520,7 +520,10 @@ sidecar/        Bun + TS service (Hono)
                    teardown, self-review comments, gh-stack bridge, file editor
   src/reviewWorkspaces/ PRs checked out for review: blobless clones, a detached
                    worktree per PR, local diffs and file reads, setup consent,
-                   definition/reference search by git grep
+                   definition/reference search by git grep, and the
+                   verification checklist: one run per section, the report
+                   put together from each section's newest result
+                   (`verification.ts`, `checklist.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

@@ -65,6 +65,8 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
   addReviewPr: through(review, "addReviewPr"),
   removeReviewPr: through(review, "removeReviewPr"),
   refreshReviewPr: through(review, "refreshReviewPr"),
+  getReviewWorkspace: through(review, "getReviewWorkspace"),
+  startReviewClaudeSession: through(review, "startReviewClaudeSession"),
   followReviewPrProgress: through(review, "followReviewPrProgress"),
   archiveReviewWorkspace: through(review, "archiveReviewWorkspace"),
   reviewChangedFiles: through(review, "reviewChangedFiles"),
@@ -74,7 +76,9 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
 mock.module("../lib/reviewWorkspaces/verification", () => ({
   ...verification,
   startVerification: through(verification, "startVerification"),
-  latestVerification: through(verification, "latestVerification"),
+  verificationChecklist: through(verification, "verificationChecklist"),
+  verificationEvidence: through(verification, "verificationEvidence"),
+  verificationUpstack: through(verification, "verificationUpstack"),
 }));
 
 mock.module("../lib/agentRuns", () => ({

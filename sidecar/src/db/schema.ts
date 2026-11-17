@@ -833,8 +833,8 @@ export const issueLocalStatus = pgEnum("issue_local_status", ["todo", "in_progre
 /**
  * Links a tracked issue to the workspace opened to work on it, and records its
  * local lifecycle status. Created when "Start work" opens a workspace for an
- * issue. One row per issue (unique on provider/sourceKey/externalId); archiving
- * the linked workspace marks the issue `done`.
+ * issue. One row per issue (unique on provider/sourceKey/externalId); closing
+ * the issue when archiving the linked workspace marks it `done`.
  */
 export const issueLinks = pgTable(
   "issue_links",
@@ -2145,6 +2145,8 @@ export const reviewWorkspaces = pgTable("review_workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+  /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
+  askClaudeRepoConfig: boolean("ask_claude_repo_config").notNull().default(false),
 });
 
 /**

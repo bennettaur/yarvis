@@ -279,6 +279,135 @@ describe("github client", () => {
     expect(toPrDetail(base).conversation).toEqual([]);
   });
 
+  it("marks comments a bot wrote, in threads and in the conversation", () => {
+    const detail = toPrDetail({
+      number: 5,
+      title: "t",
+      state: "OPEN",
+      reviewThreads: {
+        nodes: [
+          {
+            id: "T1",
+            path: "a.ts",
+            comments: {
+              nodes: [
+                { id: "C1", author: { __typename: "Bot", login: "semgrep-app" }, body: "b" },
+                { id: "C2", author: { __typename: "User", login: "alice" }, body: "u" },
+              ],
+            },
+          },
+        ],
+      },
+      comments: {
+        nodes: [{ id: "IC1", author: { __typename: "Bot", login: "codecov" }, body: "c" }],
+      },
+    });
+    expect(detail.reviewThreads[0]?.comments.map((c) => c.isBot)).toEqual([true, undefined]);
+    expect(detail.conversation?.[0]?.isBot).toBe(true);
+  });
+
+  it("reads the issues a PR closes, in any repository, skipping nodes it can't place", async () => {
+    let query = "";
+    const gh = new GitHubClient("t", (async (_url: string, init?: RequestInit) => {
+      query = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                closingIssuesReferences: {
+                  nodes: [
+                    { number: 3, repository: { nameWithOwner: "o/r" } },
+                    { number: 9, repository: { nameWithOwner: "other/repo" } },
+                    { number: 4, repository: null },
+                    null,
+                  ],
+                },
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch);
+    expect(await gh.prClosingIssues("o", "r", 12)).toEqual([
+      { owner: "o", repo: "r", number: 3 },
+      { owner: "other", repo: "repo", number: 9 },
+    ]);
+    expect(query).toContain("closingIssuesReferences");
+  });
+
+  it("reads a commit's check runs, their annotations and the PR's open code scanning alerts", async () => {
+    const asked: string[] = [];
+    const routes: Record<string, unknown> = {
+      "/repos/o/r/commits/abc/check-runs": {
+        check_runs: [
+          {
+            id: 7,
+            name: "tests",
+            output: { title: "1 failed", summary: "s", annotations_count: 2 },
+          },
+        ],
+      },
+      "/repos/o/r/check-runs/7/annotations": [
+        { path: "a.ts", start_line: 3, annotation_level: "failure", title: "t", message: "m" },
+        { path: "b.ts", annotation_level: "bogus", message: "n" },
+      ],
+      "/repos/o/r/code-scanning/alerts": [
+        {
+          html_url: "https://github.com/o/r/security/code-scanning/4",
+          tool: { name: "CodeQL" },
+          rule: {
+            id: "js/xss",
+            severity: "error",
+            security_severity_level: "high",
+            description: "XSS",
+          },
+          most_recent_instance: {
+            location: { path: "src/v.ts", start_line: 9 },
+            message: { text: "Cross-site scripting" },
+          },
+        },
+      ],
+    };
+    const gh = new GitHubClient("t", (async (url: string) => {
+      const path = String(url).replace("https://api.github.com", "");
+      asked.push(path);
+      const key = Object.keys(routes).find((k) => path.startsWith(k));
+      return key
+        ? new Response(JSON.stringify(routes[key]), { status: 200 })
+        : new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch);
+
+    expect(await gh.commitCheckRuns("o", "r", "abc")).toEqual([
+      {
+        id: 7,
+        name: "tests",
+        title: "1 failed",
+        summary: "s",
+        annotationsCount: 2,
+      },
+    ]);
+    expect(await gh.checkRunAnnotations("o", "r", 7)).toEqual([
+      { path: "a.ts", line: 3, level: "failure", title: "t", message: "m" },
+      { path: "b.ts", line: null, level: "notice", title: null, message: "n" },
+    ]);
+    expect(await gh.prCodeScanningAlerts("o", "r", 12)).toEqual([
+      {
+        tool: "CodeQL",
+        rule: "js/xss",
+        severity: "high",
+        description: "XSS",
+        path: "src/v.ts",
+        line: 9,
+        message: "Cross-site scripting",
+        url: "https://github.com/o/r/security/code-scanning/4",
+      },
+    ]);
+    // Scanners analyse a PR at its merge ref.
+    expect(asked.at(-1)).toContain("ref=refs%2Fpull%2F12%2Fmerge&state=open");
+  });
+
   it("normalizes CheckRun and StatusContext into a flat check list", () => {
     const detail = toPrDetail({
       number: 5,
@@ -313,6 +442,7 @@ describe("github client", () => {
                   nodes: [
                     {
                       __typename: "CheckRun",
+                      databaseId: 41,
                       name: "build",
                       status: "COMPLETED",
                       conclusion: "SUCCESS",
@@ -341,7 +471,13 @@ describe("github client", () => {
       mergeable: "MERGEABLE",
     });
     expect(detail.checks).toEqual([
-      { name: "build", status: "COMPLETED", conclusion: "SUCCESS", url: "https://ci/build" },
+      {
+        name: "build",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        url: "https://ci/build",
+        checkRunId: 41,
+      },
       { name: "legacy", status: "COMPLETED", conclusion: "FAILURE", url: "https://ci/legacy" },
     ]);
     expect(detail.reviewThreads[0]).toMatchObject({
