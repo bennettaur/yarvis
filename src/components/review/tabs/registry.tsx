@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import ClaudeTab from "./ClaudeTab";
 import CommitTab from "./CommitTab";
 import DiagramTab from "./DiagramTab";
 import DiffTab from "./DiffTab";
@@ -21,6 +22,7 @@ export const STATIC_TAB_LABEL: Record<StaticTabKind, string> = {
   verification: "Verification",
   diagram: "Flow diagram",
   mutation: "Mutation testing",
+  claude: "Ask Claude",
 };
 
 /** The mark before a dynamic tab's title, so a diff, an interdiff and a commit tell apart. */
@@ -104,5 +106,7 @@ export function renderTab(spec: TabSpec, ctx: TabContext): ReactNode {
       return <DiagramTab ctx={ctx} />;
     case "mutation":
       return <MutationTab ctx={ctx} />;
+    case "claude":
+      return <ClaudeTab ctx={ctx} />;
   }
 }
