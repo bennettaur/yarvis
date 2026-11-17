@@ -8,7 +8,7 @@ import {
   mutationTargets,
   readStrykerReport,
   relatedTests,
-  TEST_RUN_LIMIT_SECONDS,
+  TEST_RUN_CPU_LIMIT_SECONDS,
   testCommand,
 } from "./mutation.ts";
 
@@ -104,7 +104,7 @@ describe("relatedTests", () => {
 });
 
 describe("testCommand", () => {
-  const limitPrefix = `perl -e 'alarm shift; exec @ARGV or die "exec failed: $!\\n"' ${TEST_RUN_LIMIT_SECONDS}`;
+  const limitPrefix = `ulimit -t ${TEST_RUN_CPU_LIMIT_SECONDS} && exec`;
 
   it("quotes every path, so a file name can't add shell syntax", () => {
     expect(testCommand("/bin/bun", "frontend", ["src/a;rm -rf x.test.ts"])).toBe(
@@ -132,11 +132,9 @@ describe("testCommand", () => {
       );
       const command = testCommand(process.execPath, "frontend", ["spin.test.ts"], 1);
       // The spawn timeout is only a backstop so a broken limit fails the test
-      // instead of hanging it. It kills with SIGTERM, not SIGALRM.
+      // instead of hanging it. It kills with SIGTERM, not SIGXCPU.
       const result = Bun.spawnSync(["sh", "-c", command], { cwd: dir, timeout: 20_000 });
-      // A shell that doesn't exec its last command reports the signal as 128 + 14.
-      const killedByAlarm = result.signalCode === "SIGALRM" || result.exitCode === 142;
-      expect(killedByAlarm).toBe(true);
+      expect(result.signalCode).toBe("SIGXCPU");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
