@@ -53,7 +53,7 @@ describe("a file's part in a chapter", () => {
     " one",
     "-two",
     "+TWO",
-    "@@ -20,2 +20,0 @@",
+    "@@ -20,2 +19,0 @@",
     "-gone",
     "-also gone",
     "@@ -40,2 +38,3 @@",
@@ -77,7 +77,7 @@ describe("a file's part in a chapter", () => {
       " forty-one",
     ]);
     expect(texts(rowsInRange(rows, { start: 19, end: 21 }))).toEqual([
-      "@@ -20,2 +20,0 @@",
+      "@@ -20,2 +19,0 @@",
       "-gone",
       "-also gone",
     ]);

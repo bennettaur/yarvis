@@ -9,7 +9,7 @@ import type { DiffRow } from "../pr/diff";
 import type { ChangeTheme, VerificationChangeMap } from "./verification";
 
 export interface StoryChapter {
-  /** Stable across re-renders: the theme's title, or the leftovers' fixed key. */
+  /** The theme's position and title, or the leftovers' fixed key. */
   key: string;
   title: string;
   description: string;
@@ -20,6 +20,7 @@ export interface StoryChapter {
   files: ChangeTheme["files"];
 }
 
+// Starts with a NUL so no theme key (`<index>:<title>`) can equal it.
 const LEFTOVERS_KEY = "\u0000unmapped";
 
 export function storyChapters(map: VerificationChangeMap): StoryChapter[] {

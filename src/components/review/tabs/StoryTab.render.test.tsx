@@ -10,7 +10,7 @@ import type {
 } from "../../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
-import { fileDiffKey, reviewViewedKey, verificationKey } from "./reviewData";
+import { changedFilesKey, fileDiffKey, reviewViewedKey, verificationKey } from "./reviewData";
 import StoryTab from "./StoryTab";
 import type { TabContext, TabSpec } from "./types";
 
@@ -63,6 +63,8 @@ const report: VerificationReport = {
     status: "issues",
     findings: [
       { title: "No eviction test", detail: "d", severity: "high", path: "src/cache.ts", line: 2 },
+      { title: "Timeout untested", detail: "d", severity: "low", path: "src/http.ts", line: 2 },
+      { title: "Unrelated helper", detail: "d", severity: "low", path: "src/http.ts", line: 1 },
     ],
   },
 };
@@ -118,9 +120,20 @@ afterEach(() => {
   localStorage.clear();
 });
 
-async function mount(state: VerificationChecklist) {
+async function mount(state: VerificationChecklist, viewed: string[] = []) {
   primeCache(verificationKey(pr.id), state);
-  primeCache(reviewViewedKey(prRef), []);
+  primeCache(reviewViewedKey(prRef), viewed);
+  primeCache(changedFilesKey(pr) ?? "", {
+    headSha: pr.headSha,
+    mergeBaseSha: pr.mergeBaseSha,
+    files: ["src/cache.ts", "src/http.ts"].map((path) => ({
+      path,
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+    })),
+  } as never);
   primeCache(
     fileDiffKey(pr, "src/cache.ts") ?? "",
     patch(["@@ -1,2 +1,3 @@", " const a = 1;", "+const cache = new Lru();", " export {};"]),
@@ -158,7 +171,65 @@ describe("StoryTab", () => {
     expect(text).toContain("1 of 2 chapters read");
     expect(text).toContain("Ask the author: Why the timeout?");
     expect(text).toContain("+  30000);");
+    expect(text).toContain("Test quality: Timeout untested");
+    expect(text).not.toContain("Unrelated helper");
     expect(button(host, "Mark read")).toBeDefined();
+  });
+
+  it("opens at the first chapter not yet read", async () => {
+    const host = await mount(checklist(report), ["src/cache.ts"]);
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("Chapter 2 of 2");
+    expect(text).toContain("1 of 2 chapters read");
+  });
+
+  it("opens the diff at the theme's first line", async () => {
+    const host = await mount(checklist(report), ["src/cache.ts"]);
+    button(host, "src/http.ts:2-2").click();
+    expect(opened).toEqual([{ kind: "diff", prId: pr.id, path: "src/http.ts", revealLine: 2 }]);
+  });
+
+  it("doesn't link a path the PR doesn't change", async () => {
+    const stray: VerificationReport = {
+      mustRead: [],
+      changeMap: {
+        intent: "x",
+        unmapped: [],
+        themes: [
+          {
+            title: "Stray",
+            description: "",
+            risk: "low",
+            cohesion: "core",
+            question: "",
+            files: [{ path: "src/other.ts" }],
+          },
+        ],
+      },
+    };
+    primeCache(fileDiffKey(pr, "src/other.ts") ?? "", patch(["@@ -1 +1 @@", "+x"]));
+    const host = await mount(checklist(stray));
+    await waitFor(() => textOf(host.innerHTML).includes("src/other.ts"), "the path");
+    expect(button(host, "src/other.ts")).toBeUndefined();
+  });
+
+  it("shows the first few files of a big chapter, and the rest on request", async () => {
+    const files = Array.from({ length: 7 }, (_, i) => ({ path: `src/f${i}.ts` }));
+    const big: VerificationReport = {
+      mustRead: [],
+      changeMap: {
+        intent: "x",
+        unmapped: [],
+        themes: [
+          { title: "Big", description: "", risk: "low", cohesion: "core", question: "", files },
+        ],
+      },
+    };
+    for (const f of files) primeCache(fileDiffKey(pr, f.path) ?? "", patch(["@@ -1 +1 @@", "+x"]));
+    const host = await mount(checklist(big));
+    expect(textOf(host.innerHTML)).not.toContain("src/f5.ts");
+    button(host, "Show 2 more files").click();
+    await waitFor(() => textOf(host.innerHTML).includes("src/f6.ts"), "the rest");
   });
 
   it("opens the full diff from a file's path", async () => {
@@ -181,5 +252,28 @@ describe("StoryTab", () => {
     await waitFor(() => started.length > 0, "the start");
     expect(started).toEqual(["changeMap"]);
     await waitFor(() => textOf(host.innerHTML).includes("Writing the change map"), "the wait");
+  });
+
+  it("shows why the change map didn't start", async () => {
+    stubReviewApi({
+      startVerification: async () =>
+        ({ runs: [], failed: [{ section: "changeMap", error: "No checkout" }] }) as never,
+      verificationChecklist: async () => checklist(null),
+    });
+    const host = await mount(checklist(null));
+    button(host, "Write the change map").click();
+    await waitFor(() => textOf(host.innerHTML).includes("No checkout"), "the error");
+  });
+
+  it("shows the error when starting the change map throws", async () => {
+    stubReviewApi({
+      startVerification: async () => {
+        throw new Error("sidecar down");
+      },
+      verificationChecklist: async () => checklist(null),
+    });
+    const host = await mount(checklist(null));
+    button(host, "Write the change map").click();
+    await waitFor(() => textOf(host.innerHTML).includes("sidecar down"), "the error");
   });
 });

@@ -173,9 +173,8 @@ the current step.
 
 ### Story
 
-**Story** in the PR bar opens the PR as a story: one chapter per theme of
-the change, so you see what the change is made of before reading it line by
-line. The guided review orders the reading by how the code calls itself;
+**Story** in the PR bar walks you through the PR one theme at a time, the
+work that matters most first. The guided review orders the reading by how the code calls itself;
 the story orders it by what the change is for. The chapters come from the
 verification report's [change map](#verification-report): core themes first,
 then supporting ones, then outliers, the riskiest first within each, and a
@@ -183,10 +182,13 @@ last chapter for any changed file no theme names. If the PR has no change
 map yet, the tab offers to write one, and the story appears when it is done.
 
 The chapter list down the side shows what the PR is for and how many chapters
-you have read. Each chapter shows how the theme fits the PR, how risky it is,
-what changed and why, and, for an outlier, the question to ask the author.
-Below that come the hunks of each of its files that belong to the theme, with
-the report's findings and unmet claims on the lines they are about. A file's
+you have read, and says so when the change map was written for an older
+commit. Each chapter shows a Core, Supporting or Outlier badge for how the
+theme fits the PR, how risky it is, what changed and why, and, for an outlier,
+the question to ask the author. Below that come the hunks of each of its files
+that belong to the theme, with the report's check findings, risk concerns and
+must-read flags on the lines they are about. A chapter shows its first five
+files, with a button for the rest, and a file stops after 400 lines. A file's
 path opens its full diff, where you can comment. **Mark read and continue**
 marks the chapter's files viewed and moves to the next chapter. A chapter
 counts as read once all its files are viewed, wherever you marked them.

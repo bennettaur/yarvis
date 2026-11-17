@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { parsePatch } from "../../../lib/pr/diff";
+import { type DiffRow, parsePatch } from "../../../lib/pr/diff";
 import { invalidate } from "../../../lib/resourceCache";
 import {
   chapterRead,
@@ -11,10 +11,13 @@ import {
   startVerification,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { rowClass } from "../../diff/DiffRow";
 import LoadingIndicator from "../../LoadingIndicator";
 import { type FileNote, fileNotes } from "./reportHighlights";
 import {
+  fileDiffKey,
   reportOf,
+  useReviewChangedFiles,
   useReviewFileDiff,
   useReviewViewed,
   useVerificationChecklist,
@@ -28,20 +31,15 @@ const POLL_MS = 3000;
 /** Past this many rows a file's part is cut short; the diff tab has the rest. */
 const MAX_ROWS = 400;
 
-const ROW_CLASS = {
-  add: "bg-emerald-950/40 text-emerald-200",
-  del: "bg-red-950/40 text-red-200",
-  context: "text-zinc-400",
-  hunk: "bg-zinc-900 text-sky-300/80",
-  meta: "text-zinc-500",
-} as const;
+/** A chapter shows this many files at first, so a big one doesn't read every patch at once. */
+const FILES_SHOWN = 5;
 
 const COHESION_LABEL = { core: "Core", supporting: "Supporting", outlier: "Outlier" } as const;
 
 /**
  * One file's part in a chapter: the hunks that touch the theme's lines, with
- * the report's notes on those lines beneath them. Read-only; the path opens
- * the full diff, where comments go.
+ * the report's notes on those lines. Read-only; the path opens the full diff,
+ * where comments go.
  */
 function FilePart({
   ctx,
@@ -55,75 +53,96 @@ function FilePart({
   onOpen: OpenLocation;
 }) {
   const diff = useReviewFileDiff(ctx.workspaceId, ctx.pr, file.path);
-  const rows = useMemo(
-    () => (diff.data ? rowsInRange(parsePatch(diff.data.patch), file.lines) : []),
-    [diff.data, file.lines],
-  );
+  const start = file.lines?.start;
+  const end = file.lines?.end;
+  const rows = useMemo(() => {
+    if (!diff.data) return [];
+    const range = start !== undefined && end !== undefined ? { start, end } : undefined;
+    return rowsInRange(parsePatch(diff.data.patch), range);
+  }, [diff.data, start, end]);
   const notes = useMemo(() => {
     const all = fileNotes(report, file.path);
-    return file.lines
-      ? all.filter((n) => n.line >= (file.lines?.start ?? 0) && n.line <= (file.lines?.end ?? 0))
+    return start !== undefined && end !== undefined
+      ? all.filter((n) => n.line >= start && n.line <= end)
       : all;
-  }, [report, file]);
-  const notesByLine = useMemo(() => {
+  }, [report, file.path, start, end]);
+  const shown = useMemo(() => rows.slice(0, MAX_ROWS), [rows]);
+  const { notesByLine, elsewhere } = useMemo(() => {
+    const lines = new Set(shown.map((r) => r.rightLine));
     const byLine = new Map<number, FileNote[]>();
-    for (const n of notes) byLine.set(n.line, [...(byLine.get(n.line) ?? []), n]);
-    return byLine;
-  }, [notes]);
+    const rest: FileNote[] = [];
+    for (const n of notes) {
+      if (lines.has(n.line)) byLine.set(n.line, [...(byLine.get(n.line) ?? []), n]);
+      else rest.push(n);
+    }
+    return { notesByLine: byLine, elsewhere: rest };
+  }, [notes, shown]);
+  const noDiff = fileDiffKey(ctx.pr, file.path) === null;
 
   return (
     <div className="space-y-1">
       <Location
         path={file.path}
-        line={file.lines?.start}
+        line={start}
         label={file.lines ? `:${file.lines.start}-${file.lines.end}` : ""}
         onOpen={onOpen}
         className="text-xs"
       />
+      {noDiff && (
+        <p className="text-xs text-zinc-500">The diff shows once the checkout is ready.</p>
+      )}
       {diff.loading && <LoadingIndicator label="Reading the diff…" />}
       {diff.error && <p className="text-xs text-red-400">{diff.error}</p>}
       {diff.data?.tooLarge && (
-        <p className="text-xs text-zinc-500">Too large to show here; open the diff.</p>
+        <p className="text-xs text-zinc-500">Too large to show here; click the path above.</p>
       )}
       {diff.data && !diff.data.tooLarge && rows.length === 0 && (
-        <p className="text-xs text-zinc-500">No text changes to show here; open the diff.</p>
+        <p className="text-xs text-zinc-500">No text changes to show here; click the path above.</p>
       )}
-      {rows.length > 0 && (
+      {shown.length > 0 && (
         <div className="overflow-x-auto rounded border border-zinc-800">
           <table className="w-full border-collapse font-mono text-[11px] leading-snug">
             <tbody>
-              {rows.slice(0, MAX_ROWS).map((row, i) => {
-                const lineNotes =
-                  row.rightLine !== null ? notesByLine.get(row.rightLine) : undefined;
-                return (
+              {shown.map((row, i) => (
+                <PatchRow
                   // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id and never reorder
-                  <FragmentRow key={i} row={row} notes={lineNotes} />
-                );
-              })}
+                  key={i}
+                  row={row}
+                  notes={row.rightLine !== null ? notesByLine.get(row.rightLine) : undefined}
+                />
+              ))}
             </tbody>
           </table>
           {rows.length > MAX_ROWS && (
             <p className="px-2 py-1 text-[11px] text-zinc-500">
-              {rows.length - MAX_ROWS} more lines; open the diff for the rest.
+              {rows.length - MAX_ROWS} more lines; click the path above for the rest.
             </p>
           )}
         </div>
+      )}
+      {elsewhere.length > 0 && (
+        <ul className="space-y-0.5 text-xs">
+          {elsewhere.map((n, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: two notes can share a source and title
+            <li key={i} className="text-amber-200">
+              <span className="text-amber-400">
+                {n.source} (line {n.line}):{" "}
+              </span>
+              {n.title}
+              {n.detail && <span className="text-amber-200/70"> — {n.detail}</span>}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
 }
 
 /** A patch row, and under it any note the report put on that line. The text is the patch's own, shown as plain text. */
-function FragmentRow({
-  row,
-  notes,
-}: {
-  row: ReturnType<typeof parsePatch>[number];
-  notes: FileNote[] | undefined;
-}) {
+function PatchRow({ row, notes }: { row: DiffRow; notes: FileNote[] | undefined }) {
   return (
     <>
-      <tr className={ROW_CLASS[row.kind]}>
+      <tr className={rowClass(row.kind)}>
         <td className="w-10 select-none px-1 text-right align-top text-zinc-600">
           {row.leftLine ?? ""}
         </td>
@@ -132,8 +151,9 @@ function FragmentRow({
         </td>
         <td className="whitespace-pre px-2">{row.text}</td>
       </tr>
-      {notes?.map((n) => (
-        <tr key={`${n.source}:${n.title}`} className="bg-amber-950/30">
+      {notes?.map((n, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: two notes can share a source and title
+        <tr key={i} className="bg-amber-950/30">
           <td colSpan={2} />
           <td className="px-2 py-0.5 font-sans text-amber-200">
             <span className="text-amber-400">{n.source}: </span>
@@ -142,6 +162,44 @@ function FragmentRow({
           </td>
         </tr>
       ))}
+    </>
+  );
+}
+
+/** A chapter's files, the first few at once and the rest on request. Keyed by chapter, so the count resets. */
+function ChapterFiles({
+  ctx,
+  files,
+  report,
+  onOpen,
+}: {
+  ctx: TabContext;
+  files: StoryChapter["files"];
+  report: VerificationReport | null;
+  onOpen: OpenLocation;
+}) {
+  const [all, setAll] = useState(false);
+  const shown = all ? files : files.slice(0, FILES_SHOWN);
+  return (
+    <>
+      {shown.map((f) => (
+        <FilePart
+          key={`${f.path}:${f.lines?.start}`}
+          ctx={ctx}
+          file={f}
+          report={report}
+          onOpen={onOpen}
+        />
+      ))}
+      {shown.length < files.length && (
+        <button
+          type="button"
+          onClick={() => setAll(true)}
+          className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Show {files.length - shown.length} more files
+        </button>
+      )}
     </>
   );
 }
@@ -158,8 +216,8 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
   const checklist = useVerificationChecklist(workspaceId, pr.id);
   const report = reportOf(checklist.data);
   const map = report?.changeMap ?? null;
-  const item = checklist.data?.items.find((i) => i.section === "changeMap") ?? null;
-  const writing = item?.latest?.status === "running";
+  const changeMapItem = checklist.data?.items.find((i) => i.section === "changeMap") ?? null;
+  const writing = changeMapItem?.latest?.status === "running";
   const { refresh } = checklist;
   useEffect(() => {
     if (!writing) return;
@@ -173,17 +231,23 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
   // Until the reader picks one, the story opens at the first chapter not yet read.
   const firstUnread = chapters.find((c) => !chapterRead(c, viewed.viewed)) ?? chapters[0];
   const current = chapters.find((c) => c.key === chosen) ?? firstUnread;
-  const at = current ? chapters.indexOf(current) : -1;
+  const currentIndex = current ? chapters.indexOf(current) : -1;
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const open: OpenLocation = {
+  // The map is model-written, so only a file the PR changes is a link.
+  const changed = useReviewChangedFiles(workspaceId, pr);
+  const changedPaths = useMemo(
+    () => new Set(changed.data?.files.map((f) => f.path) ?? []),
+    [changed.data],
+  );
+  const opener: OpenLocation = {
     open: (path, line) =>
       ctx.openTab({ kind: "diff", prId: pr.id, path, ...(line ? { revealLine: line } : {}) }),
-    canOpen: () => true,
+    canOpen: (path) => changedPaths.has(path),
   };
 
-  const writeStory = async () => {
+  const writeChangeMap = async () => {
     setStarting(true);
     setError(null);
     try {
@@ -200,7 +264,7 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
   const markReadAndContinue = async () => {
     if (!current) return;
     await viewed.markAllViewed(current.files.map((f) => f.path));
-    const next = chapters[at + 1];
+    const next = chapters[currentIndex + 1];
     if (next) setChosen(next.key);
   };
 
@@ -219,14 +283,14 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
         <p>
           Story mode reads the PR theme by theme, the work that matters first: each chapter says
           what changed and why, above the hunks it covers. The chapters come from the change map,
-          which an agent writes from the checkout.
+          which an agent writes.
         </p>
         {writing ? (
           <LoadingIndicator label="Writing the change map…" />
         ) : (
           <button
             type="button"
-            onClick={() => void writeStory()}
+            onClick={() => void writeChangeMap()}
             disabled={starting || notReady}
             title={notReady ? "Waiting for the checkout" : undefined}
             className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
@@ -248,7 +312,12 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
         <p className="text-zinc-300">{map.intent}</p>
         <p className="text-zinc-500">
           {readCount} of {chapters.length} chapters read
-          {item?.result && !item.result.current && " · from an older head"}
+          {changeMapItem?.result &&
+            !changeMapItem.result.current &&
+            (changeMapItem.result.headSha
+              ? ` · written for an older commit (${changeMapItem.result.headSha.slice(0, 7)})`
+              : " · written for an older commit")}
+          {writing && " · rewriting"}
         </p>
         <ol className="space-y-0.5">
           {chapters.map((c, i) => {
@@ -277,7 +346,7 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
           <header className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-zinc-500">
-                Chapter {at + 1} of {chapters.length}
+                Chapter {currentIndex + 1} of {chapters.length}
               </span>
               {current.cohesion && (
                 <span className="rounded border border-zinc-700 px-1 py-0.5 text-[10px] uppercase text-zinc-400">
@@ -299,20 +368,18 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
               </p>
             )}
           </header>
-          {current.files.map((f) => (
-            <FilePart
-              key={`${f.path}:${f.lines?.start}`}
-              ctx={ctx}
-              file={f}
-              report={report}
-              onOpen={open}
-            />
-          ))}
+          <ChapterFiles
+            key={current.key}
+            ctx={ctx}
+            files={current.files}
+            report={report}
+            onOpen={opener}
+          />
           <footer className="flex items-center gap-2 border-t border-zinc-800 pt-3">
             <button
               type="button"
-              disabled={at <= 0}
-              onClick={() => setChosen(chapters[at - 1]?.key ?? null)}
+              disabled={currentIndex <= 0}
+              onClick={() => setChosen(chapters[currentIndex - 1]?.key ?? null)}
               className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
             >
               Back
@@ -322,7 +389,7 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
               onClick={() => void markReadAndContinue()}
               className="rounded bg-sky-700 px-2.5 py-1 text-xs text-white hover:bg-sky-600"
             >
-              {at + 1 < chapters.length ? "Mark read and continue" : "Mark read"}
+              {currentIndex + 1 < chapters.length ? "Mark read and continue" : "Mark read"}
             </button>
             {viewed.error && <span className="text-xs text-red-400">{viewed.error}</span>}
           </footer>
