@@ -548,7 +548,7 @@ export function createReviewWorkspaceRoutes(
       const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
       const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
       if ("error" in source) return c.json({ error: source.error }, 400);
-      return c.json({ headSha: pr.headSha, ...(await upstackChanges(source)) });
+      return c.json(await upstackChanges(source));
     } catch (e) {
       return fail(c, e);
     }

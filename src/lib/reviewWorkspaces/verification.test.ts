@@ -74,7 +74,7 @@ describe("changedUpstack", () => {
       {
         number: 8,
         url: "u8",
-        incomplete: false,
+        stale: false,
         files: [
           { path: "src/a.ts", ranges: [{ start: 10, end: 12 }] },
           { path: "src/gone.ts", ranges: null },
@@ -93,6 +93,11 @@ describe("changedUpstack", () => {
   it("counts any line of a file the layer replaces, and a finding with no line in a changed file", () => {
     expect(changedUpstack(upstack, "src/gone.ts", 300)).toMatchObject(layer);
     expect(changedUpstack(upstack, "src/a.ts", undefined)).toMatchObject(layer);
+  });
+
+  it("ignores a layer not built on this PR's current head, whose lines don't match", () => {
+    const stale = { ...upstack, layers: upstack.layers.map((l) => ({ ...l, stale: true })) };
+    expect(changedUpstack(stale, "src/a.ts", 11)).toBeNull();
   });
 
   it("finds nothing without a path, a matching file or any layers", () => {

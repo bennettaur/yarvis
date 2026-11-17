@@ -38,13 +38,10 @@ const HIGH_IMPACT_BAND = 4;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-function findingsOf(report: VerificationReport, severity: Severity) {
-  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
-  return [...inChecks, ...(report.claims?.gaps ?? [])].filter((f) => f.severity === severity);
-}
-
 function countFindings(report: VerificationReport, severity: Severity): number {
-  return findingsOf(report, severity).length;
+  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
+  const all = [...inChecks, ...(report.claims?.gaps ?? [])];
+  return all.filter((f) => f.severity === severity).length;
 }
 
 /** What CI says about approving: a blocker when it fails, a concern until it passes. */
@@ -104,16 +101,20 @@ export function assessReview(
       concerns.push(plural(partial, "claim only partly met", "claims only partly met"));
     }
 
-    // A high finding on a line a PR stacked above changes may be fixed
-    // there, so it asks for a look rather than blocking.
-    const highs = findingsOf(report, "high");
-    const above = highs.flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
-    const high = highs.length - above.length;
+    const high = countFindings(report, "high");
     if (high > 0) blockers.push(plural(high, "high finding", "high findings"));
+    // Still a blocker: the PR's author controls the layer above, so it can
+    // only point at where a fix may be. Only results for the current commit
+    // have line numbers the layer's can be matched against.
+    const current = new Set(items.filter((i) => i.result?.current).map((i) => i.section));
+    const above = VERIFICATION_CHECKS.filter((key) => current.has(key))
+      .flatMap((key) => report[key]?.findings ?? [])
+      .filter((f) => f.severity === "high")
+      .flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
     if (above.length > 0) {
       const layers = [...new Set(above.map((l) => `#${l.number}`))].join(", ");
       concerns.push(
-        `${plural(above.length, "high finding is", "high findings are")} on lines ${layers} above changes; check ${above.length === 1 ? "it's" : "they're"} fixed there`,
+        `${plural(above.length, "high finding is", "high findings are")} on lines that ${layers} (stacked above) changes; check whether ${above.length === 1 ? "it's" : "they're"} fixed there`,
       );
     }
     const medium = countFindings(report, "medium");

@@ -95,10 +95,11 @@ describe("githubPrSource", () => {
       baseRef,
       headRef: `b${number}`,
       state,
+      needsUpdate: number === 5,
     });
     const asked: number[] = [];
     const client = {
-      prDetail: async () => ({ headRef: "feature" }),
+      prDetail: async () => ({ headRef: "feature", headSha: "h" }),
       prStack: async () => ({
         entries: [
           entry(1, "main"),
@@ -113,9 +114,10 @@ describe("githubPrSource", () => {
         return { files: [], incomplete: false };
       },
     } as unknown as GitHubClient;
-    expect(await githubPrSource(client, ghRef).upstackLayers()).toEqual([
-      { number: 5, url: "u5", files: [], incomplete: false },
-    ]);
+    expect(await githubPrSource(client, ghRef).upstackLayers()).toEqual({
+      headSha: "h",
+      layers: [{ number: 5, url: "u5", files: [], incomplete: false, stale: true }],
+    });
     expect(asked).toEqual([5]);
   });
 

@@ -288,7 +288,7 @@ describe("the suggested decision", () => {
     expect(assessReview(null, green, items(DEFAULT_SECTIONS)).suggestion).toBe("run_checks");
   });
 
-  it("asks for a look, not changes, at a high finding a PR stacked above changes", () => {
+  it("still blocks on a high finding a PR stacked above changes, and says where to look", () => {
     const report: VerificationReport = {
       ...clean,
       tests: {
@@ -306,16 +306,22 @@ describe("the suggested decision", () => {
         {
           number: 8,
           url: "u",
-          incomplete: false,
+          stale: false,
           files: [{ path: "src/a.ts", ranges: [{ start: 4, end: 6 }] }],
         },
       ],
     };
     expect(assessReview(report, green, items(), null, upstack)).toMatchObject({
       suggestion: "request_changes",
-      blockers: ["1 high finding"],
-      concerns: ["1 high finding is on lines #8 above changes; check it's fixed there"],
+      blockers: ["2 high findings"],
+      concerns: [
+        "1 high finding is on lines that #8 (stacked above) changes; check whether it's fixed there",
+      ],
     });
+    // A result from an older commit has other line numbers, so it isn't matched.
+    expect(
+      assessReview(report, green, items(["tests"]), null, upstack).concerns,
+    ).not.toContainEqual(expect.stringContaining("stacked above"));
   });
 
   it("raises tests that missed mutants on this commit, and doesn't ask for mutation testing", () => {

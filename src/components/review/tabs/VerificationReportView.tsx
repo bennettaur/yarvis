@@ -293,10 +293,6 @@ const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
 /** Struck through and dimmed once its file is viewed. */
 const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
-/**
- * A check passing is one line and nothing more: the reader's time goes to the
- * checks that found something, which open with their findings showing.
- */
 /** Says a layer stacked on this PR changes the finding's line, so it may be fixed there. */
 function UpstackNote({
   upstack,
@@ -321,6 +317,10 @@ function UpstackNote({
   );
 }
 
+/**
+ * A check passing is one line and nothing more: the reader's time goes to the
+ * checks that found something, which open with their findings showing.
+ */
 function CheckRow({
   label,
   check,

@@ -719,40 +719,38 @@ describe("CI evidence", () => {
     expect(await res.json()).toEqual({ error: "github token not configured" });
   });
 
-  it("says what the PRs stacked above change in this one, at this PR's head", async () => {
+  it("says what the PR stacked above changes in this one, at this PR's live head", async () => {
     const { wsId, prId } = await insertPr();
-    const res = await evidenceApp(
-      (r) =>
-        ({
-          ref: r,
-          upstackLayers: async () => [
-            {
-              number: 8,
-              url: "https://github.com/o/r/pull/8",
-              files: [
-                {
-                  filename: "src/a.ts",
-                  status: "modified",
-                  additions: 1,
-                  deletions: 1,
-                  patch: "@@ -10,3 +10,3 @@\n x\n-y\n+z\n x",
-                },
-              ],
-              incomplete: false,
-            },
-          ],
-        }) as unknown as PrCodeSource,
-    ).request(`/rw/${wsId}/prs/${prId}/upstack`);
+    const layer = {
+      number: 8,
+      url: "https://github.com/o/r/pull/8",
+      incomplete: false,
+      stale: false,
+      files: [
+        {
+          filename: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -10,3 +10,3 @@\n x\n-y\n+z\n x",
+        },
+      ],
+    };
+    const source = (r: PrRef) =>
+      ({
+        ref: r,
+        upstackLayers: async () => ({ headSha: "live", layers: [layer] }),
+      }) as unknown as PrCodeSource;
+    const res = await evidenceApp(source).request(`/rw/${wsId}/prs/${prId}/upstack`);
     expect(res.status).toBe(200);
-    const [row] = await db.select().from(reviewWorkspacePrs);
     expect(await res.json()).toEqual({
-      headSha: row?.headSha ?? null,
+      headSha: "live",
       layers: [
         {
           number: 8,
           url: "https://github.com/o/r/pull/8",
+          stale: false,
           files: [{ path: "src/a.ts", ranges: [{ start: 10, end: 12 }] }],
-          incomplete: false,
         },
       ],
       note: null,

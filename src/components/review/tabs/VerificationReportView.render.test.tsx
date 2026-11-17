@@ -439,7 +439,7 @@ describe("VerificationReportView", () => {
         {
           number: 8,
           url: "https://github.com/o/r/pull/8",
-          incomplete: false,
+          stale: false,
           files: [{ path: "src/cache.test.ts", ranges: null }],
         },
       ],

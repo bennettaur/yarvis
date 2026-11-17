@@ -412,15 +412,17 @@ export async function verificationEvidence(
   return (await res.json()) as VerificationEvidence;
 }
 
-/** Mirrors the sidecar's `UpstackChanges` (`pr/upstack.ts`), with the head it was read at. */
+/** Mirrors the sidecar's `UpstackChanges` (`pr/upstack.ts`). */
 export interface VerificationUpstack {
+  /** This PR's head as the provider has it, which the layers' line numbers are against. */
   headSha: string | null;
   layers: {
     number: number;
     url: string;
-    /** `ranges` null: the layer deletes the file or has no patch, so any line may have changed. */
+    /** Not built on this PR's current head, so its line numbers don't match. */
+    stale: boolean;
+    /** `ranges` null: the layer deletes the file or its patch can't be read, so any line may have changed. */
     files: { path: string; ranges: { start: number; end: number }[] | null }[];
-    incomplete: boolean;
   }[];
   note: string | null;
 }
@@ -440,9 +442,9 @@ const UPSTACK_NEARBY_LINES = 3;
 
 /**
  * The layer above that changes the line a finding is on, or null. A layer
- * that targets this PR's head diffs against it, so its base-side ranges are
- * this PR's head lines. A finding with no line counts when the layer changes
- * the file at all.
+ * built on this PR's head diffs against it, so its base-side ranges are this
+ * PR's head lines; a stale one's aren't, and is never matched. A finding with
+ * no line counts when the layer changes the file at all.
  */
 export function changedUpstack(
   upstack: VerificationUpstack | null,
@@ -451,6 +453,7 @@ export function changedUpstack(
 ): { number: number; url: string } | null {
   if (!upstack || !path) return null;
   for (const layer of upstack.layers) {
+    if (layer.stale) continue;
     const file = layer.files.find((f) => f.path === path);
     if (!file) continue;
     if (file.ranges === null || line === undefined) return layer;
