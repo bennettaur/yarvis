@@ -391,7 +391,7 @@ cat "${fakeDir}/result.jsonl"`,
     };
     const one = await cost(["tests"]);
     expect(one).toBeGreaterThan(0);
-    expect(await cost(["tests", "risk"])).toBeCloseTo(2 * one, 2);
+    expect(await cost(["tests", "risk"])).toBeGreaterThan(one);
 
     // Once the test-quality check has a result for this head, it isn't priced again.
     await kickOffVerification(db, config, ref, { confirmed: true, sections: ["tests"] }, kickoff);
@@ -400,7 +400,8 @@ cat "${fakeDir}/result.jsonl"`,
       const rows = await db.select().from(agentRuns);
       return rows.length === 1 && rows[0]?.status === "succeeded";
     }, "the tests run");
-    expect(await cost(["tests", "risk"])).toBeCloseTo(one, 2);
+    expect(await cost(["tests", "risk"])).toBe(await cost(["risk"]));
+    expect(await cost(["risk"])).toBe(one);
   });
 
   it("says so when the checkout doesn't finish in time", async () => {

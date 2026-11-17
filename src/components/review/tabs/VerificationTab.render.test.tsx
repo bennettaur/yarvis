@@ -266,9 +266,12 @@ describe("VerificationTab", () => {
       }),
     );
     expect(textOf(checks.innerHTML)).toContain("Test quality · older head");
-    expect(
-      [...checks.querySelectorAll("button")].filter((b) => b.textContent === "Post to PR"),
-    ).toHaveLength(1);
+    const posts = [...checks.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Post to PR",
+    );
+    // The one left is the current check's finding, not the older head's.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.closest("li")?.textContent).toContain("Misses the delete path");
   });
 
   it("cancels a run going here", async () => {
@@ -346,13 +349,18 @@ describe("VerificationTab", () => {
       }),
     });
     const host = await mount(checklist());
-    button(host, `Run picked (${DEFAULT_SECTIONS.length})`)?.click();
+    // Picked by hand, so the picks after the run are what's left of these.
+    pick(host, "Performance").click();
+    await waitFor(() => !pick(host, "Performance").checked, "the picks to change");
+    button(host, `Run picked (${DEFAULT_SECTIONS.length - 1})`)?.click();
     await waitFor(
       () => textOf(host.innerHTML).includes("Couldn't start Test quality: no Claude Code here"),
       "the partial failure",
     );
-    // The one that didn't start stays picked for another try.
+    // The one that didn't start stays picked for another try; the one that did isn't.
     expect(pick(host, "Test quality").checked).toBe(true);
+    expect(pick(host, "Risk").checked).toBe(false);
+    expect(pick(host, "Performance").checked).toBe(false);
   });
 
   it("re-reads the checklist while a check runs, and stops once none is", async () => {
