@@ -54,7 +54,8 @@ function summarize(size: VerificationSize, sections: readonly ReportSection[]): 
  * since whoever asked has usually moved on by the time the report is written.
  *
  * The in-flight state here is per process. A chat turn runs in one instance,
- * and `startVerification` itself refuses a second run across instances.
+ * and `startVerification` joins a section's run that another instance already
+ * has going.
  */
 
 /** Longest the background wait gives a clone and checkout before giving up. */
@@ -277,11 +278,12 @@ async function startReport(
   // Only follow runs this call started. One already going was started by an
   // earlier ask, which follows it, or from the tab, where the user is watching.
   const fresh = started.runs.filter((r) => !r.existing);
-  if (fresh.length > 0)
+  if (fresh.length > 0 || started.failed.length > 0)
     void notifyWhenDone(
       db,
       pr,
       fresh.map((r) => r.runId),
+      started.failed.length,
       deps,
     );
   outcomes.started = fresh.map((r) => r.section);
@@ -365,11 +367,16 @@ function goAheadDetail(result: Extract<KickoffResult, { status: "needs-confirmat
   return `${why}: ${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
 }
 
-/** Rings the bell once every run this module started has ended; whoever asked has usually moved on. */
+/**
+ * Rings the bell once every run this module started has ended; whoever asked
+ * has usually moved on. A section whose run couldn't start counts as failed,
+ * so a report missing it is never announced as ready.
+ */
 async function notifyWhenDone(
   db: Db,
   pr: ReviewWorkspacePr,
   runIds: string[],
+  notStarted: number,
   deps: KickoffDeps,
 ): Promise<void> {
   try {
@@ -377,12 +384,13 @@ async function notifyWhenDone(
     await Promise.all(runIds.map((id) => registryFor(deps).follow(id, () => undefined)));
     const runs = await Promise.all(runIds.map((id) => getAgentRunSummary(db, id)));
     const statuses = runs.map((run) => run?.status ?? null);
-    const failed = statuses.filter((s) => s === "failed").length;
-    if (statuses.every((s) => s === "succeeded")) {
+    const failed = statuses.filter((s) => s === "failed").length + notStarted;
+    const total = runIds.length + notStarted;
+    if (failed === 0 && statuses.every((s) => s === "succeeded")) {
       await notify(db, pr, "completed", "Verification report ready", null);
     } else if (failed > 0) {
       // A run's error can quote what the agent read, so the bell gets a fixed line.
-      const which = runIds.length === 1 ? "The check" : `${failed} of the ${runIds.length} checks`;
+      const which = total === 1 ? "The check" : `${failed} of the ${total} checks`;
       await notify(
         db,
         pr,
