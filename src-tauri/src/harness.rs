@@ -274,9 +274,14 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
 }
 
 /// Refuses a harness the assistant named but may not start. The default and
-/// the built-in harness are always allowed, as is a relaunch with `--resume`:
-/// that continues a session the core itself launched with this harness, and
-/// no assistant tool can ask for one.
+/// the built-in harness are always allowed, as is a relaunch with `--resume`.
+///
+/// The core can't tell a real resume from a spawn that merely carries a
+/// resume id, so the exemption relies on the sidecar: only its restart sweep
+/// sets one, with the harness from a session row that the session's own hook
+/// wrote using the harness token. No assistant tool can pass a resume id. The
+/// token can't be re-checked here because its signing key changes on every
+/// launch, and a resume always follows a relaunch.
 pub fn check_assistant_may_launch(
     builtin: ResolvedHarness,
     stored: &[AgentHarness],

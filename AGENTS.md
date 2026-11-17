@@ -28,7 +28,10 @@ Three processes, each with a clean ownership boundary:
   a PTY. `claude.spawn` can name a saved agent harness by id, never a command,
   and the core refuses one the user hasn't let the assistant start
   (`harness::check_assistant_may_launch`): the id comes from a model that may
-  have read it in an issue.
+  have read it in an issue. A spawn with a resume id skips that check for a
+  Claude Code harness, so the sidecar's restart sweep can bring back a session
+  the user started. That makes `resume` something only the sweep may set, from
+  a hook-verified session row. Never expose it to an agent tool.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
