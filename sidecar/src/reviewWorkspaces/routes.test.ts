@@ -1097,7 +1097,7 @@ cat "${fakeDir}/result.jsonl"`,
     ]) {
       expect(disallowed).toContain(tool);
     }
-    // The agent named by --agent loads only from the shipped plugin.
+    // The agent named by --agent is in the plugin dir the run passes.
     const pluginDir = args[args.indexOf("--plugin-dir") + 1] as string;
     expect(existsSync(join(pluginDir, "agents/flow-diagram.md"))).toBe(true);
     expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId, live: true } });

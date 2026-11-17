@@ -46,7 +46,7 @@ function open(id: string): SharedStream {
     try {
       for await (const event of streamAgentRun(id, shared.abort.signal)) {
         shared.events.push(event);
-        for (const f of [...shared.followers]) f.onEvent?.(event);
+        notify(shared, (f) => f.onEvent?.(event));
       }
     } catch (e) {
       error = e;
@@ -54,7 +54,20 @@ function open(id: string): SharedStream {
     // Removed first, so a follower that re-follows from onEnd gets a fresh stream.
     if (streams.get(id) === shared) streams.delete(id);
     if (shared.abort.signal.aborted) return;
-    for (const f of [...shared.followers]) f.onEnd(error);
+    notify(shared, (f) => f.onEnd(error));
   })();
   return shared;
+}
+
+/** Calls each current follower, so one view's bug can't end the stream for the others. */
+function notify(shared: SharedStream, call: (follower: RunFollower) => void): void {
+  for (const f of [...shared.followers]) {
+    // A follower an earlier call unsubscribed has stopped listening.
+    if (!shared.followers.has(f)) continue;
+    try {
+      call(f);
+    } catch (e) {
+      console.error("[agent-runs] a run follower threw:", e);
+    }
+  }
 }

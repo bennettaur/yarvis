@@ -106,10 +106,52 @@ describe("followAgentRun", () => {
       },
     });
     const errors: unknown[] = [];
-    const stop = followAgentRun("r4", { onEnd: (e) => errors.push(e) });
+    const stops = [
+      followAgentRun("r4", { onEnd: (e) => errors.push(e) }),
+      followAgentRun("r4", { onEnd: (e) => errors.push(e) }),
+    ];
     await new Promise((r) => setTimeout(r, 0));
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as Error).message).toBe("connection reset");
-    stop();
+    expect(errors.map((e) => (e as Error).message)).toEqual([
+      "connection reset",
+      "connection reset",
+    ]);
+    for (const stop of stops) stop();
+  });
+
+  it("keeps a stream reopened while the last one winds down", async () => {
+    // React's StrictMode mounts, unmounts and remounts: the first stream is
+    // still closing when the second opens.
+    const run = controlledRun();
+    followAgentRun("r5", { onEnd: () => {} })();
+    const again = followAgentRun("r5", { onEnd: () => {} });
+    await new Promise((r) => setTimeout(r, 0));
+    const third = followAgentRun("r5", { onEnd: () => {} });
+    expect(run.opened).toHaveLength(2);
+    expect(run.opened[1]?.aborted).toBe(false);
+    again();
+    third();
+  });
+
+  it("keeps the stream going for the others when one follower throws", async () => {
+    const run = controlledRun();
+    const seen: string[] = [];
+    const ends: string[] = [];
+    const stopBad = followAgentRun("r6", {
+      onEvent: () => {
+        throw new Error("view bug");
+      },
+      onEnd: () => ends.push("bad"),
+    });
+    const stopGood = followAgentRun("r6", {
+      onEvent: (e) => e.type === "tool" && seen.push(e.id),
+      onEnd: (e) => ends.push(e ? "good, with an error" : "good"),
+    });
+    await run.push(tool("a"));
+    await run.push(tool("b"));
+    await run.end();
+    expect(seen).toEqual(["a", "b"]);
+    expect(ends).toEqual(["bad", "good"]);
+    stopBad();
+    stopGood();
   });
 });
