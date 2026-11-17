@@ -305,11 +305,13 @@ function ChecklistRow({
   );
 }
 
-const MUTATION_TONE: Record<NonNullable<MutationRun["summary"]>["verdict"], Tone> = {
-  strong: "good",
-  mixed: "warn",
-  weak: "bad",
-  inconclusive: "muted",
+type MutationVerdict = NonNullable<MutationRun["summary"]>["verdict"];
+
+const MUTATION_VERDICT: Record<MutationVerdict, { label: string; tone: Tone }> = {
+  strong: { label: "Strong", tone: "good" },
+  mixed: { label: "Mixed", tone: "warn" },
+  weak: { label: "Weak", tone: "bad" },
+  inconclusive: { label: "Inconclusive", tone: "muted" },
 };
 
 /** What the PR's latest mutation-testing pass says, for the checklist. */
@@ -318,9 +320,9 @@ function mutationChip(run: MutationRun): { text: string; tone: Tone } | null {
   if (run.status === "cancelled") return { text: "Last pass cancelled", tone: "muted" };
   const summary = run.summary;
   if (!summary) return null;
-  const verdict = summary.verdict[0]?.toUpperCase() + summary.verdict.slice(1);
+  const { label, tone } = MUTATION_VERDICT[summary.verdict];
   const killed = summary.valid > 0 ? `: ${summary.killed} of ${summary.valid} mutants caught` : "";
-  return { text: `${verdict}${killed}`, tone: MUTATION_TONE[summary.verdict] };
+  return { text: `${label}${killed}`, tone };
 }
 
 /**

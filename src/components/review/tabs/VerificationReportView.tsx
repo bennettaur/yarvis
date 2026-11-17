@@ -355,7 +355,7 @@ function CheckRow({
 }
 
 const TRIPWIRE_LABEL: Record<VerificationTripwire["kind"], string> = {
-  build: "CI, build or install",
+  build: "Runs code or sets rules",
   binary: "Binary",
   "hidden-text": "Hidden text",
   "opaque-blob": "Encoded string",

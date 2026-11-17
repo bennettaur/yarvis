@@ -9,9 +9,9 @@ private temp directory for each run, removed when the run ends.
 
 The verification report is the `verification-report` skill, which runs the
 agents for the sections it is given (summary, change map, claims, risk,
-malicious intent, tests, complexity, performance, comments, observability, quality, approach,
-and the flow diagram) in parallel and assembles their answers. Yarvis starts one run
-per section, so each can be re-run on its own, and
+malicious intent, tests, complexity, performance, comments, observability,
+quality, approach, and the flow diagram) in parallel and assembles their
+answers. Yarvis starts one run per section, so each can be re-run on its own, and
 `sidecar/src/reviewWorkspaces/checklist.ts` puts the report together from each
 section's newest answer. A run starts from `sidecar/src/reviewWorkspaces/verification.ts`, which
 writes the PR's context, an `index.md` of every changed file and one numbered

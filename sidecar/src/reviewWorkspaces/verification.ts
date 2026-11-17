@@ -474,6 +474,15 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   flow: "yarvis-review:flow-diagram",
 };
 
+/**
+ * Whether a run is judged without the PR's own account of itself: the
+ * malicious-intent check gets no `pr.md`, so a persuasive description,
+ * comment thread or ticket can't talk it out of a finding.
+ */
+function withoutStory(sections: readonly ReportSection[]): boolean {
+  return sections.length === 1 && sections[0] === "malice";
+}
+
 /** The picked sections in report order, without repeats; the default when none are given. */
 export function normalizeSections(picked?: readonly ReportSection[]): ReportSection[] {
   if (!picked || picked.length === 0) return [...DEFAULT_SECTIONS];
@@ -595,6 +604,8 @@ export function dedupeChecks(
       return true;
     });
     kept.push(...own);
+    // Keeps what the server added to a check (the tripwires) when the
+    // checklist cross-checks stored answers again.
     result[section] = { ...check, ...checkFrom(findings) };
   }
   return result;
@@ -1144,7 +1155,7 @@ export function buildVerificationMaterial(
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
     `SECTIONS=${input.sections.join(",")}`,
     "",
-    "REVIEW_CONTEXT holds pr.md (the PR's description, CI checks and comments), index.md " +
+    `REVIEW_CONTEXT holds ${withoutStory(input.sections) ? "" : "pr.md (the PR's description, CI checks and comments), "}index.md ` +
       "(every changed file and its patch, and the reading groups), groups/ (each reading " +
       "group's patches, one file per group) and patches/ (one numbered patch per changed " +
       "file, from the merge-base to the head). The agents read them there; you don't need to.",
@@ -1483,7 +1494,7 @@ async function startSectionRun(
       },
       contextDir,
     );
-    writeFileSync(join(contextDir, "pr.md"), material.contextFile);
+    if (!withoutStory(sections)) writeFileSync(join(contextDir, "pr.md"), material.contextFile);
     writeFileSync(join(contextDir, "index.md"), material.indexFile);
     mkdirSync(join(contextDir, "groups"));
     material.groupFiles.forEach((file, i) => {

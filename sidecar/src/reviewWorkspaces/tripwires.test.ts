@@ -75,6 +75,29 @@ describe("scanPatch", () => {
     ]);
   });
 
+  it("finds an encoded string after filler on the same line", () => {
+    const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789".repeat(5);
+    const line = `+/* ${"-".repeat(240)} */ const p = "${blob}";`;
+    expect(scanPatch("src/p.ts", ["@@ -1 +1 @@", line].join("\n"))).toEqual([
+      expect.objectContaining({ kind: "opaque-blob", line: 1 }),
+    ]);
+  });
+
+  it("finds tag characters and invisible identifiers", () => {
+    const tagged = `+// ok${String.fromCodePoint(0xe0041, 0xe0042)}`;
+    const filler = "+const { a, \u3164 } = req.query;";
+    const found = scanPatch("src/q.ts", ["@@ -1,0 +1,2 @@", tagged, filler].join("\n"));
+    expect(found.map((t) => [t.kind, t.line])).toEqual([
+      ["hidden-text", 1],
+      ["hidden-text", 2],
+    ]);
+  });
+
+  it("checks a lockfile or minified file for hidden text only", () => {
+    const patch = ["@@ -1 +1 @@", `+"x": "${"0123456789abcdef".repeat(20)}\u202E"`].join("\n");
+    expect(scanPatch("yarn.lock", patch, true).map((t) => t.kind)).toEqual(["hidden-text"]);
+  });
+
   it("doesn't take a long run of one character for encoded data", () => {
     expect(scanPatch("src/rule.ts", ["@@ -1 +1 @@", `+// ${"=".repeat(240)}`].join("\n"))).toEqual(
       [],
@@ -94,20 +117,54 @@ describe("tripwireCollector", () => {
       source("src/__snapshots__/view.test.ts.snap"),
       source("bun.lock", { skim: "lockfile" }),
       source("src/a.ts"),
-      source("scripts/old.sh", { status: "deleted" }),
+      source(".github/workflows/scan.yml", { status: "deleted" }),
+      source("src/auth.test.ts", { status: "deleted" }),
+      source("docs/old.md", { status: "deleted" }),
     ];
     const collector = tripwireCollector(sources);
     const blob = `+x = '${"0123456789abcdef".repeat(20)}'`;
     collector.onPatch(sources[3] as PatchSource, ["@@ -1 +1 @@", blob].join("\n"));
     collector.onPatch(sources[4] as PatchSource, ["@@ -1 +1 @@", blob].join("\n"));
     const { tripwires, omitted } = collector.result();
+    // The most telling kinds first; within a kind, the diff's order.
     expect(tripwires.map((t) => [t.kind, t.path])).toEqual([
-      ["build", ".github/workflows/ci.yml"],
-      ["binary", "fixtures/data.bin"],
-      ["test-tampering", "src/__snapshots__/view.test.ts.snap"],
       ["opaque-blob", "src/a.ts"],
+      ["test-tampering", "src/__snapshots__/view.test.ts.snap"],
+      ["test-tampering", "src/auth.test.ts"],
+      ["build", ".github/workflows/ci.yml"],
+      ["build", "bun.lock"],
+      ["build", ".github/workflows/scan.yml"],
+      ["binary", "fixtures/data.bin"],
     ]);
+    expect(tripwires.find((t) => t.path.endsWith("scan.yml"))?.note).toStartWith(
+      "removed CI configuration",
+    );
     expect(omitted).toBe(0);
+  });
+
+  it("flags a test or workflow moved somewhere it no longer counts", () => {
+    const { tripwires } = tripwireCollector([
+      source("src/auth.ts.bak", { oldPath: "src/auth.test.ts", status: "renamed" }),
+      source("ci/build.yml", { oldPath: ".github/workflows/build.yml", status: "renamed" }),
+    ]).result();
+    expect(tripwires.map((t) => t.note)).toEqual([
+      "moved out of the tests from src/auth.test.ts",
+      expect.stringContaining("moved from .github/workflows/build.yml"),
+    ]);
+  });
+
+  it("keeps hidden text over a flood of binaries when it has to cut the list", () => {
+    const sources = [
+      ...Array.from({ length: MAX_TRIPWIRES + 5 }, (_, i) =>
+        source(`icons/${i}.png`, { binary: true }),
+      ),
+      source("src/x.ts"),
+    ];
+    const collector = tripwireCollector(sources);
+    collector.onPatch(sources.at(-1) as PatchSource, "@@ -1 +1 @@\n+a\u202Eb");
+    const { tripwires, omitted } = collector.result();
+    expect(tripwires[0]).toMatchObject({ kind: "hidden-text", path: "src/x.ts" });
+    expect(omitted).toBe(6);
   });
 
   it("keeps the first few and counts the rest", () => {

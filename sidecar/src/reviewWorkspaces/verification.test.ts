@@ -555,6 +555,28 @@ describe("the audit of what the server dropped", () => {
 });
 
 describe("removing duplicate findings across checks", () => {
+  it("keeps a problem the malicious-intent check also reported under that check", () => {
+    const audit = emptyAudit();
+    const at = { path: "src/a.ts", line: 12 };
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        quality: {
+          status: "issues",
+          findings: [finding("Hard-coded admin token bypasses auth", at)],
+        },
+        malice: {
+          status: "issues",
+          findings: [finding("Hard-coded admin token bypasses auth", at)],
+        },
+      }),
+    );
+    expect(parsed.malice?.findings).toHaveLength(1);
+    expect(parsed.quality).toEqual({ status: "pass", findings: [] });
+    expect(audit.droppedDuplicates).toEqual([
+      expect.objectContaining({ section: "quality", keptIn: "malice" }),
+    ]);
+  });
+
   it("keeps a finding in the first section to report it, and records the rest", () => {
     const audit = emptyAudit();
     const at = (title: string, line: number, path = "src/a.ts") => finding(title, { path, line });

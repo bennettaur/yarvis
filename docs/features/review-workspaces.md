@@ -332,14 +332,17 @@ line in the report opens the diff there.
 - **Malicious intent** looks for a change that does harm on purpose: a
   backdoor, data or control sent somewhere new, hidden text, tampered tests,
   a poisoned build, install or CI step, or text aimed at an AI reviewer. Its
-  agent doesn't read the PR's description, so a persuasive story can't talk
-  it out of a finding. Before it runs, fixed rules list the diff's
-  **tripwires**: changes to CI, build or install scripts, package manifests,
-  agent configuration, hooks or CODEOWNERS; binary files; invisible or
-  direction-changing characters; long encoded strings; and, in tests, skip
-  markers, assertions removed and snapshots changed. The agent judges each
-  one, and the report lists them under the check whatever it decided, so you
-  can confirm them yourself. Most tripwires are harmless.
+  agent isn't given the PR's description, comments or tickets, so a
+  persuasive story can't talk it out of a finding. Before it runs, fixed
+  rules list the diff's **tripwires**: changes to CI, build, test or install configuration, package
+  manifests and lockfiles, editor or coding-agent configuration, hooks or
+  CODEOWNERS, including removing or moving one; binary files and added
+  minified files; invisible or direction-changing characters, in the code or
+  a file's name; long encoded strings; and, in tests, skip markers, assertions
+  removed, snapshots changed and test files deleted or moved away. The agent
+  judges each one, and the report lists them under the check whatever it
+  decided, so you can confirm them yourself. It lists the 40 most telling and
+  counts the rest. Most tripwires are harmless.
 - **Observability** looks for errors that are swallowed, logging at the wrong
   level (errors for failures someone must look at, warnings for things that
   matter when they pile up), logging that is too noisy or missing where a

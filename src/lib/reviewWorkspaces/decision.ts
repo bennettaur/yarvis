@@ -125,7 +125,8 @@ export function assessReview(
   }
 
   // Mutation testing runs the PR's code, so it is opt-in: not having run it isn't a gap.
-  const summary = mutation?.isCurrentHead && mutation.status === "succeeded" && mutation.summary;
+  const summary =
+    mutation?.isCurrentHead && mutation.status === "succeeded" ? mutation.summary : null;
   if (summary && (summary.verdict === "weak" || summary.verdict === "mixed")) {
     concerns.push(
       `Mutation testing: ${summary.verdict}, ${plural(summary.survived, "mutant", "mutants")} the tests missed`,
