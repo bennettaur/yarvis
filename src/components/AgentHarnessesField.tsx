@@ -192,8 +192,8 @@ export default function AgentHarnessesField({
       setNotice("Saved. Applies to the next agent session started.");
     } catch (e) {
       setError(errorText(e));
-      // A save can land and then fail clearing removed secrets, so what is
-      // stored may already have changed: read it back rather than assume.
+      // What is stored may still have changed, such as by another window's
+      // save, so read it back rather than assume.
       getSettings()
         .then((next) => {
           onSaved(next);

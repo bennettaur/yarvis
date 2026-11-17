@@ -14,6 +14,11 @@ const invoked: Array<{ command: string; args: unknown }> = [];
 let stored: Settings;
 /** Error the next `set_agent` rejects with, mimicking the core. */
 let rejectSaveWith: string | null = null;
+/** Error `set_agent_harnesses` rejects with after the list is already stored,
+ * as when another window saved it first. */
+let rejectHarnessSaveWith: string | null = null;
+/** Error `list_agent_harness_secret_status` rejects with. */
+let rejectSecretStatusWith: string | null = null;
 
 function defaultSettings(): Settings {
   return {
@@ -73,9 +78,11 @@ mock.module("@tauri-apps/api/core", () => ({
         agentHarnesses: harnesses?.length ? harnesses : null,
         defaultAgentHarness: defaultHarness === "claude" ? null : defaultHarness,
       };
+      if (rejectHarnessSaveWith) throw new Error(rejectHarnessSaveWith);
       return stored;
     }
     if (command === "list_agent_harness_secret_status") {
+      if (rejectSecretStatusWith) throw new Error(rejectSecretStatusWith);
       return (stored.agentHarnesses ?? []).flatMap((h) =>
         h.secretEnv.map((key) => ({ harnessId: h.id, key, present: false })),
       );
@@ -136,6 +143,8 @@ describe("AgentSection", () => {
     invoked.length = 0;
     stored = defaultSettings();
     rejectSaveWith = null;
+    rejectHarnessSaveWith = null;
+    rejectSecretStatusWith = null;
   });
 
   it("offers the core's defaults as placeholders when nothing is stored", async () => {
@@ -450,6 +459,32 @@ describe("AgentSection", () => {
     await waitFor(() => host.innerHTML.includes('value="pi"'));
     const idInput = Array.from(host.querySelectorAll("input")).find((i) => i.value === "pi");
     expect(idInput?.readOnly).toBe(true);
+    cleanup();
+  });
+
+  it("shows a failed harness save and locks the ids that were stored anyway", async () => {
+    rejectHarnessSaveWith = "could not save settings";
+    const { host, cleanup } = await mount();
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    button("Pi")?.click();
+    await waitFor(() => host.innerHTML.includes('value="pi"'));
+    const idInput = () => Array.from(host.querySelectorAll("input")).find((i) => i.value === "pi");
+    expect(idInput()?.readOnly).toBe(false);
+    button("Save harnesses")?.click();
+    await waitFor(() => host.innerHTML.includes("could not save settings"));
+    await waitFor(() => idInput()?.readOnly === true);
+
+    expect(host.innerHTML).not.toContain("Saved. Applies");
+    cleanup();
+  });
+
+  it("says so when the harness secrets can't be read", async () => {
+    rejectSecretStatusWith = "1Password is locked";
+    const { host, cleanup } = await mount();
+    await waitFor(() => host.innerHTML.includes("Could not read the harness secrets"));
+
+    expect(host.innerHTML).toContain("1Password is locked");
     cleanup();
   });
 });
