@@ -222,7 +222,8 @@ function GroupView({
       >
         {group.tabs.map((spec) => {
           const id = tabId(spec);
-          const owner = ownerOf(spec.prId);
+          // The Claude tab belongs to the workspace, so it carries no PR's colour.
+          const owner = spec.kind === "claude" ? null : ownerOf(spec.prId);
           const active = group.activeId === id;
           const title = tabTitle(spec);
           const full = tabTooltip(spec);

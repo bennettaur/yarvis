@@ -568,8 +568,9 @@ export function emptyAudit(): ReportAudit {
  * path and line are never treated as duplicates, and a section's own findings
  * are left alone, since one agent wrote them all.
  *
- * Done here rather than by the model so the rule is the same on every run and
- * nothing a check reported disappears without a record.
+ * Done here rather than by the model so the rule is the same on every run. A
+ * run's own answer records what it drops; the checklist drops only when it
+ * shows the report, so every section's stored result keeps its findings.
  */
 export function dedupeChecks(
   checks: Partial<Record<CheckSection, Check>>,
@@ -1420,7 +1421,8 @@ export async function startVerification(
         } catch (e) {
           console.error(`[verification] could not start ${section}:`, describeError(e));
           firstError ??= e;
-          failed.push({ section, error: e instanceof Error ? e.message : String(e) });
+          // Sent to the client as is, so redacted like any other error the routes answer with.
+          failed.push({ section, error: clientError(e) });
         }
       }
     }
