@@ -99,16 +99,28 @@ export function relatedTests(
 }
 
 /**
+ * The longest one test run may take before it is killed. Stryker's own timeout
+ * catches a mutant that loops forever, but only while Stryker is alive. If
+ * Stryker is killed mid-run, the looping `bun test` is orphaned and spins at
+ * full CPU until this limit ends it.
+ */
+export const TEST_RUN_LIMIT_SECONDS = 600;
+
+/**
  * Stryker's command runner hands this to a shell. Every part is a path from
  * git or the bun binary's own path, but quoting keeps a stray space or `;` in
  * a file name from being read as shell syntax.
+ *
+ * Perl's `alarm` survives the `exec` into bun, so the limit holds even when
+ * no parent is left to enforce it, and SIGALRM ends a busy loop that bun's own
+ * per-test `--timeout` can't interrupt.
  */
 export function testCommand(bun: string, suite: Suite, tests: string[]): string {
   const quote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
   const relative = tests.map((test) =>
     quote(`./${suite === "sidecar" ? test.slice("sidecar/".length) : test}`),
   );
-  const command = `${quote(bun)} test ${relative.join(" ")}`;
+  const command = `perl -e 'alarm shift; exec @ARGV' ${TEST_RUN_LIMIT_SECONDS} ${quote(bun)} test ${relative.join(" ")}`;
   // The sidecar suite runs from sidecar/ so its own bunfig preload applies.
   return suite === "sidecar" ? `cd sidecar && ${command}` : command;
 }
