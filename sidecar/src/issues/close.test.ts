@@ -206,6 +206,25 @@ describe("createIssueCloser", () => {
     expect(sent.some((r) => r.method === "PATCH")).toBe(false);
   });
 
+  it("gives up on a tracker that never answers", async () => {
+    // Every request hangs until its signal aborts, as a stalled connection would.
+    fetchSpy.mockImplementation(
+      ((_input: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        })) as typeof fetch,
+    );
+    for (const [c, link] of [
+      [github, { provider: "github", sourceKey: "acme/widget", externalId: "1" }],
+      [jira, { provider: "jira", sourceKey: "PROJ", externalId: "PROJ-4" }],
+      [azure, { provider: "azure", sourceKey: "P", externalId: "7" }],
+    ] as const) {
+      await expect(createIssueCloser(c, 20)(link)).rejects.toThrow(
+        "the tracker didn't answer within 0.02s",
+      );
+    }
+  });
+
   it("names the tracker that isn't configured", async () => {
     const none = createIssueCloser(config({}));
     await expect(none({ provider: "github", sourceKey: "a/b", externalId: "1" })).rejects.toThrow(

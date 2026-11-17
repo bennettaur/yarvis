@@ -1273,8 +1273,12 @@ const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
 };
 
 /** A client for the GitHub the config points at: github.com unless overridden. */
-export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
-  return new GitHubClient(token, fetch, {
+export function createGitHubClient(
+  config: Pick<Config, "endpoints">,
+  token: string,
+  fetchImpl: FetchFn = fetch,
+): GitHubClient {
+  return new GitHubClient(token, fetchImpl, {
     api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
     graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
   });

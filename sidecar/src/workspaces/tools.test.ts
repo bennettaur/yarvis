@@ -3007,8 +3007,18 @@ describe("archive_workspace and linked issues", () => {
 
     const result = await tools.list_workspace_issues.execute!({ workspaceId }, opts);
 
-    expect(result).toEqual([
-      expect.objectContaining({ key: "acme/widget#5", title: "Issue 5", status: "in_progress" }),
+    const { warning, issues } = result as {
+      warning: string;
+      issues: { key: string; title: string; status: string }[];
+    };
+    const tag = warning.match(/<(linked-issue-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
+    expect(issues).toEqual([
+      expect.objectContaining({
+        key: "acme/widget#5",
+        title: `<${tag}>\nIssue 5\n</${tag}>`,
+        status: "in_progress",
+      }),
     ]);
   });
 
@@ -3127,11 +3137,17 @@ describe("archive_workspace and linked issues", () => {
     const result = (await tools.archive_workspace.execute!(
       { workspaceId, force: false, keepOpenIssueIds: [] },
       opts,
-    )) as { closedIssues: string[]; issueCloseErrors: unknown[] };
+    )) as {
+      closedIssues: string[];
+      issueCloseErrors: unknown[];
+      issueCloseErrorsWarning: string;
+    };
 
     expect(result.closedIssues).toEqual([]);
+    const tag = result.issueCloseErrorsWarning.match(/<(tracker-error-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
     expect(result.issueCloseErrors).toEqual([
-      { issue: "acme/widget#7", message: "tracker said no" },
+      { issue: "acme/widget#7", message: `<${tag}>\ntracker said no\n</${tag}>` },
     ]);
   });
 });
