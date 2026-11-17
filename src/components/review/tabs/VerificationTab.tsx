@@ -5,6 +5,7 @@ import { prDetailKey } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
+import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
 import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
   type ChecklistItem,
@@ -25,6 +26,7 @@ import LoadingIndicator from "../../LoadingIndicator";
 import DecisionPanel from "./DecisionPanel";
 import {
   reportOf,
+  useMutationTesting,
   useReviewChangedFiles,
   useReviewTree,
   useReviewViewed,
@@ -303,6 +305,81 @@ function ChecklistRow({
   );
 }
 
+type MutationVerdict = NonNullable<MutationRun["summary"]>["verdict"];
+
+const MUTATION_VERDICT: Record<MutationVerdict, { label: string; tone: Tone }> = {
+  strong: { label: "Strong", tone: "good" },
+  mixed: { label: "Mixed", tone: "warn" },
+  weak: { label: "Weak", tone: "bad" },
+  inconclusive: { label: "Inconclusive", tone: "muted" },
+};
+
+/** What the PR's latest mutation-testing pass says, for the checklist. */
+function mutationChip(run: MutationRun): { text: string; tone: Tone } | null {
+  if (run.status === "failed") return { text: "Last pass failed", tone: "bad" };
+  if (run.status === "cancelled") return { text: "Last pass cancelled", tone: "muted" };
+  const summary = run.summary;
+  if (!summary) return null;
+  const { label, tone } = MUTATION_VERDICT[summary.verdict];
+  const killed = summary.valid > 0 ? `: ${summary.killed} of ${summary.valid} mutants caught` : "";
+  return { text: `${label}${killed}`, tone };
+}
+
+/**
+ * Mutation testing on the checklist. It runs the PR's own tests, so it starts
+ * from its tab, where the reviewer agrees to that; this row says where it
+ * stands and opens it.
+ */
+function MutationRow({
+  state,
+  error,
+  onOpenTab,
+}: {
+  state: MutationTestingState | null;
+  error: string | null;
+  onOpenTab: () => void;
+}) {
+  const run = state?.run ?? null;
+  const chip = run && run.status !== "running" ? mutationChip(run) : null;
+  return (
+    <li className="flex items-center gap-2 py-1 text-sm">
+      {/* Lines the label up with the checkbox rows. */}
+      <span className="w-[13px] shrink-0" aria-hidden="true" />
+      <span
+        className="shrink-0 text-zinc-200"
+        title="Small deliberate bugs in the changed code, run against the PR's tests, to see whether the tests notice."
+      >
+        Mutation testing
+      </span>
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+        {run?.status === "running" && (
+          <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <Loader />
+            Running ({run.phase})
+          </span>
+        )}
+        {chip && <Chip {...chip} />}
+        {run && !run.isCurrentHead && (
+          <span className="text-[11px] text-amber-300">older head ({shortSha(run.headSha)})</span>
+        )}
+        {!run && !error && (
+          <span className="text-xs text-zinc-500">
+            Not run{state?.blocked ? `: ${state.blocked.reason}` : ""}
+          </span>
+        )}
+        {error && <span className="text-xs text-red-400">{error}</span>}
+      </span>
+      <button
+        type="button"
+        onClick={onOpenTab}
+        className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+      >
+        Open
+      </button>
+    </li>
+  );
+}
+
 const SEVERITY_CLASS: Record<EvidenceSeverity, string> = {
   high: "text-red-300",
   medium: "text-amber-300",
@@ -433,6 +510,14 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     .slice(0, MAX_NAMED_TICKETS);
 
   const evidence = useVerificationEvidence(workspaceId, pr.id);
+  const mutation = useMutationTesting(workspaceId, pr.id);
+  const mutationRunning = mutation.data?.run?.status === "running";
+  const refreshMutation = mutation.refresh;
+  useEffect(() => {
+    if (!mutationRunning) return;
+    const timer = setInterval(() => void refreshMutation(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [mutationRunning, refreshMutation]);
   const report = reportOf(checklist.data);
   const size = checklist.data?.size ?? null;
   const viewed = useReviewViewed(ctx.prRef);
@@ -544,6 +629,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
               : null
           }
           items={items}
+          mutation={mutation.data?.run ?? null}
           currentSections={currentSections}
           onOpen={open}
         />
@@ -605,6 +691,13 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                     starting={starting}
                   />
                 ))}
+                {theme.id === "correctness" && (
+                  <MutationRow
+                    state={mutation.data ?? null}
+                    error={mutation.error}
+                    onOpenTab={() => ctx.openTab({ kind: "mutation", prId: pr.id })}
+                  />
+                )}
                 {evidenceRows.map((item) => (
                   <EvidenceRow key={item.id} item={item} onOpen={open} />
                 ))}

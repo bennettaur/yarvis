@@ -24,6 +24,10 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import {
+  getMutationTesting,
+  type MutationTestingState,
+} from "../../../lib/reviewWorkspaces/mutation";
 import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
   type VerificationChecklist,
@@ -93,6 +97,17 @@ export const verificationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}
 
 /** The PR's mutation-testing state: its latest pass and whether a new one may start. */
 export const mutationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}mutation`;
+
+export function useMutationTesting(
+  workspaceId: string,
+  prId: string,
+): Resource<MutationTestingState> {
+  return useCachedResource(
+    mutationKey(prId),
+    () => getMutationTesting(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+}
 
 /** The PR's verification checklist. Not pinned to a commit: a run finishing changes it. */
 export function useVerificationChecklist(

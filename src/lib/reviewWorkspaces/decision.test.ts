@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { assessReview, draftComments, reviewSummary, whereToLook } from "./decision";
+import type { MutationRun } from "./mutation";
 import {
   type ChecklistItem,
   type ChecklistRun,
@@ -284,6 +285,32 @@ describe("the suggested decision", () => {
     const partly = assessReview(clean, green, items(["tests"]));
     expect(partly).toMatchObject({ suggestion: "review_deeper", notRun: ["tests"] });
     expect(assessReview(null, green, items(DEFAULT_SECTIONS)).suggestion).toBe("run_checks");
+  });
+
+  it("raises tests that missed mutants on this commit, and doesn't ask for mutation testing", () => {
+    const pass = (
+      verdict: "strong" | "mixed" | "weak",
+      isCurrentHead = true,
+      status: MutationRun["status"] = "succeeded",
+    ) =>
+      ({
+        status,
+        isCurrentHead,
+        summary: { verdict, survived: 4 },
+      }) as MutationRun;
+    expect(assessReview(clean, green, items(), pass("weak"))).toMatchObject({
+      suggestion: "review_deeper",
+      concerns: ["Mutation testing: weak, 4 mutants the tests missed"],
+    });
+    expect(assessReview(clean, green, items(), pass("mixed")).concerns).toEqual([
+      "Mutation testing: mixed, 4 mutants the tests missed",
+    ]);
+    expect(assessReview(clean, green, items(), pass("weak", false)).suggestion).toBe("approve");
+    expect(assessReview(clean, green, items(), pass("weak", true, "failed")).suggestion).toBe(
+      "approve",
+    );
+    expect(assessReview(clean, green, items(), pass("strong")).suggestion).toBe("approve");
+    expect(assessReview(clean, green, items(), null).suggestion).toBe("approve");
   });
 });
 

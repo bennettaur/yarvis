@@ -1,6 +1,6 @@
 ---
 name: verification-report
-description: Writes a pull request verification report by running the requested summary, change map, claims, risk, test, complexity, performance, comment, observability, quality, approach and flow-diagram sections in parallel and merging their answers. Use when asked for a verification report on a checked-out PR.
+description: Writes a pull request verification report by running the requested summary, change map, claims, risk, malicious-intent, test, complexity, performance, comment, observability, quality, approach and flow-diagram sections in parallel and merging their answers. Use when asked for a verification report on a checked-out PR.
 ---
 
 # Verification report
@@ -31,6 +31,7 @@ listed. `summary` in SECTIONS stands for both `summary` and `mustRead`.
 | `yarvis-review:change-mapper` | `changeMap` | one |
 | `yarvis-review:claims-verifier` | `claims` | one |
 | `yarvis-review:risk-reviewer` | `risk` | one per group |
+| `yarvis-review:intent-reviewer` | `malice` | one per group |
 | `yarvis-review:test-reviewer` | `tests` | one per group |
 | `yarvis-review:complexity-reviewer` | `complexity` | one per group |
 | `yarvis-review:performance-reviewer` | `performance` | one per group |
@@ -72,7 +73,7 @@ answer.
 With more than one agent per check, put the groups' answers for a check
 together, still without rewording anything:
 
-- a check (`tests`, `complexity`, `performance`, `comments`,
+- a check (`malice`, `tests`, `complexity`, `performance`, `comments`,
   `observability`, `quality`):
   every group's findings in one list, most severe first, keeping the five most
   severe; `status` is `issues` when any finding is left, else `pass`;

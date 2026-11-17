@@ -782,6 +782,7 @@ describe("verification report", () => {
       gaps: [],
     },
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
+    malice: pass,
     // The same problem from two checks: the server keeps the first section's (tests).
     tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
     complexity: pass,
@@ -912,6 +913,7 @@ cat "${fakeDir}/result.jsonl"`,
       mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
       tests?: { status: string; findings: unknown[] };
       quality?: { status: string; findings: unknown[] };
+      malice?: { status: string; findings: unknown[]; tripwires?: unknown[] };
       claims?: { items: { source: string }[]; tickets?: unknown[]; ticketNotes?: string[] };
       coverage?: Coverage;
     } | null;
@@ -1204,6 +1206,32 @@ cat "${fakeDir}/result.jsonl"`,
     expect(report?.mustRead?.[0]?.flags).toEqual([]);
     // Each run read the same patch; together they still examined two files.
     expect(report?.coverage?.examined).toBe(2);
+  });
+
+  it("gives the malicious-intent check the diff's tripwires and keeps them on its answer", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    remote.pushToPr(".github/workflows/ci.yml", "on: push\n");
+    remote.pushToPr("src/a.ts", 'export const a = 2;\nexport const b = "admin\u202E";\n');
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    expect((await verify("POST", wsId, prId, ["malice"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    const tripwires = readFileSync(join(contextDir, "tripwires.md"), "utf8");
+    expect(tripwires).toContain("[binary] image.bin");
+    // Judged without the PR's own account of itself.
+    expect(existsSync(join(contextDir, "pr.md"))).toBe(false);
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "malice")?.result, "the result");
+    const { report } = await checklist(wsId, prId);
+    expect(report?.malice?.findings).toEqual([]);
+    // One from a patch's added lines, two from the paths; the most telling first.
+    expect(report?.malice?.tripwires).toEqual([
+      expect.objectContaining({ kind: "hidden-text", path: "src/a.ts", line: 2 }),
+      expect.objectContaining({ kind: "build", path: ".github/workflows/ci.yml" }),
+      { kind: "binary", path: "image.bin", note: "binary file: no diff to review" },
+    ]);
   });
 
   it("joins a section already running and starts the rest", async () => {

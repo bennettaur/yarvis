@@ -19,6 +19,7 @@ import {
   type VerificationImpact,
   type VerificationMustRead,
   type VerificationReport,
+  type VerificationTripwire,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
 import FlowDiagram from "./FlowDiagram";
@@ -348,6 +349,50 @@ function CheckRow({
             <PostFinding finding={f} section={label} poster={poster} />
           </li>
         ))}
+      </ul>
+    </details>
+  );
+}
+
+const TRIPWIRE_LABEL: Record<VerificationTripwire["kind"], string> = {
+  build: "Runs code or sets rules",
+  binary: "Binary",
+  "hidden-text": "Hidden text",
+  "opaque-blob": "Encoded string",
+  "test-tampering": "Tests",
+};
+
+/**
+ * The places Yarvis's fixed rules flagged for the malicious-intent check.
+ * Shown whatever the check made of them, since the point is that a model's
+ * reading can't make one disappear.
+ */
+function Tripwires({
+  tripwires,
+  omitted,
+  onOpen,
+}: {
+  tripwires: VerificationTripwire[];
+  omitted: number;
+  onOpen: OpenLocation;
+}) {
+  if (tripwires.length === 0) return null;
+  return (
+    <details className="pl-6 text-xs">
+      <summary className="cursor-pointer text-zinc-400">
+        {tripwires.length + omitted} {tripwires.length + omitted === 1 ? "tripwire" : "tripwires"}{" "}
+        to confirm
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {tripwires.map((t, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: two tripwires can share a kind, path and line
+          <li key={i} className="flex flex-wrap items-center gap-2">
+            <span className="text-zinc-500">{TRIPWIRE_LABEL[t.kind]}</span>
+            <Location path={t.path} line={t.line} onOpen={onOpen} />
+            <span className="text-zinc-400">{t.note}</span>
+          </li>
+        ))}
+        {omitted > 0 && <li className="text-zinc-500">{omitted} more not listed.</li>}
       </ul>
     </details>
   );
@@ -916,14 +961,22 @@ export default function VerificationReportView({
               // Absent when the run wasn't asked for it, or was made before the check existed.
               if (!check) return null;
               return (
-                <CheckRow
-                  key={key}
-                  label={titled(CHECK_LABEL[key], key)}
-                  check={check}
-                  onOpen={onOpen}
-                  viewed={viewed}
-                  poster={posterFor(key)}
-                />
+                <div key={key} className="space-y-1">
+                  <CheckRow
+                    label={titled(CHECK_LABEL[key], key)}
+                    check={check}
+                    onOpen={onOpen}
+                    viewed={viewed}
+                    poster={posterFor(key)}
+                  />
+                  {key === "malice" && report.malice?.tripwires && (
+                    <Tripwires
+                      tripwires={report.malice.tripwires}
+                      omitted={report.malice.tripwiresOmitted ?? 0}
+                      onOpen={onOpen}
+                    />
+                  )}
+                </div>
               );
             })}
           </div>

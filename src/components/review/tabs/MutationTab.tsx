@@ -4,12 +4,11 @@ import {
   getMutationTestingConfig,
   type MutationTestingConfig,
 } from "../../../lib/pr/mutationTestingConfig";
-import { invalidate, SIDECAR_FRESHNESS, useCachedResource } from "../../../lib/resourceCache";
+import { invalidate } from "../../../lib/resourceCache";
 import { useReviewChangedFiles } from "../../../lib/reviewWorkspaces/cache";
 import {
   cancelMutationTesting,
   followMutationProgress,
-  getMutationTesting,
   type MutationRun,
   startMutationTesting,
 } from "../../../lib/reviewWorkspaces/mutation";
@@ -23,7 +22,7 @@ import {
   PHASES,
   reduceMutationProgress,
 } from "./mutationProgress";
-import { mutationKey } from "./reviewData";
+import { mutationKey, useMutationTesting } from "./reviewData";
 import type { TabContext } from "./types";
 import type { OpenLocation } from "./VerificationReportView";
 
@@ -258,11 +257,7 @@ function RunOutcome({ run }: { run: MutationRun }) {
  */
 export default function MutationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
-  const state = useCachedResource(
-    mutationKey(pr.id),
-    () => getMutationTesting(workspaceId, pr.id),
-    SIDECAR_FRESHNESS,
-  );
+  const state = useMutationTesting(workspaceId, pr.id);
   const changed = useReviewChangedFiles(workspaceId, pr);
   const [config, setConfig] = useState(DEFAULT_MUTATION_TESTING_CONFIG);
   const [confirming, setConfirming] = useState<null | { confirmRunTests: boolean }>(null);

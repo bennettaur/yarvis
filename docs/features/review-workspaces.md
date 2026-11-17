@@ -202,9 +202,11 @@ theme:
 
 - **Understand the change**: a summary with the files that must be read and
   why, the change map, and the flow diagram.
-- **Correctness and tests**: claims, test quality, performance and
-  observability.
-- **Risk and impact**: the risk score.
+- **Correctness and tests**: claims, test quality, performance,
+  observability, and mutation testing. Mutation testing runs the PR's own
+  tests, so it starts from its own tab, where you agree to that: its row shows
+  the latest pass's verdict and **Open** takes you there.
+- **Risk and impact**: the risk score and the malicious-intent check.
 - **Maintainability**: complexity, code quality, comment quality, and whether
   there is a simpler way to do what the PR does.
 
@@ -215,6 +217,7 @@ for, suggests a decision, and lists every reason for it:
   missing or contradicted, or a check found something high.
 - **Review deeper first** for a high-risk change, an outlier, a claim only
   partly met, a medium finding, a simpler approach, a security bot's comment,
+  a mutation-testing pass on this commit whose verdict was weak or mixed,
   CI that hasn't passed on the current commit (still running, no checks, or
   not read yet), or a check not yet run on that commit.
 - **Looks ready to approve** when CI passed, the checks have run on this
@@ -326,6 +329,20 @@ line in the report opens the diff there.
   tickets per run. The change map reads the same tickets when it judges what
   belongs.
 
+- **Malicious intent** looks for a change that does harm on purpose: a
+  backdoor, data or control sent somewhere new, hidden text, tampered tests,
+  a poisoned build, install or CI step, or text aimed at an AI reviewer. Its
+  agent isn't given the PR's description, comments or tickets, so a
+  persuasive story can't talk it out of a finding. Before it runs, fixed
+  rules list the diff's **tripwires**: changes to CI, build, test or install configuration, package
+  manifests and lockfiles, editor or coding-agent configuration, hooks or
+  CODEOWNERS, including removing or moving one; binary files and added
+  minified files; invisible or direction-changing characters, in the code or
+  a file's name; long encoded strings; and, in tests, skip markers, assertions
+  removed, snapshots changed and test files deleted or moved away. The agent
+  judges each one, and the report lists them under the check whatever it
+  decided, so you can confirm them yourself. It lists the 40 most telling and
+  counts the rest. Most tripwires are harmless.
 - **Observability** looks for errors that are swallowed, logging at the wrong
   level (errors for failures someone must look at, warnings for things that
   matter when they pile up), logging that is too noisy or missing where a

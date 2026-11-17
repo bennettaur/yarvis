@@ -193,6 +193,11 @@ export interface VerificationReport {
     /** Absent on a report from before changes were scored, or one whose agent listed none. */
     impact?: VerificationImpact;
   };
+  malice?: VerificationCheck & {
+    /** What the sidecar's fixed rules found in the diff, whatever the check decided about each. */
+    tripwires?: VerificationTripwire[];
+    tripwiresOmitted?: number;
+  };
   tests?: VerificationCheck;
   complexity?: VerificationCheck;
   performance?: VerificationCheck;
@@ -218,8 +223,17 @@ export interface VerificationSize {
   skimmed: string[];
 }
 
+/** Mirrors the sidecar's `Tripwire` (`reviewWorkspaces/tripwires.ts`). */
+export interface VerificationTripwire {
+  kind: "build" | "binary" | "hidden-text" | "opaque-blob" | "test-tampering";
+  path: string;
+  line?: number;
+  note: string;
+}
+
 /** The checks shown as one row each, in the order the report lists them. */
 export const VERIFICATION_CHECKS = [
+  "malice",
   "tests",
   "complexity",
   "performance",
@@ -231,6 +245,7 @@ export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
 /** What each check is called, in the report, on the diff and in drafted comments. */
 export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
+  malice: "Malicious intent",
   tests: "Test quality",
   complexity: "Complexity",
   performance: "Performance",
