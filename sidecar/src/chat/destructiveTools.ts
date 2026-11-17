@@ -44,6 +44,10 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // may decide to file one mid-task, so the user reads the text before anyone
   // else can.
   "file_yarvis_issue",
+  // Spends a verification report's runs on up to ten PRs in one call, and
+  // each PR's budget check sees only its own cost, so the user agrees to the
+  // whole queue.
+  "start_pr_verification_queue",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([

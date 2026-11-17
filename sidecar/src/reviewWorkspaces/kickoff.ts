@@ -68,6 +68,8 @@ export interface KickoffOptions {
   confirmed?: boolean;
   /** Run the sections again even where they have a result for the PR's current head. */
   rerun?: boolean;
+  /** The caller reports the outcome itself (the verification queue), so no bell rings for this PR. */
+  quiet?: boolean;
 }
 
 export interface KickoffDeps {
@@ -153,7 +155,7 @@ const hasCheckoutFailed = (pr: ReviewWorkspacePr) =>
   pr.status === "error" || pr.worktreeStatus === "error";
 
 /** "repo#12", the name the PRs tab gives a review workspace it creates. */
-const shortPrName = (ref: PrRef) =>
+export const shortPrName = (ref: PrRef) =>
   `${ref.repo}#${ref.provider === "github" ? ref.number : ref.prId}`;
 
 const prName = (pr: ReviewWorkspacePr) => pr.title?.trim() || pr.refKey;
@@ -278,7 +280,7 @@ async function startReport(
   // Only follow runs this call started. One already going was started by an
   // earlier ask, which follows it, or from the tab, where the user is watching.
   const fresh = started.runs.filter((r) => !r.existing);
-  if (fresh.length > 0 || started.failed.length > 0)
+  if ((fresh.length > 0 || started.failed.length > 0) && !options.quiet)
     void notifyWhenDone(
       db,
       pr,
@@ -338,7 +340,7 @@ async function startWhenCheckedOut(
     }
     const options = checkoutWaits.get(pr.refKey) ?? {};
     const result = await startReport(db, config, pr, options, deps);
-    if (result.status === "needs-confirmation") {
+    if (result.status === "needs-confirmation" && !options.quiet) {
       await notify(
         db,
         pr,

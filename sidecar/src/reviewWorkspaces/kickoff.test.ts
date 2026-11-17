@@ -14,6 +14,7 @@ import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
+import { cancelVerificationQueue, getVerificationQueue, startVerificationQueue } from "./queue.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
 import { DEFAULT_SECTIONS, type ReportSection } from "./verification.ts";
@@ -459,5 +460,85 @@ cat "${fakeDir}/result.jsonl"`,
     expect(again).not.toHaveProperty("error", expect.stringContaining("exploded"));
     const [pr] = await db.select().from(reviewWorkspacePrs);
     expect(pr?.worktreeStatus).toBe("error");
+  });
+});
+
+describe("startVerificationQueue", () => {
+  const ref2: PrRef = { ...ref, number: 2 };
+  const queueBell = async () =>
+    (await attention()).find((a) => a.title.startsWith("Verification queue"));
+
+  /** PR 1 checked out, with its summary check started and held open by the fake. */
+  async function heldRun() {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+    const started = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, sections: ["summary"] },
+      kickoff,
+    );
+    expect(started).toMatchObject({ status: "started" });
+  }
+
+  it("skips a PR that needs the user's go-ahead, and rings one bell naming it", async () => {
+    const { queue } = startVerificationQueue(db, config, [ref], ["summary"], kickoff);
+    expect(queue.items).toEqual([{ ref, name: "r#1", state: "running", note: null }]);
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(getVerificationQueue(queue.id)).toMatchObject({
+      finished: true,
+      items: [{ state: "needs-confirmation", note: "It's a large PR." }],
+    });
+    // The PR's own go-ahead bell stays quiet: the queue reports for it.
+    expect(await attention()).toEqual([
+      expect.objectContaining({
+        kind: "info",
+        title: "Verification queue finished: 0 of 1 checked",
+        body: "r#1: needs your go-ahead. It's a large PR.",
+      }),
+    ]);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("starts the next PR only once the last one's checks end, and runs one queue at a time", async () => {
+    await heldRun();
+    const { queue } = startVerificationQueue(db, config, [ref, ref2, ref], ["summary"], kickoff);
+    // A PR named twice is checked once.
+    expect(queue.items.map((i) => i.name)).toEqual(["r#1", "r#2"]);
+    await until(async () => queue.currentRunIds.length > 0, "the queue joining PR 1's run");
+    expect(queue.items[1]?.state).toBe("waiting");
+    expect(await db.select().from(reviewWorkspacePrs)).toHaveLength(1);
+    expect(startVerificationQueue(db, config, [ref2], ["summary"], kickoff)).toEqual({
+      queue,
+      existing: true,
+    });
+
+    release();
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    // PR 2 has no branch on the test remote, so its checkout fails.
+    expect(queue.items.map((i) => [i.name, i.state])).toEqual([
+      ["r#1", "done"],
+      ["r#2", "failed"],
+    ]);
+    expect(await queueBell()).toMatchObject({
+      kind: "error",
+      title: "Verification queue finished: 1 of 2 checked",
+    });
+  });
+
+  it("cancels the PR running now and drops the rest", async () => {
+    await heldRun();
+    const { queue } = startVerificationQueue(db, config, [ref, ref2], ["summary"], kickoff);
+    await until(async () => queue.currentRunIds.length > 0, "the queue joining PR 1's run");
+    expect(cancelVerificationQueue(queue.id, kickoff)).toBe(true);
+    expect(cancelVerificationQueue(queue.id, kickoff)).toBe(false);
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(queue.items.map((i) => i.state)).toEqual(["cancelled", "cancelled"]);
+    expect(await queueBell()).toMatchObject({
+      kind: "info",
+      title: "Verification queue cancelled: 0 of 2 checked",
+    });
   });
 });
