@@ -479,6 +479,31 @@ describe("AgentSection", () => {
     cleanup();
   });
 
+  it("keeps a new harness as the default when its id is edited", async () => {
+    const { host, cleanup } = await mount();
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    button("Pi")?.click();
+    await waitFor(() => host.innerHTML.includes('value="pi"'));
+    const select = host.querySelector("select") as HTMLSelectElement;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(select, "pi");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => select.value === "pi");
+    const idIndex = Array.from(host.querySelectorAll("input")).findIndex((i) => i.value === "pi");
+    type(host, idIndex, "pi-work");
+    await waitFor(() => host.innerHTML.includes('value="pi-work"'));
+    button("Save harnesses")?.click();
+    await waitFor(() => invoked.some((i) => i.command === "set_agent_harnesses"));
+
+    const saved = invoked.find((i) => i.command === "set_agent_harnesses")?.args as {
+      harnesses: Array<{ id: string }>;
+      defaultHarness: string;
+    };
+    expect(saved.harnesses.map((h) => h.id)).toEqual(["pi-work"]);
+    expect(saved.defaultHarness).toBe("pi-work");
+    cleanup();
+  });
+
   it("says so when the harness secrets can't be read", async () => {
     rejectSecretStatusWith = "1Password is locked";
     const { host, cleanup } = await mount();
