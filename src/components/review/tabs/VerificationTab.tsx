@@ -423,8 +423,15 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { failed } = await startVerification(workspaceId, pr.id, sections);
-      setPickedSections((prev) => (prev ?? picked).filter((s) => !sections.includes(s)));
+      const { runs, failed } = await startVerification(workspaceId, pr.id, sections);
+      // Untick only what started, so a check that failed to start stays picked
+      // for another try. With nothing left ticked by hand, go back to the
+      // suggestions, which follow the PR to its next head.
+      const started = runs.map((r) => r.section);
+      setPickedSections((prev) => {
+        const left = prev?.filter((s) => !started.includes(s)) ?? [];
+        return left.length > 0 ? left : null;
+      });
       if (failed.length > 0) {
         const labels = failed.map((f) => items.find((i) => i.section === f.section)?.label);
         setActionError(`Couldn't start ${labels.join(", ")}: ${failed[0]?.error}`);

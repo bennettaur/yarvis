@@ -100,7 +100,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .boolean()
           .optional()
           .describe(
-            "Run again although a report for the current commit exists. Only when the user asked.",
+            "Run the asked-for sections again even where they already have a result for the current commit; with sections omitted, every default section runs again. Only when the user asked.",
           ),
       }),
       execute: async ({ pullRequest, sections, confirmed, rerun }) => {

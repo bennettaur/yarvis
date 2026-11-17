@@ -11,6 +11,11 @@ import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { verificationChecklist } from "./checklist.ts";
+import {
+  defaultReviewClaudeDeps,
+  type ReviewClaudeDeps,
+  startReviewClaudeSession,
+} from "./claudeSession.ts";
 import { isValidSymbol } from "./definitions.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
@@ -113,6 +118,8 @@ const idSchema = z.string().uuid();
 const startVerificationSchema = z
   .object({ sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional() })
   .nullable();
+// No body starts with the workspace's saved choice.
+const startClaudeSessionSchema = z.object({ loadRepoConfig: z.boolean().optional() }).nullable();
 /** The path is checked as a repo path by the search itself; the symbol only here. */
 const symbolQuerySchema = z.object({
   path: z.string().min(1).max(4096),
@@ -131,6 +138,8 @@ export interface ReviewWorkspaceRouteOptions {
   mutation?: MutationTestingDeps;
   /** Replaces the provider the CI evidence is read from, for tests. */
   evidenceSource?: (ref: PrRef) => PrCodeSource | { error: string };
+  /** Replaces the core control channel the workspace's Ask Claude session starts through, for tests. */
+  claudeSession?: ReviewClaudeDeps;
 }
 
 /**
@@ -467,6 +476,27 @@ export function createReviewWorkspaceRoutes(
           c.req.param("prId"),
           parsed.data,
           deps(),
+        ),
+      );
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Starts Claude Code over the workspace's checked-out PRs for the user to ask
+  // questions in, or leaves the session already running. A body may save
+  // whether sessions load the repos' own config; the answer says which applies.
+  router.post("/:id/claude-session", async (c) => {
+    const parsed = startClaudeSessionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(
+        await startReviewClaudeSession(
+          db(),
+          config,
+          c.req.param("id"),
+          options.claudeSession ?? defaultReviewClaudeDeps,
+          parsed.data ?? {},
         ),
       );
     } catch (e) {
