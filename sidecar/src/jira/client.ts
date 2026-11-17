@@ -10,6 +10,7 @@
  * org URL — it is validated against an allowlist before any credential is sent.
  */
 
+import type { Config } from "../config.ts";
 import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts";
 import { adfToMarkdown, textToAdf } from "./adf.ts";
 import type {
@@ -398,4 +399,12 @@ export class JiraClient {
     const data = await this.get<any[]>(`/user/assignable/search?${params.toString()}`);
     return (data ?? []).map((u) => this.toUser(u));
   }
+}
+
+/** Builds a JIRA client from configured secrets, or null when unconfigured. */
+export function jiraClientFromConfig(config: Pick<Config, "secrets">): JiraClient | null {
+  const { jiraBaseUrl, jiraEmail, jiraApiToken } = config.secrets;
+  if (!jiraBaseUrl || !jiraEmail || !jiraApiToken) return null;
+  if (!isAllowedJiraBaseUrl(jiraBaseUrl)) return null;
+  return new JiraClient(jiraBaseUrl, jiraEmail, jiraApiToken);
 }

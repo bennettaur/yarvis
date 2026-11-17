@@ -1,5 +1,5 @@
 {
-  "id": "6060213f-bf55-415a-a554-a334fa1ed6a0",
+  "id": "208e1a8d-f3de-416d-93d1-c5f4e24a2685",
   "prevId": "ad0072cf-6ba4-4fae-b677-cf3b41d93924",
   "version": "7",
   "dialect": "postgresql",
@@ -4279,6 +4279,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "ask_claude_repo_config": {
+          "name": "ask_claude_repo_config",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {},
@@ -5195,12 +5202,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "harness": {
-          "name": "harness",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "source": {
           "name": "source",
           "type": "text",
@@ -5820,12 +5821,6 @@
         },
         "pending_issue_prompt": {
           "name": "pending_issue_prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pending_harness": {
-          "name": "pending_harness",
           "type": "text",
           "primaryKey": false,
           "notNull": false

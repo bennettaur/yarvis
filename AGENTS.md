@@ -21,8 +21,9 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `claude.slash`,
-  `mcp.saveOAuth`, `github.saveToken`, `alarm.fire`, `alarm.release`)
+  method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
+  `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
+  `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY. `claude.spawn` can name a saved agent harness by id, never a command,
@@ -790,6 +791,72 @@ report there and leaves the fixes to the author.
   run the PR's code and its setup runs unsandboxed, so this is defence in
   depth, not the trust boundary; the sidecar's own writes into the copy still
   assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The review workspace's **Ask Claude** tab is the interactive counterpart:
+  one PTY session per review workspace that the user drives, started through
+  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`, then
+  `spawn_review_claude_session` in `pty.rs`).
+  - **Settings.** The user drives the session, so their own config loads
+    (`--setting-sources user`, no `--strict-mcp-config`): skills, plugins,
+    hooks, allow rules, MCP servers. The repos' project config (skills from
+    the checkouts) and their `CLAUDE.md` load only when the user ticks the
+    workspace's `askClaudeRepoConfig` option in the tab, which a start's body
+    saves and restarting applies. On top of that the sidecar sends
+    `lockedDownSettings`, minus what only an unattended run needs (no hooks,
+    no auto-memory, the built-in plugins off), plus a deny on the edit tools
+    and a sandbox `denyWrite` on every checkout, on
+    the clones they share a `.git` with, on the session's own folder and on
+    the review workspace's folder, where its settings are written. One
+    PR's code must not be able to rewrite another's, whose setup would then
+    run it unsandboxed, nor plant a hook or config in a clone, which the
+    sidecar's git would run. The core adds the checkouts as
+    `permissions.additionalDirectories` and writes the settings, and the
+    guardrail prompt with the sidecar's context line, to
+    `<workspacesRoot>/.review/<workspaceId>/.ask-claude/`. That folder is
+    outside everything the sandbox can write, and isn't emptied on a start
+    the way the session folder is, so a running session's files stay put.
+  - **Launch line.** The core types a short line into the user's login shell:
+    the agent command's program, minus its own flags, under `exec` (so no
+    shell outlives it, and `|| exit` covers an `exec` that fails), with
+    `--setting-sources user` (or `user,project,local` with the option on),
+    `--settings <file>`, `--no-chrome` (Claude in Chrome acts in the user's signed-in browser,
+    outside the sandbox), `--permission-mode default` and
+    `--append-system-prompt-file <file>`. Everything long goes in the files:
+    a line typed before the shell's line editor starts is read in canonical
+    mode, where macOS drops whatever passes 1024 bytes, and the core refuses
+    a line over `MAX_LAUNCH_LINE_BYTES`. Leaving `project` out of the
+    sources keeps an added folder's skills out, but
+    `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`
+    regardless, so the core sets it to 0, or 1 with the option on, after the
+    user's own assignments. `env -u`
+    drops common credential variables the login shell may export (`GH_TOKEN`
+    and the AWS keys; the full list is `REVIEW_SESSION_UNSET_ENV`) and
+    Yarvis's session tokens. That is a denylist, and a command's shell may
+    get them back from the user's rc files; the sandbox keeping commands off
+    the network, unless the user approves a host, is what stops them leaving.
+  - **Where the shell opens.** The login shell's hooks (mise, direnv) act on
+    the folder it opens in and that folder's parents, so it never opens in a
+    checkout: it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`,
+    which the session can't write to and which is emptied before each start.
+    The core checks, on real paths, that the folder is
+    `.review-sessions/<workspaceId>` and overlaps no checkout, and refuses
+    control characters in what it types. The PTY id (`review-claude:`) is not
+    attention addressable, so it gets no sidecar tokens, and
+    `spawn_into_state` refuses to put a plain shell under it. A start while a
+    session runs leaves it alone without spawning anything.
+  - **Teardown.** Removing a PR or archiving the workspace ends the session
+    first, through `claude.killReview`, under a per-workspace lock
+    (`withReviewWorkspaceLock`) that a start also takes, so no start lands
+    between the kill and the removal. A refresh, and a clone resumed after a
+    restart, start under that lock too, and a removal reads the PR and checks
+    it isn't being updated under it, so neither starts on a PR being removed.
+    `claude.spawnReview` and `claude.killReview` time out after 5s, since
+    removals wait on them; a spawn that timed out is ended, since it may
+    still land, but one the core refused isn't, so a running session
+    survives it. The lock is per sidecar: a second app instance sharing the
+    database can start a session the first one's removal doesn't end. That
+    is accepted, since the session is read-only and only loses its folders.
+    An archive that couldn't end the session keeps its folders and says so,
+    since a running session may still read its settings file.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

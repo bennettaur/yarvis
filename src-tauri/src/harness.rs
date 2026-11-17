@@ -199,7 +199,7 @@ fn program_of(command: &str) -> Option<String> {
 
 /// True when a command launches Claude Code, judged by its program's file name.
 /// Decides the built-in harness's kind, since `agentCommand` carries none.
-fn runs_claude_code(command: &str) -> bool {
+pub fn runs_claude_code(command: &str) -> bool {
     program_of(command)
         .is_some_and(|program| Path::new(&program).file_name() == Some(OsStr::new("claude")))
 }

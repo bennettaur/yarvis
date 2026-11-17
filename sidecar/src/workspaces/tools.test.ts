@@ -3144,3 +3144,181 @@ describe("add_repo_to_workspace", () => {
     expect(result.error).toBe("workspace not found");
   });
 });
+
+describe("archive_workspace and linked issues", () => {
+  /** Links issues to the workspace, one per `[externalId, localStatus]`. */
+  async function linkIssues(
+    workspaceId: string,
+    issues: [string, "todo" | "in_progress" | "done"][],
+  ) {
+    return db
+      .insert(schema.issueLinks)
+      .values(
+        issues.map(([externalId, localStatus]) => ({
+          provider: "github",
+          sourceKey: "acme/widget",
+          externalId,
+          title: `Issue ${externalId}`,
+          workspaceId,
+          localStatus,
+        })),
+      )
+      .returning();
+  }
+
+  async function localStatus(id: string) {
+    const [row] = await db.select().from(schema.issueLinks).where(eq(schema.issueLinks.id, id));
+    return row?.localStatus;
+  }
+
+  it("list_workspace_issues lists the workspace's linked issues", async () => {
+    const { workspaceId } = await activeWorkspace("Linked");
+    await linkIssues(workspaceId, [["5", "in_progress"]]);
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = await tools.list_workspace_issues.execute!({ workspaceId }, opts);
+
+    const { warning, issues } = result as {
+      warning: string;
+      issues: { key: string; title: string; status: string }[];
+    };
+    const tag = warning.match(/<(linked-issue-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
+    expect(issues).toEqual([
+      expect.objectContaining({
+        key: "acme/widget#5",
+        title: `<${tag}>\nIssue 5\n</${tag}>`,
+        status: "in_progress",
+      }),
+    ]);
+  });
+
+  it("closes every unfinished linked issue except the ones kept open", async () => {
+    const { workspaceId } = await activeWorkspace("Closing");
+    const [closes, kept] = await linkIssues(workspaceId, [
+      ["1", "in_progress"],
+      ["2", "todo"],
+      ["3", "done"],
+    ]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [kept!.id] },
+      opts,
+    )) as { status: string; closedIssues: string[] };
+
+    expect(result.status).toBe("archived");
+    expect(result.closedIssues).toEqual(["acme/widget#1"]);
+    // Already done locally, so it isn't sent to the tracker again.
+    expect(closed).toEqual(["1"]);
+    expect(await localStatus(closes!.id)).toBe("done");
+    expect(await localStatus(kept!.id)).toBe("todo");
+  });
+
+  it("closes every unfinished linked issue when none are kept open", async () => {
+    const { workspaceId } = await activeWorkspace("Close all");
+    await linkIssues(workspaceId, [
+      ["1", "in_progress"],
+      ["2", "todo"],
+    ]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    await tools.archive_workspace.execute!({ workspaceId, force: false }, opts);
+
+    expect(closed.sort()).toEqual(["1", "2"]);
+  });
+
+  it("refuses a keep-open id that isn't linked to the workspace, before archiving", async () => {
+    const { workspaceId } = await activeWorkspace("Mistyped");
+    await linkIssues(workspaceId, [["1", "todo"]]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [crypto.randomUUID()] },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not linked to this workspace");
+    expect(closed).toEqual([]);
+    expect((await getWorkspace(db, workspaceId))?.status).toBe("active");
+  });
+
+  it("closes nothing while a dirty worktree holds up the archive", async () => {
+    const { workspaceId } = await activeWorkspace("Dirty");
+    const [link] = await linkIssues(workspaceId, [["1", "todo"]]);
+    const refused = new Set<string>();
+    const dirtyRunner: GitRunner = async (args, runOpts) => {
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refused.add(args[2] ?? "");
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        const stdout = [...refused].map((path) => `worktree ${path}\0\0`).join("");
+        return { stdout, stderr: "", exitCode: 0 };
+      }
+      return okRunner(args, runOpts);
+    };
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: dirtyRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false },
+      opts,
+    )) as { status: string; closedIssues: string[] };
+
+    expect(result.status).toBe("archiving");
+    expect(result.closedIssues).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(await localStatus(link!.id)).toBe("todo");
+  });
+
+  it("reports the issues the tracker refused to close", async () => {
+    const { workspaceId } = await activeWorkspace("Refused");
+    await linkIssues(workspaceId, [["7", "todo"]]);
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async () => {
+        throw new Error("tracker said no");
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [] },
+      opts,
+    )) as {
+      closedIssues: string[];
+      issueCloseErrors: unknown[];
+      issueCloseErrorsWarning: string;
+    };
+
+    expect(result.closedIssues).toEqual([]);
+    const tag = result.issueCloseErrorsWarning.match(/<(tracker-error-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
+    expect(result.issueCloseErrors).toEqual([
+      { issue: "acme/widget#7", message: `<${tag}>\ntracker said no\n</${tag}>` },
+    ]);
+  });
+});

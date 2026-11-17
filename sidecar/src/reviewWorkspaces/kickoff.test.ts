@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
@@ -14,8 +14,10 @@ import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
+import { cancelVerificationQueue, getVerificationQueue, startVerificationQueue } from "./queue.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
+import { DEFAULT_SECTIONS, type ReportSection } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -42,12 +44,14 @@ const pass = { status: "pass", findings: [] };
 const report = {
   summary: "A small change.",
   mustRead: [],
+  changeMap: { intent: "A small change.", themes: [] },
+  claims: { items: [], gaps: [] },
   risk: { level: "low", clientImpact: "None.", mitigations: [], concerns: [] },
-  completeness: pass,
   tests: pass,
   complexity: pass,
   performance: pass,
   comments: pass,
+  malice: pass,
   observability: pass,
   quality: pass,
   approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
@@ -136,6 +140,7 @@ exit 1`,
           checks: [],
           reviewThreads: [],
         }) as unknown as PrDetail,
+      loadTickets: async () => ({ tickets: [], notes: [] }),
       settings: async () => ({ model: "haiku", maxBudgetUsd: 100 }),
       run: {
         program,
@@ -216,7 +221,7 @@ describe("kickOffVerification", () => {
     });
   });
 
-  it("starts once confirmed, joins the running report, and rings the bell when it ends", async () => {
+  it("starts once confirmed, joins the running checks, and rings the bell when they all end", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
     await until(async () => (await attention()).length > 0, "the checkout");
     await sql`TRUNCATE attention_items`;
@@ -225,18 +230,31 @@ describe("kickOffVerification", () => {
     expect(started).toMatchObject({ status: "started" });
     if (started.status !== "started") throw new Error("unreachable");
 
-    // Confirming again doesn't start a second run.
+    // One run per default section.
+    expect(started.runIds).toHaveLength(DEFAULT_SECTIONS.length);
+    // Confirming again doesn't start a second run of any of them.
+    expect(started.sections).toEqual({
+      started: [...DEFAULT_SECTIONS],
+      running: [],
+      current: [],
+      failed: [],
+    });
     const joined = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
-    expect(joined).toEqual({ ...started, status: "already-running" });
+    expect(joined).toEqual({
+      ...started,
+      status: "already-running",
+      sections: { started: [], running: [...DEFAULT_SECTIONS], current: [], failed: [] },
+    });
 
     release();
     await until(
       async () => (await attention()).some((a) => a.title === "Verification report ready"),
       "the ready notice",
     );
-    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, started.runId));
-    expect(run?.status).toBe("succeeded");
-    // One run, and one notice for it, though it was asked for twice.
+    const runs = await db.select().from(agentRuns).where(inArray(agentRuns.id, started.runIds));
+    expect(runs.map((r) => r.status)).toEqual(started.runIds.map(() => "succeeded"));
+    expect(await db.select().from(agentRuns)).toHaveLength(DEFAULT_SECTIONS.length);
+    // One notice once every run has ended, though the report was asked for twice.
     const ready = (await attention()).filter((a) => a.title === "Verification report ready");
     expect(ready).toHaveLength(1);
 
@@ -244,7 +262,44 @@ describe("kickOffVerification", () => {
     expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toEqual({
       ...started,
       status: "exists",
+      sections: { started: [], running: [], current: [...DEFAULT_SECTIONS], failed: [] },
     });
+
+    // Asking for a current section and a new one starts only the new one.
+    const more = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, sections: ["tests", "flow"] },
+      kickoff,
+    );
+    expect(more).toMatchObject({
+      status: "started",
+      sections: { started: ["flow"], running: [], current: ["tests"], failed: [] },
+    });
+    await until(async () => {
+      const rows = await db.select().from(agentRuns);
+      return (
+        rows.length === DEFAULT_SECTIONS.length + 1 && rows.every((r) => r.status !== "running")
+      );
+    }, "the flow run");
+
+    // A re-run starts a section even with a current result.
+    const again = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, rerun: true, sections: ["tests"] },
+      kickoff,
+    );
+    expect(again).toMatchObject({
+      status: "started",
+      sections: { started: ["tests"], current: [] },
+    });
+    await until(
+      async () => (await db.select().from(agentRuns)).every((r) => r.status !== "running"),
+      "the re-run",
+    );
   });
 
   // Through the tool, so the arguments the model sends are the ones that count.
@@ -299,6 +354,60 @@ describe("kickOffVerification", () => {
     expect(items[0]?.body).not.toContain("blew up");
   });
 
+  it("rings one error bell, not ready, when one check of several fails", async () => {
+    // Fails only the run writing the test-quality section.
+    const program = fakeClaude(
+      fakeDir,
+      "claude-tests-fail",
+      `input=$(cat)
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+case "$input" in *"SECTIONS=tests"*) echo "tests agent blew up" >&2; exit 1;; esac
+cat "${fakeDir}/result.jsonl"`,
+    );
+    if (kickoff.verification.run) kickoff.verification.run.program = program;
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+
+    expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toMatchObject({
+      status: "started",
+    });
+    release();
+    await until(
+      async () => (await attention()).some((a) => a.title === "Verification report failed"),
+      "the failure notice",
+    );
+    const items = await attention();
+    expect(items.map((a) => a.title)).toEqual(["Verification report failed"]);
+    expect(items[0]?.body).toContain(`1 of the ${DEFAULT_SECTIONS.length} checks failed`);
+    const runs = await db.select().from(agentRuns);
+    expect(runs.filter((r) => r.status === "failed")).toHaveLength(1);
+  });
+
+  it("prices the go-ahead for the sections about to run, leaving out current ones", async () => {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    const cost = async (sections: ReportSection[]) => {
+      const asked = await kickOffVerification(db, config, ref, { sections }, kickoff);
+      if (asked.status !== "needs-confirmation" || !asked.size)
+        throw new Error("expected a go-ahead");
+      return asked.size.estimatedCostUsd;
+    };
+    const one = await cost(["tests"]);
+    expect(one).toBeGreaterThan(0);
+    expect(await cost(["tests", "risk"])).toBeGreaterThan(one);
+
+    // Once the test-quality check has a result for this head, it isn't priced again.
+    await kickOffVerification(db, config, ref, { confirmed: true, sections: ["tests"] }, kickoff);
+    release();
+    await until(async () => {
+      const rows = await db.select().from(agentRuns);
+      return rows.length === 1 && rows[0]?.status === "succeeded";
+    }, "the tests run");
+    expect(await cost(["tests", "risk"])).toBe(await cost(["risk"]));
+    expect(await cost(["risk"])).toBe(one);
+  });
+
   it("says so when the checkout doesn't finish in time", async () => {
     const { promise, resolve: openCheckout } = Promise.withResolvers<void>();
     checkoutGate = promise;
@@ -351,5 +460,85 @@ describe("kickOffVerification", () => {
     expect(again).not.toHaveProperty("error", expect.stringContaining("exploded"));
     const [pr] = await db.select().from(reviewWorkspacePrs);
     expect(pr?.worktreeStatus).toBe("error");
+  });
+});
+
+describe("startVerificationQueue", () => {
+  const ref2: PrRef = { ...ref, number: 2 };
+  const queueBell = async () =>
+    (await attention()).find((a) => a.title.startsWith("Verification queue"));
+
+  /** PR 1 checked out, with its summary check started and held open by the fake. */
+  async function heldRun() {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+    const started = await kickOffVerification(
+      db,
+      config,
+      ref,
+      { confirmed: true, sections: ["summary"] },
+      kickoff,
+    );
+    expect(started).toMatchObject({ status: "started" });
+  }
+
+  it("skips a PR that needs the user's go-ahead, and rings one bell naming it", async () => {
+    const { queue } = startVerificationQueue(db, config, [ref], ["summary"], kickoff);
+    expect(queue.items).toEqual([{ ref, name: "r#1", state: "running", note: null }]);
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(getVerificationQueue(queue.id)).toMatchObject({
+      finished: true,
+      items: [{ state: "needs-confirmation", note: "It's a large PR." }],
+    });
+    // The PR's own go-ahead bell stays quiet: the queue reports for it.
+    expect(await attention()).toEqual([
+      expect.objectContaining({
+        kind: "info",
+        title: "Verification queue finished: 0 of 1 checked",
+        body: "r#1: needs your go-ahead. It's a large PR.",
+      }),
+    ]);
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+
+  it("starts the next PR only once the last one's checks end, and runs one queue at a time", async () => {
+    await heldRun();
+    const { queue } = startVerificationQueue(db, config, [ref, ref2, ref], ["summary"], kickoff);
+    // A PR named twice is checked once.
+    expect(queue.items.map((i) => i.name)).toEqual(["r#1", "r#2"]);
+    await until(async () => queue.currentRunIds.length > 0, "the queue joining PR 1's run");
+    expect(queue.items[1]?.state).toBe("waiting");
+    expect(await db.select().from(reviewWorkspacePrs)).toHaveLength(1);
+    expect(startVerificationQueue(db, config, [ref2], ["summary"], kickoff)).toEqual({
+      queue,
+      existing: true,
+    });
+
+    release();
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    // PR 2 has no branch on the test remote, so its checkout fails.
+    expect(queue.items.map((i) => [i.name, i.state])).toEqual([
+      ["r#1", "done"],
+      ["r#2", "failed"],
+    ]);
+    expect(await queueBell()).toMatchObject({
+      kind: "error",
+      title: "Verification queue finished: 1 of 2 checked",
+    });
+  });
+
+  it("cancels the PR running now and drops the rest", async () => {
+    await heldRun();
+    const { queue } = startVerificationQueue(db, config, [ref, ref2], ["summary"], kickoff);
+    await until(async () => queue.currentRunIds.length > 0, "the queue joining PR 1's run");
+    expect(cancelVerificationQueue(queue.id, kickoff)).toBe(true);
+    expect(cancelVerificationQueue(queue.id, kickoff)).toBe(false);
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+    expect(queue.items.map((i) => i.state)).toEqual(["cancelled", "cancelled"]);
+    expect(await queueBell()).toMatchObject({
+      kind: "info",
+      title: "Verification queue cancelled: 0 of 2 checked",
+    });
   });
 });

@@ -24,7 +24,6 @@ const report: VerificationReport = {
       },
     ],
   },
-  completeness: pass,
   tests: {
     status: "issues",
     findings: [
@@ -367,7 +366,7 @@ describe("VerificationReportView", () => {
         }),
       ),
     );
-    expect(text).toContain("Completenesspasses");
+    expect(text).toContain("Complexitypasses");
     expect(text).toContain("Performancepasses");
     expect(text).toContain("Test quality1 finding");
     expect(text).toContain("Eviction is untested");
@@ -395,6 +394,69 @@ describe("VerificationReportView", () => {
     );
     expect(withoutChecks).not.toContain("Observability");
     expect(withoutChecks).not.toContain("Code quality");
+  });
+
+  it("lists the malicious-intent check's tripwires even when it passes, each opening its line", async () => {
+    const opened: unknown[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          malice: {
+            ...pass,
+            tripwires: [
+              { kind: "build", path: ".github/workflows/ci.yml", note: "CI configuration" },
+              { kind: "hidden-text", path: "src/auth.ts", line: 7, note: "invisible characters" },
+            ],
+            tripwiresOmitted: 3,
+          },
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      expect(text).toContain("Malicious intentpasses");
+      expect(text).toContain("5 tripwires to confirm");
+      expect(text).toContain("Hidden text");
+      expect(text).toContain("3 more not listed.");
+      const link = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "src/auth.ts:7",
+      );
+      link?.click();
+      await waitFor(() => opened.length > 0, "the open");
+      expect(opened).toEqual([["src/auth.ts", 7]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says when a PR stacked above changes a finding's line, but not for an older head's", async () => {
+    const upstack = {
+      headSha: "h",
+      note: null,
+      layers: [
+        {
+          number: 8,
+          url: "https://github.com/o/r/pull/8",
+          stale: false,
+          files: [{ path: "src/cache.test.ts", ranges: null }],
+        },
+      ],
+    };
+    const render = async (currentSections?: Set<string>) =>
+      textOf(
+        await renderToHtml(
+          createElement(VerificationReportView, {
+            report,
+            upstack,
+            currentSections,
+            onOpen: { open: () => {}, canOpen: () => true },
+          }),
+        ),
+      );
+    expect(await render()).toContain("changed in #8 above");
+    expect(await render(new Set(["summary"]))).not.toContain("changed in #8 above");
   });
 
   it("crosses off must-reads and findings in files the reviewer has viewed", async () => {
@@ -642,5 +704,134 @@ describe("VerificationReportView", () => {
     );
     expect(text).toContain("Not rated");
     expect(text).not.toContain("simpler way exists");
+  });
+});
+
+describe("the change map and claims", () => {
+  const withMap: VerificationReport = {
+    mustRead: [],
+    changeMap: {
+      intent: "Caches user lookups.",
+      themes: [
+        {
+          title: "Cache the lookup",
+          description: "Reads go through an LRU.",
+          risk: "medium",
+          cohesion: "core",
+          question: "",
+          files: [{ path: "src/cache.ts", lines: { start: 3, end: 40 } }],
+        },
+        {
+          title: "Bump the timeout",
+          description: "The HTTP timeout goes from 5s to 30s.",
+          risk: "low",
+          cohesion: "outlier",
+          question: "Why does this PR change the HTTP timeout?",
+          files: [{ path: "src/http.ts" }],
+        },
+      ],
+      unmapped: ["README.md"],
+    },
+    claims: {
+      items: [
+        {
+          claim: "Caches user lookups",
+          source: "description",
+          status: "verified",
+          evidence: "getUser reads through the cache",
+          path: "src/cache.ts",
+          line: 12,
+        },
+        {
+          claim: "Invalidates on write",
+          source: "ABC-12",
+          status: "missing",
+          evidence: "No write path clears the cache",
+          path: "src/users.ts",
+          line: 30,
+        },
+      ],
+      gaps: [
+        {
+          title: "TODO left in eviction",
+          detail: "d",
+          severity: "medium",
+          path: "src/cache.ts",
+          line: 50,
+        },
+      ],
+      tickets: [
+        { key: "ABC-12", title: "Cache users", url: "https://acme.atlassian.net/browse/ABC-12" },
+      ],
+      ticketNotes: ["Couldn't read XY-1: not found"],
+    },
+  };
+
+  it("lists each theme with how it fits, and the files no theme names", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: withMap,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Caches user lookups.");
+    expect(text).toContain("Coremedium riskCache the lookup");
+    expect(text).toContain("src/cache.ts:3-40");
+    expect(text).toContain("Outlierlow riskBump the timeout");
+    expect(text).toContain("Ask the author: Why does this PR change the HTTP timeout?");
+    expect(text).toContain("In no theme:README.md");
+  });
+
+  it("sends an outlier's question and an unmet claim to the PR, but not a verified claim", async () => {
+    const posted: { title: string; detail: string; path: string; line: number; section: string }[] =
+      [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: withMap,
+        onOpen: { open: () => {}, canOpen: () => true },
+        poster: {
+          toPr: async (f, section) => {
+            posted.push({ ...f, section });
+            return undefined;
+          },
+        },
+      }),
+    );
+    const buttons = [...host.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Post to PR",
+    );
+    // The outlier, the missing claim and the unfinished work: never the verified claim.
+    expect(buttons).toHaveLength(3);
+    for (const b of buttons) b.click();
+    await waitFor(() => posted.length === 3, "the posts");
+    expect(posted).toContainEqual({
+      title: "Bump the timeout",
+      detail: "Why does this PR change the HTTP timeout?",
+      path: "src/http.ts",
+      line: 1,
+      section: "Change map",
+    });
+    expect(posted).toContainEqual(
+      expect.objectContaining({ title: "Invalidates on write", section: "Claims: missing" }),
+    );
+    unmount();
+  });
+
+  it("shows each claim's verdict, what it was checked against, and the unfinished work", async () => {
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: withMap,
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Checked against the title, description andABC-12");
+    expect(text).toContain("Couldn't read XY-1: not found");
+    expect(text).toContain("VerifiedCaches user lookupsdescription");
+    expect(text).toContain("MissingInvalidates on writeABC-12");
+    expect(text).toContain("Unfinished work1 finding");
   });
 });
