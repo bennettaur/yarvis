@@ -146,7 +146,12 @@ describe("ask_user over MCP", () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
 
-    const [item] = await sql`SELECT source, kind, status, title, workspace_id FROM attention_items`;
+    // The attention item is raised after the question is stored, so wait for it too.
+    let item: postgres.Row | undefined;
+    for (let i = 0; i < 100 && !item; i++) {
+      [item] = await sql`SELECT source, kind, status, title, workspace_id FROM attention_items`;
+      if (!item) await Bun.sleep(20);
+    }
     expect(item).toMatchObject({
       source: "system",
       kind: "question",
