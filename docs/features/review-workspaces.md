@@ -191,7 +191,7 @@ row runs that one; tick several and press **Run picked** to start them
 together. The boxes start ticked on the checks with no result for the PR's
 current head, except the flow diagram, which runs only when you ask. Each
 row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
-what its last run cost, whether that result is from an older head, and whether
+what that result cost, whether that result is from an older head, and whether
 its last run failed or was cancelled. A failed or cancelled run leaves the
 check's last good result in place. While checks run, the tab checks on them
 every few seconds, and **Cancel** on a running check's row stops it. A check
