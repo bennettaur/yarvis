@@ -37,6 +37,7 @@ import {
   refDomKey,
   reviewClonePath,
   reviewSessionFolder,
+  reviewWorkspaceDir,
   withReviewWorkspaceLock,
 } from "./service.ts";
 
@@ -56,10 +57,12 @@ const DENIED_TOOLS = ["Write", "Edit", "NotebookEdit", "Skill"];
  * one PR's code can't change another's, which a later setup run would execute,
  * nor to the clones the checkouts share a `.git` with, whose hooks and config
  * the sidecar's own git commands would run, nor to the session's own folder,
- * which the next session's shell opens in.
+ * which the next session's shell opens in, nor to the review workspace's
+ * folder, where the core writes the session's settings and prompt.
  */
 function reviewSessionSettings(
   sessionFolder: string,
+  workspaceFolder: string,
   checkouts: string[],
   clones: string[],
 ): Record<string, unknown> {
@@ -71,7 +74,10 @@ function reviewSessionSettings(
     permissions: { ...permissions, deny: [...permissions.deny, ...DENIED_TOOLS] },
     sandbox: {
       ...sandbox,
-      filesystem: { ...sandbox.filesystem, denyWrite: [sessionFolder, ...checkouts, ...clones] },
+      filesystem: {
+        ...sandbox.filesystem,
+        denyWrite: [sessionFolder, workspaceFolder, ...checkouts, ...clones],
+      },
     },
   };
 }
@@ -181,7 +187,14 @@ async function startLocked(
       workspaceId: ws.id,
       cwd,
       addDirs: checkouts,
-      settings: JSON.stringify(reviewSessionSettings(cwd, checkouts, clones)),
+      settings: JSON.stringify(
+        reviewSessionSettings(
+          cwd,
+          realFolder(reviewWorkspaceDir(config, ws.id)),
+          checkouts,
+          clones,
+        ),
+      ),
       context,
     });
   } catch (e) {

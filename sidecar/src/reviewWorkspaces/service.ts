@@ -243,11 +243,14 @@ export const withReviewWorkspaceLock = createKeyedLock();
  * failure is logged, not thrown: the removal the user asked for still happens,
  * and the session just loses the folder.
  */
-async function endClaudeSessionQuietly(deps: ReviewDeps, workspaceId: string): Promise<void> {
+/** Whether the session is known to be over: ended, or there was none to end. */
+async function endClaudeSessionQuietly(deps: ReviewDeps, workspaceId: string): Promise<boolean> {
   try {
     await deps.endClaudeSession?.(workspaceId);
+    return true;
   } catch (e) {
     console.error("[review-workspaces] could not end the Claude Code session:", describeError(e));
+    return false;
   }
 }
 
@@ -860,13 +863,14 @@ export async function archiveReviewWorkspace(
   // goes on to remove anything. Under the workspace's lock, so a start either
   // finishes before the claim, and the session it started is ended below, or
   // runs after it and sees the workspace archiving.
+  let sessionEnded = false;
   const claimed = await withReviewWorkspaceLock(id, async () => {
     const [row] = await db
       .update(reviewWorkspaces)
       .set({ status: "archiving", updatedAt: new Date() })
       .where(and(eq(reviewWorkspaces.id, id), eq(reviewWorkspaces.status, "active")))
       .returning();
-    if (row) await endClaudeSessionQuietly(deps, id);
+    if (row) sessionEnded = await endClaudeSessionQuietly(deps, id);
     return row;
   });
   if (!claimed) {
@@ -887,12 +891,17 @@ export async function archiveReviewWorkspace(
         failures.push(safeMessage(e));
       }
     }
-    try {
-      // The session ended above, and its sandbox couldn't write to either folder.
-      rmSync(reviewSessionFilesDir(config, id), { recursive: true, force: true });
-      rmSync(reviewSessionFolder(config, id), { recursive: true, force: true });
-    } catch (e) {
-      failures.push(safeMessage(e));
+    if (!sessionEnded) {
+      // A session that may still be running keeps the settings file it reads.
+      failures.push("the Claude Code session couldn't be ended, so its folders were kept");
+    } else {
+      try {
+        // The session ended above, and its sandbox couldn't write to either folder.
+        rmSync(reviewSessionFilesDir(config, id), { recursive: true, force: true });
+        rmSync(reviewSessionFolder(config, id), { recursive: true, force: true });
+      } catch (e) {
+        failures.push(safeMessage(e));
+      }
     }
     try {
       // Only removes an empty folder; anything left in it is what a failure

@@ -790,7 +790,8 @@ report there and leaves the fixes to the author.
   `spawn_review_claude_session` in `pty.rs`).
   - **Settings.** The sidecar sends `lockedDownSettings` plus a deny on the
     edit tools and `Skill`, and a sandbox `denyWrite` on every checkout, on
-    the clones they share a `.git` with and on the session's own folder. One
+    the clones they share a `.git` with, on the session's own folder and on
+    the review workspace's folder, where its settings are written. One
     PR's code must not be able to rewrite another's, whose setup would then
     run it unsandboxed, nor plant a hook or config in a clone, which the
     sidecar's git would run. The core adds the checkouts as
@@ -839,6 +840,8 @@ report there and leaves the fixes to the author.
     survives it. The lock is per sidecar: a second app instance sharing the
     database can start a session the first one's removal doesn't end. That
     is accepted, since the session is read-only and only loses its folders.
+    An archive that couldn't end the session keeps its folders and says so,
+    since a running session may still read its settings file.
   The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
   not pointed at a checkout: it runs in a fresh empty folder under
   `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its

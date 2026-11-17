@@ -1350,6 +1350,10 @@ fn review_launch_command(program: &str, settings: &Path, prompt: &Path) -> Resul
     if line.len() > MAX_LAUNCH_LINE_BYTES {
         return Err("the review session's launch line is too long to type".into());
     }
+    // The files' real paths can differ from the folder checked before.
+    if line.chars().any(is_unsafe_name_char) {
+        return Err("the review session's launch line carries a control character".into());
+    }
     Ok(line)
 }
 
@@ -1481,6 +1485,16 @@ fn check_review_spawn(
         .any(|d| real_cwd.starts_with(d) || d.starts_with(&real_cwd))
     {
         return Err("the session folder overlaps a checkout".into());
+    }
+    // Nor may a checkout hold, or be, the folder its settings are written to.
+    if let Some(root) = real_cwd.parent().and_then(Path::parent) {
+        let files = root.join(".review").join(workspace_id).join(".ask-claude");
+        if real_dirs
+            .iter()
+            .any(|d| files.starts_with(d) || d.starts_with(&files))
+        {
+            return Err("a checkout overlaps the session's settings folder".into());
+        }
     }
     // Only a JSON object can reach the line, and it goes in single-quoted.
     if !serde_json::from_str::<serde_json::Value>(settings).is_ok_and(|v| v.is_object()) {
@@ -2253,6 +2267,8 @@ mod tests {
         assert!(line.len() <= MAX_LAUNCH_LINE_BYTES, "{} bytes", line.len());
         let deep = Path::new("/x").join("y".repeat(MAX_LAUNCH_LINE_BYTES));
         assert!(review_launch_command(&program, &deep, &prompt).is_err());
+        let tabbed = Path::new("/x\ty/settings.json");
+        assert!(review_launch_command(&program, tabbed, &prompt).is_err());
     }
 
     #[test]
@@ -2354,6 +2370,13 @@ mod tests {
         assert!(check(&cwd, &one, "[]", "").is_err());
         assert!(check(&cwd, &one, "not json", "").is_err());
         assert!(check(&cwd, &one, "{}", &"x".repeat(9_000)).is_err());
+        // A checkout can't hold, or be, the folder the session's settings go in.
+        let files = root.join(".review").join("ws1").join(".ask-claude");
+        std::fs::create_dir_all(&files).unwrap();
+        for dir in [files.parent().unwrap(), files.as_path()] {
+            let dirs = [dir.to_string_lossy().into_owned()];
+            assert!(check(&cwd, &dirs, "{}", "").is_err(), "{}", dir.display());
+        }
         // A link is judged by where it leads: one named like the session folder
         // but pointing into a checkout, or a checkout that is a link to it.
         let linked_cwd = root.join("elsewhere").join(".review-sessions").join("ws1");

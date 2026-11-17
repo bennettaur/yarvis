@@ -1525,8 +1525,13 @@ describe("claude session", () => {
           ...base.sandbox.filesystem,
           // One PR's code mustn't be able to change another's checkout, nor
           // the clone's hooks and config, nor leave anything in the folder the
-          // next session's shell opens in.
-          denyWrite: [spawn.cwd, realCheckout, realpathSync(reviewClonePath(config, ref))],
+          // next session's shell opens in, nor the settings file it reads.
+          denyWrite: [
+            spawn.cwd,
+            realpathSync(reviewWorkspaceDir(config, wsId)),
+            realCheckout,
+            realpathSync(reviewClonePath(config, ref)),
+          ],
         },
       },
     });
@@ -1589,7 +1594,12 @@ describe("claude session", () => {
     const settings = JSON.parse(spawn.settings);
     // The three PRs share one clone, named once.
     expect([...settings.sandbox.filesystem.denyWrite].sort()).toEqual(
-      [spawn.cwd, ...ready, realpathSync(reviewClonePath(config, ref))].sort(),
+      [
+        spawn.cwd,
+        realpathSync(reviewWorkspaceDir(config, spawn.workspaceId)),
+        ...ready,
+        realpathSync(reviewClonePath(config, ref)),
+      ].sort(),
     );
 
     // A PR that failed, or whose checkout has no head yet, is left out too.
@@ -1859,17 +1869,25 @@ describe("claude session", () => {
     ).toEqual([]);
 
     const other = await readyWorkspace();
+    // What the core writes for a session that may still be running.
+    const settingsFile = join(reviewSessionFilesDir(config, other.wsId), "settings.json");
+    mkdirSync(reviewSessionFilesDir(config, other.wsId));
+    writeFileSync(settingsFile, "{}");
     expect((await sessionApp.request(`/rw/${other.wsId}/archive`, { method: "POST" })).ok).toBe(
       true,
     );
+    let archived: { status: string; error: string | null } | undefined;
     await until(async () => {
-      const [row] = await db
+      [archived] = await db
         .select()
         .from(reviewWorkspaces)
         .where(eq(reviewWorkspaces.id, other.wsId));
-      return row?.status === "archived";
+      return archived?.status === "archived";
     }, "the archive to finish");
     expect(ended).toEqual([wsId, other.wsId]);
+    // Its settings stay put, so the session can't lose its lockdown mid-run.
+    expect(existsSync(settingsFile)).toBe(true);
+    expect(archived?.error).toContain("couldn't be ended");
   });
 
   it("ends a session whose start was under way when the workspace was archived", async () => {
