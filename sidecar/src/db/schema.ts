@@ -2145,6 +2145,8 @@ export const reviewWorkspaces = pgTable("review_workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+  /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
+  askClaudeRepoConfig: boolean("ask_claude_repo_config").notNull().default(false),
 });
 
 /**

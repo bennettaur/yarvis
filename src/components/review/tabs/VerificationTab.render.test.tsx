@@ -266,6 +266,34 @@ describe("VerificationTab", () => {
     );
     expect(textOf(stale.innerHTML)).toContain("Stale reads");
     expect(button(stale, "Post to PR")).toBeUndefined();
+    unmount();
+
+    // Per check: an older head's test findings can't post while a current check's can.
+    const located = (title: string) => ({
+      status: "issues" as const,
+      findings: [{ title, detail: "d", severity: "medium" as const, path: "src/a.ts", line: 4 }],
+    });
+    const mixed: VerificationReport = {
+      mustRead: [],
+      tests: located("No eviction test"),
+      performance: located("Misses the delete path"),
+    };
+    const checks = await mount(
+      checklist({
+        items: {
+          ...answered(mixed),
+          tests: { latest: run(), result: run({ headSha: older, current: false }) },
+        },
+        report: mixed,
+      }),
+    );
+    expect(textOf(checks.innerHTML)).toContain("Test quality · older head");
+    const posts = [...checks.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Post to PR",
+    );
+    // The one left is the current check's finding, not the older head's.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.closest("li")?.textContent).toContain("Misses the delete path");
   });
 
   it("cancels a run going here", async () => {
@@ -386,12 +414,43 @@ describe("VerificationTab", () => {
       }),
     });
     const host = await mount(checklist());
-    button(host, `Run picked (${DEFAULT_SECTIONS.length})`)?.click();
+    // Picked by hand, so the picks after the run are what's left of these.
+    pick(host, "Performance").click();
+    await waitFor(() => !pick(host, "Performance").checked, "the picks to change");
+    button(host, `Run picked (${DEFAULT_SECTIONS.length - 1})`)?.click();
     await waitFor(
       () => textOf(host.innerHTML).includes("Couldn't start Test quality: no Claude Code here"),
       "the partial failure",
     );
+    // The one that didn't start stays picked for another try; the one that did isn't.
+    expect(pick(host, "Test quality").checked).toBe(true);
+    expect(pick(host, "Risk").checked).toBe(false);
+    expect(pick(host, "Performance").checked).toBe(false);
   });
+
+  it("re-reads the checklist while a check runs, and stops once none is", async () => {
+    let reads = 0;
+    const report: VerificationReport = { mustRead: [], tests: check };
+    stubReviewApi({
+      verificationChecklist: async () => {
+        reads++;
+        return checklist({ items: { tests: { latest: run(), result: run() } }, report });
+      },
+    });
+    const host = await mount(
+      checklist({ items: { tests: { latest: run({ status: "running", live: true }) } } }),
+    );
+    // Past one polling interval, the row shows the run's result.
+    await waitFor(
+      () => textOf(row(host, "Test quality").innerHTML).includes("Pass"),
+      "the finished check",
+      8_000,
+    );
+    const settled = reads;
+    // Nothing is running any more, so another interval passes with no read.
+    await new Promise((resolve) => setTimeout(resolve, 3_500));
+    expect(reads).toBe(settled);
+  }, 15_000);
 
   it("shows what each check's last run cost", async () => {
     const host = await mount(
