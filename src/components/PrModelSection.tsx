@@ -240,7 +240,7 @@ export default function PrModelSection() {
         {verification && (
           <ClaudeRunRow
             label="Verification report"
-            hint="Runs on Claude Code. A report estimated over the budget asks before it starts."
+            hint="Runs on Claude Code. The assistant asks before starting a report estimated over the budget."
             value={verification}
             onSave={(patch) => void saveVerification(patch)}
             onError={setError}

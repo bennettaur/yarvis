@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { FLOW_DIAGRAM_AGENT } from "../reviewWorkspaces/flowDiagram.ts";
-import { REREVIEW_AGENT } from "../reviewWorkspaces/rereview.ts";
 import { SECTION_AGENTS } from "../reviewWorkspaces/verification.ts";
 import {
   INPUTS_AND_TRUST_MARKER,
@@ -43,7 +41,7 @@ describe("writing out a shipped plugin", () => {
         .sort();
       expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
-      expect(agents).toHaveLength(12);
+      expect(agents).toHaveLength(14);
       for (const path of sourceFiles) {
         const shipped = readFileSync(join(copy.dir, path), "utf8");
         const original = readFileSync(join(source, path), "utf8");
@@ -73,21 +71,6 @@ describe("writing out a shipped plugin", () => {
         expect(name.startsWith("yarvis-review:")).toBe(true);
         const file = join(copy.dir, "agents", `${name.slice("yarvis-review:".length)}.md`);
         expect(existsSync(file)).toBe(true);
-      }
-    } finally {
-      copy.remove();
-    }
-  });
-
-  it("lets every agent a run uses as its main thread answer with structured output", () => {
-    // A run started with --json-schema answers through StructuredOutput; an
-    // agent without it in `tools` ends with no answer at all.
-    const copy = writePluginCopy("yarvis-review");
-    try {
-      for (const name of [REREVIEW_AGENT, FLOW_DIAGRAM_AGENT]) {
-        const file = join(copy.dir, "agents", `${name.slice("yarvis-review:".length)}.md`);
-        const tools = readFileSync(file, "utf8").match(/^tools: (.*)$/m)?.[1] ?? "";
-        expect(tools.split(", ")).toContain("StructuredOutput");
       }
     } finally {
       copy.remove();

@@ -12,7 +12,6 @@ import { mock } from "bun:test";
 
 type ReviewApi = typeof import("../lib/reviewWorkspaces/api");
 type VerificationApi = typeof import("../lib/reviewWorkspaces/verification");
-type FlowDiagramApi = typeof import("../lib/reviewWorkspaces/flowDiagram");
 type AgentRunsApi = typeof import("../lib/agentRuns");
 type MutationApi = typeof import("../lib/reviewWorkspaces/mutation");
 type MutationConfigApi = typeof import("../lib/pr/mutationTestingConfig");
@@ -22,7 +21,6 @@ type PrModelsApi = typeof import("../lib/pr/models");
 type Overrides = Partial<
   ReviewApi &
     VerificationApi &
-    FlowDiagramApi &
     AgentRunsApi &
     MutationApi &
     MutationConfigApi &
@@ -36,7 +34,6 @@ type Overrides = Partial<
 // would call itself.
 const review = { ...(await import("../lib/reviewWorkspaces/api")) };
 const verification = { ...(await import("../lib/reviewWorkspaces/verification")) };
-const flowDiagram = { ...(await import("../lib/reviewWorkspaces/flowDiagram")) };
 const agentRuns = { ...(await import("../lib/agentRuns")) };
 const mutation = { ...(await import("../lib/reviewWorkspaces/mutation")) };
 const mutationConfig = { ...(await import("../lib/pr/mutationTestingConfig")) };
@@ -79,13 +76,9 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
 mock.module("../lib/reviewWorkspaces/verification", () => ({
   ...verification,
   startVerification: through(verification, "startVerification"),
-  latestVerification: through(verification, "latestVerification"),
-}));
-
-mock.module("../lib/reviewWorkspaces/flowDiagram", () => ({
-  ...flowDiagram,
-  startFlowDiagram: through(flowDiagram, "startFlowDiagram"),
-  latestFlowDiagram: through(flowDiagram, "latestFlowDiagram"),
+  verificationChecklist: through(verification, "verificationChecklist"),
+  verificationEvidence: through(verification, "verificationEvidence"),
+  verificationUpstack: through(verification, "verificationUpstack"),
 }));
 
 mock.module("../lib/agentRuns", () => ({

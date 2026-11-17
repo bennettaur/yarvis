@@ -8,6 +8,7 @@ import { buildIssuePrompt, upsertLink } from "../issues/service.ts";
 import { createWorkspace, startKickOff } from "../workspaces/service.ts";
 import { isAllowedJiraBaseUrl, JiraClient } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
+import { issueKey } from "./validation.ts";
 
 /**
  * JIRA issue routes, mounted under /api/jira. Unlike GitHub, a JIRA issue is
@@ -16,14 +17,6 @@ import { applyJiraStartWorkSideEffects } from "./service.ts";
  * rather than under the shared `/api/issues/:provider` routes (which JIRA still
  * reuses for the provider-neutral stars / saved filters / workspace links).
  */
-
-// Project key + number, e.g. "PROJ-45". Interpolated into JIRA API paths, so it
-// must not smuggle extra path segments. Case-insensitive; JIRA keys are upper.
-const issueKey = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[A-Za-z][A-Za-z0-9_]*-\d+$/, "invalid jira issue key");
 
 const projectKey = z
   .string()

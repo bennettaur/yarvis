@@ -131,12 +131,13 @@
 <!-- ───────────────────────────────────────────── -->
 <section id="in-app">
   <h2>What's in the report</h2>
-  <p>It runs Claude Code on your machine against the PR's checkout. Above <b>Run verification</b> you pick the sections; the summary and must-read files always run. Its progress shows check by check, and every file and line in it opens the diff.</p>
+  <p>It runs Claude Code on your machine against the PR's checkout. The tab is a checklist grouped by theme, and each check runs on its own when you pick it, so one can be re-run, or fail, without the others. The report below the checklist shows each check's newest result, and every file and line in it opens the diff.</p>
   <div class="grid g3">
-    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Summary and must-read files</h3><p>Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
     <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
-    <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
+    <div class="card"><h3>Checks</h3><p>Claims (the description and linked tickets checked against the code), malicious intent, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
     <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
+    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted. It opens in its own tab rather than in the report.</p></div>
     <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. This list appears at the top of the report, each file with the reason.</p></div>
   </div>
 
@@ -171,7 +172,7 @@
     </div>
     <div class="card">
       <h3>Everything from the PR is data</h3>
-      <p>The diffs, descriptions and comments the agents read are treated as untrusted.</p>
+      <p>The diffs, descriptions and comments the agents read are treated as untrusted. The flow diagram is drawn in Mermaid's strict mode and shown as an image, where it can't run anything.</p>
       <p class="why">Why: the PR's author controls that text, and the agents run on your machine.</p>
     </div>
     <div class="card">
@@ -228,7 +229,7 @@
   <div class="grid g2">
     <div class="card">
       <h3>The surrounding code, not only the diff</h3>
-      <p>The simpler-approach agent follows the code beyond the diff, into the rest of the checkout. A change is often only wrong in how it meets code that didn't change.</p>
+      <p>The flow diagram and simpler-approach agents follow the code beyond the diff, into the rest of the checkout. A change is often only wrong in how it meets code that didn't change.</p>
     </div>
     <div class="card">
       <h3>The PR's own description</h3>
@@ -256,7 +257,7 @@
     </div>
     <div class="card">
       <h3>The shape of the flow</h3>
-      <p><b>Flow diagram</b> is a separate run, started from the PR's nav. It shows where the change sits: the changed steps highlighted, traced up to what starts the flow and down to where it ends, so you see how far it reaches before reading a line.</p>
+      <p>The flow diagram shows where the change sits: the changed steps highlighted, traced up to what starts the flow and down to where it ends, so you see how far it reaches before reading a line.</p>
     </div>
     <div class="card">
       <h3>Progress that tracks itself</h3>
@@ -272,10 +273,10 @@
 <section id="running">
   <h2>Running it</h2>
   <ul>
-    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Pick sections and press <b>Run verification</b>. Starting a second run for the same PR joins the one already running.</li>
+    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Press <b>Run</b> on a check, or tick several and press <b>Run picked</b>. Starting a check that is already running joins that run.</li>
     <li><b>From the assistant</b>: "verify bennettaur/yarvis#612" from chat, voice or Telegram. It uses or creates a review workspace, waits for the clone, and never runs the setup script. It asks first when the PR is large, over budget, of unknown size, or from a repo you haven't registered, since the PR reference may have come from text someone else wrote.</li>
-    <li><b>Cost</b>: before a large run, or one estimated over the budget in <b>Settings → PR review</b>, you see an estimate and are asked. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
-    <li><b>Staleness</b>: a report for an older head says so and offers <b>Re-run</b>. If a re-run fails or is cancelled, the last good report stays.</li>
+    <li><b>Cost</b>: the tab doesn't ask: which checks you run is the budget, and each row shows what its last run cost. The assistant asks first when the PR is large or over the budget in <b>Settings → PR review</b>. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
+    <li><b>Staleness</b>: a check whose result is for an older head says so on its row and in the report. If a re-run fails or is cancelled, the check's last good result stays.</li>
   </ul>
 </section>
 <!-- ───────────────────────────────────────────── -->

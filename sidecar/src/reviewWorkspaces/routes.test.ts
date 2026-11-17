@@ -25,6 +25,7 @@ import { ControlTimeoutError } from "../core/controlClient.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
+import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import type { Coverage } from "./coverage.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
@@ -651,6 +652,126 @@ describe("removing and archiving", () => {
   });
 });
 
+describe("CI evidence", () => {
+  const evidenceApp = (source: (r: PrRef) => PrCodeSource | { error: string }) =>
+    new Hono().route("/rw", createReviewWorkspaceRoutes(config, { deps, evidenceSource: source }));
+
+  const insertPr = async () => {
+    const [ws] = await db.insert(reviewWorkspaces).values({ name: "Evidence" }).returning();
+    const [pr] = await db
+      .insert(reviewWorkspacePrs)
+      .values({
+        workspaceId: ws?.id as string,
+        refKey: "gh:o/r/1",
+        ref,
+        colorIndex: 0,
+        position: 0,
+        status: "ready",
+        worktreePath: join(config.workspacesRoot, ".review", ws?.id as string, "gh-o-r-1"),
+      })
+      .returning();
+    return { wsId: ws?.id as string, prId: pr?.id as string };
+  };
+
+  it("reads the PR's checks, alerts and bot comments from its provider", async () => {
+    const { wsId, prId } = await insertPr();
+    const asked: PrRef[] = [];
+    const res = await evidenceApp((r) => {
+      asked.push(r);
+      return {
+        ref: r,
+        detail: async () =>
+          ({
+            headSha: "f".repeat(40),
+            checks: [{ name: "tests", status: "COMPLETED", conclusion: "FAILURE", url: null }],
+            reviewThreads: [],
+            conversation: [],
+          }) as unknown as PrDetail,
+        files: async () => [],
+        fileDiff: async () => ({}) as never,
+        readFile: async () => "",
+        listDir: async () => [],
+        searchCode: async () => [],
+        searchScope: "",
+        ciChecks: async () => [
+          { name: "tests", status: "COMPLETED", conclusion: "FAILURE", url: null },
+        ],
+        checkRunOutputs: async () => [],
+        checkRunAnnotations: async () => [],
+        codeScanningAlerts: async () => [],
+        linkedTickets: async () => [],
+        upstackLayers: async () => null,
+      };
+    }).request(`/rw/${wsId}/prs/${prId}/evidence`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      headSha: string;
+      items: { id: string; summary: string }[];
+    };
+    expect(asked).toEqual([ref]);
+    expect(body.headSha).toBe("f".repeat(40));
+    expect(body.items.map((i) => [i.id, i.summary])).toEqual([
+      ["ci-checks", "1 of 1 failing"],
+      ["code-scanning", "No open alerts"],
+    ]);
+  });
+
+  it("answers 404 for a PR the workspace doesn't have", async () => {
+    const { wsId } = await insertPr();
+    const res = await evidenceApp(() => ({ error: "unused" })).request(
+      `/rw/${wsId}/prs/00000000-0000-4000-8000-000000000000/evidence`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("says what is missing when the provider isn't set up", async () => {
+    const { wsId, prId } = await insertPr();
+    const res = await evidenceApp(() => ({ error: "github token not configured" })).request(
+      `/rw/${wsId}/prs/${prId}/evidence`,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "github token not configured" });
+  });
+
+  it("says what the PR stacked above changes in this one, at this PR's live head", async () => {
+    const { wsId, prId } = await insertPr();
+    const layer = {
+      number: 8,
+      url: "https://github.com/o/r/pull/8",
+      incomplete: false,
+      stale: false,
+      files: [
+        {
+          filename: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -10,3 +10,3 @@\n x\n-y\n+z\n x",
+        },
+      ],
+    };
+    const source = (r: PrRef) =>
+      ({
+        ref: r,
+        upstackLayers: async () => ({ headSha: "live", layers: [layer] }),
+      }) as unknown as PrCodeSource;
+    const res = await evidenceApp(source).request(`/rw/${wsId}/prs/${prId}/upstack`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      headSha: "live",
+      layers: [
+        {
+          number: 8,
+          url: "https://github.com/o/r/pull/8",
+          stale: false,
+          files: [{ path: "src/a.ts", ranges: [{ start: 10, end: 12 }] }],
+        },
+      ],
+      note: null,
+    });
+  });
+});
+
 describe("verification report", () => {
   const pass = { status: "pass", findings: [] };
   const at = (title: string, line: number) => ({
@@ -671,20 +792,51 @@ describe("verification report", () => {
       },
       { path: "src/elsewhere.ts", reason: "not changed by the PR" },
     ],
+    changeMap: {
+      intent: "Changes a.",
+      themes: [
+        {
+          title: "Change a",
+          description: "d",
+          risk: "low",
+          cohesion: "core",
+          question: "",
+          files: [{ path: "src/a.ts" }],
+        },
+      ],
+    },
+    claims: {
+      items: [
+        {
+          claim: "Changes a",
+          source: "description",
+          status: "verified",
+          evidence: "the new line",
+          path: "src/a.ts",
+          line: 2,
+        },
+        // A source the run wasn't given reads as the description.
+        { claim: "Is approved", source: "SEC-1", status: "missing", evidence: "nothing" },
+      ],
+      gaps: [],
+    },
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
-    // The same problem from two checks: the server keeps the specialist's (tests).
-    completeness: { status: "issues", findings: [at("b is never read", 2)] },
+    malice: pass,
+    // The same problem from two checks: the server keeps the first section's (tests).
     tests: { status: "issues", findings: [at("b is never read, and untested", 2)] },
     complexity: pass,
     performance: pass,
     comments: pass,
     observability: pass,
-    quality: pass,
+    quality: { status: "issues", findings: [at("b is never read", 2)] },
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
   };
   let budget: number;
   // Makes startClaudeRun throw before it records a run: it reads `program` first.
   let startFails: boolean;
+  // The tickets each run that read them was given by name.
+  let namedTickets: string[][];
+  let ticketsFail: boolean;
   const detail = {
     title: "Feature work",
     body: "Changes a and renames old.",
@@ -744,6 +896,22 @@ cat "${fakeDir}/result.jsonl"`,
         deps,
         verification: {
           loadDetail: async () => detail,
+          loadTickets: async (_ref, _pr, named) => {
+            namedTickets.push([...named]);
+            if (ticketsFail) throw new Error("Jira is down");
+            return {
+              tickets: [
+                {
+                  key: "ABC-12",
+                  title: "Rename old",
+                  url: "https://example.atlassian.net/browse/ABC-12",
+                  body: "Rename old to new everywhere.",
+                  comments: [],
+                },
+              ],
+              notes: ["Couldn't read ABC-99: not found"],
+            };
+          },
           settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
           run: {
             get program(): string {
@@ -760,28 +928,43 @@ cat "${fakeDir}/result.jsonl"`,
 
   const release = () => writeFileSync(join(fakeDir, "release"), "");
 
-  async function verify(method: string, wsId: string, prId: string): Promise<Response> {
-    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, { method });
+  async function verify(
+    method: string,
+    wsId: string,
+    prId: string,
+    sections?: string[],
+  ): Promise<Response> {
+    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+      method,
+      ...(sections && {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sections }),
+      }),
+    });
   }
 
-  async function latest(wsId: string, prId: string) {
-    return (await (await verify("GET", wsId, prId)).json()) as {
-      run: {
-        id: string;
-        status: string;
-        targetKey: string;
-        live: boolean;
-        // The fixture as the server parses it, which fills in each must-read's flags.
-        result: Omit<typeof report, "mustRead"> & {
-          mustRead: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
-          coverage?: Coverage;
-        };
-      } | null;
-      current: boolean;
-      headSha: string;
-      size: VerificationSize | null;
-    };
+  type Run = { id: string; status: string; live: boolean; headSha: string; current: boolean };
+  type Checklist = {
+    headSha: string;
+    items: { section: string; theme: string; latest: Run | null; result: Run | null }[];
+    report: {
+      summary?: string;
+      mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
+      tests?: { status: string; findings: unknown[] };
+      quality?: { status: string; findings: unknown[] };
+      malice?: { status: string; findings: unknown[]; tripwires?: unknown[] };
+      claims?: { items: { source: string }[]; tickets?: unknown[]; ticketNotes?: string[] };
+      coverage?: Coverage;
+    } | null;
+    size: VerificationSize | null;
+    namedTickets: string[];
+  };
+
+  async function checklist(wsId: string, prId: string): Promise<Checklist> {
+    return (await (await verify("GET", wsId, prId)).json()) as Checklist;
   }
+
+  const item = (list: Checklist, section: string) => list.items.find((i) => i.section === section);
 
   /** A run row as another run, kind or PR would have left it. */
   async function insertRun(
@@ -789,7 +972,11 @@ cat "${fakeDir}/result.jsonl"`,
     refKey: string,
     headSha: string,
     minutesAgo: number,
-    status = "succeeded",
+    {
+      status = "succeeded",
+      sections,
+      result = null,
+    }: { status?: string; sections?: string[]; result?: unknown } = {},
   ) {
     const [row] = await db
       .insert(agentRuns)
@@ -798,7 +985,9 @@ cat "${fakeDir}/result.jsonl"`,
         targetKey: `${refKey}@${headSha}`,
         status,
         instance: "test",
-        meta: { refKey, headSha },
+        result,
+        // A run with sections is one section's own run; without, an old whole report.
+        meta: { refKey, headSha, ...(sections && { sections, format: 2 }) },
         startedAt: new Date(Date.now() - minutesAgo * 60_000),
       })
       .returning({ id: agentRuns.id });
@@ -812,6 +1001,8 @@ cat "${fakeDir}/result.jsonl"`,
     await sql`TRUNCATE agent_runs`;
     budget = 0.5;
     startFails = false;
+    namedTickets = [];
+    ticketsFail = false;
     setUpFake();
   });
 
@@ -822,32 +1013,20 @@ cat "${fakeDir}/result.jsonl"`,
 
   it("runs only the sections asked for, and refuses one it doesn't know", async () => {
     const { wsId, prId } = await readyWorkspace();
-    const start = (body: unknown) =>
-      verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    expect((await start({ sections: ["tests", "vibes"] })).status).toBe(400);
-    // The flow diagram is its own run now, not a section.
-    expect((await start({ sections: ["flow"] })).status).toBe(400);
+    expect((await verify("POST", wsId, prId, ["tests", "vibes"])).status).toBe(400);
 
-    const res = await start({ sections: ["tests"] });
+    const res = await verify("POST", wsId, prId, ["tests"]);
     expect(res.status).toBe(202);
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("SECTIONS=tests\n");
     release();
-    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the report");
-    const { run } = await latest(wsId, prId);
+    await until(async () => !!item(await checklist(wsId, prId), "tests")?.result, "the result");
+    const list = await checklist(wsId, prId);
     // The fake answers every section; only the one asked for is kept.
-    expect(Object.keys(run?.result ?? {}).sort()).toEqual([
-      "coverage",
-      "mustRead",
-      "summary",
-      "tests",
-    ]);
+    expect(Object.keys(list.report ?? {}).sort()).toEqual(["coverage", "tests"]);
+    expect(item(list, "summary")).toMatchObject({ latest: null, result: null });
     const [row] = await db.select().from(agentRuns);
-    expect((row?.meta as { sections?: string[] } | undefined)?.sections).toEqual(["tests"]);
+    expect(row?.meta).toMatchObject({ sections: ["tests"], format: 2 });
   });
 
   it("refuses to start before the checkout is ready", async () => {
@@ -859,19 +1038,24 @@ cat "${fakeDir}/result.jsonl"`,
     expect(((await res.json()) as { error: string }).error).toContain("checking-out");
   });
 
-  it("starts one run for concurrent requests, and serves it against the current head", async () => {
+  it("starts one run per section for concurrent requests, and serves it against the current head", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
-    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
+    expect(item(await checklist(wsId, prId), "summary")).toMatchObject({
+      latest: null,
+      result: null,
+    });
 
-    const responses = await Promise.all([verify("POST", wsId, prId), verify("POST", wsId, prId)]);
+    const responses = await Promise.all([
+      verify("POST", wsId, prId, ["summary"]),
+      verify("POST", wsId, prId, ["summary"]),
+    ]);
     expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
     const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
-      runId: string;
-      existing: boolean;
+      runs: { section: string; runId: string; existing: boolean }[];
     }[];
-    const runId = bodies[0]?.runId as string;
-    expect(bodies[1]?.runId).toBe(runId);
-    expect(bodies.map((b) => b.existing).sort()).toEqual([false, true]);
+    const runId = bodies[0]?.runs[0]?.runId as string;
+    expect(bodies[1]?.runs[0]?.runId).toBe(runId);
+    expect(bodies.map((b) => b.runs[0]?.existing).sort()).toEqual([false, true]);
     expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
@@ -908,33 +1092,43 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
     expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
+    expect(prompt).toContain("SECTIONS=summary\n");
     expect(prompt).toMatch(/READING_GROUPS=[2-9]/);
     // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
     expect(prompt).not.toContain("Changes a and renames old.");
 
-    const running = await latest(wsId, prId);
+    const running = await checklist(wsId, prId);
     const headSha = sh(worktreePath, "rev-parse", "HEAD").trim();
     expect(running).toMatchObject({
-      run: { id: runId, status: "running", live: true },
-      current: true,
+      headSha,
+      report: null,
       size: { large: true, binary: ["image.bin"], truncated: [], budgetUsd: 0.5 },
     });
-    expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
+    expect(item(running, "summary")).toMatchObject({
+      theme: "understand",
+      latest: { id: runId, status: "running", live: true, headSha, current: true },
+      result: null,
+    });
+    const [started] = await db.select().from(agentRuns);
+    expect(started?.targetKey).toBe(`gh:o/r/1@${headSha}`);
 
     release();
-    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
-    const done = await latest(wsId, prId);
-    expect(done.run?.live).toBe(false);
+    await until(async () => !!item(await checklist(wsId, prId), "summary")?.result, "the run");
+    const done = await checklist(wsId, prId);
+    expect(item(done, "summary")?.latest?.live).toBe(false);
     // Held to the word cap the diff size gives: the ceiling, since huge.txt's
     // 20,000 lines are all in a patch the run reads.
-    expect(done.run?.result.summary).toBe(`${"word ".repeat(80).trim()}…`);
-    expect(done.run?.result.mustRead).toEqual([
-      { path: "src/a.ts", reason: "the change", flags: [] },
+    expect(done.report?.summary).toBe(`${"word ".repeat(80).trim()}…`);
+    // The flag stays: no other section's result reports the same problem.
+    expect(done.report?.mustRead).toEqual([
+      {
+        path: "src/a.ts",
+        reason: "the change",
+        flags: [{ note: "b is never read; check it is used", line: 2 }],
+      },
     ]);
-    expect(done.run?.result.tests.findings).toHaveLength(1);
-    expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
     // The server's count of what the run read: only a.ts's patch, by a subagent.
-    const coverage = done.run?.result.coverage;
+    const coverage = done.report?.coverage;
     expect(coverage?.total).toBe(7);
     expect(coverage?.notExamined.map((n) => n.path).sort()).toEqual([
       "big.txt",
@@ -950,58 +1144,231 @@ cat "${fakeDir}/result.jsonl"`,
     // What the server took out is on the run, to be audited.
     await until(async () => {
       const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
-      const meta = (row?.meta ?? {}) as { droppedDuplicates?: unknown };
-      return Array.isArray(meta.droppedDuplicates);
+      const meta = (row?.meta ?? {}) as { droppedMustReads?: unknown };
+      return Array.isArray(meta.droppedMustReads);
     }, "the audit");
     const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
     expect(row?.meta).toMatchObject({
       refKey: "gh:o/r/1",
       headSha,
       droppedMustReads: ["src/elsewhere.ts"],
-      droppedFlags: [{ path: "src/a.ts", line: 2, note: "b is never read; check it is used" }],
-      droppedDuplicates: [
-        {
-          section: "completeness",
-          keptIn: "tests",
-          title: "b is never read",
-          path: "src/a.ts",
-        },
-      ],
     });
 
-    // A push moves the PR on; the old report is still served, marked stale.
+    // A push moves the PR on; the old result is still served, marked stale.
     remote.pushToPr("src/a.ts", "export const a = 5;\n");
     await call("POST", `/${wsId}/prs/${prId}/refresh`);
     await progress(wsId, prId);
-    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId }, current: false });
-  });
-
-  it("serves the PR's newest run, ignoring other kinds and other PRs", async () => {
-    const { wsId, prId } = await readyWorkspace();
-    const headSha = (await prRow(prId)).headSha as string;
-    await insertRun("verification-report", "gh:o/r/1", "old", 30);
-    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20);
-    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10);
-    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
-    await insertRun("verification-report", "gh:o/r/10", headSha, 5);
-
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: { id: newest, live: false },
-      current: true,
-      lastSucceeded: { run: { id: newest }, headSha, current: true },
+    expect(item(await checklist(wsId, prId), "summary")).toMatchObject({
+      result: { id: runId, current: false },
     });
   });
 
-  it("keeps the last good report in view when a re-run fails", async () => {
+  it("gives a claims run the PR's tickets, and records what its claims were checked against", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const res = await verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sections: ["claims"], namedTickets: ["ABC-12"] }),
+    });
+    expect(res.status).toBe(202);
+    expect(namedTickets).toEqual([["ABC-12"]]);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(context).toContain("## ABC-12: Rename old");
+    expect(context).toContain("Rename old to new everywhere.");
+    expect(context).toContain("Couldn't read ABC-99: not found");
+
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "claims")?.result, "the claims");
+    const { report } = await checklist(wsId, prId);
+    expect(report?.claims?.tickets).toEqual([
+      { key: "ABC-12", title: "Rename old", url: "https://example.atlassian.net/browse/ABC-12" },
+    ]);
+    expect(report?.claims?.ticketNotes).toEqual(["Couldn't read ABC-99: not found"]);
+    expect(report?.claims?.items.map((c) => c.source)).toEqual(["description", "description"]);
+    expect((await checklist(wsId, prId)).namedTickets).toEqual(["ABC-12"]);
+  });
+
+  it("gives the change map the tickets too, and still starts when they can't be read", async () => {
+    ticketsFail = true;
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["changeMap"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(namedTickets).toEqual([[]]);
+    expect(context).toContain("Linked tickets: none read.");
+    expect(context).toContain("Couldn't read tickets: Jira is down");
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "changeMap")?.result, "the map");
+  });
+
+  it("reads no tickets for sections that don't check against them", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["tests"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const context = readFileSync(
+      join(args[args.indexOf("--add-dir") + 1] as string, "pr.md"),
+      "utf8",
+    );
+    expect(namedTickets).toEqual([]);
+    expect(context).not.toContain("Linked tickets");
+    release();
+  });
+
+  it("puts the report together from each section's run, showing a problem once", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    release();
+    const res = await verify("POST", wsId, prId, ["summary", "quality", "tests"]);
+    expect(res.status).toBe(202);
+    const { runs } = (await res.json()) as { runs: { section: string; runId: string }[] };
+    expect(runs.map((r) => r.section)).toEqual(["summary", "tests", "quality"]);
+    expect(new Set(runs.map((r) => r.runId)).size).toBe(3);
+    await until(async () => {
+      const list = await checklist(wsId, prId);
+      return ["summary", "quality", "tests"].every((s) => item(list, s)?.result);
+    }, "every result");
+
+    const { report } = await checklist(wsId, prId);
+    // The same problem from two checks: the first section's (tests) is kept.
+    expect(report?.tests?.findings).toHaveLength(1);
+    expect(report?.quality).toEqual({ status: "pass", findings: [] });
+    // The must-read flag repeats the tests finding, so it goes too.
+    expect(report?.mustRead?.[0]?.flags).toEqual([]);
+    // Each run read the same patch; together they still examined two files.
+    expect(report?.coverage?.examined).toBe(2);
+  });
+
+  it("gives the malicious-intent check the diff's tripwires and keeps them on its answer", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    remote.pushToPr(".github/workflows/ci.yml", "on: push\n");
+    remote.pushToPr("src/a.ts", 'export const a = 2;\nexport const b = "admin\u202E";\n');
+    await call("POST", `/${wsId}/prs/${prId}/refresh`);
+    await progress(wsId, prId);
+    expect((await verify("POST", wsId, prId, ["malice"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
+    const tripwires = readFileSync(join(contextDir, "tripwires.md"), "utf8");
+    expect(tripwires).toContain("[binary] image.bin");
+    // Judged without the PR's own account of itself.
+    expect(existsSync(join(contextDir, "pr.md"))).toBe(false);
+    release();
+    await until(async () => !!item(await checklist(wsId, prId), "malice")?.result, "the result");
+    const { report } = await checklist(wsId, prId);
+    expect(report?.malice?.findings).toEqual([]);
+    // One from a patch's added lines, two from the paths; the most telling first.
+    expect(report?.malice?.tripwires).toEqual([
+      expect.objectContaining({ kind: "hidden-text", path: "src/a.ts", line: 2 }),
+      expect.objectContaining({ kind: "build", path: ".github/workflows/ci.yml" }),
+      { kind: "binary", path: "image.bin", note: "binary file: no diff to review" },
+    ]);
+  });
+
+  it("joins a section already running and starts the rest", async () => {
     const { wsId, prId } = await readyWorkspace();
     const headSha = (await prRow(prId)).headSha as string;
-    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30);
-    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, "failed");
+    const tests = await insertRun("verification-report", "gh:o/r/1", headSha, 1, {
+      status: "running",
+      sections: ["tests"],
+    });
+    // An old whole-report run still going covers risk, not the approach.
+    const legacy = await insertRun("verification-report", "gh:o/r/1", headSha, 2, {
+      status: "running",
+    });
+    const res = await verify("POST", wsId, prId, ["risk", "tests", "approach"]);
+    expect(res.status).toBe(202);
+    const { runs, failed } = (await res.json()) as {
+      runs: { section: string; runId: string; existing: boolean }[];
+      failed: unknown[];
+    };
+    expect(failed).toEqual([]);
+    expect(runs.map(({ section, existing }) => [section, existing])).toEqual([
+      ["risk", true],
+      ["tests", true],
+      ["approach", false],
+    ]);
+    expect(runs[0]?.runId).toBe(legacy);
+    expect(runs[1]?.runId).toBe(tests);
+    const fresh = await db
+      .select()
+      .from(agentRuns)
+      .where(eq(agentRuns.id, runs[2]?.runId as string));
+    expect(fresh[0]?.meta).toMatchObject({ sections: ["approach"], format: 2 });
+  });
 
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: { id: failed, status: "failed" },
-      current: true,
-      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+  it("passes over a result stored in an older shape for an older one that reads", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", headSha, 20, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+    await insertRun("verification-report", "gh:o/r/1", headSha, 10, {
+      sections: ["tests"],
+      result: { tests: { status: "pass" } },
+    });
+    const list = await checklist(wsId, prId);
+    expect(item(list, "tests")?.result?.id).toBe(good);
+    expect(list.report?.tests).toEqual({ status: "pass", findings: [] });
+  });
+
+  it("serves each section's newest result, ignoring other kinds and other PRs", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    // An old whole report: every default section of its day, the summary included.
+    const old = await insertRun("verification-report", "gh:o/r/1", "old", 30, {
+      result: { summary: "Old summary.", mustRead: [], tests: { status: "pass", findings: [] } },
+    });
+    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20, {
+      sections: ["tests"],
+      result: { tests: { status: "issues", findings: [at("b is never read", 2)] } },
+    });
+    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10, { sections: ["tests"] });
+    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
+    await insertRun("verification-report", "gh:o/r/10", headSha, 5, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+
+    const list = await checklist(wsId, prId);
+    expect(item(list, "tests")).toMatchObject({
+      latest: { id: newest, live: false },
+      result: { id: newest, current: true },
+    });
+    expect(item(list, "summary")).toMatchObject({
+      result: { id: old, headSha: "old", current: false },
+    });
+    // The old report had no risk answer, so the section has a run but no result.
+    expect(item(list, "risk")).toMatchObject({ latest: { id: old }, result: null });
+    expect(item(list, "flow")).toMatchObject({ latest: null, result: null });
+    expect(list.report?.summary).toBe("Old summary.");
+    expect(list.report?.tests?.findings).toHaveLength(1);
+  });
+
+  it("keeps the last good result in view when a re-run fails", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, {
+      status: "failed",
+      sections: ["tests"],
+    });
+
+    expect(item(await checklist(wsId, prId), "tests")).toMatchObject({
+      latest: { id: failed, status: "failed", current: true },
+      result: { id: good, headSha: "older-head", current: false },
     });
   });
 
@@ -1014,163 +1381,6 @@ cat "${fakeDir}/result.jsonl"`,
     expect(await res.text()).toContain("no Claude Code here");
     expect(contextDirs()).toEqual(before);
     expect(await db.select().from(agentRuns)).toHaveLength(0);
-  });
-});
-
-describe("flow diagram", () => {
-  const diagram = {
-    title: "How a changes",
-    explanation: "e",
-    mermaid: "flowchart TD\n  start --> a\n",
-  };
-  const detail = {
-    title: "Feature work",
-    body: "Changes a and renames old.",
-    author: "octocat",
-    headRef: "feature",
-    baseRef: "main",
-    checks: [],
-    reviewThreads: [],
-  } as unknown as PrDetail;
-  let fakeDir: string;
-  let diagramApp: Hono;
-
-  /** A `claude` that records its stdin and argv, waits for `release`, then answers with the diagram. */
-  beforeEach(async () => {
-    await sql`TRUNCATE agent_runs`;
-    fakeDir = mkdtempSync(join(tmpdir(), "yarvis-flow-diagram-fake-"));
-    writeFileSync(
-      join(fakeDir, "result.jsonl"),
-      `${JSON.stringify(resultLine({ structured_output: diagram }))}\n`,
-    );
-    const program = fakeClaude(
-      fakeDir,
-      "claude",
-      `cat > "${fakeDir}/stdin.txt"
-printf '%s\\n' "$@" > "${fakeDir}/args.txt"
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
-cat "${fakeDir}/result.jsonl"`,
-    );
-    const registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
-    diagramApp = new Hono().route(
-      "/rw",
-      createReviewWorkspaceRoutes(config, {
-        deps,
-        flowDiagram: {
-          loadDetail: async () => detail,
-          settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5 }),
-          run: { program, registry, instance: "test" },
-        },
-      }),
-    );
-  });
-
-  afterEach(() => {
-    writeFileSync(join(fakeDir, "release"), "");
-    rmSync(fakeDir, { recursive: true, force: true });
-  });
-
-  const request = (method: string, wsId: string, prId: string) =>
-    diagramApp.request(`/rw/${wsId}/prs/${prId}/flow-diagram`, { method });
-
-  async function latest(wsId: string, prId: string) {
-    return (await (await request("GET", wsId, prId)).json()) as {
-      run: { id: string; status: string; live: boolean; result: unknown } | null;
-      current: boolean;
-    };
-  }
-
-  it("runs the flow agent alone on the checkout, and serves its diagram", async () => {
-    const { wsId, prId } = await readyWorkspace();
-    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
-
-    const res = await request("POST", wsId, prId);
-    expect(res.status).toBe(202);
-    const { runId } = (await res.json()) as { runId: string };
-    // A second start joins the run already going.
-    const again = await request("POST", wsId, prId);
-    expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ runId, existing: true });
-
-    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
-    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
-    expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:flow-diagram");
-    expect(
-      args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
-    ).toEqual(["Read", "Grep", "Glob"]);
-    expect(args).toContain("--disallowedTools");
-    const disallowed = args.slice(args.indexOf("--disallowedTools") + 1);
-    for (const tool of [
-      "Bash",
-      "Write",
-      "Edit",
-      "NotebookEdit",
-      "WebFetch",
-      "WebSearch",
-      "Agent",
-    ]) {
-      expect(disallowed).toContain(tool);
-    }
-    // The agent named by --agent is in the plugin dir the run passes.
-    const pluginDir = args[args.indexOf("--plugin-dir") + 1] as string;
-    expect(existsSync(join(pluginDir, "agents/flow-diagram.md"))).toBe(true);
-    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId, live: true } });
-    const contextDir = args[args.indexOf("--add-dir") + 1] as string;
-    expect(readFileSync(join(contextDir, "pr.md"), "utf8")).toContain("Changes a and renames old.");
-    expect(existsSync(join(contextDir, "patches/src/a.ts.diff"))).toBe(true);
-    const stdin = join(fakeDir, "stdin.txt");
-    await until(
-      async () => existsSync(stdin) && readFileSync(stdin, "utf8").includes("READ_BUDGET_KB"),
-      "the fake's stdin",
-    );
-    // The PR's text reaches the agent only fenced, through pr.md.
-    expect(readFileSync(stdin, "utf8")).not.toContain("Changes a and renames old.");
-
-    writeFileSync(join(fakeDir, "release"), "");
-    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: {
-        id: runId,
-        live: false,
-        result: { ...diagram, mermaid: "flowchart TD\n  start --> a" },
-      },
-      current: true,
-    });
-    await until(async () => !existsSync(contextDir), "the context folder to go");
-    // A diagram run is not a verification report.
-    const verification = await call("GET", `/${wsId}/prs/${prId}/verification`);
-    expect(((await verification.json()) as { run: unknown }).run).toBeNull();
-  });
-
-  it("keeps the last good diagram in view when a re-run fails, marked by its head", async () => {
-    const { wsId, prId } = await readyWorkspace();
-    const headSha = (await prRow(prId)).headSha as string;
-    const insert = async (head: string, minutesAgo: number, status: string) => {
-      const [row] = await db
-        .insert(agentRuns)
-        .values({
-          kind: "pr-flow-diagram",
-          targetKey: `gh:o/r/1@${head}`,
-          status,
-          instance: "test",
-          meta: { refKey: "gh:o/r/1", headSha: head },
-          startedAt: new Date(Date.now() - minutesAgo * 60_000),
-        })
-        .returning({ id: agentRuns.id });
-      return row?.id as string;
-    };
-    const good = await insert("older-head", 30, "succeeded");
-    const failed = await insert(headSha, 5, "failed");
-    // Another kind for the same PR is not a diagram.
-    await insert(headSha, 1, "succeeded").then((id) =>
-      db.update(agentRuns).set({ kind: "verification-report" }).where(eq(agentRuns.id, id)),
-    );
-
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: { id: failed, status: "failed" },
-      current: true,
-      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
-    });
   });
 });
 

@@ -5,16 +5,20 @@ import { agentRunRegistry } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { prEvidence } from "../pr/evidence.ts";
+import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
+import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
+import { upstackChanges } from "../pr/upstack.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
+import { verificationChecklist } from "./checklist.ts";
 import {
   defaultReviewClaudeDeps,
   type ReviewClaudeDeps,
   startReviewClaudeSession,
 } from "./claudeSession.ts";
 import { isValidSymbol } from "./definitions.ts";
-import { type FlowDiagramDeps, latestFlowDiagram, startFlowDiagram } from "./flowDiagram.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -58,7 +62,6 @@ import {
 } from "./service.ts";
 import {
   defaultVerificationDeps,
-  latestVerification,
   REPORT_SECTIONS,
   startVerification,
   type VerificationDeps,
@@ -115,7 +118,16 @@ const setupSchema = z.object({
 const idSchema = z.string().uuid();
 // No body, or no sections, runs the default set.
 const startVerificationSchema = z
-  .object({ sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional() })
+  .object({
+    sections: z.array(z.enum(REPORT_SECTIONS)).max(REPORT_SECTIONS.length).optional(),
+    // Keys or links the reviewer named for the change map and claims. Past the
+    // cap they are dropped, not refused, so the other sections still start.
+    namedTickets: z
+      .array(z.string().trim().min(1).max(300))
+      .max(50)
+      .transform((t) => t.slice(0, MAX_NAMED_TICKETS))
+      .optional(),
+  })
   .nullable();
 // No body starts with the workspace's saved choice.
 const startClaudeSessionSchema = z.object({ loadRepoConfig: z.boolean().optional() }).nullable();
@@ -131,12 +143,12 @@ export interface ReviewWorkspaceRouteOptions {
   deps?: (db: Db) => ReviewDeps;
   /** Replaces the provider, settings and `claude` the verification report uses, for tests. */
   verification?: VerificationDeps;
-  /** Replaces the provider, settings and `claude` the flow diagram uses, for tests. */
-  flowDiagram?: FlowDiagramDeps;
   /** Replaces the provider, settings and `claude` the re-review summary uses, for tests. */
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
+  /** Replaces the provider the CI evidence and the layers above are read from, for tests. */
+  evidenceSource?: (ref: PrRef) => PrCodeSource | { error: string };
   /** Replaces the core control channel the workspace's Ask Claude session starts through, for tests. */
   claudeSession?: ReviewClaudeDeps;
 }
@@ -503,8 +515,9 @@ export function createReviewWorkspaceRoutes(
     }
   });
 
-  // Starts the PR's verification report, or answers with the run already
-  // going for it. The run is followed on `/api/agent-runs/:runId/events`.
+  // Starts a run for each picked section of the PR's verification report; a
+  // section with a run already going joins it. Each run is followed on
+  // `/api/agent-runs/:runId/events`.
   router.post("/:id/prs/:prId/verification", async (c) => {
     const parsed = startVerificationSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
@@ -517,20 +530,21 @@ export function createReviewWorkspaceRoutes(
         deps(),
         options.verification ?? defaultVerificationDeps(config),
         parsed.data?.sections,
+        parsed.data?.namedTickets,
       );
-      return c.json(started, started.existing ? 200 : 202);
+      return c.json(started, started.runs.some((r) => !r.existing) ? 202 : 200);
     } catch (e) {
       return fail(c, e);
     }
   });
 
-  // The PR's latest verification run (any head), and whether it was made
-  // against the head the PR is at now.
+  // The PR's verification checklist: each section's latest run and newest
+  // result, and the report those results make.
   router.get("/:id/prs/:prId/verification", async (c) => {
     const registry = options.verification?.run?.registry ?? agentRunRegistry;
     try {
       return c.json(
-        await latestVerification(
+        await verificationChecklist(
           db(),
           config,
           c.req.param("id"),
@@ -544,34 +558,27 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
-  // Starts the PR's flow diagram, or answers with the run already going for
-  // it. The run is followed on `/api/agent-runs/:runId/events`.
-  router.post("/:id/prs/:prId/flow-diagram", async (c) => {
+  // What other tools already said about the PR: CI checks and their
+  // annotations, code scanning alerts and bot comments, read from its provider.
+  router.get("/:id/prs/:prId/evidence", async (c) => {
     try {
-      const started = await startFlowDiagram(
-        db(),
-        config,
-        c.req.param("id"),
-        c.req.param("prId"),
-        deps(),
-        options.flowDiagram ?? defaultVerificationDeps(config),
-      );
-      return c.json(started, started.existing ? 200 : 202);
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
+      if ("error" in source) return c.json({ error: source.error }, 400);
+      return c.json(await prEvidence(source));
     } catch (e) {
       return fail(c, e);
     }
   });
 
-  // The PR's latest flow diagram run (any head), and whether it was made
-  // against the head the PR is at now.
-  router.get("/:id/prs/:prId/flow-diagram", async (c) => {
-    const registry = options.flowDiagram?.run?.registry ?? agentRunRegistry;
+  // What the PRs stacked on this one change in it, so a finding already fixed
+  // upstack can say so. Read from the provider like the evidence.
+  router.get("/:id/prs/:prId/upstack", async (c) => {
     try {
-      return c.json(
-        await latestFlowDiagram(db(), c.req.param("id"), c.req.param("prId"), (id) =>
-          registry.isLive(id),
-        ),
-      );
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
+      if ("error" in source) return c.json({ error: source.error }, 400);
+      return c.json(await upstackChanges(source));
     } catch (e) {
       return fail(c, e);
     }

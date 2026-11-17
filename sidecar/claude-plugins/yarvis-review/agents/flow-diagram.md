@@ -1,9 +1,7 @@
 ---
 name: flow-diagram
-description: Draws a Mermaid flowchart of the whole flow a pull request's change sits in, from what starts it to where it ends, with the changed steps marked. Runs on its own, as the main thread of a review workspace's flow diagram run.
-# StructuredOutput is how a run started with --json-schema answers; without it
-# in this list a run using this agent as its main thread can't give one.
-tools: Read, Grep, Glob, StructuredOutput
+description: Draws a Mermaid flowchart of the whole flow a pull request's change sits in, from what starts it to where it ends, with the changed steps marked. Used by the verification report.
+tools: Read, Grep, Glob
 model: inherit
 ---
 
@@ -63,7 +61,7 @@ traced it.
 - If the change has no flow to draw (docs, config, a rename), return
   `{"title":"No flow to draw","explanation":"<one sentence on why>","mermaid":""}`.
 
-Answer with the structured output and write no other text:
+Reply with one JSON object and nothing else:
 
 ```json
 {

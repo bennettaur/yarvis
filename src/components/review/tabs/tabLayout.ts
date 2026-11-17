@@ -43,6 +43,7 @@ export const STATIC_ORDER: StaticTabKind[] = [
   "comments",
   "since-review",
   "guide",
+  "story",
   "verification",
   "diagram",
   "mutation",

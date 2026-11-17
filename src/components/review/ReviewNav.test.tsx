@@ -9,7 +9,6 @@ import { mountForInteraction, renderToHtml, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import { PR_COLORS, prColor } from "./prColors";
 import ReviewNav, { cloneStatusText, navGroups, prLabel } from "./ReviewNav";
-import { flowDiagramKey, verificationKey } from "./tabs/reviewData";
 
 const pr = (over: Partial<ReviewWorkspacePr> = {}): ReviewWorkspacePr => ({
   id: "pr-1",
@@ -90,9 +89,6 @@ describe("ReviewNav", () => {
       primeCache(prStackKey(p.ref), null);
       const key = changedFilesKey(p);
       if (key) primeCache(key, { headSha: p.headSha, mergeBaseSha: p.mergeBaseSha, files: [] });
-      const none = { run: null, headSha: p.headSha, current: false, lastSucceeded: null };
-      primeCache(verificationKey(p.id), { ...none, size: null });
-      primeCache(flowDiagramKey(p.id), none);
     }
     return renderToHtml(
       createElement(ReviewNav, {
@@ -125,15 +121,7 @@ describe("ReviewNav", () => {
     expect(sections[0]!.innerHTML).toContain(prColor(0).border);
     expect(sections[1]!.innerHTML).toContain(prColor(2).border);
     for (const s of sections) {
-      for (const label of [
-        "Description",
-        "Reviewers",
-        "Checks",
-        "Comments",
-        "Verification",
-        "Flow diagram",
-        "Changed files",
-      ]) {
+      for (const label of ["Description", "Reviewers", "Checks", "Comments", "Changed files"]) {
         expect(s.textContent).toContain(label);
       }
     }

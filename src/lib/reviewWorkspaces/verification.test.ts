@@ -1,11 +1,13 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import {
-  DEFAULT_SECTIONS,
+  changedUpstack,
   findingCommentBody,
-  runSections,
-  sizeFor,
-  type VerificationSize,
+  type VerificationUpstack,
+  verificationChecklist,
 } from "./verification";
+
+afterAll(resetSidecarApi);
 
 describe("findingCommentBody", () => {
   it("names the report and section, and quotes what it said", () => {
@@ -45,41 +47,62 @@ describe("findingCommentBody", () => {
   });
 });
 
-describe("runSections", () => {
-  it("reads a run's sections in report order, and the default for a run that recorded none", () => {
-    expect(runSections({ sections: ["approach", "tests"] })).toEqual(["tests", "approach"]);
-    // Sections removed from reports, such as `flow`, are dropped.
-    expect(runSections({ sections: ["flow", "tests"] })).toEqual(["tests"]);
-    expect(runSections({ sections: ["flow"] })).toEqual(DEFAULT_SECTIONS);
-    expect(runSections({})).toEqual(DEFAULT_SECTIONS);
-    expect(runSections(undefined)).toEqual(DEFAULT_SECTIONS);
+describe("verificationChecklist", () => {
+  const answer = (report: unknown) =>
+    stubSidecarApi({
+      sidecarFetch: async () =>
+        new Response(JSON.stringify({ headSha: "h", themes: [], items: [], report, size: null })),
+    });
+
+  it("gives a report with no summary result an empty must-read list", async () => {
+    answer({ tests: { status: "pass", findings: [] } });
+    const { report } = await verificationChecklist("ws", "pr");
+    expect(report).toEqual({ tests: { status: "pass", findings: [] }, mustRead: [] });
+  });
+
+  it("passes a missing report through as none", async () => {
+    answer(null);
+    expect((await verificationChecklist("ws", "pr")).report).toBeNull();
   });
 });
 
-describe("sizeFor", () => {
-  const size: VerificationSize = {
-    files: 3,
-    changedLines: 30,
-    large: false,
-    binary: [],
-    truncated: [],
-    skimmed: [],
-    estimatedCostUsd: 0.5,
-    sectionCostUsd: 0.04,
-    defaultSections: [...DEFAULT_SECTIONS],
-    budgetUsd: 0.52,
-    overBudget: false,
+describe("changedUpstack", () => {
+  const upstack: VerificationUpstack = {
+    headSha: "h",
+    note: null,
+    layers: [
+      {
+        number: 8,
+        url: "u8",
+        stale: false,
+        files: [
+          { path: "src/a.ts", ranges: [{ start: 10, end: 12 }] },
+          { path: "src/gone.ts", ranges: null },
+        ],
+      },
+    ],
   };
+  const layer = { number: 8, url: "u8" };
 
-  it("moves the estimate by each section added or dropped, and re-weighs the budget", () => {
-    // One section more than a size whose defaults leave one out.
-    const more = sizeFor({ ...size, defaultSections: DEFAULT_SECTIONS.slice(1) }, DEFAULT_SECTIONS);
-    expect(more.estimatedCostUsd).toBe(0.54);
-    expect(more.overBudget).toBe(true);
-    expect(sizeFor(size, ["tests"]).estimatedCostUsd).toBe(0.18);
+  it("names the layer that changes a finding's line, or one a few lines off", () => {
+    expect(changedUpstack(upstack, "src/a.ts", 11)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", 15)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", 16)).toBeNull();
   });
 
-  it("never goes below zero", () => {
-    expect(sizeFor({ ...size, sectionCostUsd: 1 }, ["tests"]).estimatedCostUsd).toBe(0);
+  it("counts any line of a file the layer replaces, and a finding with no line in a changed file", () => {
+    expect(changedUpstack(upstack, "src/gone.ts", 300)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", undefined)).toMatchObject(layer);
+  });
+
+  it("ignores a layer not built on this PR's current head, whose lines don't match", () => {
+    const stale = { ...upstack, layers: upstack.layers.map((l) => ({ ...l, stale: true })) };
+    expect(changedUpstack(stale, "src/a.ts", 11)).toBeNull();
+  });
+
+  it("finds nothing without a path, a matching file or any layers", () => {
+    expect(changedUpstack(upstack, undefined, 11)).toBeNull();
+    expect(changedUpstack(upstack, "src/b.ts", 11)).toBeNull();
+    expect(changedUpstack(null, "src/a.ts", 11)).toBeNull();
   });
 });

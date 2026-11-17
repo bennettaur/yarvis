@@ -1,12 +1,11 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { isAllowedAzureOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
 import { sanitizeIssueText, ticketTextFence } from "../issues/service.ts";
 import type { IssueSummary } from "../issues/types.ts";
-import { AzureBoardsClient } from "./client.ts";
+import { type AzureBoardsClient, boardsClientFromConfig } from "./client.ts";
 import { areaPath, projectName, tagList, workItemId } from "./validation.ts";
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -17,14 +16,6 @@ export interface AzureBoardsToolDeps {
   /** Overrides the Boards client; defaults to one built from the configured
    *  Azure DevOps PAT and org URL (null when either is missing). */
   boardsClient?: AzureBoardsClient | null;
-}
-
-/** Same gate the Boards routes apply: the PAT only ever goes to Azure's hosts. */
-function clientFromConfig(config: Config): AzureBoardsClient | null {
-  const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
-  if (!azureDevopsToken || !azureDevopsOrgUrl) return null;
-  if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) return null;
-  return new AzureBoardsClient(azureDevopsToken, azureDevopsOrgUrl);
 }
 
 const idArg = workItemId.describe("The work item id, e.g. 1234");
@@ -52,7 +43,7 @@ function workItemResult(i: IssueSummary) {
  */
 export function buildAzureBoardsTools(db: Db, config: Config, deps: AzureBoardsToolDeps = {}) {
   const boards: AzureBoardsClient | null =
-    deps.boardsClient !== undefined ? deps.boardsClient : clientFromConfig(config);
+    deps.boardsClient !== undefined ? deps.boardsClient : boardsClientFromConfig(config);
 
   return {
     azure_boards_search: tool({
