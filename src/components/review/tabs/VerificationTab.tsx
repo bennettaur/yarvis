@@ -22,6 +22,7 @@ import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
+import DecisionPanel from "./DecisionPanel";
 import {
   reportOf,
   useReviewChangedFiles,
@@ -531,6 +532,21 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             </button>
           </span>
         </div>
+
+        <DecisionPanel
+          prRef={ctx.prRef}
+          seen={{ headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha }}
+          report={report}
+          evidence={
+            // CI on another commit says nothing about this one.
+            evidence.data && evidence.data.headSha === checklist.data?.headSha
+              ? evidence.data.items
+              : null
+          }
+          items={items}
+          currentSections={currentSections}
+          onOpen={open}
+        />
 
         <p className="text-xs text-zinc-500">
           Each check is an agent that reads every changed file's diff. Run the ones you want; each

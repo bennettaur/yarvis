@@ -1,11 +1,12 @@
 import {
+  CHECK_LABEL,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type LineDecoration, plainHoverText } from "../editor";
-import { CHECK_LABEL, CLAIM_LABEL, FLAG_LABEL, isUnmetClaim } from "./VerificationReportView";
+import { CLAIM_LABEL, FLAG_LABEL, isUnmetClaim } from "./VerificationReportView";
 
 /** One thing the verification report says about a line of a file. */
 export interface FileNote {
