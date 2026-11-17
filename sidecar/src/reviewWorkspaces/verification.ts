@@ -1,10 +1,10 @@
 /**
- * The verification report: a headless Claude Code run over a review PR's
- * checkout that summarises the change, picks the files that must be read, and
- * runs the risk, completeness, test, complexity, performance, comment,
- * observability and quality checks, plus a whole-PR rating of whether a
- * simpler approach exists — each a subagent of the `yarvis-review` plugin,
- * fanned out by its `verification-report` skill.
+ * The verification report's runs: each section (the summary and must-read
+ * files, risk, the completeness, test, complexity, performance, comment,
+ * observability and quality checks, the simpler-approach rating and the flow
+ * diagram) is a headless Claude Code run of its own over a review PR's
+ * checkout, through the `yarvis-review` plugin's `verification-report` skill.
+ * `checklist.ts` puts the report together from each section's newest result.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a
@@ -18,18 +18,12 @@ import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ratesFor } from "../agentRuns/pricing.ts";
-import {
-  type AgentRunSummary,
-  type ClaudeRunDeps,
-  getAgentRunSummary,
-  spotlight,
-  startClaudeRun,
-} from "../agentRuns/service.ts";
+import { type ClaudeRunDeps, spotlight, startClaudeRun } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
-import { describeError } from "../llm/errors.ts";
+import { clientError, describeError } from "../llm/errors.ts";
 import {
   getVerificationRunConfig,
   type VerificationModel,
@@ -81,7 +75,6 @@ import {
   getReviewPr,
   type ReviewDeps,
   ReviewWorkspaceError,
-  reviewDiffFacts,
   reviewPatchSources,
 } from "./service.ts";
 
@@ -300,8 +293,11 @@ export const CHECK_SECTIONS = [
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
 
-/** The sections a reviewer can pick. The summary and must-reads always run. */
-export const REPORT_SECTIONS = ["risk", ...CHECK_SECTIONS, "approach", "flow"] as const;
+/**
+ * The sections a reviewer can pick, each run on its own. `summary` writes the
+ * summary and the must-read files.
+ */
+export const REPORT_SECTIONS = ["summary", "risk", ...CHECK_SECTIONS, "approach", "flow"] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
 /** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
@@ -311,6 +307,7 @@ export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter
 
 /** The agent that writes each section, for following its reads. */
 export const SECTION_AGENTS: Record<ReportSection, string> = {
+  summary: "yarvis-review:change-summary",
   risk: "yarvis-review:risk-reviewer",
   completeness: "yarvis-review:completeness-reviewer",
   tests: "yarvis-review:test-reviewer",
@@ -406,8 +403,9 @@ export function emptyAudit(): ReportAudit {
  * path and line are never treated as duplicates, and a section's own findings
  * are left alone, since one agent wrote them all.
  *
- * Done here rather than by the model so the rule is the same on every run and
- * nothing a check reported disappears without a record.
+ * Done here rather than by the model so the rule is the same on every run. A
+ * run's own answer records what it drops; the checklist drops only when it
+ * shows the report, so every section's stored result keeps its findings.
  */
 export function dedupeChecks(
   checks: Partial<Record<CheckSection, Check>>,
@@ -516,16 +514,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     approach: approachSchema,
     flow: flowSchema,
   };
-  // Only the asked-for sections are in the shape, all required: Claude Code is
-  // shown only what to write, and a section the model adds anyway is stripped
-  // unread, so a malformed extra can't fail the run.
-  const askedSchemas: Record<string, z.ZodType> = Object.fromEntries(
-    limits.sections.map((name) => [name, sectionSchemas[name]]),
-  );
-  type Answered = {
-    [K in keyof typeof sectionSchemas]?: z.output<(typeof sectionSchemas)[K]>;
-  };
-  const fixed = z.object({
+  const summarySchemas = {
     summary: z
       .string()
       .transform((s) => clipWords(s, limits.summaryWords))
@@ -545,13 +534,21 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
         });
       return known.slice(0, limits.mustReadMax);
     }),
-  });
-  return fixed.extend(askedSchemas).transform((report) => {
+  };
+  // Only the asked-for sections are in the shape, all required: Claude Code is
+  // shown only what to write, and a section the model adds anyway is stripped
+  // unread, so a malformed extra can't fail the run.
+  const askedSchemas: Record<string, z.ZodType> = Object.fromEntries(
+    limits.sections.flatMap((name): [string, z.ZodType][] =>
+      name === "summary" ? Object.entries(summarySchemas) : [[name, sectionSchemas[name]]],
+    ),
+  );
+  type Answered = {
+    [K in keyof typeof sectionSchemas]?: z.output<(typeof sectionSchemas)[K]>;
+  } & { summary?: string; mustRead?: MustRead[] };
+  return z.object(askedSchemas).transform((answer) => {
     // The shape is built per run, so its type can't say which sections it has.
-    const { summary, mustRead, risk, approach, flow, ...answered } = report as z.output<
-      typeof fixed
-    > &
-      Answered;
+    const { summary, mustRead, risk, approach, flow, ...answered } = answer as Answered;
     const checks: Partial<Record<CheckSection, Check>> = {};
     for (const name of CHECK_SECTIONS) {
       const check = answered[name];
@@ -561,29 +558,71 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
         findings: check.findings.map((f) => withRepoPath(f, limits.checkoutDir)),
       };
     }
-    const concerns = risk?.concerns.map((c) => withRepoPath(c, limits.checkoutDir)) ?? [];
-    const impact = risk?.impact && {
-      ...risk.impact,
-      changes: risk.impact.changes.map((c) => withRepoPath(c, limits.checkoutDir)),
-    };
-    const deduped = dedupeChecks(checks, audit);
-    const cited = [
-      ...concerns,
-      ...(impact?.changes.filter((c) => c.band >= ATTENTION_BAND) ?? []),
-      ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
-    ];
-    return {
-      summary,
-      mustRead: dropCoveredFlags(mustRead, cited, audit),
-      ...(risk && { risk: { ...risk, concerns, impact } }),
-      ...deduped,
-      ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
-      ...(flow && { flow }),
-    };
+    return crossCheck(
+      {
+        ...(summary !== undefined && { summary, mustRead: mustRead ?? [] }),
+        ...(risk && {
+          risk: {
+            ...risk,
+            concerns: risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
+            impact: risk.impact && {
+              ...risk.impact,
+              changes: risk.impact.changes.map((c) => withRepoPath(c, limits.checkoutDir)),
+            },
+          },
+        }),
+        ...checks,
+        ...(approach && { approach: withRepoPath(approach, limits.checkoutDir) }),
+        ...(flow && { flow }),
+      },
+      audit,
+    );
   });
 }
 
-export type VerificationReport = z.output<ReturnType<typeof verificationReportSchema>>;
+type Risk = z.output<typeof riskSchema>;
+type Approach = z.output<typeof approachSchema>;
+type Flow = z.output<typeof flowSchema>;
+
+/**
+ * A report's sections. Any can be missing: a run writes only the sections it
+ * was asked for, and the checklist puts a report together from each
+ * section's newest result.
+ */
+export type VerificationReport = {
+  summary?: string;
+  /** Present exactly when `summary` is. */
+  mustRead?: MustRead[];
+  risk?: Risk;
+  approach?: Approach;
+  flow?: Flow;
+} & Partial<Record<CheckSection, Check>>;
+
+/**
+ * Shows each problem once across sections: a finding two checks reported stays
+ * in the first ({@link dedupeChecks}), and a must-read flag a finding or risk
+ * concern already reports is dropped ({@link dropCoveredFlags}). What it takes
+ * out goes into `audit`.
+ */
+export function crossCheck(report: VerificationReport, audit: ReportAudit): VerificationReport {
+  const { summary, mustRead, risk, approach, flow } = report;
+  const deduped = dedupeChecks(report, audit);
+  const cited = [
+    ...(risk?.concerns ?? []),
+    ...(risk?.impact?.changes.filter((c) => c.band >= ATTENTION_BAND) ?? []),
+    ...CHECK_SECTIONS.flatMap((section) => deduped[section]?.findings ?? []),
+  ];
+  return {
+    ...(summary !== undefined && {
+      summary,
+      mustRead: dropCoveredFlags(mustRead ?? [], cited, audit),
+    }),
+    ...(risk && { risk }),
+    ...deduped,
+    ...(approach && { approach }),
+    ...(flow && { flow }),
+  };
+}
 
 /** The report as stored: the agents' answer plus the server's count of what they read. */
 export type CoveredReport = VerificationReport & { coverage: Coverage | UnknownCoverage };
@@ -612,7 +651,7 @@ const MAX_COMMENTS_PER_THREAD = 5;
 
 /**
  * Past this many changed lines or files a run reads a lot and costs more, so
- * the UI says so before starting one.
+ * the assistant asks before starting one.
  */
 const LARGE_PR = { changedLines: 4_000, files: 150 };
 
@@ -650,8 +689,6 @@ const MODEL_IDS: Record<VerificationModel, string> = {
   sonnet: "claude-sonnet-5",
   opus: "claude-opus-5-5",
 };
-/** Agents that read every file: the summary agent and one per section. A bulk file's first page is read by one. */
-export const fileReaders = (sections: readonly ReportSection[]) => 1 + sections.length;
 const BULK_READERS = 1;
 /** A numbered patch line is about this long, its share of context lines included. */
 const BYTES_PER_CHANGED_LINE = 115;
@@ -703,11 +740,6 @@ const roundToCents = (usd: number) => Math.round(usd * 100) / 100;
 /** About what a run whose agents read `readBytes` of patch costs with `model`, in USD. */
 export function estimateRunCostUsd(model: VerificationModel, readBytes: number): number {
   return roundToCents((BASE_TOKENS + readBytes / BYTES_PER_TOKEN) * perTokenUsd(model));
-}
-
-/** About what one more agent reading every file adds, in USD, unrounded so a client can sum it. */
-export function readerCostUsd(model: VerificationModel, perReaderBytes: number): number {
-  return (perReaderBytes / BYTES_PER_TOKEN) * perTokenUsd(model);
 }
 
 export interface VerificationInput {
@@ -967,22 +999,6 @@ function targetKeyFor(refKey: string, headSha: string): string {
   return `${refKey}@${headSha}`;
 }
 
-/** The newest verification run for a PR (any head), matched on the `refKey` its meta records. */
-async function latestRunId(db: Db, refKey: string, status?: string): Promise<string | null> {
-  const conditions = [
-    eq(agentRuns.kind, VERIFICATION_RUN_KIND),
-    sql`${agentRuns.meta}->>'refKey' = ${refKey}`,
-  ];
-  if (status) conditions.push(eq(agentRuns.status, status));
-  const [row] = await db
-    .select({ id: agentRuns.id })
-    .from(agentRuns)
-    .where(and(...conditions))
-    .orderBy(desc(agentRuns.startedAt))
-    .limit(1);
-  return row?.id ?? null;
-}
-
 /** Adds what the server took out of the answer to the run's meta, once the run is over. */
 /**
  * Adds how much patch each agent read to the run's meta, so a reader near
@@ -1022,13 +1038,65 @@ async function recordAudit(db: Db, runId: string, audit: ReportAudit): Promise<v
     .where(eq(agentRuns.id, runId));
 }
 
-/** One check-and-start at a time per PR, so two clicks can't start two runs. */
+/** One check-and-start at a time per PR, so two clicks can't start a check twice. */
 const withPrLock = createKeyedLock();
 
-export interface StartedVerification {
+/**
+ * A run that wrote only the sections it was asked for. Runs from before every
+ * section ran on its own carry no format and always wrote the summary too.
+ */
+const RUN_FORMAT = 2;
+
+/** What a run from before sections could be picked ran. */
+const LEGACY_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
+  (s) => s !== "flow" && s !== "approach",
+);
+
+/** The sections a run was asked for, from its meta, in report order. */
+export function runSections(meta: Record<string, unknown>): ReportSection[] {
+  const recorded: unknown[] = Array.isArray(meta.sections) ? meta.sections : [...LEGACY_SECTIONS];
+  return REPORT_SECTIONS.filter(
+    (s) => recorded.includes(s) || (s === "summary" && meta.format !== RUN_FORMAT),
+  );
+}
+
+/** The PR's running verification runs, by the sections they write. */
+async function runningSections(db: Db, refKey: string): Promise<Map<ReportSection, string>> {
+  const rows = await db
+    .select({ id: agentRuns.id, meta: agentRuns.meta })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.kind, VERIFICATION_RUN_KIND),
+        eq(agentRuns.status, "running"),
+        sql`${agentRuns.meta}->>'refKey' = ${refKey}`,
+      ),
+    )
+    .orderBy(desc(agentRuns.startedAt));
+  const running = new Map<ReportSection, string>();
+  for (const row of rows) {
+    for (const section of runSections(row.meta as Record<string, unknown>)) {
+      if (!running.has(section)) running.set(section, row.id);
+    }
+  }
+  return running;
+}
+
+export interface StartedCheck {
+  section: ReportSection;
   runId: string;
-  /** True when a run for this PR was already going and nothing new started. */
+  /** True when a run writing this section was already going and nothing new started. */
   existing: boolean;
+}
+
+export interface StartedVerification {
+  /** One per section that started or joined a run, in report order. */
+  runs: StartedCheck[];
+  /**
+   * Sections whose run couldn't start. The others still run, so a failure
+   * part way through doesn't leave runs going that nobody follows.
+   */
+  failed: { section: ReportSection; error: string }[];
 }
 
 export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
@@ -1040,10 +1108,21 @@ export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
   return pr.headSha;
 }
 
+/** What every section's run is given, loaded once for all of them. */
+interface RunInputs {
+  pr: ReviewWorkspacePr;
+  headSha: string;
+  sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
+  detail: VerificationInput["detail"];
+  settings: VerificationRunConfig;
+}
+
 /**
- * Starts a verification run for a review PR, or returns the one already
- * running for it (whatever head it was started at). Needs the worktree checked
- * out, since the agents read the files themselves.
+ * Starts a run for each picked section of a review PR's report, each on its
+ * own so one can be re-run, or fail, without the others. A section that
+ * already has a run going (whatever head it was started at, in any instance)
+ * joins that run. Needs the worktree checked out, since the agents read the
+ * files themselves. Throws only when no section started or joined a run.
  *
  * The PR row is read once, inside the lock, and that one row supplies the
  * diff's head, the target key and the working directory, so they can't
@@ -1065,129 +1144,154 @@ export async function startVerification(
   return withPrLock(refKey, async () => {
     const pr = await getReviewPr(db, workspaceId, prId);
     const headSha = requireCheckout(config, pr);
-    const running = await latestRunId(db, refKey, "running");
-    if (running) return { runId: running, existing: true };
-
-    const [{ sources }, detail, settings] = await Promise.all([
-      reviewPatchSources(config, pr, reviewDeps, PATCH_LIMITS.maxPatchBytes),
-      deps.loadDetail(pr.ref).catch((e) => {
-        // The report is still worth having without the description and checks;
-        // the context says they are missing so nothing reads their absence as
-        // "none".
-        console.error("[verification] could not load PR details:", describeError(e));
-        return null;
-      }),
-      deps.settings(),
-    ]);
-
-    const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
-    const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
-    try {
-      const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
-      const material = buildVerificationMaterial(
-        { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index, sections },
-        contextDir,
-      );
-      writeFileSync(join(contextDir, "pr.md"), material.contextFile);
-      writeFileSync(join(contextDir, "index.md"), material.indexFile);
-      mkdirSync(join(contextDir, "groups"));
-      material.groupFiles.forEach((file, i) => {
-        writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
-      });
-      const audit = emptyAudit();
-      let volumes: ReadVolume[] = [];
-      const handle = await startClaudeRun(
-        db,
-        {
-          kind: VERIFICATION_RUN_KIND,
-          targetKey: targetKeyFor(refKey, headSha),
-          cwd: pr.worktreePath,
-          addDirs: [contextDir],
-          prompt: material.prompt,
-          outputSchema: verificationReportSchema(
-            { ...material.limits, checkoutDir: pr.worktreePath },
-            audit,
-          ),
-          finishOutput: (report, activity): CoveredReport => {
-            const counted = safeCoverage("verification", () =>
-              coverageOf(index, activity, {
-                cwd: pr.worktreePath,
-                contextDir,
-                lanes: new Set(sections.map((s) => SECTION_AGENTS[s])),
-              }),
-            );
-            volumes = counted.volumes;
-            return { ...report, coverage: counted.coverage };
-          },
-          plugins: ["yarvis-review"],
-          allowedTools: ALLOWED_TOOLS,
-          disallowedTools: DISALLOWED_TOOLS,
-          model: settings.model,
-          maxTurns: MAX_TURNS,
-          timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
-          meta: {
-            workspaceId,
-            prId,
-            refKey,
-            headSha,
-            summaryWords: material.limits.summaryWords,
-            mustReadMax: material.limits.mustReadMax,
-            binaryFiles: index.filter((e) => e.binary).length,
-            truncatedFiles: index.filter((e) => e.truncated).length,
-            patchBytes: index.reduce((n, e) => n + e.bytes, 0),
-            readingGroups: material.groups,
-            detailLoaded: detail !== null,
-            sections,
-          },
-        },
-        deps.run,
-      );
-      void handle.done
-        .then(async (outcome) => {
-          const coverage = outcome.output?.coverage;
-          if (coverage && !("unknown" in coverage)) {
-            console.log(
-              `[verification] run ${handle.id}: examined ${coverage.examined} of ` +
-                `${coverage.total} changed files, skimmed ${coverage.skimmed.length}`,
-            );
-          }
-          await recordReadVolumes(db, handle.id, volumes);
-          return recordAudit(db, handle.id, audit);
-        })
-        .catch((e) => console.error("[verification] could not record the audit:", e))
-        .finally(removeContext);
-      return { runId: handle.id, existing: false };
-    } catch (e) {
-      removeContext();
-      throw e;
+    const running = await runningSections(db, refKey);
+    const runs: StartedCheck[] = [];
+    const failed: StartedVerification["failed"] = [];
+    let firstError: unknown;
+    const toStart: ReportSection[] = [];
+    for (const section of sections) {
+      const runId = running.get(section);
+      if (runId) runs.push({ section, runId, existing: true });
+      else toStart.push(section);
     }
+    if (toStart.length > 0) {
+      const [{ sources }, detail, settings] = await Promise.all([
+        reviewPatchSources(config, pr, reviewDeps, PATCH_LIMITS.maxPatchBytes),
+        deps.loadDetail(pr.ref).catch((e) => {
+          // The report is still worth having without the description and checks;
+          // the context says they are missing so nothing reads their absence as
+          // "none".
+          console.error("[verification] could not load PR details:", describeError(e));
+          return null;
+        }),
+        deps.settings(),
+      ]);
+      // Each run writes its own copy of the patches, so read each diff once.
+      const once = sources.map((source) => {
+        let text: ReturnType<typeof source.read> | undefined;
+        return { ...source, read: () => (text ??= source.read()) };
+      });
+      const inputs: RunInputs = { pr, headSha, sources: once, detail, settings };
+      for (const section of toStart) {
+        try {
+          runs.push({
+            section,
+            runId: await startSectionRun(db, inputs, section, deps),
+            existing: false,
+          });
+        } catch (e) {
+          console.error(`[verification] could not start ${section}:`, describeError(e));
+          firstError ??= e;
+          // Sent to the client as is, so redacted like any other error the routes answer with.
+          failed.push({ section, error: clientError(e) });
+        }
+      }
+    }
+    if (runs.length === 0 && firstError !== undefined) throw firstError;
+    return {
+      runs: REPORT_SECTIONS.flatMap((s) => runs.filter((r) => r.section === s)),
+      failed,
+    };
   });
 }
 
-export interface LatestVerification {
-  run: (AgentRunSummary & { live: boolean }) | null;
-  /** The PR's head now. */
-  headSha: string | null;
-  /** True when the run was made against that head. */
-  current: boolean;
-  /**
-   * The newest run that finished with a report — the same run as `run` when
-   * that one succeeded — so a re-run that failed or was cancelled doesn't hide
-   * the last good report. `headSha` is the commit it was made against.
-   */
-  lastSucceeded: { run: AgentRunSummary; headSha: string | null; current: boolean } | null;
-  /**
-   * The PR's size, for warning before a run that reads a lot or costs more
-   * than its budget. Null until the PR is ready to read.
-   */
-  size: VerificationSize | null;
+/** Starts one section's run, with a context directory of its own that goes when the run ends. */
+async function startSectionRun(
+  db: Db,
+  { pr, headSha, sources, detail, settings }: RunInputs,
+  section: ReportSection,
+  deps: VerificationDeps,
+): Promise<string> {
+  const sections = [section];
+  const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
+  const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
+  try {
+    const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
+    const material = buildVerificationMaterial(
+      { ref: pr.ref, headSha, detail, fallbackTitle: pr.title, index, sections },
+      contextDir,
+    );
+    writeFileSync(join(contextDir, "pr.md"), material.contextFile);
+    writeFileSync(join(contextDir, "index.md"), material.indexFile);
+    mkdirSync(join(contextDir, "groups"));
+    material.groupFiles.forEach((file, i) => {
+      writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
+    });
+    const audit = emptyAudit();
+    let volumes: ReadVolume[] = [];
+    const handle = await startClaudeRun(
+      db,
+      {
+        kind: VERIFICATION_RUN_KIND,
+        targetKey: targetKeyFor(pr.refKey, headSha),
+        cwd: pr.worktreePath,
+        addDirs: [contextDir],
+        prompt: material.prompt,
+        outputSchema: verificationReportSchema(
+          { ...material.limits, checkoutDir: pr.worktreePath },
+          audit,
+        ),
+        finishOutput: (report, activity): CoveredReport => {
+          const counted = safeCoverage("verification", () =>
+            coverageOf(index, activity, {
+              cwd: pr.worktreePath,
+              contextDir,
+              lanes: new Set(sections.map((s) => SECTION_AGENTS[s])),
+            }),
+          );
+          volumes = counted.volumes;
+          return { ...report, coverage: counted.coverage };
+        },
+        plugins: ["yarvis-review"],
+        allowedTools: ALLOWED_TOOLS,
+        disallowedTools: DISALLOWED_TOOLS,
+        model: settings.model,
+        maxTurns: MAX_TURNS,
+        timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
+        meta: {
+          workspaceId: pr.workspaceId,
+          prId: pr.id,
+          refKey: pr.refKey,
+          headSha,
+          summaryWords: material.limits.summaryWords,
+          mustReadMax: material.limits.mustReadMax,
+          binaryFiles: index.filter((e) => e.binary).length,
+          truncatedFiles: index.filter((e) => e.truncated).length,
+          patchBytes: index.reduce((n, e) => n + e.bytes, 0),
+          readingGroups: material.groups,
+          detailLoaded: detail !== null,
+          sections,
+          format: RUN_FORMAT,
+        },
+      },
+      deps.run,
+    );
+    void handle.done
+      .then(async (outcome) => {
+        const coverage = outcome.output?.coverage;
+        if (coverage && !("unknown" in coverage)) {
+          console.log(
+            `[verification] run ${handle.id} (${section}): examined ${coverage.examined} of ` +
+              `${coverage.total} changed files, skimmed ${coverage.skimmed.length}`,
+          );
+        }
+        await recordReadVolumes(db, handle.id, volumes);
+        return recordAudit(db, handle.id, audit);
+      })
+      .catch((e) => console.error("[verification] could not record the audit:", e))
+      .finally(removeContext);
+    return handle.id;
+  } catch (e) {
+    removeContext();
+    throw e;
+  }
 }
 
 export interface VerificationSize {
   files: number;
   /** Added and removed lines over every text file. */
   changedLines: number;
-  /** Past {@link LARGE_PR}: the UI asks before starting. */
+  /** Past {@link LARGE_PR}: the assistant asks before starting. */
   large: boolean;
   /** Changed files with no text diff, so no patch. */
   binary: string[];
@@ -1195,24 +1299,27 @@ export interface VerificationSize {
   truncated: string[];
   /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
   skimmed: string[];
-  /** A rough figure from {@link estimateRunCostUsd}, for the configured model and the default sections. */
+  /** {@link checksCostUsd} for the default sections. */
   estimatedCostUsd: number;
   /**
-   * About what one section adds: one more agent reading every file. The
-   * estimate moves by this much per section added to or taken from the
-   * defaults. It leaves out the agent's own fixed overhead and, for the flow
-   * diagram and the approach rating, their reads of the checkout, so it runs
-   * low.
+   * About what one section's run costs with the configured model: an agent
+   * reading every file plus a coordinator's fixed overhead. BASE_TOKENS was
+   * measured on a run of eight agents, so charging it to every section rounds
+   * up rather than down.
    */
-  sectionCostUsd: number;
-  /** The sections {@link estimatedCostUsd} assumes. */
-  defaultSections: readonly ReportSection[];
-  /** The configured budget. It only warns: past it the UI asks first, and nothing stops the run. */
+  checkCostUsd: number;
+  /** What the summary's run adds to {@link checkCostUsd}: the first page of each bulk file. */
+  summaryExtraUsd: number;
+  /** The configured budget. It only warns: past it the assistant asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
 }
 
-/** The facts a warning before a run states, from the PR's files and the run settings. */
+/**
+ * What the checklist says the agents won't read whole, and the size and cost
+ * the assistant weighs before starting a run, from the PR's files and the run
+ * settings.
+ */
 export function verificationSize(
   files: SizedFile[],
   truncated: string[],
@@ -1221,10 +1328,10 @@ export function verificationSize(
 ): VerificationSize {
   const changedLines = files.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0);
   const read = estimateReadBytes(files, new Set(truncated), bulk);
-  const estimatedCostUsd = estimateRunCostUsd(
-    settings.model,
-    read.perReader * fileReaders(DEFAULT_SECTIONS) + read.bulk,
-  );
+  const checkCostUsd = estimateRunCostUsd(settings.model, read.perReader);
+  const summaryExtraUsd =
+    estimateRunCostUsd(settings.model, read.perReader + read.bulk) - checkCostUsd;
+  const estimatedCostUsd = checksCostUsd({ checkCostUsd, summaryExtraUsd }, DEFAULT_SECTIONS);
   return {
     files: files.length,
     changedLines,
@@ -1233,56 +1340,18 @@ export function verificationSize(
     truncated,
     skimmed: files.filter((f) => !f.binary && bulk.get(f.path)?.skim).map((f) => f.path),
     estimatedCostUsd,
-    sectionCostUsd: readerCostUsd(settings.model, read.perReader),
-    defaultSections: DEFAULT_SECTIONS,
+    checkCostUsd,
+    summaryExtraUsd,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
   };
 }
 
-/** The PR's most recent verification run and last good report, and whether the PR has moved on since. */
-export async function latestVerification(
-  db: Db,
-  config: Config,
-  workspaceId: string,
-  prId: string,
-  reviewDeps: ReviewDeps,
-  isLive: (id: string) => boolean,
-  settings: () => Promise<VerificationRunConfig>,
-): Promise<LatestVerification> {
-  const pr = await getReviewPr(db, workspaceId, prId);
-  const id = await latestRunId(db, pr.refKey);
-  const run = id ? await getAgentRunSummary(db, id) : null;
-  let size: LatestVerification["size"] = null;
-  if (pr.status === "ready") {
-    // A cached read once the PR has been opened. A failure only costs the warning.
-    try {
-      const [{ files, truncated, bulk }, runConfig] = await Promise.all([
-        reviewDiffFacts(db, config, workspaceId, prId, reviewDeps, PATCH_LIMITS.maxPatchBytes),
-        settings(),
-      ]);
-      size = verificationSize(files, truncated, bulk, runConfig);
-    } catch (e) {
-      console.error("[verification] could not size the PR:", describeError(e));
-    }
-  }
-  const isCurrent = (r: AgentRunSummary) =>
-    pr.headSha !== null && r.targetKey === targetKeyFor(pr.refKey, pr.headSha);
-  const succeededId =
-    run?.status === "succeeded" ? run.id : await latestRunId(db, pr.refKey, "succeeded");
-  const succeeded =
-    succeededId === run?.id ? run : succeededId ? await getAgentRunSummary(db, succeededId) : null;
-  return {
-    run: run ? { ...run, live: isLive(run.id) } : null,
-    headSha: pr.headSha,
-    current: run !== null && isCurrent(run),
-    lastSucceeded: succeeded
-      ? {
-          run: succeeded,
-          headSha: (succeeded.meta as { headSha?: string }).headSha ?? null,
-          current: isCurrent(succeeded),
-        }
-      : null,
-    size,
-  };
+/** About what running `sections` costs, each as its own run, in USD. */
+export function checksCostUsd(
+  size: Pick<VerificationSize, "checkCostUsd" | "summaryExtraUsd">,
+  sections: readonly ReportSection[],
+): number {
+  const extra = sections.includes("summary") ? size.summaryExtraUsd : 0;
+  return roundToCents(sections.length * size.checkCostUsd + extra);
 }

@@ -2,9 +2,10 @@ import type { AgentRunStatus } from "../agentRuns";
 import { ensureOk, sidecarFetch } from "../api";
 
 /**
- * Client for a review PR's verification report: starting one, and reading the
- * latest. Following a run live goes through `lib/agentRuns`, like any other
- * headless Claude Code run.
+ * Client for a review PR's verification checklist: starting a run for each
+ * picked section, and reading each section's latest run and newest result
+ * with the report they make. Following a run live goes through
+ * `lib/agentRuns`, like any other headless Claude Code run.
  */
 
 export type Severity = "high" | "medium" | "low";
@@ -128,11 +129,12 @@ export interface VerificationApproach {
 }
 
 /**
- * Mirrors the sidecar's `CoveredReport` (`reviewWorkspaces/verification.ts`).
- * A section the run wasn't asked for is absent.
+ * Mirrors the sidecar's `ChecklistReport` (`reviewWorkspaces/checklist.ts`):
+ * each section's newest result. A section with no result is absent; with no
+ * summary result, `mustRead` is empty.
  */
 export interface VerificationReport {
-  summary: string;
+  summary?: string;
   mustRead: VerificationMustRead[];
   risk?: {
     level: "low" | "medium" | "high";
@@ -155,27 +157,17 @@ export interface VerificationReport {
   coverage?: VerificationCoverage | UnknownCoverage;
 }
 
-/** Mirrors the sidecar's `VerificationSize`: the facts a warning before a run states. */
+/**
+ * The part of the sidecar's `VerificationSize` the tab shows: what the
+ * agents won't read whole.
+ */
 export interface VerificationSize {
-  files: number;
-  changedLines: number;
-  /** Big enough that the UI asks before starting. */
-  large: boolean;
   /** Changed files with no text diff, so no patch for the agents. */
   binary: string[];
   /** Changed files whose diff is too large, so the agents see only its start. */
   truncated: string[];
   /** Lockfiles and generated, vendored or minified files, which the agents only skim. */
   skimmed: string[];
-  /** A rough estimate for the configured model and the default sections. */
-  estimatedCostUsd: number;
-  /** About what one section adds to the estimate, or takes off it. */
-  sectionCostUsd: number;
-  /** The sections `estimatedCostUsd` assumes. */
-  defaultSections: ReportSection[];
-  budgetUsd: number;
-  /** The estimate is over the budget: the UI asks before starting. */
-  overBudget: boolean;
 }
 
 /** The checks shown as one row each, in the order the report lists them. */
@@ -190,34 +182,23 @@ export const VERIFICATION_CHECKS = [
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
-/** The sections a reviewer can pick, in report order; mirrors the sidecar's `REPORT_SECTIONS`. */
-export const REPORT_SECTIONS = ["risk", ...VERIFICATION_CHECKS, "approach", "flow"] as const;
+/**
+ * The sections a reviewer can run, in report order; mirrors the sidecar's
+ * `REPORT_SECTIONS`. `summary` is the summary and must-read files.
+ */
+export const REPORT_SECTIONS = [
+  "summary",
+  "risk",
+  ...VERIFICATION_CHECKS,
+  "approach",
+  "flow",
+] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** What the sidecar runs when no sections are picked: everything but the diagram. */
+/** What runs when no sections are picked: everything but the diagram. */
 export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
   (s) => s !== "flow",
 );
-
-/** The sections a run was asked for, from its meta; a run from before sections could be picked ran the default set. */
-export function runSections(meta: Record<string, unknown> | undefined): readonly ReportSection[] {
-  const recorded = meta?.sections;
-  if (!Array.isArray(recorded)) return DEFAULT_SECTIONS;
-  return REPORT_SECTIONS.filter((s) => recorded.includes(s));
-}
-
-/** The size facts with the estimate moved to `sections`, for warning before that run. */
-export function sizeFor(
-  size: VerificationSize,
-  sections: readonly ReportSection[],
-): VerificationSize {
-  const extra = sections.length - size.defaultSections.length;
-  const estimatedCostUsd = Math.max(
-    0,
-    Math.round((size.estimatedCostUsd + extra * size.sectionCostUsd) * 100) / 100,
-  );
-  return { ...size, estimatedCostUsd, overBudget: estimatedCostUsd > size.budgetUsd };
-}
 
 /**
  * Mentions as plain text: a zero-width space after the `@` keeps GitHub from
@@ -246,72 +227,88 @@ export function findingCommentBody(
   return `**${title}** (verification report: ${tag})\n\n${quoted}`;
 }
 
-/** A verification run as the route returns it. */
-export interface VerificationRun {
+/** Mirrors the sidecar's `ChecklistRun`: a run's state, without its answer. */
+export interface ChecklistRun {
   id: string;
-  kind: string;
-  targetKey: string;
   status: AgentRunStatus;
-  /** The report, once the run has succeeded. */
-  result: VerificationReport | null;
-  error: string | null;
-  costUsd: number | null;
-  meta: Record<string, unknown>;
-  startedAt: string;
-  finishedAt: string | null;
   /** Whether this sidecar is running it, so its events can be followed live. */
   live: boolean;
+  /** The commit it ran against. */
+  headSha: string | null;
+  /** True when that is the PR's head now. */
+  current: boolean;
+  error: string | null;
+  costUsd: number | null;
+  startedAt: string;
+  finishedAt: string | null;
 }
 
-export interface LatestVerification {
-  run: VerificationRun | null;
+export type ChecklistThemeId = "understand" | "correctness" | "risk" | "maintainability";
+
+export interface ChecklistItem {
+  section: ReportSection;
+  theme: ChecklistThemeId;
+  label: string;
+  /** What the section checks, in a sentence. */
+  description: string;
+  /** The newest run that wrote this section, whatever its outcome. */
+  latest: ChecklistRun | null;
+  /** The newest run that answered for it: the one the report shows. */
+  result: ChecklistRun | null;
+}
+
+/** Mirrors the sidecar's `VerificationChecklist`. */
+export interface VerificationChecklist {
   /** The PR's head now. */
   headSha: string | null;
-  /** True when the run was made against that head. */
-  current: boolean;
-  /**
-   * The newest run that finished with a report (the same as `run` when that
-   * one succeeded), so a failed or cancelled re-run doesn't hide the last good
-   * report. `headSha` is the commit it was made against.
-   */
-  lastSucceeded: {
-    run: Omit<VerificationRun, "live">;
-    headSha: string | null;
-    current: boolean;
-  } | null;
-  /**
-   * The PR's size, to warn before a run that reads a lot or may outrun its
-   * budget. Null until the PR is ready to read.
-   */
+  themes: readonly { id: ChecklistThemeId; label: string }[];
+  /** In report order. */
+  items: ChecklistItem[];
+  /** Each section's newest result put together; null until any section has one. */
+  report: VerificationReport | null;
+  /** What the agents won't read whole. Null until the PR is ready to read. */
   size: VerificationSize | null;
 }
 
 const path = (workspaceId: string, prId: string) =>
   `/api/review-workspaces/${workspaceId}/prs/${prId}/verification`;
 
-export async function latestVerification(
+export async function verificationChecklist(
   workspaceId: string,
   prId: string,
-): Promise<LatestVerification> {
+): Promise<VerificationChecklist> {
   const res = await sidecarFetch(path(workspaceId, prId));
-  await ensureOk(res, "read verification report");
-  return res.json();
+  await ensureOk(res, "read verification checklist");
+  const checklist = (await res.json()) as VerificationChecklist;
+  const { report } = checklist;
+  // The sidecar omits `mustRead` when no summary result exists; the tab treats that as an empty list.
+  return report
+    ? { ...checklist, report: { ...report, mustRead: report.mustRead ?? [] } }
+    : checklist;
+}
+
+export interface StartedCheck {
+  section: ReportSection;
+  runId: string;
+  /** True when a run writing this section was already going, and nothing new started. */
+  existing: boolean;
 }
 
 /**
- * Starts a report on `sections`, or answers with the run already going for
- * this PR (`existing`). Follow it with `streamAgentRun(runId)`.
+ * Starts a run for each of `sections`; a section with a run already going
+ * joins it. `failed` names the sections whose run couldn't start; it throws
+ * only when none started or joined a run.
  */
 export async function startVerification(
   workspaceId: string,
   prId: string,
   sections: readonly ReportSection[],
-): Promise<{ runId: string; existing: boolean }> {
+): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sections }),
   });
-  await ensureOk(res, "start verification report");
+  await ensureOk(res, "start verification checks");
   return res.json();
 }

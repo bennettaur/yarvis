@@ -131,9 +131,9 @@
 <!-- ───────────────────────────────────────────── -->
 <section id="in-app">
   <h2>What's in the report</h2>
-  <p>It runs Claude Code on your machine against the PR's checkout. Above <b>Run verification</b> you pick the sections; the summary and must-read files always run. Its progress shows check by check, and every file and line in it opens the diff.</p>
+  <p>It runs Claude Code on your machine against the PR's checkout. The tab is a checklist grouped by theme, and each check runs on its own when you pick it, so one can be re-run, or fail, without the others. The report below the checklist shows each check's newest result, and every file and line in it opens the diff.</p>
   <div class="grid g3">
-    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Summary and must-read files</h3><p>Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
     <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
     <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
     <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
@@ -273,10 +273,10 @@
 <section id="running">
   <h2>Running it</h2>
   <ul>
-    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Pick sections and press <b>Run verification</b>. Starting a second run for the same PR joins the one already running.</li>
+    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Press <b>Run</b> on a check, or tick several and press <b>Run picked</b>. Starting a check that is already running joins that run.</li>
     <li><b>From the assistant</b>: "verify bennettaur/yarvis#612" from chat, voice or Telegram. It uses or creates a review workspace, waits for the clone, and never runs the setup script. It asks first when the PR is large, over budget, of unknown size, or from a repo you haven't registered, since the PR reference may have come from text someone else wrote.</li>
-    <li><b>Cost</b>: before a large run, or one estimated over the budget in <b>Settings → PR review</b>, you see an estimate and are asked. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
-    <li><b>Staleness</b>: a report for an older head says so and offers <b>Re-run</b>. If a re-run fails or is cancelled, the last good report stays.</li>
+    <li><b>Cost</b>: the tab doesn't ask: which checks you run is the budget, and each row shows what its last run cost. The assistant asks first when the PR is large or over the budget in <b>Settings → PR review</b>. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
+    <li><b>Staleness</b>: a check whose result is for an older head says so on its row and in the report. If a re-run fails or is cancelled, the check's last good result stays.</li>
   </ul>
 </section>
 <!-- ───────────────────────────────────────────── -->

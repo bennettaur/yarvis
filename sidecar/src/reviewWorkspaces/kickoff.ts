@@ -7,6 +7,7 @@ import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { findRepoForPr } from "../workspaces/service.ts";
+import { verificationChecklist } from "./checklist.ts";
 import {
   createReviewWorkspace,
   getReviewPr,
@@ -16,7 +17,8 @@ import {
   resumeIfStalled,
 } from "./service.ts";
 import {
-  latestVerification,
+  checksCostUsd,
+  normalizeSections,
   type ReportSection,
   startVerification,
   type VerificationDeps,
@@ -32,14 +34,18 @@ export type SizeSummary = Pick<
   "files" | "changedLines" | "large" | "overBudget" | "estimatedCostUsd" | "budgetUsd"
 >;
 
-const summarize = (size: VerificationSize): SizeSummary => ({
-  files: size.files,
-  changedLines: size.changedLines,
-  large: size.large,
-  overBudget: size.overBudget,
-  estimatedCostUsd: size.estimatedCostUsd,
-  budgetUsd: size.budgetUsd,
-});
+/** The size facts, with the estimate for the sections about to run rather than the defaults. */
+function summarize(size: VerificationSize, sections: readonly ReportSection[]): SizeSummary {
+  const estimatedCostUsd = checksCostUsd(size, sections);
+  return {
+    files: size.files,
+    changedLines: size.changedLines,
+    large: size.large,
+    overBudget: estimatedCostUsd > size.budgetUsd,
+    estimatedCostUsd,
+    budgetUsd: size.budgetUsd,
+  };
+}
 
 /**
  * Starting a PR's verification report from somewhere other than its review
@@ -48,7 +54,8 @@ const summarize = (size: VerificationSize): SizeSummary => ({
  * since whoever asked has usually moved on by the time the report is written.
  *
  * The in-flight state here is per process. A chat turn runs in one instance,
- * and `startVerification` itself refuses a second run across instances.
+ * and `startVerification` joins a section's run that another instance already
+ * has going.
  */
 
 /** Longest the background wait gives a clone and checkout before giving up. */
@@ -59,7 +66,7 @@ export interface KickoffOptions {
   sections?: readonly ReportSection[];
   /** The user agreed, after being told why, to a run that needs their go-ahead. */
   confirmed?: boolean;
-  /** Run again even though a report for the PR's current head exists. */
+  /** Run the sections again even where they have a result for the PR's current head. */
   rerun?: boolean;
 }
 
@@ -74,18 +81,36 @@ export interface KickoffDeps {
 }
 
 /**
- * Why a run waits for the user: the same size and budget questions the review
- * tab asks before its Run button goes ahead, a PR that couldn't be sized, or a
- * repo the user never registered, since the name may have come from text
- * someone else wrote.
+ * Why a run waits for the user: a large PR, an estimate over the budget for
+ * the sections about to run, a PR that couldn't be sized, or a repo the user
+ * never registered, since the name may have come from text someone else wrote.
  */
 export type ConfirmReason = "large" | "over-budget" | "unsized" | "unregistered-repo";
 
+/** What happened to each section asked for, so the model can say which ones run. */
+export interface SectionOutcomes {
+  started: ReportSection[];
+  /** Already had a run going, which they joined. */
+  running: ReportSection[];
+  /** Already had a result for the PR's current head. */
+  current: ReportSection[];
+  /** Their run couldn't start. */
+  failed: ReportSection[];
+}
+
+/**
+ * Each section runs on its own. `runIds` are the runs behind the sections
+ * started or running; a run from before sections ran on their own covers
+ * several.
+ */
+type Ran = { workspaceId: string; prId: string; runIds: string[]; sections: SectionOutcomes };
+
 export type KickoffResult =
-  | { status: "started"; workspaceId: string; prId: string; runId: string }
-  | { status: "already-running"; workspaceId: string; prId: string; runId: string }
-  /** A report for the PR's current head is already there. */
-  | { status: "exists"; workspaceId: string; prId: string; runId: string }
+  | ({ status: "started" } & Ran)
+  /** No section was started: each already has a run going, or a current result. */
+  | ({ status: "already-running" } & Ran)
+  /** Every section asked for already has a result for the PR's current head. */
+  | ({ status: "exists" } & Ran)
   /** The checkout isn't ready yet; the report starts on its own once it is. */
   | { status: "waiting-for-checkout"; workspaceId: string; prId: string; createdWorkspace: boolean }
   | {
@@ -200,7 +225,7 @@ async function startReport(
   deps: KickoffDeps,
 ): Promise<KickoffResult> {
   const { workspaceId, id: prId } = pr;
-  const latest = await latestVerification(
+  const checklist = await verificationChecklist(
     db,
     config,
     workspaceId,
@@ -209,22 +234,35 @@ async function startReport(
     (id) => registryFor(deps).isLive(id),
     deps.verification.settings,
   );
-  if (latest.run?.live) {
-    return { status: "already-running", workspaceId, prId, runId: latest.run.id };
-  }
-  if (!options.rerun && latest.lastSucceeded?.current) {
-    return { status: "exists", workspaceId, prId, runId: latest.lastSucceeded.run.id };
+  const asked = normalizeSections(options.sections);
+  const items = checklist.items.filter((item) => asked.includes(item.section));
+  // Any instance's run counts, as it does for startVerification, which joins it.
+  const running = items.filter((item) => item.latest?.status === "running");
+  const current = items.filter((item) => !running.includes(item) && item.result?.current);
+  const pending = items
+    .filter((item) => !running.includes(item) && (options.rerun || !item.result?.current))
+    .map((item) => item.section);
+  const outcomes: SectionOutcomes = {
+    started: [],
+    running: running.map((item) => item.section),
+    current: options.rerun ? [] : current.map((item) => item.section),
+    failed: [],
+  };
+  const runningIds = running.flatMap((item) => item.latest?.id ?? []);
+
+  if (pending.length === 0) {
+    const runIds = [...new Set([...runningIds, ...current.flatMap((i) => i.result?.id ?? [])])];
+    const status = running.length > 0 ? "already-running" : "exists";
+    return { status, workspaceId, prId, runIds, sections: outcomes };
   }
   if (!options.confirmed) {
-    const { size } = latest;
+    const { size } = checklist;
+    const summary = size ? summarize(size, pending) : null;
     let reason: ConfirmReason | null = null;
-    if (!size) reason = "unsized";
-    else if (size.large) reason = "large";
-    else if (size.overBudget) reason = "over-budget";
-    if (reason) {
-      const summary = size ? summarize(size) : null;
-      return { status: "needs-confirmation", reason, workspaceId, prId, size: summary };
-    }
+    if (!summary) reason = "unsized";
+    else if (summary.large) reason = "large";
+    else if (summary.overBudget) reason = "over-budget";
+    if (reason) return { status: "needs-confirmation", reason, workspaceId, prId, size: summary };
   }
   // An earlier failure's bell item would otherwise sit beside this run's result.
   await clearAttentionScope(db, { sessionKey: sessionKeyFor(pr) }, "resolved");
@@ -235,16 +273,28 @@ async function startReport(
     prId,
     deps.review,
     deps.verification,
-    options.sections,
+    pending,
   );
-  // Only follow a run this call started. One already going was started by an
+  // Only follow runs this call started. One already going was started by an
   // earlier ask, which follows it, or from the tab, where the user is watching.
-  if (!started.existing) void notifyWhenDone(db, pr, started.runId, deps);
+  const fresh = started.runs.filter((r) => !r.existing);
+  if (fresh.length > 0 || started.failed.length > 0)
+    void notifyWhenDone(
+      db,
+      pr,
+      fresh.map((r) => r.runId),
+      started.failed.length,
+      deps,
+    );
+  outcomes.started = fresh.map((r) => r.section);
+  outcomes.running.push(...started.runs.filter((r) => r.existing).map((r) => r.section));
+  outcomes.failed = started.failed.map((f) => f.section);
   return {
-    status: started.existing ? "already-running" : "started",
+    status: fresh.length > 0 ? "started" : "already-running",
     workspaceId,
     prId,
-    runId: started.runId,
+    runIds: [...new Set([...runningIds, ...started.runs.map((r) => r.runId)])],
+    sections: outcomes,
   };
 }
 
@@ -317,35 +367,49 @@ function goAheadDetail(result: Extract<KickoffResult, { status: "needs-confirmat
   return `${why}: ${size.files} files, ${size.changedLines} changed lines, about $${size.estimatedCostUsd.toFixed(2)} against a $${size.budgetUsd.toFixed(2)} budget. ${ask}`;
 }
 
-/** Rings the bell once a run this module started ends; whoever asked has usually moved on. */
+/**
+ * Rings the bell once every run this module started has ended; whoever asked
+ * has usually moved on. A section whose run couldn't start counts as failed,
+ * so a report missing it is never announced as ready.
+ */
 async function notifyWhenDone(
   db: Db,
   pr: ReviewWorkspacePr,
-  runId: string,
+  runIds: string[],
+  notStarted: number,
   deps: KickoffDeps,
 ): Promise<void> {
   try {
-    // The run's row is written before the registry lets it go.
-    await registryFor(deps).follow(runId, () => undefined);
-    const run = await getAgentRunSummary(db, runId);
-    if (run?.status === "succeeded") {
+    // A run's row is written before the registry lets it go.
+    await Promise.all(runIds.map((id) => registryFor(deps).follow(id, () => undefined)));
+    const runs = await Promise.all(runIds.map((id) => getAgentRunSummary(db, id)));
+    const statuses = runs.map((run) => run?.status ?? null);
+    const failed = statuses.filter((s) => s === "failed").length + notStarted;
+    const total = runIds.length + notStarted;
+    if (failed === 0 && statuses.every((s) => s === "succeeded")) {
       await notify(db, pr, "completed", "Verification report ready", null);
-    } else if (run?.status === "failed") {
-      // The run's error can quote what the agent read, so the bell gets a fixed line.
+    } else if (failed > 0) {
+      // A run's error can quote what the agent read, so the bell gets a fixed line.
+      const which = total === 1 ? "The check" : `${failed} of the ${total} checks`;
       await notify(
         db,
         pr,
         "error",
         "Verification report failed",
-        "The run failed. Open the review workspace to see why.",
+        `${which} failed. Open the review workspace to see why.`,
       );
-    } else if (run?.status !== "cancelled") {
-      console.error(
-        `[verification] run ${runId} ended as ${run?.status ?? "missing"}; not notifying`,
-      );
+    } else {
+      // The rest were cancelled, which the user did and needs no bell, or
+      // ended some way a run shouldn't, which is logged.
+      const odd = statuses.some((s) => s !== "succeeded" && s !== "cancelled");
+      if (odd) {
+        console.error(
+          `[verification] runs ${runIds.join(", ")} ended as ${statuses.join(", ")}; not notifying`,
+        );
+      }
     }
   } catch (e) {
-    console.error("[verification] could not report the run's end:", describeError(e));
+    console.error("[verification] could not report the runs' end:", describeError(e));
   }
 }
 

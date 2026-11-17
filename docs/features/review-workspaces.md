@@ -173,13 +173,35 @@ the current step.
 
 ### Verification report
 
-**Verification** in the PR bar opens a tab where agents (Claude Code,
-running on your machine against the PR's checkout) read every changed file's
-diff and report: a summary, the files that must be read and why, the risk, and
-checks for completeness, tests, complexity, performance, comments,
-observability and code quality, and whether there is a simpler way to do what
-the PR does. Its progress shows check by check while it runs, and **Cancel**
-stops it. Every file and line in the report opens the diff there.
+**Verification** in the PR bar opens a checklist of checks that agents
+(Claude Code, running on your machine against the PR's checkout) run on the
+change, each reading every changed file's diff. The checks are grouped by
+theme:
+
+- **Understand the change**: a summary with the files that must be read and
+  why, and the flow diagram.
+- **Correctness and tests**: completeness, test quality, performance and
+  observability.
+- **Risk and impact**: the risk score.
+- **Maintainability**: complexity, code quality, comment quality, and whether
+  there is a simpler way to do what the PR does.
+
+Each check runs on its own, when you choose. **Run** (or **Re-run**) on a
+row runs that one; tick several and press **Run picked** to start them
+together. The boxes start ticked on the checks with no result for the PR's
+current head, except the flow diagram, which runs only when you ask. Each
+row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
+what that result cost, whether that result is from an older head, and whether
+its last run failed or was cancelled. A failed or cancelled run leaves the
+check's last good result in place. While checks run, the tab checks on them
+every few seconds, and **Cancel** on a running check's row stops it. A check
+another Yarvis instance is running says so, and can't be started twice. If
+some picked checks can't start, the tab names them and the rest still run.
+Nothing asks about cost first: which checks you run is the budget.
+
+Below the checklist, the report shows each check's newest result. A section
+whose result is from an older head is marked "older head". Every file and
+line in the report opens the diff there.
 
 - **Observability** looks for errors that are swallowed, logging at the wrong
   level (errors for failures someone must look at, warnings for things that
@@ -209,14 +231,9 @@ The assistant can start a report too, and creates the review workspace when
 there isn't one. See
 [Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 
-Above **Run verification** you pick which sections to run: risk, each check,
-**Simpler approach** and the **Flow diagram**. The summary and must-read files
-always run. The diagram is off unless you tick it; the others start ticked,
-and after a run the boxes start where that run's did, so a section added
-since the last run starts unticked. The cost estimate follows what you pick.
-If a report is already being written for the PR, starting another joins that
-run, with the sections it was started with.
-A report shows only the sections its run was asked for.
+The report shows only the checks that have a result. When two checks found
+the same problem in results for the same head, it is shown once, under the
+check that comes first: test quality before completeness, for example.
 
 The **Flow diagram** traces the whole flow the change sits in, not just the
 diff. An agent follows the changed code up to what starts the flow (a route, a
@@ -249,8 +266,8 @@ workspace, **Add to *workspace*** adds it to that workspace's
 [review comments](workspaces.md#the-right-column) instead, where its agent can
 pick it up. There it carries a **report finding** badge, and the agent reads
 it as a problem to check rather than as your request. Nothing is sent until
-you click. A report for an older head offers neither button, since its line
-numbers may point at different code now; re-run it first. Like any comment
+you click. A check whose result is for an older head offers neither button,
+since its line numbers may point at different code now; re-run it first. Like any comment
 you post, a posted finding records where you reviewed.
 
 No file is left out to save room. Each changed file's diff is given to the
@@ -285,17 +302,12 @@ open its diff. Nothing else in the report covers those files. Below it:
   whatever kind of file each one is.
 
 When every file was read, the report says that at least one check read each
-one.
+one. The count covers the checks whose results are for the PR's head (or,
+when none are, for the newest result's head): a file counts as read when any
+of them read it.
 
-- A report made for an older head says so, with **Re-run**.
-- If a re-run fails or is cancelled, the last good report stays below the
-  notice.
-- Before a run, the tab names the binary files, any diffs that will be cut
-  off, and the bulk the agents will only skim.
-- On a large PR, or when the estimated cost is over the report's budget
-  (**Settings → PR review**), you are asked first, with a rough cost estimate
-  against the budget. The budget only warns: once you choose **Run anyway**,
-  the run finishes whatever it ends up costing.
+Under the checklist, the tab names the binary files, any diffs that will be
+cut off, and the bulk the agents will only skim.
 
 ### Mutation testing
 

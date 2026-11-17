@@ -11,6 +11,7 @@ import {
   auditIsEmpty,
   buildVerificationMaterial,
   checkOutcome,
+  checksCostUsd,
   DEFAULT_SECTIONS,
   emptyAudit,
   estimateReadBytes,
@@ -107,7 +108,7 @@ describe("the report schema", () => {
         ],
       }),
     );
-    expect(parsed.mustRead[0]?.flags).toEqual([
+    expect(parsed.mustRead?.[0]?.flags).toEqual([
       { note: "retries never decremented", line: 17 },
       { note: "no line", line: undefined },
       { note: "third", line: undefined },
@@ -118,7 +119,7 @@ describe("the report schema", () => {
     const parsed = schema.parse(
       report({ mustRead: [{ path: "src/a.ts", reason: "core", flags: null }] }),
     );
-    expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(parsed.mustRead?.[0]?.flags).toEqual([]);
   });
 
   it("reads an invalid line range as no range, or as its one valid end", () => {
@@ -130,7 +131,7 @@ describe("the report schema", () => {
         ],
       }),
     );
-    expect(parsed.mustRead.map((m) => m.lines)).toEqual([{ start: 12, end: 12 }, undefined]);
+    expect(parsed.mustRead?.map((m) => m.lines)).toEqual([{ start: 12, end: 12 }, undefined]);
   });
 
   it("derives a check's status from its findings, most severe first, capped", () => {
@@ -282,13 +283,22 @@ describe("the report schema", () => {
       mermaid: "flowchart TD\n a --> b",
     };
     const parsed = picked.parse({ ...report(), flow });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect(Object.keys(parsed).sort()).toEqual(["flow", "tests"]);
     expect(parsed.flow).toEqual(flow);
     const { flow: _f, ...withoutFlow } = { ...report(), flow };
     expect(picked.safeParse(withoutFlow).success).toBe(false);
-    // Only the summary and the picked sections are required of the answer.
+    // Only the picked sections are required of the answer.
     const required = JSON.parse(jsonSchemaArg(picked)).required;
-    expect([...required].sort()).toEqual(["flow", "mustRead", "summary", "tests"]);
+    expect([...required].sort()).toEqual(["flow", "tests"]);
+  });
+
+  it("asks for the summary and must-reads together, as one section", () => {
+    const picked = verificationReportSchema({ ...limits, sections: ["summary"] });
+    const parsed = picked.parse(report({ mustRead: [{ path: "src/a.ts", reason: "core" }] }));
+    expect(Object.keys(parsed).sort()).toEqual(["mustRead", "summary"]);
+    expect(parsed.mustRead?.map((m) => m.path)).toEqual(["src/a.ts"]);
+    const required = JSON.parse(jsonSchemaArg(picked)).required;
+    expect([...required].sort()).toEqual(["mustRead", "summary"]);
   });
 
   it("keeps the simpler way only when the rating says there is one", () => {
@@ -365,10 +375,10 @@ describe("the report schema", () => {
       tests: { status: "ok", findings: "not a list" },
       risk: { level: "extreme" },
     });
-    expect(Object.keys(parsed).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(parsed)).toEqual(["flow"]);
     // Claude Code is shown only the fields to write.
     const sent = JSON.parse(jsonSchemaArg(picked));
-    expect(Object.keys(sent.properties).sort()).toEqual(["flow", "mustRead", "summary"]);
+    expect(Object.keys(sent.properties)).toEqual(["flow"]);
   });
 
   it("gives Claude Code its limits as descriptions, never as bounds it would enforce", () => {
@@ -400,7 +410,7 @@ describe("dropping must-read flags a finding already reports", () => {
   const keptNotes = (overrides: Record<string, unknown>, sections = limits.sections) =>
     verificationReportSchema({ ...limits, sections })
       .parse(report(overrides))
-      .mustRead[0]?.flags.map((f) => f.note);
+      .mustRead?.[0]?.flags.map((f) => f.note);
 
   it("drops one a check finding reports within a few lines, and records it", () => {
     const audit = emptyAudit();
@@ -413,7 +423,9 @@ describe("dropping must-read flags a finding already reports", () => {
         quality: quality("Retry count is never decremented", 17),
       }),
     );
-    expect(parsed.mustRead[0]?.flags.map((f) => f.note)).toEqual(["cache key ignores the locale"]);
+    expect(parsed.mustRead?.[0]?.flags.map((f) => f.note)).toEqual([
+      "cache key ignores the locale",
+    ]);
     expect(audit.droppedFlags).toEqual([{ path: "src/a.ts", line: 20, note: retry }]);
   });
 
@@ -464,7 +476,7 @@ describe("dropping must-read flags a finding already reports", () => {
         ...flagged([{ note: retry, line: 18 }]),
         quality: quality("Retry count is never decremented", 17),
       },
-      ["quality"],
+      ["summary", "quality"],
     );
     expect(notes).toEqual([]);
   });
@@ -663,9 +675,9 @@ describe("paths an agent cites", () => {
         },
       }),
     );
-    expect(parsed.mustRead.map((m) => m.path)).toEqual(["src/a.ts"]);
+    expect(parsed.mustRead?.map((m) => m.path)).toEqual(["src/a.ts"]);
     // The concern's absolute path still matches the must-read's flag.
-    expect(parsed.mustRead[0]?.flags).toEqual([]);
+    expect(parsed.mustRead?.[0]?.flags).toEqual([]);
     expect(audit.droppedFlags).toEqual([
       { path: "src/a.ts", line: 9, note: "uploads retried forever, check the limit" },
     ]);
@@ -916,22 +928,19 @@ describe("the size a warning states", () => {
     expect(whole.overBudget).toBe(true);
   });
 
-  it("prices the default sections, and one more section as one more full reader", () => {
+  it("prices each section as a run of its own, the summary's with the bulk's first pages", () => {
     const files = [f("src/a.ts", 2_000), f("package-lock.json", 40_000)];
     const bulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
     const size = verificationSize(files, [], bulk, sonnet);
     const read = estimateReadBytes(files, new Set(), bulk);
-    expect(size.defaultSections).toEqual(DEFAULT_SECTIONS);
-    // The summary agent plus one per default section reads every file.
-    expect(size.estimatedCostUsd).toBe(
-      estimateRunCostUsd("sonnet", read.perReader * (1 + DEFAULT_SECTIONS.length) + read.bulk),
+    const check = estimateRunCostUsd("sonnet", read.perReader);
+    expect(size.checkCostUsd).toBe(check);
+    expect(checksCostUsd(size, ["tests", "risk"])).toBeCloseTo(2 * check, 2);
+    expect(checksCostUsd(size, ["summary"])).toBeCloseTo(
+      estimateRunCostUsd("sonnet", read.perReader + read.bulk),
+      2,
     );
-    const oneMore = estimateRunCostUsd(
-      "sonnet",
-      read.perReader * (2 + DEFAULT_SECTIONS.length) + read.bulk,
-    );
-    expect(size.sectionCostUsd).toBeCloseTo(oneMore - size.estimatedCostUsd, 1);
-    expect(size.sectionCostUsd).toBeGreaterThan(0);
+    expect(size.estimatedCostUsd).toBe(checksCostUsd(size, DEFAULT_SECTIONS));
   });
 
   it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
@@ -951,18 +960,19 @@ describe("the size a warning states", () => {
     expect(estimateRunCostUsd("sonnet", 350_000)).toBeCloseTo((62_000 + 100_000) * perToken, 2);
   });
 
-  it("lands near what the calibration runs cost", () => {
+  it("never prices the calibration runs below what they cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
-    // Those runs had seven check agents and a report now has ten, so the code-heavy
-    // run is allowed above the measured cost by the three extra readers.
+    // Those were one run of seven check agents. Each section now pays a
+    // coordinator's overhead of its own, which wasn't measured, so the estimate
+    // charges the whole base to each and lands above what one run cost.
     const code = verificationSize(
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
       noBulk,
       { model: "haiku", maxBudgetUsd: 1 },
     );
-    expect(code.estimatedCostUsd).toBeGreaterThan(0.056 * 0.75);
-    expect(code.estimatedCostUsd).toBeLessThan(0.056 * 1.25 * (10 / 7));
+    expect(code.estimatedCostUsd).toBeGreaterThan(0.056);
+    expect(code.estimatedCostUsd).toBeLessThan(0.056 * DEFAULT_SECTIONS.length);
     const bulk = new Map(
       ["package-lock.json", "generated/a.ts", "generated/b.ts"].map((p) => [
         p,
@@ -981,8 +991,8 @@ describe("the size a warning states", () => {
       bulk,
       { model: "haiku", maxBudgetUsd: 1 },
     );
-    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018 * 0.75);
-    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * 1.5);
+    expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018);
+    expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * DEFAULT_SECTIONS.length * 1.5);
   });
 });
 

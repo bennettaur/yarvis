@@ -24,10 +24,10 @@ import {
 } from "../../../lib/reviewWorkspaces/cache";
 import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
-  type LatestVerification,
-  latestVerification,
+  type VerificationChecklist,
   type VerificationMustRead,
   type VerificationReport,
+  verificationChecklist,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type ModelSide, reviewUri } from "../editor";
 
@@ -71,14 +71,14 @@ export const verificationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}
 /** The PR's mutation-testing state: its latest pass and whether a new one may start. */
 export const mutationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}mutation`;
 
-/** The PR's latest verification run. Not pinned to a commit: a run finishing changes it. */
-export function useLatestVerification(
+/** The PR's verification checklist. Not pinned to a commit: a run finishing changes it. */
+export function useVerificationChecklist(
   workspaceId: string,
   prId: string,
-): Resource<LatestVerification> {
+): Resource<VerificationChecklist> {
   return useCachedResource(
     verificationKey(prId),
-    () => latestVerification(workspaceId, prId),
+    () => verificationChecklist(workspaceId, prId),
     SIDECAR_FRESHNESS,
   );
 }
@@ -100,9 +100,9 @@ export function useLatestRereview(
   );
 }
 
-/** The report of the latest run that produced one, whatever head it was made at. */
-export function reportOf(latest: LatestVerification | null): VerificationReport | null {
-  return latest?.lastSucceeded?.run.result ?? null;
+/** Each section's newest result, whatever head it was made at. */
+export function reportOf(checklist: VerificationChecklist | null): VerificationReport | null {
+  return checklist?.report ?? null;
 }
 
 /** The must-read entry naming `path`, if the report lists it. */

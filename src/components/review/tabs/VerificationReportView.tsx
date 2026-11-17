@@ -574,25 +574,43 @@ export default function VerificationReportView({
   onOpen,
   viewed = NONE_VIEWED,
   poster,
+  currentSections,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
   /** Absent where findings can't be sent anywhere. */
   poster?: FindingPoster;
+  /**
+   * The sections whose result is for the PR's head now; absent when they all
+   * are. The others are marked, and their findings can't be posted, since
+   * their line numbers may point at different code now.
+   */
+  currentSections?: ReadonlySet<string>;
 }) {
   const { risk } = report;
+  const isCurrent = (section: string) => !currentSections || currentSections.has(section);
+  const posterFor = (section: string) => (isCurrent(section) ? poster : undefined);
+  const titled = (title: string, section: string) =>
+    isCurrent(section) ? title : `${title} · older head`;
   const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
   return (
     <div className="space-y-5">
       <Coverage report={report} onOpen={onOpen} />
 
-      <Section title="Summary">
-        <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
-      </Section>
+      {report.summary !== undefined && (
+        <Section title={titled("Summary", "summary")}>
+          <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
+        </Section>
+      )}
 
       {report.mustRead.length > 0 && (
-        <Section title={`Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`}>
+        <Section
+          title={titled(
+            `Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`,
+            "summary",
+          )}
+        >
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
               <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
@@ -602,13 +620,13 @@ export default function VerificationReportView({
       )}
 
       {report.flow && (
-        <Section title="Flow">
+        <Section title={titled("Flow", "flow")}>
           <FlowDiagram flow={report.flow} />
         </Section>
       )}
 
       {risk && (
-        <Section title="Risk">
+        <Section title={titled("Risk", "risk")}>
           <div className="space-y-2 text-sm">
             <div className="flex items-start gap-2">
               {risk.impact && (
@@ -629,7 +647,12 @@ export default function VerificationReportView({
               <span className="text-zinc-300">{risk.clientImpact}</span>
             </div>
             {risk.impact && (
-              <ImpactDetail impact={risk.impact} onOpen={onOpen} viewed={viewed} poster={poster} />
+              <ImpactDetail
+                impact={risk.impact}
+                onOpen={onOpen}
+                viewed={viewed}
+                poster={posterFor("risk")}
+              />
             )}
             {risk.mitigations.length > 0 && (
               <div className="text-xs text-zinc-400">
@@ -649,7 +672,7 @@ export default function VerificationReportView({
                       <Location path={c.path} line={c.line} onOpen={onOpen} />
                     </div>
                     <p className="text-xs text-zinc-400">{c.detail}</p>
-                    <PostFinding finding={c} section="Risk" poster={poster} />
+                    <PostFinding finding={c} section="Risk" poster={posterFor("risk")} />
                   </li>
                 ))}
               </ul>
@@ -659,7 +682,7 @@ export default function VerificationReportView({
       )}
 
       {report.approach && (
-        <Section title="Simpler approach">
+        <Section title={titled("Simpler approach", "approach")}>
           <Approach approach={report.approach} onOpen={onOpen} />
         </Section>
       )}
@@ -674,11 +697,11 @@ export default function VerificationReportView({
               return (
                 <CheckRow
                   key={key}
-                  label={CHECK_LABEL[key]}
+                  label={titled(CHECK_LABEL[key], key)}
                   check={check}
                   onOpen={onOpen}
                   viewed={viewed}
-                  poster={poster}
+                  poster={posterFor(key)}
                 />
               );
             })}

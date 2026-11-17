@@ -760,28 +760,40 @@ cat "${fakeDir}/result.jsonl"`,
 
   const release = () => writeFileSync(join(fakeDir, "release"), "");
 
-  async function verify(method: string, wsId: string, prId: string): Promise<Response> {
-    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, { method });
+  async function verify(
+    method: string,
+    wsId: string,
+    prId: string,
+    sections?: string[],
+  ): Promise<Response> {
+    return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
+      method,
+      ...(sections && {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sections }),
+      }),
+    });
   }
 
-  async function latest(wsId: string, prId: string) {
-    return (await (await verify("GET", wsId, prId)).json()) as {
-      run: {
-        id: string;
-        status: string;
-        targetKey: string;
-        live: boolean;
-        // The fixture as the server parses it, which fills in each must-read's flags.
-        result: Omit<typeof report, "mustRead"> & {
-          mustRead: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
-          coverage?: Coverage;
-        };
-      } | null;
-      current: boolean;
-      headSha: string;
-      size: VerificationSize | null;
-    };
+  type Run = { id: string; status: string; live: boolean; headSha: string; current: boolean };
+  type Checklist = {
+    headSha: string;
+    items: { section: string; theme: string; latest: Run | null; result: Run | null }[];
+    report: {
+      summary?: string;
+      mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
+      tests?: { status: string; findings: unknown[] };
+      completeness?: { status: string; findings: unknown[] };
+      coverage?: Coverage;
+    } | null;
+    size: VerificationSize | null;
+  };
+
+  async function checklist(wsId: string, prId: string): Promise<Checklist> {
+    return (await (await verify("GET", wsId, prId)).json()) as Checklist;
   }
+
+  const item = (list: Checklist, section: string) => list.items.find((i) => i.section === section);
 
   /** A run row as another run, kind or PR would have left it. */
   async function insertRun(
@@ -789,7 +801,11 @@ cat "${fakeDir}/result.jsonl"`,
     refKey: string,
     headSha: string,
     minutesAgo: number,
-    status = "succeeded",
+    {
+      status = "succeeded",
+      sections,
+      result = null,
+    }: { status?: string; sections?: string[]; result?: unknown } = {},
   ) {
     const [row] = await db
       .insert(agentRuns)
@@ -798,7 +814,9 @@ cat "${fakeDir}/result.jsonl"`,
         targetKey: `${refKey}@${headSha}`,
         status,
         instance: "test",
-        meta: { refKey, headSha },
+        result,
+        // A run with sections is one section's own run; without, an old whole report.
+        meta: { refKey, headSha, ...(sections && { sections, format: 2 }) },
         startedAt: new Date(Date.now() - minutesAgo * 60_000),
       })
       .returning({ id: agentRuns.id });
@@ -822,30 +840,20 @@ cat "${fakeDir}/result.jsonl"`,
 
   it("runs only the sections asked for, and refuses one it doesn't know", async () => {
     const { wsId, prId } = await readyWorkspace();
-    const start = (body: unknown) =>
-      verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-    expect((await start({ sections: ["tests", "vibes"] })).status).toBe(400);
+    expect((await verify("POST", wsId, prId, ["tests", "vibes"])).status).toBe(400);
 
-    const res = await start({ sections: ["tests"] });
+    const res = await verify("POST", wsId, prId, ["tests"]);
     expect(res.status).toBe(202);
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("SECTIONS=tests\n");
     release();
-    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the report");
-    const { run } = await latest(wsId, prId);
+    await until(async () => !!item(await checklist(wsId, prId), "tests")?.result, "the result");
+    const list = await checklist(wsId, prId);
     // The fake answers every section; only the one asked for is kept.
-    expect(Object.keys(run?.result ?? {}).sort()).toEqual([
-      "coverage",
-      "mustRead",
-      "summary",
-      "tests",
-    ]);
+    expect(Object.keys(list.report ?? {}).sort()).toEqual(["coverage", "tests"]);
+    expect(item(list, "summary")).toMatchObject({ latest: null, result: null });
     const [row] = await db.select().from(agentRuns);
-    expect((row?.meta as { sections?: string[] } | undefined)?.sections).toEqual(["tests"]);
+    expect(row?.meta).toMatchObject({ sections: ["tests"], format: 2 });
   });
 
   it("refuses to start before the checkout is ready", async () => {
@@ -857,19 +865,24 @@ cat "${fakeDir}/result.jsonl"`,
     expect(((await res.json()) as { error: string }).error).toContain("checking-out");
   });
 
-  it("starts one run for concurrent requests, and serves it against the current head", async () => {
+  it("starts one run per section for concurrent requests, and serves it against the current head", async () => {
     const { wsId, prId, worktreePath } = await readyWorkspace();
-    expect(await latest(wsId, prId)).toMatchObject({ run: null, current: false });
+    expect(item(await checklist(wsId, prId), "summary")).toMatchObject({
+      latest: null,
+      result: null,
+    });
 
-    const responses = await Promise.all([verify("POST", wsId, prId), verify("POST", wsId, prId)]);
+    const responses = await Promise.all([
+      verify("POST", wsId, prId, ["summary"]),
+      verify("POST", wsId, prId, ["summary"]),
+    ]);
     expect(responses.map((r) => r.status).sort()).toEqual([200, 202]);
     const bodies = (await Promise.all(responses.map((r) => r.json()))) as {
-      runId: string;
-      existing: boolean;
+      runs: { section: string; runId: string; existing: boolean }[];
     }[];
-    const runId = bodies[0]?.runId as string;
-    expect(bodies[1]?.runId).toBe(runId);
-    expect(bodies.map((b) => b.existing).sort()).toEqual([false, true]);
+    const runId = bodies[0]?.runs[0]?.runId as string;
+    expect(bodies[1]?.runs[0]?.runId).toBe(runId);
+    expect(bodies.map((b) => b.runs[0]?.existing).sort()).toEqual([false, true]);
     expect(await db.select().from(agentRuns)).toHaveLength(1);
 
     // While it runs: the checkout is the working directory, the prepared
@@ -906,33 +919,43 @@ cat "${fakeDir}/result.jsonl"`,
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
     expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
+    expect(prompt).toContain("SECTIONS=summary\n");
     expect(prompt).toMatch(/READING_GROUPS=[2-9]/);
     // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
     expect(prompt).not.toContain("Changes a and renames old.");
 
-    const running = await latest(wsId, prId);
+    const running = await checklist(wsId, prId);
     const headSha = sh(worktreePath, "rev-parse", "HEAD").trim();
     expect(running).toMatchObject({
-      run: { id: runId, status: "running", live: true },
-      current: true,
+      headSha,
+      report: null,
       size: { large: true, binary: ["image.bin"], truncated: [], budgetUsd: 0.5 },
     });
-    expect(running.run?.targetKey).toBe(`gh:o/r/1@${headSha}`);
+    expect(item(running, "summary")).toMatchObject({
+      theme: "understand",
+      latest: { id: runId, status: "running", live: true, headSha, current: true },
+      result: null,
+    });
+    const [started] = await db.select().from(agentRuns);
+    expect(started?.targetKey).toBe(`gh:o/r/1@${headSha}`);
 
     release();
-    await until(async () => (await latest(wsId, prId)).run?.status === "succeeded", "the run");
-    const done = await latest(wsId, prId);
-    expect(done.run?.live).toBe(false);
+    await until(async () => !!item(await checklist(wsId, prId), "summary")?.result, "the run");
+    const done = await checklist(wsId, prId);
+    expect(item(done, "summary")?.latest?.live).toBe(false);
     // Held to the word cap the diff size gives: the ceiling, since huge.txt's
     // 20,000 lines are all in a patch the run reads.
-    expect(done.run?.result.summary).toBe(`${"word ".repeat(80).trim()}…`);
-    expect(done.run?.result.mustRead).toEqual([
-      { path: "src/a.ts", reason: "the change", flags: [] },
+    expect(done.report?.summary).toBe(`${"word ".repeat(80).trim()}…`);
+    // The flag stays: no other section's result reports the same problem.
+    expect(done.report?.mustRead).toEqual([
+      {
+        path: "src/a.ts",
+        reason: "the change",
+        flags: [{ note: "b is never read; check it is used", line: 2 }],
+      },
     ]);
-    expect(done.run?.result.tests.findings).toHaveLength(1);
-    expect(done.run?.result.completeness).toEqual({ status: "pass", findings: [] });
     // The server's count of what the run read: only a.ts's patch, by a subagent.
-    const coverage = done.run?.result.coverage;
+    const coverage = done.report?.coverage;
     expect(coverage?.total).toBe(7);
     expect(coverage?.notExamined.map((n) => n.path).sort()).toEqual([
       "big.txt",
@@ -948,58 +971,144 @@ cat "${fakeDir}/result.jsonl"`,
     // What the server took out is on the run, to be audited.
     await until(async () => {
       const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
-      const meta = (row?.meta ?? {}) as { droppedDuplicates?: unknown };
-      return Array.isArray(meta.droppedDuplicates);
+      const meta = (row?.meta ?? {}) as { droppedMustReads?: unknown };
+      return Array.isArray(meta.droppedMustReads);
     }, "the audit");
     const [row] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
     expect(row?.meta).toMatchObject({
       refKey: "gh:o/r/1",
       headSha,
       droppedMustReads: ["src/elsewhere.ts"],
-      droppedFlags: [{ path: "src/a.ts", line: 2, note: "b is never read; check it is used" }],
-      droppedDuplicates: [
-        {
-          section: "completeness",
-          keptIn: "tests",
-          title: "b is never read",
-          path: "src/a.ts",
-        },
-      ],
     });
 
-    // A push moves the PR on; the old report is still served, marked stale.
+    // A push moves the PR on; the old result is still served, marked stale.
     remote.pushToPr("src/a.ts", "export const a = 5;\n");
     await call("POST", `/${wsId}/prs/${prId}/refresh`);
     await progress(wsId, prId);
-    expect(await latest(wsId, prId)).toMatchObject({ run: { id: runId }, current: false });
-  });
-
-  it("serves the PR's newest run, ignoring other kinds and other PRs", async () => {
-    const { wsId, prId } = await readyWorkspace();
-    const headSha = (await prRow(prId)).headSha as string;
-    await insertRun("verification-report", "gh:o/r/1", "old", 30);
-    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20);
-    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10);
-    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
-    await insertRun("verification-report", "gh:o/r/10", headSha, 5);
-
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: { id: newest, live: false },
-      current: true,
-      lastSucceeded: { run: { id: newest }, headSha, current: true },
+    expect(item(await checklist(wsId, prId), "summary")).toMatchObject({
+      result: { id: runId, current: false },
     });
   });
 
-  it("keeps the last good report in view when a re-run fails", async () => {
+  it("puts the report together from each section's run, showing a problem once", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    release();
+    const res = await verify("POST", wsId, prId, ["summary", "completeness", "tests"]);
+    expect(res.status).toBe(202);
+    const { runs } = (await res.json()) as { runs: { section: string; runId: string }[] };
+    expect(runs.map((r) => r.section)).toEqual(["summary", "tests", "completeness"]);
+    expect(new Set(runs.map((r) => r.runId)).size).toBe(3);
+    await until(async () => {
+      const list = await checklist(wsId, prId);
+      return ["summary", "completeness", "tests"].every((s) => item(list, s)?.result);
+    }, "every result");
+
+    const { report } = await checklist(wsId, prId);
+    // The same problem from two checks: the specialist's (tests) is kept.
+    expect(report?.tests?.findings).toHaveLength(1);
+    expect(report?.completeness).toEqual({ status: "pass", findings: [] });
+    // The must-read flag repeats the tests finding, so it goes too.
+    expect(report?.mustRead?.[0]?.flags).toEqual([]);
+    // Each run read the same patch; together they still examined two files.
+    expect(report?.coverage?.examined).toBe(2);
+  });
+
+  it("joins a section already running and starts the rest", async () => {
     const { wsId, prId } = await readyWorkspace();
     const headSha = (await prRow(prId)).headSha as string;
-    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30);
-    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, "failed");
+    const tests = await insertRun("verification-report", "gh:o/r/1", headSha, 1, {
+      status: "running",
+      sections: ["tests"],
+    });
+    // An old whole-report run still going covers risk, not the approach.
+    const legacy = await insertRun("verification-report", "gh:o/r/1", headSha, 2, {
+      status: "running",
+    });
+    const res = await verify("POST", wsId, prId, ["risk", "tests", "approach"]);
+    expect(res.status).toBe(202);
+    const { runs, failed } = (await res.json()) as {
+      runs: { section: string; runId: string; existing: boolean }[];
+      failed: unknown[];
+    };
+    expect(failed).toEqual([]);
+    expect(runs.map(({ section, existing }) => [section, existing])).toEqual([
+      ["risk", true],
+      ["tests", true],
+      ["approach", false],
+    ]);
+    expect(runs[0]?.runId).toBe(legacy);
+    expect(runs[1]?.runId).toBe(tests);
+    const fresh = await db
+      .select()
+      .from(agentRuns)
+      .where(eq(agentRuns.id, runs[2]?.runId as string));
+    expect(fresh[0]?.meta).toMatchObject({ sections: ["approach"], format: 2 });
+  });
 
-    expect(await latest(wsId, prId)).toMatchObject({
-      run: { id: failed, status: "failed" },
-      current: true,
-      lastSucceeded: { run: { id: good }, headSha: "older-head", current: false },
+  it("passes over a result stored in an older shape for an older one that reads", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", headSha, 20, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+    await insertRun("verification-report", "gh:o/r/1", headSha, 10, {
+      sections: ["tests"],
+      result: { tests: { status: "pass" } },
+    });
+    const list = await checklist(wsId, prId);
+    expect(item(list, "tests")?.result?.id).toBe(good);
+    expect(list.report?.tests).toEqual({ status: "pass", findings: [] });
+  });
+
+  it("serves each section's newest result, ignoring other kinds and other PRs", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    // An old whole report: every default section of its day, the summary included.
+    const old = await insertRun("verification-report", "gh:o/r/1", "old", 30, {
+      result: { summary: "Old summary.", mustRead: [], tests: { status: "pass", findings: [] } },
+    });
+    const newest = await insertRun("verification-report", "gh:o/r/1", headSha, 20, {
+      sections: ["tests"],
+      result: { tests: { status: "issues", findings: [at("b is never read", 2)] } },
+    });
+    await insertRun("mutation-testing", "gh:o/r/1", headSha, 10, { sections: ["tests"] });
+    // A key `gh:o/r/1` is a prefix of; a prefix match would pick it.
+    await insertRun("verification-report", "gh:o/r/10", headSha, 5, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+
+    const list = await checklist(wsId, prId);
+    expect(item(list, "tests")).toMatchObject({
+      latest: { id: newest, live: false },
+      result: { id: newest, current: true },
+    });
+    expect(item(list, "summary")).toMatchObject({
+      result: { id: old, headSha: "old", current: false },
+    });
+    // The old report had no risk answer, so the section has a run but no result.
+    expect(item(list, "risk")).toMatchObject({ latest: { id: old }, result: null });
+    expect(item(list, "flow")).toMatchObject({ latest: null, result: null });
+    expect(list.report?.summary).toBe("Old summary.");
+    expect(list.report?.tests?.findings).toHaveLength(1);
+  });
+
+  it("keeps the last good result in view when a re-run fails", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const headSha = (await prRow(prId)).headSha as string;
+    const good = await insertRun("verification-report", "gh:o/r/1", "older-head", 30, {
+      sections: ["tests"],
+      result: { tests: { status: "pass", findings: [] } },
+    });
+    const failed = await insertRun("verification-report", "gh:o/r/1", headSha, 5, {
+      status: "failed",
+      sections: ["tests"],
+    });
+
+    expect(item(await checklist(wsId, prId), "tests")).toMatchObject({
+      latest: { id: failed, status: "failed", current: true },
+      result: { id: good, headSha: "older-head", current: false },
     });
   });
 

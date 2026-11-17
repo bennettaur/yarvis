@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ReviewChangedFile } from "../../../lib/reviewWorkspaces/api";
 import type {
-  LatestVerification,
+  VerificationChecklist,
   VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { filterPaths } from "../nav/AllFilesTree";
@@ -61,14 +61,11 @@ describe("must-read lookup", () => {
     expect([...mustReadByPath(report).keys()]).toEqual(["a.ts"]);
   });
 
-  it("reads the last good report, even behind a failed re-run", () => {
-    const good = { status: "succeeded", result: report } as never;
-    const failed = { status: "failed", result: null } as never;
-    const latest = (run: never, lastSucceeded: LatestVerification["lastSucceeded"]) =>
-      ({ run, headSha: "h", current: true, lastSucceeded, size: null }) as LatestVerification;
-    expect(reportOf(latest(good, { run: good, headSha: "h", current: true }))).toBe(report);
-    expect(reportOf(latest(failed, { run: good, headSha: "g", current: false }))).toBe(report);
-    expect(reportOf(latest(failed, null))).toBeNull();
+  it("reads the report the checklist put together, and nothing before there is one", () => {
+    const checklist = (r: VerificationReport | null) =>
+      ({ headSha: "h", themes: [], items: [], report: r, size: null }) as VerificationChecklist;
+    expect(reportOf(checklist(report))).toBe(report);
+    expect(reportOf(checklist(null))).toBeNull();
     expect(reportOf(null)).toBeNull();
   });
 });
