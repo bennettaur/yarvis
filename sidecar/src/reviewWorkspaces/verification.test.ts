@@ -1109,6 +1109,23 @@ describe("the size a warning states", () => {
     expect(size.estimatedCostUsd).toBe(checksCostUsd(size, DEFAULT_SECTIONS));
   });
 
+  it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
+    const lock = [f("package-lock.json", 40_000)];
+    const asBulk = new Map([["package-lock.json", { skim: "lockfile", markedByPr: false }]]);
+    expect(estimateReadBytes(lock, new Set(), asBulk)).toEqual({ perReader: 0, bulk: 200 * 115 });
+    // Any other file: 115 bytes a changed line, by each agent that reads every file.
+    expect(estimateReadBytes([f("src/a.ts", 100)], new Set(), noBulk)).toEqual({
+      perReader: 100 * 115,
+      bulk: 0,
+    });
+  });
+
+  it("prices tokens read as one cache write and RESEND cache reads, at the model's rates", () => {
+    // Sonnet 5: $2/M input, $0.2/M cache read. 350 KB read is 100k tokens on top of the base.
+    const perToken = (1.25 * 2 + 15 * 0.2) / 1_000_000;
+    expect(estimateRunCostUsd("sonnet", 350_000)).toBeCloseTo((62_000 + 100_000) * perToken, 2);
+  });
+
   it("never prices the calibration runs below what they cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
     // Those were one run of seven check agents. Each section now pays a

@@ -223,7 +223,7 @@ row runs that one; tick several and press **Run picked** to start them
 together. The boxes start ticked on the checks with no result for the PR's
 current head, except the flow diagram, which runs only when you ask. Each
 row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
-what its last run cost, whether that result is from an older head, and whether
+what that result cost, whether that result is from an older head, and whether
 its last run failed or was cancelled. A failed or cancelled run leaves the
 check's last good result in place. While checks run, the tab checks on them
 every few seconds, and **Cancel** on a running check's row stops it. A check
@@ -450,6 +450,65 @@ from the PR, its tests or a model is shown as plain text. A path is a link to
 the diff only when the PR changes that file. A pass made for an older head
 says so, with **Re-run**.
 
+### Ask Claude
+
+**Ask Claude** in the PR bar opens a tab with Claude Code reading the
+workspace's PR checkouts, for asking questions about the changes: what a
+function does, where something is called from, why a test might fail. There
+is one session per workspace, and it reads every PR checked out there, so with
+a [stack](#open-a-pr) it can answer across the layers. Opening it from any PR's
+bar brings up the same tab.
+
+It starts once a checkout is ready, and keeps running when you switch tabs or
+close this one, so reopening it picks up the same conversation. A PR added to
+the workspace after it started joins when you press **Restart**, which ends the
+session and starts a fresh one. When you quit Claude Code, the session ends
+with it, and opening the tab again starts a new one. Removing a PR from the
+workspace, or archiving the workspace, ends it too, since a checkout it reads
+is going away.
+
+It's your session, so your own Claude Code setup loads: your `CLAUDE.md`,
+skills, agents, plugins, hooks, allow rules and MCP servers. The checkouts are
+code the PRs' authors wrote, so the rest is held down:
+
+- The repos' own skills and `CLAUDE.md` don't load, even if your shell sets
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. A repo's skill can
+  pre-approve tools and its `CLAUDE.md` reads as instructions. For a PR whose
+  author you trust, tick **Repo skills and CLAUDE.md** in the tab's header.
+  The session restarts with them, and the workspace remembers the choice.
+  A repo's own settings file and hooks never load, since the session doesn't
+  start inside a checkout.
+- It can read the checkouts but not change them, neither with its edit tools
+  nor from a command it runs, so one PR's code can't rewrite another's. Its
+  commands can't write to the repositories' clones either, where a planted git
+  hook would run the next time Yarvis fetches.
+- Your allow rules and MCP servers work as they do anywhere else, so a tool
+  you've allowed runs without asking here too, even when something in a
+  checkout is what suggested it.
+- Commands run in Claude Code's sandbox, which can't reach the network unless
+  you approve a host when it asks, and can't read your SSH, cloud or Yarvis
+  credentials. Claude Code starts without common credential variables your
+  shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is
+  off, so it can't act in your browser. Claude asks you before running a
+  command that isn't read-only, or doing anything else beyond reading the
+  checkouts, unless your own allow rules already cover it. Domains your own
+  sandbox settings allow are allowed here too.
+- It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
+  the like) act on the folder a terminal opens in, so the session opens in an
+  empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
+  workspaces folder, and reaches the checkouts from there. Its commands can't
+  write to that folder either, and it's emptied before each start. Its
+  settings and instructions are written to `.ask-claude/` in the review
+  workspace's folder, which its commands can't write to either.
+- Its instructions tell it that what it reads in the checkouts is material to
+  explain, not instructions to follow.
+
+It needs the agent command under **Settings → Repositories → Agent** to run
+Claude Code (see [The agent command](workspaces.md#the-agent-command)). That
+setting's own flags (such as `--permission-mode auto`) are left out here. If
+Claude Code can't start (it isn't on your shell's `PATH`, say), the tab closes
+rather than leaving a plain shell behind.
+
 ### Since last review
 
 For a re-review: what the author did since you last looked, without wading
@@ -616,8 +675,9 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review** and **Verification**, which open those tabs (see
-  [Guided review](#guided-review) and [Verification report](#verification-report)).
+- **Guided review**, **Verification** and **Ask Claude**, which open those
+  tabs (see [Guided review](#guided-review),
+  [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
   last reviewed (see [Since last review](#since-last-review)),
