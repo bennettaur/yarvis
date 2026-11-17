@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { assessReview, draftComments, reviewSummary, whereToLook } from "./decision";
 import type { MutationRun } from "./mutation";
+import type { VerificationUpstack } from "./verification";
 import {
   type ChecklistItem,
   type ChecklistRun,
@@ -285,6 +286,36 @@ describe("the suggested decision", () => {
     const partly = assessReview(clean, green, items(["tests"]));
     expect(partly).toMatchObject({ suggestion: "review_deeper", notRun: ["tests"] });
     expect(assessReview(null, green, items(DEFAULT_SECTIONS)).suggestion).toBe("run_checks");
+  });
+
+  it("asks for a look, not changes, at a high finding a PR stacked above changes", () => {
+    const report: VerificationReport = {
+      ...clean,
+      tests: {
+        status: "issues",
+        findings: [
+          { title: "Fixed above", detail: "", severity: "high", path: "src/a.ts", line: 5 },
+          { title: "Still here", detail: "", severity: "high", path: "src/b.ts", line: 5 },
+        ],
+      },
+    };
+    const upstack: VerificationUpstack = {
+      headSha: "h",
+      note: null,
+      layers: [
+        {
+          number: 8,
+          url: "u",
+          incomplete: false,
+          files: [{ path: "src/a.ts", ranges: [{ start: 4, end: 6 }] }],
+        },
+      ],
+    };
+    expect(assessReview(report, green, items(), null, upstack)).toMatchObject({
+      suggestion: "request_changes",
+      blockers: ["1 high finding"],
+      concerns: ["1 high finding is on lines #8 above changes; check it's fixed there"],
+    });
   });
 
   it("raises tests that missed mutants on this commit, and doesn't ask for mutation testing", () => {

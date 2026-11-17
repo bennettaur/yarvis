@@ -2633,6 +2633,7 @@ export class GitHubClient {
       files.push(
         ...batch.map((f) => ({
           filename: f.filename,
+          ...(typeof f.previous_filename === "string" && { previousFilename: f.previous_filename }),
           status: f.status,
           additions: f.additions ?? 0,
           deletions: f.deletions ?? 0,

@@ -34,8 +34,10 @@ import {
   type VerificationEvidence,
   type VerificationMustRead,
   type VerificationReport,
+  type VerificationUpstack,
   verificationChecklist,
   verificationEvidence,
+  verificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type ModelSide, reviewUri } from "../editor";
 
@@ -131,6 +133,20 @@ export function useVerificationEvidence(
   return useCachedResource(
     evidenceKey(prId),
     () => verificationEvidence(workspaceId, prId),
+    PROVIDER_FRESHNESS,
+  );
+}
+
+export const upstackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}upstack`;
+
+/** What the PRs stacked on this one change in it, read from the provider. */
+export function useVerificationUpstack(
+  workspaceId: string,
+  prId: string,
+): Resource<VerificationUpstack> {
+  return useCachedResource(
+    upstackKey(prId),
+    () => verificationUpstack(workspaceId, prId),
     PROVIDER_FRESHNESS,
   );
 }

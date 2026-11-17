@@ -431,6 +431,34 @@ describe("VerificationReportView", () => {
     }
   });
 
+  it("says when a PR stacked above changes a finding's line, but not for an older head's", async () => {
+    const upstack = {
+      headSha: "h",
+      note: null,
+      layers: [
+        {
+          number: 8,
+          url: "https://github.com/o/r/pull/8",
+          incomplete: false,
+          files: [{ path: "src/cache.test.ts", ranges: null }],
+        },
+      ],
+    };
+    const render = async (currentSections?: Set<string>) =>
+      textOf(
+        await renderToHtml(
+          createElement(VerificationReportView, {
+            report,
+            upstack,
+            currentSections,
+            onOpen: { open: () => {}, canOpen: () => true },
+          }),
+        ),
+      );
+    expect(await render()).toContain("changed in #8 above");
+    expect(await render(new Set(["summary"]))).not.toContain("changed in #8 above");
+  });
+
   it("crosses off must-reads and findings in files the reviewer has viewed", async () => {
     const html = await renderToHtml(
       createElement(VerificationReportView, {

@@ -214,15 +214,24 @@ At the top, **Decision** sums the checklist up. It opens with what the PR is
 for, suggests a decision, and lists every reason for it:
 
 - **Changes needed** when CI fails, a scanner raised a high alert, a claim is
-  missing or contradicted, or a check found something high.
+  missing or contradicted, or a check found something high that no PR
+  stacked above changes.
 - **Review deeper first** for a high-risk change, an outlier, a claim only
   partly met, a medium finding, a simpler approach, a security bot's comment,
-  a mutation-testing pass on this commit whose verdict was weak or mixed,
+  a mutation-testing pass on this commit whose verdict was weak or mixed, a
+  high finding on a line a PR stacked above changes (see below),
   CI that hasn't passed on the current commit (still running, no checks, or
   not read yet), or a check not yet run on that commit.
 - **Looks ready to approve** when CI passed, the checks have run on this
   commit, and none of that is there.
 - **Run the checks first** when nothing has run on this commit.
+
+On a GitHub PR with others stacked on it, the checklist also reads what the
+PRs directly above change in this one. Their diffs are against this PR's
+code, so their changed lines are this PR's lines. A check finding within a
+few lines of one, in a result for the current commit, is marked **changed
+in #N above**, which opens that PR: the problem may already be fixed there.
+A high finding marked that way asks for a look rather than changes.
 
 The suggestion is a summary, not a gate. The three buttons work whatever it
 suggests:

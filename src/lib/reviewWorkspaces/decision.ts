@@ -11,12 +11,14 @@ import type { MutationRun } from "./mutation";
 import {
   CHECK_LABEL,
   type ChecklistItem,
+  changedUpstack,
   DEFAULT_SECTIONS,
   type EvidenceItem,
   findingCommentBody,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationReport,
+  type VerificationUpstack,
 } from "./verification";
 
 export type Suggestion = "approve" | "request_changes" | "review_deeper" | "run_checks";
@@ -36,13 +38,13 @@ const HIGH_IMPACT_BAND = 4;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+function findingsOf(report: VerificationReport, severity: Severity) {
+  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
+  return [...inChecks, ...(report.claims?.gaps ?? [])].filter((f) => f.severity === severity);
+}
+
 function countFindings(report: VerificationReport, severity: Severity): number {
-  const inChecks = VERIFICATION_CHECKS.reduce(
-    (n, key) => n + (report[key]?.findings.filter((f) => f.severity === severity).length ?? 0),
-    0,
-  );
-  const inGaps = report.claims?.gaps.filter((g) => g.severity === severity).length ?? 0;
-  return inChecks + inGaps;
+  return findingsOf(report, severity).length;
 }
 
 /** What CI says about approving: a blocker when it fails, a concern until it passes. */
@@ -73,6 +75,7 @@ export function assessReview(
   evidence: readonly EvidenceItem[] | null,
   items: readonly ChecklistItem[],
   mutation: MutationRun | null = null,
+  upstack: VerificationUpstack | null = null,
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
@@ -101,8 +104,18 @@ export function assessReview(
       concerns.push(plural(partial, "claim only partly met", "claims only partly met"));
     }
 
-    const high = countFindings(report, "high");
+    // A high finding on a line a PR stacked above changes may be fixed
+    // there, so it asks for a look rather than blocking.
+    const highs = findingsOf(report, "high");
+    const above = highs.flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
+    const high = highs.length - above.length;
     if (high > 0) blockers.push(plural(high, "high finding", "high findings"));
+    if (above.length > 0) {
+      const layers = [...new Set(above.map((l) => `#${l.number}`))].join(", ");
+      concerns.push(
+        `${plural(above.length, "high finding is", "high findings are")} on lines ${layers} above changes; check ${above.length === 1 ? "it's" : "they're"} fixed there`,
+      );
+    }
     const medium = countFindings(report, "medium");
     if (medium > 0) concerns.push(plural(medium, "medium finding", "medium findings"));
 

@@ -7,6 +7,7 @@ import {
   type CheckItem,
   type CheckRunOutput,
   EvidenceUnavailable,
+  NO_PULL_REQUEST,
   type PrDetail,
   type PrFile,
   type PrRef,
@@ -62,6 +63,20 @@ export interface PrCodeSource {
   codeScanningAlerts(): Promise<ScanAlert[] | null>;
   /** The tickets the PR links itself: issues it closes on GitHub, linked work items on Azure. */
   linkedTickets(): Promise<TicketRef[]>;
+  /**
+   * The open PRs stacked directly on this one (those targeting its head
+   * branch), each with its changed files. Null when the provider has no
+   * stacks; Azure DevOps doesn't track them.
+   */
+  upstackLayers(): Promise<UpstackLayer[] | null>;
+}
+
+export interface UpstackLayer {
+  number: number;
+  url: string;
+  files: PrFile[];
+  /** The provider stopped listing the layer's files before the end. */
+  incomplete: boolean;
 }
 
 export interface CodeHit {
@@ -138,6 +153,21 @@ export function githubPrSource(client: GitHubClient, ref: PrRef): PrCodeSource {
       (await client.prClosingIssues(owner, repo, number)).map(
         (issue): TicketRef => ({ kind: "github", ...issue }),
       ),
+    upstackLayers: async () => {
+      const [{ headRef }, stack] = await Promise.all([
+        detail(),
+        client.prStack(owner, repo, number),
+      ]);
+      const above = stack.entries.filter(
+        (e) => e.baseRef === headRef && e.state === "open" && e.number !== NO_PULL_REQUEST,
+      );
+      return Promise.all(
+        above.map(async (e) => {
+          const { files: layerFiles, incomplete } = await client.allPrFiles(owner, repo, e.number);
+          return { number: e.number, url: e.url, files: layerFiles, incomplete };
+        }),
+      );
+    },
   };
 }
 
@@ -164,6 +194,7 @@ export function azurePrSource(client: AzureDevOpsClient, ref: PrRef): PrCodeSour
     codeScanningAlerts: async () => null,
     linkedTickets: async () =>
       (await client.prWorkItemIds(azRef)).map((id): TicketRef => ({ kind: "azure", id })),
+    upstackLayers: async () => null,
   };
 }
 

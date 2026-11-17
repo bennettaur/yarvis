@@ -1,6 +1,11 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
-import { findingCommentBody, verificationChecklist } from "./verification";
+import {
+  changedUpstack,
+  findingCommentBody,
+  type VerificationUpstack,
+  verificationChecklist,
+} from "./verification";
 
 afterAll(resetSidecarApi);
 
@@ -58,5 +63,41 @@ describe("verificationChecklist", () => {
   it("passes a missing report through as none", async () => {
     answer(null);
     expect((await verificationChecklist("ws", "pr")).report).toBeNull();
+  });
+});
+
+describe("changedUpstack", () => {
+  const upstack: VerificationUpstack = {
+    headSha: "h",
+    note: null,
+    layers: [
+      {
+        number: 8,
+        url: "u8",
+        incomplete: false,
+        files: [
+          { path: "src/a.ts", ranges: [{ start: 10, end: 12 }] },
+          { path: "src/gone.ts", ranges: null },
+        ],
+      },
+    ],
+  };
+  const layer = { number: 8, url: "u8" };
+
+  it("names the layer that changes a finding's line, or one a few lines off", () => {
+    expect(changedUpstack(upstack, "src/a.ts", 11)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", 15)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", 16)).toBeNull();
+  });
+
+  it("counts any line of a file the layer replaces, and a finding with no line in a changed file", () => {
+    expect(changedUpstack(upstack, "src/gone.ts", 300)).toMatchObject(layer);
+    expect(changedUpstack(upstack, "src/a.ts", undefined)).toMatchObject(layer);
+  });
+
+  it("finds nothing without a path, a matching file or any layers", () => {
+    expect(changedUpstack(upstack, undefined, 11)).toBeNull();
+    expect(changedUpstack(upstack, "src/b.ts", 11)).toBeNull();
+    expect(changedUpstack(null, "src/a.ts", 11)).toBeNull();
   });
 });
