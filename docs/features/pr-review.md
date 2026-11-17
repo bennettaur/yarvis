@@ -205,7 +205,9 @@ the background, and the attention bell tells you when they're done.
   risk, malicious intent and tests), **standard** (the default: every check
   but the flow diagram) or **full** (everything). The bell rings once when the
   queue finishes, naming each PR and how it went, and you can ask the
-  assistant how the queue is going in the meantime. A PR that would need your
+  assistant how the queue is going, or to stop it, in the meantime. One queue
+  runs at a time, and the assistant asks you to approve each one, since it
+  spends money on every PR in it. A PR that would need your
   go-ahead (below) is skipped and named at the end, since agreeing to a queue
   isn't agreeing to any one PR's cost; ask for that PR on its own to start
   it. The queue lives in the running app, so restarting it drops the rest of

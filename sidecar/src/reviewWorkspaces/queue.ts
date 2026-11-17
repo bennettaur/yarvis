@@ -2,7 +2,8 @@
  * Verifying several pull requests in turn, such as a stack or a list the user
  * names to the assistant. Each PR's checks are a dozen Claude Code runs at
  * once, so the queue starts one PR's checks only after the last PR's have
- * ended, and rings the bell once at the end with how each went.
+ * ended, runs one queue at a time, and rings the bell once at the end with
+ * how each went.
  *
  * The queue is per process, like the kickoff it is built on: a chat turn runs
  * in one instance, and `startVerification` still refuses a second run of a
@@ -15,8 +16,14 @@ import { createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
-import type { PrRef } from "../pr/types.ts";
-import { CHECKOUT_WAIT_MS, type KickoffDeps, kickOffVerification } from "./kickoff.ts";
+import { type PrRef, refKey } from "../pr/types.ts";
+import {
+  CHECKOUT_WAIT_MS,
+  type ConfirmReason,
+  type KickoffDeps,
+  kickOffVerification,
+  shortPrName,
+} from "./kickoff.ts";
 import { getReviewPr } from "./service.ts";
 import {
   DEFAULT_SECTIONS,
@@ -29,7 +36,7 @@ import {
 export const VERIFICATION_PRESETS = {
   /** What the PR does, what it is made of, and how risky it is. */
   quick: ["summary", "changeMap", "risk"],
-  /** Whether it is safe to merge: malice, risk, claims and tests. */
+  /** Whether it is safe to merge: claims, risk, malicious intent and tests. */
   security: ["claims", "risk", "malice", "tests"],
   /** Every check but the flow diagram. */
   standard: DEFAULT_SECTIONS,
@@ -41,11 +48,17 @@ export type VerificationPreset = keyof typeof VERIFICATION_PRESETS;
 
 /** Most PRs one queue takes: a deep stack, or a morning's review list. */
 export const MAX_QUEUE_PRS = 10;
-/** Queues kept for status questions after they finish; the oldest go first. */
+/** Finished queues kept for status questions; the oldest go first. A running one is never dropped. */
 const MAX_KEPT_QUEUES = 20;
 const POLL_MS = 2000;
 
-export type QueueItemState = "waiting" | "running" | "done" | "failed" | "needs-confirmation";
+export type QueueItemState =
+  | "waiting"
+  | "running"
+  | "done"
+  | "failed"
+  | "needs-confirmation"
+  | "cancelled";
 
 export interface QueueItem {
   ref: PrRef;
@@ -61,24 +74,31 @@ export interface VerificationQueue {
   sections: ReportSection[];
   items: QueueItem[];
   finished: boolean;
+  cancelled: boolean;
+  /** The runs of the PR being checked now, so cancelling can stop them. */
+  currentRunIds: string[];
 }
 
 const queues = new Map<string, VerificationQueue>();
-
-export const queueItemName = (ref: PrRef) =>
-  `${ref.repo}#${ref.provider === "github" ? ref.number : ref.prId}`;
 
 /** The queue as it stands, or null when this process never ran it or has let it go. */
 export function getVerificationQueue(id: string): VerificationQueue | null {
   return queues.get(id) ?? null;
 }
 
+/** The queue this process is running, if any. */
+function runningQueue(): VerificationQueue | null {
+  for (const queue of queues.values()) if (!queue.finished) return queue;
+  return null;
+}
+
 /**
- * Queues `refs` for verification, in order, and starts the first. Answers at
- * once; the bell rings when the last PR's checks end. A PR that needs the
- * user's go-ahead (large, over budget, or in a repo they never registered) is
- * skipped and named at the end, since agreeing to a queue isn't agreeing to
- * any one PR's cost.
+ * Queues `refs` for verification, in order, and starts the first; or, while
+ * another queue is still running, answers with that one and starts nothing.
+ * Answers at once; the bell rings when the last PR's checks end. A PR that
+ * needs the user's go-ahead (large, over budget, or in a repo they never
+ * registered) is skipped and named at the end, since agreeing to a queue
+ * isn't agreeing to any one PR's cost.
  */
 export function startVerificationQueue(
   db: Db,
@@ -86,26 +106,44 @@ export function startVerificationQueue(
   refs: PrRef[],
   sections: readonly ReportSection[],
   deps: KickoffDeps,
-): VerificationQueue {
+): { queue: VerificationQueue; existing: boolean } {
+  const running = runningQueue();
+  if (running) return { queue: running, existing: true };
+  if (refs.length > MAX_QUEUE_PRS) {
+    throw new Error(`a queue takes at most ${MAX_QUEUE_PRS} PRs`);
+  }
+  const unique = [...new Map(refs.map((ref) => [refKey(ref), ref])).values()];
   const queue: VerificationQueue = {
     id: randomUUID(),
     sections: [...sections],
-    items: refs.slice(0, MAX_QUEUE_PRS).map((ref) => ({
-      ref,
-      name: queueItemName(ref),
-      state: "waiting",
-      note: null,
-    })),
+    items: unique.map((ref) => ({ ref, name: shortPrName(ref), state: "waiting", note: null })),
     finished: false,
+    cancelled: false,
+    currentRunIds: [],
   };
   queues.set(queue.id, queue);
-  while (queues.size > MAX_KEPT_QUEUES) {
-    const oldest = queues.keys().next().value;
-    if (oldest === undefined) break;
-    queues.delete(oldest);
+  for (const [id, kept] of queues) {
+    if (queues.size <= MAX_KEPT_QUEUES) break;
+    if (kept.finished) queues.delete(id);
   }
   void runQueue(db, config, queue, deps);
-  return queue;
+  return { queue, existing: false };
+}
+
+/**
+ * Stops a queue: the PRs not yet started are dropped, and the checks of the
+ * one running now are cancelled. False when there is no such queue running.
+ */
+export function cancelVerificationQueue(id: string, deps: KickoffDeps): boolean {
+  const queue = queues.get(id);
+  if (!queue || queue.finished || queue.cancelled) return false;
+  queue.cancelled = true;
+  for (const item of queue.items) {
+    if (item.state === "waiting") item.state = "cancelled";
+  }
+  const registry = deps.verification.run?.registry ?? agentRunRegistry;
+  for (const runId of queue.currentRunIds) registry.cancel(runId);
+  return true;
 }
 
 async function runQueue(
@@ -115,9 +153,10 @@ async function runQueue(
   deps: KickoffDeps,
 ): Promise<void> {
   for (const item of queue.items) {
+    if (queue.cancelled) break;
     item.state = "running";
     try {
-      const outcome = await verifyOne(db, config, item.ref, queue.sections, deps);
+      const outcome = await verifyOne(db, config, item.ref, queue, deps);
       item.state = outcome.state;
       item.note = outcome.note;
     } catch (e) {
@@ -125,6 +164,7 @@ async function runQueue(
       item.state = "failed";
       item.note = "Starting its checks failed. See Settings → Diagnostics.";
     }
+    queue.currentRunIds = [];
   }
   queue.finished = true;
   await notifyQueueDone(db, queue).catch((e) =>
@@ -132,20 +172,25 @@ async function runQueue(
   );
 }
 
-type Outcome = { state: Exclude<QueueItemState, "waiting" | "running">; note: string | null };
+type Outcome = {
+  state: Exclude<QueueItemState, "waiting" | "running">;
+  note: string | null;
+};
 
 /** Starts one PR's checks, waiting for its checkout first if it needs one, and waits for them to end. */
 async function verifyOne(
   db: Db,
   config: Config,
   ref: PrRef,
-  sections: ReportSection[],
+  queue: VerificationQueue,
   deps: KickoffDeps,
 ): Promise<Outcome> {
   const pollMs = deps.pollMs ?? POLL_MS;
   const deadline = Date.now() + (deps.waitMs ?? CHECKOUT_WAIT_MS);
-  let result = await kickOffVerification(db, config, ref, { sections }, deps);
+  const options = { sections: queue.sections, quiet: true };
+  let result = await kickOffVerification(db, config, ref, options, deps);
   while (result.status === "waiting-for-checkout") {
+    if (queue.cancelled) return { state: "cancelled", note: null };
     if (Date.now() > deadline) return { state: "failed", note: "Its checkout didn't finish." };
     await Bun.sleep(pollMs);
     const pr = await getReviewPr(db, result.workspaceId, result.prId);
@@ -154,7 +199,7 @@ async function verifyOne(
     }
     if (pr.status === "ready" && pr.worktreeStatus === "ready" && pr.headSha) {
       // The kickoff's own wait may start the checks first; this call then joins them.
-      result = await kickOffVerification(db, config, ref, { sections }, deps);
+      result = await kickOffVerification(db, config, ref, options, deps);
     }
   }
   switch (result.status) {
@@ -165,23 +210,32 @@ async function verifyOne(
     case "exists":
       return { state: "done", note: "Already checked at this commit." };
     default: {
+      queue.currentRunIds = result.runIds;
       const statuses = await Promise.all(result.runIds.map((id) => runEnd(db, id, deps)));
-      const failed = statuses.filter((s) => s !== "succeeded").length;
+      if (queue.cancelled) return { state: "cancelled", note: null };
+      // A section whose run never started didn't check anything either.
+      const total = statuses.length + result.sections.failed.length;
+      const failed =
+        statuses.filter((s) => s !== "succeeded").length + result.sections.failed.length;
       return failed === 0
         ? { state: "done", note: null }
-        : { state: "failed", note: `${failed} of ${statuses.length} checks didn't finish.` };
+        : { state: "failed", note: `${failed} of ${total} checks didn't finish.` };
     }
   }
 }
 
-const CONFIRM_NOTE: Record<string, string> = {
+const CONFIRM_NOTE: Record<ConfirmReason, string> = {
   large: "It's a large PR.",
   "over-budget": "It's over your budget.",
   unsized: "Its size couldn't be worked out.",
   "unregistered-repo": "Its repo isn't one you registered.",
 };
 
-/** How a run ended. One this process runs is followed; one another instance runs is polled. */
+/**
+ * How a run ended. One this process runs is followed to its end, which its
+ * own timeout bounds. One another instance runs is polled; if that instance
+ * died, the row stays "running" and this gives up after a run's longest time.
+ */
 async function runEnd(db: Db, id: string, deps: KickoffDeps): Promise<string> {
   await (deps.verification.run?.registry ?? agentRunRegistry).follow(id, () => undefined);
   const deadline = Date.now() + VERIFICATION_RUN_TIMEOUT_MS;
@@ -196,21 +250,23 @@ const STATE_TEXT: Record<Outcome["state"], string> = {
   done: "checked",
   failed: "failed",
   "needs-confirmation": "needs your go-ahead",
+  cancelled: "cancelled",
 };
 
 function notifyQueueDone(db: Db, queue: VerificationQueue) {
   const count = (state: QueueItemState) => queue.items.filter((i) => i.state === state).length;
-  const failed = count("failed");
-  const waiting = count("needs-confirmation");
   const lines = queue.items.map(
     (i) =>
       `${i.name}: ${STATE_TEXT[i.state as Outcome["state"]] ?? i.state}${i.note ? `. ${i.note}` : ""}`,
   );
+  let kind: "completed" | "error" | "info" = "completed";
+  if (count("failed") > 0) kind = "error";
+  else if (count("needs-confirmation") > 0 || queue.cancelled) kind = "info";
   return createAttention(db, {
     source: "system",
     sessionKey: `pr-verification-queue:${queue.id}`,
-    kind: failed > 0 ? "error" : waiting > 0 ? "info" : "completed",
-    title: `Verification queue finished: ${count("done")} of ${queue.items.length} checked`,
+    kind,
+    title: `Verification queue ${queue.cancelled ? "cancelled" : "finished"}: ${count("done")} of ${queue.items.length} checked`,
     body: lines.join("\n"),
   });
 }
