@@ -466,9 +466,9 @@ any check, it runs from its row on the checklist, but it starts unticked.
 
 The diagram isn't drawn in the report. It has its own tab: **Open** on the
 check's row, or **Flow diagram** in the PR's nav, opens it. The tab follows a
-running check, says when its last run failed or was cancelled, and keeps the
-last diagram shown, marked when it was made for an older head. **Open
-checklist** takes you back to run it again.
+running check and says when the last run failed, was cancelled or gave no
+diagram. Through all of these it keeps the last diagram shown, marked when it
+was made for an older head. **Open checklist** takes you back to run it again.
 
 Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
 is too long, isn't drawn, and the tab says so. The diagram is model-written

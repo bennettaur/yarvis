@@ -100,7 +100,7 @@ export function findingPoster(
   };
 }
 
-const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
+export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
 type Tone = "good" | "warn" | "bad" | "muted";
 
@@ -197,7 +197,7 @@ function Chip({ text, tone }: { text: string; tone: Tone }) {
 /** How often the checklist is re-read while a check runs. */
 const POLL_MS = 3000;
 
-const usd = (n: number) => `$${n.toFixed(2)}`;
+export const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /** One section on the checklist: whether it has run, what its newest result says, and a button to run it. */
 function ChecklistRow({

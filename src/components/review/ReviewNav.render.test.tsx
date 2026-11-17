@@ -1,11 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { prDetailKey } from "../../lib/pr/cache";
+import { prDetailKey, prStackKey } from "../../lib/pr/cache";
 import type { PrDetail } from "../../lib/pr/types";
 import { primeCache } from "../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../lib/reviewWorkspaces/cache";
 import { mountForInteraction } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import ReviewNav from "./ReviewNav";
 import type { TabSpec } from "./tabs/types";
 
@@ -25,10 +26,16 @@ const pr = {
 
 let unmount = () => {};
 afterEach(() => unmount());
+afterAll(resetSidecarApi);
 
 describe("ReviewNav", () => {
   it("opens the verification checklist and the flow diagram from the PR's items", async () => {
+    // The reads this test isn't about (the last review, the stack) get nothing.
+    stubSidecarApi({
+      sidecarFetch: async () => Response.json({ error: "not served here" }, { status: 404 }),
+    });
     primeCache(prDetailKey(pr.ref), { title: pr.title, reviewThreads: [] } as unknown as PrDetail);
+    primeCache(prStackKey(pr.ref), null);
     primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
     const opened: TabSpec[] = [];
     const mounted = await mountForInteraction(

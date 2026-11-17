@@ -149,10 +149,39 @@ describe("DiagramTab", () => {
     expect(text).toContain("How an order is saved");
   });
 
-  it("says a run was cancelled", async () => {
-    const host = await mount(checklist({ latest: run({ id: "r2", status: "cancelled" }) }));
+  it("says a run was cancelled, and keeps the last diagram under it", async () => {
+    const host = await mount(
+      checklist({
+        latest: run({ id: "r2", status: "cancelled" }),
+        result: run({ headSha: "g".repeat(40), current: false }),
+      }),
+    );
     const text = textOf(host.innerHTML);
-    expect(text).toContain("The last run was cancelled.");
+    expect(text).toContain("The last run was cancelled. Below is the last diagram, from ggggggg");
     expect(text).not.toContain("failed");
+    expect(text).toContain("How an order is saved");
+  });
+
+  it("marks a diagram made for an older head", async () => {
+    const host = await mount(
+      checklist({ latest: run({ current: false }), result: run({ current: false }) }),
+    );
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("This diagram is for an older head");
+    expect(text).not.toContain("Below is the last diagram");
+  });
+
+  it("keeps the last diagram on screen while a re-run draws the next", async () => {
+    const host = await mount(
+      checklist({ latest: run({ id: "r2", status: "running", live: true }), result: run() }),
+    );
+    const text = textOf(host.innerHTML);
+    expect(text).toContain("Tracing the flow… Below is the last diagram, from hhhhhhh");
+    expect(text).toContain("How an order is saved");
+  });
+
+  it("says when the last run gave no diagram", async () => {
+    const host = await mount(checklist({ latest: run({ id: "r2" }), result: null }));
+    expect(textOf(host.innerHTML)).toContain("The last run gave no diagram.");
   });
 });
