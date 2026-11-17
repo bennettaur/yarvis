@@ -16,7 +16,7 @@ import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
-import { DEFAULT_SECTIONS } from "./verification.ts";
+import { DEFAULT_SECTIONS, type ReportSection } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -350,6 +350,60 @@ describe("kickOffVerification", () => {
     expect(items.map((a) => a.title)).toEqual(["Verification report failed"]);
     expect(items[0]?.kind).toBe("error");
     expect(items[0]?.body).not.toContain("blew up");
+  });
+
+  it("rings one error bell, not ready, when one check of several fails", async () => {
+    // Fails only the run writing the test-quality section.
+    const program = fakeClaude(
+      fakeDir,
+      "claude-tests-fail",
+      `input=$(cat)
+while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+case "$input" in *"SECTIONS=tests"*) echo "tests agent blew up" >&2; exit 1;; esac
+cat "${fakeDir}/result.jsonl"`,
+    );
+    if (kickoff.verification.run) kickoff.verification.run.program = program;
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    await sql`TRUNCATE attention_items`;
+
+    expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toMatchObject({
+      status: "started",
+    });
+    release();
+    await until(
+      async () => (await attention()).some((a) => a.title === "Verification report failed"),
+      "the failure notice",
+    );
+    const items = await attention();
+    expect(items.map((a) => a.title)).toEqual(["Verification report failed"]);
+    expect(items[0]?.body).toContain(`1 of the ${DEFAULT_SECTIONS.length} checks failed`);
+    const runs = await db.select().from(agentRuns);
+    expect(runs.filter((r) => r.status === "failed")).toHaveLength(1);
+  });
+
+  it("prices the go-ahead for the sections about to run, leaving out current ones", async () => {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    const cost = async (sections: ReportSection[]) => {
+      const asked = await kickOffVerification(db, config, ref, { sections }, kickoff);
+      if (asked.status !== "needs-confirmation" || !asked.size)
+        throw new Error("expected a go-ahead");
+      return asked.size.estimatedCostUsd;
+    };
+    const one = await cost(["tests"]);
+    expect(one).toBeGreaterThan(0);
+    expect(await cost(["tests", "risk"])).toBeGreaterThan(one);
+
+    // Once the test-quality check has a result for this head, it isn't priced again.
+    await kickOffVerification(db, config, ref, { confirmed: true, sections: ["tests"] }, kickoff);
+    release();
+    await until(async () => {
+      const rows = await db.select().from(agentRuns);
+      return rows.length === 1 && rows[0]?.status === "succeeded";
+    }, "the tests run");
+    expect(await cost(["tests", "risk"])).toBe(await cost(["risk"]));
+    expect(await cost(["risk"])).toBe(one);
   });
 
   it("says so when the checkout doesn't finish in time", async () => {

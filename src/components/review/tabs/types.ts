@@ -10,7 +10,8 @@ export type StaticTabKind =
   | "since-review"
   | "guide"
   | "verification"
-  | "mutation";
+  | "mutation"
+  | "claude";
 
 export type TabSpec =
   | { kind: StaticTabKind; prId: string }
@@ -28,9 +29,15 @@ export type TabSpec =
 /** The kinds a PR can have many of, each naming a file or a commit. */
 export type DynamicTabKind = Exclude<TabSpec["kind"], StaticTabKind>;
 
-/** Identity of a tab: opening a spec whose id is already open focuses that tab. */
+/**
+ * Identity of a tab: opening a spec whose id is already open focuses that tab.
+ * The Claude tab is the workspace's, not a PR's: its one session reads every
+ * PR, so opening it from any PR's bar brings up the same tab.
+ */
 export const tabId = (t: TabSpec) =>
-  `${t.kind}:${t.prId}${"path" in t ? `:${t.path}` : "sha" in t ? `:${t.sha}` : ""}`;
+  t.kind === "claude"
+    ? "claude"
+    : `${t.kind}:${t.prId}${"path" in t ? `:${t.path}` : "sha" in t ? `:${t.sha}` : ""}`;
 
 /** One PR's colour as Tailwind classes, written out in full so the build keeps them. */
 export interface PrColor {
