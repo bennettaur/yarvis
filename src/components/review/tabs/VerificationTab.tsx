@@ -32,6 +32,7 @@ import {
   useReviewViewed,
   useVerificationChecklist,
   useVerificationEvidence,
+  useVerificationUpstack,
   verificationKey,
 } from "./reviewData";
 import { FileNotices, fileNotices } from "./SizeNotices";
@@ -511,6 +512,12 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
 
   const evidence = useVerificationEvidence(workspaceId, pr.id);
   const mutation = useMutationTesting(workspaceId, pr.id);
+  const upstackRead = useVerificationUpstack(workspaceId, pr.id);
+  // Their ranges are against the head they were read at, which must be this one.
+  const upstack =
+    upstackRead.data && upstackRead.data.headSha === checklist.data?.headSha
+      ? upstackRead.data
+      : null;
   const mutationRunning = mutation.data?.run?.status === "running";
   const refreshMutation = mutation.refresh;
   useEffect(() => {
@@ -630,6 +637,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           }
           items={items}
           mutation={mutation.data?.run ?? null}
+          upstack={upstack}
           currentSections={currentSections}
           onOpen={open}
         />
@@ -740,6 +748,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             viewed={viewed.viewed}
             poster={poster}
             currentSections={currentSections}
+            upstack={upstack}
           />
         )}
       </div>

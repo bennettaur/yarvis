@@ -9,6 +9,7 @@ import { prEvidence } from "../pr/evidence.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
+import { upstackChanges } from "../pr/upstack.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { verificationChecklist } from "./checklist.ts";
@@ -146,7 +147,7 @@ export interface ReviewWorkspaceRouteOptions {
   rereview?: RereviewDeps;
   /** Replaces the Claude Code program and copy helpers of mutation testing, for tests. */
   mutation?: MutationTestingDeps;
-  /** Replaces the provider the CI evidence is read from, for tests. */
+  /** Replaces the provider the CI evidence and the layers above are read from, for tests. */
   evidenceSource?: (ref: PrRef) => PrCodeSource | { error: string };
   /** Replaces the core control channel the workspace's Ask Claude session starts through, for tests. */
   claudeSession?: ReviewClaudeDeps;
@@ -565,6 +566,19 @@ export function createReviewWorkspaceRoutes(
       const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
       if ("error" in source) return c.json({ error: source.error }, 400);
       return c.json(await prEvidence(source));
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // What the PRs stacked on this one change in it, so a finding already fixed
+  // upstack can say so. Read from the provider like the evidence.
+  router.get("/:id/prs/:prId/upstack", async (c) => {
+    try {
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      const source = (options.evidenceSource ?? ((ref) => prSourceFor(config, ref)))(pr.ref);
+      if ("error" in source) return c.json({ error: source.error }, 400);
+      return c.json(await upstackChanges(source));
     } catch (e) {
       return fail(c, e);
     }

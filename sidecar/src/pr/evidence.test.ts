@@ -78,6 +78,7 @@ function source(over: {
     checkRunAnnotations: over.annotations ?? (async () => []),
     codeScanningAlerts: over.alerts ?? (async () => []),
     linkedTickets: async () => [],
+    upstackLayers: async () => null,
   };
 }
 

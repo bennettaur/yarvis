@@ -373,6 +373,8 @@ export interface PrDetail {
 /** A changed file with its unified-diff patch (`patch` is null until loaded). */
 export interface PrFile {
   filename: string;
+  /** The path before a rename, when the provider says. */
+  previousFilename?: string;
   status: string;
   additions: number;
   deletions: number;

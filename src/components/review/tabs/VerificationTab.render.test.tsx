@@ -60,6 +60,7 @@ beforeEach(() => {
   mutationState = { run: null, headSha: HEAD, blocked: null, sandboxNotes: "" };
   stubReviewApi({
     getMutationTesting: async () => mutationState,
+    verificationUpstack: async () => ({ headSha: HEAD, layers: [], note: null }),
     startVerification: async (_ws, prId, sections) => {
       started.push(prId);
       startedSections.push(sections);

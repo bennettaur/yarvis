@@ -700,6 +700,7 @@ describe("CI evidence", () => {
         checkRunAnnotations: async () => [],
         codeScanningAlerts: async () => [],
         linkedTickets: async () => [],
+        upstackLayers: async () => null,
       };
     }).request(`/rw/${wsId}/prs/${prId}/evidence`);
     expect(res.status).toBe(200);
@@ -730,6 +731,44 @@ describe("CI evidence", () => {
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "github token not configured" });
+  });
+
+  it("says what the PR stacked above changes in this one, at this PR's live head", async () => {
+    const { wsId, prId } = await insertPr();
+    const layer = {
+      number: 8,
+      url: "https://github.com/o/r/pull/8",
+      incomplete: false,
+      stale: false,
+      files: [
+        {
+          filename: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: "@@ -10,3 +10,3 @@\n x\n-y\n+z\n x",
+        },
+      ],
+    };
+    const source = (r: PrRef) =>
+      ({
+        ref: r,
+        upstackLayers: async () => ({ headSha: "live", layers: [layer] }),
+      }) as unknown as PrCodeSource;
+    const res = await evidenceApp(source).request(`/rw/${wsId}/prs/${prId}/upstack`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      headSha: "live",
+      layers: [
+        {
+          number: 8,
+          url: "https://github.com/o/r/pull/8",
+          stale: false,
+          files: [{ path: "src/a.ts", ranges: [{ start: 10, end: 12 }] }],
+        },
+      ],
+      note: null,
+    });
   });
 });
 

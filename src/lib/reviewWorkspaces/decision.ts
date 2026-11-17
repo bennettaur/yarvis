@@ -11,12 +11,14 @@ import type { MutationRun } from "./mutation";
 import {
   CHECK_LABEL,
   type ChecklistItem,
+  changedUpstack,
   DEFAULT_SECTIONS,
   type EvidenceItem,
   findingCommentBody,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationReport,
+  type VerificationUpstack,
 } from "./verification";
 
 export type Suggestion = "approve" | "request_changes" | "review_deeper" | "run_checks";
@@ -37,12 +39,9 @@ const HIGH_IMPACT_BAND = 4;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 function countFindings(report: VerificationReport, severity: Severity): number {
-  const inChecks = VERIFICATION_CHECKS.reduce(
-    (n, key) => n + (report[key]?.findings.filter((f) => f.severity === severity).length ?? 0),
-    0,
-  );
-  const inGaps = report.claims?.gaps.filter((g) => g.severity === severity).length ?? 0;
-  return inChecks + inGaps;
+  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
+  const all = [...inChecks, ...(report.claims?.gaps ?? [])];
+  return all.filter((f) => f.severity === severity).length;
 }
 
 /** What CI says about approving: a blocker when it fails, a concern until it passes. */
@@ -73,6 +72,7 @@ export function assessReview(
   evidence: readonly EvidenceItem[] | null,
   items: readonly ChecklistItem[],
   mutation: MutationRun | null = null,
+  upstack: VerificationUpstack | null = null,
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
@@ -103,6 +103,20 @@ export function assessReview(
 
     const high = countFindings(report, "high");
     if (high > 0) blockers.push(plural(high, "high finding", "high findings"));
+    // Still a blocker: the PR's author controls the layer above, so it can
+    // only point at where a fix may be. Only results for the current commit
+    // have line numbers the layer's can be matched against.
+    const current = new Set(items.filter((i) => i.result?.current).map((i) => i.section));
+    const above = VERIFICATION_CHECKS.filter((key) => current.has(key))
+      .flatMap((key) => report[key]?.findings ?? [])
+      .filter((f) => f.severity === "high")
+      .flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
+    if (above.length > 0) {
+      const layers = [...new Set(above.map((l) => `#${l.number}`))].join(", ");
+      concerns.push(
+        `${plural(above.length, "high finding is", "high findings are")} on lines that ${layers} (stacked above) changes; check whether ${above.length === 1 ? "it's" : "they're"} fixed there`,
+      );
+    }
     const medium = countFindings(report, "medium");
     if (medium > 0) concerns.push(plural(medium, "medium finding", "medium findings"));
 

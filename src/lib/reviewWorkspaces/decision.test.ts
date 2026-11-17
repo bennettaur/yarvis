@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { assessReview, draftComments, reviewSummary, whereToLook } from "./decision";
 import type { MutationRun } from "./mutation";
+import type { VerificationUpstack } from "./verification";
 import {
   type ChecklistItem,
   type ChecklistRun,
@@ -285,6 +286,42 @@ describe("the suggested decision", () => {
     const partly = assessReview(clean, green, items(["tests"]));
     expect(partly).toMatchObject({ suggestion: "review_deeper", notRun: ["tests"] });
     expect(assessReview(null, green, items(DEFAULT_SECTIONS)).suggestion).toBe("run_checks");
+  });
+
+  it("still blocks on a high finding a PR stacked above changes, and says where to look", () => {
+    const report: VerificationReport = {
+      ...clean,
+      tests: {
+        status: "issues",
+        findings: [
+          { title: "Fixed above", detail: "", severity: "high", path: "src/a.ts", line: 5 },
+          { title: "Still here", detail: "", severity: "high", path: "src/b.ts", line: 5 },
+        ],
+      },
+    };
+    const upstack: VerificationUpstack = {
+      headSha: "h",
+      note: null,
+      layers: [
+        {
+          number: 8,
+          url: "u",
+          stale: false,
+          files: [{ path: "src/a.ts", ranges: [{ start: 4, end: 6 }] }],
+        },
+      ],
+    };
+    expect(assessReview(report, green, items(), null, upstack)).toMatchObject({
+      suggestion: "request_changes",
+      blockers: ["2 high findings"],
+      concerns: [
+        "1 high finding is on lines that #8 (stacked above) changes; check whether it's fixed there",
+      ],
+    });
+    // A result from an older commit has other line numbers, so it isn't matched.
+    expect(
+      assessReview(report, green, items(["tests"]), null, upstack).concerns,
+    ).not.toContainEqual(expect.stringContaining("stacked above"));
   });
 
   it("raises tests that missed mutants on this commit, and doesn't ask for mutation testing", () => {

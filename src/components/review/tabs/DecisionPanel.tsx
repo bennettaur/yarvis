@@ -18,6 +18,7 @@ import type {
   ChecklistItem,
   EvidenceItem,
   VerificationReport,
+  VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { Location, type OpenLocation } from "./VerificationReportView";
 
@@ -222,6 +223,7 @@ export default function DecisionPanel({
   evidence,
   items,
   mutation = null,
+  upstack = null,
   currentSections,
   onOpen,
 }: {
@@ -234,13 +236,15 @@ export default function DecisionPanel({
   items: readonly ChecklistItem[];
   /** The PR's latest mutation-testing pass, if it has had one. */
   mutation?: MutationRun | null;
+  /** What the PRs stacked on this one change in it, read at its head. */
+  upstack?: VerificationUpstack | null;
   /** Sections whose result is for the PR's head; only these comment on lines. */
   currentSections: ReadonlySet<string>;
   onOpen: OpenLocation;
 }) {
   const assessment = useMemo(
-    () => assessReview(report, evidence, items, mutation),
-    [report, evidence, items, mutation],
+    () => assessReview(report, evidence, items, mutation, upstack),
+    [report, evidence, items, mutation, upstack],
   );
   const drafts = useMemo(
     () => draftComments(report, evidence, currentSections),

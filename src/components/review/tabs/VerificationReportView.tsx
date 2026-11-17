@@ -4,6 +4,7 @@ import {
   CHECK_LABEL,
   type ChangeKind,
   type ClaimStatus,
+  changedUpstack,
   coverageKnown,
   type ImpactBand,
   type Severity,
@@ -20,6 +21,7 @@ import {
   type VerificationMustRead,
   type VerificationReport,
   type VerificationTripwire,
+  type VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
 import FlowDiagram from "./FlowDiagram";
@@ -291,6 +293,30 @@ const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
 /** Struck through and dimmed once its file is viewed. */
 const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
 
+/** Says a layer stacked on this PR changes the finding's line, so it may be fixed there. */
+function UpstackNote({
+  upstack,
+  path,
+  line,
+}: {
+  upstack: VerificationUpstack | null;
+  path?: string;
+  line?: number;
+}) {
+  const layer = changedUpstack(upstack, path, line);
+  if (!layer) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => openExternal(layer.url)}
+      title="A PR stacked on this one changes this line; it may already be fixed there."
+      className="rounded border border-sky-800 px-1 py-0.5 text-[10px] text-sky-300 hover:bg-sky-950"
+    >
+      changed in #{layer.number} above
+    </button>
+  );
+}
+
 /**
  * A check passing is one line and nothing more: the reader's time goes to the
  * checks that found something, which open with their findings showing.
@@ -301,12 +327,15 @@ function CheckRow({
   onOpen,
   viewed,
   poster,
+  upstack = null,
 }: {
   label: string;
   check: VerificationCheck;
   onOpen: OpenLocation;
   viewed: Viewed;
   poster?: FindingPoster;
+  /** What the layers above change; only for a result at the PR's head, whose lines match theirs. */
+  upstack?: VerificationUpstack | null;
 }) {
   if (check.status === "pass" || check.findings.length === 0) {
     return (
@@ -344,6 +373,7 @@ function CheckRow({
               </span>
               <span className="font-medium text-zinc-200">{f.title}</span>
               <Location path={f.path} line={f.line} onOpen={onOpen} />
+              <UpstackNote upstack={upstack} path={f.path} line={f.line} />
             </div>
             <p className="text-xs text-zinc-400">{f.detail}</p>
             <PostFinding finding={f} section={label} poster={poster} />
@@ -819,10 +849,13 @@ export default function VerificationReportView({
   viewed = NONE_VIEWED,
   poster,
   currentSections,
+  upstack = null,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
   viewed?: Viewed;
+  /** What the PRs stacked on this one change in it, read at the PR's head. */
+  upstack?: VerificationUpstack | null;
   /** Absent where findings can't be sent anywhere. */
   poster?: FindingPoster;
   /**
@@ -968,6 +1001,7 @@ export default function VerificationReportView({
                     onOpen={onOpen}
                     viewed={viewed}
                     poster={posterFor(key)}
+                    upstack={isCurrent(key) ? upstack : null}
                   />
                   {key === "malice" && report.malice?.tripwires && (
                     <Tripwires

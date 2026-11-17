@@ -217,12 +217,24 @@ for, suggests a decision, and lists every reason for it:
   missing or contradicted, or a check found something high.
 - **Review deeper first** for a high-risk change, an outlier, a claim only
   partly met, a medium finding, a simpler approach, a security bot's comment,
-  a mutation-testing pass on this commit whose verdict was weak or mixed,
+  a mutation-testing pass on this commit whose verdict was weak or mixed, a
+  high finding on a line the PR stacked above changes (see below; it still
+  blocks too),
   CI that hasn't passed on the current commit (still running, no checks, or
   not read yet), or a check not yet run on that commit.
 - **Looks ready to approve** when CI passed, the checks have run on this
   commit, and none of that is there.
 - **Run the checks first** when nothing has run on this commit.
+
+On a GitHub PR with another stacked on it, the checklist also reads what the
+PR directly above changes in this one. While that PR is built on this one's
+current head, its diff is against this PR's code, so its changed lines are
+this PR's lines. A check finding within a few lines of one, in a result for
+the current commit, is marked **changed in #N above**, which opens that PR:
+the problem may already be fixed there. A high finding marked that way still
+blocks, since the PR above is the author's too; the decision says where to
+look. A PR above that hasn't been restacked onto this one's head is ignored,
+since its line numbers no longer match.
 
 The suggestion is a summary, not a gate. The three buttons work whatever it
 suggests:
