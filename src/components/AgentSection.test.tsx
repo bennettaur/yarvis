@@ -189,6 +189,7 @@ describe("AgentSection", () => {
     const { host, cleanup } = await mount();
     const button = (label: string) =>
       Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    await waitFor(() => button("Pi") !== undefined);
     button("Pi")?.click();
     await waitFor(() => host.innerHTML.includes('value="pi"'));
     button("Save harnesses")?.click();
@@ -467,6 +468,7 @@ describe("AgentSection", () => {
     const { host, cleanup } = await mount();
     const button = (label: string) =>
       Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    await waitFor(() => button("Pi") !== undefined);
     button("Pi")?.click();
     await waitFor(() => host.innerHTML.includes('value="pi"'));
     const idInput = () => Array.from(host.querySelectorAll("input")).find((i) => i.value === "pi");
@@ -483,6 +485,7 @@ describe("AgentSection", () => {
     const { host, cleanup } = await mount();
     const button = (label: string) =>
       Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    await waitFor(() => button("Pi") !== undefined);
     button("Pi")?.click();
     await waitFor(() => host.innerHTML.includes('value="pi"'));
     const select = host.querySelector("select") as HTMLSelectElement;
