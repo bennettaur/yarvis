@@ -171,6 +171,28 @@ marks its files viewed. When the guide has one, the
 [flow diagram](pr-review.md#see-the-flow-diagram) is a folded section below
 the current step.
 
+### Story
+
+**Story** in the PR bar walks you through the PR one theme at a time, the
+work that matters most first. The guided review orders the reading by how the code calls itself;
+the story orders it by what the change is for. The chapters come from the
+verification report's [change map](#verification-report): core themes first,
+then supporting ones, then outliers, the riskiest first within each, and a
+last chapter for any changed file no theme names. If the PR has no change
+map yet, the tab offers to write one, and the story appears when it is done.
+
+The chapter list down the side shows what the PR is for and how many chapters
+you have read, and says so when the change map was written for an older
+commit. Each chapter shows a Core, Supporting or Outlier badge for how the
+theme fits the PR, how risky it is, what changed and why, and, for an outlier,
+the question to ask the author. Below that come the hunks of each of its files
+that belong to the theme, with the report's check findings, risk concerns and
+must-read flags on the lines they are about. A chapter shows its first five
+files, with a button for the rest, and a file stops after 400 lines. A file's
+path opens its full diff, where you can comment. **Mark read and continue**
+marks the chapter's files viewed and moves to the next chapter. A chapter
+counts as read once all its files are viewed, wherever you marked them.
+
 ### Verification report
 
 **Verification** in the PR bar opens a checklist of checks that agents
@@ -675,8 +697,8 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review**, **Verification** and **Ask Claude**, which open those
-  tabs (see [Guided review](#guided-review),
+- **Guided review**, **Story**, **Verification** and **Ask Claude**, which
+  open those tabs (see [Guided review](#guided-review), [Story](#story),
   [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
