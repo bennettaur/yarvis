@@ -756,10 +756,11 @@ export const workspaceRepoPr = pgTable(
       .references(() => workspaceRepos.id, { onDelete: "cascade" }),
     prNumber: integer("pr_number"), // null = no PR found yet
     prUrl: text("pr_url"),
-    // Set when the PR was linked by number (by the user, the workspace's agent,
-    // or found on an added worktree) rather than found on the worktree's own
-    // branch. The poller then re-reads it by number, since a branch read would
-    // replace it with whatever PR the worktree's branch has, or with none.
+    // Set when the PR was named rather than found on the worktree's own branch:
+    // linked by the user or the workspace's agent, found on an added worktree,
+    // or the PR a workspace was started from. The poller then re-reads it by
+    // number, since a branch read would replace it with whatever PR the
+    // worktree's branch has, or with none. "Detect PRs again" clears it.
     pinned: boolean("pinned").notNull().default(false),
     prState: text("pr_state"), // open | closed | merged
     // The PR's head commit as last polled; for a merged PR, what it merged.

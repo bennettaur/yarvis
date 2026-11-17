@@ -126,8 +126,8 @@ export async function startWorkspaceForPr(
     throw new PrWorkspaceRefusal(e instanceof Error ? e.message : String(e));
   }
 
-  // The PR is known here, so the workspace is linked to it now rather than
-  // waiting on a branch read to find it.
+  // The PR is already known, so it is linked here rather than left for a
+  // branch read to find.
   const onBranch = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
   if (onBranch) {
     await seedWorkspacePr(db, onBranch.workspaceRepoId, locator.number);
@@ -140,6 +140,7 @@ export async function startWorkspaceForPr(
     existingBranches: { [repo.id]: detail.headRef },
     brief,
   });
+  // `createWorkspace` doesn't return its repo rows; the branch lookup finds the one it wrote.
   const created = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
   if (created) await seedWorkspacePr(db, created.workspaceRepoId, locator.number);
 

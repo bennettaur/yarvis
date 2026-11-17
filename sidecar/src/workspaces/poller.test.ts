@@ -1109,14 +1109,6 @@ describe("linked PRs", () => {
     expect(row).toMatchObject({ prNumber: 12, pinned: true, checkRollup: "failure" });
   });
 
-  it("re-reads a pinned PR in the open workspace by number", () => {
-    const now = Date.now();
-    markWorkspaceViewed("ws", now);
-    const candidate = { workspaceId: "ws", prState: "open", lastPolledAt: null };
-    expect(dueRefresh({ ...candidate, prNumber: 12, pinned: true }, now)).toBe("number");
-    expect(dueRefresh({ ...candidate, prNumber: 12 }, now)).toBe("branch");
-  });
-
   it("links a PR by number and pins it", async () => {
     const wrId = await seedReadyRepo("a");
     const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
@@ -1153,16 +1145,75 @@ describe("linked PRs", () => {
     expect(queries).toEqual([]);
   });
 
+  /** An Azure PR read by id; branch lookups answer with no PR, so a branch read would lose it. */
+  const azureById = (number: number) =>
+    azureClientWith((url) => {
+      if (url.includes(`/pullRequests/${number}`)) {
+        return {
+          pullRequestId: number,
+          status: "active",
+          mergeStatus: "succeeded",
+          lastMergeSourceCommit: { commitId: "e".repeat(40) },
+          repository: {
+            name: "web",
+            webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+            project: { name: "Shop" },
+          },
+        };
+      }
+      if (url.includes("/pullRequests/")) return { __status: 404 };
+      if (url.includes("/pullrequests?")) return { value: [] };
+      return {};
+    });
+
+  it("reads a pinned Azure PR by id, not by branch", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 55, pinned: true });
+
+    await pollOnce(db, { azure: azureById(55) }, () => "branch");
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({
+      prNumber: 55,
+      prState: "open",
+      prUrl: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/55",
+      pinned: true,
+      lastError: null,
+    });
+  });
+
+  it("links an Azure PR by id, and refuses an id the repo doesn't have", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    const workspaceId = await workspaceOf(wrId);
+
+    const pr = await linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 55);
+    expect(pr.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
+
+    await expect(
+      linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 56),
+    ).rejects.toBeInstanceOf(PrLinkRefusal);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.prNumber).toBe(55);
+  });
+
   it("seeds a PR only where the repo has none", async () => {
     const emptyWr = await seedReadyRepo("a");
     const linkedWr = await seedReadyRepo("b");
+    // A branch poll that found no PR yet leaves a row with no number.
+    const polledWr = await seedReadyRepo("c");
     await db.insert(workspaceRepoPr).values({ workspaceRepoId: linkedWr, prNumber: 7 });
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: polledWr, prNumber: null, lastPolledAt: new Date() });
 
     await seedWorkspacePr(db, emptyWr, 42);
     await seedWorkspacePr(db, linkedWr, 42);
+    await seedWorkspacePr(db, polledWr, 42);
 
     const [empty] = await db.select().from(workspaceRepoPr).where(eqWr(emptyWr));
     expect(empty).toMatchObject({ prNumber: 42, pinned: true, lastPolledAt: null });
+    const [polled] = await db.select().from(workspaceRepoPr).where(eqWr(polledWr));
+    expect(polled).toMatchObject({ prNumber: 42, pinned: true, lastPolledAt: null });
     const [linked] = await db.select().from(workspaceRepoPr).where(eqWr(linkedWr));
     expect(linked).toMatchObject({ prNumber: 7, pinned: false });
   });
@@ -1220,6 +1271,31 @@ describe("detectWorkspacePrs", () => {
 
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
     expect(row).toMatchObject({ prNumber: 5, pinned: false });
+  });
+
+  it("drops a hand-linked PR when no branch has one", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42, pinned: true });
+
+    const detected = await detectWorkspacePrs(
+      db,
+      { github: branchesClient({}) },
+      await workspaceOf(wrId),
+    );
+
+    expect(detected).toEqual([
+      { workspaceRepoId: wrId, branch: null, prNumber: null, prUrl: null },
+    ]);
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ prNumber: null, pinned: false });
+  });
+
+  it("refuses an archived workspace", async () => {
+    const wrId = await seedReadyRepo("a");
+    const workspaceId = await workspaceOf(wrId);
+    await db.update(workspaces).set({ status: "archived" }).where(eq(workspaces.id, workspaceId));
+
+    await expect(detectWorkspacePrs(db, {}, workspaceId)).rejects.toBeInstanceOf(PrLinkRefusal);
   });
 
   it("leaves a repo no provider can read as it was", async () => {

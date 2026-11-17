@@ -6,6 +6,7 @@ import { repoPrRef } from "../../lib/repos";
 import { openExternal } from "../../lib/url";
 import {
   type CheckRollup,
+  type DetectedPr,
   detectWorkspacePrs,
   linkWorkspacePr,
   type WorkspaceRepoDetail,
@@ -120,6 +121,21 @@ function SyncChips({ sync }: { sync: WorkspaceRepoSync }) {
   return <span className="flex items-center gap-1.5">{chips}</span>;
 }
 
+/** One line on what detection found, for the note beside its button. */
+function summarizeDetection(found: DetectedPr[]): { text: string; failed: boolean } {
+  const repoWithError = found.find((r) => r.error);
+  if (repoWithError) {
+    return { text: `Couldn't read every repo: ${repoWithError.error}`, failed: true };
+  }
+  // The button only shows beside ready repos, and the sidecar leaves out a
+  // repo no configured provider can read, so an empty answer means no token.
+  if (found.length === 0) {
+    return { text: "No GitHub or Azure DevOps token can read these repos", failed: true };
+  }
+  const linked = found.filter((r) => r.prNumber !== null).length;
+  return { text: linked ? `Found ${linked} of ${found.length}` : "No PR found", failed: false };
+}
+
 /**
  * Looks for every repo's PR again now, rather than on the poller's schedule,
  * and drops any PR linked by hand. Reports what it found, or why it couldn't.
@@ -138,19 +154,7 @@ export function DetectPrsButton({
     setBusy(true);
     setNote(null);
     try {
-      const found = await detectWorkspacePrs(workspaceId);
-      const failed = found.find((r) => r.error);
-      const linked = found.filter((r) => r.prNumber !== null).length;
-      setNote(
-        failed
-          ? { text: `Couldn't read every repo: ${failed.error}`, failed: true }
-          : found.length === 0
-            ? { text: "No GitHub or Azure DevOps token can read these repos", failed: true }
-            : {
-                text: linked ? `Found ${linked} of ${found.length}` : "No PR found",
-                failed: false,
-              },
-      );
+      setNote(summarizeDetection(await detectWorkspacePrs(workspaceId)));
       onDetected();
     } catch (e) {
       setNote({ text: e instanceof Error ? e.message : String(e), failed: true });

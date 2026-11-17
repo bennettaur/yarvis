@@ -2984,6 +2984,51 @@ describe("provision + archive (injected git runner)", () => {
     expect(deleted).toEqual([wr!.branch]);
   });
 
+  it("trusts a pinned merged PR only when it merged the workspace's branch", async () => {
+    const repo = await addRepo();
+    const deleted: string[] = [];
+    /** Squash-merged with its remote branch gone; `inPr` says whether the PR's head contains the branch. */
+    const pinnedGit =
+      (inPr: boolean): GitRunner =>
+      async (args, opts) => {
+        if (args[0] === "show-ref") {
+          const local = args[3]?.startsWith("refs/heads/");
+          return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        }
+        if (args[0] === "merge-base") {
+          return { stdout: "", stderr: "", exitCode: inPr && args[3] === PR_HEAD ? 0 : 1 };
+        }
+        if (args[0] === "rev-list") return squashedCount(args, 0);
+        if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+        return fakeGit(args, opts);
+      };
+    const archivePinned = async (name: string, inPr: boolean) => {
+      const ws = await createWorkspace(db, config, { name, repoIds: [repo.id] });
+      await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+      const [wr] = await db
+        .select()
+        .from(workspaceRepos)
+        .where(eq(workspaceRepos.workspaceId, ws.id));
+      await db.insert(workspaceRepoPr).values({
+        workspaceRepoId: wr!.id,
+        prNumber: 3,
+        prState: "merged",
+        headSha: PR_HEAD,
+        pinned: true,
+      });
+      deleted.length = 0;
+      await archiveWorkspace(db, ws.id, { force: true }, pinnedGit(inPr));
+      return wr!.branch;
+    };
+
+    // A PR linked by hand that never had this branch's commits.
+    await archivePinned("someone-elses-pr", false);
+    expect(deleted).toEqual([]);
+
+    const branch = await archivePinned("this-branchs-pr", true);
+    expect(deleted).toEqual([branch]);
+  });
+
   it("names unpushed commits even when a dirty extra worktree stops the archive", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "dirty-and-ahead", repoIds: [repo.id] });

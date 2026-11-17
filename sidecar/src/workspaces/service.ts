@@ -2582,12 +2582,23 @@ async function checkBranchForArchive(
   force: boolean,
 ): Promise<boolean> {
   const primaryClonePath = wr.repo.primaryClonePath;
-  const prMerged = wr.pr?.prState === "merged";
+  let prMerged = wr.pr?.prState === "merged";
   const mergedHead = prMerged ? (wr.pr?.headSha ?? null) : null;
   // Declared out here so the throw below isn't caught by the best-effort catch:
   // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;
   try {
+    // A pinned PR was named, not found on this branch, so its merge says
+    // nothing about the branch unless the branch is part of what it merged.
+    if (prMerged && wr.pr?.pinned) {
+      prMerged =
+        mergedHead !== null &&
+        (
+          await runner(["merge-base", "--is-ancestor", `refs/heads/${wr.branch}`, mergedHead], {
+            cwd: primaryClonePath,
+          })
+        ).exitCode === 0;
+    }
     const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
     if (!landed) return false;
     if (force) return true;

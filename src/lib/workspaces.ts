@@ -36,8 +36,6 @@ export interface WorkspaceRepoPr {
   checks: { total: number; success: number; failure: number; pending: number } | null;
   /** Null when unknown: no PR, not polled, or a provider that can't answer. */
   reviewDecision: ReviewDecision | null;
-  /** The PR was linked by number, so it is kept whatever PR the worktree's branch has. */
-  pinned?: boolean;
   lastPolledAt: string | null;
   lastError: string | null;
 }
@@ -416,6 +414,7 @@ export interface DetectedPr {
   branch: string | null;
   prNumber: number | null;
   prUrl: string | null;
+  /** Why this repo couldn't be read, when it couldn't. */
   error?: string;
 }
 

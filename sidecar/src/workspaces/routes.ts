@@ -14,6 +14,7 @@ import {
   detectWorkspacePrs,
   linkWorkspacePr,
   lookupBranchPr,
+  MAX_PR_NUMBER,
   markWorkspaceListViewed,
   markWorkspaceViewed,
   PrLinkRefusal,
@@ -474,6 +475,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
     try {
       return c.json({ repos: await detectWorkspacePrs(db(), pollerClients(config), id) });
     } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
       console.error("[workspaces] PR detection failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
     }
@@ -486,7 +488,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
       .safeParse({ id: c.req.param("id"), wrId: c.req.param("wrId") });
     if (!ids.success) return c.json({ error: "invalid workspace or repo id" }, 400);
     const body = z
-      .object({ number: z.number().int().positive() })
+      .object({ number: z.number().int().positive().max(MAX_PR_NUMBER) })
       .safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: body.error.flatten() }, 400);
     try {

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { MAX_PR_NUMBER } from "../workspaces/poller.ts";
 import { callerError, jsonResult, toolError } from "./results.ts";
 
 /**
@@ -53,7 +54,12 @@ export function registerPrLinkTools(
           .min(1)
           .max(MAX_NAME_LENGTH)
           .describe("The repo's folder in the workspace, or its name"),
-        number: z.number().int().positive().describe("The pull request's number (or Azure id)"),
+        number: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_PR_NUMBER)
+          .describe("The pull request's number (or Azure id)"),
       },
       annotations: {
         readOnlyHint: false,
