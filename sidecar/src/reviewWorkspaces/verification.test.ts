@@ -57,6 +57,7 @@ function report(overrides: Record<string, unknown> = {}) {
     },
     claims: { items: [], gaps: [] },
     risk: { level: "low", clientImpact: "None: internal only.", mitigations: [], concerns: [] },
+    malice: pass,
     tests: pass,
     complexity: pass,
     performance: pass,

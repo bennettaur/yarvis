@@ -396,6 +396,41 @@ describe("VerificationReportView", () => {
     expect(withoutChecks).not.toContain("Code quality");
   });
 
+  it("lists the malicious-intent check's tripwires even when it passes, each opening its line", async () => {
+    const opened: unknown[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          malice: {
+            ...pass,
+            tripwires: [
+              { kind: "build", path: ".github/workflows/ci.yml", note: "CI configuration" },
+              { kind: "hidden-text", path: "src/auth.ts", line: 7, note: "invisible characters" },
+            ],
+            tripwiresOmitted: 3,
+          },
+        },
+        onOpen: { open: (path, line) => opened.push([path, line]), canOpen: () => true },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      expect(text).toContain("Malicious intentpasses");
+      expect(text).toContain("5 tripwires to confirm");
+      expect(text).toContain("Hidden text");
+      expect(text).toContain("3 more not listed.");
+      const link = [...host.querySelectorAll("button")].find(
+        (b) => b.textContent === "src/auth.ts:7",
+      );
+      link?.click();
+      await waitFor(() => opened.length > 0, "the open");
+      expect(opened).toEqual([["src/auth.ts", 7]]);
+    } finally {
+      unmount();
+    }
+  });
+
   it("crosses off must-reads and findings in files the reviewer has viewed", async () => {
     const html = await renderToHtml(
       createElement(VerificationReportView, {

@@ -231,12 +231,18 @@ const linesOf = (text: string) => {
  * Writes each source's patch to its own file in `contextDir`, numbered and
  * fenced as `tag`, one at a time so a huge PR's patches are never all in
  * memory together. `header` adds a line naming the file before a patch that
- * lacks git's own.
+ * lacks git's own. `onPatch` sees each file's patch as written, before it is
+ * numbered and fenced, for a caller that scans them.
  */
 export async function writePatchFiles(
   contextDir: string,
   sources: PatchSource[],
-  options: { tag: string; header?: (path: string) => string; limits?: PatchLimits },
+  options: {
+    tag: string;
+    header?: (path: string) => string;
+    limits?: PatchLimits;
+    onPatch?: (source: PatchSource, patch: string) => void;
+  },
 ): Promise<PatchIndexEntry[]> {
   const limits = options.limits ?? PATCH_LIMITS;
   const entries: PatchIndexEntry[] = [];
@@ -283,6 +289,7 @@ export async function writePatchFiles(
     }
     const truncated = !read.complete || Buffer.byteLength(read.patch) > limits.maxPatchBytes;
     const patch = truncated ? cutBytes(read.patch, limits.truncatedBytes) : read.patch;
+    options.onPatch?.(source, patch);
     const fenced = fencedPatch(patch, options.tag, options.header?.(source.path));
     const content = truncated
       ? `${fenced}[Yarvis: this diff is over ${sizeText(limits.maxPatchBytes)}, so it is cut ` +

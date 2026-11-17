@@ -4,6 +4,7 @@ import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
+import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
 import {
   type ChecklistItem,
   type ChecklistRun,
@@ -22,7 +23,7 @@ import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
-import { evidenceKey, treeKey, verificationKey } from "./reviewData";
+import { evidenceKey, mutationKey, treeKey, verificationKey } from "./reviewData";
 import type { TabContext } from "./types";
 import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab";
 
@@ -49,13 +50,16 @@ let startedSections: (readonly ReportSection[])[] = [];
 let cancelled: string[] = [];
 // What the checklist reads as after the cache is invalidated.
 let reread: VerificationChecklist;
+let mutationState: MutationTestingState;
 
 beforeEach(() => {
   started = [];
   startedSections = [];
   cancelled = [];
   reread = checklist();
+  mutationState = { run: null, headSha: HEAD, blocked: null, sandboxNotes: "" };
   stubReviewApi({
+    getMutationTesting: async () => mutationState,
     startVerification: async (_ws, prId, sections) => {
       started.push(prId);
       startedSections.push(sections);
@@ -103,6 +107,7 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   performance: { theme: "correctness", label: "Performance" },
   observability: { theme: "correctness", label: "Observability" },
   risk: { theme: "risk", label: "Risk" },
+  malice: { theme: "risk", label: "Malicious intent" },
   complexity: { theme: "maintainability", label: "Complexity" },
   quality: { theme: "maintainability", label: "Code quality" },
   comments: { theme: "maintainability", label: "Comment quality" },
@@ -778,6 +783,62 @@ describe("evidence from CI, scanners and bots", () => {
     );
     expect(textOf(mounted.host.innerHTML)).toContain("GitHub rate limit reached");
     expect(row(mounted.host, "Test quality")).toBeDefined();
+  });
+
+  it("shows mutation testing with the checks, and opens its tab to run it", async () => {
+    const opened: unknown[] = [];
+    mutationState = {
+      run: {
+        id: "m1",
+        headSha: older,
+        status: "succeeded",
+        phase: "done",
+        execution: null,
+        summary: {
+          killed: 3,
+          survived: 5,
+          timeouts: 0,
+          errors: 0,
+          uncovered: 0,
+          equivalent: 0,
+          valid: 8,
+          killRate: 0.375,
+          verdict: "weak",
+          notes: [],
+        },
+        findings: [],
+        error: null,
+        costUsd: null,
+        startedAt: "",
+        finishedAt: null,
+        isCurrentHead: false,
+        live: false,
+      } as MutationRun,
+      headSha: HEAD,
+      blocked: null,
+      sandboxNotes: "",
+    };
+    primeCache(mutationKey(pr.id), mutationState);
+    primeCache(verificationKey(pr.id), checklist());
+    primeCache(evidenceKey(pr.id), NO_EVIDENCE);
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    const mounted = await mountForInteraction(
+      createElement(VerificationTab, { ctx: { ...ctx, openTab: (tab) => opened.push(tab) } }),
+    );
+    unmount = mounted.unmount;
+    const mutation = row(mounted.host, "Mutation testing");
+    expect(textOf(mutation.innerHTML)).toContain("Weak: 3 of 8 mutants caught");
+    expect(textOf(mutation.innerHTML)).toContain(`older head (${older.slice(0, 7)})`);
+    button(mutation, "Open")?.click();
+    expect(opened).toEqual([{ kind: "mutation", prId: pr.id }]);
+  });
+
+  it("says why mutation testing can't run yet", async () => {
+    mutationState = { ...mutationState, blocked: { reason: "Run setup first" } };
+    primeCache(mutationKey(pr.id), mutationState);
+    const host = await mount(checklist());
+    expect(textOf(row(host, "Mutation testing").innerHTML)).toContain("Not run: Run setup first");
   });
 
   it("says when CI ran on a different commit than the checkout", async () => {

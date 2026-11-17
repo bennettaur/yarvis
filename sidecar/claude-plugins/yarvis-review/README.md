@@ -9,7 +9,7 @@ private temp directory for each run, removed when the run ends.
 
 The verification report is the `verification-report` skill, which runs the
 agents for the sections it is given (summary, change map, claims, risk,
-tests, complexity, performance, comments, observability, quality, approach,
+malicious intent, tests, complexity, performance, comments, observability, quality, approach,
 and the flow diagram) in parallel and assembles their answers. Yarvis starts one run
 per section, so each can be re-run on its own, and
 `sidecar/src/reviewWorkspaces/checklist.ts` puts the report together from each
@@ -20,6 +20,9 @@ directory the run may read, marks bulk to skim, and splits the rest into
 reading groups no bigger than one agent can hold; on a big PR the skill runs
 each check once per group. Once the run answers it adds which changed files
 no agent read (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+For the malicious-intent check it also writes `tripwires.md`, what
+`reviewWorkspaces/tripwires.ts`'s fixed rules found in the diff, and adds that
+list to the check's answer itself, so the agent can't drop one.
 Duplicate findings across sections are removed when `checklist.ts` puts the
 report together, among results for the same head.
 

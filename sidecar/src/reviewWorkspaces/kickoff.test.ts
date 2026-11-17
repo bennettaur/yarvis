@@ -50,6 +50,7 @@ const report = {
   complexity: pass,
   performance: pass,
   comments: pass,
+  malice: pass,
   observability: pass,
   quality: pass,
   approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },

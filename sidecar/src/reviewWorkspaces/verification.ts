@@ -83,6 +83,7 @@ import {
   ReviewWorkspaceError,
   reviewPatchSources,
 } from "./service.ts";
+import { type Tripwire, tripwireCollector, tripwiresFile } from "./tripwires.ts";
 
 export const VERIFICATION_RUN_KIND = "verification-report";
 
@@ -121,6 +122,9 @@ type Finding = z.output<typeof findingSchema>;
 interface Check {
   status: "pass" | "issues";
   findings: Finding[];
+  /** The malicious-intent check's only: what the server's fixed rules found, which the model can't drop. */
+  tripwires?: Tripwire[];
+  tripwiresOmitted?: number;
 }
 
 /** The findings decide the status: `issues` with none has nothing to show, `pass` with some would hide them. */
@@ -416,8 +420,13 @@ function claimsSchema(audit: ReportAudit) {
     }));
 }
 
-/** The check sections, in the order that decides which keeps a finding two of them reported. */
+/**
+ * The check sections, in the order that decides which keeps a finding two of
+ * them reported. Malicious intent comes first: a backdoor reported as a
+ * quality nit would be read as one.
+ */
 export const CHECK_SECTIONS = [
+  "malice",
   "tests",
   "performance",
   "complexity",
@@ -454,6 +463,7 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   changeMap: "yarvis-review:change-mapper",
   claims: "yarvis-review:claims-verifier",
   risk: "yarvis-review:risk-reviewer",
+  malice: "yarvis-review:intent-reviewer",
   tests: "yarvis-review:test-reviewer",
   complexity: "yarvis-review:complexity-reviewer",
   performance: "yarvis-review:performance-reviewer",
@@ -585,7 +595,7 @@ export function dedupeChecks(
       return true;
     });
     kept.push(...own);
-    result[section] = checkFrom(findings);
+    result[section] = { ...check, ...checkFrom(findings) };
   }
   return result;
 }
@@ -651,6 +661,7 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
     changeMap: changeMapSchema(limits),
     claims: claimsSchema(audit),
     risk: riskSchema,
+    malice: checkSchema,
     tests: checkSchema,
     complexity: checkSchema,
     performance: checkSchema,
@@ -1453,7 +1464,13 @@ async function startSectionRun(
   const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
   const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
   try {
-    const index = await writePatchFiles(contextDir, sources, { tag: "diff" });
+    const tripwires = section === "malice" ? tripwireCollector(sources) : null;
+    const index = await writePatchFiles(contextDir, sources, {
+      tag: "diff",
+      ...(tripwires && { onPatch: tripwires.onPatch }),
+    });
+    const tripped = tripwires?.result() ?? null;
+    if (tripped) writeFileSync(join(contextDir, "tripwires.md"), tripwiresFile(tripped));
     const material = buildVerificationMaterial(
       {
         ref: pr.ref,
@@ -1503,7 +1520,18 @@ async function startSectionRun(
             tickets: read,
             ticketNotes: tickets?.notes ?? [],
           };
-          return { ...report, ...(claims && { claims }), coverage: counted.coverage };
+          const malice = report.malice &&
+            tripped && {
+              ...report.malice,
+              tripwires: tripped.tripwires,
+              tripwiresOmitted: tripped.omitted,
+            };
+          return {
+            ...report,
+            ...(claims && { claims }),
+            ...(malice && { malice }),
+            coverage: counted.coverage,
+          };
         },
         plugins: ["yarvis-review"],
         allowedTools: ALLOWED_TOOLS,

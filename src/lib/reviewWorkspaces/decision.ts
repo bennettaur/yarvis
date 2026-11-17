@@ -7,6 +7,7 @@
  * the reviewer can see why it suggests what it does and disagree.
  */
 
+import type { MutationRun } from "./mutation";
 import {
   CHECK_LABEL,
   type ChecklistItem,
@@ -71,6 +72,7 @@ export function assessReview(
   report: VerificationReport | null,
   evidence: readonly EvidenceItem[] | null,
   items: readonly ChecklistItem[],
+  mutation: MutationRun | null = null,
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
@@ -120,6 +122,14 @@ export function assessReview(
         rating === "much-simpler" ? "A much simpler way exists" : "A simpler way exists",
       );
     }
+  }
+
+  // Mutation testing runs the PR's code, so it is opt-in: not having run it isn't a gap.
+  const summary = mutation?.isCurrentHead && mutation.status === "succeeded" && mutation.summary;
+  if (summary && (summary.verdict === "weak" || summary.verdict === "mixed")) {
+    concerns.push(
+      `Mutation testing: ${summary.verdict}, ${plural(summary.survived, "mutant", "mutants")} the tests missed`,
+    );
   }
 
   const nothingRun = judged.length > 0 && notRun.length === judged.length;

@@ -12,6 +12,7 @@ import {
   type Suggestion,
   whereToLook,
 } from "../../../lib/reviewWorkspaces/decision";
+import type { MutationRun } from "../../../lib/reviewWorkspaces/mutation";
 import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import type {
   ChecklistItem,
@@ -220,6 +221,7 @@ export default function DecisionPanel({
   report,
   evidence,
   items,
+  mutation = null,
   currentSections,
   onOpen,
 }: {
@@ -230,13 +232,15 @@ export default function DecisionPanel({
   /** CI and scanner results for the PR's head; null when there are none for it. */
   evidence: readonly EvidenceItem[] | null;
   items: readonly ChecklistItem[];
+  /** The PR's latest mutation-testing pass, if it has had one. */
+  mutation?: MutationRun | null;
   /** Sections whose result is for the PR's head; only these comment on lines. */
   currentSections: ReadonlySet<string>;
   onOpen: OpenLocation;
 }) {
   const assessment = useMemo(
-    () => assessReview(report, evidence, items),
-    [report, evidence, items],
+    () => assessReview(report, evidence, items, mutation),
+    [report, evidence, items, mutation],
   );
   const drafts = useMemo(
     () => draftComments(report, evidence, currentSections),

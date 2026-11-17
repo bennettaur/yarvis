@@ -87,6 +87,12 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Risk",
     description: "How likely the change is to break something, and how far that would spread.",
   },
+  malice: {
+    theme: "risk",
+    label: "Malicious intent",
+    description:
+      "Backdoors, data sent somewhere new, hidden text, tampered tests, and changes to CI, build or install scripts, judged without the PR's description.",
+  },
   complexity: {
     theme: "maintainability",
     label: "Complexity",
