@@ -2475,8 +2475,8 @@ function trackArchive(
 /**
  * The commit at which to delete a repo's local branch after its worktree is
  * gone, so archived workspaces don't pile up branches in the shared clone, or
- * null to keep the branch. Only a landed branch goes, and a git failure keeps it, since a
- * branch left behind costs nothing.
+ * null to keep the branch. Only a landed branch goes, and a git failure keeps
+ * it, since a branch left behind costs nothing.
  *
  * Throws instead when a landed branch has commits that neither a remote nor
  * its merged PR has (work added after the merge) and `force` isn't set, so the

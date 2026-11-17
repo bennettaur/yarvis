@@ -629,6 +629,25 @@ describe("workspace worktrees", () => {
       expect(branches).not.toContain("stack/later");
     });
 
+    it("keeps an added branch with commits the base doesn't have", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "stack/work" },
+        runner,
+      );
+      writeFileSync(join(added.path, "work.ts"), "work");
+      await git(added.path, "add", "work.ts");
+      await git(added.path, "commit", "-m", "work");
+      await git(clone, "worktree", "remove", added.path);
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result.status).toBe("archived");
+      expect(await listLocalBranches(runner, clone)).toContain("stack/work");
+    });
+
     it("stops on commits made after a squash merge, and deletes them on a forced retry", async () => {
       const { workspaceId, wr, clone, git, runner } = await withRealClone();
       const head = async (cwd: string, ref: string) =>
