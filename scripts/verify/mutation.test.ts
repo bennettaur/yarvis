@@ -104,18 +104,23 @@ describe("relatedTests", () => {
 });
 
 describe("testCommand", () => {
-  const limit = `perl -e 'alarm shift; exec @ARGV' ${TEST_RUN_LIMIT_SECONDS}`;
+  const limitPrefix = `perl -e 'alarm shift; exec @ARGV or die "exec failed: $!\\n"' ${TEST_RUN_LIMIT_SECONDS}`;
 
   it("quotes every path, so a file name can't add shell syntax", () => {
     expect(testCommand("/bin/bun", "frontend", ["src/a;rm -rf x.test.ts"])).toBe(
-      `${limit} '/bin/bun' test './src/a;rm -rf x.test.ts'`,
+      `${limitPrefix} '/bin/bun' test './src/a;rm -rf x.test.ts'`,
     );
   });
 
   it("runs the sidecar suite from sidecar/, with paths relative to it", () => {
     expect(testCommand("/bin/bun", "sidecar", ["sidecar/src/b.test.ts"])).toBe(
-      `cd sidecar && ${limit} '/bin/bun' test './src/b.test.ts'`,
+      `cd sidecar && ${limitPrefix} '/bin/bun' test './src/b.test.ts'`,
     );
+  });
+
+  it("fails the run when the test command can't start", () => {
+    const result = Bun.spawnSync(["sh", "-c", testCommand("/no/such/bun", "frontend", [])]);
+    expect(result.exitCode).not.toBe(0);
   });
 
   it("kills a run that outlives its limit, even inside a busy loop", () => {
@@ -125,16 +130,13 @@ describe("testCommand", () => {
         join(dir, "spin.test.ts"),
         "import { it } from 'bun:test';\nit('spins', () => { for (;;) {} });\n",
       );
-      const command = testCommand(process.execPath, "frontend", ["spin.test.ts"]).replace(
-        ` ${TEST_RUN_LIMIT_SECONDS} `,
-        " 1 ",
-      );
+      const command = testCommand(process.execPath, "frontend", ["spin.test.ts"], 1);
       // The spawn timeout is only a backstop so a broken limit fails the test
-      // instead of hanging it; finishing well inside it shows the alarm fired.
-      const started = Date.now();
+      // instead of hanging it. It kills with SIGTERM, not SIGALRM.
       const result = Bun.spawnSync(["sh", "-c", command], { cwd: dir, timeout: 20_000 });
-      expect(result.success).toBe(false);
-      expect(Date.now() - started).toBeLessThan(10_000);
+      // A shell that doesn't exec its last command reports the signal as 128 + 14.
+      const killedByAlarm = result.signalCode === "SIGALRM" || result.exitCode === 142;
+      expect(killedByAlarm).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
