@@ -71,6 +71,13 @@ const EXIT_GRACE_MS = 2_000;
  */
 const WATCHDOG_SLACK_MS = KILL_GRACE_MS + EXIT_GRACE_MS + 3_000;
 
+/**
+ * How long the helper may take to come up, profile compile included. That
+ * compile takes about three seconds on an idle Mac and several times that on a
+ * busy one, so this only catches a helper that will never answer.
+ */
+const HELPER_START_TIMEOUT_MS = 60_000;
+
 /** How often a running command's process tree is sampled for the sweep. */
 const MEMBERSHIP_POLL_MS = 100;
 
@@ -577,9 +584,10 @@ export const runSandboxed: SandboxRunner = (command) => {
 /**
  * The helper that runs inside the sandbox for a whole pass. It reads one JSON
  * request per line — `{id, argv, cwd}` — and for each forks a child in its own
- * process group, `exec`s the argv directly (no shell), and streams back JSON
- * lines: `spawned` with the child's pgid at once, then `exit` with its exit
- * code or signal and the tail of its output (base64). Output stops being read
+ * process group, `exec`s the argv directly (no shell). It writes `ready` once
+ * it is running, then streams back JSON lines for each request: `spawned` with
+ * the child's pgid at once, then `exit` with its exit code or signal and the
+ * tail of its output (base64). Output stops being read
  * two seconds after the child exits, so a grandchild that escaped holding the
  * pipe can't stall it. Timeouts and cancels are the sidecar's: it signals the
  * group itself. Perl because it ships with macOS and has what this needs
@@ -592,6 +600,7 @@ $| = 1;
 my $json = JSON::PP->new->utf8->canonical;
 my ($max, $grace) = (${MAX_OUTPUT_CHARS}, ${EXIT_GRACE_MS / 1000});
 sub reply { print $json->encode($_[0]), "\n"; }
+reply({ event => "ready" });
 while (my $line = <STDIN>) {
   my $req = eval { $json->decode($line) };
   next unless ref $req eq "HASH" && ref $req->{argv} eq "ARRAY" && @{$req->{argv}};
@@ -706,9 +715,11 @@ export interface SandboxSession {
 }
 
 /**
- * Starts one sandboxed helper for a pass, so the profile is compiled once. Falls
- * back to a sandbox per command (`runSandboxed`) when the helper can't start;
- * the protection is the same either way, only slower.
+ * Starts one sandboxed helper for a pass, so the profile is compiled once.
+ * Resolves once the helper is running, so the first command's timeout doesn't
+ * also have to cover the compile. Falls back to a sandbox per command
+ * (`runSandboxed`) when the helper can't start; the protection is the same
+ * either way, only slower.
  */
 export async function openSandboxSession(base: {
   cwd: string;
@@ -819,8 +830,16 @@ export async function openSandboxSession(base: {
   });
   // A helper that died mid-write closes the pipe under us; the exit handler reports it.
   helper.stdin?.on("error", () => {});
+  // Settled by the helper's `ready` line, or by the helper failing before it.
+  let markReady = () => {};
+  let markStartFailed = (_message: string) => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    markStartFailed = (message) => reject(new SandboxUnavailableError(message));
+  });
   const fail = (message: string) => {
     broken ??= message;
+    markStartFailed(broken);
     for (const entry of pending.values()) entry.onError(broken);
     pending.clear();
   };
@@ -844,6 +863,10 @@ export async function openSandboxSession(base: {
       } catch {
         return;
       }
+      if (reply.event === "ready") {
+        markReady();
+        return;
+      }
       const entry = pending.get(Number(reply.id));
       if (!entry) return;
       if (reply.event === "spawned") entry.onSpawned(Number(reply.pgid));
@@ -859,6 +882,15 @@ export async function openSandboxSession(base: {
         entry.onError(String(reply.message));
       }
     });
+  }
+  const startTimer = setTimeout(
+    () => breakSession("the sandbox helper did not start in time, so the session was ended"),
+    HELPER_START_TIMEOUT_MS,
+  );
+  try {
+    await ready;
+  } finally {
+    clearTimeout(startTimer);
   }
 
   let nextId = 1;
