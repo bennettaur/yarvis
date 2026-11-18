@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueSummary } from "../../lib/issues/types";
+import { waitFor } from "../../test/render";
 import { resetReposApi, stubReposApi } from "../../test/reposApi";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
@@ -45,6 +46,8 @@ let failing: string | null = null;
 /** When set, the detail fetch hangs until this resolves, so the window between
  *  clicking a row's Start work and the picker opening can be acted on. */
 let holdDetail: Promise<void> | null = null;
+/** Detail fetches parked on `holdDetail` right now. */
+let detailsHeld = 0;
 
 /** What the fake sidecar answers each route with. */
 function responseFor(path: string): unknown {
@@ -77,7 +80,11 @@ stubSidecarApi({
     fetched.push(path);
     if (init.method && init.method !== "GET")
       sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
-    if (holdDetail && path.startsWith("/api/jira/issue/")) await holdDetail;
+    if (holdDetail && path.startsWith("/api/jira/issue/")) {
+      detailsHeld += 1;
+      await holdDetail;
+      detailsHeld -= 1;
+    }
     if (failing && path.startsWith(failing)) return new Response("nope", { status: 500 });
     return new Response(JSON.stringify(responseFor(path)), { status: 200 });
   },
@@ -123,6 +130,7 @@ beforeEach(() => {
   sent.length = 0;
   failing = null;
   holdDetail = null;
+  detailsHeld = 0;
 });
 
 describe("JiraIssuesView", () => {
@@ -175,16 +183,17 @@ describe("JiraIssuesView", () => {
       release = () => resolve();
     });
     const { host, cleanup } = await mount();
+    await waitFor(() => startButton(host) !== null, "the assigned list to load");
     startButton(host)?.click();
+    await waitFor(() => detailsHeld === 1, "the start's detail fetch");
     // Open the ticket while its detail is still in flight, then come back.
     host.querySelector("li")?.click();
-    await settle();
-    expect(button(host, "← Back")).toBeDefined();
+    await waitFor(() => button(host, "← Back") !== undefined, "the ticket to open");
     release();
-    await settle();
+    await waitFor(() => detailsHeld === 0, "the held detail fetches to answer");
     holdDetail = null;
     button(host, "← Back")?.click();
-    await settle();
+    await waitFor(() => startButton(host) !== null, "the list to come back");
     // The abandoned start must not spring its picker open on the way back.
     expect(modal(host)).toBeNull();
     cleanup();

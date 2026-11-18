@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Settings } from "../lib/settings";
 import { nativeInvoke } from "../test/nativeInvoke";
-import { renderToHtml } from "../test/render";
+import { renderToHtml, waitFor } from "../test/render";
 
 /**
  * Covers the session-limit field end to end through `invoke`, rather than
@@ -71,7 +71,8 @@ async function mount(): Promise<{ host: HTMLElement; cleanup: () => void }> {
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(host);
   root.render(createElement(TerminalSection));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Save stays disabled until the stored settings have loaded into the field.
+  await waitFor(() => saveButton(host)?.disabled === false, "the settings to load");
   return {
     host,
     cleanup: () => {
@@ -91,11 +92,11 @@ function type(host: HTMLElement, value: string): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+const saveButton = (host: HTMLElement) =>
+  Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("Sav"));
+
 async function clickSave(host: HTMLElement): Promise<void> {
-  const button = Array.from(host.querySelectorAll("button")).find((b) =>
-    b.textContent?.startsWith("Sav"),
-  );
-  button?.click();
+  saveButton(host)?.click();
   await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
@@ -172,8 +173,11 @@ describe("TerminalSection", () => {
     const { host, cleanup } = await mount();
     type(host, "5");
     await clickSave(host);
+    await waitFor(
+      () => host.innerHTML.includes("the session cap must be at least 1"),
+      "the core's rejection to show",
+    );
 
-    expect(host.innerHTML).toContain("the session cap must be at least 1");
     expect(host.innerHTML).not.toContain("Saved.");
     cleanup();
   });

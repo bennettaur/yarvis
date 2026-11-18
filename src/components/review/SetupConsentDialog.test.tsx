@@ -89,7 +89,10 @@ describe("SetupConsentView", () => {
   it("takes focus when it opens", async () => {
     const mounted = await mountForInteraction(view());
     unmount = mounted.unmount;
-    expect(document.activeElement?.getAttribute("role")).toBe("dialog");
+    await waitFor(
+      () => document.activeElement?.getAttribute("role") === "dialog",
+      "the dialog to take focus",
+    );
   });
 
   it("waits for the script before offering to run it", async () => {
