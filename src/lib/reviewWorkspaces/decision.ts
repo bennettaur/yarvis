@@ -23,6 +23,14 @@ import {
 
 export type Suggestion = "approve" | "request_changes" | "review_deeper" | "run_checks";
 
+/** What each suggestion says, on the decision panel and in an exported report. */
+export const SUGGESTION_LABEL: Record<Suggestion, string> = {
+  approve: "Looks ready to approve",
+  request_changes: "Changes needed",
+  review_deeper: "Review deeper first",
+  run_checks: "Run the checks first",
+};
+
 export interface Assessment {
   suggestion: Suggestion;
   /** Why changes are needed: each one is enough on its own. */

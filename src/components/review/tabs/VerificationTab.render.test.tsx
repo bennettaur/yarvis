@@ -20,6 +20,7 @@ import {
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
+import { clipboardWrites, resetClipboardWrites } from "../../../test/clipboard";
 import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
@@ -219,6 +220,27 @@ describe("VerificationTab", () => {
     expect(button(row(host, "Test quality"), "Re-run")).toBeDefined();
     expect(text).toContain("Adds a cache in front of the user lookup.");
     expect(text).toContain("No test for eviction");
+  });
+
+  it("copies the whole report as Markdown", async () => {
+    resetClipboardWrites();
+    const report: VerificationReport = {
+      ...goodReport,
+      tests: {
+        status: "issues",
+        findings: [{ title: "No test for eviction", detail: "d", severity: "high" }],
+      },
+    };
+    const host = await mount(checklist({ items: answered(report), report }));
+    const copy = host.querySelector(
+      'button[aria-label="Copy the whole report as Markdown, to paste into Claude"]',
+    ) as HTMLButtonElement;
+    copy.click();
+    await waitFor(() => clipboardWrites().length === 1);
+    const [md] = clipboardWrites();
+    expect(md).toContain("PR: https://github.com/octo/repo/pull/7");
+    expect(md).toContain("Suggested: **Changes needed**");
+    expect(md).toContain("**[high] No test for eviction**");
   });
 
   it("keeps a section's last result under a failed re-run, marked as from an older head", async () => {
