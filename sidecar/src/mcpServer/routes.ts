@@ -12,8 +12,15 @@ import {
   sessionKeyBelongsTo,
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
+import { linkWorkspacePr, PrLinkRefusal, pollerClients } from "../workspaces/poller.ts";
 import { listLocatedReviewComments, updateReviewComment } from "../workspaces/reviewComments.ts";
-import { addExtraWorktree } from "../workspaces/service.ts";
+import {
+  addExtraWorktree,
+  findReadyRepo,
+  getWorkspace,
+  readyRepoFolders,
+} from "../workspaces/service.ts";
+import { type LinkPullRequest, PrLinkToolRefusal } from "./prLinkTools.ts";
 import type { QuestionOrigin } from "./questionTools.ts";
 import { UUID } from "./results.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
@@ -144,6 +151,37 @@ export function createMcpEndpointRoutes(config: Config): Hono {
   const addWorktree: AddWorktree = (workspaceId, input) =>
     addExtraWorktree(getDb(config.databaseUrl as string).db, workspaceId, input);
 
+  const linkPullRequest: LinkPullRequest = async (workspaceId, input) => {
+    const db = getDb(config.databaseUrl as string).db;
+    const detail = await getWorkspace(db, workspaceId);
+    if (!detail) throw new PrLinkToolRefusal("workspace not found");
+    const workspaceRepo = findReadyRepo(detail, input.repo);
+    if (!workspaceRepo) {
+      throw new PrLinkToolRefusal(
+        `no ready repo "${input.repo}" in this workspace (repos: ${readyRepoFolders(detail)})`,
+      );
+    }
+    try {
+      const pr = await linkWorkspacePr(
+        db,
+        pollerClients(config),
+        workspaceId,
+        workspaceRepo.id,
+        input.number,
+        { relink: false },
+      );
+      return {
+        repo: workspaceRepo.repo.name,
+        number: input.number,
+        url: pr.prUrl,
+        state: pr.prState,
+      };
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) throw new PrLinkToolRefusal(e.message);
+      throw e;
+    }
+  };
+
   router.post("/", async (c) => {
     // A malformed id is ignored rather than refused, so the memory tools still
     // work from a session whose header got mangled.
@@ -154,7 +192,12 @@ export function createMcpEndpointRoutes(config: Config): Hono {
     const provenTerminal = origin.sessionKey !== null && origin.workspaceId === workspaceId;
     const workspace: WorkspaceContext | undefined =
       workspaceId && UUID.safeParse(workspaceId).success
-        ? { id: workspaceId, reviewComments, ...(provenTerminal ? { addWorktree } : {}) }
+        ? {
+            id: workspaceId,
+            reviewComments,
+            linkPullRequest,
+            ...(provenTerminal ? { addWorktree } : {}),
+          }
         : undefined;
     const db = () => getDb(config.databaseUrl as string).db;
     // Fires once the reply stream ends, the client cancels it, or the request

@@ -334,9 +334,11 @@ Some rules that follow from how it works:
   the screen. The workspace shows its log while it runs.
 - Pressing **Start workspace** twice reuses the first workspace instead of
   creating a second worktree on the branch.
-- Once the workspace is created, the button changes to a link back to it. For
-  a workspace created some other way, the link appears after the next PR poll
-  (within a minute).
+- Once the workspace is created, the button changes to a link back to it,
+  because the workspace is linked to the PR as it is created. For a workspace
+  created some other way, the link appears after the next PR poll (within a
+  minute), or as soon as you link the PR there yourself. See
+  [Linking a pull request](workspaces.md#linking-a-pull-request).
 
 ### Resolve merge conflicts
 

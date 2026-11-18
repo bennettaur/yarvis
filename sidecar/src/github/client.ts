@@ -124,6 +124,7 @@ export function toPrSummary(item: any): PrSummary {
     state: item.state,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
+    ...(item.closed_at !== undefined ? { closedAt: item.closed_at } : {}),
   };
 }
 
@@ -1029,7 +1030,7 @@ const PR_BY_BRANCH_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
     pullRequests(headRefName:$branch, first:20, orderBy:{field:CREATED_AT,direction:DESC}){
-      nodes{ ${PR_SUMMARY_FIELDS} headRepositoryOwner{ login } }
+      nodes{ ${PR_SUMMARY_FIELDS} closedAt headRepositoryOwner{ login } }
     }
   }
 }`;
@@ -1061,7 +1062,7 @@ query($owner:String!,$repo:String!,$number:Int!){
 }`;
 
 /** What the workspace poller reads about each PR, in one query: summary, status and reviews. */
-const PR_POLL_FIELDS = `number url isDraft ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
+const PR_POLL_FIELDS = `number url isDraft headRefName closedAt ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
 
 /**
  * Same-named branches a batched branch read looks through for the one in the
@@ -1180,6 +1181,7 @@ function restLikePr(node: any): any {
     state: node.state === "OPEN" ? "open" : "closed",
     created_at: node.createdAt,
     updated_at: node.updatedAt,
+    closed_at: node.closedAt,
   };
 }
 
@@ -1248,6 +1250,10 @@ export interface PolledPr {
   number: number;
   url: string;
   draft: boolean;
+  /** The branch the PR merges from. */
+  headBranch: string;
+  /** When the PR was closed or merged; null while it is open. */
+  closedAt: string | null;
   status: PrStatus;
   /** Null when nothing waits on review: a draft, or a PR that is no longer open. */
   reviewDecision: ReviewDecision | null;
@@ -1261,6 +1267,8 @@ function toPolledPr(pr: any): PolledPr {
     number: pr.number,
     url: pr.url,
     draft: Boolean(pr.isDraft),
+    headBranch: pr.headRefName ?? "",
+    closedAt: pr.closedAt ?? null,
     status,
     reviewDecision: awaitingReview ? summarizeReviewDecision(restLikeReviews(pr)) : null,
   };
@@ -1616,38 +1624,44 @@ export class GitHubClient {
    * tight secondary rate limit the background poller would otherwise hit).
    */
   async findPrByBranch(owner: string, repo: string, branch: string): Promise<PrSummary | null> {
+    return (await this.findPrsByBranch(owner, repo, branch))[0] ?? null;
+  }
+
+  /**
+   * Every PR whose head branch is `branch` in the repo itself (not a fork's
+   * same-named branch), newest first, up to 20.
+   */
+  async findPrsByBranch(owner: string, repo: string, branch: string): Promise<PrSummary[]> {
     return this.graphqlFirst(
       async () => {
         const data = await this.graphql<{ repository?: { pullRequests?: { nodes?: any[] } } }>(
           PR_BY_BRANCH_QUERY,
           { owner, repo, branch },
         );
-        const pr = (data.repository?.pullRequests?.nodes ?? []).find(
-          (node) => node?.headRepositoryOwner?.login?.toLowerCase() === owner.toLowerCase(),
-        );
-        return pr ? toPrSummary(restLikePr(pr)) : null;
+        return (data.repository?.pullRequests?.nodes ?? [])
+          .filter((node) => node?.headRepositoryOwner?.login?.toLowerCase() === owner.toLowerCase())
+          .map((node) => toPrSummary(restLikePr(node)));
       },
       async () => {
         const head = encodeURIComponent(`${owner}:${branch}`);
         const items = await this.api<any[]>(
-          `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=1`,
+          `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=20`,
         );
-        const item = items[0];
-        return item ? toPrSummary(item) : null;
+        return (items ?? []).map(toPrSummary);
       },
     );
   }
 
   /**
-   * The PR on each branch with its status and review verdict, for the
-   * workspace poller: one request for up to {@link POLL_BATCH_SIZE} branches,
-   * where the single-PR reads take three per branch. Null where a branch has
-   * no PR.
+   * The PRs on each branch with their status and review verdicts, newest
+   * first, for the workspace poller: one request for up to
+   * {@link POLL_BATCH_SIZE} branches, where the single-PR reads take three per
+   * PR. Empty where a branch has no PR.
    * GraphQL only, with no REST fallback: a background read that runs out of
    * GraphQL budget waits for it rather than spending the REST budget the PR
    * pages need.
    */
-  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr | null>[]> {
+  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr[]>[]> {
     return this.pollBatch(
       refs,
       buildBranchPollQuery,
@@ -1656,13 +1670,15 @@ export class GitHubClient {
         [`r${i}`]: ref.repo,
         [`b${i}`]: ref.branch,
       }),
-      (ref, repo) => {
-        const pr = (repo?.pullRequests?.nodes ?? []).find(
-          (node: any) =>
-            node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
-        );
-        return { ok: true, value: pr ? toPolledPr(pr) : null };
-      },
+      (ref, repo) => ({
+        ok: true,
+        value: (repo?.pullRequests?.nodes ?? [])
+          .filter(
+            (node: any) =>
+              node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
+          )
+          .map(toPolledPr),
+      }),
     );
   }
 

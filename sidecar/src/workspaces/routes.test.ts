@@ -877,6 +877,47 @@ describe("workspace worktrees", () => {
     expect([badId.status, badWorktree.status]).toEqual([400, 400]);
   });
 
+  it("refuses to link a PR when no provider can read the repo", async () => {
+    const { workspaceId, wr } = await provisioned();
+    const link = (body: unknown) =>
+      app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/prs`, {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const badNumber = await link({ number: -1 });
+    const noProvider = await link({ number: 42 });
+    expect([badNumber.status, noProvider.status]).toEqual([400, 400]);
+    expect(((await noProvider.json()) as { error: string }).error).toContain("token");
+  });
+
+  it("unlinks a PR, and answers 404 for one the repo doesn't have", async () => {
+    const { workspaceId, wr } = await provisioned();
+    const db = getDb(url).db;
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr.id, prNumber: 7 });
+    const unlink = (number: string) =>
+      app.request(`/api/workspaces/${workspaceId}/repos/${wr.id}/prs/${number}`, {
+        method: "DELETE",
+        headers: auth,
+      });
+
+    expect((await unlink("7")).status).toBe(200);
+    expect((await unlink("8")).status).toBe(404);
+    expect((await unlink("x")).status).toBe(400);
+    const detail = await getWorkspace(db, workspaceId);
+    expect(detail?.repos[0]?.prs).toEqual([]);
+  });
+
+  it("detects nothing when no provider is configured", async () => {
+    const { workspaceId } = await provisioned();
+    const res = await app.request(`/api/workspaces/${workspaceId}/prs/detect`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ repos: [] });
+  });
+
   it("rejects a worktree that isn't an absolute path before it reaches git", async () => {
     const { workspaceId, wr } = await provisioned();
     const res = await app.request(
@@ -2308,6 +2349,7 @@ describe("provision + archive (injected git runner)", () => {
     expect(agents).toContain("## Running a repo's tools");
     expect(agents).toContain("## Extra worktrees");
     expect(agents).toContain("create it with the Yarvis MCP tool `add_worktree`");
+    expect(agents).toContain("`link_pull_request`");
     expect(agents).not.toContain("outside the sandbox, which asks");
     expect(agents).toContain("mise");
     expect(agents).toContain("`mise exec -- git commit`");
@@ -3047,6 +3089,50 @@ describe("provision + archive (injected git runner)", () => {
     const forced = await archiveWorkspace(db, ws.id, { force: true }, unpushedGit);
     expect(forced.status).toBe("archived");
     expect(deleted).toEqual([wr!.branch]);
+  });
+
+  it("trusts a merged PR only for the branch it merged from", async () => {
+    const repo = await addRepo();
+    const deleted: string[] = [];
+    // Squash-merged with its remote branch gone, as in the tests above.
+    const branchGit: GitRunner = async (args, opts) => {
+      if (args[0] === "show-ref") {
+        const local = args[3]?.startsWith("refs/heads/");
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
+      }
+      if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
+      if (args[0] === "rev-list") return squashedCount(args, 0);
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
+      return fakeGit(args, opts);
+    };
+    const archiveWithMergedPr = async (name: string, headBranch: (own: string) => string) => {
+      const ws = await createWorkspace(db, config, { name, repoIds: [repo.id] });
+      await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+      const [wr] = await db
+        .select()
+        .from(workspaceRepos)
+        .where(eq(workspaceRepos.workspaceId, ws.id));
+      await db.insert(workspaceRepoPr).values({
+        workspaceRepoId: wr!.id,
+        prNumber: 3,
+        prState: "merged",
+        headSha: PR_HEAD,
+        headBranch: headBranch(wr!.branch),
+      });
+      deleted.length = 0;
+      await archiveWorkspace(db, ws.id, { force: true }, branchGit);
+      return wr!.branch;
+    };
+
+    // A PR linked from another branch merged other commits.
+    await archiveWithMergedPr("someone-elses-pr", () => "other-branch");
+    expect(deleted).toEqual([]);
+
+    const branch = await archiveWithMergedPr("this-branchs-pr", (own) => own);
+    expect(deleted).toEqual([branch]);
   });
 
   it("names unpushed commits even when a dirty extra worktree stops the archive", async () => {

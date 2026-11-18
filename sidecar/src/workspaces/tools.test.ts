@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bu
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createAttention, updateAttentionStatus } from "../attention/service.ts";
@@ -1271,7 +1271,11 @@ describe("workspace tools", () => {
         .select()
         .from(schema.workspaceRepos)
         .where(eq(schema.workspaceRepos.workspaceId, created.workspaceId));
-      if (row) await db.insert(schema.workspaceRepoPr).values({ workspaceRepoId: wr!.id, ...row });
+      if (row) {
+        await db
+          .insert(schema.workspaceRepoPr)
+          .values({ workspaceRepoId: wr!.id, prNumber: 42, ...row });
+      }
       return { tools, workspaceId: created.workspaceId, workspaceRepoId: wr!.id };
     }
 
@@ -1376,10 +1380,16 @@ describe("workspace tools", () => {
 
     it("reports when a branch with no PR was last looked at, and whether a refresh reached it", async () => {
       const polledAt = new Date();
-      const reached = await cachedWorkspace(writes({ lastPolledAt: polledAt, lastError: null }), {
-        prNumber: null,
-        lastPolledAt: new Date(Date.now() - 20 * 60_000),
-      });
+      const reached = await cachedWorkspace(async (ids) => {
+        await db
+          .update(schema.workspaceRepos)
+          .set({ prsPolledAt: polledAt, prsPollError: null })
+          .where(inArray(schema.workspaceRepos.workspaceId, ids));
+      }, null);
+      await db
+        .update(schema.workspaceRepos)
+        .set({ prsPolledAt: new Date(Date.now() - 20 * 60_000) })
+        .where(eq(schema.workspaceRepos.workspaceId, reached.workspaceId));
       const neverPolled = await cachedWorkspace(async () => {}, null, "Never polled");
 
       const fresh = (await reached.tools.get_workspace_status.execute!(
@@ -1599,17 +1609,11 @@ describe("workspace tools", () => {
       opts,
     )) as { workspaceId: string };
 
-    // A poll ran but found no PR yet: the row exists with a null prNumber.
-    const [wr] = await db
-      .select()
-      .from(schema.workspaceRepos)
+    // A poll searched the branch but found no PR yet.
+    await db
+      .update(schema.workspaceRepos)
+      .set({ prsPolledAt: new Date() })
       .where(eq(schema.workspaceRepos.workspaceId, created.workspaceId));
-    await db.insert(schema.workspaceRepoPr).values({
-      workspaceRepoId: wr!.id,
-      prNumber: null,
-      checkRollup: "none",
-      lastPolledAt: new Date(),
-    });
 
     const result = (await tools.get_workspace_status.execute!(
       { workspaceId: created.workspaceId },
@@ -1771,16 +1775,10 @@ describe("workspace tools", () => {
 
     it("notes a repo polled with no PR yet", async () => {
       const { workspaceId } = await activeWorkspace("No PR yet WS");
-      const [wr] = await db
-        .select()
-        .from(schema.workspaceRepos)
+      await db
+        .update(schema.workspaceRepos)
+        .set({ prsPolledAt: new Date() })
         .where(eq(schema.workspaceRepos.workspaceId, workspaceId));
-      await db.insert(schema.workspaceRepoPr).values({
-        workspaceRepoId: wr!.id,
-        prNumber: null,
-        checkRollup: "none",
-        lastPolledAt: new Date(),
-      });
       const { prSource, refs } = sourceReturning({});
       const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, prSource });
 

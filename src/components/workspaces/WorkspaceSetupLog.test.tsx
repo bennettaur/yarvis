@@ -33,6 +33,7 @@ const baseRepo: WorkspaceRepoDetail = {
     updatedAt: "2026-01-01T00:00:00Z",
   },
   pr: null,
+  prs: [],
 };
 
 const render = (repo: WorkspaceRepoDetail) =>

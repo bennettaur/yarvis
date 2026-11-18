@@ -10,7 +10,17 @@ import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.t
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
-import { lookupBranchPr, markWorkspaceListViewed, markWorkspaceViewed } from "./poller.ts";
+import {
+  detectWorkspacePrs,
+  linkWorkspacePr,
+  lookupBranchPr,
+  MAX_PR_NUMBER,
+  markWorkspaceListViewed,
+  markWorkspaceViewed,
+  PrLinkRefusal,
+  pollerClients,
+  unlinkWorkspacePr,
+} from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -454,6 +464,65 @@ export function createWorkspaceRoutes(config: Config): Hono {
     } catch (e) {
       console.error("[workspaces] PR lookup failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Searches every repo's branches for PRs now, adding what it finds.
+  router.post("/:id/prs/detect", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    try {
+      return c.json({ repos: await detectWorkspacePrs(db(), pollerClients(config), id) });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      console.error("[workspaces] PR detection failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  const prNumber = z.coerce.number().int().positive().max(MAX_PR_NUMBER);
+  const repoIds = (c: { req: { param: (name: string) => string | undefined } }) =>
+    z
+      .object({ id: z.string().uuid(), wrId: z.string().uuid() })
+      .safeParse({ id: c.req.param("id"), wrId: c.req.param("wrId") });
+
+  // Links one of a repo's PRs by number, beside the ones it has.
+  router.post("/:id/repos/:wrId/prs", async (c) => {
+    const ids = repoIds(c);
+    if (!ids.success) return c.json({ error: "invalid workspace or repo id" }, 400);
+    const body = z.object({ number: prNumber }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: body.error.flatten() }, 400);
+    try {
+      const pr = await linkWorkspacePr(
+        db(),
+        pollerClients(config),
+        ids.data.id,
+        ids.data.wrId,
+        body.data.number,
+        // The user's own request may undo their earlier unlink.
+        { relink: true },
+      );
+      return c.json({ pr });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      console.error("[workspaces] PR link failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Unlinks one of a repo's PRs; a later search of its branch won't add it back.
+  router.delete("/:id/repos/:wrId/prs/:number", async (c) => {
+    const ids = repoIds(c);
+    const number = prNumber.safeParse(c.req.param("number"));
+    if (!ids.success || !number.success) return c.json({ error: "invalid id or PR number" }, 400);
+    try {
+      await unlinkWorkspacePr(db(), ids.data.id, ids.data.wrId, number.data);
+      return c.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 404);
+      throw e;
     }
   });
 

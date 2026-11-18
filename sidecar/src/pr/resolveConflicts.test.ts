@@ -300,7 +300,7 @@ describe("resolveConflictsForPr", () => {
 
   // The poller caches a PR's workspace only once it is provisioned; before
   // that the branch match is what finds it, and nothing new may be created.
-  it("finds the workspace by the PR the poller matched, and by branch before that", async () => {
+  it("finds the workspace by branch, and links the PR so the next lookup finds it by PR", async () => {
     const repo = await addRepo();
     const workspace = await activeWorkspace(repo.id);
     const viaBranch = fakes();
@@ -313,7 +313,11 @@ describe("resolveConflictsForPr", () => {
       .select()
       .from(workspaceRepos)
       .where(eq(workspaceRepos.workspaceId, workspace.id));
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wr!.id, prNumber: 7 });
+    const [linked] = await db
+      .select()
+      .from(workspaceRepoPr)
+      .where(eq(workspaceRepoPr.workspaceRepoId, wr!.id));
+    expect(linked).toMatchObject({ prNumber: 7, dismissed: false });
     const viaPr = fakes();
     const result = await resolveConflictsForPr(db, config, fakeSource(), viaPr.options);
     expect(result.workspaceId).toBe(workspace.id);
