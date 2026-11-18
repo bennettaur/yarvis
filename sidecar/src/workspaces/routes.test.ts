@@ -3828,26 +3828,41 @@ describe("resumable start-work kick-off", () => {
   });
 
   /**
-   * Runs `fn` with the sidecar reading a settings file that saves Pi, opened
-   * to the assistant or not, then restores the suite's own file.
+   * Runs `fn` with the sidecar reading `contents` as its settings file, then
+   * restores the suite's own file.
    */
-  async function withPiSaved(assistantMayUse: boolean, fn: () => Promise<void>): Promise<void> {
+  async function withSettingsFile(contents: string, fn: () => Promise<void>): Promise<void> {
     const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
     const dir = mkdtempSync(join(tmpdir(), "yarvis-kickoff-harness-"));
     const settings = join(dir, "settings.json");
-    writeFileSync(
-      settings,
-      JSON.stringify({
-        agentHarnesses: [{ id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse }],
-      }),
-    );
+    writeFileSync(settings, contents);
     process.env.YARVIS_SETTINGS_PATH = settings;
     try {
       await fn();
     } finally {
-      process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      if (suiteSettings === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+      else process.env.YARVIS_SETTINGS_PATH = suiteSettings;
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  /** Settings that save Pi, opened to the assistant or not. */
+  const piSaved = (assistantMayUse: boolean) =>
+    JSON.stringify({
+      agentHarnesses: [{ id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse }],
+    });
+
+  /** The kick-off's `workspace.session_started` event, which is fire-and-forget. */
+  async function kickOffEvent(workspaceId: string): Promise<Record<string, unknown>> {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = await listEvents(getDb(url).db, { type: "workspace.session_started" });
+      const hit = rows.find(
+        (r) => (r.payload as { workspaceId?: string }).workspaceId === workspaceId,
+      );
+      if (hit) return hit.payload as Record<string, unknown>;
+      await Bun.sleep(10);
+    }
+    throw new Error(`no session_started event for ${workspaceId}`);
   }
 
   /** A workspace whose kick-off on `pi` failed once, so a retry is owed. */
@@ -3883,7 +3898,7 @@ describe("resumable start-work kick-off", () => {
   }
 
   it("retries a failed kick-off with the harness it was asked for", async () => {
-    await withPiSaved(true, async () => {
+    await withSettingsFile(piSaved(true), async () => {
       const id = await failedPiKickOff("harness retry");
       expect(await retriedHarnesses()).toEqual(["pi"]);
       expect((await getWorkspace(getDb(url).db, id))?.pendingHarness).toBeNull();
@@ -3891,12 +3906,23 @@ describe("resumable start-work kick-off", () => {
   });
 
   it("retries a kick-off on the default once its harness may no longer be started", async () => {
-    await withPiSaved(false, async () => {
+    await withSettingsFile(piSaved(false), async () => {
       const id = await failedPiKickOff("harness revoked");
       expect(await retriedHarnesses()).toEqual([undefined]);
       const detail = await getWorkspace(getDb(url).db, id);
       expect(detail?.pendingBrief).toBeNull();
       expect(detail?.pendingHarness).toBeNull();
+      // The switch shows in the event log, not only the sidecar's.
+      expect(await kickOffEvent(id)).toMatchObject({ harness: null, harnessFallbackFrom: "pi" });
+    });
+  });
+
+  it("keeps a kick-off's harness when the settings can't be read", async () => {
+    // Read as empty, a broken file would look like the harness was removed.
+    await withSettingsFile("{ not json", async () => {
+      const id = await failedPiKickOff("settings unreadable");
+      expect(await retriedHarnesses()).toEqual(["pi"]);
+      expect(await kickOffEvent(id)).toMatchObject({ harness: "pi", harnessFallbackFrom: null });
     });
   });
 

@@ -257,7 +257,7 @@ pub fn update_subtree(
 
 /// [`update_subtree`] in `store`, for a caller that already holds the write
 /// lock because it has more to do under the same lock.
-pub fn update_subtree_in(
+pub fn update_subtree_locked(
     guard: &WriteGuard,
     store: &Store,
     key: &str,

@@ -753,6 +753,8 @@ describe("workspace tools", () => {
       opts,
     )) as { error?: string };
     expect(result.error).toContain('leave harness out to use the default, "Claude"');
+    // The user asked for Pi, so they hear why something else ran.
+    expect(result.error).toContain(`tell the user "Pi" can't take Remote Control`);
   });
 
   it("start_work_on_issue refuses a harness the assistant may not start before touching anything", async () => {

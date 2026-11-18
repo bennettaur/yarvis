@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { z } from "zod";
-import { readSection } from "../settings/store.ts";
+import { readSection, settingsAreReadable } from "../settings/store.ts";
 
 /**
  * The agent harnesses a workspace session can be started with, as the chat
@@ -113,9 +113,9 @@ export async function listAgentHarnesses(
 /**
  * Why a session tool can't launch with `harness` (or the default, when it is
  * omitted), or null when it can. Checked before a workspace is built, since
- * the core would refuse the same launch only after provisioning. The message
- * never tells the model to pick another harness on its own: only the user or
- * the default may choose one.
+ * the core would refuse the same launch only after provisioning. No message
+ * tells the model to pick another harness on its own: only the user or the
+ * default may choose one.
  */
 export async function harnessChoiceError(
   harness: string | undefined,
@@ -125,15 +125,27 @@ export async function harnessChoiceError(
   const listed = await listAgentHarnesses();
   const pick = harness ? listed.find((h) => h.id === harness) : listed.find((h) => h.isDefault);
   if (!pick) {
-    return `"${harness}" is not a harness you may start; call list_agent_harnesses, or leave harness out for the default`;
+    return `"${harness}" is not a harness you may start; leave harness out for the default, or ask the user which agent they meant`;
   }
   if (remoteControl && pick.kind !== "claude-code") {
+    // `pick` isn't Claude Code, so a Claude Code default is never `pick` itself.
     const fallback = listed.find((h) => h.isDefault && h.kind === "claude-code");
-    const next =
-      fallback && fallback.id !== pick.id
-        ? `leave harness out to use the default, "${fallback.name}"`
-        : "ask the user which Claude Code harness to use";
+    const next = fallback
+      ? `leave harness out to use the default, "${fallback.name}", and tell the user "${pick.name}" can't take Remote Control`
+      : "ask the user which Claude Code harness to use";
     return `Remote Control needs a Claude Code harness, and "${pick.name}" isn't one; ${next}`;
   }
   return null;
+}
+
+/**
+ * Whether `harness` is still one the assistant may start, for a kick-off that
+ * stored it earlier. Settings that can't be read count as yes: the core still
+ * decides at launch, and reading them as empty would drop the user's choice
+ * for good.
+ */
+export async function harnessStillStartable(harness: string): Promise<boolean> {
+  if (!(await settingsAreReadable())) return true;
+  const listed = await listAgentHarnesses();
+  return listed.some((h) => h.id === harness);
 }

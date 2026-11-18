@@ -1681,12 +1681,11 @@ fn check_review_spawn(
 /// `review-claude:<workspace_id>`, for the user to ask questions about its PRs.
 /// Like `spawn_claude_session`, the caller chooses only whether to start it:
 /// the program comes from the built-in agent's command (`agentCommand`), and
-/// the flags are fixed here. The
-/// sidecar supplies the folder to start in, the checkouts to add, the settings,
-/// a line of context for the prompt and whether the user chose to load the
-/// repos' own config, as it already does for the headless
-/// runs it spawns itself, so this grants it nothing new; what the settings
-/// allow is the sidecar's call. Refused when the built-in agent isn't Claude
+/// the flags are fixed here. The sidecar supplies the folder to start in, the
+/// checkouts to add, the settings, a line of context for the prompt and whether
+/// the user chose to load the repos' own config, as it already does for the
+/// headless runs it spawns itself, so this grants it nothing new; what the
+/// settings allow is the sidecar's call. Refused when the built-in agent isn't Claude
 /// Code, since the lockdown is made of Claude Code flags. Saved harnesses don't
 /// apply: a review session always runs the built-in agent, whatever the
 /// default harness is.

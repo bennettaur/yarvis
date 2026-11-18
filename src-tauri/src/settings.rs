@@ -391,7 +391,9 @@ impl SettingsState {
         // one is saved. `set_agent_harness_secret` checks the list under the
         // same lock, so it can't store a value for a variable this save drops.
         // The store is looked up once the lock is held, so a switch to another
-        // store that finished while this waited is honored.
+        // store that finished while this waited is honored. Validated first
+        // too, so a bad submission isn't held up behind another window's save.
+        crate::harness::validate(&harnesses, non_blank(default_id.clone()).as_deref())?;
         let secrets_guard = keychain::lock_for_write()?;
         self.set_agent_harnesses_in(
             &secrets_guard,
@@ -421,7 +423,7 @@ impl SettingsState {
         // the settings lock, since 1Password can take a while to answer, and
         // only when something was dropped, so an ordinary save never prompts.
         if !dropped.is_empty() {
-            keychain::update_subtree_in(
+            keychain::update_subtree_locked(
                 secrets_guard,
                 store,
                 crate::harness::SECRET_ENV_SUBTREE,
@@ -884,19 +886,21 @@ pub fn set_agent_harness_secret(
                 .iter()
                 .any(|h| h.id == harness_id && h.secret_env.contains(&key))
         };
-        write_harness_secret(subtree, declared, &harness_id, &key, value)
+        write_harness_secret(subtree, &harness_id, &key, value, declared)
     })
 }
 
 /// The edit [`set_agent_harness_secret`] makes to the harness-secrets subtree.
 /// A value is written only when `declared` says the saved harness lists the
-/// variable; removing works for any name. Returns whether anything changed.
+/// variable. `declared` is called only for a non-empty value: removing, which
+/// an empty value also does, works for any name. Returns whether anything
+/// changed.
 fn write_harness_secret(
     subtree: &mut Value,
-    declared: impl FnOnce() -> bool,
     harness_id: &str,
     key: &str,
     value: Option<String>,
+    declared: impl FnOnce() -> bool,
 ) -> Result<bool, String> {
     let obj = subtree
         .as_object_mut()
@@ -1328,10 +1332,10 @@ mod tests {
         save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
 
         let reloaded = SettingsState::load(settings.path.clone()).snapshot();
-        assert_eq!(
-            reloaded_harness_ids(&settings),
-            Some(vec!["box".to_string()])
-        );
+        let ids: Option<Vec<String>> = reloaded
+            .agent_harnesses
+            .map(|list| list.into_iter().map(|h| h.id).collect());
+        assert_eq!(ids, Some(vec!["box".to_string()]));
         assert_eq!(reloaded.default_agent_harness.as_deref(), Some("box"));
     }
 
@@ -1341,11 +1345,14 @@ mod tests {
     fn the_built_in_default_and_an_empty_list_are_stored_as_absent() {
         let settings = temp_store("harness-absent");
         let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
         save_harnesses(&settings, &secrets, vec![], Some("claude")).unwrap();
 
         let reloaded = SettingsState::load(settings.path.clone()).snapshot();
         assert_eq!(reloaded.agent_harnesses, None);
         assert_eq!(reloaded.default_agent_harness, None);
+        let raw = std::fs::read_to_string(&settings.path).unwrap();
+        assert!(!raw.contains(r#""claude""#), "{raw}");
     }
 
     #[test]
@@ -1418,11 +1425,11 @@ mod tests {
     fn a_harness_secret_is_written_only_for_a_declared_variable() {
         let mut subtree = json!({});
         let refused =
-            write_harness_secret(&mut subtree, || false, "box", "TOKEN", Some("t".into()));
+            write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || false);
         assert!(refused.is_err());
         assert_eq!(subtree, json!({}));
 
-        let written = write_harness_secret(&mut subtree, || true, "box", "TOKEN", Some("t".into()));
+        let written = write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || true);
         assert_eq!(written, Ok(true));
         assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
     }
@@ -1435,22 +1442,22 @@ mod tests {
         let not_checked = || unreachable!("removal must not need a declared variable");
 
         assert_eq!(
-            write_harness_secret(&mut subtree, not_checked, "box", "OLD", None),
+            write_harness_secret(&mut subtree, "box", "OLD", None, not_checked),
             Ok(true)
         );
         assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
         // An empty value removes too, rather than storing an empty secret.
         let emptied = write_harness_secret(
             &mut subtree,
-            not_checked,
             "box",
             "TOKEN",
             Some(String::new()),
+            not_checked,
         );
         assert_eq!(emptied, Ok(true));
         assert_eq!(subtree, json!({}));
         assert_eq!(
-            write_harness_secret(&mut subtree, not_checked, "box", "TOKEN", None),
+            write_harness_secret(&mut subtree, "box", "TOKEN", None, not_checked),
             Ok(false)
         );
     }

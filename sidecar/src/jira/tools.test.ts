@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import type { IssueSummary } from "../issues/types.ts";
@@ -271,37 +274,53 @@ describe("jira tools: ticket changes", () => {
 
 describe("jira tools: starting work", () => {
   it("refuses a harness the assistant may not start before reading the ticket", async () => {
-    // The suite's settings file saves no harnesses, so only the built-in one
-    // may be started.
-    let touched = false;
-    const jiraClient = {
-      issueDetail: async () => {
-        touched = true;
-        throw new Error("should not be read");
-      },
-    } as unknown as JiraClient;
-    let started = false;
-    const tools = buildJiraTools(db, config, {
-      jiraClient,
-      startClaudeSession: async (input) => {
-        started = true;
-        return { sessionKey: `ws-claude:${input.workspaceId}` };
-      },
-    });
+    // Saved, but not ticked for the assistant.
+    const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-jira-harness-"));
+    const settings = join(dir, "settings.json");
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        agentHarnesses: [{ id: "locked", name: "Locked", kind: "claude-code", command: "claude" }],
+      }),
+    );
+    process.env.YARVIS_SETTINGS_PATH = settings;
+    try {
+      let touched = false;
+      const jiraClient = {
+        issueDetail: async () => {
+          touched = true;
+          throw new Error("should not be read");
+        },
+      } as unknown as JiraClient;
+      let started = false;
+      const tools = buildJiraTools(db, config, {
+        jiraClient,
+        startClaudeSession: async (input) => {
+          started = true;
+          return { sessionKey: `ws-claude:${input.workspaceId}` };
+        },
+      });
 
-    const result = (await tools.jira_start_work_on_issue.execute!(
-      {
-        key: "PROJ-1",
-        repoIds: [],
-        assignSelf: true,
-        transitionToInProgress: true,
-        harness: "yolo",
-      },
-      opts,
-    )) as { error?: string };
+      const result = (await tools.jira_start_work_on_issue.execute!(
+        {
+          key: "PROJ-1",
+          repoIds: [],
+          assignSelf: true,
+          transitionToInProgress: true,
+          harness: "locked",
+        },
+        opts,
+      )) as { error?: string };
 
-    expect(result.error).toContain("not a harness you may start");
-    expect(touched).toBe(false);
-    expect(started).toBe(false);
+      expect(result.error).toContain("not a harness you may start");
+      expect(result.error).not.toContain("list_agent_harnesses");
+      expect(touched).toBe(false);
+      expect(started).toBe(false);
+    } finally {
+      if (suiteSettings === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+      else process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

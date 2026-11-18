@@ -103,7 +103,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
-import { harnessChoiceError } from "./harnesses.ts";
+import { harnessStillStartable } from "./harnesses.ts";
 import {
   checkBeforeWrite,
   checkRepoIntegrity,
@@ -2106,16 +2106,14 @@ async function launchKickOffSession(
   startSession: ClaudeSessionStarter,
   remoteControl: boolean,
 ): Promise<void> {
-  let harness = detail.pendingHarness ?? undefined;
-  if (harness) {
-    const refused = await harnessChoiceError(harness, false);
-    if (refused) {
-      console.warn(
-        `[workspaces] the kick-off's harness can no longer be started (${refused}); using the default`,
-      );
-      harness = undefined;
-    }
+  const stored = detail.pendingHarness ?? undefined;
+  const fellBack = stored !== undefined && !(await harnessStillStartable(stored));
+  if (fellBack) {
+    console.warn(
+      `[workspaces] the kick-off's harness "${stored}" can no longer be started; using the default`,
+    );
   }
+  const harness = fellBack ? undefined : stored;
   try {
     await startSession({
       workspaceId: detail.id,
@@ -2138,6 +2136,9 @@ async function launchKickOffSession(
       kickOff: true,
       remoteControl,
       harness: harness ?? null,
+      // The harness the assistant picked, when it could no longer be started
+      // and the default ran instead.
+      harnessFallbackFrom: fellBack ? stored : null,
     },
   });
   await clearPendingBrief(db, detail.id).catch(() => undefined);

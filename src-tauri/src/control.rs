@@ -104,11 +104,10 @@ mod unix_impl {
         harness: Option<String>,
     }
 
-    /// Parses a `claude.spawn` request and runs the assistant-harness gate on
-    /// it. `gate` gets the harness asked for and whether this is a resume;
-    /// the dispatch passes `check_sidecar_harness`. Parsing and the gate sit
-    /// together so the dispatch has no way to get spawn parameters without
-    /// running it.
+    /// Parses a `claude.spawn` request, validates its workspace id and runs the
+    /// assistant-harness gate on it. `gate` gets the harness asked for and
+    /// whether this is a resume. Parsing and the gate sit together so the
+    /// dispatch has no way to get spawn parameters without running it.
     fn checked_spawn_params(
         params: Value,
         gate: impl FnOnce(Option<&str>, bool) -> Result<(), String>,
