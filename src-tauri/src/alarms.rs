@@ -267,7 +267,9 @@ mod tests {
     fn alarm(id: &str) -> Alarm {
         Alarm {
             id: id.to_string(),
-            label: format!("alarm {id}"),
+            // `fire` posts a real macOS notification even on the mock runtime,
+            // so the label says where it came from.
+            label: format!("Yarvis cargo test alarm {id} (safe to ignore)"),
             fire_at_ms: now_ms(),
             // Silent: a ringing alarm spawns an `afplay` loop we don't want in
             // a test, and the firing set is deliberately independent of sound.
