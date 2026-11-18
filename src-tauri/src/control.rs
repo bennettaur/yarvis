@@ -28,7 +28,13 @@
 //! methods that write a secret. `mcp.saveOAuth` can only reach the `oauth`
 //! subtree of one MCP server's entry, and `github.saveToken` only the
 //! `github_token` key — never a provider key, the database URL, or another
-//! server's headers. Requests and responses are newline-delimited JSON.
+//! server's headers. `harness.runEnv` is the one method that reads a secret
+//! back: it answers with one Claude Code harness's program and environment,
+//! that harness's secret variables included, for a headless verification run
+//! the sidecar starts with it. It refuses any other kind, and never answers
+//! with another harness's values or anything else in the store. Requests and
+//! responses are newline-delimited JSON; a reply carries `result` only for a
+//! method that answers with data.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -74,6 +80,8 @@ mod unix_impl {
     struct Response {
         id: Value,
         ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     }
@@ -182,6 +190,11 @@ mod unix_impl {
     #[derive(Deserialize)]
     struct SaveGitHubTokenParams {
         token: String,
+    }
+
+    #[derive(Deserialize)]
+    struct HarnessRunEnvParams {
+        harness: String,
     }
 
     #[derive(Deserialize)]
@@ -298,22 +311,39 @@ mod unix_impl {
                 return Response {
                     id: Value::Null,
                     ok: false,
+                    result: None,
                     error: Some(format!("bad request: {e}")),
                 }
             }
         };
-        match run_method(app, &req.method, req.params) {
-            Ok(()) => Response {
+        let outcome = match req.method.as_str() {
+            "harness.runEnv" => harness_run_env(app, req.params).map(Some),
+            method => run_method(app, method, req.params).map(|()| None),
+        };
+        match outcome {
+            Ok(result) => Response {
                 id: req.id,
                 ok: true,
+                result,
                 error: None,
             },
             Err(e) => Response {
                 id: req.id,
                 ok: false,
+                result: None,
                 error: Some(e),
             },
         }
+    }
+
+    /// `harness.runEnv`: see the module doc for what it may answer with.
+    fn harness_run_env(app: &AppHandle, params: Value) -> Result<Value, String> {
+        let p: HarnessRunEnvParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let (program, env) = crate::pty::headless_harness(app, &p.harness)?;
+        Ok(serde_json::json!({
+            "program": program,
+            "env": env.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+        }))
     }
 
     fn run_method(app: &AppHandle, method: &str, params: Value) -> Result<(), String> {

@@ -488,6 +488,8 @@ export async function startVerification(
   namedTickets: readonly string[] = [],
   /** A model or effort for every section started, over each section's setting. */
   override: RunChoice = {},
+  /** The harness every section started runs with, over the setting. */
+  harness?: string,
 ): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
@@ -496,6 +498,7 @@ export async function startVerification(
       sections,
       ...(namedTickets.length > 0 && { namedTickets }),
       ...((override.model || override.effort) && { override }),
+      ...(harness && { harness }),
     }),
   });
   await ensureOk(res, "start verification checks");

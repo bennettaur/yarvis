@@ -4,6 +4,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  harnessRunEnv,
   killReviewClaudeSession,
   spawnClaudeSession,
   spawnReviewClaudeSession,
@@ -24,11 +25,18 @@ const core = net.createServer((conn) => {
       const req = JSON.parse(buffer.slice(0, idx));
       buffer = buffer.slice(idx + 1);
       requests.push({ method: req.method, params: req.params });
-      conn.write(`${JSON.stringify({ id: req.id, ok: true })}\n`);
+      conn.write(`${JSON.stringify({ id: req.id, ok: true, ...answerFor(req) })}\n`);
     }
   });
 });
 const previousSock = process.env.YARVIS_CORE_SOCK;
+
+/** What the stand-in answers with, for the one method that returns data. */
+function answerFor(req: { method: string; params: { harness?: string } }) {
+  if (req.method !== "harness.runEnv") return {};
+  if (req.params.harness === "garbled") return { result: { program: 1 } };
+  return { result: { program: "/opt/bin/claude", env: { API_KEY: "sk-test" } } };
+}
 
 beforeAll(async () => {
   await new Promise<void>((resolve) => core.listen(path, resolve));
@@ -89,5 +97,20 @@ describe("review sessions", () => {
       { method: "claude.spawnReview", params: session },
       { method: "claude.killReview", params: { workspaceId: "w1" } },
     ]);
+  });
+});
+
+describe("harnessRunEnv", () => {
+  it("asks for one harness by id and returns the core's answer", async () => {
+    requests.length = 0;
+    expect(await harnessRunEnv("bedrock")).toEqual({
+      program: "/opt/bin/claude",
+      env: { API_KEY: "sk-test" },
+    });
+    expect(requests).toEqual([{ method: "harness.runEnv", params: { harness: "bedrock" } }]);
+  });
+
+  it("refuses an answer that isn't a program and an environment", async () => {
+    await expect(harnessRunEnv("garbled")).rejects.toThrow();
   });
 });

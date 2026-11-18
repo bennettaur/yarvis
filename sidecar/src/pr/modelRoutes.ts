@@ -4,6 +4,7 @@ import type { Config } from "../config.ts";
 import { selectionSchema } from "../llm/complexityRoutes.ts";
 import { CHECKLIST_ENTRIES } from "../reviewWorkspaces/checklist.ts";
 import { REPORT_SECTIONS, SECTION_RUN_DEFAULTS } from "../reviewWorkspaces/verification.ts";
+import { harnessIdSchema, listVerificationHarnesses } from "../workspaces/harnesses.ts";
 import {
   getPrModelConfig,
   getRereviewRunConfig,
@@ -32,13 +33,18 @@ const saveVerificationSchema = z
   .object({
     maxBudgetUsd: verificationBudgetSchema,
     sections: z.partialRecord(z.enum(REPORT_SECTIONS), runChoiceSchema.strict()),
+    harness: harnessIdSchema.nullable(),
   })
   .partial()
   .strict();
 
-/** The settings, with each section's name and default so Settings can list them. */
-const verificationView = (settings: VerificationRunConfig) => ({
+/**
+ * The settings, with each section's name and default and the harnesses a run
+ * can use, so Settings can list them.
+ */
+const verificationView = async (settings: VerificationRunConfig) => ({
   ...settings,
+  harnesses: await listVerificationHarnesses(),
   sectionDefaults: REPORT_SECTIONS.map((section) => ({
     section,
     label: CHECKLIST_ENTRIES[section].label,
@@ -59,13 +65,20 @@ export function createPrModelRoutes(_config: Config): Hono {
 
   // The verification report's budget, and each section's Claude Code model and effort.
   router.get("/verification", async (c) =>
-    c.json(verificationView(await getVerificationRunConfig())),
+    c.json(await verificationView(await getVerificationRunConfig())),
   );
 
   router.patch("/verification", async (c) => {
     const parsed = saveVerificationSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(verificationView(await saveVerificationRunConfig(parsed.data)));
+    const { harness } = parsed.data;
+    if (harness && !(await listVerificationHarnesses()).some((h) => h.id === harness)) {
+      return c.json(
+        { error: `"${harness}" isn't a Claude Code harness a check can run with` },
+        400,
+      );
+    }
+    return c.json(await verificationView(await saveVerificationRunConfig(parsed.data)));
   });
 
   // The "What's changed" summary's model, budget and auto-start.

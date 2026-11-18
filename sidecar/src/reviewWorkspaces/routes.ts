@@ -12,6 +12,7 @@ import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { upstackChanges } from "../pr/upstack.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
+import { harnessIdSchema } from "../workspaces/harnesses.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
 import { verificationChecklist } from "./checklist.ts";
 import {
@@ -130,6 +131,8 @@ const startVerificationSchema = z
       .optional(),
     // A model or effort for every section this starts, over the settings.
     override: runChoiceSchema.strict().optional(),
+    // The harness every section this starts runs with, over the settings.
+    harness: harnessIdSchema.optional(),
   })
   .nullable();
 // No body starts with the workspace's saved choice.
@@ -536,6 +539,7 @@ export function createReviewWorkspaceRoutes(
           sections: parsed.data?.sections,
           namedTickets: parsed.data?.namedTickets,
           override: parsed.data?.override,
+          harness: parsed.data?.harness,
         },
       );
       return c.json(started, started.runs.some((r) => !r.existing) ? 202 : 200);

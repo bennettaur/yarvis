@@ -88,6 +88,13 @@ session doesn't launch right away, Yarvis retries it on the next start. If by
 then you've removed that harness or unticked it, the retry uses your default
 instead.
 
+A Claude Code harness can also run a PR's [verification
+checks](review-workspaces.md), picked in **Settings → PR review** or on the
+Verification tab. Those runs use only the harness's program and its
+environment, plain and secret, not the rest of its command, so a variable
+the run needs belongs in the environment list rather than before `claude`
+in the command. The assistant can't pick a harness for them.
+
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than
 starting a session you can't reach.

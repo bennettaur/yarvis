@@ -6,14 +6,16 @@
  * can — spawning/killing a Claude Code session in a workspace PTY, and writing
  * refreshed MCP OAuth credentials into the Keychain. The wire protocol is
  * newline-delimited JSON: each request `{ id, method, params }` gets one reply
- * `{ id, ok, error? }`.
+ * `{ id, ok, result?, error? }`, with `result` only from a method that answers
+ * with data.
  */
 
 import net from "node:net";
+import { z } from "zod";
 import type { McpOAuthCredentials } from "../config.ts";
 
 interface Pending {
-  resolve: () => void;
+  resolve: (result: unknown) => void;
   reject: (e: Error) => void;
 }
 
@@ -48,7 +50,7 @@ function onData(chunk: string): void {
     buffer = buffer.slice(idx + 1);
     idx = buffer.indexOf("\n");
     if (!line.trim()) continue;
-    let msg: { id?: number; ok?: boolean; error?: string };
+    let msg: { id?: number; ok?: boolean; result?: unknown; error?: string };
     try {
       msg = JSON.parse(line);
     } catch {
@@ -58,7 +60,7 @@ function onData(chunk: string): void {
     const p = pending.get(msg.id);
     if (!p) continue;
     pending.delete(msg.id);
-    if (msg.ok) p.resolve();
+    if (msg.ok) p.resolve(msg.result);
     else p.reject(new Error(msg.error ?? "control request failed"));
   }
 }
@@ -105,18 +107,18 @@ async function rpc(
   method: string,
   params: Record<string, unknown>,
   timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<void> {
+): Promise<unknown> {
   const s = await getSocket();
   const id = nextId++;
   const payload = `${JSON.stringify({ id, method, params })}\n`;
-  return await new Promise<void>((resolve, reject) => {
+  return await new Promise<unknown>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (pending.delete(id)) reject(new ControlTimeoutError(`control RPC '${method}' timed out`));
     }, timeoutMs);
     pending.set(id, {
-      resolve: () => {
+      resolve: (result) => {
         clearTimeout(timer);
-        resolve();
+        resolve(result);
       },
       reject: (e) => {
         clearTimeout(timer);
@@ -154,6 +156,28 @@ export async function spawnClaudeSession(input: {
     resume: input.resumeSessionId,
     instruction: input.instruction,
   });
+}
+
+/** What a headless Claude Code run needs to use a harness the user saved. */
+export interface HarnessRunEnv {
+  program: string;
+  /** The harness's environment, its secret variables included. */
+  env: Record<string, string>;
+}
+
+const harnessRunEnvSchema = z.object({
+  program: z.string().min(1),
+  env: z.record(z.string(), z.string()),
+});
+
+/**
+ * Asks the core for harness `harness`'s program and environment, secrets
+ * included, for a verification run. The core refuses any harness that isn't
+ * Claude Code. The values are credentials: they go into the run's environment
+ * and nowhere else, never into a log, a row or a reply.
+ */
+export async function harnessRunEnv(harness: string): Promise<HarnessRunEnv> {
+  return harnessRunEnvSchema.parse(await rpc("harness.runEnv", { harness }));
 }
 
 /**

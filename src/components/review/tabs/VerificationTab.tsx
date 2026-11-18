@@ -4,6 +4,7 @@ import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
 import {
   type RunChoice,
+  useVerificationSettings,
   VERIFICATION_EFFORTS,
   VERIFICATION_MODEL_LABELS,
   VERIFICATION_MODELS,
@@ -523,6 +524,13 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const [starting, setStarting] = useState(false);
   // Empty means each check runs on its own model and effort from Settings.
   const [runChoice, setRunChoice] = useState<RunChoice>({});
+  // Empty means the harness set in Settings.
+  const [runHarness, setRunHarness] = useState("");
+  const verificationSettings = useVerificationSettings().data;
+  const harnesses = verificationSettings?.harnesses ?? [];
+  const settingsHarness = harnesses.find(
+    (h) => h.id === (verificationSettings?.harness ?? "claude"),
+  );
   // Tickets the reviewer names for the change map and claims, beside the ones
   // the PR links. Until they type, the last run's are offered again.
   const [typedTickets, setTypedTickets] = useState<string | null>(null);
@@ -578,6 +586,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         sections,
         namedTickets,
         runChoice,
+        runHarness || undefined,
       );
       // Untick only what started, so a check that failed to start stays picked
       // for another try. With nothing left ticked by hand, go back to the
@@ -635,6 +644,24 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-zinc-200">Verification</h2>
           <span className="ml-auto flex items-center gap-2">
+            {harnesses.length > 1 && (
+              <select
+                aria-label="Harness for the checks you run"
+                title="Run the checks you start with another Claude Code harness than the one set in Settings"
+                value={runHarness}
+                onChange={(e) => setRunHarness(e.target.value)}
+                className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
+              >
+                <option value="">{settingsHarness?.name ?? "Settings' harness"}</option>
+                {harnesses
+                  .filter((h) => h.id !== settingsHarness?.id)
+                  .map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.name}
+                    </option>
+                  ))}
+              </select>
+            )}
             <select
               aria-label="Model for the checks you run"
               title="Run the checks you start on one model instead of each check's own, set in Settings"

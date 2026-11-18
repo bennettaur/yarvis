@@ -883,6 +883,7 @@ describe("verification report", () => {
       "claude",
       `cat > "${fakeDir}/stdin.tmp" && mv "${fakeDir}/stdin.tmp" "${fakeDir}/stdin.txt"
 printf '%s\\n' "$@" > "${fakeDir}/args.tmp" && mv "${fakeDir}/args.tmp" "${fakeDir}/args.txt"
+printf '%s' "$YARVIS_TEST_HARNESS_KEY" > "${fakeDir}/env.tmp" && mv "${fakeDir}/env.tmp" "${fakeDir}/env.txt"
 ctx=""; prev=""
 for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
@@ -926,6 +927,10 @@ cat "${fakeDir}/result.jsonl"`,
             registry,
             instance: "test",
           },
+          harnessEnv: async (harness) => {
+            if (harness !== "bedrock") throw new Error(`"${harness}" isn't a Claude Code harness`);
+            return { program, env: { YARVIS_TEST_HARNESS_KEY: "sk-test" } };
+          },
         },
       }),
     );
@@ -939,12 +944,17 @@ cat "${fakeDir}/result.jsonl"`,
     prId: string,
     sections?: string[],
     override?: Record<string, string>,
+    harness?: string,
   ): Promise<Response> {
     return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
       method,
       ...(sections && {
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections, ...(override && { override }) }),
+        body: JSON.stringify({
+          sections,
+          ...(override && { override }),
+          ...(harness && { harness }),
+        }),
       }),
     });
   }
@@ -1228,6 +1238,32 @@ cat "${fakeDir}/result.jsonl"`,
     expect(args[args.indexOf("--effort") + 1]).toBe("max");
     const [row] = await db.select().from(agentRuns);
     expect(row?.meta).toMatchObject({ model: "opus", effort: "max" });
+    release();
+  });
+
+  it("runs the checks with the harness picked for the run, its environment included", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["tests"], undefined, "bedrock")).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "env.txt")), "the fake's env");
+    expect(readFileSync(join(fakeDir, "env.txt"), "utf8")).toBe("sk-test");
+    const [row] = await db.select().from(agentRuns);
+    expect(row?.meta).toMatchObject({ harness: "bedrock" });
+    // The environment can hold credentials, so it is never kept on the run.
+    expect(JSON.stringify(row?.meta)).not.toContain("sk-test");
+    release();
+  });
+
+  it("runs the built-in agent without asking the core, and says why a harness can't run", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const refused = await verify("POST", wsId, prId, ["tests"], undefined, "pi");
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(await refused.json())).toContain("isn't a Claude Code harness");
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+    expect((await verify("POST", wsId, prId, ["tests"])).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "env.txt")), "the fake's env");
+    expect(readFileSync(join(fakeDir, "env.txt"), "utf8")).toBe("");
+    const [row] = await db.select().from(agentRuns);
+    expect(row?.meta).toMatchObject({ harness: "claude" });
     release();
   });
 

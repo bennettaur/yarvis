@@ -47,26 +47,32 @@ const KNOWN_KINDS = new Set(["claude-code", "pi", "opencode"]);
 /** The built-in agent's command, as `pty::agent_command` resolves it. */
 const DEFAULT_AGENT_COMMAND = "claude --permission-mode auto";
 
-/**
- * The kind the core gives the built-in harness: Claude Code when its command
- * runs `claude` (past any `VAR=value` words), custom otherwise. Mirrors
- * `harness::runs_claude_code`, since only Claude Code takes Remote Control.
- */
-function builtinKind(command: string): string {
+/** Whether a command line runs `claude` itself, past any `VAR=value` words. */
+function runsClaude(command: string): boolean {
   const program = command.split(/\s+/).find((word) => word && !word.includes("="));
-  return program && basename(program) === "claude" ? "claude-code" : "custom";
+  return !!program && basename(program) === "claude";
 }
 
 /**
- * The harnesses the assistant may start: the built-in one, the default, and
- * any the user marked "assistant may use". The core refuses the rest
- * (`harness::check_assistant_may_launch`), so listing them would only invite a
- * call that fails. Entries are filtered the way the core's `resolve_stored`
- * filters them, so an id listed here is one the core will launch.
+ * The kind the core gives the built-in harness: Claude Code when its command
+ * runs `claude`, custom otherwise. Mirrors `harness::runs_claude_code`, since
+ * only Claude Code takes Remote Control.
  */
-export async function listAgentHarnesses(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<HarnessListing[]> {
+function builtinKind(command: string): string {
+  return runsClaude(command) ? "claude-code" : "custom";
+}
+
+interface SavedHarness extends HarnessListing {
+  assistantMayUse: boolean;
+  /** Whether a verification run can use it. */
+  runsHeadless: boolean;
+}
+
+/**
+ * Every harness the core will launch: the built-in one first, then the saved
+ * ones, filtered the way the core's `resolve_stored` filters them.
+ */
+async function savedHarnesses(env: NodeJS.ProcessEnv): Promise<SavedHarness[]> {
   const [stored, defaultId, agentName, agentCommand] = await Promise.all([
     readSection<unknown>("agentHarnesses").catch(() => undefined),
     readSection<unknown>("defaultAgentHarness").catch(() => undefined),
@@ -92,22 +98,61 @@ export async function listAgentHarnesses(
     env.YARVIS_CLAUDE_COMMAND?.trim() ||
     (typeof agentCommand === "string" && agentCommand.trim()) ||
     DEFAULT_AGENT_COMMAND;
+  const builtin = builtinKind(builtinCommand);
   return [
     {
       id: BUILTIN_HARNESS_ID,
       name: builtinName,
-      kind: builtinKind(builtinCommand),
+      kind: builtin,
       isDefault: effectiveDefault === BUILTIN_HARNESS_ID,
+      assistantMayUse: true,
+      runsHeadless: builtin === "claude-code",
     },
-    ...entries
-      .filter((h) => h.id === effectiveDefault || h.assistantMayUse === true)
-      .map((h) => ({
+    ...entries.map((h) => {
+      const kind = typeof h.kind === "string" && KNOWN_KINDS.has(h.kind) ? h.kind : "custom";
+      return {
         id: h.id,
         name: typeof h.name === "string" && h.name.trim() ? h.name.trim() : h.id,
-        kind: typeof h.kind === "string" && KNOWN_KINDS.has(h.kind) ? h.kind : "custom",
+        kind,
         isDefault: effectiveDefault === h.id,
-      })),
+        assistantMayUse: h.assistantMayUse === true,
+        runsHeadless: kind === "claude-code" && runsClaude(h.command),
+      };
+    }),
   ];
+}
+
+const listing = ({ id, name, kind, isDefault }: SavedHarness): HarnessListing => ({
+  id,
+  name,
+  kind,
+  isDefault,
+});
+
+/**
+ * The harnesses the assistant may start: the built-in one, the default, and
+ * any the user marked "assistant may use". The core refuses the rest
+ * (`harness::check_assistant_may_launch`), so listing them would only invite a
+ * call that fails.
+ */
+export async function listAgentHarnesses(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HarnessListing[]> {
+  return (await savedHarnesses(env)).filter((h) => h.isDefault || h.assistantMayUse).map(listing);
+}
+
+/**
+ * The harnesses a verification run can use: Claude Code ones that run
+ * `claude` directly, since a run depends on flags only Claude Code takes.
+ * Mirrors the core's `harness::headless_program`. The user picks among them in
+ * Settings or on the Verification tab; the assistant can't pick one.
+ */
+export async function listVerificationHarnesses(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ id: string; name: string }[]> {
+  return (await savedHarnesses(env))
+    .filter((h) => h.runsHeadless)
+    .map(({ id, name }) => ({ id, name }));
 }
 
 /**

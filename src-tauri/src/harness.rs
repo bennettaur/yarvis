@@ -188,6 +188,24 @@ impl ResolvedHarness {
     }
 }
 
+/// The program a headless run, such as a verification check, starts for
+/// `harness`. Those runs depend on flags only Claude Code takes
+/// (`--json-schema`, `--plugin-dir`, stream-json output), so any other kind is
+/// refused. Only the program is used: the command's flags and any `VAR=value`
+/// words before it were written for an interactive session, so a variable the
+/// run needs belongs in the harness's environment instead.
+pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
+    if harness.kind != HarnessKind::ClaudeCode {
+        return Err(format!(
+            "\"{}\" isn't a Claude Code harness, so it can't run verification checks",
+            harness.name
+        ));
+    }
+    harness
+        .program()
+        .ok_or_else(|| format!("\"{}\" doesn't run claude directly", harness.name))
+}
+
 /// The executable a command line runs, past any leading `VAR=value`
 /// assignments.
 fn program_of(command: &str) -> Option<String> {
@@ -596,6 +614,25 @@ mod tests {
 
     fn claude() -> ResolvedHarness {
         builtin("Claude".into(), "claude --permission-mode auto".into())
+    }
+
+    #[test]
+    fn a_headless_run_takes_only_a_claude_code_harness_and_only_its_program() {
+        assert_eq!(headless_program(&claude()).as_deref(), Ok("claude"));
+        let bedrock = resolve_stored(&stored(
+            "bedrock",
+            HarnessKind::ClaudeCode,
+            "AWS_PROFILE=x /opt/bin/claude --permission-mode auto",
+        ))
+        .unwrap();
+        assert_eq!(headless_program(&bedrock).as_deref(), Ok("/opt/bin/claude"));
+        let pi = resolve_stored(&stored("pi", HarnessKind::Pi, "pi")).unwrap();
+        assert!(headless_program(&pi).is_err());
+        // Marked Claude Code but runs a wrapper: what the wrapper does with the
+        // run's flags is unknown.
+        let wrapped =
+            resolve_stored(&stored("ssh", HarnessKind::ClaudeCode, "ssh box claude")).unwrap();
+        assert!(headless_program(&wrapped).is_err());
     }
 
     #[test]

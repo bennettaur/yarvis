@@ -21,7 +21,8 @@ A PR's header here has **Open in review workspace** to move it there.
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. The same section sets the
-   Claude model and effort for each of the verification report's checks, and
+   Claude Code harness the verification report runs with, the
+   Claude model and effort for each of its checks, and
    the most one report may spend ($2 by default). Each check starts on a model
    matched to its job: Opus at high effort for risk and malicious intent,
    which feed the merge gate; Haiku at low effort for comment quality and

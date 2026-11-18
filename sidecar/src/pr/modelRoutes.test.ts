@@ -152,6 +152,30 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     expect(((await odd.json()) as { sections: unknown }).sections).toEqual({});
   });
 
+  it("offers only Claude Code harnesses that run claude, and saves one of them", async () => {
+    await writeFile(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({
+        agentHarnesses: [
+          { id: "bedrock", name: "Bedrock", kind: "claude-code", command: "claude" },
+          { id: "wrapped", name: "Wrapped", kind: "claude-code", command: "ssh box claude" },
+          { id: "pi", name: "Pi", kind: "pi", command: "pi" },
+        ],
+      }),
+    );
+    const read = await app().request("/api/pr-models/verification", { headers: auth });
+    const body = (await read.json()) as { harnesses: { id: string }[] };
+    expect(body.harnesses.map((h) => h.id)).toEqual(["claude", "bedrock"]);
+
+    expect((await patch({ harness: "pi" })).status).toBe(400);
+    expect((await patch({ harness: "wrapped" })).status).toBe(400);
+    expect(await (await patch({ harness: "bedrock" })).json()).toMatchObject({
+      harness: "bedrock",
+    });
+    const cleared = (await (await patch({ harness: null })).json()) as Record<string, unknown>;
+    expect(cleared.harness).toBeUndefined();
+  });
+
   it("takes a budget of any size, since it only warns", async () => {
     expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
   });

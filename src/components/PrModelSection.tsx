@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { listProviders, type ProviderInfo } from "../lib/chat";
 import type { ModelSelection } from "../lib/complexityModels";
 import {
+  BUILTIN_HARNESS_ID,
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
   getRereviewRunConfig,
@@ -18,11 +19,13 @@ import {
   VERIFICATION_EFFORTS,
   VERIFICATION_MODEL_LABELS,
   VERIFICATION_MODELS,
+  VERIFICATION_SETTINGS_KEY,
   type VerificationEffort,
   type VerificationModel,
   type VerificationRunConfig,
   type VerificationRunConfigPatch,
 } from "../lib/pr/models";
+import { invalidate } from "../lib/resourceCache";
 import type { ReportSection } from "../lib/reviewWorkspaces/verification";
 
 /**
@@ -132,6 +135,25 @@ function VerificationSectionRuns({
     onSave({ sections: { [section]: choice } });
   return (
     <div className="space-y-1">
+      {value.harnesses.length > 1 && (
+        <label className="flex items-center gap-2 text-xs text-zinc-400">
+          Run the checks with
+          <select
+            className={FIELD}
+            aria-label="Verification harness"
+            value={value.harness ?? BUILTIN_HARNESS_ID}
+            onChange={(e) =>
+              onSave({ harness: e.target.value === BUILTIN_HARNESS_ID ? null : e.target.value })
+            }
+          >
+            {value.harnesses.map((h) => (
+              <option key={h.id} value={h.id}>
+                {h.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <p className="text-xs text-zinc-500">
         Each check's Claude model and effort. A run started from the checklist or the assistant can
         override them for that run.
@@ -243,6 +265,7 @@ export default function PrModelSection() {
     );
     try {
       setVerification(await saveVerificationRunConfig(patch));
+      invalidate(VERIFICATION_SETTINGS_KEY);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

@@ -17,6 +17,7 @@ let config: Record<string, unknown> = { guide: null, ask: null };
 const VERIFICATION_DEFAULTS = {
   maxBudgetUsd: 2,
   sections: {},
+  harnesses: [{ id: "claude", name: "Claude" }],
   sectionDefaults: [
     { section: "risk", label: "Risk", model: "opus", effort: "high" },
     { section: "comments", label: "Comment quality", model: "haiku", effort: "low" },
@@ -182,6 +183,37 @@ describe("PrModelSection", () => {
       { sections: { risk: { effort: "max" } } },
       { maxBudgetUsd: 50 },
     ]);
+  });
+
+  it("offers a harness only when there is more than the built-in agent, and saves the pick", async () => {
+    const harnessSelect = (host: HTMLElement) =>
+      host.querySelector('[aria-label="Verification harness"]') as HTMLSelectElement | null;
+    let mounted = await mountForInteraction(createElement(PrModelSection));
+    await settle();
+    expect(harnessSelect(mounted.host)).toBeNull();
+    mounted.unmount();
+
+    verification = {
+      ...VERIFICATION_DEFAULTS,
+      harnesses: [
+        { id: "claude", name: "Claude" },
+        { id: "bedrock", name: "Bedrock" },
+      ],
+    };
+    mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    const select = harnessSelect(mounted.host) as HTMLSelectElement;
+    expect(select.value).toBe("claude");
+    enter(select, "bedrock", "change");
+    await settle();
+    enter(harnessSelect(mounted.host) as HTMLSelectElement, "claude", "change");
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    // The built-in agent is saved as no harness at all.
+    expect(saves).toEqual([{ harness: "bedrock" }, { harness: null }]);
   });
 
   it("saves the What's changed summary's own budget and auto-start", async () => {
