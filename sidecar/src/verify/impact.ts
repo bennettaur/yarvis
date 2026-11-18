@@ -56,6 +56,11 @@ export interface ClassifiedChange {
   evidence: Evidence;
   /** Touches secrets, permissions, what an agent may do, or deletes or migrates data. */
   sensitive?: boolean;
+  /**
+   * A mistake here can only reach internal viewers: no client-facing surface,
+   * no writes, no data or API another system reads. Ignored on a sensitive change.
+   */
+  internal?: boolean;
   /** How many like changes this entry stands for, so twelve small additions can be one entry. */
   count?: number;
 }
@@ -74,8 +79,8 @@ const clampBand = (band: number): ImpactBand => Math.min(5, Math.max(1, band)) a
 
 /**
  * One change's band: the table, then at most one step for evidence and one for
- * sensitive ground. A passive change or a proven reorganization behaves as
- * before, so neither moves, wherever it is.
+ * sensitive ground or internal-only exposure. A passive change or a proven
+ * reorganization behaves as before, so neither moves, wherever it is.
  */
 export function changeBand(change: ClassifiedChange): ImpactBand {
   // A move nobody showed to be a move might change behaviour, so it scores as one that does.
@@ -94,6 +99,7 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
   }
 
   if (change.sensitive) band += 1;
+  else if (change.internal) band -= 1;
   return clampBand(band);
 }
 
@@ -104,6 +110,14 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
  * changes add nothing, so a sweeping rename stays minimal.
  */
 const LOAD_WEIGHT: Record<ImpactBand, number> = { 1: 0, 2: 1, 3: 2, 4: 4, 5: 4 };
+
+/**
+ * Additions add no load: only other new code reaches them, so they can't break
+ * what works today, and the edit that wires them in is scored as its own change.
+ * A new page split over twelve files is one feature, not twelve risks.
+ */
+const loadWeight = (change: ClassifiedChange & { band: ImpactBand }): number =>
+  change.kind === "addition" ? 0 : LOAD_WEIGHT[change.band];
 
 /**
  * Loads at which the volume of change raises the PR's band, highest first,
@@ -157,7 +171,7 @@ export function scoreImpact<T extends ClassifiedChange>(changes: readonly T[]): 
   for (const change of scored) {
     const count = Math.max(1, change.count ?? 1);
     counts[change.kind] += count;
-    load += LOAD_WEIGHT[change.band] * count;
+    load += loadWeight(change) * count;
   }
   const raise = VOLUME_STEPS.find((step) => load >= step.load)?.raise ?? 0;
   const ceiling = top >= ATTENTION_BAND ? 5 : VOLUME_ONLY_CEILING;

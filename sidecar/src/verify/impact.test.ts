@@ -68,6 +68,17 @@ describe("changeBand", () => {
       changeBand(change({ kind: "logic", reach: "core", evidence: "unproven", sensitive: true })),
     ).toBe(5);
   });
+
+  it("lowers an internal-only change one band", () => {
+    expect(changeBand(change({ kind: "logic", reach: "local", internal: true }))).toBe(2);
+    expect(changeBand(change({ kind: "logic", reach: "leaf", internal: true }))).toBe(1);
+  });
+
+  it("ignores internal on sensitive ground", () => {
+    expect(
+      changeBand(change({ kind: "logic", reach: "local", sensitive: true, internal: true })),
+    ).toBe(4);
+  });
 });
 
 describe("scoreImpact", () => {
@@ -85,20 +96,41 @@ describe("scoreImpact", () => {
   });
 
   it("raises many small changes one band", () => {
-    const impact = scoreImpact([change({ kind: "addition", reach: "local", count: 10 })]);
+    const impact = scoreImpact([change({ kind: "logic", reach: "leaf", count: 10 })]);
     expect(impact).toMatchObject({ band: 3, highestChangeBand: 2, load: 10, raisedByVolume: 1 });
   });
 
   it("doesn't raise below a load of 8", () => {
-    const impact = scoreImpact([change({ kind: "addition", reach: "local", count: 7 })]);
+    const impact = scoreImpact([change({ kind: "logic", reach: "leaf", count: 7 })]);
     expect(impact).toMatchObject({ band: 2, load: 7, raisedByVolume: 0 });
   });
 
   it("raises one band up to a load of 15 and two from 16", () => {
-    const at = (count: number) =>
-      scoreImpact([change({ kind: "addition", reach: "local", count })]);
+    const at = (count: number) => scoreImpact([change({ kind: "logic", reach: "leaf", count })]);
     expect(at(15)).toMatchObject({ band: 3, raisedByVolume: 1 });
     expect(at(16)).toMatchObject({ band: 4, highestChangeBand: 2, raisedByVolume: 2 });
+  });
+
+  it("adds no load for additions, since only new code reaches them", () => {
+    const impact = scoreImpact([
+      change({ kind: "addition", reach: "local", count: 12 }),
+      change({ kind: "logic", reach: "local" }),
+    ]);
+    expect(impact).toMatchObject({ band: 3, highestChangeBand: 3, load: 2, raisedByVolume: 0 });
+  });
+
+  it("still scores an addition at its own band", () => {
+    const impact = scoreImpact([change({ kind: "addition", reach: "core", evidence: "unproven" })]);
+    expect(impact).toMatchObject({ band: 4, load: 0 });
+  });
+
+  it("scores an internal read-only page with its wiring as low", () => {
+    const impact = scoreImpact([
+      change({ kind: "addition", reach: "local", internal: true, count: 12 }),
+      change({ kind: "logic", reach: "local", internal: true }),
+      change({ kind: "passive", count: 2 }),
+    ]);
+    expect(impact).toMatchObject({ band: 2, raisedByVolume: 0 });
   });
 
   it("never lets volume alone raise a PR past high", () => {

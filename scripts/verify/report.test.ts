@@ -711,7 +711,7 @@ describe("renderReport's impact", () => {
 
   it("says when the number of changes raised the band", () => {
     const review = makeReview({
-      changes: [change({ kind: "addition", reach: "local", count: 9 })],
+      changes: [change({ kind: "removal", reach: "local", count: 9 })],
     });
     const { body } = renderReport(review, makeFacts(), TARGET);
     expect(body).toContain("raised from low by the number of changes");

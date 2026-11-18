@@ -249,7 +249,7 @@ describe("the report schema", () => {
       const changes = [
         change(),
         ...Array.from({ length: 40 }, () =>
-          change({ kind: "addition", reach: "local", evidence: "partial" }),
+          change({ kind: "removal", reach: "local", evidence: "partial" }),
         ),
       ];
       const parsed = schema.parse(report({ risk: { ...report().risk, changes } }));
@@ -259,7 +259,14 @@ describe("the report schema", () => {
       expect(parsed.risk?.impact?.changes[0]?.band).toBe(4);
     });
 
-    it("defaults a missing count, sensitivity and check", () => {
+    it("lowers the level for an internal-only change", () => {
+      const internal = change({ kind: "logic", reach: "local", internal: true });
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes: [internal] } }));
+      expect(parsed.risk?.impact).toMatchObject({ band: 2 });
+      expect(parsed.risk?.impact?.changes[0]?.internal).toBe(true);
+    });
+
+    it("defaults a missing count, sensitivity, internal flag and check", () => {
       const parsed = schema.parse(
         report({
           risk: {
@@ -271,6 +278,7 @@ describe("the report schema", () => {
       expect(parsed.risk?.impact?.changes[0]).toMatchObject({
         count: 1,
         sensitive: false,
+        internal: false,
         check: "",
       });
     });

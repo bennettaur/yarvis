@@ -104,6 +104,13 @@ A rename of a local variable in a core file is `leaf`.
 permissions or what an automated agent may do, secrets, personal data, money,
 or deletes or migrates data.
 
+`internal`: true only when a mistake in the change can reach nobody but
+the team's own staff: an internal dashboard or admin view that only reads,
+a dev script, a test helper. False when it writes, deletes or sends
+anything, serves an API, event or stored data another system reads, sits
+on a page or flow clients use, or is sensitive. Leave it false when unsure:
+it lowers the change's band by one.
+
 `check`: for every logic, interface or removal change, every change that
 is unproven or sensitive, and every reorganization, one sentence naming what
 a reviewer should confirm: "`chargeCard` still refuses a zero amount after
@@ -162,6 +169,7 @@ Reply with one JSON object and nothing else:
   "concerns": [{ "title": "…", "detail": "…", "path": "src/x.ts", "line": 12 }],
   "changes": [
     { "title": "Retry a failed charge once", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": true, "count": 1, "check": "A retried charge can't bill the card twice", "path": "src/payments/charge.ts", "line": 40 },
+    { "title": "Show failed charges on the ops dashboard", "kind": "addition", "reach": "leaf", "evidence": "partial", "internal": true, "count": 1, "check": "", "path": "src/ops/FailedCharges.tsx", "line": 1 },
     { "title": "Comment and naming cleanups", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6, "check": "", "path": "src/payments/", "line": null }
   ]
 }
