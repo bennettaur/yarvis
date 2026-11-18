@@ -11,9 +11,11 @@ import {
 } from "../../../lib/resourceCache";
 import {
   type ReviewFileContent,
+  type ReviewFileDiff,
   type ReviewTree,
   type ReviewWorkspacePr,
   reviewFile,
+  reviewFileDiff,
   reviewTree,
 } from "../../../lib/reviewWorkspaces/api";
 import {
@@ -22,12 +24,20 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import {
+  getMutationTesting,
+  type MutationTestingState,
+} from "../../../lib/reviewWorkspaces/mutation";
 import { type LatestRereview, latestRereview } from "../../../lib/reviewWorkspaces/rereview";
 import {
-  type LatestVerification,
-  latestVerification,
+  type VerificationChecklist,
+  type VerificationEvidence,
   type VerificationMustRead,
   type VerificationReport,
+  type VerificationUpstack,
+  verificationChecklist,
+  verificationEvidence,
+  verificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type ModelSide, reviewUri } from "../editor";
 
@@ -55,6 +65,25 @@ export function useReviewTree(workspaceId: string, pr: PrShas): Resource<ReviewT
   return useCachedResource(key, () => reviewTree(workspaceId, pr.id), AT_COMMIT);
 }
 
+export function fileDiffKey(pr: PrShas, path: string): string | null {
+  return pr.headSha && pr.mergeBaseSha
+    ? `${reviewWorkspacePrefix(pr.id)}diff:${pr.mergeBaseSha}..${pr.headSha}:${path}`
+    : null;
+}
+
+/** One file's patch, from the merge-base to the head. */
+export function useReviewFileDiff(
+  workspaceId: string,
+  pr: PrShas,
+  path: string,
+): Resource<ReviewFileDiff> {
+  return useCachedResource(
+    fileDiffKey(pr, path),
+    () => reviewFileDiff(workspaceId, pr.id, path),
+    AT_COMMIT,
+  );
+}
+
 /** One side of a file; `path` null skips the read (an added file has no base). */
 export function useReviewFile(
   workspaceId: string,
@@ -71,15 +100,54 @@ export const verificationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}
 /** The PR's mutation-testing state: its latest pass and whether a new one may start. */
 export const mutationKey = (prId: string) => `${reviewWorkspacePrefix(prId)}mutation`;
 
-/** The PR's latest verification run. Not pinned to a commit: a run finishing changes it. */
-export function useLatestVerification(
+export function useMutationTesting(
   workspaceId: string,
   prId: string,
-): Resource<LatestVerification> {
+): Resource<MutationTestingState> {
+  return useCachedResource(
+    mutationKey(prId),
+    () => getMutationTesting(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+}
+
+/** The PR's verification checklist. Not pinned to a commit: a run finishing changes it. */
+export function useVerificationChecklist(
+  workspaceId: string,
+  prId: string,
+): Resource<VerificationChecklist> {
   return useCachedResource(
     verificationKey(prId),
-    () => latestVerification(workspaceId, prId),
+    () => verificationChecklist(workspaceId, prId),
     SIDECAR_FRESHNESS,
+  );
+}
+
+/** What CI, scanners and bots said about the PR. A provider call, so held longer. */
+export const evidenceKey = (prId: string) => `${reviewWorkspacePrefix(prId)}evidence`;
+
+export function useVerificationEvidence(
+  workspaceId: string,
+  prId: string,
+): Resource<VerificationEvidence> {
+  return useCachedResource(
+    evidenceKey(prId),
+    () => verificationEvidence(workspaceId, prId),
+    PROVIDER_FRESHNESS,
+  );
+}
+
+export const upstackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}upstack`;
+
+/** What the PRs stacked on this one change in it, read from the provider. */
+export function useVerificationUpstack(
+  workspaceId: string,
+  prId: string,
+): Resource<VerificationUpstack> {
+  return useCachedResource(
+    upstackKey(prId),
+    () => verificationUpstack(workspaceId, prId),
+    PROVIDER_FRESHNESS,
   );
 }
 
@@ -100,9 +168,9 @@ export function useLatestRereview(
   );
 }
 
-/** The report of the latest run that produced one, whatever head it was made at. */
-export function reportOf(latest: LatestVerification | null): VerificationReport | null {
-  return latest?.lastSucceeded?.run.result ?? null;
+/** Each section's newest result, whatever head it was made at. */
+export function reportOf(checklist: VerificationChecklist | null): VerificationReport | null {
+  return checklist?.report ?? null;
 }
 
 /** The must-read entry naming `path`, if the report lists it. */

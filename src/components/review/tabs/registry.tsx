@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
+import ClaudeTab from "./ClaudeTab";
 import CommitTab from "./CommitTab";
+import DiagramTab from "./DiagramTab";
 import DiffTab from "./DiffTab";
 import FileTab from "./FileTab";
 import GuideTab from "./GuideTab";
@@ -7,6 +9,7 @@ import MutationTab from "./MutationTab";
 import SinceFileTab from "./SinceFileTab";
 import SinceReviewTab from "./SinceReviewTab";
 import { ChecksTab, CommentsTab, DescriptionTab, ReviewersTab } from "./StaticTabs";
+import StoryTab from "./StoryTab";
 import type { DynamicTabKind, StaticTabKind, TabContext, TabSpec } from "./types";
 import VerificationTab from "./VerificationTab";
 
@@ -17,8 +20,11 @@ export const STATIC_TAB_LABEL: Record<StaticTabKind, string> = {
   comments: "Comments",
   "since-review": "Since last review",
   guide: "Guided review",
+  story: "Story",
   verification: "Verification",
+  diagram: "Flow diagram",
   mutation: "Mutation testing",
+  claude: "Ask Claude",
 };
 
 /** The mark before a dynamic tab's title, so a diff, an interdiff and a commit tell apart. */
@@ -96,9 +102,15 @@ export function renderTab(spec: TabSpec, ctx: TabContext): ReactNode {
       return <SinceReviewTab ctx={ctx} />;
     case "guide":
       return <GuideTab ctx={ctx} />;
+    case "story":
+      return <StoryTab ctx={ctx} />;
     case "verification":
       return <VerificationTab ctx={ctx} />;
+    case "diagram":
+      return <DiagramTab ctx={ctx} />;
     case "mutation":
       return <MutationTab ctx={ctx} />;
+    case "claude":
+      return <ClaudeTab ctx={ctx} />;
   }
 }

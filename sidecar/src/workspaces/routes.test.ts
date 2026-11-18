@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -47,6 +47,7 @@ import {
   createWorkspace,
   getWorkspace,
   ignoreWorkspaceError,
+  issueLabel,
   listRepoBranches,
   type ProvisionEvent,
   provisionWorkspace,
@@ -86,6 +87,8 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "ls-remote")
     return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
+  if (args[0] === "symbolic-ref" && args[2]?.startsWith("refs/heads/"))
+    return { stdout: "", stderr: "", exitCode: 1 }; // a plain branch, not a symref
   if (args[0] === "rev-list" && args[1] === "--count")
     return { stdout: "0\n", stderr: "", exitCode: 0 };
   // Create the worktree dir like real git would, so setup scripts have a cwd.
@@ -610,6 +613,84 @@ describe("workspace worktrees", () => {
       expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
     });
 
+    it("deletes a landed branch on archive after its worktree was removed", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const add = (branch: string) =>
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch }, runner);
+      const removed = await add("stack/removed");
+      await git(clone, "worktree", "remove", removed.path);
+      // Adding a worktree must not forget the removed one, or archive never sees its branch.
+      await add("stack/later");
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result).toMatchObject({ status: "archived", errors: [] });
+      const branches = await listLocalBranches(runner, clone);
+      expect(branches).not.toContain("stack/removed");
+      expect(branches).not.toContain("stack/later");
+    });
+
+    it("keeps an added branch with commits the base doesn't have", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "stack/work" },
+        runner,
+      );
+      writeFileSync(join(added.path, "work.ts"), "work");
+      await git(added.path, "add", "work.ts");
+      await git(added.path, "commit", "-m", "work");
+      await git(clone, "worktree", "remove", added.path);
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result.status).toBe("archived");
+      expect(await listLocalBranches(runner, clone)).toContain("stack/work");
+    });
+
+    it("stops on commits made after a squash merge, and deletes them on a forced retry", async () => {
+      const { workspaceId, wr, clone, git, runner } = await withRealClone();
+      const head = async (cwd: string, ref: string) =>
+        (await defaultGitRunner(["rev-parse", ref], { cwd })).stdout.trim();
+      writeFileSync(join(wr.worktreePath, "feature.ts"), "feature");
+      await git(wr.worktreePath, "add", "feature.ts");
+      await git(wr.worktreePath, "commit", "-m", "feature");
+      const prHead = await head(clone, `refs/heads/${wr.branch}`);
+      await git(clone, "update-ref", "refs/remotes/origin/main", await squash(clone, prHead));
+      await db
+        .insert(workspaceRepoPr)
+        .values({ workspaceRepoId: wr.id, prNumber: 7, prState: "merged", headSha: prHead });
+      writeFileSync(join(wr.worktreePath, "late.ts"), "late");
+      await git(wr.worktreePath, "add", "late.ts");
+      await git(wr.worktreePath, "commit", "-m", "late");
+
+      const blocked = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(blocked.status).toBe("archiving");
+      expect(blocked.errors[0]?.message).toContain("1 commit(s) that no remote has");
+      expect(existsSync(wr.worktreePath)).toBe(true);
+      expect(await listLocalBranches(runner, clone)).toContain(wr.branch);
+
+      const forced = await archiveWorkspace(db, workspaceId, { force: true }, runner);
+
+      expect(forced).toMatchObject({ status: "archived", errors: [] });
+      expect(await listLocalBranches(runner, clone)).not.toContain(wr.branch);
+
+      /** A squash merge of `commit` onto origin/main: its tree, with main as the only parent. */
+      async function squash(cwd: string, commit: string) {
+        const result = await defaultGitRunner(
+          [
+            ...["-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", `${commit}^{tree}`],
+            ...["-p", "refs/remotes/origin/main", "-m", "squash"],
+          ],
+          { cwd },
+        );
+        if (result.exitCode !== 0) throw new Error(result.stderr);
+        return result.stdout.trim();
+      }
+    });
+
     it("keeps a landed branch on archive that another workspace stacks on", async () => {
       const { workspaceId, wr, clone, runner } = await withRealClone();
       await addExtraWorktree(db, workspaceId, { repo: "widget", branch: "stack/shared" }, runner);
@@ -1033,6 +1114,16 @@ async function waitForAttention(workspaceId: string, status: string) {
   }
   throw new Error(`workspace ${workspaceId}'s attention never reached ${status}`);
 }
+
+describe("issueLabel", () => {
+  it("names an issue the way its tracker does", () => {
+    const label = (provider: string, sourceKey: string, externalId: string) =>
+      issueLabel({ provider, sourceKey, externalId });
+    expect(label("github", "acme/widget", "12")).toBe("acme/widget#12");
+    expect(label("jira", "PROJ", "PROJ-45")).toBe("PROJ-45");
+    expect(label("azure", "org/project", "678")).toBe("#678");
+  });
+});
 
 describe("assertSafeBranchName", () => {
   it("accepts ordinary branch names", () => {
@@ -2265,6 +2356,116 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos[0]?.status).toBe("removed");
   });
 
+  it("closes only the picked linked issues once the workspace is archived", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "with-issues", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const link = (externalId: string, workspaceId: string) => ({
+      provider: "github",
+      sourceKey: "acme/widget",
+      externalId,
+      workspaceId,
+      localStatus: "in_progress" as const,
+    });
+    const other = await createWorkspace(db, config, { name: "elsewhere", repoIds: [] });
+    const [picked, kept, failing, foreign, alreadyDone] = await db
+      .insert(issueLinks)
+      .values([
+        link("1", ws.id),
+        link("2", ws.id),
+        link("3", ws.id),
+        link("4", other.id),
+        { ...link("5", ws.id), localStatus: "done" as const },
+      ])
+      .returning();
+
+    const closeCalls: string[] = [];
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [picked!.id, failing!.id, foreign!.id, alreadyDone!.id] },
+      fakeGit,
+      async ({ externalId }) => {
+        closeCalls.push(externalId);
+        if (externalId === "3") throw new Error(`tracker said no${"!".repeat(1000)}`);
+      },
+    );
+
+    expect(result.status).toBe("archived");
+    expect(result.closedIssues).toEqual(["acme/widget#1"]);
+    // Neither an issue linked to another workspace nor one already done is closed.
+    expect(closeCalls.sort()).toEqual(["1", "3"]);
+    // The tracker's reason is capped before it reaches the user or the chat model.
+    expect(result.issueCloseErrors).toHaveLength(1);
+    expect(result.issueCloseErrors[0]?.issue).toBe("acme/widget#3");
+    expect(result.issueCloseErrors[0]?.message.length).toBe(300);
+    const status = async (id: string) =>
+      (await db.select().from(issueLinks).where(eq(issueLinks.id, id)))[0]?.localStatus;
+    expect(await status(picked!.id)).toBe("done");
+    expect(await status(kept!.id)).toBe("in_progress");
+    expect(await status(failing!.id)).toBe("in_progress");
+    const flagged = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]?.kind).toBe("error");
+    expect(flagged[0]?.body).toStartWith(
+      "Archived, but could not close acme/widget#3: tracker said no!",
+    );
+    expect(flagged[0]?.navTarget).toEqual({ type: "workspace", workspaceId: ws.id });
+  });
+
+  it("raises nothing when every picked issue closes", async () => {
+    const db = getDb(url).db;
+    const ws = await createWorkspace(db, config, { name: "clean-close", repoIds: [] });
+    const [row] = await db
+      .insert(issueLinks)
+      .values({ provider: "github", sourceKey: "acme/widget", externalId: "6", workspaceId: ws.id })
+      .returning();
+
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [row!.id] },
+      fakeGit,
+      async () => {},
+    );
+
+    expect(result.closedIssues).toEqual(["acme/widget#6"]);
+    const flagged = await db
+      .select()
+      .from(attentionItems)
+      .where(eq(attentionItems.workspaceId, ws.id));
+    expect(flagged.filter((i) => i.kind === "error")).toEqual([]);
+  });
+
+  it("leaves linked issues open when the archive stops on a dirty worktree", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, { name: "dirty-issues", repoIds: [repo.id] });
+    await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
+    const [row] = await db
+      .insert(issueLinks)
+      .values({ provider: "github", sourceKey: "acme/widget", externalId: "9", workspaceId: ws.id })
+      .returning();
+    const closeCalls: string[] = [];
+    const result = await archiveWorkspace(
+      db,
+      ws.id,
+      { closeIssueIds: [row!.id] },
+      dirtyGit,
+      async ({ externalId }) => {
+        closeCalls.push(externalId);
+      },
+    );
+
+    expect(result.status).toBe("archiving");
+    expect(result.closedIssues).toEqual([]);
+    expect(closeCalls).toEqual([]);
+  });
+
   it("ends every registered agent session in the workspace it archives", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();
@@ -2496,6 +2697,78 @@ describe("provision + archive (injected git runner)", () => {
     expect(detail?.repos.map((r) => r.status).sort()).toEqual(["error", "removed"]);
   });
 
+  it("rejects an archive request whose issues to close aren't link ids", async () => {
+    const ws = await createWorkspace(db, config, { name: "bad-close-ids", repoIds: [] });
+    const res = await app.request(`/api/workspaces/${ws.id}/archive`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ closeIssueIds: ["acme/widget#1"] }),
+    });
+    expect(res.status).toBe(400);
+    // Refused before the archive starts, so the workspace is untouched.
+    expect((await getWorkspace(db, ws.id))?.status).toBe(ws.status);
+  });
+
+  it("closes the picked issues on GitHub after an archive started over HTTP", async () => {
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+      (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+    );
+    try {
+      const withGitHub = createApp({ ...config, secrets: { githubToken: "gh-token" } });
+      const ws = await createWorkspace(db, config, { name: "http-close", repoIds: [] });
+      const [picked, kept] = await db
+        .insert(issueLinks)
+        .values([
+          { provider: "github", sourceKey: "acme/widget", externalId: "21", workspaceId: ws.id },
+          { provider: "github", sourceKey: "acme/widget", externalId: "22", workspaceId: ws.id },
+        ])
+        .returning();
+
+      const res = await withGitHub.request(`/api/workspaces/${ws.id}/archive`, {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ closeIssueIds: [picked!.id] }),
+      });
+      expect(res.status).toBe(202);
+      await waitForStatus(ws.id, "archived");
+      const status = async (id: string) =>
+        (await db.select().from(issueLinks).where(eq(issueLinks.id, id)))[0]?.localStatus;
+      // The issues close after the status flips, so wait on the link itself.
+      for (let attempt = 0; attempt < 200 && (await status(picked!.id)) !== "done"; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(await status(picked!.id)).toBe("done");
+
+      const calls = fetchSpy.mock.calls.map(([input, init]) => ({
+        url: String(input),
+        method: init?.method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      }));
+      expect(calls).toEqual([
+        {
+          url: expect.stringContaining("/repos/acme/widget/issues/21"),
+          method: "PATCH",
+          body: { state: "closed" },
+        },
+      ]);
+      expect(await status(kept!.id)).toBe("todo");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("refuses more than 100 issues to close", async () => {
+    const ws = await createWorkspace(db, config, { name: "too-many-close", repoIds: [] });
+    const res = await app.request(`/api/workspaces/${ws.id}/archive`, {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        closeIssueIds: Array.from({ length: 101 }, () => crypto.randomUUID()),
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("returns from a background archive before the worktrees are gone", async () => {
     const repo = await addRepo();
     const ws = await createWorkspace(db, config, { name: "bg-archive", repoIds: [repo.id] });
@@ -2650,16 +2923,18 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const tried: string[][] = [];
     const stuckBranchGit: GitRunner = async (args, opts) => {
-      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
-      if (args[0] === "branch") {
+      if (args[0] === "show-ref") return { stdout: `${"d".repeat(40)}\n`, stderr: "", exitCode: 0 };
+      if (args[0] === "update-ref") {
         tried.push(args);
-        return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+        return { stdout: "", stderr: "cannot lock ref", exitCode: 1 };
       }
       return fakeGit(args, opts);
     };
     const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
     expect(result.status).toBe("archived");
-    expect(tried).toEqual([["branch", "-D", "--", `yarvis/${ws.slug}`]]);
+    expect(tried).toEqual([
+      ["update-ref", "--no-deref", "-d", `refs/heads/yarvis/${ws.slug}`, "d".repeat(40)],
+    ]);
   });
 
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
@@ -2681,6 +2956,8 @@ describe("provision + archive (injected git runner)", () => {
   });
 
   const PR_HEAD = "c".repeat(40);
+  /** The local branch's tip in the fake clones below. */
+  const TIP = "d".repeat(40);
   /**
    * A squash-merged branch as `rev-list --count` sees it: its own commits are on
    * no remote, so only excluding the PR's head leaves just the work after it.
@@ -2709,11 +2986,14 @@ describe("provision + archive (injected git runner)", () => {
     const branchGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
     await archiveWorkspace(db, ws.id, {}, branchGit);
@@ -2743,14 +3023,17 @@ describe("provision + archive (injected git runner)", () => {
     const unpushedGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
       if (args[0] === "status" && opts?.cwd === wr!.worktreePath) {
         return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
       }
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -2798,11 +3081,14 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -2832,11 +3118,14 @@ describe("provision + archive (injected git runner)", () => {
     const noHeadGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -3518,6 +3807,123 @@ describe("resumable start-work kick-off", () => {
     });
     expect(started).toEqual([ws.id]);
     expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
+  });
+
+  it("keeps a harness only for a workspace that has a kick-off to run", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const plain = await createWorkspace(db, config, {
+      name: "no brief",
+      repoIds: [repo.id],
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, plain.id))?.pendingHarness).toBeNull();
+    const kickOff = await createWorkspace(db, config, {
+      name: "with brief",
+      repoIds: [repo.id],
+      brief: "do it",
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, kickOff.id))?.pendingHarness).toBe("pi");
+  });
+
+  /**
+   * Runs `fn` with the sidecar reading `contents` as its settings file, then
+   * restores the suite's own file.
+   */
+  async function withSettingsFile(contents: string, fn: () => Promise<void>): Promise<void> {
+    const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-kickoff-harness-"));
+    const settings = join(dir, "settings.json");
+    writeFileSync(settings, contents);
+    process.env.YARVIS_SETTINGS_PATH = settings;
+    try {
+      await fn();
+    } finally {
+      if (suiteSettings === undefined) delete process.env.YARVIS_SETTINGS_PATH;
+      else process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** Settings that save Pi, opened to the assistant or not. */
+  const piSaved = (assistantMayUse: boolean) =>
+    JSON.stringify({
+      agentHarnesses: [{ id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse }],
+    });
+
+  /** The kick-off's `workspace.session_started` event, which is fire-and-forget. */
+  async function kickOffEvent(workspaceId: string): Promise<Record<string, unknown>> {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = await listEvents(getDb(url).db, { type: "workspace.session_started" });
+      const hit = rows.find(
+        (r) => (r.payload as { workspaceId?: string }).workspaceId === workspaceId,
+      );
+      if (hit) return hit.payload as Record<string, unknown>;
+      await Bun.sleep(10);
+    }
+    throw new Error(`no session_started event for ${workspaceId}`);
+  }
+
+  /** A workspace whose kick-off on `pi` failed once, so a retry is owed. */
+  async function failedPiKickOff(name: string): Promise<string> {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name,
+      repoIds: [repo.id],
+      brief: "implement the ticket",
+      harness: "pi",
+    });
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async () => {
+        throw new Error("agent not logged in");
+      },
+    });
+    return ws.id;
+  }
+
+  /** Runs the startup sweep and returns the harness each launch asked for. */
+  async function retriedHarnesses(): Promise<(string | undefined)[]> {
+    const harnesses: (string | undefined)[] = [];
+    await resumeKickOffs(getDb(url).db, {
+      startSession: async (input: StartClaudeSessionInput) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      runner: fakeGit,
+    });
+    return harnesses;
+  }
+
+  it("retries a failed kick-off with the harness it was asked for", async () => {
+    await withSettingsFile(piSaved(true), async () => {
+      const id = await failedPiKickOff("harness retry");
+      expect(await retriedHarnesses()).toEqual(["pi"]);
+      expect((await getWorkspace(getDb(url).db, id))?.pendingHarness).toBeNull();
+    });
+  });
+
+  it("retries a kick-off on the default once its harness may no longer be started", async () => {
+    await withSettingsFile(piSaved(false), async () => {
+      const id = await failedPiKickOff("harness revoked");
+      expect(await retriedHarnesses()).toEqual([undefined]);
+      const detail = await getWorkspace(getDb(url).db, id);
+      expect(detail?.pendingBrief).toBeNull();
+      expect(detail?.pendingHarness).toBeNull();
+      // The switch shows in the event log, not only the sidecar's.
+      expect(await kickOffEvent(id)).toMatchObject({ harness: null, harnessFallbackFrom: "pi" });
+    });
+  });
+
+  it("keeps a kick-off's harness when the settings can't be read", async () => {
+    // Read as empty, a broken file would look like the harness was removed.
+    await withSettingsFile("{ not json", async () => {
+      const id = await failedPiKickOff("settings unreadable");
+      expect(await retriedHarnesses()).toEqual(["pi"]);
+      expect(await kickOffEvent(id)).toMatchObject({ harness: "pi", harnessFallbackFrom: null });
+    });
   });
 
   it("does not launch a session for a workspace with no ticket", async () => {

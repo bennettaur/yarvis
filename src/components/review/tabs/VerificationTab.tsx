@@ -1,84 +1,47 @@
 import { useEffect, useMemo, useState } from "react";
-import { cancelAgentRun, streamAgentRun } from "../../../lib/agentRuns";
+import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
 import { refKey } from "../../../lib/pr/ref";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
+import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
 import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
+  type ChecklistItem,
+  DEFAULT_SECTIONS,
+  type EvidenceItem,
+  type EvidenceSeverity,
   findingCommentBody,
-  REPORT_SECTIONS,
+  MAX_NAMED_TICKETS,
   type ReportSection,
-  runSections,
-  sizeFor,
   startVerification,
-  type VerificationSize,
+  type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { openExternal } from "../../../lib/url";
 import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import { Loader } from "../../ai-elements/loader";
 import LoadingIndicator from "../../LoadingIndicator";
+import DecisionPanel from "./DecisionPanel";
 import {
   reportOf,
-  useLatestVerification,
+  useMutationTesting,
   useReviewChangedFiles,
   useReviewTree,
   useReviewViewed,
+  useVerificationChecklist,
+  useVerificationEvidence,
+  useVerificationUpstack,
   verificationKey,
 } from "./reviewData";
-import { CostLine, FileNotices, fileNotices } from "./SizeNotices";
+import { FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
 import VerificationReportView, {
-  CHECK_LABEL,
   type FindingPoster,
+  Location,
   type OpenLocation,
 } from "./VerificationReportView";
-import {
-  type CheckProgress,
-  initialProgress,
-  type RunProgress,
-  reduceProgress,
-} from "./verificationProgress";
-
-/**
- * Follows one run's events into its progress, from the start (the stream
- * replays what already happened) to its `done`. When it ends the PR's latest
- * report is re-read, which is where the finished report comes from.
- */
-export function useVerificationRun(
-  prId: string,
-  runId: string | null,
-  sections: readonly ReportSection[],
-): RunProgress | null {
-  const [progress, setProgress] = useState<RunProgress | null>(null);
-  // Keyed by value: a run's sections are fixed, so a re-render with an equal
-  // list must not restart the stream.
-  const sectionsKey = sections.join(",");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sections is read through its key
-  useEffect(() => {
-    const initial = () => initialProgress(sections);
-    setProgress(runId ? initial() : null);
-    if (!runId) return;
-    const abort = new AbortController();
-    void (async () => {
-      try {
-        for await (const event of streamAgentRun(runId, abort.signal)) {
-          setProgress((p) => reduceProgress(p ?? initial(), event));
-        }
-      } catch (e) {
-        if (abort.signal.aborted) return;
-        setProgress((p) => ({
-          ...(p ?? initial()),
-          error: `Lost track of the run: ${e instanceof Error ? e.message : String(e)}`,
-        }));
-      }
-      if (!abort.signal.aborted) invalidate(verificationKey(prId));
-    })();
-    return () => abort.abort();
-  }, [prId, runId, sectionsKey]);
-  return progress;
-}
 
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
@@ -137,131 +100,445 @@ export function findingPoster(
   };
 }
 
-const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
+export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
-/**
- * What a run on this PR will and won't see, and what it may cost, asked
- * before a large or over-budget run starts.
- */
-function SizeWarning({ size }: { size: VerificationSize }) {
-  return (
-    <div className="space-y-1">
-      {size.large && (
-        <div>
-          This PR is large: {size.files} files, {size.changedLines} changed lines. The checks read
-          every file's diff, so the run takes longer and costs more than usual.
-        </div>
-      )}
-      <FileNotices notices={fileNotices(size)} />
-      <CostLine {...size} />
-    </div>
-  );
-}
+type Tone = "good" | "warn" | "bad" | "muted";
 
-const SECTION_LABEL: Record<ReportSection, string> = {
-  risk: "Risk",
-  ...CHECK_LABEL,
-  approach: "Simpler approach",
-  flow: "Flow diagram",
+const TONE_CLASS: Record<Tone, string> = {
+  good: "border-emerald-800 text-emerald-300",
+  warn: "border-amber-800 text-amber-300",
+  bad: "border-red-800 text-red-300",
+  muted: "border-zinc-700 text-zinc-400",
 };
 
-/** Which sections the next run writes. The summary and must-read files always come with it. */
-function SectionPicker({
-  picked,
-  onChange,
-  disabled,
-}: {
-  picked: readonly ReportSection[];
-  onChange: (sections: ReportSection[]) => void;
-  disabled: boolean;
-}) {
-  const toggle = (section: ReportSection) =>
-    onChange(
-      REPORT_SECTIONS.filter((s) => (s === section ? !picked.includes(s) : picked.includes(s))),
-    );
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** What a section's result says, in a few words, for its checklist row. */
+export function resultVerdict(
+  section: ReportSection,
+  report: VerificationReport,
+): { text: string; tone: Tone } | null {
+  switch (section) {
+    case "summary": {
+      if (report.summary === undefined) return null;
+      const n = report.mustRead.length;
+      return {
+        text: n ? plural(n, "must-read file", "must-read files") : "Summary",
+        tone: "muted",
+      };
+    }
+    case "risk": {
+      const { risk } = report;
+      if (!risk) return null;
+      const tone: Tone = risk.level === "high" ? "bad" : risk.level === "medium" ? "warn" : "good";
+      return { text: risk.impact ? `Impact ${risk.impact.band}/5` : `${risk.level} risk`, tone };
+    }
+    case "approach": {
+      const { approach } = report;
+      if (!approach) return null;
+      if (approach.rating === "no-simpler") return { text: "No simpler way", tone: "good" };
+      if (approach.rating === "unrated") return { text: "Not rated", tone: "muted" };
+      return {
+        text: approach.rating === "much-simpler" ? "Much simpler way" : "Simpler way",
+        tone: approach.rating === "much-simpler" ? "bad" : "warn",
+      };
+    }
+    case "changeMap": {
+      const { changeMap } = report;
+      if (!changeMap) return null;
+      // No themes but changed files means the map failed, which isn't a clean result.
+      if (changeMap.themes.length === 0 && changeMap.unmapped.length > 0) {
+        return { text: "Not mapped", tone: "warn" };
+      }
+      const outliers = changeMap.themes.filter((t) => t.cohesion === "outlier").length;
+      const themes = plural(changeMap.themes.length, "theme", "themes");
+      return outliers > 0
+        ? { text: `${themes}, ${plural(outliers, "outlier", "outliers")}`, tone: "warn" }
+        : { text: themes, tone: "muted" };
+    }
+    case "claims": {
+      const { claims } = report;
+      if (!claims) return null;
+      const { items, gaps } = claims;
+      const verified = items.filter((c) => c.status === "verified").length;
+      const anyUnmet = items.some((c) => c.status === "missing" || c.status === "contradicted");
+      const needsAttention = items.some((c) => c.status === "partial") || gaps.length > 0;
+      const tone: Tone = anyUnmet ? "bad" : needsAttention ? "warn" : "good";
+      if (items.length > 0) return { text: `${verified} of ${items.length} verified`, tone };
+      if (gaps.length > 0) return { text: plural(gaps.length, "gap", "gaps"), tone };
+      return { text: "No claims", tone: "muted" };
+    }
+    case "flow":
+      if (!report.flow) return null;
+      return report.flow.mermaid
+        ? { text: "Drawn", tone: "muted" }
+        : { text: "Not drawn", tone: "muted" };
+    default: {
+      const check = report[section];
+      if (!check) return null;
+      if (check.findings.length === 0) return { text: "Pass", tone: "good" };
+      const high = check.findings.some((f) => f.severity === "high");
+      return {
+        text: plural(check.findings.length, "finding", "findings"),
+        tone: high ? "bad" : "warn",
+      };
+    }
+  }
+}
+
+function Chip({ text, tone }: { text: string; tone: Tone }) {
   return (
-    <fieldset className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
-      <legend className="sr-only">Sections to run</legend>
-      <span className="text-zinc-500">Run:</span>
-      {REPORT_SECTIONS.map((section) => (
-        <label key={section} className="flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={picked.includes(section)}
-            onChange={() => toggle(section)}
-            disabled={disabled}
-          />
-          {SECTION_LABEL[section]}
-        </label>
-      ))}
-    </fieldset>
+    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${TONE_CLASS[tone]}`}>
+      {text}
+    </span>
   );
 }
 
-function CheckLine({ check }: { check: CheckProgress }) {
-  const icon =
-    check.state === "running" ? (
-      <Loader />
-    ) : check.state === "done" ? (
-      <span className="text-emerald-400">✓</span>
-    ) : check.state === "failed" ? (
-      <span className="text-red-400">✕</span>
-    ) : (
-      <span className="text-zinc-600">○</span>
-    );
-  return (
-    <li className="flex items-center gap-2 text-sm">
-      <span className="flex w-4 justify-center">{icon}</span>
-      <span className={check.state === "waiting" ? "text-zinc-500" : "text-zinc-200"}>
-        {check.label}
+/** How often the checklist is re-read while a check runs. */
+const POLL_MS = 3000;
+
+export const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** One section on the checklist: whether it has run, what its newest result says, and a button to run it. */
+function ChecklistRow({
+  item,
+  report,
+  picked,
+  onToggle,
+  onRun,
+  onCancel,
+  canRun,
+  starting,
+  onOpenTab,
+}: {
+  item: ChecklistItem;
+  report: VerificationReport | null;
+  picked: boolean;
+  onToggle: () => void;
+  onRun: () => void;
+  onCancel: (runId: string) => Promise<void>;
+  canRun: boolean;
+  starting: boolean;
+  /** Opens the tab that shows this section's result on its own, for a section that has one. */
+  onOpenTab?: () => void;
+}) {
+  const { latest, result } = item;
+  // A run another Yarvis instance is doing can't be cancelled from here.
+  const running = latest?.status === "running";
+  const runningHere = running && latest.live;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const verdict = report && result ? resultVerdict(item.section, report) : null;
+  const cost = result?.costUsd ?? latest?.costUsd ?? null;
+
+  const cancel = async () => {
+    if (!latest) return;
+    setActionError(null);
+    try {
+      await onCancel(latest.id);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  let state: React.ReactNode;
+  if (runningHere) {
+    state = (
+      <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+        <Loader />
+        Running
       </span>
-      {check.activity && check.state === "running" && (
-        <span className="min-w-0 truncate font-mono text-[11px] text-zinc-500">
-          {check.activity}
-        </span>
+    );
+  } else if (running) {
+    state = <span className="text-xs text-zinc-400">Running in another Yarvis instance</span>;
+  } else {
+    state = (
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {latest?.status === "failed" && (
+          <span title={latest.error ?? undefined}>
+            <Chip text="Last run failed" tone="bad" />
+          </span>
+        )}
+        {latest?.status === "cancelled" && <Chip text="Last run cancelled" tone="muted" />}
+        {verdict && <Chip {...verdict} />}
+        {result && !result.current && (
+          <span className="text-[11px] text-amber-300">
+            older head ({shortSha(result.headSha)})
+          </span>
+        )}
+        {cost !== null && <span className="text-[11px] text-zinc-500">{usd(cost)}</span>}
+        {!latest && <span className="text-xs text-zinc-500">Not run</span>}
+      </span>
+    );
+  }
+
+  return (
+    <li className="flex items-center gap-2 py-1 text-sm">
+      <input
+        type="checkbox"
+        aria-label={`Pick ${item.label}`}
+        checked={picked}
+        onChange={onToggle}
+        disabled={running}
+      />
+      <span className="shrink-0 text-zinc-200" title={item.description}>
+        {item.label}
+      </span>
+      <span className="min-w-0 flex-1">{state}</span>
+      {actionError && <span className="text-xs text-red-400">{actionError}</span>}
+      {onOpenTab && result && (
+        <button
+          type="button"
+          onClick={onOpenTab}
+          className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Open
+        </button>
+      )}
+      {runningHere ? (
+        <button
+          type="button"
+          onClick={() => void cancel()}
+          className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Cancel
+        </button>
+      ) : (
+        !running && (
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={!canRun || starting}
+            className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {latest ? "Re-run" : "Run"}
+          </button>
+        )
       )}
     </li>
   );
 }
 
+type MutationVerdict = NonNullable<MutationRun["summary"]>["verdict"];
+
+const MUTATION_VERDICT: Record<MutationVerdict, { label: string; tone: Tone }> = {
+  strong: { label: "Strong", tone: "good" },
+  mixed: { label: "Mixed", tone: "warn" },
+  weak: { label: "Weak", tone: "bad" },
+  inconclusive: { label: "Inconclusive", tone: "muted" },
+};
+
+/** What the PR's latest mutation-testing pass says, for the checklist. */
+function mutationChip(run: MutationRun): { text: string; tone: Tone } | null {
+  if (run.status === "failed") return { text: "Last pass failed", tone: "bad" };
+  if (run.status === "cancelled") return { text: "Last pass cancelled", tone: "muted" };
+  const summary = run.summary;
+  if (!summary) return null;
+  const { label, tone } = MUTATION_VERDICT[summary.verdict];
+  const killed = summary.valid > 0 ? `: ${summary.killed} of ${summary.valid} mutants caught` : "";
+  return { text: `${label}${killed}`, tone };
+}
+
 /**
- * The verification report: an agent review of the whole change — summary,
- * the files that must be read, risk, and the completeness, test, complexity,
- * performance, comment, observability and quality checks — run on the PR's
- * checkout. Shows the run's progress while it works and the report once it
- * is done; every location in it opens the file's diff at that line.
+ * Mutation testing on the checklist. It runs the PR's own tests, so it starts
+ * from its tab, where the reviewer agrees to that; this row says where it
+ * stands and opens it.
+ */
+function MutationRow({
+  state,
+  error,
+  onOpenTab,
+}: {
+  state: MutationTestingState | null;
+  error: string | null;
+  onOpenTab: () => void;
+}) {
+  const run = state?.run ?? null;
+  const chip = run && run.status !== "running" ? mutationChip(run) : null;
+  return (
+    <li className="flex items-center gap-2 py-1 text-sm">
+      {/* Lines the label up with the checkbox rows. */}
+      <span className="w-[13px] shrink-0" aria-hidden="true" />
+      <span
+        className="shrink-0 text-zinc-200"
+        title="Small deliberate bugs in the changed code, run against the PR's tests, to see whether the tests notice."
+      >
+        Mutation testing
+      </span>
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+        {run?.status === "running" && (
+          <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <Loader />
+            Running ({run.phase})
+          </span>
+        )}
+        {chip && <Chip {...chip} />}
+        {run && !run.isCurrentHead && (
+          <span className="text-[11px] text-amber-300">older head ({shortSha(run.headSha)})</span>
+        )}
+        {!run && !error && (
+          <span className="text-xs text-zinc-500">
+            Not run{state?.blocked ? `: ${state.blocked.reason}` : ""}
+          </span>
+        )}
+        {error && <span className="text-xs text-red-400">{error}</span>}
+      </span>
+      <button
+        type="button"
+        onClick={onOpenTab}
+        className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+      >
+        Open
+      </button>
+    </li>
+  );
+}
+
+const SEVERITY_CLASS: Record<EvidenceSeverity, string> = {
+  high: "text-red-300",
+  medium: "text-amber-300",
+  low: "text-zinc-400",
+  info: "text-zinc-500",
+};
+
+/**
+ * What another tool already said, beside the checks Yarvis runs: CI checks,
+ * code scanning alerts or bot comments. Nothing to run, so no checkbox; the
+ * entries open on demand. Their text was written by the tool, so it is shown
+ * as plain text.
+ */
+function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocation }) {
+  const [expanded, setExpanded] = useState(false);
+  const totalEntries = item.entries.length + item.hiddenEntries;
+  return (
+    <li className="py-1 text-sm">
+      <div className="flex items-center gap-2">
+        {/* Lines the label up with the checkbox rows. */}
+        <span className="w-[13px] shrink-0" aria-hidden="true" />
+        <span className="shrink-0 text-zinc-200" title={item.description}>
+          {item.label}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          <Chip text={item.summary} tone={item.tone} />
+          <span className="text-[11px] text-zinc-500">reported on the PR</span>
+        </span>
+        {totalEntries > 0 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+          >
+            {expanded ? "Hide" : `Show ${totalEntries}`}
+          </button>
+        )}
+      </div>
+      {item.note && <p className="ml-5 text-[11px] text-zinc-500">{item.note}</p>}
+      {expanded && (
+        <ul className="mt-1 ml-5 space-y-1.5">
+          {item.entries.map((entry, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id and never reorder while shown
+            <li key={i} className="text-xs">
+              <div className="flex flex-wrap items-baseline gap-1.5">
+                <span className={`uppercase text-[10px] ${SEVERITY_CLASS[entry.severity]}`}>
+                  {entry.severity}
+                </span>
+                {/* Check names already lead their titles; a scanner's name doesn't. */}
+                {!entry.title.startsWith(entry.source) && (
+                  <span className="text-[11px] text-zinc-500">{entry.source}</span>
+                )}
+                <span className="text-zinc-200">{entry.title}</span>
+                {entry.path && (
+                  <Location path={entry.path} line={entry.line ?? undefined} onOpen={onOpen} />
+                )}
+                {entry.url && (
+                  <button
+                    type="button"
+                    onClick={() => openExternal(entry.url)}
+                    className="text-[11px] text-sky-400 hover:text-sky-300"
+                  >
+                    Open
+                  </button>
+                )}
+              </div>
+              {entry.detail && <p className="text-zinc-400">{entry.detail}</p>}
+            </li>
+          ))}
+          {item.hiddenEntries > 0 && (
+            <li className="text-[11px] text-zinc-500">
+              {item.hiddenEntries} more not shown; see the PR.
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
+function suggestedSections(items: ChecklistItem[]): ReportSection[] {
+  return items
+    .filter(
+      (i) =>
+        DEFAULT_SECTIONS.includes(i.section) &&
+        !i.result?.current &&
+        i.latest?.status !== "running",
+    )
+    .map((i) => i.section);
+}
+
+const NO_ITEMS: ChecklistItem[] = [];
+
+/**
+ * The verification checklist: every section of the report, grouped by theme,
+ * each run on its own when the reviewer chooses, with the report its newest
+ * results make below. Every file and line in the report opens the diff there.
+ *
+ * While a check runs, the checklist is re-read every few seconds rather than
+ * each run's event stream followed: one long stream per check would take up
+ * the webview's few connections to the sidecar, and every other request
+ * would wait behind them.
  */
 export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const { workspaceId, pr } = ctx;
-  const latest = useLatestVerification(workspaceId, pr.id);
-  // The run this window started, with the sections it was asked for.
-  const [started, setStarted] = useState<{
-    id: string;
-    sections: readonly ReportSection[];
-  } | null>(null);
-  const [joined, setJoined] = useState(false);
+  const checklist = useVerificationChecklist(workspaceId, pr.id);
+  const items = checklist.data?.items ?? NO_ITEMS;
+  const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
+  const picked = pickedSections ?? suggestedSections(items);
+  const anyRunning = items.some((i) => i.latest?.status === "running");
+  const { refresh } = checklist;
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = setInterval(() => void refresh(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  // A large PR, or one the estimate says will outrun the budget, asks first.
-  const [confirmingLarge, setConfirmingLarge] = useState(false);
+  // Tickets the reviewer names for the change map and claims, beside the ones
+  // the PR links. Until they type, the last run's are offered again.
+  const [typedTickets, setTypedTickets] = useState<string | null>(null);
+  const ticketText = typedTickets ?? checklist.data?.namedTickets.join(", ") ?? "";
+  const namedTickets = ticketText
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .slice(0, MAX_NAMED_TICKETS);
 
-  const run = latest.data?.run ?? null;
-  // The last run's sections until the reviewer changes them.
-  const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
-  const lastSections = runSections(run?.meta);
-  const sections = pickedSections ?? lastSections;
-  const runningHere = run?.status === "running" && run.live ? run.id : null;
-  const followId = started?.id ?? runningHere;
-  // A run followed but not started here lists the sections its own meta records.
-  const progress = useVerificationRun(pr.id, followId, started?.sections ?? lastSections);
-  const running = followId !== null && progress !== null && progress.finished === null;
-  const runningElsewhere = !running && run?.status === "running" && !run.live;
-  const report = reportOf(latest.data);
-  const good = latest.data?.lastSucceeded ?? null;
-  const size = useMemo(() => {
-    const facts = latest.data?.size;
-    return facts ? sizeFor(facts, sections) : null;
-  }, [latest.data?.size, sections]);
+  const evidence = useVerificationEvidence(workspaceId, pr.id);
+  const mutation = useMutationTesting(workspaceId, pr.id);
+  const upstackRead = useVerificationUpstack(workspaceId, pr.id);
+  // Their ranges are against the head they were read at, which must be this one.
+  const upstack =
+    upstackRead.data && upstackRead.data.headSha === checklist.data?.headSha
+      ? upstackRead.data
+      : null;
+  const mutationRunning = mutation.data?.run?.status === "running";
+  const refreshMutation = mutation.refresh;
+  useEffect(() => {
+    if (!mutationRunning) return;
+    const timer = setInterval(() => void refreshMutation(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [mutationRunning, refreshMutation]);
+  const report = reportOf(checklist.data);
+  const size = checklist.data?.size ?? null;
   const viewed = useReviewViewed(ctx.prRef);
   const linked = useLinkedWorkspace(ctx.prRef);
   const poster = useMemo(
@@ -273,39 +550,44 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       ),
     [ctx.prRef, ctx.pr.headSha, ctx.pr.mergeBaseSha, linked],
   );
+  // An older head's line numbers may point at different code now, so only a
+  // section whose result is for the current head can post.
+  const currentSections = useMemo(
+    () => new Set(items.filter((i) => i.result?.current).map((i) => i.section)),
+    [items],
+  );
 
-  const start = async (confirmed = false) => {
-    if ((size?.large || size?.overBudget) && !confirmed) {
-      setConfirmingLarge(true);
-      return;
-    }
-    setConfirmingLarge(false);
+  const run = async (sections: ReportSection[]) => {
+    if (sections.length === 0) return;
     setStarting(true);
     setActionError(null);
-    setJoined(false);
     try {
-      const { runId, existing } = await startVerification(workspaceId, pr.id, sections);
-      // A run already going was started with its own sections, not these; it
-      // is followed as `runningHere` once the latest run is re-read.
-      if (existing) setJoined(true);
-      else setStarted({ id: runId, sections });
-      invalidate(verificationKey(pr.id));
+      const { runs, failed } = await startVerification(workspaceId, pr.id, sections, namedTickets);
+      // Untick only what started, so a check that failed to start stays picked
+      // for another try. With nothing left ticked by hand, go back to the
+      // suggestions, which follow the PR to its next head.
+      const started = runs.map((r) => r.section);
+      setPickedSections((prev) => {
+        const left = prev?.filter((s) => !started.includes(s)) ?? [];
+        return left.length > 0 ? left : null;
+      });
+      if (failed.length > 0) {
+        const labels = failed.map((f) => items.find((i) => i.section === f.section)?.label);
+        setActionError(`Couldn't start ${labels.join(", ")}: ${failed[0]?.error}`);
+      }
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e));
     } finally {
       setStarting(false);
+      // Even after a failure some checks may have started.
+      invalidate(verificationKey(pr.id));
     }
   };
 
-  const cancel = async () => {
-    if (!followId) return;
-    setActionError(null);
-    try {
-      await cancelAgentRun(followId);
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const toggle = (section: ReportSection) =>
+    setPickedSections(
+      picked.includes(section) ? picked.filter((s) => s !== section) : [...picked, section],
+    );
 
   // The report is model-written, so only a path the PR actually has is a link.
   const changed = useReviewChangedFiles(workspaceId, pr);
@@ -321,14 +603,11 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   };
 
   const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
-  const finishedRun = running ? null : run;
-  const failed = finishedRun?.status === "failed";
-  const cancelled = finishedRun?.status === "cancelled";
 
-  if (latest.loading) {
+  if (checklist.loading) {
     return (
       <div className="p-4">
-        <LoadingIndicator label="Loading the verification report…" />
+        <LoadingIndicator label="Loading the verification checklist…" />
       </div>
     );
   }
@@ -338,81 +617,135 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       {/* 80% so diagrams grow with the window; never narrower than 48rem unless the pane is. */}
       <div className="mx-auto w-4/5 min-w-[min(100%,48rem)] space-y-4 p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-sm font-semibold text-zinc-200">Verification report</h2>
-          {good && report && !running && (
-            <span className="text-xs text-zinc-500">
-              at {short(good.headSha)}
-              {good.run.costUsd != null ? ` · $${good.run.costUsd.toFixed(2)}` : ""}
-            </span>
-          )}
-          <span className="ml-auto flex gap-2">
-            {running ? (
-              <button
-                type="button"
-                onClick={() => void cancel()}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
-                Cancel
-              </button>
-            ) : (
-              !runningElsewhere && (
-                <button
-                  type="button"
-                  onClick={() => void start()}
-                  disabled={starting || notReady || sections.length === 0}
-                  title={
-                    notReady
-                      ? "Waiting for the checkout"
-                      : sections.length === 0
-                        ? "Pick at least one section"
-                        : undefined
-                  }
-                  className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
-                >
-                  {starting ? "Starting…" : run ? "Re-run" : "Run verification"}
-                </button>
-              )
-            )}
+          <h2 className="text-sm font-semibold text-zinc-200">Verification</h2>
+          <span className="ml-auto">
+            <button
+              type="button"
+              onClick={() => void run(picked)}
+              disabled={starting || notReady || picked.length === 0}
+              title={
+                notReady
+                  ? "Waiting for the checkout"
+                  : picked.length === 0
+                    ? "Pick at least one check"
+                    : undefined
+              }
+              className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600 disabled:opacity-50"
+            >
+              {starting ? "Starting…" : `Run picked (${picked.length})`}
+            </button>
           </span>
         </div>
 
-        {!running && !runningElsewhere && (
-          <SectionPicker
-            picked={sections}
-            onChange={(next) => {
-              setPickedSections(next);
-              setConfirmingLarge(false);
-            }}
-            disabled={starting}
-          />
-        )}
+        <DecisionPanel
+          prRef={ctx.prRef}
+          seen={{ headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha }}
+          report={report}
+          evidence={
+            // CI on another commit says nothing about this one.
+            evidence.data && evidence.data.headSha === checklist.data?.headSha
+              ? evidence.data.items
+              : null
+          }
+          items={items}
+          mutation={mutation.data?.run ?? null}
+          upstack={upstack}
+          currentSections={currentSections}
+          onOpen={open}
+        />
 
-        {confirmingLarge && size && !running && (
-          <div
-            role="alert"
-            className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200"
-          >
-            <SizeWarning size={size} />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => void start(true)}
-                className="rounded bg-sky-700 px-3 py-1 text-xs text-white hover:bg-sky-600"
-              >
-                Run anyway
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmingLarge(false)}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-        {!confirmingLarge && size && !running && (
-          // Even on a small PR, say up front what the run won't read whole.
+        <p className="text-xs text-zinc-500">
+          Each check is an agent that reads every changed file's diff. Run the ones you want; each
+          runs on its own, and the report below shows each check's newest result. Beside them is
+          what CI, code scanners and bots already reported on the PR.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+          {evidence.loading && <span>Reading CI checks and scanner results…</span>}
+          {evidence.data &&
+            checklist.data?.headSha &&
+            evidence.data.headSha !== checklist.data.headSha && (
+              <span className="text-amber-300">
+                CI results are for {shortSha(evidence.data.headSha)}; the checkout is at{" "}
+                {shortSha(checklist.data.headSha)}.
+              </span>
+            )}
+          {evidence.error && (
+            <span className="text-red-400">Couldn't read CI results: {evidence.error}</span>
+          )}
+          {!evidence.loading && (
+            <button
+              type="button"
+              onClick={() => void evidence.refresh()}
+              disabled={evidence.refreshing}
+              className="ml-auto text-sky-400 hover:text-sky-300 disabled:opacity-50"
+            >
+              {evidence.refreshing ? "Re-reading CI results…" : "Re-read CI results"}
+            </button>
+          )}
+        </div>
+
+        {(checklist.data?.themes ?? []).map((theme) => {
+          const rows = items.filter((i) => i.theme === theme.id);
+          const evidenceRows = evidence.data?.items.filter((i) => i.theme === theme.id) ?? [];
+          if (rows.length === 0 && evidenceRows.length === 0) return null;
+          return (
+            <section key={theme.id} className="space-y-1">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {theme.label}
+              </h3>
+              <ul className="divide-y divide-zinc-800/60">
+                {rows.map((item) => (
+                  <ChecklistRow
+                    key={item.section}
+                    item={item}
+                    report={report}
+                    picked={picked.includes(item.section)}
+                    onToggle={() => toggle(item.section)}
+                    onRun={() => void run([item.section])}
+                    onCancel={async (runId) => {
+                      await cancelAgentRun(runId);
+                      await refresh();
+                    }}
+                    canRun={!notReady}
+                    starting={starting}
+                    onOpenTab={
+                      item.section === "flow"
+                        ? () => ctx.openTab({ kind: "diagram", prId: pr.id })
+                        : undefined
+                    }
+                  />
+                ))}
+                {theme.id === "correctness" && (
+                  <MutationRow
+                    state={mutation.data ?? null}
+                    error={mutation.error}
+                    onOpenTab={() => ctx.openTab({ kind: "mutation", prId: pr.id })}
+                  />
+                )}
+                {evidenceRows.map((item) => (
+                  <EvidenceRow key={item.id} item={item} onOpen={open} />
+                ))}
+              </ul>
+            </section>
+          );
+        })}
+
+        <label className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+          <span title="Issues the PR closes, its linked work items, and Jira keys in its title or branch are read anyway.">
+            More tickets for the change map and claims
+          </span>
+          <input
+            type="text"
+            value={ticketText}
+            onChange={(e) => setTypedTickets(e.target.value)}
+            placeholder="ABC-123, #45 or a ticket link"
+            className="min-w-[16rem] flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600"
+          />
+        </label>
+
+        {size && (
+          // Say up front what the checks won't read whole.
           <div className="text-xs text-zinc-400" data-testid="file-notices">
             <FileNotices notices={fileNotices(size)} />
           </div>
@@ -423,97 +756,16 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             {actionError}
           </p>
         )}
-        {joined && (
-          <p className="text-xs text-zinc-400">
-            A report was already being written for this PR, so no new run started. Below is that
-            run, with the sections it was started with.
-          </p>
-        )}
-        {latest.error && <p className="text-xs text-red-400">{latest.error}</p>}
+        {checklist.error && <p className="text-xs text-red-400">{checklist.error}</p>}
 
-        {!run && !running && (
-          <p className="text-sm text-zinc-400">
-            Agents read every changed file's diff and report what the change does, which files must
-            be read, how risky it is, and whether it is complete, tested, simple, fast, well
-            commented, observable and well written, and whether there is a simpler way to do what
-            the PR does. Checks that pass say so in a line, and the report lists any file the checks
-            didn't read. Pick the sections above; the flow diagram traces the whole flow the change
-            sits in and is off unless you ask for it.
-          </p>
-        )}
-
-        {running && progress && (
-          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-            <ul className="space-y-1">
-              {progress.checks.map((c) => (
-                <CheckLine key={c.agent} check={c} />
-              ))}
-            </ul>
-            {progress.activity && (
-              <p className="truncate font-mono text-[11px] text-zinc-500">{progress.activity}</p>
-            )}
-          </div>
-        )}
-        {progress?.error && !running && !failed && (
-          <p className="text-xs text-red-400">{progress.error}</p>
-        )}
-
-        {runningElsewhere && (
-          <p className="text-sm text-zinc-400">
-            A report is being written by another Yarvis window.{" "}
-            <button
-              type="button"
-              onClick={() => void latest.refresh()}
-              className="text-sky-400 hover:text-sky-300"
-            >
-              Check again
-            </button>
-          </p>
-        )}
-
-        {failed && (
-          <div
-            role="alert"
-            className="rounded-lg border border-red-900 bg-red-950/30 p-3 text-sm text-red-300"
-          >
-            {report ? "The re-run failed" : "The last run failed"}:{" "}
-            {finishedRun?.error ?? progress?.error ?? "no reason given"}
-            {report && good && (
-              <span className="block text-xs text-red-300/80">
-                Below is the last good report, from {short(good.headSha)}.
-              </span>
-            )}
-          </div>
-        )}
-        {cancelled && (
-          <p className="text-sm text-zinc-500">
-            The last run was cancelled.
-            {report && good && ` Below is the last good report, from ${short(good.headSha)}.`}
-          </p>
-        )}
-
-        {report && good && !good.current && !running && (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-800 bg-amber-950/30 p-2 text-xs text-amber-200">
-            This report is for an older head; the pull request has moved to{" "}
-            {short(latest.data?.headSha)}.
-            <button
-              type="button"
-              onClick={() => void start()}
-              disabled={starting || notReady}
-              className="ml-auto rounded border border-amber-700 px-2 py-0.5 hover:bg-amber-900/40 disabled:opacity-50"
-            >
-              Re-run
-            </button>
-          </div>
-        )}
-
-        {report && !running && (
+        {report && (
           <VerificationReportView
             report={report}
             onOpen={open}
             viewed={viewed.viewed}
-            // An older head's line numbers may point at different code now.
-            poster={good?.current ? poster : undefined}
+            poster={poster}
+            currentSections={currentSections}
+            upstack={upstack}
           />
         )}
       </div>

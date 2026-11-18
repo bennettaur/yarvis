@@ -17,6 +17,12 @@ function fakeSource(over: Partial<PrCodeSource> = {}): PrCodeSource {
     listDir: async () => [],
     searchCode: async (): Promise<CodeHit[] | null> => [],
     searchScope: "the default branch",
+    ciChecks: async () => [],
+    checkRunOutputs: async () => null,
+    checkRunAnnotations: async () => [],
+    codeScanningAlerts: async () => null,
+    linkedTickets: async () => [],
+    upstackLayers: async () => null,
     ...over,
   };
 }

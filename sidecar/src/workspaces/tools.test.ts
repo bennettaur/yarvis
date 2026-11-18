@@ -120,6 +120,47 @@ function fakeGitHub(overrides: Partial<WorkspaceGitHubClient> = {}) {
  * provisioning settled on, which the sync refuses to proceed without seeing
  * checked out.
  */
+/** Restores the suite's settings file after `useHarnessSettings`; null when unchanged. */
+let restoreHarnessSettings: (() => void) | null = null;
+
+/**
+ * Points the sidecar at a settings file with Pi and OpenCode saved and opened
+ * to the assistant, for a test that starts a session with one. Undone in the
+ * suite's `afterEach`.
+ */
+function useHarnessSettings(extra: Record<string, unknown> = {}): void {
+  const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "yarvis-harnesses-"));
+  const settings = join(dir, "settings.json");
+  writeFileSync(
+    settings,
+    JSON.stringify({
+      agentHarnesses: [
+        { id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse: true },
+        {
+          id: "opencode",
+          name: "OpenCode",
+          kind: "opencode",
+          command: "opencode",
+          assistantMayUse: true,
+        },
+        { id: "locked", name: "Locked", kind: "claude-code", command: "claude --yolo" },
+      ],
+      ...extra,
+    }),
+  );
+  process.env.YARVIS_SETTINGS_PATH = settings;
+  restoreHarnessSettings = () => {
+    process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+    rmSync(dir, { recursive: true, force: true });
+  };
+}
+
+afterEach(() => {
+  restoreHarnessSettings?.();
+  restoreHarnessSettings = null;
+});
+
 async function activeWorkspace(
   name: string,
   cloneUrls = ["https://github.com/acme/widget.git"],
@@ -622,6 +663,200 @@ describe("workspace tools", () => {
     expect(result.sessionKey).toBe(`ws-claude:${wsId}`);
     expect(startedCwds.length).toBe(2);
     expect(startedCwds[1]).toContain("existing-ws");
+  });
+
+  it("create_scratch_workspace_session hands its harness to the kick-off and to a plain launch", async () => {
+    useHarnessSettings();
+    const started: { harness?: string; instruction?: string }[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started.push({ harness: input.harness, instruction: input.instruction });
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Kick-off", brief: "Do the thing.", startWork: true, harness: "pi" },
+      opts,
+    );
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Plain", startWork: true, harness: "opencode" },
+      opts,
+    );
+    expect(started).toEqual([
+      { harness: "pi", instruction: AGENT_KICKOFF_INSTRUCTION },
+      { harness: "opencode", instruction: undefined },
+    ]);
+  });
+
+  it("create_workspace_session hands its harness to the kick-off", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/harness.git" });
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_workspace_session.execute!(
+      {
+        name: "Repo kick-off",
+        repoIds: [repo.id],
+        brief: "Do it.",
+        startWork: true,
+        harness: "pi",
+      },
+      opts,
+    );
+    expect(harnesses).toEqual(["pi"]);
+  });
+
+  it("refuses a harness the assistant may not start before building anything", async () => {
+    useHarnessSettings();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Locked out", brief: "Do it.", startWork: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect((await sql`SELECT id FROM workspaces WHERE name = 'Locked out'`).length).toBe(0);
+  });
+
+  it("refuses Remote Control on a default harness that can't take it", async () => {
+    useHarnessSettings({ defaultAgentHarness: "pi" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("Remote Control needs a Claude Code harness");
+    // The model is sent back to the user rather than told to pick one itself.
+    expect(result.error).toContain("ask the user which Claude Code harness to use");
+    expect(result.error).not.toContain("list_agent_harnesses");
+  });
+
+  it("points Remote Control back at a Claude Code default rather than another harness", async () => {
+    useHarnessSettings();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true, harness: "pi" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain('leave harness out to use the default, "Claude"');
+    // The user asked for Pi, so they hear why something else ran.
+    expect(result.error).toContain(`tell the user "Pi" can't take Remote Control`);
+  });
+
+  it("start_work_on_issue refuses a harness the assistant may not start before touching anything", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client, calls } = fakeGitHub();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect(calls.assigned).toEqual([]);
+    expect(calls.labeled).toEqual([]);
+    expect((await db.select().from(schema.workspaces)).length).toBe(0);
+  });
+
+  it("start_work_on_issue launches the harness the user named", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client } = fakeGitHub();
+    let startedHarness: string | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        startedHarness = input.harness;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: false, applyLabel: false, harness: "pi" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(startedHarness).toBe("pi");
+  });
+
+  it("offers the model the harness list as a tool", async () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const listed = (await tools.list_agent_harnesses.execute!({}, opts)) as { id: string }[];
+    expect(listed.map((h) => h.id)).toContain("claude");
+  });
+
+  it("refuses a harness id the core could never launch before starting anything", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.start_workspace_session.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = crypto.randomUUID();
+    expect(schema.safeParse({ workspaceId, harness: "Bad Id" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, harness: "pi" }).success).toBe(true);
+  });
+
+  it("start_workspace_session launches the harness it was asked for", async () => {
+    useHarnessSettings();
+    const created = await activeWorkspace("Harness WS");
+    // Creating the workspace logged a session start of its own.
+    await sql`TRUNCATE events RESTART IDENTITY`;
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.start_workspace_session.execute!(
+      { workspaceId: created.workspaceId, harness: "pi" },
+      opts,
+    );
+    await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
+    // Without one the core picks the default, so none is sent.
+    expect(harnesses).toEqual(["pi", undefined]);
+    // The activity log says which harness the user (or assistant) picked.
+    // emitEvent is fire-and-forget, so wait for both rows rather than a delay.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const [{ n }] =
+        await sql`SELECT count(*)::int AS n FROM events WHERE type = 'workspace.session_started' AND source = 'chat'`;
+      if (n >= 2) break;
+      await Bun.sleep(20);
+    }
+    const events =
+      await sql`SELECT payload FROM events WHERE type = 'workspace.session_started' AND source = 'chat' ORDER BY created_at`;
+    expect(events.map((e) => (e.payload as { harness: string | null }).harness)).toEqual([
+      "pi",
+      null,
+    ]);
   });
 
   it("start_workspace_session gives a workspace that lacks them the registration hooks", async () => {
@@ -2971,5 +3206,183 @@ describe("add_repo_to_workspace", () => {
     const gadget = await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
     const result = await add(dirRunner, "00000000-0000-0000-0000-000000000000", gadget.id);
     expect(result.error).toBe("workspace not found");
+  });
+});
+
+describe("archive_workspace and linked issues", () => {
+  /** Links issues to the workspace, one per `[externalId, localStatus]`. */
+  async function linkIssues(
+    workspaceId: string,
+    issues: [string, "todo" | "in_progress" | "done"][],
+  ) {
+    return db
+      .insert(schema.issueLinks)
+      .values(
+        issues.map(([externalId, localStatus]) => ({
+          provider: "github",
+          sourceKey: "acme/widget",
+          externalId,
+          title: `Issue ${externalId}`,
+          workspaceId,
+          localStatus,
+        })),
+      )
+      .returning();
+  }
+
+  async function localStatus(id: string) {
+    const [row] = await db.select().from(schema.issueLinks).where(eq(schema.issueLinks.id, id));
+    return row?.localStatus;
+  }
+
+  it("list_workspace_issues lists the workspace's linked issues", async () => {
+    const { workspaceId } = await activeWorkspace("Linked");
+    await linkIssues(workspaceId, [["5", "in_progress"]]);
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const result = await tools.list_workspace_issues.execute!({ workspaceId }, opts);
+
+    const { warning, issues } = result as {
+      warning: string;
+      issues: { key: string; title: string; status: string }[];
+    };
+    const tag = warning.match(/<(linked-issue-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
+    expect(issues).toEqual([
+      expect.objectContaining({
+        key: "acme/widget#5",
+        title: `<${tag}>\nIssue 5\n</${tag}>`,
+        status: "in_progress",
+      }),
+    ]);
+  });
+
+  it("closes every unfinished linked issue except the ones kept open", async () => {
+    const { workspaceId } = await activeWorkspace("Closing");
+    const [closes, kept] = await linkIssues(workspaceId, [
+      ["1", "in_progress"],
+      ["2", "todo"],
+      ["3", "done"],
+    ]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [kept!.id] },
+      opts,
+    )) as { status: string; closedIssues: string[] };
+
+    expect(result.status).toBe("archived");
+    expect(result.closedIssues).toEqual(["acme/widget#1"]);
+    // Already done locally, so it isn't sent to the tracker again.
+    expect(closed).toEqual(["1"]);
+    expect(await localStatus(closes!.id)).toBe("done");
+    expect(await localStatus(kept!.id)).toBe("todo");
+  });
+
+  it("closes every unfinished linked issue when none are kept open", async () => {
+    const { workspaceId } = await activeWorkspace("Close all");
+    await linkIssues(workspaceId, [
+      ["1", "in_progress"],
+      ["2", "todo"],
+    ]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    await tools.archive_workspace.execute!({ workspaceId, force: false }, opts);
+
+    expect(closed.sort()).toEqual(["1", "2"]);
+  });
+
+  it("refuses a keep-open id that isn't linked to the workspace, before archiving", async () => {
+    const { workspaceId } = await activeWorkspace("Mistyped");
+    await linkIssues(workspaceId, [["1", "todo"]]);
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [crypto.randomUUID()] },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not linked to this workspace");
+    expect(closed).toEqual([]);
+    expect((await getWorkspace(db, workspaceId))?.status).toBe("active");
+  });
+
+  it("closes nothing while a dirty worktree holds up the archive", async () => {
+    const { workspaceId } = await activeWorkspace("Dirty");
+    const [link] = await linkIssues(workspaceId, [["1", "todo"]]);
+    const refused = new Set<string>();
+    const dirtyRunner: GitRunner = async (args, runOpts) => {
+      if (args[0] === "worktree" && args[1] === "remove" && !args.includes("--force")) {
+        refused.add(args[2] ?? "");
+        return { stdout: "", stderr: "worktree contains modified files", exitCode: 1 };
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        const stdout = [...refused].map((path) => `worktree ${path}\0\0`).join("");
+        return { stdout, stderr: "", exitCode: 0 };
+      }
+      return okRunner(args, runOpts);
+    };
+    const closed: string[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: dirtyRunner,
+      closeIssue: async ({ externalId }) => {
+        closed.push(externalId);
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false },
+      opts,
+    )) as { status: string; closedIssues: string[] };
+
+    expect(result.status).toBe("archiving");
+    expect(result.closedIssues).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(await localStatus(link!.id)).toBe("todo");
+  });
+
+  it("reports the issues the tracker refused to close", async () => {
+    const { workspaceId } = await activeWorkspace("Refused");
+    await linkIssues(workspaceId, [["7", "todo"]]);
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      closeIssue: async () => {
+        throw new Error("tracker said no");
+      },
+    });
+
+    const result = (await tools.archive_workspace.execute!(
+      { workspaceId, force: false, keepOpenIssueIds: [] },
+      opts,
+    )) as {
+      closedIssues: string[];
+      issueCloseErrors: unknown[];
+      issueCloseErrorsWarning: string;
+    };
+
+    expect(result.closedIssues).toEqual([]);
+    const tag = result.issueCloseErrorsWarning.match(/<(tracker-error-\w+)>/)?.[1];
+    expect(tag).toBeDefined();
+    expect(result.issueCloseErrors).toEqual([
+      { issue: "acme/widget#7", message: `<${tag}>\ntracker said no\n</${tag}>` },
+    ]);
   });
 });

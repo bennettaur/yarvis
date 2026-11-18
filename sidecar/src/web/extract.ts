@@ -100,11 +100,16 @@ const CLIPPED = /(?:^|;)overflow:hidden/;
  * sentence), variation-selector supplements, and C0/C1 control characters
  * other than tab and newline.
  */
-const INVISIBLE_CHARS = new RegExp(
+const INVISIBLE_CLASS =
   "[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u180E\\u200B-\\u200F\\u202A-\\u202E" +
-    "\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]",
-  "gu",
-);
+  "\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]";
+const INVISIBLE_CHARS = new RegExp(INVISIBLE_CLASS, "gu");
+const ANY_INVISIBLE = new RegExp(INVISIBLE_CLASS, "u");
+
+/** Whether `text` holds any of {@link INVISIBLE_CHARS}. */
+export function hasInvisibleChars(text: string): boolean {
+  return ANY_INVISIBLE.test(text);
+}
 
 /** How much hidden text is kept for screening. It is never returned. */
 const MAX_HIDDEN_CHARS = 20_000;

@@ -3,19 +3,22 @@
 //! instruction or an allowed slash command into a Claude Code session in a
 //! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
-//! (`alarm.fire`) or stopping one (`alarm.release`).
+//! (`alarm.fire`) or stopping one (`alarm.release`). It also starts and ends
+//! the locked-down session over a review workspace's PR checkouts
+//! (`claude.spawnReview`, `claude.killReview`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
 //! reachable over the network. The protocol is deliberately narrow — the sidecar
-//! can only start, stop, or talk to a Claude session for a workspace, and chooses
-//! only whether to launch the configured agent, not what runs: the command comes
-//! from settings, which only the webview can write. The sidecar's `name` does
-//! reach the launch line, and that line is typed into an interactive shell rather
-//! than exec'd, so `pty::sanitize_session_name` strips it — see that function for
+//! can only start, stop, or talk to an agent session for a workspace, and chooses
+//! only whether to launch one and which saved harness, by id — never what runs:
+//! the command comes from settings, which only the webview can write, and a
+//! harness is refused unless the user allowed the assistant to start it. The
+//! sidecar's `name` does reach the launch line, and that line is typed into an
+//! interactive shell rather than exec'd, so `pty::sanitize_session_name` strips it — see that function for
 //! why quoting alone is not enough. `claude.send` types free text at a prompt
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
-//! unless the configured agent itself is what reads that prompt, and refuses
+//! unless the session's own agent is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
 //! than a request. `claude.slash` is how a slash command reaches a session: the
 //! sidecar names a command, and `pty::send_session_slash_command` types it only
@@ -51,8 +54,8 @@ mod unix_impl {
 
     use super::ControlSocketPath;
     use crate::pty::{
-        kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
-        PtyState,
+        check_sidecar_harness, kill_session, send_session_instruction, send_session_slash_command,
+        spawn_claude_session, spawn_review_claude_session, PtyState,
     };
 
     /// Cap on a single request line, bounding what one message can buffer.
@@ -94,6 +97,43 @@ mod unix_impl {
         /// sidecar relaunches a workspace's agent after the app restarted.
         #[serde(default)]
         resume: Option<String>,
+        /// Id of the agent harness to launch. Absent means the configured
+        /// default. The core resolves it against the harnesses the user saved,
+        /// so a caller picks among those and never supplies a command.
+        #[serde(default)]
+        harness: Option<String>,
+    }
+
+    /// Parses a `claude.spawn` request, validates its workspace id and runs the
+    /// assistant-harness gate on it. `gate` gets the harness asked for and
+    /// whether this is a resume. Parsing and the gate sit together so the
+    /// dispatch has no way to get spawn parameters without running it.
+    fn checked_spawn_params(
+        params: Value,
+        gate: impl FnOnce(Option<&str>, bool) -> Result<(), String>,
+    ) -> Result<SpawnParams, String> {
+        let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+        validate_workspace_id(&p.workspace_id)?;
+        gate(p.harness.as_deref(), p.resume.is_some())?;
+        Ok(p)
+    }
+
+    #[derive(Deserialize)]
+    struct SpawnReviewParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        cwd: String,
+        /// The PR checkouts the session reads, added as
+        /// `permissions.additionalDirectories`.
+        #[serde(rename = "addDirs")]
+        add_dirs: Vec<String>,
+        /// The session's settings as JSON text, written to the file `--settings` reads.
+        settings: String,
+        /// Which PR is checked out where, appended to the session's guardrail.
+        context: String,
+        /// Whether the user chose to load the repos' own skills and CLAUDE.md.
+        #[serde(rename = "loadRepoConfig", default)]
+        load_repo_config: bool,
     }
 
     #[derive(Deserialize)]
@@ -280,8 +320,11 @@ mod unix_impl {
         let state = app.state::<PtyState>();
         match method {
             "claude.spawn" => {
-                let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-                validate_workspace_id(&p.workspace_id)?;
+                // The UI's own launches don't come through here, so this is
+                // where a harness the assistant chose is checked.
+                let p = checked_spawn_params(params, |requested, resuming| {
+                    check_sidecar_harness(app, requested, resuming)
+                })?;
                 spawn_claude_session(
                     app,
                     state.inner(),
@@ -291,7 +334,32 @@ mod unix_impl {
                     p.remote_control,
                     p.resume.as_deref(),
                     p.instruction.as_deref(),
+                    p.harness.as_deref(),
                 )
+            }
+            "claude.spawnReview" => {
+                let p: SpawnReviewParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                spawn_review_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.add_dirs,
+                    &p.settings,
+                    &p.context,
+                    p.load_repo_config,
+                )
+            }
+            "claude.killReview" => {
+                let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                kill_session(
+                    state.inner(),
+                    &crate::pty::review_session_id(&p.workspace_id),
+                );
+                Ok(())
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -303,7 +371,6 @@ mod unix_impl {
                 let p: SendParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
                 validate_workspace_id(&p.workspace_id)?;
                 send_session_instruction(
-                    app,
                     state.inner(),
                     &p.workspace_id,
                     &p.instruction,
@@ -413,7 +480,39 @@ mod unix_impl {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::harness::{self, AgentHarness, HarnessKind};
         use serde_json::json;
+
+        #[test]
+        fn a_spawn_naming_a_harness_the_assistant_may_not_start_is_refused() {
+            let yolo = AgentHarness {
+                id: "yolo".into(),
+                name: "Yolo".into(),
+                kind: HarnessKind::ClaudeCode,
+                command: "claude --dangerously-skip-permissions".into(),
+                ..AgentHarness::default()
+            };
+            let gate = |params: Value| {
+                checked_spawn_params(params, |requested, resuming| {
+                    harness::check_assistant_may_launch(
+                        harness::builtin("Claude".into(), "claude".into()),
+                        std::slice::from_ref(&yolo),
+                        None,
+                        requested,
+                        resuming,
+                    )
+                })
+                .map(|_| ())
+            };
+            let base = json!({ "workspaceId": "w", "cwd": "/tmp", "name": "n" });
+            assert!(gate(base.clone()).is_ok());
+            let mut fresh = base.clone();
+            fresh["harness"] = json!("yolo");
+            assert!(gate(fresh.clone()).is_err());
+            // A resume relaunches what the core already launched there.
+            fresh["resume"] = json!("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70");
+            assert!(gate(fresh).is_ok());
+        }
 
         /// Shaped exactly like `toAlarm()` in `sidecar/src/alarms/service.ts`.
         fn sidecar_payload(meet_link: Value, label: &str) -> Value {
@@ -461,6 +560,25 @@ mod unix_impl {
                 p.resume.as_deref(),
                 Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
             );
+        }
+
+        #[test]
+        fn reads_the_review_session_the_sidecar_sends() {
+            // Shaped like `spawnReviewClaudeSession` in `controlClient.ts`.
+            let p: SpawnReviewParams = serde_json::from_value(json!({
+                "workspaceId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+                "cwd": "/tmp/.review-sessions/w",
+                "addDirs": ["/tmp/.review/w/pr1", "/tmp/.review/w/pr2"],
+                "settings": "{\"disableAllHooks\":true}",
+                "context": "github/o/r/1 in /tmp/.review/w/pr1.",
+                "loadRepoConfig": true,
+            }))
+            .expect("sidecar payload");
+            assert!(p.load_repo_config);
+            assert!(validate_workspace_id(&p.workspace_id).is_ok());
+            assert_eq!(p.add_dirs.len(), 2);
+            assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
+            assert!(p.context.starts_with("github/o/r/1"));
         }
 
         #[test]

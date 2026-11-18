@@ -5,19 +5,25 @@ import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/pl
 import approachReviewer from "../../claude-plugins/yarvis-review/agents/approach-reviewer.md" with {
   type: "text",
 };
+import changeMapper from "../../claude-plugins/yarvis-review/agents/change-mapper.md" with {
+  type: "text",
+};
 import changeSummary from "../../claude-plugins/yarvis-review/agents/change-summary.md" with {
   type: "text",
 };
-import commentReviewer from "../../claude-plugins/yarvis-review/agents/comment-reviewer.md" with {
+import claimsVerifier from "../../claude-plugins/yarvis-review/agents/claims-verifier.md" with {
   type: "text",
 };
-import completenessReviewer from "../../claude-plugins/yarvis-review/agents/completeness-reviewer.md" with {
+import commentReviewer from "../../claude-plugins/yarvis-review/agents/comment-reviewer.md" with {
   type: "text",
 };
 import complexityReviewer from "../../claude-plugins/yarvis-review/agents/complexity-reviewer.md" with {
   type: "text",
 };
 import flowDiagram from "../../claude-plugins/yarvis-review/agents/flow-diagram.md" with {
+  type: "text",
+};
+import intentReviewer from "../../claude-plugins/yarvis-review/agents/intent-reviewer.md" with {
   type: "text",
 };
 import observabilityReviewer from "../../claude-plugins/yarvis-review/agents/observability-reviewer.md" with {
@@ -97,7 +103,9 @@ const PLUGINS = {
     "README.md": reviewReadme,
     "agents/change-summary.md": withInputsAndTrust(changeSummary),
     "agents/risk-reviewer.md": withInputsAndTrust(riskReviewer),
-    "agents/completeness-reviewer.md": withInputsAndTrust(completenessReviewer),
+    "agents/change-mapper.md": withInputsAndTrust(changeMapper),
+    "agents/claims-verifier.md": withInputsAndTrust(claimsVerifier),
+    "agents/intent-reviewer.md": withInputsAndTrust(intentReviewer),
     "agents/test-reviewer.md": withInputsAndTrust(testReviewer),
     "agents/complexity-reviewer.md": withInputsAndTrust(complexityReviewer),
     "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),

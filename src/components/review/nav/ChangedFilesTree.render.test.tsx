@@ -5,7 +5,7 @@ import { prDetailKey } from "../../../lib/pr/cache";
 import type { PrDetail, PrRef } from "../../../lib/pr/types";
 import { primeCache } from "../../../lib/resourceCache";
 import type { ReviewChangedFiles, ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
-import type { LatestVerification } from "../../../lib/reviewWorkspaces/verification";
+import type { VerificationChecklist } from "../../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, textOf } from "../../../test/render";
 import { reviewThread } from "../../../test/reviewThread";
 import { changedFilesKey, reviewViewedKey, verificationKey } from "../tabs/reviewData";
@@ -50,18 +50,15 @@ function prime() {
   primeCache(prDetailKey(ref), {
     reviewThreads: [reviewThread({ path: "src/a.ts", bodies: ["one", "two"] })],
   } as unknown as PrDetail);
-  const run = {
-    status: "succeeded",
-    result: { mustRead: [{ path: "src/a.ts", reason: "the core change" }] },
-  } as never;
-  const latest: LatestVerification = {
+  const checklist: VerificationChecklist = {
     headSha: pr.headSha,
-    current: true,
-    run,
-    lastSucceeded: { run, headSha: pr.headSha, current: true },
+    themes: [],
+    items: [],
+    report: { summary: "s", mustRead: [{ path: "src/a.ts", reason: "the core change" }] },
     size: null,
+    namedTickets: [],
   };
-  primeCache(verificationKey(pr.id), latest);
+  primeCache(verificationKey(pr.id), checklist);
 }
 
 describe("ChangedFilesTree", () => {

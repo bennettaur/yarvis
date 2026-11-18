@@ -54,6 +54,16 @@ pub struct Settings {
     /// Base command a workspace's agent session is launched from; see
     /// `pty::agent_command`.
     pub agent_command: Option<String>,
+    /// Agent harnesses beyond the built-in one; see `harness.rs`.
+    #[serde(default, deserialize_with = "crate::harness::deserialize_lenient")]
+    pub agent_harnesses: Option<Vec<crate::harness::AgentHarness>>,
+    /// Id of the harness a launch gets when it names none. Unset means the
+    /// built-in one.
+    #[serde(
+        default,
+        deserialize_with = "crate::harness::deserialize_default_lenient"
+    )]
+    pub default_agent_harness: Option<String>,
     /// Azure DevOps organization base URL for the PR dashboard; see
     /// `sidecar::build_command`.
     pub azure_devops_org_url: Option<String>,
@@ -364,6 +374,71 @@ impl SettingsState {
             *settings = Self::read_from_disk(&self.path);
             settings.agent_name = name;
             settings.agent_command = command;
+        }
+        self.save()
+    }
+
+    /// Replaces the stored harness list and default. Rejected as a whole when
+    /// any entry is invalid (see `harness::validate`), so a save never keeps
+    /// half of what the user submitted. Clears the stored values of any secret
+    /// variable the save drops, and saves nothing if that fails.
+    fn set_agent_harnesses(
+        &self,
+        harnesses: Vec<crate::harness::AgentHarness>,
+        default_id: Option<String>,
+    ) -> Result<(), String> {
+        // The secret-store lock is held from reading the old list until the new
+        // one is saved. `set_agent_harness_secret` checks the list under the
+        // same lock, so it can't store a value for a variable this save drops.
+        // The store is looked up once the lock is held, so a switch to another
+        // store that finished while this waited is honored. Validated first
+        // too, so a bad submission isn't held up behind another window's save.
+        crate::harness::validate(&harnesses, non_blank(default_id.clone()).as_deref())?;
+        let secrets_guard = keychain::lock_for_write()?;
+        self.set_agent_harnesses_in(
+            &secrets_guard,
+            &secret_store::active(),
+            harnesses,
+            default_id,
+        )
+    }
+
+    /// [`Self::set_agent_harnesses`] against `store`, under a lock the caller holds.
+    fn set_agent_harnesses_in(
+        &self,
+        secrets_guard: &keychain::WriteGuard,
+        store: &Store,
+        harnesses: Vec<crate::harness::AgentHarness>,
+        default_id: Option<String>,
+    ) -> Result<(), String> {
+        let default_id = non_blank(default_id);
+        crate::harness::validate(&harnesses, default_id.as_deref())?;
+        let before = Self::read_from_disk(&self.path)
+            .agent_harnesses
+            .unwrap_or_default();
+        let dropped = crate::harness::dropped_secrets(&before, &harnesses);
+        // Cleared before the list is saved: once it no longer declares them, no
+        // later save would see them as dropped, and a harness reusing the id
+        // and variable would inherit a key meant for the old one. Done outside
+        // the settings lock, since 1Password can take a while to answer, and
+        // only when something was dropped, so an ordinary save never prompts.
+        if !dropped.is_empty() {
+            keychain::update_subtree_locked(
+                secrets_guard,
+                store,
+                crate::harness::SECRET_ENV_SUBTREE,
+                |subtree| Ok(crate::harness::prune_secrets(subtree, &dropped)),
+            )
+            .map_err(|e| {
+                format!("the removed secret values could not be cleared, so nothing was saved: {e}")
+            })?;
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.agent_harnesses = (!harnesses.is_empty()).then_some(harnesses);
+            settings.default_agent_harness =
+                default_id.filter(|id| id != crate::harness::BUILTIN_HARNESS_ID);
         }
         self.save()
     }
@@ -735,6 +810,133 @@ pub fn set_agent(
     Ok(state.snapshot().into())
 }
 
+/// Replaces the configured agent harnesses and the default one, clearing the
+/// stored values of any secret variable the save drops. See
+/// `SettingsState::set_agent_harnesses`.
+#[tauri::command(async)]
+pub fn set_agent_harnesses(
+    state: tauri::State<'_, SettingsState>,
+    harnesses: Vec<crate::harness::AgentHarness>,
+    default_harness: Option<String>,
+) -> Result<SettingsView, String> {
+    state.set_agent_harnesses(harnesses, default_harness)?;
+    Ok(state.snapshot().into())
+}
+
+/// Whether each secret variable a harness declares has a value stored.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessSecretStatus {
+    harness_id: String,
+    key: String,
+    present: bool,
+}
+
+/// Lists which declared harness secrets are stored, in one secret-store read.
+/// Values are never returned: the webview writes secrets and never reads them.
+#[tauri::command(async)]
+pub fn list_agent_harness_secret_status() -> Result<Vec<HarnessSecretStatus>, String> {
+    // From disk, like the launch and the secret write, so a harness another
+    // instance saved shows its secrets here too.
+    let harnesses = from_disk().agent_harnesses.unwrap_or_default();
+    if harnesses.iter().all(|h| h.secret_env.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let root = keychain::read_root()?;
+    let stored = root.get(crate::harness::SECRET_ENV_SUBTREE);
+    Ok(harnesses
+        .iter()
+        .flat_map(|harness| {
+            harness
+                .secret_env
+                .iter()
+                .map(move |key| HarnessSecretStatus {
+                    harness_id: harness.id.clone(),
+                    key: key.clone(),
+                    present: stored
+                        .and_then(|s| s.get(&harness.id))
+                        .and_then(|values| values.get(key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.is_empty()),
+                })
+        })
+        .collect())
+}
+
+/// Stores, or with `None` removes, one secret variable's value for a harness.
+/// Only a variable the saved harness declares in `secretEnv` can be written,
+/// so the webview can't use this to put arbitrary data in the secret store.
+/// Removing works for any name, so a variable dropped from a harness can still
+/// have its old value cleared.
+#[tauri::command(async)]
+pub fn set_agent_harness_secret(
+    harness_id: String,
+    key: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
+        // Checked under the secret-store lock, against the file: a harness
+        // save that drops this variable prunes under the same lock, so the
+        // two can't interleave and leave a value behind. From disk also
+        // counts a harness another instance saved.
+        let declared = || {
+            from_disk()
+                .agent_harnesses
+                .unwrap_or_default()
+                .iter()
+                .any(|h| h.id == harness_id && h.secret_env.contains(&key))
+        };
+        write_harness_secret(subtree, &harness_id, &key, value, declared)
+    })
+}
+
+/// The edit [`set_agent_harness_secret`] makes to the harness-secrets subtree.
+/// A value is written only when `declared` says the saved harness lists the
+/// variable. `declared` is called only for a non-empty value: removing, which
+/// an empty value also does, works for any name. Returns whether anything
+/// changed.
+fn write_harness_secret(
+    subtree: &mut Value,
+    harness_id: &str,
+    key: &str,
+    value: Option<String>,
+    declared: impl FnOnce() -> bool,
+) -> Result<bool, String> {
+    let obj = subtree
+        .as_object_mut()
+        .expect("update_subtree passes an object");
+    match value.filter(|v| !v.is_empty()) {
+        Some(value) => {
+            if !declared() {
+                return Err(format!(
+                    "harness \"{harness_id}\" declares no secret variable {key}; save the harness first"
+                ));
+            }
+            let values = obj
+                .entry(harness_id.to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !values.is_object() {
+                *values = Value::Object(serde_json::Map::new());
+            }
+            values
+                .as_object_mut()
+                .expect("made an object above")
+                .insert(key.to_string(), Value::String(value));
+            Ok(true)
+        }
+        None => {
+            let Some(values) = obj.get_mut(harness_id).and_then(Value::as_object_mut) else {
+                return Ok(false);
+            };
+            let removed = values.remove(key).is_some();
+            if values.is_empty() {
+                obj.remove(harness_id);
+            }
+            Ok(removed)
+        }
+    }
+}
+
 /// Sets the extra slash commands workspace sessions may be sent, replacing the
 /// stored list. See `SettingsState::set_allowed_slash_commands`.
 #[tauri::command]
@@ -881,9 +1083,10 @@ pub struct BackendSwitch {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_legacy_migration, copy_secrets, secrets_lock_beside, Copied, Settings, SettingsState,
-        SettingsView,
+        apply_legacy_migration, copy_secrets, secrets_lock_beside, write_harness_secret, Copied,
+        Settings, SettingsState, SettingsView,
     };
+    use crate::harness::{AgentHarness, HarnessKind};
     use crate::keychain;
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
@@ -1086,6 +1289,177 @@ mod tests {
             );
             assert_eq!(store.snapshot().agent_command, None);
         }
+    }
+
+    fn harness(id: &str, secret_env: &[&str]) -> AgentHarness {
+        AgentHarness {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: HarnessKind::Custom,
+            command: "cloudbox run".to_string(),
+            secret_env: secret_env.iter().map(|k| k.to_string()).collect(),
+            ..AgentHarness::default()
+        }
+    }
+
+    /// Saves `harnesses` against `secrets`, as the Tauri command does against
+    /// the configured store.
+    fn save_harnesses(
+        settings: &SettingsState,
+        secrets: &Store,
+        harnesses: Vec<AgentHarness>,
+        default_id: Option<&str>,
+    ) -> Result<(), String> {
+        settings.set_agent_harnesses_in(
+            &keychain::lock_for_write().unwrap(),
+            secrets,
+            harnesses,
+            default_id.map(str::to_string),
+        )
+    }
+
+    fn reloaded_harness_ids(settings: &SettingsState) -> Option<Vec<String>> {
+        SettingsState::load(settings.path.clone())
+            .snapshot()
+            .agent_harnesses
+            .map(|list| list.into_iter().map(|h| h.id).collect())
+    }
+
+    #[test]
+    fn a_harness_list_and_default_survive_a_reload() {
+        let settings = temp_store("harness-round-trip");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
+
+        let reloaded = SettingsState::load(settings.path.clone()).snapshot();
+        let ids: Option<Vec<String>> = reloaded
+            .agent_harnesses
+            .map(|list| list.into_iter().map(|h| h.id).collect());
+        assert_eq!(ids, Some(vec!["box".to_string()]));
+        assert_eq!(reloaded.default_agent_harness.as_deref(), Some("box"));
+    }
+
+    /// The built-in default and an empty list are stored as absent, so a
+    /// settings file never names the built-in id.
+    #[test]
+    fn the_built_in_default_and_an_empty_list_are_stored_as_absent() {
+        let settings = temp_store("harness-absent");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
+        save_harnesses(&settings, &secrets, vec![], Some("claude")).unwrap();
+
+        let reloaded = SettingsState::load(settings.path.clone()).snapshot();
+        assert_eq!(reloaded.agent_harnesses, None);
+        assert_eq!(reloaded.default_agent_harness, None);
+        let raw = std::fs::read_to_string(&settings.path).unwrap();
+        assert!(!raw.contains(r#""claude""#), "{raw}");
+    }
+
+    #[test]
+    fn an_invalid_harness_list_is_rejected_and_nothing_is_stored() {
+        let settings = temp_store("harness-invalid");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], None).unwrap();
+
+        for (list, default_id) in [
+            (vec![harness("Not An Id", &[])], None),
+            (vec![harness("box", &[]), harness("box", &[])], None),
+            (vec![harness("box", &[])], Some("missing")),
+        ] {
+            assert!(save_harnesses(&settings, &secrets, list, default_id).is_err());
+            assert_eq!(
+                reloaded_harness_ids(&settings),
+                Some(vec!["box".to_string()])
+            );
+        }
+    }
+
+    /// A harness that reused the id and variable would otherwise be launched
+    /// with a value stored for the one it replaced.
+    #[test]
+    fn a_dropped_secret_variable_loses_its_stored_value() {
+        let settings = temp_store("harness-prune");
+        let empty = Store::Memory(MemoryStore::empty());
+        save_harnesses(
+            &settings,
+            &empty,
+            vec![harness("box", &["TOKEN", "KEEP"])],
+            None,
+        )
+        .unwrap();
+        let held = MemoryStore::holding(
+            r#"{"agent_harness_env":{"box":{"TOKEN":"t","KEEP":"k"}},"github_token":"g"}"#,
+        );
+
+        save_harnesses(
+            &settings,
+            &Store::Memory(held.clone()),
+            vec![harness("box", &["KEEP"])],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&held.contents().unwrap()).unwrap(),
+            json!({ "agent_harness_env": { "box": { "KEEP": "k" } }, "github_token": "g" })
+        );
+    }
+
+    /// Saving the list first would leave a value no later save can see as
+    /// dropped, so a failed clear must stop the save.
+    #[test]
+    fn a_save_whose_dropped_secrets_cannot_be_cleared_stores_nothing() {
+        let settings = temp_store("harness-prune-fails");
+        let empty = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &empty, vec![harness("box", &["TOKEN"])], None).unwrap();
+
+        let unreadable = Store::Memory(MemoryStore::unreadable());
+        assert!(save_harnesses(&settings, &unreadable, vec![], None).is_err());
+        assert_eq!(
+            reloaded_harness_ids(&settings),
+            Some(vec!["box".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_harness_secret_is_written_only_for_a_declared_variable() {
+        let mut subtree = json!({});
+        let refused =
+            write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || false);
+        assert!(refused.is_err());
+        assert_eq!(subtree, json!({}));
+
+        let written = write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || true);
+        assert_eq!(written, Ok(true));
+        assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
+    }
+
+    /// Removing skips the declared check, so a variable already dropped from
+    /// its harness can still be cleared.
+    #[test]
+    fn removing_a_harness_secret_works_for_any_name_and_drops_an_emptied_entry() {
+        let mut subtree = json!({ "box": { "OLD": "o", "TOKEN": "t" } });
+        let not_checked = || unreachable!("removal must not need a declared variable");
+
+        assert_eq!(
+            write_harness_secret(&mut subtree, "box", "OLD", None, not_checked),
+            Ok(true)
+        );
+        assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
+        // An empty value removes too, rather than storing an empty secret.
+        let emptied = write_harness_secret(
+            &mut subtree,
+            "box",
+            "TOKEN",
+            Some(String::new()),
+            not_checked,
+        );
+        assert_eq!(emptied, Ok(true));
+        assert_eq!(subtree, json!({}));
+        assert_eq!(
+            write_harness_secret(&mut subtree, "box", "TOKEN", None, not_checked),
+            Ok(false)
+        );
     }
 
     #[test]

@@ -660,6 +660,22 @@ export class AzureDevOpsClient {
       .filter((c): c is CheckItem => c !== null);
   }
 
+  /** The ids of the work items linked to a PR. */
+  async prWorkItemIds(ref: AzureRef): Promise<number[]> {
+    const data = await this.get<AzureList<{ id?: string | number }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/workitems`,
+    );
+    return (data.value ?? [])
+      .map((w) => Number(w.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+  }
+
+  /** {@link prCiChecks} for a PR known only by its ref. */
+  async prCiChecksFor(ref: AzureRef): Promise<CheckItem[]> {
+    const pr = await this.prRaw(ref);
+    return this.prCiChecks(ref.project, pr.repository?.project?.id ?? "", ref.prId);
+  }
+
   /** `prUrl` is the PR's web page, which each thread links into. */
   private async threads(ref: AzureRef, prUrl: string): Promise<ReviewThread[]> {
     const data = await this.get<AzureList<AzureThread>>(`${this.prBase(ref)}/threads`);
