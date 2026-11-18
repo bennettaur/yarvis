@@ -63,7 +63,6 @@ import {
   type AddExtraWorktreeResult,
   branchCollision,
   isReservedBranchName,
-  MAX_EXTRA_WORKTREES,
   WorktreeRefusal,
 } from "./extraWorktree.ts";
 import {
@@ -77,7 +76,6 @@ import {
   addWorktreeWithoutHooks,
   type BranchSync,
   branchExists,
-  branchLanded,
   branchSync,
   type ChangedFile,
   canonicalPath,
@@ -92,6 +90,7 @@ import {
   fileDiff,
   type GitRunner,
   hasUncommittedChanges,
+  landedTip,
   listChangedFiles,
   listFiles,
   listLocalBranches,
@@ -104,6 +103,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { harnessStillStartable } from "./harnesses.ts";
 import {
   checkBeforeWrite,
   checkRepoIntegrity,
@@ -467,6 +467,9 @@ export interface CreateWorkspaceInput {
    * launch survives the UI navigating away — see `workspaces.pendingBrief`.
    */
   brief?: string | null;
+  /** The agent harness the brief's session runs; omitted means the default.
+   *  Ignored without a brief. See `workspaces.pendingHarness`. */
+  harness?: string;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
@@ -550,12 +553,20 @@ export async function createWorkspace(
   // tasks) gets the same defense against hidden instructions surviving into the
   // auto-approved agent session. Sanitizing sanitized text is a no-op.
   const pendingBrief = input.brief?.trim() ? sanitizeIssueText(input.brief) : null;
+  const pendingHarness = pendingBrief ? (input.harness ?? null) : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingBrief })
+      .values({
+        name: input.name.trim(),
+        slug,
+        rootPath,
+        status: "creating",
+        pendingBrief,
+        pendingHarness,
+      })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -731,13 +742,6 @@ export async function addExtraWorktree(
     if (repoStatus !== "ready") {
       throw new WorktreeRefusal(`${basename(workspaceRepo.worktreePath)} is no longer ready`);
     }
-    const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
-    if (live >= MAX_EXTRA_WORKTREES) {
-      throw new WorktreeRefusal(
-        `${basename(workspaceRepo.worktreePath)} already has ${live} extra worktrees; remove one first`,
-      );
-    }
-
     await fetchRemote(runner, clone);
     const [local, remote, taken] = await Promise.all([
       listLocalBranches(runner, clone),
@@ -872,31 +876,6 @@ async function undoWorktree(
 }
 
 /**
- * Deletes the repo's recorded extra worktrees that git no longer has, and
- * answers how many are left.
- */
-async function pruneExtraWorktrees(
-  db: Db,
-  workspaceRepoId: string,
-  clone: string,
-): Promise<number> {
-  const rows = await db
-    .select()
-    .from(workspaceExtraWorktrees)
-    .where(eq(workspaceExtraWorktrees.workspaceRepoId, workspaceRepoId));
-  const gone = rows.filter((row) => resolveAdminName(clone, row.worktreePath) === null);
-  if (gone.length > 0) {
-    await db.delete(workspaceExtraWorktrees).where(
-      inArray(
-        workspaceExtraWorktrees.id,
-        gone.map((row) => row.id),
-      ),
-    );
-  }
-  return rows.length - gone.length;
-}
-
-/**
  * The branches active workspaces on this repo work on or stack on, the
  * branches other active workspaces added with `add_worktree`, and the repo's
  * default branch. They can be on the remote alone, or gone from the clone
@@ -945,7 +924,7 @@ function assertUsableBranch(branch: string, label: string): void {
  * brief, which holds a whole ticket body and is wanted only by the one
  * workspace being opened — this list is polled, and for every workspace at once.
  */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
+export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief" | "pendingHarness"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
   /**
@@ -982,7 +961,11 @@ export async function listWorkspaces(
   db: Db,
   { withActivity = false }: { withActivity?: boolean } = {},
 ): Promise<WorkspaceSummary[]> {
-  const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const {
+    pendingBrief: _omitted,
+    pendingHarness: _omittedHarness,
+    ...listColumns
+  } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
@@ -2160,6 +2143,10 @@ export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE
  * leaves the brief in place for `resumeKickOffs` to retry rather than failing
  * the workspace. Retrying is safe — the core keys sessions by workspace and
  * discards a spawn for an id that already has one.
+ *
+ * A stored harness the user has since removed or stopped letting the assistant
+ * start falls back to the default. Otherwise the core would refuse it on every
+ * retry and the kick-off would never run.
  */
 async function launchKickOffSession(
   db: Db,
@@ -2167,6 +2154,14 @@ async function launchKickOffSession(
   startSession: ClaudeSessionStarter,
   remoteControl: boolean,
 ): Promise<void> {
+  const stored = detail.pendingHarness ?? undefined;
+  const fellBack = stored !== undefined && !(await harnessStillStartable(stored));
+  if (fellBack) {
+    console.warn(
+      `[workspaces] the kick-off's harness "${stored}" can no longer be started; using the default`,
+    );
+  }
+  const harness = fellBack ? undefined : stored;
   try {
     await startSession({
       workspaceId: detail.id,
@@ -2174,6 +2169,7 @@ async function launchKickOffSession(
       name: detail.name,
       remoteControl,
       instruction: AGENT_KICKOFF_INSTRUCTION,
+      harness,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
@@ -2182,7 +2178,16 @@ async function launchKickOffSession(
   void emitEvent(db, {
     type: "workspace.session_started",
     source: "workspaces",
-    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      kickOff: true,
+      remoteControl,
+      harness: harness ?? null,
+      // The harness the assistant picked, when it could no longer be started
+      // and the default ran instead.
+      harnessFallbackFrom: fellBack ? stored : null,
+    },
   });
   await clearPendingBrief(db, detail.id).catch(() => undefined);
 }
@@ -2195,7 +2200,7 @@ async function launchKickOffSession(
 export async function clearPendingBrief(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ pendingBrief: null, updatedAt: new Date() })
+    .set({ pendingBrief: null, pendingHarness: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
 }
 
@@ -2596,20 +2601,20 @@ function trackArchive(
 }
 
 /**
- * Whether to delete a repo's local branch once its worktree is gone, so
- * archived workspaces don't pile up branches in the shared clone. Only a
- * landed branch goes, and a git failure keeps it, since a branch left behind
- * costs nothing.
+ * The commit at which to delete a repo's local branch after its worktree is
+ * gone, so archived workspaces don't pile up branches in the shared clone, or
+ * null to keep the branch. Only a landed branch goes, and a git failure keeps
+ * it, since a branch left behind costs nothing.
  *
  * Throws instead when a landed branch has commits that neither a remote nor
  * its merged PR has (work added after the merge) and `force` isn't set, so the
  * user hears about them while the worktree is still there to push from.
  */
-async function checkBranchForArchive(
+async function branchTipToDelete(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   const primaryClonePath = wr.repo.primaryClonePath;
   // Only a PR that merged from this branch says anything about it; one linked
   // from another branch merged other commits.
@@ -2619,21 +2624,21 @@ async function checkBranchForArchive(
   // Declared out here so the throw below isn't caught by the best-effort catch:
   // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;
+  let tip: string | null;
   try {
-    const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
-    if (!landed) return false;
-    if (force) return true;
-    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch, mergedHead);
+    tip = await landedTip(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
+    if (tip === null || force) return tip;
+    unpushed = await unpushedCommitCount(runner, primaryClonePath, tip, mergedHead);
   } catch (e) {
     console.warn(`[workspaces] couldn't check branch ${wr.branch} before archive, keeping it:`, e);
-    return false;
+    return null;
   }
-  if (unpushed === 0) return true;
+  if (unpushed === 0) return tip;
   if (prMerged && !mergedHead) {
     // Polled before the PR cache kept a head commit: a squash merge's own
     // commits look unpushed too, so there's no telling them from new work.
     console.warn(`[workspaces] kept branch ${wr.branch}: its merged PR's head commit is unknown`);
-    return false;
+    return null;
   }
   const dirty = await hasUncommittedChanges(runner, wr.worktreePath).catch(() => false);
   throw new Error(
@@ -2645,9 +2650,13 @@ async function checkBranchForArchive(
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+async function deleteBranchBestEffort(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  tip: string,
+): Promise<void> {
   try {
-    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch);
+    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch, tip);
   } catch (e) {
     console.warn(
       `[workspaces] couldn't delete branch ${wr.branch} after removing its worktree:`,
@@ -2677,9 +2686,8 @@ async function deleteLandedExtraBranches(
   for (const row of rows) {
     if (inUse.has(row.branch.toLowerCase())) continue;
     try {
-      if (await branchLanded(runner, clone, row.branch, wr.baseBranch, false)) {
-        await deleteBranch(runner, clone, row.branch);
-      }
+      const tip = await landedTip(runner, clone, row.branch, wr.baseBranch, false);
+      if (tip !== null) await deleteBranch(runner, clone, row.branch, tip);
     } catch (e) {
       console.warn(`[workspaces] couldn't delete extra worktree branch ${row.branch}:`, e);
     }
@@ -2724,11 +2732,11 @@ async function removeWorktreesAndFinish(
         // Checked before anything is removed. An extra worktree that stops this
         // attempt would otherwise hide the unpushed commits, and the Force
         // retry that follows skips the check and deletes them unwarned.
-        let shouldDeleteBranch = false;
+        let branchTip: string | null = null;
         let unpushedCommitsError: unknown = null;
         if (wr.status !== "removed") {
           try {
-            shouldDeleteBranch = await checkBranchForArchive(runner, wr, force);
+            branchTip = await branchTipToDelete(runner, wr, force);
           } catch (e) {
             unpushedCommitsError = e;
           }
@@ -2763,7 +2771,7 @@ async function removeWorktreesAndFinish(
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
+        if (branchTip !== null) await deleteBranchBestEffort(runner, wr, branchTip);
       });
       if (wr.status === "removed") continue;
       await db
@@ -2805,6 +2813,7 @@ async function removeWorktreesAndFinish(
       // brief still pending on it is only a copy of the work kept alive for
       // nobody.
       pendingBrief: fullyRemoved ? null : detail.pendingBrief,
+      pendingHarness: fullyRemoved ? null : detail.pendingHarness,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })

@@ -4,6 +4,7 @@ import { orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { createGitHubClient, type GitHubClient } from "../github/client.ts";
+import { CLAUDE_EFFORTS } from "../lib/claudeCli.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { type KickoffDeps, kickOffVerification } from "../reviewWorkspaces/kickoff.ts";
 import {
@@ -19,6 +20,7 @@ import { githubNameSchema, prNumberSchema, refSegmentSchema } from "../reviewWor
 import { defaultReviewDeps, ReviewWorkspaceError } from "../reviewWorkspaces/service.ts";
 import { defaultVerificationDeps, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
 import { kickOffGuide } from "./guideRun.ts";
+import { VERIFICATION_MODELS } from "./models.ts";
 import { NO_PULL_REQUEST, type PrRef } from "./types.ts";
 
 /**
@@ -80,6 +82,22 @@ async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
 
 class StackError extends Error {}
 
+/** A model or effort for every check a call starts; only what the user named. */
+const runChoiceFields = {
+  model: z
+    .enum(VERIFICATION_MODELS)
+    .optional()
+    .describe(
+      "Run every check on this Claude model instead of each check's own. Only when the user named a model; omit otherwise.",
+    ),
+  effort: z
+    .enum(CLAUDE_EFFORTS)
+    .optional()
+    .describe(
+      "Run every check at this effort instead of each check's own. Only when the user named an effort; omit otherwise.",
+    ),
+};
+
 const PRESET_NAMES = Object.keys(VERIFICATION_PRESETS) as [
   VerificationPreset,
   ...VerificationPreset[],
@@ -119,8 +137,9 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .max(REPORT_SECTIONS.length)
           .optional()
           .describe("Exact sections instead of a preset, when the user named them."),
+        ...runChoiceFields,
       }),
-      execute: async ({ pullRequests, stackOf, preset, sections }) => {
+      execute: async ({ pullRequests, stackOf, preset, sections, model, effort }) => {
         const listed = (pullRequests?.length ?? 0) > 0;
         if (listed === (stackOf !== undefined)) {
           return { status: "error", error: "Give either pullRequests or stackOf." };
@@ -153,6 +172,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
             refs,
             picked,
             kickoffDeps(),
+            { model, effort },
           );
           return { status: existing ? "already-running" : "queued", ...queueView(queue) };
         } catch (e) {
@@ -233,8 +253,9 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .describe(
             "Run the asked-for sections again even where they already have a result for the current commit; with sections omitted, every default section runs again. Only when the user asked.",
           ),
+        ...runChoiceFields,
       }),
-      execute: async ({ pullRequest, sections, confirmed, rerun }) => {
+      execute: async ({ pullRequest, sections, confirmed, rerun, model, effort }) => {
         const ref = toRef(config, pullRequest);
         if ("error" in ref) return ref;
         try {
@@ -242,7 +263,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
             db,
             config,
             ref,
-            { sections, confirmed, rerun },
+            { sections, confirmed, rerun, override: { model, effort } },
             kickoffDeps(),
           );
         } catch (e) {

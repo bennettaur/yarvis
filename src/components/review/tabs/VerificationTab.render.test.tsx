@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import type { RunChoice } from "../../../lib/pr/models";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
@@ -24,7 +25,7 @@ import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { evidenceKey, mutationKey, treeKey, verificationKey } from "./reviewData";
-import type { TabContext } from "./types";
+import type { TabContext, TabSpec } from "./types";
 import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab";
 
 const pr = {
@@ -383,6 +384,44 @@ describe("VerificationTab", () => {
     button(row(host, "Claims"), "Run")?.click();
     await waitFor(() => named.length > 0, "the start");
     expect(named).toEqual(["ABC-12", "#45", "https://acme.atlassian.net/browse/XY-3"]);
+  });
+
+  it("starts checks on the model and effort picked for the run, or each check's own", async () => {
+    const sent: RunChoice[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, _tickets, override = {}) => {
+        sent.push(override);
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount(checklist());
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 1, "the first start");
+    const choose = (label: string, value: string) => {
+      const select = host.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        value,
+      );
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("Model for the checks you run", "haiku");
+    choose("Effort for the checks you run", "low");
+    await waitFor(
+      () =>
+        (
+          host.querySelector(
+            'select[aria-label="Effort for the checks you run"]',
+          ) as HTMLSelectElement
+        ).value === "low",
+      "the picks to change",
+    );
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 2, "the second start");
+    expect(sent).toEqual([{}, { model: "haiku", effort: "low" }]);
   });
 
   it("offers the last run's tickets again, and sends at most five", async () => {
@@ -892,6 +931,35 @@ describe("evidence from CI, scanners and bots", () => {
     expect(textOf(mutation.innerHTML)).toContain(`older head (${older.slice(0, 7)})`);
     button(mutation, "Open")?.click();
     expect(opened).toEqual([{ kind: "mutation", prId: pr.id }]);
+  });
+
+  it("opens the flow diagram in its own tab, rather than drawing it in the report", async () => {
+    const opened: TabSpec[] = [];
+    const flow = { title: "How an order is saved", explanation: "", mermaid: "flowchart TD" };
+    primeCache(
+      verificationKey(pr.id),
+      checklist({
+        items: { flow: { latest: run(), result: run() } },
+        report: { ...goodReport, flow },
+      }),
+    );
+    primeCache(evidenceKey(pr.id), NO_EVIDENCE);
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    const mounted = await mountForInteraction(
+      createElement(VerificationTab, { ctx: { ...ctx, openTab: (tab) => opened.push(tab) } }),
+    );
+    unmount = mounted.unmount;
+    expect(textOf(mounted.host.innerHTML)).not.toContain("How an order is saved");
+    // Only a section with its own tab offers to open it.
+    expect(button(row(mounted.host, "Summary and must-read files"), "Open")).toBeUndefined();
+    button(row(mounted.host, "Flow diagram"), "Open")?.click();
+    expect(opened).toEqual([{ kind: "diagram", prId: pr.id }]);
+  });
+
+  it("offers no tab for a flow diagram that hasn't been drawn", async () => {
+    const host = await mount(checklist());
+    expect(button(row(host, "Flow diagram"), "Open")).toBeUndefined();
   });
 
   it("says why mutation testing can't run yet", async () => {

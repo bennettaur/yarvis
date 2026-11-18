@@ -45,6 +45,8 @@ const NAV_ITEMS: StaticTabKind[] = [
   "checks",
   "comments",
   "since-review",
+  "verification",
+  "diagram",
 ];
 
 function Item({

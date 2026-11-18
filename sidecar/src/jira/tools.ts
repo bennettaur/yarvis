@@ -18,6 +18,7 @@ import {
   sessionStartedMessage,
 } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
+import { harnessChoiceError, harnessIdSchema } from "../workspaces/harnesses.ts";
 import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
 import { type JiraClient, jiraClientFromConfig } from "./client.ts";
 import { applyJiraStartWorkSideEffects } from "./service.ts";
@@ -379,8 +380,11 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
           .boolean()
           .default(true)
           .describe("Transition the issue into an in-progress status in JIRA"),
+        harness: harnessIdSchema.optional(),
       }),
-      execute: async ({ key, repoIds, assignSelf, transitionToInProgress }) => {
+      execute: async ({ key, repoIds, assignSelf, transitionToInProgress, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         if (!jira) return { error: "JIRA not configured in Settings" };
 
         let issue: JiraIssueDetail;
@@ -404,6 +408,7 @@ export function buildJiraTools(db: Db, config: Config, deps: JiraToolDeps = {}) 
             body: issue.body,
             sourceKey: issue.sourceKey,
           }),
+          harness,
         });
 
         await provisionWorkspace(db, ws.id, () => undefined, {

@@ -144,11 +144,6 @@ const AGENT_TABS: { kind: StaticTabKind; label: string; title: string }[] = [
     title: "Read the PR theme by theme, the work that matters first",
   },
   {
-    kind: "verification",
-    label: "Verification",
-    title: "Have an agent check the PR does what it says",
-  },
-  {
     kind: "claude",
     label: "Ask Claude",
     title: "Chat with Claude Code about every PR in this workspace",

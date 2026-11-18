@@ -120,6 +120,47 @@ function fakeGitHub(overrides: Partial<WorkspaceGitHubClient> = {}) {
  * provisioning settled on, which the sync refuses to proceed without seeing
  * checked out.
  */
+/** Restores the suite's settings file after `useHarnessSettings`; null when unchanged. */
+let restoreHarnessSettings: (() => void) | null = null;
+
+/**
+ * Points the sidecar at a settings file with Pi and OpenCode saved and opened
+ * to the assistant, for a test that starts a session with one. Undone in the
+ * suite's `afterEach`.
+ */
+function useHarnessSettings(extra: Record<string, unknown> = {}): void {
+  const suiteSettings = process.env.YARVIS_SETTINGS_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "yarvis-harnesses-"));
+  const settings = join(dir, "settings.json");
+  writeFileSync(
+    settings,
+    JSON.stringify({
+      agentHarnesses: [
+        { id: "pi", name: "Pi", kind: "pi", command: "pi", assistantMayUse: true },
+        {
+          id: "opencode",
+          name: "OpenCode",
+          kind: "opencode",
+          command: "opencode",
+          assistantMayUse: true,
+        },
+        { id: "locked", name: "Locked", kind: "claude-code", command: "claude --yolo" },
+      ],
+      ...extra,
+    }),
+  );
+  process.env.YARVIS_SETTINGS_PATH = settings;
+  restoreHarnessSettings = () => {
+    process.env.YARVIS_SETTINGS_PATH = suiteSettings;
+    rmSync(dir, { recursive: true, force: true });
+  };
+}
+
+afterEach(() => {
+  restoreHarnessSettings?.();
+  restoreHarnessSettings = null;
+});
+
 async function activeWorkspace(
   name: string,
   cloneUrls = ["https://github.com/acme/widget.git"],
@@ -622,6 +663,200 @@ describe("workspace tools", () => {
     expect(result.sessionKey).toBe(`ws-claude:${wsId}`);
     expect(startedCwds.length).toBe(2);
     expect(startedCwds[1]).toContain("existing-ws");
+  });
+
+  it("create_scratch_workspace_session hands its harness to the kick-off and to a plain launch", async () => {
+    useHarnessSettings();
+    const started: { harness?: string; instruction?: string }[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started.push({ harness: input.harness, instruction: input.instruction });
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Kick-off", brief: "Do the thing.", startWork: true, harness: "pi" },
+      opts,
+    );
+    await tools.create_scratch_workspace_session.execute!(
+      { name: "Plain", startWork: true, harness: "opencode" },
+      opts,
+    );
+    expect(started).toEqual([
+      { harness: "pi", instruction: AGENT_KICKOFF_INSTRUCTION },
+      { harness: "opencode", instruction: undefined },
+    ]);
+  });
+
+  it("create_workspace_session hands its harness to the kick-off", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/harness.git" });
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.create_workspace_session.execute!(
+      {
+        name: "Repo kick-off",
+        repoIds: [repo.id],
+        brief: "Do it.",
+        startWork: true,
+        harness: "pi",
+      },
+      opts,
+    );
+    expect(harnesses).toEqual(["pi"]);
+  });
+
+  it("refuses a harness the assistant may not start before building anything", async () => {
+    useHarnessSettings();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Locked out", brief: "Do it.", startWork: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect((await sql`SELECT id FROM workspaces WHERE name = 'Locked out'`).length).toBe(0);
+  });
+
+  it("refuses Remote Control on a default harness that can't take it", async () => {
+    useHarnessSettings({ defaultAgentHarness: "pi" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain("Remote Control needs a Claude Code harness");
+    // The model is sent back to the user rather than told to pick one itself.
+    expect(result.error).toContain("ask the user which Claude Code harness to use");
+    expect(result.error).not.toContain("list_agent_harnesses");
+  });
+
+  it("points Remote Control back at a Claude Code default rather than another harness", async () => {
+    useHarnessSettings();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true, harness: "pi" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain('leave harness out to use the default, "Claude"');
+    // The user asked for Pi, so they hear why something else ran.
+    expect(result.error).toContain(`tell the user "Pi" can't take Remote Control`);
+  });
+
+  it("start_work_on_issue refuses a harness the assistant may not start before touching anything", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client, calls } = fakeGitHub();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect(calls.assigned).toEqual([]);
+    expect(calls.labeled).toEqual([]);
+    expect((await db.select().from(schema.workspaces)).length).toBe(0);
+  });
+
+  it("start_work_on_issue launches the harness the user named", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client } = fakeGitHub();
+    let startedHarness: string | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        startedHarness = input.harness;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: false, applyLabel: false, harness: "pi" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(startedHarness).toBe("pi");
+  });
+
+  it("offers the model the harness list as a tool", async () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const listed = (await tools.list_agent_harnesses.execute!({}, opts)) as { id: string }[];
+    expect(listed.map((h) => h.id)).toContain("claude");
+  });
+
+  it("refuses a harness id the core could never launch before starting anything", () => {
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+    const schema = tools.start_workspace_session.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const workspaceId = crypto.randomUUID();
+    expect(schema.safeParse({ workspaceId, harness: "Bad Id" }).success).toBe(false);
+    expect(schema.safeParse({ workspaceId, harness: "pi" }).success).toBe(true);
+  });
+
+  it("start_workspace_session launches the harness it was asked for", async () => {
+    useHarnessSettings();
+    const created = await activeWorkspace("Harness WS");
+    // Creating the workspace logged a session start of its own.
+    await sql`TRUNCATE events RESTART IDENTITY`;
+    const harnesses: (string | undefined)[] = [];
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      startClaudeSession: async (input) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+    await tools.start_workspace_session.execute!(
+      { workspaceId: created.workspaceId, harness: "pi" },
+      opts,
+    );
+    await tools.start_workspace_session.execute!({ workspaceId: created.workspaceId }, opts);
+    // Without one the core picks the default, so none is sent.
+    expect(harnesses).toEqual(["pi", undefined]);
+    // The activity log says which harness the user (or assistant) picked.
+    // emitEvent is fire-and-forget, so wait for both rows rather than a delay.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const [{ n }] =
+        await sql`SELECT count(*)::int AS n FROM events WHERE type = 'workspace.session_started' AND source = 'chat'`;
+      if (n >= 2) break;
+      await Bun.sleep(20);
+    }
+    const events =
+      await sql`SELECT payload FROM events WHERE type = 'workspace.session_started' AND source = 'chat' ORDER BY created_at`;
+    expect(events.map((e) => (e.payload as { harness: string | null }).harness)).toEqual([
+      "pi",
+      null,
+    ]);
   });
 
   it("start_workspace_session gives a workspace that lacks them the registration hooks", async () => {

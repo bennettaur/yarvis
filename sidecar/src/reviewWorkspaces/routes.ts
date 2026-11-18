@@ -6,6 +6,7 @@ import type { Config } from "../config.ts";
 import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { prEvidence } from "../pr/evidence.ts";
+import { runChoiceSchema } from "../pr/models.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
@@ -127,6 +128,8 @@ const startVerificationSchema = z
       .max(50)
       .transform((t) => t.slice(0, MAX_NAMED_TICKETS))
       .optional(),
+    // A model or effort for every section this starts, over the settings.
+    override: runChoiceSchema.strict().optional(),
   })
   .nullable();
 // No body starts with the workspace's saved choice.
@@ -529,8 +532,11 @@ export function createReviewWorkspaceRoutes(
         c.req.param("prId"),
         deps(),
         options.verification ?? defaultVerificationDeps(config),
-        parsed.data?.sections,
-        parsed.data?.namedTickets,
+        {
+          sections: parsed.data?.sections,
+          namedTickets: parsed.data?.namedTickets,
+          override: parsed.data?.override,
+        },
       );
       return c.json(started, started.runs.some((r) => !r.existing) ? 202 : 200);
     } catch (e) {

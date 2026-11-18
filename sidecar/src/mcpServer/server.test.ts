@@ -409,6 +409,8 @@ describe("yarvis mcp server in a workspace", () => {
     expect(tools).toContain("resolve_review_comment");
     expect(tools).toContain("add_worktree");
     expect(tools).toContain("link_pull_request");
+
+    expect(client.getInstructions()).toContain("add_worktree");
   });
 
   it("links a pull request to the session's own workspace", async () => {
@@ -455,6 +457,19 @@ describe("yarvis mcp server in a workspace", () => {
     });
     expect(failure.isError).toBe(true);
     expect(JSON.stringify(failure.content)).not.toContain("secret-path");
+  });
+
+  it("doesn't mention add_worktree to a workspace session that isn't offered it", async () => {
+    const client = await connect(new FakeMemory(), {
+      id: WORKSPACE_ID,
+      reviewComments: () => new FakeReviewComments(WORKSPACE_ID, []),
+      linkPullRequest: async () => {
+        throw new Error("linkPullRequest not expected in this test");
+      },
+    });
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("add_worktree");
+    expect(client.getInstructions()).toContain("list_review_comments");
+    expect(client.getInstructions()).not.toContain("add_worktree");
   });
 
   it("adds a worktree to the session's own workspace", async () => {

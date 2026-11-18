@@ -140,6 +140,38 @@ describe("mcp endpoint", () => {
     expect(fallback).toContain("recall");
   });
 
+  it("offers add_worktree only to a terminal proven to be the workspace's own", async () => {
+    const app = createApp(testConfig());
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const other = "22222222-2222-4222-8222-222222222222";
+    const sessionFor = (id: string) => {
+      const key = `ws-claude:${id}`;
+      const token = createHmac("sha256", "test-token").update(`session:${key}`).digest("hex");
+      return { "X-Yarvis-Session-Key": key, "X-Yarvis-Session-Token": token };
+    };
+    const listTools = async (headers: Record<string, string>) => {
+      const res = await app.request(
+        "/mcp",
+        post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, undefined, HOST, {
+          "X-Yarvis-Workspace": workspace,
+          ...headers,
+        }),
+      );
+      const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
+      return body.result.tools.map((t) => t.name);
+    };
+
+    expect(await listTools(sessionFor(workspace))).toContain("add_worktree");
+    // The header alone, a forged token, and another workspace's terminal.
+    const headerOnly = await listTools({});
+    expect(headerOnly).toContain("resolve_review_comment");
+    expect(headerOnly).not.toContain("add_worktree");
+    expect(
+      await listTools({ ...sessionFor(workspace), "X-Yarvis-Session-Token": "0".repeat(64) }),
+    ).not.toContain("add_worktree");
+    expect(await listTools(sessionFor(other))).not.toContain("add_worktree");
+  });
+
   it("refuses a request addressed to a host that is not ours", async () => {
     // A page can point a name it controls at 127.0.0.1; the Host header is what
     // separates that from a client that dialed us directly.

@@ -26,7 +26,13 @@ Three processes, each with a clean ownership boundary:
   `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
-  a PTY.
+  a PTY. `claude.spawn` can name a saved agent harness by id, never a command,
+  and the core refuses one the user hasn't let the assistant start
+  (`harness::check_assistant_may_launch`): the id comes from a model that may
+  have read it in an issue. A spawn with a resume id skips that check for a
+  Claude Code harness, so the sidecar's restart sweep can bring back a session
+  the user started. That makes `resume` something only the sweep may set, from
+  a hook-verified session row. Never expose it to an agent tool.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
@@ -367,11 +373,16 @@ report there and leaves the fixes to the author.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments,
-  `add_worktree` and `link_pull_request`. The header is not a boundary. So
-  `add_worktree` may only check out a branch not yet in the clone, inside that
+  workspace, listing and resolving that workspace's review comments and
+  `link_pull_request`. The header is not a boundary, so `add_worktree` also
+  needs one of that workspace's terminals' session tokens (`questionOrigin`).
+  Even then it may only check out a branch not yet in the clone, inside that
   workspace's folder, and widen the sandbox to that one branch
-  (`addExtraWorktree`). Bodies
+  (`addExtraWorktree`), since the token is no boundary against a same-user
+  process. `link_pull_request` asks for no token because all it can do is add
+  a PR of one of that workspace's own repos to the PR list the user already
+  sees, after the provider confirms the PR exists. It can't remove one.
+  Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,
   because the user wrote them. Any other source (a verification finding the
   user chose to add) is fenced there and kept out of the event log; a new
@@ -447,11 +458,12 @@ report there and leaves the fixes to the author.
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
-  `foreground_is_agent` refuses to type at all unless the configured agent is
-  what's reading the prompt, and the chat agent's system prompt forbids
-  relaying third-party text as an instruction. Text the core would refuse that
-  way is never sent over the channel (`opensWithCommandPrefix` in
-  `workspaces/claudeSession.ts`), so the same refusal applies. `claude.slash` is the one way a line opening with `/`
+  `foreground_is_agent` refuses to type at all unless the agent the session was
+  launched with (its harness, `harness.rs`) is what's reading the prompt, and
+  the chat agent's system prompt forbids relaying third-party text as an
+  instruction. Text the core would refuse that way is never sent over the
+  channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
+  same refusal applies. `claude.slash` is the one way a line opening with `/`
   gets in: the core types it only when the command is on an allowlist no sidecar
   route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the

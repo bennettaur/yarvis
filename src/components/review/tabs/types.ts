@@ -11,6 +11,7 @@ export type StaticTabKind =
   | "guide"
   | "story"
   | "verification"
+  | "diagram"
   | "mutation"
   | "claude";
 

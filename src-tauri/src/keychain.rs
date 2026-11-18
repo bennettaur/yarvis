@@ -255,6 +255,17 @@ pub fn update_subtree(
     update_root(|root| edit_subtree(root, key, edit))
 }
 
+/// [`update_subtree`] in `store`, for a caller that already holds the write
+/// lock because it has more to do under the same lock.
+pub fn update_subtree_locked(
+    guard: &WriteGuard,
+    store: &Store,
+    key: &str,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<(), String> {
+    update_root_locked(guard, store, |root| edit_subtree(root, key, edit))
+}
+
 fn edit_subtree(
     root: &mut Value,
     key: &str,

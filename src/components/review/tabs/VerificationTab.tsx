@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
+import {
+  type RunChoice,
+  VERIFICATION_EFFORTS,
+  VERIFICATION_MODEL_LABELS,
+  VERIFICATION_MODELS,
+  type VerificationEffort,
+  type VerificationModel,
+} from "../../../lib/pr/models";
 import { refKey } from "../../../lib/pr/ref";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
@@ -100,7 +108,7 @@ export function findingPoster(
   };
 }
 
-const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
+export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "?");
 
 type Tone = "good" | "warn" | "bad" | "muted";
 
@@ -197,7 +205,7 @@ function Chip({ text, tone }: { text: string; tone: Tone }) {
 /** How often the checklist is re-read while a check runs. */
 const POLL_MS = 3000;
 
-const usd = (n: number) => `$${n.toFixed(2)}`;
+export const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /** One section on the checklist: whether it has run, what its newest result says, and a button to run it. */
 function ChecklistRow({
@@ -209,6 +217,7 @@ function ChecklistRow({
   onCancel,
   canRun,
   starting,
+  onOpenTab,
 }: {
   item: ChecklistItem;
   report: VerificationReport | null;
@@ -218,6 +227,8 @@ function ChecklistRow({
   onCancel: (runId: string) => Promise<void>;
   canRun: boolean;
   starting: boolean;
+  /** Opens the tab that shows this section's result on its own, for a section that has one. */
+  onOpenTab?: () => void;
 }) {
   const { latest, result } = item;
   // A run another Yarvis instance is doing can't be cancelled from here.
@@ -282,6 +293,15 @@ function ChecklistRow({
       </span>
       <span className="min-w-0 flex-1">{state}</span>
       {actionError && <span className="text-xs text-red-400">{actionError}</span>}
+      {onOpenTab && result && (
+        <button
+          type="button"
+          onClick={onOpenTab}
+          className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Open
+        </button>
+      )}
       {runningHere ? (
         <button
           type="button"
@@ -501,6 +521,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Empty means each check runs on its own model and effort from Settings.
+  const [runChoice, setRunChoice] = useState<RunChoice>({});
   // Tickets the reviewer names for the change map and claims, beside the ones
   // the PR links. Until they type, the last run's are offered again.
   const [typedTickets, setTypedTickets] = useState<string | null>(null);
@@ -550,7 +572,13 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { runs, failed } = await startVerification(workspaceId, pr.id, sections, namedTickets);
+      const { runs, failed } = await startVerification(
+        workspaceId,
+        pr.id,
+        sections,
+        namedTickets,
+        runChoice,
+      );
       // Untick only what started, so a check that failed to start stays picked
       // for another try. With nothing left ticked by hand, go back to the
       // suggestions, which follow the PR to its next head.
@@ -606,7 +634,45 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       <div className="mx-auto w-4/5 min-w-[min(100%,48rem)] space-y-4 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-zinc-200">Verification</h2>
-          <span className="ml-auto">
+          <span className="ml-auto flex items-center gap-2">
+            <select
+              aria-label="Model for the checks you run"
+              title="Run the checks you start on one model instead of each check's own, set in Settings"
+              value={runChoice.model ?? ""}
+              onChange={(e) =>
+                setRunChoice((prev) => ({
+                  ...prev,
+                  model: (e.target.value || undefined) as VerificationModel | undefined,
+                }))
+              }
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
+            >
+              <option value="">Each check's model</option>
+              {VERIFICATION_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {VERIFICATION_MODEL_LABELS[m]}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Effort for the checks you run"
+              title="Run the checks you start at one effort instead of each check's own, set in Settings"
+              value={runChoice.effort ?? ""}
+              onChange={(e) =>
+                setRunChoice((prev) => ({
+                  ...prev,
+                  effort: (e.target.value || undefined) as VerificationEffort | undefined,
+                }))
+              }
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
+            >
+              <option value="">Each check's effort</option>
+              {VERIFICATION_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort} effort
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={() => void run(picked)}
@@ -697,6 +763,11 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                     }}
                     canRun={!notReady}
                     starting={starting}
+                    onOpenTab={
+                      item.section === "flow"
+                        ? () => ctx.openTab({ kind: "diagram", prId: pr.id })
+                        : undefined
+                    }
                   />
                 ))}
                 {theme.id === "correctness" && (

@@ -24,7 +24,6 @@ import {
   type VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
-import FlowDiagram from "./FlowDiagram";
 
 /** What a must-read's flags are called, in the report and on the diff. */
 export const FLAG_LABEL = "Looks off";
@@ -915,12 +914,6 @@ export default function VerificationReportView({
             viewed={viewed}
             poster={posterFor("claims")}
           />
-        </Section>
-      )}
-
-      {report.flow && (
-        <Section title={titled("Flow", "flow")}>
-          <FlowDiagram flow={report.flow} />
         </Section>
       )}
 
