@@ -40,6 +40,7 @@ import {
 } from "./claudeSession.ts";
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
+import { harnessChoiceError, harnessIdSchema, listAgentHarnesses } from "./harnesses.ts";
 import { FRESH_ENOUGH_MS, pollerClients, refreshWorkspacePrs } from "./poller.ts";
 import {
   addRepoToWorkspace,
@@ -314,13 +315,13 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         : null;
 
   /**
-   * Starts a Claude session in an already-active workspace and shapes the tool
+   * Starts an agent session in an already-active workspace and shapes the tool
    * result. Shared by create_workspace_session (after provisioning) and
    * start_workspace_session (existing workspace). Always launches at the
    * workspace root so Claude sees each repo's worktree as a subfolder and can
    * read the brief seeded there by whatever the workspace was started on.
    */
-  const launchClaude = async (detail: WorkspaceDetail) => {
+  const launchClaude = async (detail: WorkspaceDetail, harness?: string) => {
     const cwd = detail.rootPath;
     // A workspace provisioned before the session-registration hooks existed
     // gets them here, so the session about to start registers.
@@ -331,11 +332,18 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         cwd,
         name: detail.name,
         remoteControl,
+        harness,
       });
       void emitEvent(db, {
         type: "workspace.session_started",
         source: "chat",
-        payload: { workspaceId: detail.id, name: detail.name, kickOff: false, remoteControl },
+        payload: {
+          workspaceId: detail.id,
+          name: detail.name,
+          kickOff: false,
+          remoteControl,
+          harness: harness ?? null,
+        },
       });
       return {
         workspaceId: detail.id,
@@ -552,8 +560,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .boolean()
           .default(true)
           .describe("Add the in-progress label to the issue on GitHub"),
+        harness: harnessIdSchema.optional(),
       }),
-      execute: async ({ repoId, issueNumber, assignSelf, applyLabel }) => {
+      execute: async ({ repoId, issueNumber, assignSelf, applyLabel, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         if (!github) return { error: "GitHub token not configured; cannot start work on an issue" };
         const repo = await getRepo(db, repoId);
         if (!repo) return { error: "repo not found; call list_repos to get a valid id" };
@@ -580,6 +591,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             body: issue.body,
             sourceKey,
           }),
+          harness,
         });
         await provisionWorkspace(db, ws.id, () => undefined, {
           runner: gitRunner,
@@ -660,8 +672,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           ),
         brief: briefSchema,
         startWork: startWorkSchema,
+        harness: harnessIdSchema.optional(),
       }),
-      execute: async ({ name, repoIds, taskId, brief, startWork }) => {
+      execute: async ({ name, repoIds, taskId, brief, startWork, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const resolved = await resolveWorkspaceBrief(db, {
           workspaceName: name,
           taskId,
@@ -675,6 +690,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           repoIds,
           taskId,
           brief: kickOffBrief,
+          harness,
         });
         // Provisioning streams progress over SSE in the route; here we just drive
         // it to completion and inspect the resulting status. Given a brief, it
@@ -699,7 +715,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
 
-        return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail);
+        return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail, harness);
       },
     }),
 
@@ -716,8 +732,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           ),
         brief: briefSchema,
         startWork: startWorkSchema,
+        harness: harnessIdSchema.optional(),
       }),
-      execute: async ({ name, taskId, brief, startWork }) => {
+      execute: async ({ name, taskId, brief, startWork, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const resolved = await resolveWorkspaceBrief(db, {
           workspaceName: name,
           taskId,
@@ -731,6 +750,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           repoIds: [],
           taskId,
           brief: kickOffBrief,
+          harness,
         });
         await provisionWorkspace(db, ws.id, () => undefined, {
           runner: gitRunner,
@@ -748,7 +768,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           };
         }
 
-        return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail);
+        return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail, harness);
       },
     }),
 
@@ -848,8 +868,11 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           .string()
           .uuid()
           .describe("Id of an existing workspace, from list_workspaces"),
+        harness: harnessIdSchema.optional(),
       }),
-      execute: async ({ workspaceId }) => {
+      execute: async ({ workspaceId, harness }) => {
+        const harnessError = await harnessChoiceError(harness, remoteControl);
+        if (harnessError) return { error: harnessError };
         const detail = await getWorkspace(db, workspaceId);
         if (!detail) return { error: "workspace not found" };
         if (detail.status !== "active") {
@@ -859,8 +882,15 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             status: detail.status,
           };
         }
-        return launchClaude(detail);
+        return launchClaude(detail, harness);
       },
+    }),
+
+    list_agent_harnesses: tool({
+      description:
+        "List the agent harnesses you may start (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user named that agent. Remote Control only starts a claude-code harness; if the default isn't one, ask the user which to use.",
+      inputSchema: z.object({}),
+      execute: async () => listAgentHarnesses(),
     }),
 
     add_repo_to_workspace: tool({
@@ -1336,7 +1366,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive refused; the errors say what is in the way, and no issues were closed. Tell the user. Retry with force=true only if they agree to lose it, passing the same keepOpenIssueIds.",
+                : "Archive refused; the errors say what is in the way, and no issues were closed. Tell the user. Retry with force=true only if they agree to lose what the errors list, passing the same keepOpenIssueIds.",
           };
         } catch (e) {
           return { error: errorMessage(e) };

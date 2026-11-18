@@ -7,7 +7,6 @@ import { run } from "./exec.ts";
 import {
   addExistingBranchWorktree,
   branchExists,
-  branchLanded,
   branchSync,
   createWorktree,
   defaultGitRunner,
@@ -20,6 +19,7 @@ import {
   type GitRunner,
   type GitRunResult,
   hasUncommittedChanges,
+  landedTip,
   listChangedFiles,
   listFiles,
   listRemoteBranches,
@@ -597,9 +597,17 @@ describe("archive cleanup helpers", () => {
     expect(found.map((path) => basename(path)).sort()).toEqual(["nested", "service-a-layer-2"]);
   });
 
-  it("counts a branch the base already contains as landed", async () => {
-    const { clone } = cloneWithOrigin();
-    expect(await branchLanded(defaultGitRunner, clone, "task", "main", false)).toBe(true);
+  it("counts a branch the base already contains as landed, and returns its tip", async () => {
+    const { clone, git } = cloneWithOrigin();
+    const tip = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", false)).toBe(tip);
+  });
+
+  it("never counts a branch that points at another branch as landed", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    expect(await landedTip(defaultGitRunner, clone, "alias", "main", true)).toBeNull();
   });
 
   it("doesn't count a branch with its own commits as landed unless its PR merged", async () => {
@@ -610,8 +618,8 @@ describe("archive cleanup helpers", () => {
       cwd: own,
       env: { ...process.env, ...GIT_TEST_ENV },
     });
-    expect(await branchLanded(defaultGitRunner, clone, "task", "main", false)).toBe(false);
-    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", false)).toBeNull();
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).not.toBeNull();
   });
 
   it("keeps a merged branch with commits its remote branch doesn't have", async () => {
@@ -626,15 +634,15 @@ describe("archive cleanup helpers", () => {
     };
     commit("pushed.txt");
     spawnSync("git", ["update-ref", "refs/remotes/origin/task", "refs/heads/task"], { cwd: clone });
-    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(true);
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).not.toBeNull();
 
     commit("after-merge.txt");
-    expect(await branchLanded(defaultGitRunner, clone, "task", "main", true)).toBe(false);
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).toBeNull();
   });
 
   it("counts the commits on a branch that no remote has", async () => {
     const { clone, own } = cloneWithOrigin();
-    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(0);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(0);
     for (const name of ["one.txt", "two.txt"]) {
       writeFileSync(join(own, name), name);
       spawnSync("git", ["add", "-A"], { cwd: own });
@@ -643,7 +651,7 @@ describe("archive cleanup helpers", () => {
         env: { ...process.env, ...GIT_TEST_ENV },
       });
     }
-    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(2);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(2);
   });
 
   it("counts a squash-merged branch's commits as kept by its PR, but not work after it", async () => {
@@ -671,17 +679,17 @@ describe("archive cleanup helpers", () => {
       .trim();
     git("update-ref", "refs/remotes/origin/main", squash);
 
-    expect(await unpushedCommitCount(defaultGitRunner, clone, "task")).toBe(1);
-    expect(await unpushedCommitCount(defaultGitRunner, clone, "task", prHead)).toBe(0);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(1);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", prHead)).toBe(0);
 
     commit("after-merge.txt");
-    expect(await unpushedCommitCount(defaultGitRunner, clone, "task", prHead)).toBe(1);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", prHead)).toBe(1);
   });
 
   it("fails rather than counts when the merged head isn't in the clone", async () => {
     const { clone } = cloneWithOrigin();
     await expect(
-      unpushedCommitCount(defaultGitRunner, clone, "task", "e".repeat(40)),
+      unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", "e".repeat(40)),
     ).rejects.toThrow();
   });
 
@@ -689,9 +697,9 @@ describe("archive cleanup helpers", () => {
     const { clone } = cloneWithOrigin();
     const sha = "a".repeat(40);
     for (const bad of ["--all", `${sha} --all`, `--all ${sha}`, sha.slice(1), `${sha}b`]) {
-      await expect(unpushedCommitCount(defaultGitRunner, clone, "task", bad)).rejects.toThrow(
-        "not a commit id",
-      );
+      await expect(
+        unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", bad),
+      ).rejects.toThrow("not a commit id");
     }
   });
 
@@ -704,7 +712,7 @@ describe("archive cleanup helpers", () => {
 
   it("doesn't count a branch that isn't there as landed", async () => {
     const { clone } = cloneWithOrigin();
-    expect(await branchLanded(defaultGitRunner, clone, "gone", "main", true)).toBe(false);
+    expect(await landedTip(defaultGitRunner, clone, "gone", "main", true)).toBeNull();
   });
 
   it("deletes a branch once no worktree has it checked out", async () => {
@@ -713,6 +721,43 @@ describe("archive cleanup helpers", () => {
     await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
     await deleteBranch(defaultGitRunner, clone, "task");
     expect(await branchExists(defaultGitRunner, clone, "task")).toBe(false);
+  });
+
+  it("deletes a branch at the tip it was checked at, with its config", async () => {
+    const { clone, git, workspaceRoot, own } = cloneWithOrigin();
+    const tip = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    git("config", "branch.task.merge", "refs/heads/task");
+    await expect(deleteBranch(defaultGitRunner, clone, "task", tip)).rejects.toThrow("checked out");
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+    await deleteBranch(defaultGitRunner, clone, "task", tip);
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(false);
+    expect(git("config", "--get-regexp", "^branch\\.task\\.").stdout.toString()).toBe("");
+  });
+
+  it("deletes only the symref when the branch points at another branch", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    const tip = git("rev-parse", "refs/heads/other").stdout.toString().trim();
+    await deleteBranch(defaultGitRunner, clone, "alias", tip);
+    expect(await branchExists(defaultGitRunner, clone, "other")).toBe(true);
+    expect(await branchExists(defaultGitRunner, clone, "alias")).toBe(false);
+  });
+
+  it("keeps a branch that gained a commit after it was checked", async () => {
+    const { clone, workspaceRoot, own } = cloneWithOrigin();
+    const checked = await landedTip(defaultGitRunner, clone, "task", "main", false);
+    expect(checked).not.toBeNull();
+    writeFileSync(join(own, "late.txt"), "late");
+    spawnSync("git", ["add", "-A"], { cwd: own });
+    spawnSync("git", ["commit", "-qm", "late"], {
+      cwd: own,
+      env: { ...process.env, ...GIT_TEST_ENV },
+    });
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+
+    await expect(deleteBranch(defaultGitRunner, clone, "task", checked!)).rejects.toThrow();
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(true);
   });
 });
 
