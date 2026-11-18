@@ -659,43 +659,53 @@ export async function removeWorktree(
 }
 
 /**
- * Whether a local branch's work has landed, so it is safe to delete: its PR
- * merged (a squash merge leaves the branch's commits off the base), or
- * `origin/<base>` as last fetched already contains its tip. A merged PR counts
- * only while the remote branch, if it is still there, holds every local commit,
- * so work added after the merge isn't deleted with the branch.
+ * The tip commit of a local branch whose work has landed, so it is safe to
+ * delete, or null when it hasn't. Landed means its PR merged (a squash merge
+ * leaves the branch's commits off the base), or `origin/<base>` as last fetched
+ * already contains its tip. A merged PR counts only while the remote branch, if
+ * it is still there, holds every local commit, so work added after the merge
+ * isn't deleted with the branch. Pass the tip to `deleteBranch` so a commit
+ * made after this check keeps the branch.
  */
-export async function branchLanded(
+export async function landedTip(
   runner: GitRunner,
   primaryClonePath: string,
   branch: string,
   baseBranch: string,
   prMerged: boolean,
-): Promise<boolean> {
-  if (!(await branchExists(runner, primaryClonePath, branch))) return false;
+): Promise<string | null> {
+  const resolved = await runner(["show-ref", "--verify", "--hash", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  if (resolved.exitCode !== 0) return null;
+  // A branch that points at another branch is never landed: deleting it must
+  // not reach the branch it points to.
+  const symref = await runner(["symbolic-ref", "-q", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  if (symref.exitCode === 0) return null;
+  const tip = resolved.stdout.trim();
   const contains = async (ref: string) =>
-    (
-      await runner(["merge-base", "--is-ancestor", `refs/heads/${branch}`, ref], {
-        cwd: primaryClonePath,
-      })
-    ).exitCode === 0;
-  if (await contains(remoteRef(baseBranch))) return true;
-  if (!prMerged) return false;
+    (await runner(["merge-base", "--is-ancestor", tip, ref], { cwd: primaryClonePath }))
+      .exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return tip;
+  if (!prMerged) return null;
   const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
     cwd: primaryClonePath,
   });
-  return remote.exitCode !== 0 || (await contains(remoteRef(branch)));
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch))) ? tip : null;
 }
 
 /**
- * How many of a local branch's commits deleting it would lose: ones no
+ * How many commits deleting a branch at `tip` would lose: ones no
  * remote-tracking ref has (any remote counts, a fork's included), and that
- * aren't behind `mergedHead`, the head commit a merged PR took.
+ * aren't behind `mergedHead`, the head commit a merged PR took. `tip` is a
+ * commit or a full ref name.
  */
 export async function unpushedCommitCount(
   runner: GitRunner,
   primaryClonePath: string,
-  branch: string,
+  tip: string,
   mergedHead: string | null = null,
 ): Promise<number> {
   const exclude = ["--remotes"];
@@ -707,7 +717,7 @@ export async function unpushedCommitCount(
   }
   const out = await git(
     runner,
-    ["rev-list", "--count", `refs/heads/${branch}`, "--not", ...exclude],
+    ["rev-list", "--count", tip, "--not", ...exclude],
     primaryClonePath,
   );
   // Thrown rather than read as 0, which would let the branch be deleted.
@@ -725,13 +735,35 @@ export async function hasUncommittedChanges(
   return out.trim() !== "";
 }
 
-/** Deletes a local branch. Git refuses while a worktree has it checked out. */
+/**
+ * Deletes a local branch, refusing while a worktree has it checked out. With
+ * `expectedTip`, git deletes it only if it still points there, so a commit
+ * made since the caller checked the branch is never lost.
+ */
 export async function deleteBranch(
   runner: GitRunner,
   primaryClonePath: string,
   branch: string,
+  expectedTip?: string,
 ): Promise<void> {
-  await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+  if (expectedTip === undefined) {
+    await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+    return;
+  }
+  // `update-ref` skips the two things `branch -D` does beyond the ref, so both
+  // are done here: the checked-out refusal and dropping the branch's config.
+  const worktrees = await listWorktrees(runner, primaryClonePath);
+  if (worktrees.some((entry) => entry.branch === branch)) {
+    throw new Error(`branch ${branch} is checked out in a worktree`);
+  }
+  // --no-deref so a branch that is a symbolic ref deletes only itself.
+  await git(
+    runner,
+    ["update-ref", "--no-deref", "-d", `refs/heads/${branch}`, expectedTip],
+    primaryClonePath,
+  );
+  // Not checked: it fails when the branch has no config.
+  await runner(["config", "--remove-section", `branch.${branch}`], { cwd: primaryClonePath });
 }
 
 async function removeLeftover(

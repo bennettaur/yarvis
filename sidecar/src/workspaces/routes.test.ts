@@ -87,6 +87,8 @@ const fakeGit: GitRunner = async (args) => {
   if (args[0] === "ls-remote")
     return { stdout: "ref: refs/heads/main\tHEAD\n", stderr: "", exitCode: 0 };
   if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 }; // branch absent
+  if (args[0] === "symbolic-ref" && args[2]?.startsWith("refs/heads/"))
+    return { stdout: "", stderr: "", exitCode: 1 }; // a plain branch, not a symref
   if (args[0] === "rev-list" && args[1] === "--count")
     return { stdout: "0\n", stderr: "", exitCode: 0 };
   // Create the worktree dir like real git would, so setup scripts have a cwd.
@@ -609,6 +611,84 @@ describe("workspace worktrees", () => {
       expect(branches).not.toContain("stack/landed");
       expect(branches).toContain("stack/working");
       expect((await getWorkspace(db, workspaceId))!.repos[0]!.extraWorktrees).toEqual([]);
+    });
+
+    it("deletes a landed branch on archive after its worktree was removed", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const add = (branch: string) =>
+        addExtraWorktree(db, workspaceId, { repo: "widget", branch }, runner);
+      const removed = await add("stack/removed");
+      await git(clone, "worktree", "remove", removed.path);
+      // Adding a worktree must not forget the removed one, or archive never sees its branch.
+      await add("stack/later");
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result).toMatchObject({ status: "archived", errors: [] });
+      const branches = await listLocalBranches(runner, clone);
+      expect(branches).not.toContain("stack/removed");
+      expect(branches).not.toContain("stack/later");
+    });
+
+    it("keeps an added branch with commits the base doesn't have", async () => {
+      const { workspaceId, clone, git, runner } = await withRealClone();
+      const added = await addExtraWorktree(
+        db,
+        workspaceId,
+        { repo: "widget", branch: "stack/work" },
+        runner,
+      );
+      writeFileSync(join(added.path, "work.ts"), "work");
+      await git(added.path, "add", "work.ts");
+      await git(added.path, "commit", "-m", "work");
+      await git(clone, "worktree", "remove", added.path);
+
+      const result = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(result.status).toBe("archived");
+      expect(await listLocalBranches(runner, clone)).toContain("stack/work");
+    });
+
+    it("stops on commits made after a squash merge, and deletes them on a forced retry", async () => {
+      const { workspaceId, wr, clone, git, runner } = await withRealClone();
+      const head = async (cwd: string, ref: string) =>
+        (await defaultGitRunner(["rev-parse", ref], { cwd })).stdout.trim();
+      writeFileSync(join(wr.worktreePath, "feature.ts"), "feature");
+      await git(wr.worktreePath, "add", "feature.ts");
+      await git(wr.worktreePath, "commit", "-m", "feature");
+      const prHead = await head(clone, `refs/heads/${wr.branch}`);
+      await git(clone, "update-ref", "refs/remotes/origin/main", await squash(clone, prHead));
+      await db
+        .insert(workspaceRepoPr)
+        .values({ workspaceRepoId: wr.id, prNumber: 7, prState: "merged", headSha: prHead });
+      writeFileSync(join(wr.worktreePath, "late.ts"), "late");
+      await git(wr.worktreePath, "add", "late.ts");
+      await git(wr.worktreePath, "commit", "-m", "late");
+
+      const blocked = await archiveWorkspace(db, workspaceId, {}, runner);
+
+      expect(blocked.status).toBe("archiving");
+      expect(blocked.errors[0]?.message).toContain("1 commit(s) that no remote has");
+      expect(existsSync(wr.worktreePath)).toBe(true);
+      expect(await listLocalBranches(runner, clone)).toContain(wr.branch);
+
+      const forced = await archiveWorkspace(db, workspaceId, { force: true }, runner);
+
+      expect(forced).toMatchObject({ status: "archived", errors: [] });
+      expect(await listLocalBranches(runner, clone)).not.toContain(wr.branch);
+
+      /** A squash merge of `commit` onto origin/main: its tree, with main as the only parent. */
+      async function squash(cwd: string, commit: string) {
+        const result = await defaultGitRunner(
+          [
+            ...["-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", `${commit}^{tree}`],
+            ...["-p", "refs/remotes/origin/main", "-m", "squash"],
+          ],
+          { cwd },
+        );
+        if (result.exitCode !== 0) throw new Error(result.stderr);
+        return result.stdout.trim();
+      }
     });
 
     it("keeps a landed branch on archive that another workspace stacks on", async () => {
@@ -2843,16 +2923,18 @@ describe("provision + archive (injected git runner)", () => {
     await provisionWorkspace(db, ws.id, () => {}, { runner: fakeGit });
     const tried: string[][] = [];
     const stuckBranchGit: GitRunner = async (args, opts) => {
-      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 0 };
-      if (args[0] === "branch") {
+      if (args[0] === "show-ref") return { stdout: `${"d".repeat(40)}\n`, stderr: "", exitCode: 0 };
+      if (args[0] === "update-ref") {
         tried.push(args);
-        return { stdout: "", stderr: "branch is locked", exitCode: 1 };
+        return { stdout: "", stderr: "cannot lock ref", exitCode: 1 };
       }
       return fakeGit(args, opts);
     };
     const result = await archiveWorkspace(db, ws.id, {}, stuckBranchGit);
     expect(result.status).toBe("archived");
-    expect(tried).toEqual([["branch", "-D", "--", `yarvis/${ws.slug}`]]);
+    expect(tried).toEqual([
+      ["update-ref", "--no-deref", "-d", `refs/heads/yarvis/${ws.slug}`, "d".repeat(40)],
+    ]);
   });
 
   it("stops on files left in the folder, and deletes them on a forced retry", async () => {
@@ -2874,6 +2956,8 @@ describe("provision + archive (injected git runner)", () => {
   });
 
   const PR_HEAD = "c".repeat(40);
+  /** The local branch's tip in the fake clones below. */
+  const TIP = "d".repeat(40);
   /**
    * A squash-merged branch as `rev-list --count` sees it: its own commits are on
    * no remote, so only excluding the PR's head leaves just the work after it.
@@ -2902,11 +2986,14 @@ describe("provision + archive (injected git runner)", () => {
     const branchGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
     await archiveWorkspace(db, ws.id, {}, branchGit);
@@ -2936,14 +3023,17 @@ describe("provision + archive (injected git runner)", () => {
     const unpushedGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
       if (args[0] === "status" && opts?.cwd === wr!.worktreePath) {
         return { stdout: "?? notes.txt\n", stderr: "", exitCode: 0 };
       }
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -2991,11 +3081,14 @@ describe("provision + archive (injected git runner)", () => {
       }
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 2);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 
@@ -3025,11 +3118,14 @@ describe("provision + archive (injected git runner)", () => {
     const noHeadGit: GitRunner = async (args, opts) => {
       if (args[0] === "show-ref") {
         const local = args[3]?.startsWith("refs/heads/");
-        return { stdout: "", stderr: "", exitCode: local ? 0 : 1 };
+        return local
+          ? { stdout: `${TIP}\n`, stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: "", exitCode: 1 };
       }
       if (args[0] === "merge-base") return { stdout: "", stderr: "", exitCode: 1 };
       if (args[0] === "rev-list") return squashedCount(args, 0);
-      if (args[0] === "branch" && args[1] === "-D") deleted.push(args[3] ?? "");
+      if (args[0] === "update-ref" && args.includes("-d"))
+        deleted.push(args[3]?.slice("refs/heads/".length) ?? "");
       return fakeGit(args, opts);
     };
 

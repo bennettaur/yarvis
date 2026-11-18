@@ -1336,7 +1336,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
             note:
               result.status === "archived"
                 ? "Workspace archived."
-                : "Archive refused; the errors say what is in the way, and no issues were closed. Tell the user. Retry with force=true only if they agree to lose it, passing the same keepOpenIssueIds.",
+                : "Archive refused; the errors say what is in the way, and no issues were closed. Tell the user. Retry with force=true only if they agree to lose what the errors list, passing the same keepOpenIssueIds.",
           };
         } catch (e) {
           return { error: errorMessage(e) };

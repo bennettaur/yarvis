@@ -63,7 +63,6 @@ import {
   type AddExtraWorktreeResult,
   branchCollision,
   isReservedBranchName,
-  MAX_EXTRA_WORKTREES,
   WorktreeRefusal,
 } from "./extraWorktree.ts";
 import {
@@ -77,7 +76,6 @@ import {
   addWorktreeWithoutHooks,
   type BranchSync,
   branchExists,
-  branchLanded,
   branchSync,
   type ChangedFile,
   canonicalPath,
@@ -92,6 +90,7 @@ import {
   fileDiff,
   type GitRunner,
   hasUncommittedChanges,
+  landedTip,
   listChangedFiles,
   listFiles,
   listLocalBranches,
@@ -712,13 +711,6 @@ export async function addExtraWorktree(
     if (repoStatus !== "ready") {
       throw new WorktreeRefusal(`${basename(workspaceRepo.worktreePath)} is no longer ready`);
     }
-    const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
-    if (live >= MAX_EXTRA_WORKTREES) {
-      throw new WorktreeRefusal(
-        `${basename(workspaceRepo.worktreePath)} already has ${live} extra worktrees; remove one first`,
-      );
-    }
-
     await fetchRemote(runner, clone);
     const [local, remote, taken] = await Promise.all([
       listLocalBranches(runner, clone),
@@ -850,31 +842,6 @@ async function undoWorktree(
   await deleteBranch(runner, clone, branch).catch((e) =>
     console.warn(`[workspaces] couldn't delete branch ${branch} after a failed add:`, e),
   );
-}
-
-/**
- * Deletes the repo's recorded extra worktrees that git no longer has, and
- * answers how many are left.
- */
-async function pruneExtraWorktrees(
-  db: Db,
-  workspaceRepoId: string,
-  clone: string,
-): Promise<number> {
-  const rows = await db
-    .select()
-    .from(workspaceExtraWorktrees)
-    .where(eq(workspaceExtraWorktrees.workspaceRepoId, workspaceRepoId));
-  const gone = rows.filter((row) => resolveAdminName(clone, row.worktreePath) === null);
-  if (gone.length > 0) {
-    await db.delete(workspaceExtraWorktrees).where(
-      inArray(
-        workspaceExtraWorktrees.id,
-        gone.map((row) => row.id),
-      ),
-    );
-  }
-  return rows.length - gone.length;
 }
 
 /**
@@ -2546,41 +2513,41 @@ function trackArchive(
 }
 
 /**
- * Whether to delete a repo's local branch once its worktree is gone, so
- * archived workspaces don't pile up branches in the shared clone. Only a
- * landed branch goes, and a git failure keeps it, since a branch left behind
- * costs nothing.
+ * The commit at which to delete a repo's local branch after its worktree is
+ * gone, so archived workspaces don't pile up branches in the shared clone, or
+ * null to keep the branch. Only a landed branch goes, and a git failure keeps
+ * it, since a branch left behind costs nothing.
  *
  * Throws instead when a landed branch has commits that neither a remote nor
  * its merged PR has (work added after the merge) and `force` isn't set, so the
  * user hears about them while the worktree is still there to push from.
  */
-async function checkBranchForArchive(
+async function branchTipToDelete(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   const primaryClonePath = wr.repo.primaryClonePath;
   const prMerged = wr.pr?.prState === "merged";
   const mergedHead = prMerged ? (wr.pr?.headSha ?? null) : null;
   // Declared out here so the throw below isn't caught by the best-effort catch:
   // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;
+  let tip: string | null;
   try {
-    const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
-    if (!landed) return false;
-    if (force) return true;
-    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch, mergedHead);
+    tip = await landedTip(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
+    if (tip === null || force) return tip;
+    unpushed = await unpushedCommitCount(runner, primaryClonePath, tip, mergedHead);
   } catch (e) {
     console.warn(`[workspaces] couldn't check branch ${wr.branch} before archive, keeping it:`, e);
-    return false;
+    return null;
   }
-  if (unpushed === 0) return true;
+  if (unpushed === 0) return tip;
   if (prMerged && !mergedHead) {
     // Polled before the PR cache kept a head commit: a squash merge's own
     // commits look unpushed too, so there's no telling them from new work.
     console.warn(`[workspaces] kept branch ${wr.branch}: its merged PR's head commit is unknown`);
-    return false;
+    return null;
   }
   const dirty = await hasUncommittedChanges(runner, wr.worktreePath).catch(() => false);
   throw new Error(
@@ -2592,9 +2559,13 @@ async function checkBranchForArchive(
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+async function deleteBranchBestEffort(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  tip: string,
+): Promise<void> {
   try {
-    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch);
+    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch, tip);
   } catch (e) {
     console.warn(
       `[workspaces] couldn't delete branch ${wr.branch} after removing its worktree:`,
@@ -2624,9 +2595,8 @@ async function deleteLandedExtraBranches(
   for (const row of rows) {
     if (inUse.has(row.branch.toLowerCase())) continue;
     try {
-      if (await branchLanded(runner, clone, row.branch, wr.baseBranch, false)) {
-        await deleteBranch(runner, clone, row.branch);
-      }
+      const tip = await landedTip(runner, clone, row.branch, wr.baseBranch, false);
+      if (tip !== null) await deleteBranch(runner, clone, row.branch, tip);
     } catch (e) {
       console.warn(`[workspaces] couldn't delete extra worktree branch ${row.branch}:`, e);
     }
@@ -2671,11 +2641,11 @@ async function removeWorktreesAndFinish(
         // Checked before anything is removed. An extra worktree that stops this
         // attempt would otherwise hide the unpushed commits, and the Force
         // retry that follows skips the check and deletes them unwarned.
-        let shouldDeleteBranch = false;
+        let branchTip: string | null = null;
         let unpushedCommitsError: unknown = null;
         if (wr.status !== "removed") {
           try {
-            shouldDeleteBranch = await checkBranchForArchive(runner, wr, force);
+            branchTip = await branchTipToDelete(runner, wr, force);
           } catch (e) {
             unpushedCommitsError = e;
           }
@@ -2710,7 +2680,7 @@ async function removeWorktreesAndFinish(
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
+        if (branchTip !== null) await deleteBranchBestEffort(runner, wr, branchTip);
       });
       if (wr.status === "removed") continue;
       await db

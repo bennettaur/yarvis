@@ -497,7 +497,6 @@ without leaving the sandbox.
   can write the workspace folder, so a checkout straight into it could follow
   a symlink the agent put there. The move is a single rename, which refuses
   anything but an empty folder in its way.
-- **At most 10 extra worktrees per repo.**
 - **The grant follows the worktree.** Once the worktree is removed, the next
   write of `.claude/settings.json` drops its branch too. Yarvis writes it when
   it provisions the workspace, starts its agent, or adds a worktree. Archiving
