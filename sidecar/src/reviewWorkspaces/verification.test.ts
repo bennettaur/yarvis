@@ -22,6 +22,9 @@ import {
   MISSING_CHECK,
   mustReadCap,
   normalizeSections,
+  REPORT_SECTIONS,
+  SECTION_RUN_DEFAULTS,
+  sectionRunChoice,
   similarTitles,
   summaryWordCap,
   type VerificationInput,
@@ -1090,7 +1093,11 @@ describe("the size a warning states", () => {
     deletions: 0,
   });
 
-  const sonnet = { model: "sonnet" as const, maxBudgetUsd: 2 };
+  const allOn = (model: "haiku" | "sonnet" | "opus", maxBudgetUsd: number) => ({
+    maxBudgetUsd,
+    sections: Object.fromEntries(REPORT_SECTIONS.map((s) => [s, { model }])),
+  });
+  const sonnet = allOn("sonnet", 2);
   const noBulk = new Map<string, BulkClass>();
 
   it("names the binary, cut-off and skimmed files, and weighs the estimate against the budget", () => {
@@ -1123,13 +1130,27 @@ describe("the size a warning states", () => {
     const size = verificationSize(files, [], bulk, sonnet);
     const read = estimateReadBytes(files, new Set(), bulk);
     const check = estimateRunCostUsd("sonnet", read.perReader);
-    expect(size.checkCostUsd).toBe(check);
+    expect(size.checkCostUsd.sonnet).toBe(check);
     expect(checksCostUsd(size, ["tests", "risk"])).toBeCloseTo(2 * check, 2);
     expect(checksCostUsd(size, ["summary"])).toBeCloseTo(
       estimateRunCostUsd("sonnet", read.perReader + read.bulk),
       2,
     );
     expect(size.estimatedCostUsd).toBe(checksCostUsd(size, DEFAULT_SECTIONS));
+  });
+
+  it("prices each section on its own model, or every section on the one a run picked", () => {
+    const files = [f("src/a.ts", 2_000)];
+    const size = verificationSize(files, [], noBulk, { maxBudgetUsd: 2, sections: {} });
+    const read = estimateReadBytes(files, new Set(), noBulk);
+    expect(size.sectionModels.malice).toBe("opus");
+    expect(size.sectionModels.comments).toBe("haiku");
+    expect(checksCostUsd(size, ["malice"])).toBe(estimateRunCostUsd("opus", read.perReader));
+    expect(checksCostUsd(size, ["comments"])).toBe(estimateRunCostUsd("haiku", read.perReader));
+    expect(checksCostUsd(size, ["malice", "comments"], "haiku")).toBeCloseTo(
+      2 * estimateRunCostUsd("haiku", read.perReader),
+      2,
+    );
   });
 
   it("reads bulk by the same rule the run skims by: a page, by one reader", () => {
@@ -1158,7 +1179,7 @@ describe("the size a warning states", () => {
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
       noBulk,
-      { model: "haiku", maxBudgetUsd: 1 },
+      allOn("haiku", 1),
     );
     expect(code.estimatedCostUsd).toBeGreaterThan(0.056);
     expect(code.estimatedCostUsd).toBeLessThan(0.056 * DEFAULT_SECTIONS.length);
@@ -1178,10 +1199,37 @@ describe("the size a warning states", () => {
       ],
       [],
       bulk,
-      { model: "haiku", maxBudgetUsd: 1 },
+      allOn("haiku", 1),
     );
     expect(mostlyBulk.estimatedCostUsd).toBeGreaterThan(0.018);
     expect(mostlyBulk.estimatedCostUsd).toBeLessThan(0.018 * DEFAULT_SECTIONS.length * 1.5);
+  });
+});
+
+describe("picking a section's model and effort", () => {
+  const settings = {
+    maxBudgetUsd: 2,
+    sections: { risk: { model: "sonnet" as const }, comments: { effort: "high" as const } },
+  };
+
+  it("falls back to the section's default for whatever the settings leave out", () => {
+    expect(sectionRunChoice("malice", settings)).toEqual(SECTION_RUN_DEFAULTS.malice);
+    expect(sectionRunChoice("risk", settings)).toEqual({
+      model: "sonnet",
+      effort: SECTION_RUN_DEFAULTS.risk.effort,
+    });
+    expect(sectionRunChoice("comments", settings)).toEqual({
+      model: SECTION_RUN_DEFAULTS.comments.model,
+      effort: "high",
+    });
+  });
+
+  it("lets a run's own choice win over the settings", () => {
+    expect(sectionRunChoice("risk", settings, { model: "haiku" })).toEqual({
+      model: "haiku",
+      effort: SECTION_RUN_DEFAULTS.risk.effort,
+    });
+    expect(sectionRunChoice("comments", settings, { effort: "max" }).effort).toBe("max");
   });
 });
 

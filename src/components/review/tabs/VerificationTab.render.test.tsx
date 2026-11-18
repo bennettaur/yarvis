@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import type { RunChoice } from "../../../lib/pr/models";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
@@ -383,6 +384,44 @@ describe("VerificationTab", () => {
     button(row(host, "Claims"), "Run")?.click();
     await waitFor(() => named.length > 0, "the start");
     expect(named).toEqual(["ABC-12", "#45", "https://acme.atlassian.net/browse/XY-3"]);
+  });
+
+  it("starts checks on the model and effort picked for the run, or each check's own", async () => {
+    const sent: RunChoice[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, _tickets, override = {}) => {
+        sent.push(override);
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount(checklist());
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 1, "the first start");
+    const choose = (label: string, value: string) => {
+      const select = host.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        value,
+      );
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("Model for the checks you run", "haiku");
+    choose("Effort for the checks you run", "low");
+    await waitFor(
+      () =>
+        (
+          host.querySelector(
+            'select[aria-label="Effort for the checks you run"]',
+          ) as HTMLSelectElement
+        ).value === "low",
+      "the picks to change",
+    );
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 2, "the second start");
+    expect(sent).toEqual([{}, { model: "haiku", effort: "low" }]);
   });
 
   it("offers the last run's tickets again, and sends at most five", async () => {

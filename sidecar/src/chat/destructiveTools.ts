@@ -173,6 +173,10 @@ function flagSet(args: unknown, name: string): boolean {
   return (args as Record<string, unknown> | null)?.[name] === true;
 }
 
+function argGiven(args: unknown, name: string): boolean {
+  return (args as Record<string, unknown> | null)?.[name] !== undefined;
+}
+
 /**
  * Built-ins that ask only under a condition checked when they are called.
  *
@@ -191,7 +195,10 @@ function flagSet(args: unknown, name: string): boolean {
  *
  * Starting a verification report with `confirmed` asks too: the flag answers a
  * question about cost or an unregistered repo, and that answer has to be the
- * user's, not the model's. Regenerating a guide asks because it throws away
+ * user's, not the model's. So does one naming a `model` or `effort`: it
+ * replaces every check's own, the risk and malicious-intent checks' included,
+ * and PR text could ask for a weaker model on the very PR those checks judge,
+ * or for an effort the cost estimate doesn't price. Regenerating a guide asks because it throws away
  * how far the user got through the old one.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
@@ -221,7 +228,11 @@ export function conditionalConfirmations(options: {
     );
     conditions.set(
       "start_pr_verification_report",
-      (args) => flagSet(args, "confirmed") || hasReadUntrusted(reads),
+      (args) =>
+        flagSet(args, "confirmed") ||
+        argGiven(args, "model") ||
+        argGiven(args, "effort") ||
+        hasReadUntrusted(reads),
     );
     conditions.set(
       "start_pr_guided_review",

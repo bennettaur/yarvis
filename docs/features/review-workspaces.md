@@ -269,6 +269,10 @@ check's last good result in place. While checks run, the tab checks on them
 every few seconds, and **Cancel** on a running check's row stops it. A check
 another Yarvis instance is running says so, and can't be started twice. If
 some picked checks can't start, the tab names them and the rest still run.
+Each check runs on the Claude model and effort set for it in **Settings → PR
+review**. The two pickers beside **Run picked** override both for the checks
+you start from the tab, whether picked or run from a row, until you set them
+back to "Each check's model" and "Each check's effort".
 Nothing asks about cost first: which checks you run is the budget.
 
 Beside the checks are rows for what other tools already reported on the PR,

@@ -5,6 +5,7 @@ import type { Db } from "../db/client.ts";
 import type { ReviewWorkspacePr } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
+import type { RunChoice } from "../pr/models.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import { findRepoForPr } from "../workspaces/service.ts";
 import { verificationChecklist } from "./checklist.ts";
@@ -34,9 +35,16 @@ export type SizeSummary = Pick<
   "files" | "changedLines" | "large" | "overBudget" | "estimatedCostUsd" | "budgetUsd"
 >;
 
-/** The size facts, with the estimate for the sections about to run rather than the defaults. */
-function summarize(size: VerificationSize, sections: readonly ReportSection[]): SizeSummary {
-  const estimatedCostUsd = checksCostUsd(size, sections);
+/**
+ * The size facts, with the estimate for the sections about to run, on the
+ * model the run picked, rather than for the defaults.
+ */
+function summarize(
+  size: VerificationSize,
+  sections: readonly ReportSection[],
+  override: RunChoice | undefined,
+): SizeSummary {
+  const estimatedCostUsd = checksCostUsd(size, sections, override?.model);
   return {
     files: size.files,
     changedLines: size.changedLines,
@@ -70,6 +78,8 @@ export interface KickoffOptions {
   rerun?: boolean;
   /** The caller reports the outcome itself (the verification queue), so no bell rings for this PR. */
   quiet?: boolean;
+  /** A model or effort for every section started, over the user's settings. */
+  override?: RunChoice;
 }
 
 export interface KickoffDeps {
@@ -259,7 +269,7 @@ async function startReport(
   }
   if (!options.confirmed) {
     const { size } = checklist;
-    const summary = size ? summarize(size, pending) : null;
+    const summary = size ? summarize(size, pending, options.override) : null;
     let reason: ConfirmReason | null = null;
     if (!summary) reason = "unsized";
     else if (summary.large) reason = "large";
@@ -275,7 +285,7 @@ async function startReport(
     prId,
     deps.review,
     deps.verification,
-    pending,
+    { sections: pending, override: options.override },
   );
   // Only follow runs this call started. One already going was started by an
   // earlier ask, which follows it, or from the tab, where the user is watching.

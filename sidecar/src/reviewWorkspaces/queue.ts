@@ -16,6 +16,7 @@ import { createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
+import type { RunChoice } from "../pr/models.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
 import {
   CHECKOUT_WAIT_MS,
@@ -72,6 +73,8 @@ export interface QueueItem {
 export interface VerificationQueue {
   id: string;
   sections: ReportSection[];
+  /** The model or effort every PR's checks run on, over the user's settings. */
+  override: RunChoice;
   items: QueueItem[];
   finished: boolean;
   cancelled: boolean;
@@ -106,6 +109,7 @@ export function startVerificationQueue(
   refs: PrRef[],
   sections: readonly ReportSection[],
   deps: KickoffDeps,
+  override: RunChoice = {},
 ): { queue: VerificationQueue; existing: boolean } {
   const running = runningQueue();
   if (running) return { queue: running, existing: true };
@@ -116,6 +120,7 @@ export function startVerificationQueue(
   const queue: VerificationQueue = {
     id: randomUUID(),
     sections: [...sections],
+    override,
     items: unique.map((ref) => ({ ref, name: shortPrName(ref), state: "waiting", note: null })),
     finished: false,
     cancelled: false,
@@ -187,7 +192,7 @@ async function verifyOne(
 ): Promise<Outcome> {
   const pollMs = deps.pollMs ?? POLL_MS;
   const deadline = Date.now() + (deps.waitMs ?? CHECKOUT_WAIT_MS);
-  const options = { sections: queue.sections, quiet: true };
+  const options = { sections: queue.sections, override: queue.override, quiet: true };
   let result = await kickOffVerification(db, config, ref, options, deps);
   while (result.status === "waiting-for-checkout") {
     if (queue.cancelled) return { state: "cancelled", note: null };
