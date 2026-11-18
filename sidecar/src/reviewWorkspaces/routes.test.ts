@@ -43,7 +43,7 @@ import {
   reviewWorkspaceDir,
 } from "./service.ts";
 import { createTestRemote, sh, type TestRemote } from "./testRepo.ts";
-import type { VerificationSize } from "./verification.ts";
+import { REPORT_SECTIONS, type VerificationSize } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -912,7 +912,12 @@ cat "${fakeDir}/result.jsonl"`,
               notes: ["Couldn't read ABC-99: not found"],
             };
           },
-          settings: async () => ({ model: "haiku", maxBudgetUsd: budget }),
+          settings: async () => ({
+            maxBudgetUsd: budget,
+            sections: Object.fromEntries(
+              REPORT_SECTIONS.map((s) => [s, { model: "haiku" as const }]),
+            ),
+          }),
           run: {
             get program(): string {
               if (startFails) throw new Error("no Claude Code here");
@@ -933,12 +938,13 @@ cat "${fakeDir}/result.jsonl"`,
     wsId: string,
     prId: string,
     sections?: string[],
+    override?: Record<string, string>,
   ): Promise<Response> {
     return verificationApp.request(`/rw/${wsId}/prs/${prId}/verification`, {
       method,
       ...(sections && {
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections }),
+        body: JSON.stringify({ sections, ...(override && { override }) }),
       }),
     });
   }
@@ -1085,6 +1091,8 @@ cat "${fakeDir}/result.jsonl"`,
       "\npatches/huge.txt.diff lines 1-",
     );
     expect(args[args.indexOf("--model") + 1]).toBe("haiku");
+    // The settings name no effort for the summary, so it gets its default.
+    expect(args[args.indexOf("--effort") + 1]).toBe("medium");
     expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
@@ -1208,6 +1216,31 @@ cat "${fakeDir}/result.jsonl"`,
     expect(context).toContain("Couldn't read tickets: Jira is down");
     release();
     await until(async () => !!item(await checklist(wsId, prId), "changeMap")?.result, "the map");
+  });
+
+  it("runs every section it starts on the model and effort the run picked", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const res = await verify("POST", wsId, prId, ["tests"], { model: "opus", effort: "max" });
+    expect(res.status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    expect(args[args.indexOf("--model") + 1]).toBe("opus");
+    expect(args[args.indexOf("--effort") + 1]).toBe("max");
+    const [row] = await db.select().from(agentRuns);
+    expect(row?.meta).toMatchObject({ model: "opus", effort: "max" });
+    release();
+  });
+
+  it("refuses a run's model or effort that Claude Code doesn't take", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const refused: Record<string, string>[] = [
+      { model: "--x" },
+      { effort: "extreme" },
+      { other: "1" },
+    ];
+    for (const override of refused) {
+      expect((await verify("POST", wsId, prId, ["tests"], override)).status).toBe(400);
+    }
   });
 
   it("reads no tickets for sections that don't check against them", async () => {

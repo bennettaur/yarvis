@@ -1,5 +1,6 @@
 import type { AgentRunStatus } from "../agentRuns";
 import { ensureOk, sidecarFetch } from "../api";
+import type { RunChoice } from "../pr/models";
 
 /**
  * Client for a review PR's verification checklist: starting a run for each
@@ -483,11 +484,17 @@ export async function startVerification(
   sections: readonly ReportSection[],
   /** Tickets for the change map and claims, as keys or links, beside the ones the PR links. */
   namedTickets: readonly string[] = [],
+  /** A model or effort for every section started, over each section's setting. */
+  override: RunChoice = {},
 ): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sections, ...(namedTickets.length > 0 && { namedTickets }) }),
+    body: JSON.stringify({
+      sections,
+      ...(namedTickets.length > 0 && { namedTickets }),
+      ...((override.model || override.effort) && { override }),
+    }),
   });
   await ensureOk(res, "start verification checks");
   return res.json();

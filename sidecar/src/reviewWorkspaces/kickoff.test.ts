@@ -10,6 +10,7 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, reviewWorkspacePrs } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
+import type { RunChoice } from "../pr/models.ts";
 import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { reviewGit } from "./git.ts";
@@ -17,7 +18,7 @@ import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
 import { cancelVerificationQueue, getVerificationQueue, startVerificationQueue } from "./queue.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
-import { DEFAULT_SECTIONS, type ReportSection } from "./verification.ts";
+import { DEFAULT_SECTIONS, REPORT_SECTIONS, type ReportSection } from "./verification.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -141,7 +142,10 @@ exit 1`,
           reviewThreads: [],
         }) as unknown as PrDetail,
       loadTickets: async () => ({ tickets: [], notes: [] }),
-      settings: async () => ({ model: "haiku", maxBudgetUsd: 100 }),
+      settings: async () => ({
+        maxBudgetUsd: 100,
+        sections: Object.fromEntries(REPORT_SECTIONS.map((s) => [s, { model: "haiku" as const }])),
+      }),
       run: {
         program,
         registry: new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 }),
@@ -387,8 +391,8 @@ cat "${fakeDir}/result.jsonl"`,
   it("prices the go-ahead for the sections about to run, leaving out current ones", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
     await until(async () => (await attention()).length > 0, "the checkout");
-    const cost = async (sections: ReportSection[]) => {
-      const asked = await kickOffVerification(db, config, ref, { sections }, kickoff);
+    const cost = async (sections: ReportSection[], override?: RunChoice) => {
+      const asked = await kickOffVerification(db, config, ref, { sections, override }, kickoff);
       if (asked.status !== "needs-confirmation" || !asked.size)
         throw new Error("expected a go-ahead");
       return asked.size.estimatedCostUsd;
@@ -396,6 +400,8 @@ cat "${fakeDir}/result.jsonl"`,
     const one = await cost(["tests"]);
     expect(one).toBeGreaterThan(0);
     expect(await cost(["tests", "risk"])).toBeGreaterThan(one);
+    // The settings run everything on Haiku; a run on Opus is priced at Opus.
+    expect(await cost(["tests"], { model: "opus" })).toBeGreaterThan(one);
 
     // Once the test-quality check has a result for this head, it isn't priced again.
     await kickOffVerification(db, config, ref, { confirmed: true, sections: ["tests"] }, kickoff);

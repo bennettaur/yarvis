@@ -26,6 +26,8 @@ import { createKeyedLock } from "../lib/keyedLock.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import {
   getVerificationRunConfig,
+  type RunChoice,
+  VERIFICATION_MODELS,
   type VerificationModel,
   type VerificationRunConfig,
 } from "../pr/models.ts";
@@ -473,6 +475,45 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   approach: "yarvis-review:approach-reviewer",
   flow: "yarvis-review:flow-diagram",
 };
+
+/**
+ * The model and effort each section runs on unless the user overrides it. The
+ * malicious-intent and risk checks feed the merge gate, so they get the
+ * strongest model. The comment and observability checks look for patterns in
+ * the diff and need little reasoning, so they get the cheapest.
+ */
+export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = {
+  summary: { model: "sonnet", effort: "medium" },
+  changeMap: { model: "sonnet", effort: "medium" },
+  claims: { model: "sonnet", effort: "medium" },
+  risk: { model: "opus", effort: "high" },
+  malice: { model: "opus", effort: "high" },
+  tests: { model: "sonnet", effort: "medium" },
+  complexity: { model: "sonnet", effort: "medium" },
+  performance: { model: "sonnet", effort: "medium" },
+  comments: { model: "haiku", effort: "low" },
+  observability: { model: "haiku", effort: "low" },
+  quality: { model: "sonnet", effort: "medium" },
+  approach: { model: "sonnet", effort: "medium" },
+  flow: { model: "sonnet", effort: "medium" },
+};
+
+/**
+ * The model and effort a section runs on: the run's own choice first, then the
+ * user's setting for the section, then its default.
+ */
+export function sectionRun(
+  section: ReportSection,
+  settings: VerificationRunConfig,
+  override: RunChoice = {},
+): Required<RunChoice> {
+  const saved = settings.sections[section] ?? {};
+  const fallback = SECTION_RUN_DEFAULTS[section];
+  return {
+    model: override.model ?? saved.model ?? fallback.model,
+    effort: override.effort ?? saved.effort ?? fallback.effort,
+  };
+}
 
 /**
  * Whether a run is judged without the PR's own account of itself: the
@@ -1332,6 +1373,8 @@ export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
 
 /** What every section's run is given, loaded once for all of them. */
 interface RunInputs {
+  /** The model or effort the caller picked for every section it starts. */
+  override: RunChoice;
   pr: ReviewWorkspacePr;
   headSha: string;
   sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
@@ -1354,6 +1397,14 @@ interface RunInputs {
  * diff's head, the target key and the working directory, so they can't
  * disagree about which commit the report is for.
  */
+export interface StartVerificationOptions {
+  sections?: readonly ReportSection[];
+  /** Tickets the reviewer named for the change map and claims, as keys or links. */
+  namedTickets?: readonly string[];
+  /** A model or effort for every section this call starts, over the user's settings. */
+  override?: RunChoice;
+}
+
 export async function startVerification(
   db: Db,
   config: Config,
@@ -1361,9 +1412,7 @@ export async function startVerification(
   prId: string,
   reviewDeps: ReviewDeps,
   deps: VerificationDeps,
-  picked?: readonly ReportSection[],
-  /** Tickets the reviewer named for the change map and claims, as keys or links. */
-  namedTickets: readonly string[] = [],
+  { sections: picked, namedTickets = [], override = {} }: StartVerificationOptions = {},
 ): Promise<StartedVerification> {
   const sections = normalizeSections(picked);
   // Read once for the lock key, which can't change; everything else comes
@@ -1403,6 +1452,7 @@ export async function startVerification(
         ? await ticketsFor(deps, pr, detail, namedTickets)
         : undefined;
       const inputs: RunInputs = {
+        override,
         pr,
         headSha,
         sources: once,
@@ -1469,11 +1519,12 @@ function knownSource(source: string, tickets: readonly { key: string }[]): strin
 /** Starts one section's run, with a context directory of its own that goes when the run ends. */
 async function startSectionRun(
   db: Db,
-  { pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
+  { override, pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
   section: ReportSection,
   deps: VerificationDeps,
 ): Promise<string> {
   const sections = [section];
+  const { model, effort } = sectionRun(section, settings, override);
   const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
   const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
   try {
@@ -1549,7 +1600,8 @@ async function startSectionRun(
         plugins: ["yarvis-review"],
         allowedTools: ALLOWED_TOOLS,
         disallowedTools: DISALLOWED_TOOLS,
-        model: settings.model,
+        model,
+        effort,
         maxTurns: MAX_TURNS,
         timeoutMs: VERIFICATION_RUN_TIMEOUT_MS,
         meta: {
@@ -1566,6 +1618,8 @@ async function startSectionRun(
           detailLoaded: detail !== null,
           ...(TICKET_SECTIONS.includes(section) && { namedTickets }),
           sections,
+          model,
+          effort,
           format: RUN_FORMAT,
         },
       },
@@ -1607,14 +1661,16 @@ export interface VerificationSize {
   /** {@link checksCostUsd} for the default sections. */
   estimatedCostUsd: number;
   /**
-   * About what one section's run costs with the configured model: an agent
-   * reading every file plus a coordinator's fixed overhead. BASE_TOKENS was
-   * measured on a run of eight agents, so charging it to every section rounds
-   * up rather than down.
+   * About what one section's run costs on each model: an agent reading every
+   * file plus a coordinator's fixed overhead. BASE_TOKENS was measured on a
+   * run of eight agents, so charging it to every section rounds up rather
+   * than down. Effort isn't counted.
    */
-  checkCostUsd: number;
+  checkCostUsd: Record<VerificationModel, number>;
   /** What the summary's run adds to {@link checkCostUsd}: the first page of each bulk file. */
-  summaryExtraUsd: number;
+  summaryExtraUsd: Record<VerificationModel, number>;
+  /** The model each section runs on with the user's settings. */
+  sectionModels: Record<ReportSection, VerificationModel>;
   /** The configured budget. It only warns: past it the assistant asks first, and nothing stops the run. */
   budgetUsd: number;
   overBudget: boolean;
@@ -1633,10 +1689,22 @@ export function verificationSize(
 ): VerificationSize {
   const changedLines = files.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0);
   const read = estimateReadBytes(files, new Set(truncated), bulk);
-  const checkCostUsd = estimateRunCostUsd(settings.model, read.perReader);
-  const summaryExtraUsd =
-    estimateRunCostUsd(settings.model, read.perReader + read.bulk) - checkCostUsd;
-  const estimatedCostUsd = checksCostUsd({ checkCostUsd, summaryExtraUsd }, DEFAULT_SECTIONS);
+  const byModel = (cost: (model: VerificationModel) => number) =>
+    Object.fromEntries(VERIFICATION_MODELS.map((m) => [m, cost(m)])) as Record<
+      VerificationModel,
+      number
+    >;
+  const checkCostUsd = byModel((m) => estimateRunCostUsd(m, read.perReader));
+  const summaryExtraUsd = byModel(
+    (m) => estimateRunCostUsd(m, read.perReader + read.bulk) - checkCostUsd[m],
+  );
+  const sectionModels = Object.fromEntries(
+    REPORT_SECTIONS.map((s) => [s, sectionRun(s, settings).model]),
+  ) as Record<ReportSection, VerificationModel>;
+  const estimatedCostUsd = checksCostUsd(
+    { checkCostUsd, summaryExtraUsd, sectionModels },
+    DEFAULT_SECTIONS,
+  );
   return {
     files: files.length,
     changedLines,
@@ -1647,16 +1715,26 @@ export function verificationSize(
     estimatedCostUsd,
     checkCostUsd,
     summaryExtraUsd,
+    sectionModels,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
   };
 }
 
-/** About what running `sections` costs, each as its own run, in USD. */
+/**
+ * About what running `sections` costs, each as its own run, in USD: each on
+ * its own model, or all on `model` when the run picked one.
+ */
 export function checksCostUsd(
-  size: Pick<VerificationSize, "checkCostUsd" | "summaryExtraUsd">,
+  size: Pick<VerificationSize, "checkCostUsd" | "summaryExtraUsd" | "sectionModels">,
   sections: readonly ReportSection[],
+  model?: VerificationModel,
 ): number {
-  const extra = sections.includes("summary") ? size.summaryExtraUsd : 0;
-  return roundToCents(sections.length * size.checkCostUsd + extra);
+  let usd = 0;
+  for (const section of sections) {
+    const runsOn = model ?? size.sectionModels[section];
+    usd += size.checkCostUsd[runsOn];
+    if (section === "summary") usd += size.summaryExtraUsd[runsOn];
+  }
+  return roundToCents(usd);
 }

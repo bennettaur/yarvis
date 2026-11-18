@@ -8,6 +8,11 @@ import { readSection } from "../settings/store.ts";
  * start, where it may start, and the environment it is given.
  */
 
+/** Claude Code's `--effort` levels. */
+export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
+
 /** Where the headless Claude Code binary is looked up when nothing is configured. */
 const DEFAULT_CLAUDE_COMMAND = "claude";
 

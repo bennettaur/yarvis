@@ -80,27 +80,54 @@ describe("GET/PATCH /api/pr-models/verification", () => {
       body: JSON.stringify(body),
     });
 
-  it("answers the defaults before anything is saved", async () => {
+  it("answers the defaults before anything is saved, with each section's own", async () => {
     const res = await app().request("/api/pr-models/verification", { headers: auth });
-    expect(await res.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+    const body = (await res.json()) as { sectionDefaults: unknown[] };
+    expect(body).toMatchObject({ maxBudgetUsd: 2, sections: {} });
+    expect(body.sectionDefaults).toContainEqual({
+      section: "malice",
+      label: "Malicious intent",
+      model: "opus",
+      effort: "high",
+    });
   });
 
   it("saves one field and keeps the other", async () => {
-    expect(await (await patch({ maxBudgetUsd: 0.75 })).json()).toEqual({
-      model: "sonnet",
+    expect(await (await patch({ maxBudgetUsd: 0.75 })).json()).toMatchObject({
       maxBudgetUsd: 0.75,
+      sections: {},
     });
-    await patch({ model: "opus" });
+    await patch({ sections: { risk: { model: "sonnet" } } });
+    await patch({ sections: { comments: { effort: "high" } } });
     const read = await app().request("/api/pr-models/verification", { headers: auth });
-    expect(await read.json()).toEqual({ model: "opus", maxBudgetUsd: 0.75 });
+    expect(await read.json()).toMatchObject({
+      maxBudgetUsd: 0.75,
+      sections: { risk: { model: "sonnet" }, comments: { effort: "high" } },
+    });
+  });
+
+  it("puts a section back on its default when its override is emptied", async () => {
+    await patch({ sections: { risk: { model: "haiku", effort: "low" } } });
+    const cleared = (await (await patch({ sections: { risk: {} } })).json()) as {
+      sections: unknown;
+    };
+    expect(cleared.sections).toEqual({});
   });
 
   it("takes a budget of any size, since it only warns", async () => {
     expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
   });
 
-  it("refuses a model that isn't a Claude Code alias, and a budget below the minimum", async () => {
-    for (const body of [{ model: "--model=x" }, { maxBudgetUsd: 0 }, { other: 1 }]) {
+  it("refuses unknown models, efforts and sections, and a budget below the minimum", async () => {
+    for (const body of [
+      { sections: { risk: { model: "--model=x" } } },
+      { sections: { risk: { effort: "extreme" } } },
+      { sections: { nope: { model: "haiku" } } },
+      { sections: { risk: { model: "haiku", other: 1 } } },
+      { model: "opus" },
+      { maxBudgetUsd: 0 },
+      { other: 1 },
+    ]) {
       expect((await patch(body)).status).toBe(400);
     }
   });
@@ -122,7 +149,7 @@ describe("GET/PATCH /api/pr-models/rereview", () => {
     await patch({ model: "haiku" });
     expect(await read()).toEqual({ model: "haiku", maxBudgetUsd: 0.5, autoStart: true });
     const verification = await app().request("/api/pr-models/verification", { headers: auth });
-    expect(await verification.json()).toEqual({ model: "sonnet", maxBudgetUsd: 2 });
+    expect(await verification.json()).toMatchObject({ maxBudgetUsd: 2, sections: {} });
   });
 
   it("takes a budget of any size", async () => {

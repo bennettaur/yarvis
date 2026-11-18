@@ -21,8 +21,11 @@ A PR's header here has **Open in review workspace** to move it there.
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. The same section sets the
-   verification report's Claude model (Sonnet by default) and the most one
-   report may spend ($2 by default).
+   Claude model and effort for each of the verification report's checks, and
+   the most one report may spend ($2 by default). Each check starts on a model
+   matched to its job: Opus at high effort for risk and malicious intent,
+   which feed the merge gate; Haiku at low effort for comment quality and
+   observability; Sonnet at medium effort for the rest.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 
@@ -194,7 +197,9 @@ the background, and the attention bell tells you when they're done.
   The setup script never runs: that still needs your answer in the review
   workspace. A check that already has a result for the PR's current commit,
   or is already running, isn't started again unless you ask for a fresh one.
-  The bell rings once every check it started has finished.
+  The bell rings once every check it started has finished. Name a model or
+  effort ("verify #612 on Haiku") and every check it starts runs on that
+  instead of its own setting; the cost it quotes is for that model.
 
 - **Several PRs, or a stack**: ask the assistant to verify a list of PRs
   ("verify #610, #611 and #612") or a whole stack ("verify the stack #612 is
