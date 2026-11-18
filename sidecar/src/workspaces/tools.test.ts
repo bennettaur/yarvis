@@ -740,6 +740,68 @@ describe("workspace tools", () => {
       opts,
     )) as { error?: string };
     expect(result.error).toContain("Remote Control needs a Claude Code harness");
+    // The model is sent back to the user rather than told to pick one itself.
+    expect(result.error).toContain("ask the user which Claude Code harness to use");
+    expect(result.error).not.toContain("list_agent_harnesses");
+  });
+
+  it("points Remote Control back at a Claude Code default rather than another harness", async () => {
+    useHarnessSettings();
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner, remoteControl: true });
+    const result = (await tools.create_scratch_workspace_session.execute!(
+      { name: "Away", startWork: true, harness: "pi" },
+      opts,
+    )) as { error?: string };
+    expect(result.error).toContain('leave harness out to use the default, "Claude"');
+  });
+
+  it("start_work_on_issue refuses a harness the assistant may not start before touching anything", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client, calls } = fakeGitHub();
+    let started = false;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: true, applyLabel: true, harness: "locked" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not a harness you may start");
+    expect(started).toBe(false);
+    expect(calls.assigned).toEqual([]);
+    expect(calls.labeled).toEqual([]);
+    expect((await db.select().from(schema.workspaces)).length).toBe(0);
+  });
+
+  it("start_work_on_issue launches the harness the user named", async () => {
+    useHarnessSettings();
+    const repo = await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git" });
+    const { client } = fakeGitHub();
+    let startedHarness: string | undefined;
+    const tools = buildWorkspaceTools(db, config, {
+      gitRunner: okRunner,
+      githubClient: client,
+      startClaudeSession: async (input) => {
+        startedHarness = input.harness;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.start_work_on_issue.execute!(
+      { repoId: repo.id, issueNumber: 99, assignSelf: false, applyLabel: false, harness: "pi" },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toBeUndefined();
+    expect(startedHarness).toBe("pi");
   });
 
   it("offers the model the harness list as a tool", async () => {

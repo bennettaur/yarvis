@@ -103,6 +103,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { harnessChoiceError } from "./harnesses.ts";
 import {
   checkBeforeWrite,
   checkRepoIntegrity,
@@ -2094,6 +2095,10 @@ export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE
  * leaves the brief in place for `resumeKickOffs` to retry rather than failing
  * the workspace. Retrying is safe — the core keys sessions by workspace and
  * discards a spawn for an id that already has one.
+ *
+ * A stored harness the user has since removed or stopped letting the assistant
+ * start falls back to the default. Otherwise the core would refuse it on every
+ * retry and the kick-off would never run.
  */
 async function launchKickOffSession(
   db: Db,
@@ -2101,6 +2106,16 @@ async function launchKickOffSession(
   startSession: ClaudeSessionStarter,
   remoteControl: boolean,
 ): Promise<void> {
+  let harness = detail.pendingHarness ?? undefined;
+  if (harness) {
+    const refused = await harnessChoiceError(harness, false);
+    if (refused) {
+      console.warn(
+        `[workspaces] the kick-off's harness can no longer be started (${refused}); using the default`,
+      );
+      harness = undefined;
+    }
+  }
   try {
     await startSession({
       workspaceId: detail.id,
@@ -2108,7 +2123,7 @@ async function launchKickOffSession(
       name: detail.name,
       remoteControl,
       instruction: AGENT_KICKOFF_INSTRUCTION,
-      harness: detail.pendingHarness ?? undefined,
+      harness,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
@@ -2122,7 +2137,7 @@ async function launchKickOffSession(
       name: detail.name,
       kickOff: true,
       remoteControl,
-      harness: detail.pendingHarness ?? null,
+      harness: harness ?? null,
     },
   });
   await clearPendingBrief(db, detail.id).catch(() => undefined);

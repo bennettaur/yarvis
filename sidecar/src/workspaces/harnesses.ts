@@ -112,9 +112,10 @@ export async function listAgentHarnesses(
 
 /**
  * Why a session tool can't launch with `harness` (or the default, when it is
- * omitted), or null when it can. Checked before a workspace is built: the core
- * would refuse the same launch, but on a kick-off that refusal comes after
- * provisioning, is only logged, and is retried on every restart.
+ * omitted), or null when it can. Checked before a workspace is built, since
+ * the core would refuse the same launch only after provisioning. The message
+ * never tells the model to pick another harness on its own: only the user or
+ * the default may choose one.
  */
 export async function harnessChoiceError(
   harness: string | undefined,
@@ -127,7 +128,12 @@ export async function harnessChoiceError(
     return `"${harness}" is not a harness you may start; call list_agent_harnesses, or leave harness out for the default`;
   }
   if (remoteControl && pick.kind !== "claude-code") {
-    return `Remote Control needs a Claude Code harness, and "${pick.name}" isn't one; pass a claude-code harness from list_agent_harnesses`;
+    const fallback = listed.find((h) => h.isDefault && h.kind === "claude-code");
+    const next =
+      fallback && fallback.id !== pick.id
+        ? `leave harness out to use the default, "${fallback.name}"`
+        : "ask the user which Claude Code harness to use";
+    return `Remote Control needs a Claude Code harness, and "${pick.name}" isn't one; ${next}`;
   }
   return null;
 }
