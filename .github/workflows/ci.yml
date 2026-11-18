@@ -140,6 +140,9 @@ jobs:
       # own copy and imports that, so no override can replace it. Its sanitizer
       # doesn't use the modes they need (SAFE_FOR_TEMPLATES, IN_PLACE, an xhtml
       # PARSER_MEDIA_TYPE). Drop them when a monaco-editor release bundles 3.4.17+.
+      # GHSA-fc5q-39xc-vjpf is a picomatch ReDoS with no patched release yet.
+      # Only build tooling uses it (vite, sass's chokidar), and only on our own
+      # globs. Drop it once a fixed picomatch ships and an override can pin it.
       - name: Audit production dependencies
         run: >-
           bun audit --prod
@@ -148,6 +151,7 @@ jobs:
           --ignore=GHSA-p98j-92pf-mc4p
           --ignore=GHSA-6688-9rhm-gjv2
           --ignore=GHSA-c6gr-qvv4-5v3f
+          --ignore=GHSA-fc5q-39xc-vjpf
 
   rust-fmt:
     name: Rust formatting
