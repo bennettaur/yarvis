@@ -268,3 +268,40 @@ describe("jira tools: ticket changes", () => {
     ]);
   });
 });
+
+describe("jira tools: starting work", () => {
+  it("refuses a harness the assistant may not start before reading the ticket", async () => {
+    // The suite's settings file saves no harnesses, so only the built-in one
+    // may be started.
+    let touched = false;
+    const jiraClient = {
+      issueDetail: async () => {
+        touched = true;
+        throw new Error("should not be read");
+      },
+    } as unknown as JiraClient;
+    let started = false;
+    const tools = buildJiraTools(db, config, {
+      jiraClient,
+      startClaudeSession: async (input) => {
+        started = true;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+    });
+
+    const result = (await tools.jira_start_work_on_issue.execute!(
+      {
+        key: "PROJ-1",
+        repoIds: [],
+        assignSelf: true,
+        transitionToInProgress: true,
+        harness: "yolo",
+      },
+      opts,
+    )) as { error?: string };
+
+    expect(result.error).toContain("not a harness you may start");
+    expect(touched).toBe(false);
+    expect(started).toBe(false);
+  });
+});

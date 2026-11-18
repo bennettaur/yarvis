@@ -216,6 +216,29 @@ describe("AgentSection", () => {
     cleanup();
   });
 
+  it("saves the assistant opt-in for the harness whose box is ticked", async () => {
+    const { host, cleanup } = await mount();
+    const button = (label: string) =>
+      Array.from(host.querySelectorAll("button")).find((b) => b.textContent === label);
+    await waitFor(() => button("Pi") !== undefined);
+    button("Pi")?.click();
+    await waitFor(() => host.innerHTML.includes('value="pi"'));
+    const optIn = Array.from(host.querySelectorAll("label"))
+      .find((l) => l.textContent?.includes("The assistant may start this harness"))
+      ?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(optIn?.checked).toBe(false);
+    optIn?.click();
+    await waitFor(() => optIn?.checked === true);
+    button("Save harnesses")?.click();
+    await waitFor(() => invoked.some((i) => i.command === "set_agent_harnesses"));
+
+    const saved = invoked.find((i) => i.command === "set_agent_harnesses")?.args as {
+      harnesses: Array<{ id: string; assistantMayUse: boolean }>;
+    };
+    expect(saved.harnesses).toEqual([expect.objectContaining({ id: "pi", assistantMayUse: true })]);
+    cleanup();
+  });
+
   it("falls back to the built-in default when the default harness is removed", async () => {
     stored = {
       ...defaultSettings(),
