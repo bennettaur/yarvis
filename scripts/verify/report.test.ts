@@ -711,7 +711,7 @@ describe("renderReport's impact", () => {
 
   it("says when the number of changes raised the band", () => {
     const review = makeReview({
-      changes: [change({ kind: "addition", reach: "local", count: 9 })],
+      changes: [change({ kind: "removal", reach: "local", count: 9 })],
     });
     const { body } = renderReport(review, makeFacts(), TARGET);
     expect(body).toContain("raised from low by the number of changes");
@@ -786,6 +786,16 @@ describe("Review", () => {
     const { sensitive: _s, count: _c, check: _k, ...bare } = change();
     const parsed = Review.parse({ ...makeReview(), changes: [bare] });
     expect(parsed.changes[0]).toMatchObject({ sensitive: false, count: 1, check: "" });
+  });
+
+  it("drops an internal flag, since this band can auto-merge", () => {
+    const logic = change({ kind: "logic", reach: "local", evidence: "partial" });
+    const parsed = Review.parse({ ...makeReview(), changes: [{ ...logic, internal: true }] });
+    expect(parsed.changes[0]).not.toHaveProperty("internal");
+    const plain = Review.parse({ ...makeReview(), changes: [logic] });
+    const band = (review: typeof parsed) =>
+      renderReport(review, makeFacts(), TARGET).data.impactBand;
+    expect(band(parsed)).toBe(band(plain));
   });
 
   it("only accepts screenshots that are absolute image paths", () => {

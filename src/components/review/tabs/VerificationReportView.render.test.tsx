@@ -93,6 +93,23 @@ describe("VerificationReportView", () => {
               band: 4,
             },
             { ...change, title: "Tidy comments", kind: "passive", count: 4, check: "", band: 1 },
+            {
+              ...change,
+              title: "Sort the staff view",
+              reach: "local",
+              internal: true,
+              check: "",
+              band: 2,
+            },
+            {
+              ...change,
+              title: "Gate the staff view",
+              reach: "local",
+              sensitive: true,
+              internal: true,
+              check: "",
+              band: 3,
+            },
           ],
         },
       },
@@ -112,7 +129,10 @@ describe("VerificationReportView", () => {
     expect(text).toContain("raised from moderate by the number of changes");
     expect(text).toContain("A write evicts the cached profile");
     expect(text).toContain("logic · core · partly tested");
-    expect(text).toContain("Every change (2)");
+    expect(text).toContain("Every change (4)");
+    expect(text).toContain("logic · local · partly tested · internal only");
+    expect(text).toContain("logic · local · partly tested · sensitive");
+    expect(text).not.toContain("sensitive · internal only");
     expect(text).toContain("passive · core · partly tested · 4 like it");
   });
 

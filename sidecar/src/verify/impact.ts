@@ -56,6 +56,12 @@ export interface ClassifiedChange {
   evidence: Evidence;
   /** Touches secrets, permissions, what an agent may do, or deletes or migrates data. */
   sensitive?: boolean;
+  /**
+   * A mistake here can only reach the organization's own employees: no client-facing
+   * surface, no writes, no data or API another system reads. Ignored on a sensitive
+   * or interface change, and on shared or core reach.
+   */
+  internal?: boolean;
   /** How many like changes this entry stands for, so twelve small additions can be one entry. */
   count?: number;
 }
@@ -70,12 +76,22 @@ const BAND_TABLE: Record<ChangeKind, readonly [ImpactBand, ImpactBand, ImpactBan
   logic: [2, 3, 4, 4],
 };
 
+/**
+ * Other features' users can reach a shared or core change, and an interface
+ * change's callers may sit outside what the reviewer read, so neither counts
+ * as internal-only.
+ */
+const lowersAsInternal = (change: ClassifiedChange): boolean =>
+  change.internal === true &&
+  change.kind !== "interface" &&
+  (change.reach === "leaf" || change.reach === "local");
+
 const clampBand = (band: number): ImpactBand => Math.min(5, Math.max(1, band)) as ImpactBand;
 
 /**
  * One change's band: the table, then at most one step for evidence and one for
- * sensitive ground. A passive change or a proven reorganization behaves as
- * before, so neither moves, wherever it is.
+ * sensitive ground or internal-only exposure. A passive change or a proven
+ * reorganization behaves as before, so neither moves, wherever it is.
  */
 export function changeBand(change: ClassifiedChange): ImpactBand {
   // A move nobody showed to be a move might change behaviour, so it scores as one that does.
@@ -94,6 +110,7 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
   }
 
   if (change.sensitive) band += 1;
+  else if (lowersAsInternal(change)) band -= 1;
   return clampBand(band);
 }
 
@@ -101,9 +118,15 @@ export function changeBand(change: ClassifiedChange): ImpactBand {
  * Each band's share of the chance that a PR breaks something. Shipping many
  * changes at once adds those chances up, and makes a bad deploy harder to
  * trace and revert than the same changes merged one at a time. Passive
- * changes add nothing, so a sweeping rename stays minimal.
+ * changes add nothing, so a sweeping rename stays minimal. Additions add
+ * nothing either: only other new code reaches them, and the edit that wires
+ * them in is scored as its own change, so a new page split over twelve files
+ * is one feature, not twelve risks.
  */
 const LOAD_WEIGHT: Record<ImpactBand, number> = { 1: 0, 2: 1, 3: 2, 4: 4, 5: 4 };
+
+const loadWeight = (change: ClassifiedChange & { band: ImpactBand }): number =>
+  change.kind === "addition" ? 0 : LOAD_WEIGHT[change.band];
 
 /**
  * Loads at which the volume of change raises the PR's band, highest first,
@@ -157,7 +180,7 @@ export function scoreImpact<T extends ClassifiedChange>(changes: readonly T[]): 
   for (const change of scored) {
     const count = Math.max(1, change.count ?? 1);
     counts[change.kind] += count;
-    load += LOAD_WEIGHT[change.band] * count;
+    load += loadWeight(change) * count;
   }
   const raise = VOLUME_STEPS.find((step) => load >= step.load)?.raise ?? 0;
   const ceiling = top >= ATTENTION_BAND ? 5 : VOLUME_ONLY_CEILING;

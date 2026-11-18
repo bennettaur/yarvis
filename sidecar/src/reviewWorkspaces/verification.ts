@@ -162,6 +162,10 @@ const changeSchema = z.object({
     .boolean()
     .nullish()
     .transform((v) => v ?? false),
+  internal: z
+    .boolean()
+    .nullish()
+    .transform((v) => v ?? false),
   count: z
     .number()
     .nullish()

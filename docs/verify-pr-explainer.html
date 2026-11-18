@@ -341,7 +341,7 @@
     <li>Passive changes and proven reorganizations never move.</li>
     <li>A <b>reorganization</b> that isn't proven scores as logic. "Mostly a move" is the mistake this score exists to catch.</li>
   </ul>
-  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight by its band (0 for band 1, 1, 2, then 4 for bands 4 and 5). A total of 8 raises the PR one band, 16 raises it two. Volume alone can take a PR to 4 but not 5, so a pile of small changes reaches the merge reviewer but not a person. When volume raised the band, the report says so, and when the changes are independent the skill adds a minor finding on how to split the PR.</p>
+  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight by its band (0 for band 1, 1, 2, then 4 for bands 4 and 5), except additions, which add nothing since only other new code reaches them. A total of 8 raises the PR one band, 16 raises it two. Volume alone can take a PR to 4 but not 5, so a pile of small changes reaches the merge reviewer but not a person. When volume raised the band, the report says so, and when the changes are independent the skill adds a minor finding on how to split the PR.</p>
 
   <h3>Facts sit under the classification</h3>
   <p><code>report.ts</code> checks the model's classification against the facts and never scores below them:</p>
