@@ -300,18 +300,21 @@ again after a minute. If CI ran on a different commit than the checkout, the
 tab says so. Azure DevOps PRs show their build and policy checks; Azure has no
 annotations, code scanning alerts or bot comments to show.
 
-Below the checklist, the report shows each check's newest result. A section
-whose result is from an older head is marked "older head". Every file and
-line in the report opens the diff there.
-
 The copy button beside the **Verification** heading copies the whole report
 as Markdown, to paste into Claude and talk the PR through. It has the
 suggested decision and its reasons, which head each check's result is from,
-every check's newest result, the latest finished mutation-testing pass, and
-what CI, scanners and bots reported for the current commit. It opens with a
-note that the content comes from the PR's code and its tools, so the reader
-treats it as claims to check, not instructions. Hidden and control
-characters are stripped from it.
+every check's newest result, the newest mutation-testing pass if it finished,
+and what CI, scanners and bots reported for the current commit. Most of that
+text comes from the PR's code and its tools, so the copy puts the report
+inside tags named with a random value, after a line telling Claude to treat
+what's inside as claims to check, not instructions. What the agents wrote
+is quoted, line breaks in one-line fields are flattened, and hidden and
+control characters are stripped, so that text can't pass for part of the
+report's own structure.
+
+Below the checklist, the report shows each check's newest result. A section
+whose result is from an older head is marked "older head". Every file and
+line in the report opens the diff there.
 
 - **Change map** groups the change into themes, such as "retry failed uploads"
   or "tests for the retry", so you can review one theme at a time. It opens

@@ -626,6 +626,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   // CI on another commit says nothing about this one.
   const currentEvidence =
     evidence.data && evidence.data.headSha === checklist.data?.headSha ? evidence.data.items : null;
+  const mutationRun = mutation.data?.run ?? null;
   // Built on click, so polling a running check doesn't rebuild it every few seconds.
   const exportMarkdown = () =>
     verificationReportMarkdown({
@@ -639,9 +640,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       headSha: checklist.data?.headSha ?? null,
       report,
       items,
-      assessment: assessReview(report, currentEvidence, items, mutation.data?.run ?? null, upstack),
+      assessment: assessReview(report, currentEvidence, items, mutationRun, upstack),
       evidence: currentEvidence,
-      mutation: mutation.data?.run ?? null,
+      mutation: mutationRun,
     });
 
   if (checklist.loading) {
@@ -728,7 +729,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           report={report}
           evidence={currentEvidence}
           items={items}
-          mutation={mutation.data?.run ?? null}
+          mutation={mutationRun}
           upstack={upstack}
           currentSections={currentSections}
           onOpen={open}
