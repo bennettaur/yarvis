@@ -212,9 +212,9 @@ describe("verificationReportMarkdown", () => {
   });
 
   it("keeps a run's error inside its table cell", () => {
-    const failed = run({ id: "r2", status: "failed", error: "bad | pipe\nnext" });
+    const failed = run({ id: "r2", status: "failed", error: "bad \\| pipe\nnext" });
     const md = verificationReportMarkdown(input({ items: [item("risk", "Risk", null, failed)] }));
-    expect(md).toContain("| Risk | not run; last run failed: bad \\| pipe next |");
+    expect(md).toContain("| Risk | not run; last run failed: bad \\\\\\| pipe next |");
   });
 
   it("lists findings with severity and location, keeping multi-line detail in its bullet", () => {

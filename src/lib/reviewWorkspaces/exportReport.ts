@@ -89,8 +89,8 @@ function fenced(text: string, lang = ""): string {
   return `${fence}${lang}\n${text}\n${fence}`;
 }
 
-/** A table cell: one line, with its pipes escaped so it can't add columns. */
-const cell = (text: string) => oneLine(text).replace(/\|/g, "\\|");
+/** A table cell: one line, with pipes and backslashes escaped so it can't add columns. */
+const cell = (text: string) => oneLine(text).replace(/[\\|]/g, "\\$&");
 
 const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : "unknown");
 
