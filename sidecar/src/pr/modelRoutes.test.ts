@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../app.ts";
@@ -112,6 +112,44 @@ describe("GET/PATCH /api/pr-models/verification", () => {
       sections: unknown;
     };
     expect(cleared.sections).toEqual({});
+  });
+
+  it("replaces a section's override whole, rather than merging into it", async () => {
+    await patch({ sections: { risk: { model: "haiku", effort: "low" } } });
+    const saved = (await (await patch({ sections: { risk: { effort: "high" } } })).json()) as {
+      sections: unknown;
+    };
+    expect(saved.sections).toEqual({ risk: { effort: "high" } });
+  });
+
+  it("reads hand-edited or older settings leniently, keeping what still validates", async () => {
+    await writeFile(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({
+        prVerification: {
+          model: "opus",
+          maxBudgetUsd: 3,
+          sections: {
+            risk: { model: "gpt-4" },
+            comments: { effort: "high" },
+            malice: { model: "opus", effort: "extreme" },
+          },
+        },
+      }),
+    );
+    const read = await app().request("/api/pr-models/verification", { headers: auth });
+    const body = (await read.json()) as Record<string, unknown>;
+    // The single model from before each check had its own is gone.
+    expect(body.model).toBeUndefined();
+    expect(body).toMatchObject({ maxBudgetUsd: 3 });
+    expect(body.sections).toEqual({ comments: { effort: "high" }, malice: { model: "opus" } });
+
+    await writeFile(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({ prVerification: { sections: "x" } }),
+    );
+    const odd = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(((await odd.json()) as { sections: unknown }).sections).toEqual({});
   });
 
   it("takes a budget of any size, since it only warns", async () => {

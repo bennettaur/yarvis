@@ -77,7 +77,7 @@ export const verificationBudgetSchema = z.number().min(VERIFICATION_BUDGET_MIN_U
 
 export interface VerificationRunConfig {
   maxBudgetUsd: number;
-  /** Overrides by section name. Names aren't checked here: the routes check them, and an unknown one is ignored. */
+  /** Overrides by section name. The route checks the names; one stored by hand that names no section is never read. */
   sections: Record<string, RunChoice>;
 }
 
@@ -88,14 +88,17 @@ export const DEFAULT_VERIFICATION_RUN_CONFIG: VerificationRunConfig = {
 
 const VERIFICATION_SETTINGS_KEY = "prVerification";
 
-/** Each stored override that still validates, with empty ones dropped. */
+/** Each stored override's fields that still validate, with empty overrides dropped. */
 function sectionsFrom(stored: unknown): Record<string, RunChoice> {
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const { model: modelSchema, effort: effortSchema } = runChoiceSchema.shape;
   const sections: Record<string, RunChoice> = {};
   for (const [section, value] of Object.entries(stored)) {
-    const parsed = runChoiceSchema.safeParse(value);
-    if (parsed.success && (parsed.data.model || parsed.data.effort)) {
-      sections[section] = parsed.data;
+    const fields = (value ?? {}) as Record<string, unknown>;
+    const model = modelSchema.safeParse(fields.model).data;
+    const effort = effortSchema.safeParse(fields.effort).data;
+    if (model || effort) {
+      sections[section] = { ...(model && { model }), ...(effort && { effort }) };
     }
   }
   return sections;
@@ -121,7 +124,7 @@ export async function getVerificationRunConfig(): Promise<VerificationRunConfig>
   return verificationConfigFrom(await readSection(VERIFICATION_SETTINGS_KEY));
 }
 
-export interface VerificationRunConfigPatch {
+interface VerificationRunConfigPatch {
   maxBudgetUsd?: number;
   /** Replaces each named section's override; an empty one puts the section back on its default. */
   sections?: Record<string, RunChoice>;

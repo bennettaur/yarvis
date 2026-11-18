@@ -44,6 +44,9 @@ describe("DESTRUCTIVE_BUILTIN_TOOLS", () => {
     const guide = conditions.get("start_pr_guided_review");
     expect(report?.({ pullRequest: {} })).toBe(false);
     expect(report?.({ pullRequest: {}, confirmed: true })).toBe(true);
+    // A model or effort replaces the gate checks' own, so the user sees it first.
+    expect(report?.({ pullRequest: {}, model: "haiku" })).toBe(true);
+    expect(report?.({ pullRequest: {}, effort: "max" })).toBe(true);
     expect(guide?.({ pullRequest: {} })).toBe(false);
     expect(guide?.({ pullRequest: {}, regenerate: true })).toBe(true);
   });

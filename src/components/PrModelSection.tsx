@@ -23,6 +23,7 @@ import {
   type VerificationRunConfig,
   type VerificationRunConfigPatch,
 } from "../lib/pr/models";
+import type { ReportSection } from "../lib/reviewWorkspaces/verification";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
@@ -127,10 +128,8 @@ function VerificationSectionRuns({
   value: VerificationRunConfig;
   onSave: (patch: VerificationRunConfigPatch) => void;
 }) {
-  const save = (
-    section: VerificationRunConfig["sectionDefaults"][number]["section"],
-    choice: RunChoice,
-  ) => onSave({ sections: { [section]: choice } });
+  const save = (section: ReportSection, choice: RunChoice) =>
+    onSave({ sections: { [section]: choice } });
   return (
     <div className="space-y-1">
       <p className="text-xs text-zinc-500">
@@ -138,23 +137,23 @@ function VerificationSectionRuns({
         override them for that run.
       </p>
       <div className="grid grid-cols-[1fr_1fr_1fr] items-center gap-x-2 gap-y-1">
-        {value.sectionDefaults.map((d) => {
-          const saved = value.sections[d.section] ?? {};
+        {value.sectionDefaults.map((check) => {
+          const saved = value.sections[check.section] ?? {};
           return (
-            <div key={d.section} className="contents">
-              <span className="text-xs text-zinc-400">{d.label}</span>
+            <div key={check.section} className="contents">
+              <span className="text-xs text-zinc-400">{check.label}</span>
               <select
                 className={FIELD}
-                aria-label={`${d.label} model`}
+                aria-label={`${check.label} model`}
                 value={saved.model ?? ""}
                 onChange={(e) =>
-                  save(d.section, {
+                  save(check.section, {
                     ...saved,
                     model: (e.target.value || undefined) as VerificationModel | undefined,
                   })
                 }
               >
-                <option value="">Default ({VERIFICATION_MODEL_LABELS[d.model]})</option>
+                <option value="">Default ({VERIFICATION_MODEL_LABELS[check.model]})</option>
                 {VERIFICATION_MODELS.map((m) => (
                   <option key={m} value={m}>
                     {VERIFICATION_MODEL_LABELS[m]}
@@ -163,16 +162,16 @@ function VerificationSectionRuns({
               </select>
               <select
                 className={FIELD}
-                aria-label={`${d.label} effort`}
+                aria-label={`${check.label} effort`}
                 value={saved.effort ?? ""}
                 onChange={(e) =>
-                  save(d.section, {
+                  save(check.section, {
                     ...saved,
                     effort: (e.target.value || undefined) as VerificationEffort | undefined,
                   })
                 }
               >
-                <option value="">Default ({d.effort} effort)</option>
+                <option value="">Default ({check.effort} effort)</option>
                 {VERIFICATION_EFFORTS.map((effort) => (
                   <option key={effort} value={effort}>
                     {effort} effort
@@ -233,11 +232,24 @@ export default function PrModelSection() {
   );
 
   const saveVerification = useCallback(async (patch: VerificationRunConfigPatch) => {
+    // Shown at once, so a second change made before this save returns builds on it.
+    setVerification(
+      (prev) =>
+        prev && {
+          ...prev,
+          ...(patch.maxBudgetUsd !== undefined && { maxBudgetUsd: patch.maxBudgetUsd }),
+          sections: { ...prev.sections, ...patch.sections },
+        },
+    );
     try {
       setVerification(await saveVerificationRunConfig(patch));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // Put back what is saved, so the failed change doesn't look saved.
+      void getVerificationRunConfig()
+        .then(setVerification)
+        .catch(() => undefined);
     }
   }, []);
 

@@ -502,7 +502,7 @@ export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = 
  * The model and effort a section runs on: the run's own choice first, then the
  * user's setting for the section, then its default.
  */
-export function sectionRun(
+export function sectionRunChoice(
   section: ReportSection,
   settings: VerificationRunConfig,
   override: RunChoice = {},
@@ -1386,6 +1386,14 @@ interface RunInputs {
   settings: VerificationRunConfig;
 }
 
+export interface StartVerificationOptions {
+  sections?: readonly ReportSection[];
+  /** Tickets the reviewer named for the change map and claims, as keys or links. */
+  namedTickets?: readonly string[];
+  /** A model or effort for every section this call starts, over the user's settings. */
+  override?: RunChoice;
+}
+
 /**
  * Starts a run for each picked section of a review PR's report, each on its
  * own so one can be re-run, or fail, without the others. A section that
@@ -1397,14 +1405,6 @@ interface RunInputs {
  * diff's head, the target key and the working directory, so they can't
  * disagree about which commit the report is for.
  */
-export interface StartVerificationOptions {
-  sections?: readonly ReportSection[];
-  /** Tickets the reviewer named for the change map and claims, as keys or links. */
-  namedTickets?: readonly string[];
-  /** A model or effort for every section this call starts, over the user's settings. */
-  override?: RunChoice;
-}
-
 export async function startVerification(
   db: Db,
   config: Config,
@@ -1524,7 +1524,7 @@ async function startSectionRun(
   deps: VerificationDeps,
 ): Promise<string> {
   const sections = [section];
-  const { model, effort } = sectionRun(section, settings, override);
+  const { model, effort } = sectionRunChoice(section, settings, override);
   const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
   const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
   try {
@@ -1699,7 +1699,7 @@ export function verificationSize(
     (m) => estimateRunCostUsd(m, read.perReader + read.bulk) - checkCostUsd[m],
   );
   const sectionModels = Object.fromEntries(
-    REPORT_SECTIONS.map((s) => [s, sectionRun(s, settings).model]),
+    REPORT_SECTIONS.map((s) => [s, sectionRunChoice(s, settings).model]),
   ) as Record<ReportSection, VerificationModel>;
   const estimatedCostUsd = checksCostUsd(
     { checkCostUsd, summaryExtraUsd, sectionModels },

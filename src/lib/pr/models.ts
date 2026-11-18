@@ -72,7 +72,7 @@ export interface VerificationRunConfigPatch {
   sections?: Partial<Record<ReportSection, RunChoice>>;
 }
 
-/** Mirrors `verificationRunConfigSchema` in `sidecar/src/pr/models.ts`. */
+/** Mirrors `VERIFICATION_BUDGET_MIN_USD` in `sidecar/src/pr/models.ts`. */
 export const VERIFICATION_BUDGET_MIN_USD = 0.25;
 
 export async function getVerificationRunConfig(): Promise<VerificationRunConfig> {

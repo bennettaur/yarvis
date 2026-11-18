@@ -24,7 +24,7 @@ import {
   normalizeSections,
   REPORT_SECTIONS,
   SECTION_RUN_DEFAULTS,
-  sectionRun,
+  sectionRunChoice,
   similarTitles,
   summaryWordCap,
   type VerificationInput,
@@ -1213,23 +1213,23 @@ describe("picking a section's model and effort", () => {
   };
 
   it("falls back to the section's default for whatever the settings leave out", () => {
-    expect(sectionRun("malice", settings)).toEqual(SECTION_RUN_DEFAULTS.malice);
-    expect(sectionRun("risk", settings)).toEqual({
+    expect(sectionRunChoice("malice", settings)).toEqual(SECTION_RUN_DEFAULTS.malice);
+    expect(sectionRunChoice("risk", settings)).toEqual({
       model: "sonnet",
       effort: SECTION_RUN_DEFAULTS.risk.effort,
     });
-    expect(sectionRun("comments", settings)).toEqual({
+    expect(sectionRunChoice("comments", settings)).toEqual({
       model: SECTION_RUN_DEFAULTS.comments.model,
       effort: "high",
     });
   });
 
   it("lets a run's own choice win over the settings", () => {
-    expect(sectionRun("risk", settings, { model: "haiku" })).toEqual({
+    expect(sectionRunChoice("risk", settings, { model: "haiku" })).toEqual({
       model: "haiku",
       effort: SECTION_RUN_DEFAULTS.risk.effort,
     });
-    expect(sectionRun("comments", settings, { effort: "max" }).effort).toBe("max");
+    expect(sectionRunChoice("comments", settings, { effort: "max" }).effort).toBe("max");
   });
 });
 

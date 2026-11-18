@@ -338,6 +338,34 @@ describe("kickOffVerification", () => {
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 
+  it("runs every check on the model and effort the assistant named", async () => {
+    await kickOffVerification(db, config, ref, {}, kickoff);
+    await until(async () => (await attention()).length > 0, "the checkout");
+    const tools = buildPrReviewStartTools(db, config, { kickoff: () => kickoff });
+    const started = await (
+      tools.start_pr_verification_report as unknown as {
+        execute: (i: unknown, o: unknown) => Promise<unknown>;
+      }
+    ).execute(
+      {
+        pullRequest: { provider: "github", owner: "o", repo: "r", number: 1 },
+        sections: ["tests"],
+        confirmed: true,
+        model: "opus",
+        effort: "max",
+      },
+      { toolCallId: "t", messages: [] },
+    );
+    expect(started).toMatchObject({ status: "started" });
+    const [row] = await db.select().from(agentRuns);
+    expect(row?.meta).toMatchObject({ model: "opus", effort: "max" });
+    release();
+    await until(
+      async () => (await db.select().from(agentRuns)).every((r) => r.status !== "running"),
+      "the run",
+    );
+  });
+
   it("rings an error bell, without the run's own error, when the report fails", async () => {
     if (kickoff.verification.run) kickoff.verification.run.program = failingProgram;
     await kickOffVerification(db, config, ref, {}, kickoff);
@@ -400,8 +428,10 @@ cat "${fakeDir}/result.jsonl"`,
     const one = await cost(["tests"]);
     expect(one).toBeGreaterThan(0);
     expect(await cost(["tests", "risk"])).toBeGreaterThan(one);
-    // The settings run everything on Haiku; a run on Opus is priced at Opus.
-    expect(await cost(["tests"], { model: "opus" })).toBeGreaterThan(one);
+    // The settings run everything on Haiku; a run on another model is priced at that model.
+    const onSonnet = await cost(["tests"], { model: "sonnet" });
+    expect(onSonnet).toBeGreaterThan(one);
+    expect(await cost(["tests"], { model: "opus" })).toBeGreaterThan(onSonnet);
 
     // Once the test-quality check has a result for this head, it isn't priced again.
     await kickOffVerification(db, config, ref, { confirmed: true, sections: ["tests"] }, kickoff);
@@ -488,6 +518,28 @@ describe("startVerificationQueue", () => {
     );
     expect(started).toMatchObject({ status: "started" });
   }
+
+  it("keeps the model and effort the assistant named for every PR it checks", async () => {
+    const tools = buildPrReviewStartTools(db, config, { kickoff: () => kickoff });
+    const answer = (await (
+      tools.start_pr_verification_queue as unknown as {
+        execute: (i: unknown, o: unknown) => Promise<unknown>;
+      }
+    ).execute(
+      {
+        pullRequests: [{ provider: "github", owner: "o", repo: "r", number: 1 }],
+        preset: "quick",
+        model: "haiku",
+        effort: "low",
+      },
+      { toolCallId: "t", messages: [] },
+    )) as { queueId: string };
+    expect(getVerificationQueue(answer.queueId)?.override).toEqual({
+      model: "haiku",
+      effort: "low",
+    });
+    await until(async () => (await queueBell()) !== undefined, "the queue's bell");
+  });
 
   it("skips a PR that needs the user's go-ahead, and rings one bell naming it", async () => {
     const { queue } = startVerificationQueue(db, config, [ref], ["summary"], kickoff);
