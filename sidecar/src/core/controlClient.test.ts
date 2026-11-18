@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   harnessRunEnv,
   killReviewClaudeSession,
@@ -35,6 +36,7 @@ const previousSock = process.env.YARVIS_CORE_SOCK;
 function answerFor(req: { method: string; params: { harness?: string } }) {
   if (req.method !== "harness.runEnv") return {};
   if (req.params.harness === "garbled") return { result: { program: 1 } };
+  if (req.params.harness === "pi") return { ok: false, error: '"Pi" isn\'t a Claude Code harness' };
   return { result: { program: "/opt/bin/claude", env: { API_KEY: "sk-test" } } };
 }
 
@@ -111,6 +113,10 @@ describe("harnessRunEnv", () => {
   });
 
   it("refuses an answer that isn't a program and an environment", async () => {
-    await expect(harnessRunEnv("garbled")).rejects.toThrow();
+    await expect(harnessRunEnv("garbled")).rejects.toBeInstanceOf(z.ZodError);
+  });
+
+  it("passes on why the core refused", async () => {
+    await expect(harnessRunEnv("pi")).rejects.toThrow("isn't a Claude Code harness");
   });
 });

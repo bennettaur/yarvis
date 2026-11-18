@@ -3,8 +3,9 @@
  *
  * The core listens on a Unix domain socket whose path is injected as
  * `YARVIS_CORE_SOCK`; this is how the sidecar asks the core to do things only it
- * can — spawning/killing a Claude Code session in a workspace PTY, and writing
- * refreshed MCP OAuth credentials into the Keychain. The wire protocol is
+ * can — spawning/killing a Claude Code session in a workspace PTY, writing
+ * refreshed MCP OAuth credentials into the Keychain, and reading a Claude Code
+ * harness's environment for a verification run. The wire protocol is
  * newline-delimited JSON: each request `{ id, method, params }` gets one reply
  * `{ id, ok, result?, error? }`, with `result` only from a method that answers
  * with data.
@@ -33,6 +34,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * when a start times out and its session is then ended.
  */
 const REVIEW_SESSION_TIMEOUT_MS = 5_000;
+/** Reading a harness's secrets can wait on a 1Password unlock the user has to answer. */
+const HARNESS_RUN_ENV_TIMEOUT_MS = 60_000;
 
 function socketPath(): string {
   const path = process.env.YARVIS_CORE_SOCK;
@@ -177,7 +180,9 @@ const harnessRunEnvSchema = z.object({
  * and nowhere else, never into a log, a row or a reply.
  */
 export async function harnessRunEnv(harness: string): Promise<HarnessRunEnv> {
-  return harnessRunEnvSchema.parse(await rpc("harness.runEnv", { harness }));
+  return harnessRunEnvSchema.parse(
+    await rpc("harness.runEnv", { harness }, HARNESS_RUN_ENV_TIMEOUT_MS),
+  );
 }
 
 /**

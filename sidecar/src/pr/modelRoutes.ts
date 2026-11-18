@@ -71,6 +71,7 @@ export function createPrModelRoutes(_config: Config): Hono {
   router.patch("/verification", async (c) => {
     const parsed = saveVerificationSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    // The core refuses such a harness at run time too; checking here fails the save instead.
     const { harness } = parsed.data;
     if (harness && !(await listVerificationHarnesses()).some((h) => h.id === harness)) {
       return c.json(

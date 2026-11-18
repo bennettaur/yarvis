@@ -150,6 +150,15 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     );
     const odd = await app().request("/api/pr-models/verification", { headers: auth });
     expect(((await odd.json()) as { sections: unknown }).sections).toEqual({});
+
+    for (const harness of [42, "Bad Id!", ""]) {
+      await writeFile(
+        join(settingsDir, "settings.json"),
+        JSON.stringify({ prVerification: { harness } }),
+      );
+      const read = await app().request("/api/pr-models/verification", { headers: auth });
+      expect(((await read.json()) as Record<string, unknown>).harness).toBeUndefined();
+    }
   });
 
   it("offers only Claude Code harnesses that run claude, and saves one of them", async () => {
@@ -160,7 +169,16 @@ describe("GET/PATCH /api/pr-models/verification", () => {
           { id: "bedrock", name: "Bedrock", kind: "claude-code", command: "claude" },
           { id: "wrapped", name: "Wrapped", kind: "claude-code", command: "ssh box claude" },
           { id: "pi", name: "Pi", kind: "pi", command: "pi" },
+          {
+            id: "moved",
+            name: "Moved",
+            kind: "claude-code",
+            command: "claude",
+            env: { HOME: "/tmp/elsewhere" },
+          },
         ],
+        // Not Claude Code, but verification still runs the built-in agent's Claude Code build.
+        agentCommand: "codex --yolo",
       }),
     );
     const read = await app().request("/api/pr-models/verification", { headers: auth });
@@ -169,9 +187,15 @@ describe("GET/PATCH /api/pr-models/verification", () => {
 
     expect((await patch({ harness: "pi" })).status).toBe(400);
     expect((await patch({ harness: "wrapped" })).status).toBe(400);
+    expect((await patch({ harness: "moved" })).status).toBe(400);
     expect(await (await patch({ harness: "bedrock" })).json()).toMatchObject({
       harness: "bedrock",
     });
+    // Settings saves one field at a time, so the others keep the harness.
+    await patch({ maxBudgetUsd: 3 });
+    await patch({ sections: { risk: { model: "sonnet" } } });
+    const kept = await app().request("/api/pr-models/verification", { headers: auth });
+    expect(await kept.json()).toMatchObject({ harness: "bedrock", maxBudgetUsd: 3 });
     const cleared = (await (await patch({ harness: null })).json()) as Record<string, unknown>;
     expect(cleared.harness).toBeUndefined();
   });

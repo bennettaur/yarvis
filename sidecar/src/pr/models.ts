@@ -82,8 +82,8 @@ export interface VerificationRunConfig {
   sections: Record<string, RunChoice>;
   /**
    * The agent harness the checks run with, by id; left out, the built-in
-   * agent. It must be a Claude Code harness, which the core checks when it
-   * hands over the harness's environment.
+   * agent. It must be a Claude Code harness: the settings route checks on
+   * save, and the core again when it hands over the harness's environment.
    */
   harness?: string;
 }

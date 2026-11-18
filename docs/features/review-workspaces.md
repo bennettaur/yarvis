@@ -273,9 +273,10 @@ Each check runs on the Claude model and effort set for it in **Settings → PR
 review**. The two pickers beside **Run picked** override both for the checks
 you start from the tab, whether picked or run from a row, until you set them
 back to "Each check's model" and "Each check's effort". With a Claude Code
-[agent harness](workspaces.md#agent-harnesses) saved, a third picker runs the
-checks with it instead of the one set in Settings, such as a Claude Code
-pointed at another provider.
+[agent harness](workspaces.md#agent-harnesses) saved besides the built-in
+agent, a third picker runs the checks with another harness, such as a Claude
+Code pointed at another provider. Its first option is the harness set in
+**Settings → PR review**.
 Nothing asks about cost first: which checks you run is the budget.
 
 Beside the checks are rows for what other tools already reported on the PR,

@@ -39,6 +39,23 @@ interface StoredHarness {
   kind?: unknown;
   command?: unknown;
   assistantMayUse?: unknown;
+  env?: unknown;
+  secretEnv?: unknown;
+}
+
+/** Mirrors the core's `HEADLESS_REFUSED_ENV`: variables a verification run refuses from a harness. */
+const HEADLESS_REFUSED_ENV = new Set([
+  "HOME",
+  "CLAUDE_CONFIG_DIR",
+  "NODE_OPTIONS",
+  "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+]);
+
+/** Whether a stored harness sets a variable a verification run refuses. */
+function setsRefusedEnv(h: StoredHarness): boolean {
+  const plain = h.env && typeof h.env === "object" ? Object.keys(h.env) : [];
+  const secret = Array.isArray(h.secretEnv) ? h.secretEnv : [];
+  return [...plain, ...secret].some((key) => HEADLESS_REFUSED_ENV.has(String(key)));
 }
 
 /** Kinds the core knows; anything else it reads as `custom` (`HarnessKind::parse`). */
@@ -62,7 +79,7 @@ function builtinKind(command: string): string {
   return runsClaude(command) ? "claude-code" : "custom";
 }
 
-interface SavedHarness extends HarnessListing {
+interface KnownHarness extends HarnessListing {
   assistantMayUse: boolean;
   /** Whether a verification run can use it. */
   runsHeadless: boolean;
@@ -72,7 +89,7 @@ interface SavedHarness extends HarnessListing {
  * Every harness the core will launch: the built-in one first, then the saved
  * ones, filtered the way the core's `resolve_stored` filters them.
  */
-async function savedHarnesses(env: NodeJS.ProcessEnv): Promise<SavedHarness[]> {
+async function allHarnesses(env: NodeJS.ProcessEnv): Promise<KnownHarness[]> {
   const [stored, defaultId, agentName, agentCommand] = await Promise.all([
     readSection<unknown>("agentHarnesses").catch(() => undefined),
     readSection<unknown>("defaultAgentHarness").catch(() => undefined),
@@ -106,7 +123,9 @@ async function savedHarnesses(env: NodeJS.ProcessEnv): Promise<SavedHarness[]> {
       kind: builtin,
       isDefault: effectiveDefault === BUILTIN_HARNESS_ID,
       assistantMayUse: true,
-      runsHeadless: builtin === "claude-code",
+      // Verification has always run the built-in agent's Claude Code build,
+      // whatever the interactive command is, so it is always offered.
+      runsHeadless: true,
     },
     ...entries.map((h) => {
       const kind = typeof h.kind === "string" && KNOWN_KINDS.has(h.kind) ? h.kind : "custom";
@@ -116,13 +135,13 @@ async function savedHarnesses(env: NodeJS.ProcessEnv): Promise<SavedHarness[]> {
         kind,
         isDefault: effectiveDefault === h.id,
         assistantMayUse: h.assistantMayUse === true,
-        runsHeadless: kind === "claude-code" && runsClaude(h.command),
+        runsHeadless: kind === "claude-code" && runsClaude(h.command) && !setsRefusedEnv(h),
       };
     }),
   ];
 }
 
-const listing = ({ id, name, kind, isDefault }: SavedHarness): HarnessListing => ({
+const toListing = ({ id, name, kind, isDefault }: KnownHarness): HarnessListing => ({
   id,
   name,
   kind,
@@ -138,19 +157,20 @@ const listing = ({ id, name, kind, isDefault }: SavedHarness): HarnessListing =>
 export async function listAgentHarnesses(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HarnessListing[]> {
-  return (await savedHarnesses(env)).filter((h) => h.isDefault || h.assistantMayUse).map(listing);
+  return (await allHarnesses(env)).filter((h) => h.isDefault || h.assistantMayUse).map(toListing);
 }
 
 /**
- * The harnesses a verification run can use: Claude Code ones that run
- * `claude` directly, since a run depends on flags only Claude Code takes.
- * Mirrors the core's `harness::headless_program`. The user picks among them in
- * Settings or on the Verification tab; the assistant can't pick one.
+ * The harnesses a verification run can use: the built-in agent, then saved
+ * Claude Code harnesses that run `claude` directly and set no variable a run
+ * refuses, since a run depends on flags only Claude Code takes. Mirrors the
+ * core's `harness::headless_run_env`. The user picks among them in Settings or
+ * on the Verification tab; the assistant can't pick one.
  */
 export async function listVerificationHarnesses(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ id: string; name: string }[]> {
-  return (await savedHarnesses(env))
+  return (await allHarnesses(env))
     .filter((h) => h.runsHeadless)
     .map(({ id, name }) => ({ id, name }));
 }

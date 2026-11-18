@@ -216,6 +216,25 @@ describe("PrModelSection", () => {
     expect(saves).toEqual([{ harness: "bedrock" }, { harness: null }]);
   });
 
+  it("shows a saved harness that is gone, so it can be changed", async () => {
+    verification = { ...VERIFICATION_DEFAULTS, harness: "deleted" };
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    const select = mounted.host.querySelector(
+      '[aria-label="Verification harness"]',
+    ) as HTMLSelectElement;
+    // Shown even with only the built-in agent left, and not as if it were that.
+    expect(select.value).toBe("deleted");
+    expect(select.textContent).toContain("deleted (no longer saved; checks fail)");
+    enter(select, "claude", "change");
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ harness: null }]);
+  });
+
   it("saves the What's changed summary's own budget and auto-start", async () => {
     const mounted = await mountForInteraction(createElement(PrModelSection));
     unmount = mounted.unmount;

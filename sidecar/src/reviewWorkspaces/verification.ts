@@ -1241,7 +1241,7 @@ export interface VerificationDeps {
   /** Passed to `startClaudeRun`; tests swap in a fake `claude`. */
   run?: ClaudeRunDeps;
   /** A saved harness's program and environment, from the core; tests swap it out. */
-  harnessEnv?: (harness: string) => Promise<HarnessRunEnv>;
+  loadHarnessRunEnv?: (harness: string) => Promise<HarnessRunEnv>;
 }
 
 export function defaultVerificationDeps(config: Config): VerificationDeps {
@@ -1383,8 +1383,8 @@ export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
 interface RunInputs {
   /** The model or effort the caller picked for every section it starts. */
   override: RunChoice;
-  /** The harness the runs use, and the program and environment that come with it. */
-  harness: { id: string; run: ClaudeRunDeps | undefined };
+  /** Resolved once for every section, since the secret store may prompt. */
+  harness: { id: string; runDeps?: ClaudeRunDeps };
   pr: ReviewWorkspacePr;
   headSha: string;
   sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
@@ -1444,7 +1444,11 @@ export async function startVerification(
       else toStart.push(section);
     }
     if (toStart.length > 0) {
-      const [{ sources }, detail, settings] = await Promise.all([
+      // First, so a harness that can't run fails before the provider reads.
+      const settings = await deps.settings();
+      // The run's pick wins over Settings.
+      const runHarness = await harnessRun(deps, harness ?? settings.harness);
+      const [{ sources }, detail] = await Promise.all([
         reviewPatchSources(config, pr, reviewDeps, PATCH_LIMITS.maxPatchBytes),
         deps.loadDetail(pr.ref).catch((e) => {
           // The report is still worth having without the description and checks;
@@ -1453,7 +1457,6 @@ export async function startVerification(
           console.error("[verification] could not load PR details:", describeError(e));
           return null;
         }),
-        deps.settings(),
       ]);
       // Each run writes its own copy of the patches, so read each diff once.
       const once = sources.map((source) => {
@@ -1465,7 +1468,7 @@ export async function startVerification(
         : undefined;
       const inputs: RunInputs = {
         override,
-        harness: await harnessRun(deps, harness ?? settings.harness),
+        harness: runHarness,
         pr,
         headSha,
         sources: once,
@@ -1508,18 +1511,18 @@ async function harnessRun(
   harness: string | undefined,
 ): Promise<RunInputs["harness"]> {
   if (!harness || harness === BUILTIN_HARNESS_ID) {
-    return { id: BUILTIN_HARNESS_ID, run: deps.run };
+    return { id: BUILTIN_HARNESS_ID, runDeps: deps.run };
   }
-  let launch: HarnessRunEnv;
+  let runEnv: HarnessRunEnv;
   try {
-    launch = await (deps.harnessEnv ?? harnessRunEnv)(harness);
+    runEnv = await (deps.loadHarnessRunEnv ?? harnessRunEnv)(harness);
   } catch (e) {
     throw new ReviewWorkspaceError(
       `can't run the checks with harness "${harness}": ${clientError(e)}`,
       400,
     );
   }
-  return { id: harness, run: { ...deps.run, program: launch.program, env: launch.env } };
+  return { id: harness, runDeps: { ...deps.run, program: runEnv.program, env: runEnv.env } };
 }
 
 /**
@@ -1662,7 +1665,7 @@ async function startSectionRun(
           format: RUN_FORMAT,
         },
       },
-      harness.run,
+      harness.runDeps,
     );
     void handle.done
       .then(async (outcome) => {

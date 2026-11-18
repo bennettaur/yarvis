@@ -60,7 +60,7 @@ export interface VerificationRunConfig {
   sections: Partial<Record<ReportSection, RunChoice>>;
   /** The agent harness the checks run with; left out, the built-in agent. */
   harness?: string;
-  /** The harnesses a check can run with: Claude Code ones, the built-in agent first. */
+  /** The harnesses a check can run with: the built-in agent first, then saved Claude Code ones. */
   harnesses: { id: string; name: string }[];
   /** Every section, in report order, with what it runs on when not overridden. */
   sectionDefaults: {
@@ -78,9 +78,6 @@ export interface VerificationRunConfigPatch {
   /** `null` goes back to the built-in agent. */
   harness?: string | null;
 }
-
-/** Id of the built-in agent's harness; mirrors `BUILTIN_HARNESS_ID` in `sidecar/src/workspaces/harnesses.ts`. */
-export const BUILTIN_HARNESS_ID = "claude";
 
 /** Cache key for the verification settings; Settings invalidates it on save. */
 export const VERIFICATION_SETTINGS_KEY = "pr-models:verification";

@@ -206,6 +206,47 @@ pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
         .ok_or_else(|| format!("\"{}\" doesn't run claude directly", harness.name))
 }
 
+/// Variables a headless run refuses from a harness. A run over a PR checkout
+/// is kept from reading credentials by rules written against the home folder
+/// (`Read(~/.ssh)`) and Claude Code's own config, so moving either one, or
+/// loading code into Claude Code itself, would quietly undo them.
+const HEADLESS_REFUSED_ENV: [&str; 4] = [
+    "HOME",
+    "CLAUDE_CONFIG_DIR",
+    "NODE_OPTIONS",
+    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+];
+
+/// The program and full environment a headless run uses for `harness`: its
+/// plain variables, then its secret ones. `read_root` reads the secret store
+/// and is called only once the harness is known to run headless, and only when
+/// it declares secrets, so a refused harness never has its secrets read.
+pub fn headless_run_env(
+    harness: &ResolvedHarness,
+    read_root: impl FnOnce() -> Result<Value, String>,
+) -> Result<(String, Vec<(String, String)>), String> {
+    let program = headless_program(harness)?;
+    let declared = harness
+        .env
+        .iter()
+        .map(|(key, _)| key)
+        .chain(&harness.secret_env);
+    if let Some(key) = declared
+        .into_iter()
+        .find(|key| HEADLESS_REFUSED_ENV.contains(&key.as_str()))
+    {
+        return Err(format!(
+            "\"{}\" sets {key}, which a verification run can't take: it would move the files the run is kept from reading",
+            harness.name
+        ));
+    }
+    let mut env = harness.env.clone();
+    if !harness.secret_env.is_empty() {
+        env.extend(secret_env_from_root(&read_root()?, harness)?);
+    }
+    Ok((program, env))
+}
+
 /// The executable a command line runs, past any leading `VAR=value`
 /// assignments.
 fn program_of(command: &str) -> Option<String> {
@@ -368,7 +409,7 @@ pub fn default_id(stored: &[AgentHarness], configured: Option<&str>) -> String {
         .to_string()
 }
 
-fn is_valid_id(id: &str) -> bool {
+pub fn is_valid_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -627,12 +668,64 @@ mod tests {
         .unwrap();
         assert_eq!(headless_program(&bedrock).as_deref(), Ok("/opt/bin/claude"));
         let pi = resolve_stored(&stored("pi", HarnessKind::Pi, "pi")).unwrap();
-        assert!(headless_program(&pi).is_err());
+        assert!(headless_program(&pi)
+            .unwrap_err()
+            .contains("isn't a Claude Code harness"));
         // Marked Claude Code but runs a wrapper: what the wrapper does with the
         // run's flags is unknown.
         let wrapped =
             resolve_stored(&stored("ssh", HarnessKind::ClaudeCode, "ssh box claude")).unwrap();
-        assert!(headless_program(&wrapped).is_err());
+        assert!(headless_program(&wrapped)
+            .unwrap_err()
+            .contains("doesn't run claude directly"));
+    }
+
+    #[test]
+    fn a_headless_run_refuses_a_harness_that_moves_what_the_run_may_not_read() {
+        let mut moved_home = stored("home", HarnessKind::ClaudeCode, "claude");
+        moved_home.env = BTreeMap::from([("HOME".to_string(), "/tmp/x".to_string())]);
+        let mut config_dir = stored("cfg", HarnessKind::ClaudeCode, "claude");
+        config_dir.secret_env = vec!["CLAUDE_CONFIG_DIR".to_string()];
+        for harness in [moved_home, config_dir] {
+            let resolved = resolve_stored(&harness).unwrap();
+            let err = headless_run_env(&resolved, || panic!("secrets read for a refused harness"))
+                .unwrap_err();
+            assert!(err.contains("can't take"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_headless_run_reads_secrets_only_for_a_harness_it_can_run() {
+        let with_secret = |id: &str, kind: HarnessKind, command: &str| {
+            let mut h = stored(id, kind, command);
+            h.env = BTreeMap::from([("REGION".to_string(), "us".to_string())]);
+            h.secret_env = vec!["API_KEY".to_string()];
+            resolve_stored(&h).unwrap()
+        };
+        let root = serde_json::json!({ SECRET_ENV_SUBTREE: { "bedrock": { "API_KEY": "sk" } } });
+
+        let pi = with_secret("pi", HarnessKind::Pi, "pi");
+        let mut read = false;
+        assert!(headless_run_env(&pi, || {
+            read = true;
+            Ok(root.clone())
+        })
+        .is_err());
+        assert!(
+            !read,
+            "a harness that can't run headless must not have its secrets read"
+        );
+
+        let bedrock = with_secret("bedrock", HarnessKind::ClaudeCode, "claude");
+        let (program, env) = headless_run_env(&bedrock, || Ok(root.clone())).unwrap();
+        assert_eq!(program, "claude");
+        assert_eq!(
+            env,
+            vec![
+                ("REGION".to_string(), "us".to_string()),
+                ("API_KEY".to_string(), "sk".to_string())
+            ]
+        );
     }
 
     #[test]

@@ -2,7 +2,6 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { listProviders, type ProviderInfo } from "../lib/chat";
 import type { ModelSelection } from "../lib/complexityModels";
 import {
-  BUILTIN_HARNESS_ID,
   DEFAULT_PR_MODEL_CONFIG,
   getPrModelConfig,
   getRereviewRunConfig,
@@ -27,6 +26,7 @@ import {
 } from "../lib/pr/models";
 import { invalidate } from "../lib/resourceCache";
 import type { ReportSection } from "../lib/reviewWorkspaces/verification";
+import { BUILTIN_HARNESS_ID } from "../lib/settings";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
@@ -131,11 +131,14 @@ function VerificationSectionRuns({
   value: VerificationRunConfig;
   onSave: (patch: VerificationRunConfigPatch) => void;
 }) {
+  // A harness deleted or changed since it was picked: shown, so it can be changed.
+  const missingHarness =
+    value.harness && !value.harnesses.some((h) => h.id === value.harness) ? value.harness : null;
   const save = (section: ReportSection, choice: RunChoice) =>
     onSave({ sections: { [section]: choice } });
   return (
     <div className="space-y-1">
-      {value.harnesses.length > 1 && (
+      {(value.harnesses.length > 1 || missingHarness) && (
         <label className="flex items-center gap-2 text-xs text-zinc-400">
           Run the checks with
           <select
@@ -151,6 +154,11 @@ function VerificationSectionRuns({
                 {h.name}
               </option>
             ))}
+            {missingHarness && (
+              <option value={missingHarness}>
+                {missingHarness} (no longer saved; checks fail)
+              </option>
+            )}
           </select>
         </label>
       )}

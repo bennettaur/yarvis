@@ -27,6 +27,7 @@ import {
   startVerification,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
+import { BUILTIN_HARNESS_ID } from "../../../lib/settings";
 import { openExternal } from "../../../lib/url";
 import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
@@ -529,7 +530,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const verificationSettings = useVerificationSettings().data;
   const harnesses = verificationSettings?.harnesses ?? [];
   const settingsHarness = harnesses.find(
-    (h) => h.id === (verificationSettings?.harness ?? "claude"),
+    (h) => h.id === (verificationSettings?.harness ?? BUILTIN_HARNESS_ID),
   );
   // Tickets the reviewer names for the change map and claims, beside the ones
   // the PR links. Until they type, the last run's are offered again.
@@ -652,7 +653,11 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
                 onChange={(e) => setRunHarness(e.target.value)}
                 className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
               >
-                <option value="">{settingsHarness?.name ?? "Settings' harness"}</option>
+                <option value="">
+                  {settingsHarness?.name ??
+                    `${verificationSettings?.harness} (no longer saved; checks fail)`}
+                </option>
+                {/* The first option already names the harness set in Settings. */}
                 {harnesses
                   .filter((h) => h.id !== settingsHarness?.id)
                   .map((h) => (

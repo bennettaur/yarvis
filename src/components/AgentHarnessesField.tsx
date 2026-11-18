@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { VERIFICATION_SETTINGS_KEY } from "../lib/pr/models";
+import { invalidate } from "../lib/resourceCache";
 import {
   type AgentHarness,
   BUILTIN_HARNESS_ID,
@@ -185,6 +187,8 @@ export default function AgentHarnessesField({
     try {
       const next = await setAgentHarnesses(drafts.map(fromDraft), defaultId);
       onSaved(next);
+      // The verification pickers list Claude Code harnesses.
+      invalidate(VERIFICATION_SETTINGS_KEY);
       const keyFor = new Map(drafts.map((d) => [d.id.trim(), d.rowKey]));
       setDrafts((next.agentHarnesses ?? []).map((h) => toDraft(h, keyFor.get(h.id))));
       setDefaultId(next.defaultAgentHarness ?? BUILTIN_HARNESS_ID);

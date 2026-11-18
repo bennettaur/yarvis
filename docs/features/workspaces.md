@@ -88,12 +88,19 @@ session doesn't launch right away, Yarvis retries it on the next start. If by
 then you've removed that harness or unticked it, the retry uses your default
 instead.
 
-A Claude Code harness can also run a PR's [verification
+A Claude Code harness whose command runs `claude` itself, not through a
+wrapper such as `ssh box claude`, can also run a PR's [verification
 checks](review-workspaces.md), picked in **Settings → PR review** or on the
 Verification tab. Those runs use only the harness's program and its
 environment, plain and secret, not the rest of its command, so a variable
 the run needs belongs in the environment list rather than before `claude`
-in the command. The assistant can't pick a harness for them.
+in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
+`NODE_OPTIONS` or `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` isn't
+offered: those would move the files a run over someone else's code is kept
+from reading. The assistant can't pick a harness for the checks, but the ones
+it starts use the harness set in Settings. Any program running as you can ask
+the app for a harness's secret variables this way, so keep them to keys
+scoped for this use.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than
