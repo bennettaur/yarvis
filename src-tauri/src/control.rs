@@ -104,12 +104,18 @@ mod unix_impl {
         harness: Option<String>,
     }
 
-    impl SpawnParams {
-        /// What the assistant-harness gate checks: the harness asked for, and
-        /// whether this relaunches a session the core itself launched.
-        fn harness_gate(&self) -> (Option<&str>, bool) {
-            (self.harness.as_deref(), self.resume.is_some())
-        }
+    /// Parses a `claude.spawn` request, validates its workspace id and runs the
+    /// assistant-harness gate on it. `gate` gets the harness asked for and
+    /// whether this is a resume. Parsing and the gate sit together so the
+    /// dispatch has no way to get spawn parameters without running it.
+    fn checked_spawn_params(
+        params: Value,
+        gate: impl FnOnce(Option<&str>, bool) -> Result<(), String>,
+    ) -> Result<SpawnParams, String> {
+        let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+        validate_workspace_id(&p.workspace_id)?;
+        gate(p.harness.as_deref(), p.resume.is_some())?;
+        Ok(p)
     }
 
     #[derive(Deserialize)]
@@ -314,12 +320,11 @@ mod unix_impl {
         let state = app.state::<PtyState>();
         match method {
             "claude.spawn" => {
-                let p: SpawnParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-                validate_workspace_id(&p.workspace_id)?;
                 // The UI's own launches don't come through here, so this is
                 // where a harness the assistant chose is checked.
-                let (requested, resuming) = p.harness_gate();
-                check_sidecar_harness(app, requested, resuming)?;
+                let p = checked_spawn_params(params, |requested, resuming| {
+                    check_sidecar_harness(app, requested, resuming)
+                })?;
                 spawn_claude_session(
                     app,
                     state.inner(),
@@ -488,15 +493,16 @@ mod unix_impl {
                 ..AgentHarness::default()
             };
             let gate = |params: Value| {
-                let p: SpawnParams = serde_json::from_value(params).unwrap();
-                let (requested, resuming) = p.harness_gate();
-                harness::check_assistant_may_launch(
-                    harness::builtin("Claude".into(), "claude".into()),
-                    std::slice::from_ref(&yolo),
-                    None,
-                    requested,
-                    resuming,
-                )
+                checked_spawn_params(params, |requested, resuming| {
+                    harness::check_assistant_may_launch(
+                        harness::builtin("Claude".into(), "claude".into()),
+                        std::slice::from_ref(&yolo),
+                        None,
+                        requested,
+                        resuming,
+                    )
+                })
+                .map(|_| ())
             };
             let base = json!({ "workspaceId": "w", "cwd": "/tmp", "name": "n" });
             assert!(gate(base.clone()).is_ok());

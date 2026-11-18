@@ -83,6 +83,11 @@ not only the assistant's instructions. That list is the whole boundary: an
 unattended [heads-down](heads-down.md) pass that starts work on a planned
 ticket can also pick any harness on it, without asking.
 
+When the assistant starts work on a ticket with a named harness and the
+session doesn't launch right away, Yarvis retries it on the next start. If by
+then you've removed that harness or unticked it, the retry uses your default
+instead.
+
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than
 starting a session you can't reach.

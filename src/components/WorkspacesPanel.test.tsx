@@ -307,6 +307,8 @@ describe("WorkspacesPanel agent tab", () => {
 
   it("starts the harness picked in the header, offering a picker only when there is a choice", async () => {
     const builtinOnly = await closeAgentTab();
+    // Wait for the start button first, or "no picker" holds before the panel renders.
+    await waitFor(() => builtinOnly.textContent?.includes("Start Claude session") ?? false);
     expect(builtinOnly.querySelector('select[aria-label="Agent harness"]')).toBeNull();
     unmount?.();
     unmount = null;

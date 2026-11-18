@@ -888,7 +888,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     list_agent_harnesses: tool({
       description:
-        "List the agent harnesses you may start (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user named that agent. Remote Control needs a claude-code harness.",
+        "List the agent harnesses you may start (Claude Code, Pi, OpenCode, or a custom command) and which one is the default. Their ids are what the harness option takes; pass one only when the user named that agent. Remote Control only starts a claude-code harness; if the default isn't one, ask the user which to use.",
       inputSchema: z.object({}),
       execute: async () => listAgentHarnesses(),
     }),

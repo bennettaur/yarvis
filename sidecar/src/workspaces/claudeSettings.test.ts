@@ -247,10 +247,17 @@ describe("agentSessionHookCommand", () => {
 
   it("forwards the harness the PTY was launched with, so a resume can reuse it", async () => {
     const { requests } = await runRegistrationHook(
-      { YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}`, YARVIS_AGENT_HARNESS: "pi" },
+      {
+        YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}`,
+        YARVIS_AGENT_HARNESS: "pi",
+        YARVIS_AGENT_HARNESS_TOKEN: "harness-tok",
+      },
       hookInput,
     );
     expect(requests[0]!.url.searchParams.get("harness")).toBe("pi");
+    // Without the core's token the sidecar refuses the harness, and the
+    // session would lose its resume.
+    expect(requests[0]!.headers.get("x-yarvis-harness-token")).toBe("harness-tok");
   });
 
   it("registers nothing outside a Yarvis PTY", async () => {

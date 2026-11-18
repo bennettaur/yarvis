@@ -1680,13 +1680,15 @@ fn check_review_spawn(
 /// Starts Claude Code for a review workspace under
 /// `review-claude:<workspace_id>`, for the user to ask questions about its PRs.
 /// Like `spawn_claude_session`, the caller chooses only whether to start it:
-/// the program comes from the agent setting, and the flags are fixed here. The
-/// sidecar supplies the folder to start in, the checkouts to add, the settings,
-/// a line of context for the prompt and whether the user chose to load the
-/// repos' own config, as it already does for the headless
-/// runs it spawns itself, so this grants it nothing new; what the settings
-/// allow is the sidecar's call. Refused when the configured agent isn't Claude
-/// Code, since the lockdown is made of Claude Code flags.
+/// the program comes from the built-in agent's command (`agentCommand`), and
+/// the flags are fixed here. The sidecar supplies the folder to start in, the
+/// checkouts to add, the settings, a line of context for the prompt and whether
+/// the user chose to load the repos' own config, as it already does for the
+/// headless runs it spawns itself, so this grants it nothing new; what the
+/// settings allow is the sidecar's call. Refused when the built-in agent isn't Claude
+/// Code, since the lockdown is made of Claude Code flags. Saved harnesses don't
+/// apply: a review session always runs the built-in agent, whatever the
+/// default harness is.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_review_claude_session(
     app: &AppHandle,
@@ -1699,7 +1701,7 @@ pub fn spawn_review_claude_session(
     load_repo_config: bool,
 ) -> Result<(), String> {
     let program = exec_claude_program(&agent_command(app), load_repo_config)
-        .ok_or("the configured agent is not Claude Code, so it can't run a review session")?;
+        .ok_or("the built-in agent is not Claude Code, so it can't run a review session")?;
     let context = check_review_spawn(workspace_id, &cwd, add_dirs, settings, context)?;
     let id = review_session_id(workspace_id);
     // A running session is left alone, before anything is written or spawned:
@@ -2370,6 +2372,24 @@ mod tests {
             None,
         );
         assert_eq!(cmd, r"claude 'it'\''s; rm -rf ~ `id` $(id)'");
+    }
+
+    #[test]
+    fn agent_launch_command_quotes_a_hostile_instruction_placed_by_prompt_args() {
+        // A harness's own placement must not weaken the quoting, and a
+        // `{prompt}` inside the instruction is text, not a second placeholder.
+        let cmd = agent_launch_command(
+            "opencode",
+            "n",
+            false,
+            None,
+            Some("it's; rm -rf ~ $(id) {prompt}"),
+            Some("run --prompt {prompt} --quiet"),
+        );
+        assert_eq!(
+            cmd,
+            r"opencode run --prompt 'it'\''s; rm -rf ~ $(id) {prompt}' --quiet"
+        );
     }
 
     #[test]
