@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
+import { HARNESS_TOKEN_HEADER, SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
 import {
   ensureBranchRefDirs,
   isOurSandboxEntry,
@@ -175,10 +175,11 @@ export function agentSessionHookCommand(workspaceId: string): string {
   }
   return (
     `if [ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; then ` +
-    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}" ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}&harness=\${YARVIS_AGENT_HARNESS}" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
     `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `-H "${HARNESS_TOKEN_HEADER}: \${YARVIS_AGENT_HARNESS_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
     `--data-binary @- >/dev/null 2>&1; ` +
     `else cat >/dev/null 2>&1; fi; true`

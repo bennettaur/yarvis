@@ -3809,6 +3809,52 @@ describe("resumable start-work kick-off", () => {
     expect((await getWorkspace(db, ws.id))?.pendingBrief).toBeNull();
   });
 
+  it("keeps a harness only for a workspace that has a kick-off to run", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const plain = await createWorkspace(db, config, {
+      name: "no brief",
+      repoIds: [repo.id],
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, plain.id))?.pendingHarness).toBeNull();
+    const kickOff = await createWorkspace(db, config, {
+      name: "with brief",
+      repoIds: [repo.id],
+      brief: "do it",
+      harness: "pi",
+    });
+    expect((await getWorkspace(db, kickOff.id))?.pendingHarness).toBe("pi");
+  });
+
+  it("retries a failed kick-off with the harness it was asked for", async () => {
+    const db = getDb(url).db;
+    const repo = await addRepo();
+    const ws = await createWorkspace(db, config, {
+      name: "harness retry",
+      repoIds: [repo.id],
+      brief: "implement the ticket",
+      harness: "pi",
+    });
+    await provisionWorkspace(db, ws.id, () => {}, {
+      runner: fakeGit,
+      startSession: async () => {
+        throw new Error("agent not logged in");
+      },
+    });
+
+    const harnesses: (string | undefined)[] = [];
+    await resumeKickOffs(db, {
+      startSession: async (input: StartClaudeSessionInput) => {
+        harnesses.push(input.harness);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      runner: fakeGit,
+    });
+    expect(harnesses).toEqual(["pi"]);
+    expect((await getWorkspace(db, ws.id))?.pendingHarness).toBeNull();
+  });
+
   it("does not launch a session for a workspace with no ticket", async () => {
     const db = getDb(url).db;
     const repo = await addRepo();

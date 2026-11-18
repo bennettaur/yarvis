@@ -26,7 +26,13 @@ Three processes, each with a clean ownership boundary:
   `github.saveToken`, `alarm.fire`, `alarm.release`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
-  a PTY.
+  a PTY. `claude.spawn` can name a saved agent harness by id, never a command,
+  and the core refuses one the user hasn't let the assistant start
+  (`harness::check_assistant_may_launch`): the id comes from a model that may
+  have read it in an issue. A spawn with a resume id skips that check for a
+  Claude Code harness, so the sidecar's restart sweep can bring back a session
+  the user started. That makes `resume` something only the sweep may set, from
+  a hook-verified session row. Never expose it to an agent tool.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
@@ -448,11 +454,12 @@ report there and leaves the fixes to the author.
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
-  `foreground_is_agent` refuses to type at all unless the configured agent is
-  what's reading the prompt, and the chat agent's system prompt forbids
-  relaying third-party text as an instruction. Text the core would refuse that
-  way is never sent over the channel (`opensWithCommandPrefix` in
-  `workspaces/claudeSession.ts`), so the same refusal applies. `claude.slash` is the one way a line opening with `/`
+  `foreground_is_agent` refuses to type at all unless the agent the session was
+  launched with (its harness, `harness.rs`) is what's reading the prompt, and
+  the chat agent's system prompt forbids relaying third-party text as an
+  instruction. Text the core would refuse that way is never sent over the
+  channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
+  same refusal applies. `claude.slash` is the one way a line opening with `/`
   gets in: the core types it only when the command is on an allowlist no sidecar
   route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the
