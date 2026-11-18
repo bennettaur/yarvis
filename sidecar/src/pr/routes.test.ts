@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Hono } from "hono";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import { listAttention } from "../attention/service.ts";
@@ -9,12 +10,23 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
+import { claimGuide } from "./guideRun.ts";
 import { saveGuide } from "./guides.ts";
+import { saveInsight } from "./insights.ts";
 import { savePrModelConfig } from "./models.ts";
+import { createPrRoutes } from "./routes.ts";
 import type { PrRef } from "./types.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
+
+async function until(check: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
 const db = getDb(url).db;
 
 const config: Config = {
@@ -67,6 +79,17 @@ describe("GET /api/pr/guide", () => {
     const body = (await res.json()) as any;
     expect(body.guide).toMatchObject({ headSha: "a".repeat(40), currentStep: 0 });
     expect(body.guide.steps).toHaveLength(2);
+    expect(body.guide.graph).toBeNull();
+  });
+
+  it("returns the guide's graph for the flow diagram", async () => {
+    const graph = {
+      nodes: [{ id: "route", kind: "endpoint", file: "a.ts", changed: true }],
+      edges: [],
+    };
+    await saveGuide(db, { ref, headSha: "a".repeat(40), steps, graph });
+    const res = await app.request(`/api/pr/guide?${refQuery}`, { headers: auth });
+    expect(((await res.json()) as any).guide.graph).toEqual(graph);
   });
 
   // Without a configured provider the head can't be checked, and a guide that
@@ -132,8 +155,8 @@ describe("PATCH /api/pr/guide/progress", () => {
     const items = await listAttention(db, { status: "pending" });
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      title: "Reviewing Add ordering",
-      body: "Step 1 of 2 · src/api.ts",
+      title: "PR review in progress",
+      body: "Add ordering: Step 1 of 2 · src/api.ts",
       navTarget: { type: "pr", owner: "o", repo: "r", number: 1 },
     });
   });
@@ -170,7 +193,7 @@ describe("PATCH /api/pr/guide/progress", () => {
     }
     const items = await listAttention(db, { status: "pending" });
     expect(items).toHaveLength(1);
-    expect(items[0]!.body).toBe("Step 2 of 3 · src/db.ts");
+    expect(items[0]!.body).toBe("Add ordering: Step 2 of 3 · src/db.ts");
   });
 });
 
@@ -224,6 +247,54 @@ describe("POST /api/pr/guide", () => {
   });
 });
 
+describe("POST /api/pr/guide with a guide agent", () => {
+  const graph = {
+    nodes: [
+      { id: "route", kind: "endpoint", file: "src/api.ts", line: 3, changed: true },
+      { id: "store", kind: "function", changed: false },
+    ],
+    edges: [{ from: "route", to: "store", kind: "calls" }],
+  };
+  // The agent is replaced, so nothing calls a model or reads the pull request;
+  // the keys only get the request past the provider checks.
+  const agentApp = new Hono().route(
+    "/pr",
+    createPrRoutes(
+      { ...config, secrets: { githubToken: "test-github-token", anthropicApiKey: "test-key" } },
+      { generateTour: async () => ({ steps, headSha: "c".repeat(40), graph }) },
+    ),
+  );
+
+  it("stores the graph the agent recorded and returns it with the guide", async () => {
+    const res = await agentApp.request("/pr/guide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, provider: "anthropic", model: "claude-sonnet-4-5" }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any).graph).toEqual(graph);
+    const [row] = await sql`SELECT graph FROM pr_guides`;
+    expect(row?.graph).toEqual(graph);
+  });
+
+  // The assistant may be writing this PR's guide in the background; pressing
+  // the button meanwhile would pay twice and overwrite it.
+  it("refuses while another guide for the PR is being written", async () => {
+    const release = claimGuide(ref);
+    try {
+      const res = await agentApp.request("/pr/guide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, provider: "anthropic", model: "claude-sonnet-4-5" }),
+      });
+      expect(res.status).toBe(409);
+      expect(await sql`SELECT id FROM pr_guides`).toHaveLength(0);
+    } finally {
+      release?.();
+    }
+  });
+});
+
 describe("model choice for guided reviews and line questions", () => {
   // A GitHub token gets the request past `sourceFor` without a network call,
   // and with no LLM keys set, the 400 names the provider the route picked.
@@ -271,6 +342,57 @@ describe("model choice for guided reviews and line questions", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain("Anthropic");
+  });
+});
+
+describe("POST /api/pr/insight/:id/post", () => {
+  const withGithub = createApp({ ...config, secrets: { githubToken: "ghp_test" } });
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  beforeEach(async () => {
+    await sql`TRUNCATE pr_insights RESTART IDENTITY`;
+  });
+
+  it("anchors the answer to the head it was asked on, and says when it went on the file", async () => {
+    const headSha = "e".repeat(40);
+    const insight = await saveInsight(db, {
+      ref,
+      path: "src/api.ts",
+      startLine: 3,
+      endLine: 4,
+      headSha,
+      question: "why?",
+      answer: "because",
+    });
+    const sent: { commit_id?: string; subject_type?: string }[] = [];
+    const replies = [
+      {
+        status: 422,
+        body: {
+          message: "Validation Failed",
+          errors: ["pull_request_review_thread.line must be part of the diff"],
+        },
+      },
+      { status: 201, body: {} },
+    ];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") sent.push(JSON.parse(String(init.body)));
+      const reply = init?.method === "POST" ? replies.shift() : undefined;
+      return new Response(JSON.stringify(reply?.body ?? {}), { status: reply?.status ?? 200 });
+    }) as unknown as typeof fetch;
+
+    const res = await withGithub.request(`/api/pr/insight/${insight.id}/post`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { placement?: string; postedAt: string | null };
+    expect(body.placement).toBe("file");
+    expect(body.postedAt).not.toBeNull();
+    expect(sent.map((s) => s.commit_id)).toEqual([headSha, headSha]);
+    expect(sent[1]?.subject_type).toBe("file");
   });
 });
 
@@ -375,6 +497,139 @@ describe("POST /api/pr/workspace", () => {
   it("rejects a body with no pull request identity", async () => {
     const res = await start({});
     expect(res.status).toBe(400);
+  });
+
+  describe("POST /api/pr/resolve-conflicts", () => {
+    const resolve = (body: unknown = { ref }) =>
+      withGithub.request("/api/pr/resolve-conflicts", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const conflicting = {
+      ...openPr,
+      state: "OPEN",
+      baseRefName: "main",
+      mergeable: "CONFLICTING",
+      mergeStateStatus: "DIRTY",
+    };
+
+    it("creates a workspace that starts on the instructions when the PR has none", async () => {
+      stubPrDetail(conflicting);
+      const res = await resolve();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { outcome: string; workspaceId: string };
+      expect(body.outcome).toBe("created");
+      const [row] =
+        await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
+      expect(row?.pending_issue_prompt).toContain("Resolve the merge conflicts on pull request #1");
+    });
+
+    it("400s a fork with the reason the button gives", async () => {
+      stubPrDetail({ ...conflicting, isCrossRepository: true });
+      const res = await resolve();
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("fork");
+    });
+
+    it("rejects a confirm flag that isn't a boolean", async () => {
+      const res = await resolve({ ref, confirm: "yes" });
+      expect(res.status).toBe(400);
+    });
+
+    it("reports a missing provider token", async () => {
+      const res = await app.request("/api/pr/resolve-conflicts", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ ref }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("github token");
+    });
+  });
+
+  describe("POST /api/pr/fix-checks", () => {
+    const fix = (body: unknown = { ref }) =>
+      withGithub.request("/api/pr/fix-checks", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const withChecks = (conclusion: string) => ({
+      ...openPr,
+      state: "OPEN",
+      baseRefName: "main",
+      commits: {
+        nodes: [
+          {
+            commit: {
+              statusCheckRollup: {
+                contexts: {
+                  nodes: [
+                    { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    it("creates a workspace that starts on the failing checks when the PR has none", async () => {
+      stubPrDetail(withChecks("FAILURE"));
+      const res = await fix();
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { outcome: string; workspaceId: string };
+      expect(body.outcome).toBe("created");
+      const [row] =
+        await sql`SELECT pending_issue_prompt FROM workspaces WHERE id = ${body.workspaceId}`;
+      expect(row?.pending_issue_prompt).toContain("Fix the failing CI checks on pull request #1");
+    });
+
+    it("400s a pull request with nothing failing", async () => {
+      stubPrDetail(withChecks("SUCCESS"));
+      const res = await fix();
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain("no failing checks");
+    });
+
+    it("rejects a confirm flag that isn't a boolean", async () => {
+      const res = await fix({ ref, confirm: "yes" });
+      expect(res.status).toBe(400);
+    });
+
+    it("502s when the provider read fails", async () => {
+      globalThis.fetch = (async () =>
+        new Response("rate limited", { status: 403 })) as unknown as typeof fetch;
+      const res = await fix();
+      expect(res.status).toBe(502);
+    });
+
+    // A second click while the first is still reading the PR must not hand the
+    // checks over twice.
+    it("409s a second request while the first is being handled", async () => {
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reads = 0;
+      globalThis.fetch = (async () => {
+        reads++;
+        await held;
+        return new Response(
+          JSON.stringify({ data: { repository: { pullRequest: withChecks("SUCCESS") } } }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch;
+
+      const first = fix();
+      await until(async () => reads > 0, "the first request reading the PR");
+      const second = await fix();
+      expect(second.status).toBe(409);
+      release();
+      expect((await first).status).toBe(400);
+    });
   });
 });
 

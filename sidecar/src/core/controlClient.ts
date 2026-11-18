@@ -25,6 +25,12 @@ const pending = new Map<number, Pending>();
 
 /** How long to wait for a reply before failing a request. */
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Review sessions are started and ended under a per-workspace lock that
+ * removals and archives wait on, so a hung core holds them up for 5s, or 10s
+ * when a start times out and its session is then ended.
+ */
+const REVIEW_SESSION_TIMEOUT_MS = 5_000;
 
 function socketPath(): string {
   const path = process.env.YARVIS_CORE_SOCK;
@@ -68,8 +74,11 @@ function onClose(): void {
 async function getSocket(): Promise<net.Socket> {
   if (socket && !socket.destroyed) return socket;
   if (connecting) return connecting;
+  // Read before the promise exists: a throw inside it would leave `connecting`
+  // holding a rejection that every later call returns, even once the path is set.
+  const path = socketPath();
   connecting = new Promise<net.Socket>((resolve, reject) => {
-    const s = net.createConnection({ path: socketPath() });
+    const s = net.createConnection({ path });
     s.setEncoding("utf8");
     const onConnectError = (e: Error) => {
       connecting = null;
@@ -89,14 +98,21 @@ async function getSocket(): Promise<net.Socket> {
   return connecting;
 }
 
-async function rpc(method: string, params: Record<string, unknown>): Promise<void> {
+/** A request the core didn't answer in time. It may still act on it later. */
+export class ControlTimeoutError extends Error {}
+
+async function rpc(
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<void> {
   const s = await getSocket();
   const id = nextId++;
   const payload = `${JSON.stringify({ id, method, params })}\n`;
   return await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (pending.delete(id)) reject(new Error(`control RPC '${method}' timed out`));
-    }, REQUEST_TIMEOUT_MS);
+      if (pending.delete(id)) reject(new ControlTimeoutError(`control RPC '${method}' timed out`));
+    }, timeoutMs);
     pending.set(id, {
       resolve: () => {
         clearTimeout(timer);
@@ -118,12 +134,14 @@ async function rpc(method: string, params: Record<string, unknown>): Promise<voi
 }
 
 /** Asks the core to start an agent session in `cwd`, optionally with Remote
- *  Control enabled and optionally starting on an instruction. */
+ *  Control enabled, resuming an earlier Claude Code session, or starting on an
+ *  instruction. */
 export async function spawnClaudeSession(input: {
   workspaceId: string;
   cwd: string;
   name: string;
   remoteControl: boolean;
+  resumeSessionId?: string;
   instruction?: string;
 }): Promise<void> {
   await rpc("claude.spawn", {
@@ -131,8 +149,32 @@ export async function spawnClaudeSession(input: {
     cwd: input.cwd,
     name: input.name,
     remoteControl: input.remoteControl,
+    resume: input.resumeSessionId,
     instruction: input.instruction,
   });
+}
+
+/**
+ * Asks the core to start Claude Code for a review workspace, keyed
+ * `review-claude:<workspaceId>`, in `cwd` with each of `addDirs` added.
+ * `settings` (JSON text) is its only settings and `context` is appended to the
+ * core's own guardrail prompt. The core builds the rest of the launch line.
+ */
+export async function spawnReviewClaudeSession(input: {
+  workspaceId: string;
+  cwd: string;
+  addDirs: string[];
+  settings: string;
+  context: string;
+  /** Whether the session loads the repos' own skills and CLAUDE.md. */
+  loadRepoConfig: boolean;
+}): Promise<void> {
+  await rpc("claude.spawnReview", input, REVIEW_SESSION_TIMEOUT_MS);
+}
+
+/** Asks the core to end a review workspace's Ask Claude session, if one is running. */
+export async function killReviewClaudeSession(workspaceId: string): Promise<void> {
+  await rpc("claude.killReview", { workspaceId }, REVIEW_SESSION_TIMEOUT_MS);
 }
 
 /** Asks the core to kill a workspace's Claude session, if one is running. */
@@ -161,6 +203,26 @@ export async function sendClaudeInstruction(input: {
 }
 
 /**
+ * Asks the core to type slash command `command` (with any `arguments`) at a
+ * workspace's running agent session and submit it. The core refuses a command
+ * that isn't on its allowlist, as well as everything `sendClaudeInstruction`
+ * refuses — see `send_session_slash_command` in `src-tauri/src/pty.rs`.
+ */
+export async function sendClaudeSlashCommand(input: {
+  workspaceId: string;
+  command: string;
+  arguments?: string;
+  agentPids: number[];
+}): Promise<void> {
+  await rpc("claude.slash", {
+    workspaceId: input.workspaceId,
+    command: input.command,
+    arguments: input.arguments,
+    agentPids: input.agentPids,
+  });
+}
+
+/**
  * Asks the core to store an MCP server's OAuth credentials in the Keychain, or
  * to forget them when `credentials` is null. The sidecar can't reach the
  * Keychain itself, and a token refresh must not wait for an app restart to be
@@ -179,4 +241,32 @@ export async function saveMcpOAuth(
  */
 export async function saveGitHubToken(token: string): Promise<void> {
   await rpc("github.saveToken", { token });
+}
+
+/** Whether a core is listening. False under `sidecar:dev` and in tests, where nothing can ring an alarm. */
+export function hasCoreChannel(): boolean {
+  return Boolean(process.env.YARVIS_CORE_SOCK);
+}
+
+/** The alarm shape the core rings and hands on to the webview's takeover. */
+export interface CoreAlarm {
+  id: string;
+  label: string;
+  fireAtMs: number;
+  sound: boolean;
+  meetLink: string | null;
+  status: string;
+}
+
+/**
+ * Asks the core to ring an alarm the sidecar marked fired: it takes over the
+ * window, shows a notification, and plays the sound until the alarm is released.
+ */
+export async function fireAlarm(alarm: CoreAlarm): Promise<void> {
+  await rpc("alarm.fire", { alarm });
+}
+
+/** Asks the core to stop ringing an alarm and hand the window back. A no-op for one not ringing. */
+export async function releaseAlarm(id: string): Promise<void> {
+  await rpc("alarm.release", { id });
 }

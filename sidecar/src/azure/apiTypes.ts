@@ -29,6 +29,7 @@ export interface AzureConnectionData {
 }
 
 export interface AzureUser {
+  id?: string;
   displayName?: string;
 }
 
@@ -85,24 +86,47 @@ export interface AzureFilePosition {
 export interface AzureThreadContext {
   filePath?: string;
   rightFileStart?: AzureFilePosition;
+  rightFileEnd?: AzureFilePosition;
   leftFileStart?: AzureFilePosition;
+  leftFileEnd?: AzureFilePosition;
 }
 
 export interface AzureComment {
+  /** Numbered from 1 within its thread. */
+  id?: number;
   commentType?: string;
   author?: AzureUser;
   content?: string;
   publishedDate?: string;
+  isDeleted?: boolean;
 }
 
 export interface AzureThread {
+  id?: number;
+  /** "active" | "pending" | "fixed" | "wontFix" | "closed" | "byDesign" | "unknown". */
   status?: string;
+  isDeleted?: boolean;
   threadContext?: AzureThreadContext | null;
   comments?: AzureComment[];
+  /**
+   * What a system thread records. A vote leaves one whose
+   * `CodeReviewThreadType` is `VoteUpdate`, authored by the voter.
+   */
+  properties?: Record<string, { $value?: unknown } | undefined>;
+  /** Identities a system thread's properties refer to by index. */
+  identities?: Record<string, { id?: string } | undefined>;
 }
 
+/**
+ * One push to a pull request. `sourceRefCommit` is the head it was pushed at
+ * and `commonRefCommit` the merge-base Azure computed for it.
+ */
 export interface AzureIteration {
   id: number;
+  createdDate?: string;
+  sourceRefCommit?: AzureCommitRef;
+  targetRefCommit?: AzureCommitRef;
+  commonRefCommit?: AzureCommitRef;
 }
 
 /**

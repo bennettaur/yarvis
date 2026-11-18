@@ -15,7 +15,8 @@ bun run demo:site            # turn the last run into a static site in demo/site
 
 The `Demo site` workflow (`.github/workflows/demo-pages.yml`) records every
 flow each morning (Toronto time) and publishes the result, with the showcase
-deck and the showcase video's player (`video/`, see `video/README.md`), to
+deck, the PR verification explainers (`docs/*-explainer.html`, under
+`verification/`) and the showcase video's player (`video/`, see `video/README.md`), to
 GitHub Pages at https://bennettaur.github.io/yarvis/. Run it from the
 Actions tab to publish straight away; only runs on `main` publish. It needs
 the repo's Pages source set to GitHub Actions (Settings → Pages), which it is.
@@ -28,8 +29,8 @@ Mac.
 
 The flows in `demo/flows/` cover the Chat tab (including a tool call that
 creates a task), Omni Chat, the Omni layout builder, GitHub PRs and issues,
-the Calendar, the Terminal tab, a workspace's Claude Code session, and a short
-tour.
+the Calendar, the Terminal tab, a workspace's Claude Code session, artifacts
+(a diagram and a document) opened beside the chat, and a short tour.
 
 Output lands in `demo/output/<flow-title>/`, with the test's title lowercased
 and hyphenated ("Memory library" becomes `memory-library/`). It holds numbered
@@ -148,7 +149,7 @@ target, and ripples on click. Typing goes one key at a time.
 | `hover(locator)` | Moves the cursor without clicking. |
 | `pause(ms)` | Holds still so a viewer can take in the screen. |
 | `shot(name, { target, cursor })` | Saves the next numbered PNG. Pass `target` to capture one element. The cursor is hidden unless `cursor: true`. |
-| `fireAlarm(alarm)` | Rings an alarm, as the core's scheduler would. |
+| `fireAlarm(alarm)` | Rings an alarm: writes it to the demo database as fired, then sends the event the core would. |
 | `emit(event, payload)` | Fires any other native event the UI listens for. |
 
 To type into a terminal, click it (`demo.click(page.locator(".xterm").first())`),

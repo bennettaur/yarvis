@@ -1,0 +1,806 @@
+# Review workspaces
+
+The **Review** tab is a second way to review pull requests, built for speed. A
+review workspace checks one or more PRs out on your machine and lays them out
+like an editor: each PR's sections in a nav on the left, and whatever you open
+from it as tabs on the right. You can put two tabs side by side, and review
+several PRs at once, each in its own colour. It works with GitHub and Azure
+DevOps. The [PRs tab](pr-review.md) stays as it is; use whichever suits the PR.
+
+## Set up
+
+Review workspaces use the same credentials as the PRs tab: a GitHub sign-in or
+token, or an Azure DevOps token and organization URL, under **Settings →
+Credentials**. See [PR review](pr-review.md#set-up).
+
+A PR's repo doesn't have to be registered. If it is (under **Settings →
+Repositories**), its setup script is offered for the PR's checkout; see
+[Running the setup script](#running-the-setup-script).
+
+## Use it
+
+### Open a PR
+
+On the **Review** tab, paste a PR into the box: a link, `owner/repo#123`, or
+`repo#123` for a registered repo, the same forms the PRs tab takes. A PR that
+is already in a review workspace opens there. Anything else gets a new
+workspace named after the PR.
+
+From the PRs tab, the PR's header has **Open in review workspace**, which does
+the same and switches to the Review tab. Its **▾** lists your review
+workspaces, to add the PR to one of them instead.
+
+When a GitHub PR in the workspace is part of a stack, the top of the nav gets a
+**Stack** section listing the other open layers the workspace doesn't hold yet,
+bottom first, each with a checkbox. There is one section per stack, however
+many of its layers the workspace holds. Nothing from the stack is added until
+you ask. Tick the ones you want and press **Add selected**, or press **Add
+all**. A layer someone has already approved is marked **Approved** and starts
+unticked, so the default skips work that has already been reviewed. Draft
+layers are marked **Draft**. Merged layers and branches with no PR aren't
+listed. If one layer can't be added, the rest still are, and the error names
+the ones that failed. The stack is found the same way as the PRs tab's
+[Stack section](pr-review.md#see-where-a-pr-sits-in-its-stack). If a stack
+can't be read, its section doesn't show, and neither do the ones after it, so a
+GitHub that is already failing isn't asked again for every layer you hold.
+
+The nav and the description show straight away. The PR's commits are fetched
+in the background, and the PR's header in the nav says how far that has got.
+The description, reviewers, checks and comments come from the provider, so
+they work before the clone finishes. Changed files and the file tree fill in
+when it does.
+
+The Review tab remembers the workspace you had open. **←** goes back to the
+list, ordered by when each workspace was last opened.
+
+### Find your way around
+
+Each PR has a group in the left nav, headed by its colour, `repo#number` and
+title:
+
+- **Description**, **Reviewers**, **Checks** and **Comments** each open as a
+  tab. Comments starts with the PR's conversation (on GitHub; Azure DevOps
+  general comments show as threads), then every open review thread, with
+  resolved ones behind **Show resolved**. Each inline thread links to its line
+  in the diff. The number beside Comments counts the open threads. Images in
+  comments load straight from wherever they are hosted, as they do in the PRs
+  tab, so opening the tab lets those hosts see the request.
+- **Since last review** opens what changed since you last reviewed the PR (see
+  [Since last review](#since-last-review)). When there are commits you haven't
+  seen, it says how many.
+- **Changed files** is a tree of what the PR changes, with how many you've
+  viewed. Each file has a viewed checkbox, its comment count (amber while a
+  thread is open), and a **must read** marker when the
+  [verification report](#verification-report) names it. Clicking a file opens
+  its diff.
+- **Commits** lists the PR's commits, newest first. A green dot marks a commit
+  that is new since your last review, and the section opens by itself when
+  there are any. Clicking a commit opens it as a tab: the files it touched on
+  the left, and the diff of the one you pick against the commit's parent.
+- **All files** is the whole tree at the PR's head, collapsed by default, with
+  a filter box: every word you type must appear in the path. Files the PR
+  changes are marked and open as diffs; anything else opens whole.
+
+Clicking the PR's header folds its group away.
+
+### Diff tabs
+
+A diff tab shows one file's changes in the editor, side by side or unified as
+set in the top bar, with unchanged stretches folded behind bars you can
+expand. **Whole file** shows it all; **Open file** opens the file at the PR's
+head in a tab of its own.
+
+- **Threads** sit under their lines on either side. Reply, resolve and
+  reopen them in place. Threads whose line no longer exists are folded into a
+  count above the editor.
+- **Comment**: hover a line and click the comment button in the margin, or
+  select lines and use the bar beside the selection for a multi-line comment.
+  Either side works. On GitHub, a comment on a line outside the diff goes on
+  the whole file instead, opening with the lines it is about, and a note
+  under the line says so.
+- **Ask**: the same way, with the ask button, to ask about those lines as in
+  the PRs tab's [line questions](pr-review.md#ask-about-a-line). The answer
+  stays under the lines. Questions go on the new version of the file; asking
+  on the old side says so.
+- **Viewed** marks the file viewed, shared with the tree and the PRs tab.
+  **Viewed, next →** marks it and opens the next file you haven't viewed.
+- A **Must read** badge, from the verification report, says why the file
+  matters and jumps to the lines it points at.
+- When the [verification report](#verification-report) has something to say
+  about the file, a strip above the diff gives the must-read reason and lists
+  each must-read flag, risk concern and check finding that cites a line, with
+  its source: **Looks off** for a flag, **Risk**, or the check's name. Click a
+  line number to jump there. The must-read lines are marked in amber on the
+  new side of the diff, and each cited line in red; hover one to read why.
+
+A **file tab** shows any file at the PR's head whole, with the PR's threads
+on it. Questions work on any file; comments only on files the PR changes,
+since that is all the providers accept.
+
+### Code navigation
+
+Diff and file tabs support go-to-definition and find references, so you can
+follow a call into code the PR doesn't touch without leaving the review.
+
+- **Go to definition**: Cmd+click a name, or put the cursor on it and press
+  F12. If there is one answer, its file opens in a tab at that line. If there
+  are several, a peek list shows them, best guess first: double-click one to
+  open it. A file the PR changes opens as a diff, and any other file opens as
+  a plain file.
+- **Find references**: press Shift+F12, or pick it from the right-click menu.
+
+For TypeScript and JavaScript, Yarvis uses the editor's own TypeScript
+service. When you open a file, Yarvis loads the files it imports from the
+PR's head: relative imports, aliases from the repo's `tsconfig.json`
+(`paths` and `baseUrl`), and index files. It follows imports a few levels
+deep, up to a fixed limit per PR, so jumps land on the real declaration.
+Packages aren't loaded, not even ones committed under `node_modules`, so a
+jump into a library finds nothing.
+
+Other languages, and TypeScript imports the editor can't resolve, use a text
+search over the PR's head commit. The search finds lines that look like
+declarations: Python, Go, Rust, Java, Kotlin, C#, Ruby, PHP, Swift, C/C++,
+and a generic fallback for everything else. Comments are skipped, and so are
+minified files, source maps and build folders (`node_modules`, `dist`,
+`build`, `out`, `target`, `.next`, `coverage`). Results are ranked with the
+current file first, then its directory, then the files it imports, then
+everything else. Python class attributes and dataclass fields come last,
+because the search can't tell them from ordinary assignments. In a very large
+repo the search stops early and shows what it found so far. It can't tell
+overloads or same-named symbols apart, so treat its answers as good guesses,
+not compiler-exact results.
+
+Navigation works once the PR's checkout has finished. It never runs code from
+the PR and doesn't need setup to have run. It reads the files committed at
+the head, so dependencies that are installed but not committed aren't visible
+to it.
+
+Every open PR shares one TypeScript service in the editor. Each PR's files
+and aliases stay separate, but a global declaration in one PR's loaded files
+(`declare global`, a script file with no imports) can show up in another PR's
+hover or completion while both are open. The peek list labels a file's folder
+with a leading `/head/` (for example `/head/app`).
+
+### Guided review
+
+**Guided review** in the PR bar opens the
+[guided review](pr-review.md#take-a-guided-review) as a tab: the tour down
+the side and the current step beside it. Next, Back, a step, a flagged finding
+or a covered file each open that place in a diff tab, and moving past a step
+marks its files viewed. When the guide has one, the
+[flow diagram](pr-review.md#see-the-flow-diagram) is a folded section below
+the current step.
+
+### Story
+
+**Story** in the PR bar walks you through the PR one theme at a time, the
+work that matters most first. The guided review orders the reading by how the code calls itself;
+the story orders it by what the change is for. The chapters come from the
+verification report's [change map](#verification-report): core themes first,
+then supporting ones, then outliers, the riskiest first within each, and a
+last chapter for any changed file no theme names. If the PR has no change
+map yet, the tab offers to write one, and the story appears when it is done.
+
+The chapter list down the side shows what the PR is for and how many chapters
+you have read, and says so when the change map was written for an older
+commit. Each chapter shows a Core, Supporting or Outlier badge for how the
+theme fits the PR, how risky it is, what changed and why, and, for an outlier,
+the question to ask the author. Below that come the hunks of each of its files
+that belong to the theme, with the report's check findings, risk concerns and
+must-read flags on the lines they are about. A chapter shows its first five
+files, with a button for the rest, and a file stops after 400 lines. A file's
+path opens its full diff, where you can comment. **Mark read and continue**
+marks the chapter's files viewed and moves to the next chapter. A chapter
+counts as read once all its files are viewed, wherever you marked them.
+
+### Verification report
+
+**Verification** in the PR bar opens a checklist of checks that agents
+(Claude Code, running on your machine against the PR's checkout) run on the
+change, each reading every changed file's diff. The checks are grouped by
+theme:
+
+- **Understand the change**: a summary with the files that must be read and
+  why, the change map, and the flow diagram.
+- **Correctness and tests**: claims, test quality, performance,
+  observability, and mutation testing. Mutation testing runs the PR's own
+  tests, so it starts from its own tab, where you agree to that: its row shows
+  the latest pass's verdict and **Open** takes you there.
+- **Risk and impact**: the risk score and the malicious-intent check.
+- **Maintainability**: complexity, code quality, comment quality, and whether
+  there is a simpler way to do what the PR does.
+
+At the top, **Decision** sums the checklist up. It opens with what the PR is
+for, suggests a decision, and lists every reason for it:
+
+- **Changes needed** when CI fails, a scanner raised a high alert, a claim is
+  missing or contradicted, or a check found something high.
+- **Review deeper first** for a high-risk change, an outlier, a claim only
+  partly met, a medium finding, a simpler approach, a security bot's comment,
+  a mutation-testing pass on this commit whose verdict was weak or mixed, a
+  high finding on a line the PR stacked above changes (see below; it still
+  blocks too),
+  CI that hasn't passed on the current commit (still running, no checks, or
+  not read yet), or a check not yet run on that commit.
+- **Looks ready to approve** when CI passed, the checks have run on this
+  commit, and none of that is there.
+- **Run the checks first** when nothing has run on this commit.
+
+On a GitHub PR with another stacked on it, the checklist also reads what the
+PR directly above changes in this one. While that PR is built on this one's
+current head, its diff is against this PR's code, so its changed lines are
+this PR's lines. A check finding within a few lines of one, in a result for
+the current commit, is marked **changed in #N above**, which opens that PR:
+the problem may already be fixed there. A high finding marked that way still
+blocks, since the PR above is the author's too; the decision says where to
+look. A PR above that hasn't been restacked onto this one's head is ignored,
+since its line numbers no longer match.
+
+The suggestion is a summary, not a gate. The three buttons work whatever it
+suggests:
+
+- **Approve** names anything the report raised and any check not run on this
+  commit, takes an optional comment, and approves the PR when you submit it.
+- **Request changes** drafts the review from the report: unmet claims,
+  outlier questions, high and medium findings, unfinished work, risk concerns
+  and failing CI. The ones a reviewer almost always raises start ticked. Tick
+  or untick each one, and edit its text. Those with a line in a result for the
+  current commit are posted on that line. The rest go into the review's
+  summary in full, which you can edit too. Mentions in text the report or a
+  check wrote are defused, so nothing it says pings anyone. The line comments go first. If one
+  fails, nothing else is sent, and a retry skips the ones already posted.
+- **Review deeper** lists where to look first: outlier themes, high-risk
+  themes, the must-read files and the lines of high findings. Each opens the
+  diff there.
+
+Nothing is posted until you submit.
+
+Each check runs on its own, when you choose. **Run** (or **Re-run**) on a
+row runs that one; tick several and press **Run picked** to start them
+together. The boxes start ticked on the checks with no result for the PR's
+current head, except the flow diagram, which runs only when you ask. Each
+row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
+what that result cost, whether that result is from an older head, and whether
+its last run failed or was cancelled. A failed or cancelled run leaves the
+check's last good result in place. While checks run, the tab checks on them
+every few seconds, and **Cancel** on a running check's row stops it. A check
+another Yarvis instance is running says so, and can't be started twice. If
+some picked checks can't start, the tab names them and the rest still run.
+Nothing asks about cost first: which checks you run is the budget.
+
+Beside the checks are rows for what other tools already reported on the PR,
+read from GitHub or Azure DevOps. They need no run, so they have no box to
+tick:
+
+- **CI checks** (under correctness): how many failed or are still running.
+  **Show** lists each check that didn't pass, plus the lines any check's run
+  pointed at (GitHub check run annotations), such as a failing test or a
+  linter warning on a check that passed.
+- **Code scanning alerts** (under risk): open alerts from CodeQL, Semgrep or
+  any other scanner that uploads to GitHub code scanning, worst first. The row
+  says when code scanning isn't set up or the token can't read the alerts.
+- **Bot comments**: open comments bots left on the PR, grouped by kind.
+  Security and dependency scanners (Semgrep, Snyk, Socket, Dependabot and
+  similar) go under risk, coverage reporters under correctness, and other bots,
+  such as review bots, under maintainability. A comment in a resolved thread is
+  left out.
+
+A file and line in these rows opens the diff there, and **Open** goes to the
+check or alert on the provider. The text is the tool's own, shown as plain
+text and shortened. Long lists are capped, failing checks' annotations first,
+and the row counts what it left out; the rest is on the PR. **Re-read CI results** fetches them again; otherwise they are read
+again after a minute. If CI ran on a different commit than the checkout, the
+tab says so. Azure DevOps PRs show their build and policy checks; Azure has no
+annotations, code scanning alerts or bot comments to show.
+
+Below the checklist, the report shows each check's newest result. A section
+whose result is from an older head is marked "older head". Every file and
+line in the report opens the diff there.
+
+- **Change map** groups the change into themes, such as "retry failed uploads"
+  or "tests for the retry", so you can review one theme at a time. It opens
+  with one sentence on what the PR is for. Each theme lists its files (and the
+  lines, when it is only part of a file), how risky it is, and how it fits
+  that goal:
+  - **Core** is what the PR is for.
+  - **Supporting** is something the core needs, such as tests, wiring, docs
+    or a refactor that makes room for it.
+  - **Outlier** is something the PR's goal doesn't need, such as an unrelated
+    fix, a drive-by refactor or an unexplained behaviour change.
+
+  A change the description mentions can still be an outlier, if the goal
+  doesn't need it. An outlier inside a file the core also changes is its own
+  theme, with the lines it covers. An outlier comes with a question for the
+  author, which **Post to PR** posts as a comment on its first file. Changed files no theme names are listed
+  under **In no theme**.
+- **Claims** lists what the PR's title, description and linked tickets say it
+  does. Each claim is marked **Verified**, **Partial**, **Missing**,
+  **Contradicted** or **Can't tell**, with the code behind the verdict. A
+  claim the code doesn't meet can be posted to the PR, and it shows on its
+  line in the diff. A verdict about the code has to name where in the code;
+  one that doesn't is shown as **Can't tell**. Unfinished work no claim covers, such as a TODO on the
+  main path or a review comment's request the code still doesn't make, is
+  listed under **Unfinished work**. The section names the tickets it read
+  and any it couldn't.
+
+  The tickets come from three places:
+  - The issues the PR closes on GitHub, or its linked work items on Azure
+    DevOps. An issue in a different repository is read only when you name
+    it, since the PR's author chose to link it.
+  - Jira keys in its title or branch name, when Jira is set up. On a PR from
+    a fork, these are listed but not read unless you name them, since
+    anyone can open one and name any key.
+  - Any you add in **More tickets for the change map and claims** before you
+    run them. That field takes a Jira key (`ABC-123`), a GitHub issue (`#45`
+    on a GitHub PR, or its github.com link), an Azure Boards work item
+    (`AB#123` or its link), or a Jira link. It offers the tickets from your
+    last run again.
+
+  Yarvis reads a ticket only from a GitHub, Jira or Azure DevOps account set
+  up in Settings, and refuses a link to any other host. It reads at most five
+  tickets per run. The change map reads the same tickets when it judges what
+  belongs.
+
+- **Malicious intent** looks for a change that does harm on purpose: a
+  backdoor, data or control sent somewhere new, hidden text, tampered tests,
+  a poisoned build, install or CI step, or text aimed at an AI reviewer. Its
+  agent isn't given the PR's description, comments or tickets, so a
+  persuasive story can't talk it out of a finding. Before it runs, fixed
+  rules list the diff's **tripwires**: changes to CI, build, test or install configuration, package
+  manifests and lockfiles, editor or coding-agent configuration, hooks or
+  CODEOWNERS, including removing or moving one; binary files and added
+  minified files; invisible or direction-changing characters, in the code or
+  a file's name; long encoded strings; and, in tests, skip markers, assertions
+  removed, snapshots changed and test files deleted or moved away. The agent
+  judges each one, and the report lists them under the check whatever it
+  decided, so you can confirm them yourself. It lists the 40 most telling and
+  counts the rest. Most tripwires are harmless.
+- **Observability** looks for errors that are swallowed, logging at the wrong
+  level (errors for failures someone must look at, warnings for things that
+  matter when they pile up), logging that is too noisy or missing where a
+  failure would go unseen, sensitive data in logs, and a metric only where a
+  new process clearly needs one.
+- **Code quality** looks for code that goes against the language's or the
+  codebase's own practice, weak error handling, and names that mislead.
+  Complexity, comments and logging are left to their own checks.
+- **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
+  agent classifies each change by what it does (a comment edit, a move, an
+  addition, a changed interface or changed logic), how much code depends on
+  what changed, and whether tests prove it. Yarvis scores those the same way
+  every time, and raises the score when the PR bundles many changes. Changes
+  that score high are listed under **Needs attention** with what to check,
+  and every change is listed behind **Every change**.
+- **Simpler approach** rates the PR as a whole, where the complexity check
+  looks at its code line by line. One agent reads the description and the
+  code, then searches the checkout for something the PR could have reused or
+  a smaller change with the same effect. It rates the PR "No simpler way
+  found", "A simpler way exists" or "A much simpler way exists", says why, and
+  names the simpler way and the code it would build on. If the agent fails,
+  the section says "Not rated".
+- A report made before these checks existed shows only the checks it had.
+
+The assistant can start a report too, and creates the review workspace when
+there isn't one. See
+[Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
+
+The report shows only the checks that have a result. When two checks found
+the same problem in results for the same head, it is shown once, under the
+check that comes first: test quality before code quality, for example.
+
+The **Flow diagram** traces the whole flow the change sits in, not just the
+diff. An agent follows the changed code up to what starts the flow (a route, a
+job, a UI action) and down to where it ends, and draws it as a Mermaid
+flowchart with the changed steps highlighted, plus a short explanation.
+Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
+is too long, isn't drawn, and the section says so. The diagram is model-written from the PR's code, so
+it is drawn in Mermaid's strict mode and shown as an image, where it can't run
+anything.
+
+Under each must-read file, the report lists anything in it that already looks
+off or unclear, such as a branch that looks inverted or a value that seems to
+be ignored, each linking to its line. These are questions to check while you
+read, not findings. They are also marked on the file's diff.
+
+The report doubles as a to-do list. Once you mark a file viewed (in its diff,
+the Changed files tree or the PRs tab), every must-read, risk concern and
+finding in that file is struck through, and **Must read** counts how many of
+its files you've viewed.
+
+A risk concern or finding that names a file and line can be sent on once you've
+read it. **Post to PR** posts it as a line comment on the PR, marked as coming
+from the verification report, with its text quoted and any `@` mentions
+broken so nobody is notified and no bot takes it as a command. GitHub only
+takes a line comment on a line inside the diff, so a finding on an unchanged
+line is posted as a comment on the whole file, opening with the line it is
+about, and a note beside the button says so. Any other refusal shows beside
+the button. When the PR was raised from a Yarvis
+workspace, **Add to *workspace*** adds it to that workspace's
+[review comments](workspaces.md#the-right-column) instead, where its agent can
+pick it up. There it carries a **report finding** badge, and the agent reads
+it as a problem to check rather than as your request. Nothing is sent until
+you click. A check whose result is for an older head offers neither button,
+since its line numbers may point at different code now; re-run it first. Like any comment
+you post, a posted finding records where you reviewed.
+
+No file is left out to save room. Each changed file's diff is given to the
+agents on its own, and each check is told to read every one in its area (the
+tests check reads the tests and the code they cover, for example). Only a
+binary file has no diff. A diff over 2 MB is cut to its first 256 KB, and the
+agents are told so.
+
+Bulk is skimmed, not read: lockfiles, minified files, `dist/` and `vendor/`,
+and files the repo's `.gitattributes` marks `linguist-generated` or
+`linguist-vendored`. Those marks are read at the merge-base, so a PR can't
+mark its own code generated to get it skimmed. For the same reason a file
+under `dist/` or `vendor/` is skimmed only if it already existed at the
+merge-base: one the PR adds there is read in full. The summary agent reads the
+first 200 lines of each bulk file to say what it is.
+
+On a big PR, one agent can't hold every diff at once, and what it read early
+would drop out of its context. So the diffs are split into reading groups of
+about 512 KB (one huge diff is split by lines), and each check runs as one
+agent per group, with their findings merged into one report.
+
+Yarvis then counts, from the files the agents actually opened, which changed
+files no check read in full. A read only counts when it shows the lines: a
+read that failed, a diff with lines too long for the agent to see whole, or
+only part of a diff read, doesn't. When any file is short, the report opens
+with a **Not examined** section listing each one and why. Click a path to
+open its diff. Nothing else in the report covers those files. Below it:
+
+- **Generated, skimmed**, folded away: the bulk whose first page was read.
+- **Not examined by** a check: changed files that check didn't read, though
+  another check did. Every check is handed the same list of patches to read,
+  whatever kind of file each one is.
+
+When every file was read, the report says that at least one check read each
+one. The count covers the checks whose results are for the PR's head (or,
+when none are, for the newest result's head): a file counts as read when any
+of them read it.
+
+Under the checklist, the tab names the binary files, any diffs that will be
+cut off, and the bulk the agents will only skim.
+
+### Mutation testing
+
+**Mutation testing** (in the PR bar's **⋯**) checks whether the PR's tests
+would notice the code being wrong. Claude Code plans a handful of small,
+deliberate bugs ("mutants") in the code the PR changes, such as a flipped
+comparison or a dropped guard. Then Yarvis runs the PR's own tests against
+each one, in a scratch copy of the checkout. A mutant the tests don't notice
+is a gap in them.
+
+It runs the PR's code, so it waits for that to be allowed:
+
+- Until you've agreed to the PR's setup script for its current commit, and
+  setup has finished, the tab says why it can't start, with **Review the
+  setup script…** to open the prompt (see
+  [Running the setup script](#running-the-setup-script)).
+- When the repo has no setup script, the tab asks you to confirm running the
+  tests without one first.
+
+Before a pass starts, the tab says how many mutants it may try, the budget for
+planning and explaining (set under **Settings → PR review**; nothing stops a
+pass that goes over it), and what the test
+sandbox does: no network beyond your machine, writes only to the scratch copy
+and a temp folder, and no reading your home folder beyond your toolchains. The
+sandbox is a second line of defence, not a guarantee, and setup itself is not
+sandboxed.
+
+While it runs, the tab shows each phase (copying, planning, the tests as they
+are, a blatant control mutant the tests must catch, each mutant, explaining
+survivors) and each mutant's result as it lands. **Cancel** stops it, keeping
+what it found so far.
+
+The report leads with a verdict (strong, mixed, weak or inconclusive) and how
+many mutants the tests caught. Each surviving mutant follows as a finding: its
+edit as a small diff, the test that should have caught it, the assertion that
+would, and the test output. Caught, unreached, equivalent and inconclusive
+mutants are counted below, folded away. Everything in the report that came
+from the PR, its tests or a model is shown as plain text. A path is a link to
+the diff only when the PR changes that file. A pass made for an older head
+says so, with **Re-run**.
+
+### Ask Claude
+
+**Ask Claude** in the PR bar opens a tab with Claude Code reading the
+workspace's PR checkouts, for asking questions about the changes: what a
+function does, where something is called from, why a test might fail. There
+is one session per workspace, and it reads every PR checked out there, so with
+a [stack](#open-a-pr) it can answer across the layers. Opening it from any PR's
+bar brings up the same tab.
+
+It starts once a checkout is ready, and keeps running when you switch tabs or
+close this one, so reopening it picks up the same conversation. A PR added to
+the workspace after it started joins when you press **Restart**, which ends the
+session and starts a fresh one. When you quit Claude Code, the session ends
+with it, and opening the tab again starts a new one. Removing a PR from the
+workspace, or archiving the workspace, ends it too, since a checkout it reads
+is going away.
+
+It's your session, so your own Claude Code setup loads: your `CLAUDE.md`,
+skills, agents, plugins, hooks, allow rules and MCP servers. The checkouts are
+code the PRs' authors wrote, so the rest is held down:
+
+- The repos' own skills and `CLAUDE.md` don't load, even if your shell sets
+  `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`. A repo's skill can
+  pre-approve tools and its `CLAUDE.md` reads as instructions. For a PR whose
+  author you trust, tick **Repo skills and CLAUDE.md** in the tab's header.
+  The session restarts with them, and the workspace remembers the choice.
+  A repo's own settings file and hooks never load, since the session doesn't
+  start inside a checkout.
+- It can read the checkouts but not change them, neither with its edit tools
+  nor from a command it runs, so one PR's code can't rewrite another's. Its
+  commands can't write to the repositories' clones either, where a planted git
+  hook would run the next time Yarvis fetches.
+- Your allow rules and MCP servers work as they do anywhere else, so a tool
+  you've allowed runs without asking here too, even when something in a
+  checkout is what suggested it.
+- Commands run in Claude Code's sandbox, which can't reach the network unless
+  you approve a host when it asks, and can't read your SSH, cloud or Yarvis
+  credentials. Claude Code starts without common credential variables your
+  shell exports, such as `GH_TOKEN` and the AWS keys. Claude in Chrome is
+  off, so it can't act in your browser. Claude asks you before running a
+  command that isn't read-only, or doing anything else beyond reading the
+  checkouts, unless your own allow rules already cover it. Domains your own
+  sandbox settings allow are allowed here too.
+- It doesn't start inside a checkout. Your shell's own hooks (mise, direnv and
+  the like) act on the folder a terminal opens in, so the session opens in an
+  empty folder of Yarvis's own, `.review-sessions/<workspace>/` under your
+  workspaces folder, and reaches the checkouts from there. Its commands can't
+  write to that folder either, and it's emptied before each start. Its
+  settings and instructions are written to `.ask-claude/` in the review
+  workspace's folder, which its commands can't write to either.
+- Its instructions tell it that what it reads in the checkouts is material to
+  explain, not instructions to follow.
+
+It needs the agent command under **Settings → Repositories → Agent** to run
+Claude Code (see [The agent command](workspaces.md#the-agent-command)). That
+setting's own flags (such as `--permission-mode auto`) are left out here. If
+Claude Code can't start (it isn't on your shell's `PATH`, say), the tab closes
+rather than leaving a plain shell behind.
+
+### Since last review
+
+For a re-review: what the author did since you last looked, without wading
+through the whole PR again.
+
+**Where you last reviewed** is recorded for you. Submitting a review (approve,
+request changes or comment) or posting a line comment through Yarvis records
+the commit you were looking at, from a review workspace or the PRs tab. Your
+own reviews on GitHub, and your votes on Azure DevOps, count too: GitHub says
+which commit each review was made on, and an Azure vote is matched to the push
+it came after. **⋯ → Mark reviewed here** in the PR bar records the checkout's
+commit by hand, for when you read the PR without leaving a review. The latest
+of all of these is your last review. Recording a review, and every refresh,
+keeps its commit in the review clone, so a force-push or a clean-up of the
+clone doesn't lose it; removing the PR from its last workspace lets them go.
+
+The **Since last review** tab shows:
+
+- A summary line: how many new commits, how many files, and whether the PR was
+  rebased onto a newer base, force-pushed, or had its base merged in.
+- **What's changed**, an agent's summary of the re-review (see
+  [What's changed](#whats-changed)).
+- The files whose change differs from the one you reviewed: **Changed again**,
+  **Newly changed** (the PR didn't touch it before), or **Reverted** (the PR no
+  longer changes it), with the lines added and removed since. Clicking one opens
+  it as a **Δ** tab.
+- The new commits, which open as commit tabs, and any commits you reviewed that
+  a force-push has since dropped.
+
+Changes that came in from the base branch are left out. If the author rebased
+onto a newer `main`, or merged `main` in, the files `main` changed don't show
+up, and a file both changed shows only the author's part. Yarvis compares the
+PR's own change then (from its merge-base to the commit you reviewed) with its
+own change now, rather than the two commits directly. A **Δ** tab shows the
+file as you reviewed it, moved onto today's base, beside the file now, so both
+sides carry the same upstream lines and only the author's edits differ. When
+upstream rewrote the very lines the PR changed, that can't be done cleanly; the
+left side is then the file exactly as you reviewed it, and a note above the
+diff says that some differences come from the base branch. A commit is only
+"new" if it brings a change you haven't seen: a commit a rebase re-created with
+the same change counts as one you've seen. On a PR with more than 500 commits
+that matching is skipped, and the tab says every rewritten commit counts as
+new.
+
+When you've caught up, **Mark reviewed here** at the bottom of the tab moves
+your starting point to the checkout's commit. Open **Δ** tabs keep comparing
+against the review they were opened from (the tab's tooltip names its commit)
+until you open the file again from the list. A commit tab whose commit a
+force-push has since dropped says it is no longer in the pull request.
+
+#### What's changed
+
+The **What's changed** button in the **Since last review** tab answers the
+questions a re-review is about: did the author deal with each of your
+comments, is there anything new you need to read, and can you approve. An
+agent (Claude Code, on your machine, reading only) reads what changed since
+your review and your comments, then reports:
+
+- **The verdict** at the top: **Ready to approve**, or **Needs another look**
+  with the reason. It is ready only when each of your comments is addressed
+  or its thread is resolved, and nothing new needs your review. A
+  disagreement the author explained still holds it back until you accept the
+  reason by resolving the thread; resolve it right there and the verdict
+  turns ready without a re-run.
+- **A summary** of two or three sentences.
+- **Your comments**, grouped. **Still open** comes first (not addressed,
+  partly addressed, or unclear), then **Answered with a reason**, with the
+  agent's summary of the author's reply, then **Addressed or resolved**, and
+  **Settled before your review** (threads you resolved before your last
+  review, with nothing said since, which aren't judged again), both folded
+  away. Each one shows the thread with **Reply** and **Resolve** right there,
+  and its location opens the diff at that line.
+- **Other changes** since your review: **Needs your review** opens each file's
+  **Δ** tab, and **Minor** (formatting, comments, renames, small mechanical
+  fixes, test-only tweaks) is folded away. Anything touching logic, contracts,
+  data, security or behaviour counts as needing review, however small.
+
+Your comments are the review threads you started or replied in, and your
+comments on the PR itself. Yarvis asks the provider who you are to find them
+(on Azure DevOps by your identity, since two people can share a display name),
+and won't run if it can't tell. Only the PR author's replies count as answers;
+another reviewer's or a bot's don't.
+
+Yarvis checks the agent's answer rather than taking it on trust:
+
+- "Addressed" or "partly" has to cite a file that changed since your review,
+  at a line in or next to one of its changes. Citing the thread's own file, or
+  nothing for a comment on the PR itself, counts only when the author answered
+  there. Anything else shows as **Unclear**.
+- So does a "disagreed" the author didn't reply to, and a comment the agent
+  skipped.
+- Every file that changed since your review is accounted for. One the agent
+  neither listed nor cited as a fix is listed as needing review ("not
+  classified by the agent").
+- The agent gets every changed file's interdiff, none left out for room, and
+  Yarvis counts which ones it actually read. A file it didn't read in full is
+  listed as needing review ("not examined by the agent", with why), even when
+  the agent called it minor or cited a fix there. A file with a version over
+  2 MB has no interdiff and is listed the same way. A fix the agent cites in a
+  file it never opened shows as **Unclear**.
+- One agent writes the summary, so it has a limit: when the changes since
+  your review are more than it can read at once (about 512 KB of interdiffs),
+  **What's changed** won't run, and says so. Before a run the section names
+  the files it can't read whole, and asks first when the estimated cost is
+  over its budget. Auto-start never starts a run like that.
+- When it changed anything, the verdict's reason is Yarvis's own count, and a
+  line under the summary says what it couldn't take as given.
+- **Ready to approve** never stands beside anything outstanding.
+
+Everything the agent wrote is shown as plain text. A path is a link only when
+the PR changes that file.
+
+A summary is for one range, from your last review to the checkout's head. When
+the PR has moved on since, the last summary stays in view with a note and
+**Re-run**. By default the agent waits for the button. To have it start when the
+tab opens on changes it hasn't summarised, turn on auto-start under
+**Settings → PR review → What's changed**, where its model and budget
+are set too ($1 by default). Like the verification report's, the budget only
+warns; a run you start finishes even if it goes over.
+
+### New commits pushed
+
+The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
+while the app is in front of you. When someone has pushed past the commit the
+checkout is at, a **New commits pushed — Refresh** banner appears under the
+bar. **Refresh** fetches the new commits and moves the checkout, showing the
+fetch's progress as it goes. Your tabs stay open and show the new commits once it is
+done, and the banner then offers **See what changed since you last reviewed** —
+or, if more commits were pushed while it ran, another **Refresh**.
+
+### Tabs
+
+Description, reviewers, checks, comments, since last review and the agent tabs
+stay pinned to the left of the strip, in that order, and each one opens once
+per PR: opening it again brings the open tab forward. Files, diffs (**±**),
+since-review files (**Δ**) and commits (**●**) open to the right of them, and
+also open only once. Opening a file that is already open jumps to the line
+asked for.
+
+- Drag a tab to reorder it. Static tabs stay where they are pinned.
+- Middle-click a tab, or press **Cmd+W**, to close it.
+- When a workspace holds more than one PR, each tab starts with its PR's
+  number (`repo#number` if the PRs come from different repos), in the PR's
+  colour, and has a left edge in that colour.
+
+### Side by side
+
+**Side by side** (or **Cmd+\\**) moves the current tab to a second group on the
+right, so two tabs show at once: a diff beside the description, or the same
+file in two PRs. You can also drag a tab onto the right half of the tab area,
+or onto the other group's strip. Drag the divider to resize. Closing a group's
+last tab folds the split away.
+
+The workspace remembers its open tabs, the split and which tab is showing
+across restarts.
+
+### The PR bar
+
+The bar above the tabs is for the PR whose tab is in front, in its colour. It
+has the same actions as the PRs tab's header: **Ready for review** on a draft,
+**Approve** and **Request changes**, **Merge** or auto-merge when the repo
+allows them, the link to a coding [workspace](workspaces.md) on the PR's
+branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
+approved the PR, **Approve** is replaced by a **✓ Approved** label in both
+places. It comes back if the author asks you to review again. It also has:
+
+- **Guided review**, **Story**, **Verification** and **Ask Claude**, which
+  open those tabs (see [Guided review](#guided-review), [Story](#story),
+  [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
+- **⋯**, with **Update checkout**, which fetches the PR's latest commits,
+  **Mark reviewed here**, which records the checkout's commit as where you
+  last reviewed (see [Since last review](#since-last-review)),
+  **Remove from workspace**, which takes the PR and its checkout out, and
+  **Mutation testing**, which opens that tab (see
+  [Mutation testing](#mutation-testing)).
+
+When the PR conflicts with its base, a red **Conflicts with <base>** banner
+sits under the bar with **Resolve conflicts**, which hands the merge to a
+coding agent in the PR's workspace. It works the same as on the PRs tab; see
+[Resolve merge conflicts](pr-review.md#resolve-merge-conflicts).
+
+**Unified** / **Split** in the top bar sets how every diff tab lays out.
+
+### Review several PRs together
+
+Paste another PR into the **Add PR** box in the top bar. It gets the next
+colour, its own group in the nav, and its tabs carry its colour. A PR keeps
+its colour for as long as it stays in the workspace.
+
+### Running the setup script
+
+Nothing from a PR runs on your machine until you say so. When the PR's repo
+is registered and has a setup script, the PR's group in the nav says **Setup
+hasn't run · review the script…**. That opens a prompt showing the PR's author,
+its branch (with the fork's owner for a PR from a fork) and commit, and the
+script exactly as it will run.
+
+**Setup is not sandboxed.** The script, and any code from the PR it runs
+(install hooks, build scripts), runs as you, with your files, your
+credentials and your network. Only run it for an author you trust. The prompt
+also lists a few environment variables the script won't get, such as your SSH
+agent, but that is a narrow exception rather than protection.
+
+**Run setup** runs it in the PR's checkout; **Don't run** records the answer
+so you aren't asked again for that PR. If the script or the PR's head changed
+after the prompt opened, the answer is refused and the prompt reloads to show
+what would run now.
+
+Until setup has run, code navigation only uses what is in the checkout, and
+mutation testing stays off.
+
+### Archive
+
+**Archive** in the top bar (or on hover in the list), after you confirm, removes the workspace's
+checkouts and moves it to **Show archived**. The clone each repo was fetched
+into is kept, so the next review of that repo starts faster.
+
+## Reference
+
+### Keyboard shortcuts
+
+| Keys | Does |
+| --- | --- |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab on the focused side |
+| Cmd+Option+→ / Cmd+Option+← | Next / previous tab, the same way |
+| Cmd+W | Close the tab |
+| Cmd+\ | Move the tab to the other side, splitting the view if it isn't yet |
+| Option+J / Option+K | Open the next / previous changed file of the PR in front |
+| F12 or Cmd+click | Go to the definition of the name under the cursor |
+| Shift+F12 | Find references to it |
+
+They work while the focus is somewhere in the workspace. While you are typing
+in a box (a comment, a reply, the Add PR field), Cmd+W and Option+J / K are
+left to the box. The focused side is the one you last clicked in; its strip
+has an indigo underline when the view is split.
+
+### Where things live
+
+Each repo is cloned once, without file contents until they are needed, under
+your workspaces folder in `.review-repos/`. Each PR gets its own checkout at
+the PR's head under `.review/<workspace>/`. Neither is a coding workspace's
+clone, so reviewing never touches your own branches. Commits you reviewed are
+kept in the clone under `refs/yarvis/reviewed/`; where you last reviewed each
+PR is in the database, so it is the same in every workspace and on the PRs tab.

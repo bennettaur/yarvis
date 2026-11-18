@@ -1,8 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrFile, PrRef } from "../../lib/pr/types";
-import { prFile as file, setPrFiles } from "../../test/prFiles";
+import { prFile as file, resetPrCache, setPrFiles, stubPrFiles } from "../../test/prFiles";
 import { renderToHtml } from "../../test/render";
+
+stubPrFiles();
+afterAll(resetPrCache);
 
 // Imported after the shared stub so its usePrFiles mock is in place.
 const { default: PrFileDiffs } = await import("./PrFileDiffs");

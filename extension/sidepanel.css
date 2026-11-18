@@ -65,3 +65,115 @@ pre {
   font-size: 12px;
   padding: 2px 8px;
 }
+.views {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.views button[aria-selected="true"] {
+  border-color: var(--text);
+}
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 70px);
+}
+.pickers {
+  display: flex;
+  gap: 6px;
+}
+.pickers select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+.thread {
+  flex: 1;
+  overflow-y: auto;
+}
+.bubble {
+  padding: 6px 8px;
+  margin: 6px 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.bubble.user {
+  margin-left: 24px;
+}
+.bubble.assistant {
+  margin-right: 24px;
+}
+.bubble .body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bubble.streaming .body:empty::after {
+  content: "…";
+  color: var(--muted);
+}
+.tool-line {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.share {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.share input {
+  flex: none;
+}
+.tab-title {
+  color: var(--text);
+}
+.share > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer textarea {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.composer button {
+  align-self: flex-end;
+}
+.approval {
+  border: 1px solid var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.approval p {
+  margin: 0 0 4px;
+}
+.approval pre {
+  max-height: 20vh;
+}
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}

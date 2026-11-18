@@ -326,6 +326,235 @@ describe("permission requests", () => {
     });
   });
 
+  describe("AskUserQuestion", () => {
+    const questionInput = {
+      ...hookInput,
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Which database?",
+            header: "Database",
+            options: [{ label: "Postgres" }, { label: "SQLite" }],
+            multiSelect: false,
+          },
+          { question: "Anything else?", options: [{ label: "No" }, { label: "Yes" }] },
+        ],
+      },
+    };
+    const answers = { "Which database?": "Postgres", "Anything else?": "Keep it local" };
+
+    it("shows the first question as the item's summary", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask(questionInput);
+      await untilItemRaised();
+      const [item] = await pendingItems();
+      expect(item!.body).toBe("AskUserQuestion: Which database?");
+    });
+
+    it("answers the hook with the questions and the user's answers", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask(questionInput);
+      expect((await decide(id, { behavior: "answer", answers })).status).toBe(200);
+      expect(await (await response).json()).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: {
+            behavior: "allow",
+            updatedInput: { ...questionInput.tool_input, answers },
+          },
+        },
+      });
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
+    it("clears the idle item Claude Code raised while the question waited", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask(questionInput);
+      await untilItemRaised();
+      await app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey, kind: "idle" }),
+      });
+      expect((await pendingItems()).map((i) => i.kind).sort()).toEqual(["idle", "permission"]);
+
+      await decide(id, { behavior: "answer", answers });
+      await response;
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
+    it("answers a question longer than a typical one", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const question = `Does this plan look right?\n${"- a step\n".repeat(200)}`;
+      const longInput = {
+        ...questionInput,
+        tool_input: { questions: [{ question, options: [{ label: "Yes" }, { label: "No" }] }] },
+      };
+      const { response, id } = await ask(longInput);
+      const res = await decide(id, { behavior: "answer", answers: { [question]: "Yes" } });
+      expect(res.status).toBe(200);
+      const reply = (await (await response).json()) as {
+        hookSpecificOutput: { decision: { updatedInput: { answers: Record<string, string> } } };
+      };
+      expect(reply.hookSpecificOutput.decision.updatedInput.answers).toEqual({ [question]: "Yes" });
+    });
+
+    it("refuses answers that don't cover exactly the prompt's questions", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { id } = await ask(questionInput);
+      const missing = { "Which database?": "Postgres" };
+      const extra = { ...answers, "Something else?": "x" };
+      expect((await decide(id, { behavior: "answer", answers: missing })).status).toBe(400);
+      expect((await decide(id, { behavior: "answer", answers: extra })).status).toBe(400);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("refuses answers for a prompt that isn't a question", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { id } = await ask();
+      const res = await decide(id, { behavior: "answer", answers: { "rm -rf build": "yes" } });
+      expect(res.status).toBe(400);
+    });
+
+    it("reports an answer to a prompt that's gone", async () => {
+      const res = await decide(crypto.randomUUID(), { behavior: "answer", answers });
+      expect(res.status).toBe(410);
+    });
+  });
+
+  describe("settled in the terminal", () => {
+    async function settle(body: unknown, headers: Record<string, string> = permissionAuth) {
+      return app.request("/ingest/permission/settled", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("drops the request for a call that ran, and clears its item", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response } = await ask();
+      await untilItemRaised();
+      const res = await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: hookInput.tool_input,
+      });
+      expect(res.status).toBe(204);
+      expect((await response).status).toBe(204);
+      expect(await waitingRequests()).toHaveLength(0);
+      expect(await pendingItems()).toHaveLength(0);
+    });
+
+    it("keeps a request whose call hasn't run", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "bun test" },
+      });
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("matches a question that ran with its answers added", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const tool_input = { questions: [{ question: "Which?", options: [{ label: "A" }] }] };
+      await ask({ ...hookInput, tool_name: "AskUserQuestion", tool_input });
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "AskUserQuestion",
+        tool_input: { ...tool_input, answers: { "Which?": "A" } },
+      });
+      expect(await waitingRequests()).toHaveLength(0);
+    });
+
+    it("drops only the older of two identical requests for one call", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const first = await ask();
+      const second = await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: hookInput.tool_input,
+      });
+      expect((await first.response).status).toBe(204);
+      expect((await waitingRequests()).map((r) => r.id)).toEqual([second.id]);
+    });
+
+    it("leaves a request for another tool with the same input", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      await settle({
+        hook_event_name: "PostToolUse",
+        tool_name: "Shell",
+        tool_input: hookInput.tool_input,
+      });
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("ignores events that say nothing about a prompt", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      expect((await settle({ hook_event_name: "PostToolUse" })).status).toBe(204);
+      expect((await settle({ hook_event_name: "Notification" })).status).toBe(204);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    for (const event of ["Stop", "UserPromptSubmit"]) {
+      it(`drops every request from the session on ${event}`, async () => {
+        await seedWorkspace(workspaceId, "WS");
+        const first = await ask();
+        const second = await ask({ ...hookInput, tool_input: { command: "bun test" } });
+        await untilItemRaised();
+        await settle({ hook_event_name: event });
+        expect((await first.response).status).toBe(204);
+        expect((await second.response).status).toBe(204);
+        expect(await waitingRequests()).toHaveLength(0);
+        expect(await pendingItems()).toHaveLength(0);
+      });
+    }
+
+    it("leaves another terminal's prompts alone", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      const other = `ws:${workspaceId}/t9/p1`;
+      await settle(
+        { hook_event_name: "Stop" },
+        {
+          ...permissionAuth,
+          "X-Yarvis-Session-Key": other,
+          "X-Yarvis-Session-Token": tokenFor(other),
+        },
+      );
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+
+    it("refuses a terminal settling another terminal's prompts", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      await ask();
+      const res = await settle(
+        { hook_event_name: "Stop" },
+        { ...permissionAuth, "X-Yarvis-Session-Token": "forged" },
+      );
+      expect(res.status).toBe(403);
+      expect(await waitingRequests()).toHaveLength(1);
+    });
+  });
+
+  it("leaves a session's prompts to its terminal once it holds too many", async () => {
+    await seedWorkspace(workspaceId, "WS");
+    for (let i = 0; i < 8; i++) await ask();
+    const ninth = await app.request("/ingest/permission", {
+      method: "POST",
+      headers: permissionAuth,
+      body: JSON.stringify(hookInput),
+    });
+    expect(ninth.status).toBe(204);
+    expect(await waitingRequests()).toHaveLength(8);
+  });
+
   it("hands the prompt back to the terminal with an empty reply and keeps the item", async () => {
     await seedWorkspace(workspaceId, "WS");
     const { response, id } = await ask();
@@ -389,6 +618,52 @@ describe("permission requests", () => {
       expect(await waitingRequests()).toHaveLength(0);
     });
   }
+
+  describe("the session's idle item", () => {
+    const raiseIdle = (key: string) =>
+      app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey: key, kind: "idle" }),
+      });
+    const pendingKinds = async () => (await pendingItems()).map((i) => i.kind).sort();
+
+    it("stays while another prompt from the session still waits", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const first = await ask();
+      const second = await ask({ ...hookInput, tool_input: { command: "bun test" } });
+      await untilItemRaised();
+      await raiseIdle(sessionKey);
+
+      await decide(first.id, { behavior: "allow" });
+      await first.response;
+      expect(await pendingKinds()).toEqual(["idle", "permission"]);
+
+      await decide(second.id, { behavior: "allow" });
+      await second.response;
+      expect(await pendingKinds()).toEqual([]);
+    });
+
+    it("stays when the prompt is handed back to the terminal", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask();
+      await untilItemRaised();
+      await raiseIdle(sessionKey);
+      await decide(id, { behavior: "terminal" });
+      await response;
+      expect(await pendingKinds()).toEqual(["idle", "permission"]);
+    });
+
+    it("leaves another session's idle item alone", async () => {
+      await seedWorkspace(workspaceId, "WS");
+      const { response, id } = await ask();
+      await untilItemRaised();
+      await raiseIdle(`ws:${workspaceId}/t2/p1`);
+      await decide(id, { behavior: "allow" });
+      await response;
+      expect(await pendingKinds()).toEqual(["idle"]);
+    });
+  });
 
   it("refuses a decision for a request that is no longer waiting", async () => {
     const res = await decide("00000000-0000-0000-0000-000000000000", { behavior: "allow" });

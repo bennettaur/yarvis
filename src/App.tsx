@@ -7,11 +7,15 @@ import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
 import PermissionRequestModal from "./components/attention/PermissionRequestModal";
 import QuestionDialog from "./components/attention/QuestionDialog";
+import { type OpenedBy, useAnswerDialogs } from "./components/attention/useAnswerDialogs";
 import ChatPanel from "./components/ChatPanel";
 import CalendarView from "./components/calendar/CalendarView";
 import ClipboardPalette from "./components/clipboard/ClipboardPalette";
 import Dashboard from "./components/Dashboard";
+import AgentFieldPanel from "./components/field/AgentFieldPanel";
 import HeadsDownPanel from "./components/headsDown/HeadsDownPanel";
+import HeadsDownQuestionDialog from "./components/headsDown/HeadsDownQuestionDialog";
+import MergeAlert from "./components/headsDown/MergeAlert";
 import IssuesPanel from "./components/IssuesPanel";
 import MemoryPanel from "./components/MemoryPanel";
 import OmniView from "./components/omni/OmniView";
@@ -19,6 +23,7 @@ import OmniChat from "./components/omnichat/OmniChat";
 import SetupGuide from "./components/onboarding/SetupGuide";
 import Tour from "./components/onboarding/Tour";
 import PrsPanel from "./components/PrsPanel";
+import ReviewPanel from "./components/ReviewPanel";
 import ScheduledJobsPanel from "./components/ScheduledJobsPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import SettingsPanel from "./components/SettingsPanel";
@@ -31,19 +36,24 @@ import {
 import TerminalTabs from "./components/shell/terminalTabs/TerminalTabs";
 import { useTabShortcuts } from "./components/shell/useTabShortcuts";
 import TasksPanel from "./components/TasksPanel";
+import VoicePanel from "./components/voice/VoicePanel";
 import WorkspacesPanel from "./components/WorkspacesPanel";
 import { useRingingAlarms } from "./lib/alarmStore";
 import type { AppPlace } from "./lib/appPlace";
 import type { AttentionItem } from "./lib/attention";
-import { markAttention } from "./lib/attentionStore";
+import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
+import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
 import type { IssueSummary } from "./lib/issues/types";
 import {
   type NewWorkspaceRequest,
+  type OpenReviewRequest,
   type OpenWorkspaceRequest,
   useNewWorkspaceListener,
+  useOpenArtifactListener,
   useOpenPlaceListener,
   useOpenPrListener,
+  useOpenReviewListener,
   useOpenWorkspaceListener,
 } from "./lib/nav";
 import { notify } from "./lib/notify";
@@ -72,9 +82,9 @@ export default function App() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [attention, setAttention] = useState<string | null>(null);
   const [attentionPanelOpen, setAttentionPanelOpen] = useState(false);
-  const [questionItem, setQuestionItem] = useState<AttentionItem | null>(null);
-  // A Claude session's permission prompt being answered from the modal.
-  const [permissionItem, setPermissionItem] = useState<AttentionItem | null>(null);
+  const closeAttentionPanel = useCallback(() => setAttentionPanelOpen(false), []);
+  const dialogs = useAnswerDialogs({ onOpen: closeAttentionPanel });
+  const { questionItem, headsDownItem, permissionItem } = dialogs;
   const [wip, setWip] = useState<WipItem[]>([]);
   const [wipLoading, setWipLoading] = useState(false);
   // A PR another view (workspaces, omni) has asked us to open. PrsPanel reads
@@ -84,11 +94,19 @@ export default function App() {
   // A workspace another view (Issues "Start work") has asked us to open, with an
   // optional Claude prompt to launch. WorkspacesPanel consumes and clears it.
   const [requestedWorkspace, setRequestedWorkspace] = useState<OpenWorkspaceRequest | null>(null);
+  const [requestedChatSession, setRequestedChatSession] = useState<string | null>(null);
+  const clearRequestedChatSession = useCallback(() => setRequestedChatSession(null), []);
+  // An artifact a link outside any chat asked to show beside the Chat tab's conversation.
+  const [requestedArtifact, setRequestedArtifact] = useState<string | null>(null);
+  const clearRequestedArtifact = useCallback(() => setRequestedArtifact(null), []);
   // A request to open the New Workspace form pre-filled (Tasks "Create workspace" /
   // "Start work"). WorkspacesPanel consumes and clears it.
   const [requestedNewWorkspace, setRequestedNewWorkspace] = useState<NewWorkspaceRequest | null>(
     null,
   );
+  // A review workspace another view (the classic PR page) asked us to show.
+  // ReviewPanel consumes and clears it.
+  const [requestedReview, setRequestedReview] = useState<OpenReviewRequest | null>(null);
   // An issue the attention/WIP panel asked us to open. IssuesPanel consumes it.
   const [requestedIssue, setRequestedIssue] = useState<IssueSummary | null>(null);
   // A PTY session on the standalone Terminal tab that an attention item asked us
@@ -111,11 +129,24 @@ export default function App() {
   }, []);
   useOpenPrListener(handleOpenPr);
 
+  const handleOpenArtifact = useCallback((id: string) => {
+    setRequestedArtifact(id);
+    setTab("chat");
+  }, []);
+  useOpenArtifactListener(handleOpenArtifact);
+
   const handleOpenWorkspace = useCallback((request: OpenWorkspaceRequest) => {
     setRequestedWorkspace(request);
     setTab("workspaces");
   }, []);
   useOpenWorkspaceListener(handleOpenWorkspace);
+
+  const handleOpenReview = useCallback((request: OpenReviewRequest) => {
+    setRequestedReview(request);
+    setTab("review");
+  }, []);
+  useOpenReviewListener(handleOpenReview);
+  const clearRequestedReview = useCallback(() => setRequestedReview(null), []);
 
   const handleNewWorkspace = useCallback((request: NewWorkspaceRequest) => {
     setRequestedNewWorkspace(request);
@@ -236,7 +267,12 @@ export default function App() {
           break;
         }
         case "chat":
-          openOmniChat();
+          if (target.sessionId) {
+            setRequestedChatSession(target.sessionId);
+            setTab("chat");
+          } else {
+            openOmniChat();
+          }
           break;
         case "pr":
         case "azure-pr":
@@ -299,42 +335,60 @@ export default function App() {
         case "heads-down":
           setTab("heads-down");
           break;
+        case "review-workspace":
+          handleOpenReview({ workspaceId: target.workspaceId, prId: target.prId, tab: target.tab });
+          break;
       }
     },
-    [openOmniChat],
+    [openOmniChat, handleOpenReview],
   );
 
+  const openDialog = dialogs.open;
   const openAttentionItem = useCallback(
-    (item: AttentionItem) => {
-      // A prompt can be answered where the user already is. The item stays
-      // pending until it is answered, which resolves it on the sidecar.
-      if (item.kind === "permission" && item.source === "claude-hook" && item.sessionKey) {
-        setAttentionPanelOpen(false);
-        setPermissionItem(item);
-        return;
-      }
-      // A question is answered in place too; it leaves the stream once answered,
-      // not when it is opened. The panel closes so Esc reaches only the dialog.
-      if (item.kind === "question") {
-        setAttentionPanelOpen(false);
-        setQuestionItem(item);
-        return;
-      }
+    (item: AttentionItem, by: OpenedBy = "click") => {
+      // A prompt or question is answered where the user already is. The item
+      // stays pending until it is answered, which resolves it on the sidecar.
+      if (openDialog(item, by)) return;
       void markAttention(item.id, "read");
       navigateTo(item.navTarget, item.title);
     },
-    [navigateTo],
+    [navigateTo, openDialog],
   );
 
+  // A prompt or question from the workspace on screen opens straight away,
+  // unless an overlay is already open. Opening would replace or close it while
+  // the user is in it; the item still waits on the bell.
+  const overlayOpenRef = useRef(false);
+  useEffect(() => {
+    overlayOpenRef.current =
+      dialogs.anyOpen ||
+      omniChatOpen ||
+      attentionPanelOpen ||
+      clipboardOpen ||
+      setupGuideOpen ||
+      tourOpen;
+  }, [dialogs.anyOpen, omniChatOpen, attentionPanelOpen, clipboardOpen, setupGuideOpen, tourOpen]);
+
+  useEffect(
+    () =>
+      onAttentionArrived((item) => {
+        if (overlayOpenRef.current) return;
+        if (!shouldAutoOpen(getViewedScope(), item)) return;
+        // Claimed now: a second item can arrive before the state change commits.
+        overlayOpenRef.current = true;
+        openAttentionItem(item, "auto");
+      }),
+    [openAttentionItem],
+  );
+
+  const closeQuestion = dialogs.closeQuestion;
   const openQuestionSession = useCallback(
     (item: AttentionItem) => {
-      setQuestionItem(null);
+      closeQuestion();
       navigateTo(item.navTarget, item.title);
     },
-    [navigateTo],
+    [navigateTo, closeQuestion],
   );
-
-  const closeQuestion = useCallback(() => setQuestionItem(null), []);
 
   const openWipItem = useCallback(
     (item: WipItem) => navigateTo(item.navTarget, item.title),
@@ -380,7 +434,15 @@ export default function App() {
         {/* Chat stays mounted while another tab is showing, so a turn keeps
             streaming instead of being cancelled by the unmount. */}
         <div className={tab === "chat" ? "h-full" : "hidden"}>
-          <ChatPanel active={tab === "chat"} sessionStorageKey={CHAT_TAB_SESSION_KEY} focusOnShow />
+          <ChatPanel
+            active={tab === "chat"}
+            sessionStorageKey={CHAT_TAB_SESSION_KEY}
+            focusOnShow
+            requestedSessionId={requestedChatSession}
+            onRequestConsumed={clearRequestedChatSession}
+            requestedArtifactId={requestedArtifact}
+            onArtifactRequestConsumed={clearRequestedArtifact}
+          />
         </div>
         {/* Omni fills the region and manages its own layout; page-like views
             scroll as a padded document. Chat is rendered above. */}
@@ -409,6 +471,12 @@ export default function App() {
             onRequestConsumed={() => setRequestedPr(null)}
             persistPlace
           />
+        ) : tab === "review" ? (
+          // Review lays out its own nav, tabs and scroll panes, like Workspaces.
+          <ReviewPanel requested={requestedReview} onRequestConsumed={clearRequestedReview} />
+        ) : tab === "field" ? (
+          // Full bleed: the field draws edge to edge and has no scroll.
+          <AgentFieldPanel />
         ) : tab === "issues" ? (
           // Issues owns its scroll so the issue detail view can pin a header and
           // scroll only its body, matching the PRs tab.
@@ -425,6 +493,7 @@ export default function App() {
             {tab === "jobs" && <ScheduledJobsPanel />}
             {tab === "sessions" && <SessionsPanel />}
             {tab === "heads-down" && <HeadsDownPanel />}
+            {tab === "voice" && <VoicePanel />}
             {tab === "dashboard" && <Dashboard />}
             {tab === "settings" && (
               <SettingsPanel
@@ -459,23 +528,44 @@ export default function App() {
 
       <QuestionDialog
         item={questionItem}
-        onClose={closeQuestion}
+        onClose={dialogs.closeQuestion}
+        onDone={dialogs.finishQuestion}
         onOpenSession={openQuestionSession}
+        armingMs={dialogs.armingMs}
+      />
+
+      <HeadsDownQuestionDialog
+        item={headsDownItem}
+        onClose={dialogs.closeHeadsDown}
+        onOpenPage={() => {
+          dialogs.closeHeadsDown();
+          navigateTo({ type: "heads-down" });
+        }}
       />
 
       <PermissionRequestModal
         sessionKey={permissionItem?.sessionKey ?? null}
         title={permissionItem?.title ?? ""}
-        onClose={() => setPermissionItem(null)}
+        onClose={dialogs.closePermission}
+        onDone={dialogs.finishPermission}
+        armingMs={dialogs.armingMs}
         onGoToSession={() => {
           if (!permissionItem) return;
-          setPermissionItem(null);
+          dialogs.closePermission();
           void markAttention(permissionItem.id, "read");
           navigateTo(permissionItem.navTarget, permissionItem.title);
         }}
       />
 
       <AttentionAutoClear />
+
+      <MergeAlert
+        onOpen={(item) => {
+          void markAttention(item.id, "read");
+          navigateTo(item.navTarget, item.title);
+        }}
+        onNavigate={navigateTo}
+      />
 
       <AlarmTakeover />
 

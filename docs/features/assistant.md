@@ -6,14 +6,15 @@ actually did. It can start work in a workspace and hand follow-ups to the
 Claude Code sessions running there. Tell it what matters this week, then keep
 asking it where you are and what's next.
 
-You can talk to it from four places, and they all reach the same agent and the
+You can talk to it from five places, and they all reach the same agent and the
 same memory:
 
 - the **Chat** tab (Cmd+1),
 - **Omni Chat**, the overlay you summon from anywhere with Control+Shift+Space
   (see [Chat and Omni Chat](quick-chat.md)),
 - your voice (see [Voice](voice.md)),
-- Telegram (see [Telegram](telegram.md)).
+- Telegram (see [Telegram](telegram.md)),
+- Chrome's side panel, beside the page you're on (see [Browser](browser.md)).
 
 ## Set up
 
@@ -124,6 +125,14 @@ The assistant can act on your workspaces in bulk:
   types that instruction into the workspace's running Claude Code session.
   Yarvis can only confirm the text was delivered, not that the work got done,
   and it says so.
+- **"Compact the billing-api session."** It runs `/compact` there. Other slash
+  commands and skills run only once you've allowed them in Settings (see
+  [Running a slash command in a session](workspaces.md#running-a-slash-command-in-a-session)).
+- **"Walk me through bennettaur/yarvis#612"** or **"Verify that PR."** It
+  starts a [guided review](pr-review.md#take-a-guided-review) or a
+  [verification report](review-workspaces.md#verification-report) in the
+  background, and the attention bell tells you when it's ready. See
+  [Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
 - **"What's the state of the billing-api workspace?"** It reports the PR,
   checks, mergeability and review verdict from the last poll (refreshed every
   minute).
@@ -141,7 +150,50 @@ The assistant can act on your workspaces in bulk:
   tier, so check the details.
 - **"Archive the billing-api workspace."** It stops the session, removes the
   worktrees, and completes any linked task. If there are uncommitted changes,
-  it asks before throwing them away.
+  it asks before throwing them away. Like the archive dialog, it also closes
+  the workspace's linked issues that aren't done yet. Say which ones to leave
+  open ("archive it but keep WID-12 open") and it skips those.
+
+### Scheduled tasks
+
+The assistant can leave itself a **scheduled task**: a prompt it runs later in
+the same chat. It schedules one on its own when you asked to be told about
+something, or when it fits what you said you're working on. Otherwise it offers
+first. It always tells you what it scheduled and when. It uses them to come
+back to something at a useful time:
+
+- **Checking on progress.** Tell it you're trying to get all your PRs
+  mergeable, and it can look again in an hour and tell you which ones still
+  aren't.
+- **Checking in.** Set your goals on Monday, and it can check in mid-week on
+  how they're going.
+- **Watching something slow.** Ask "let me know when CI on the billing-api PR
+  goes green." It checks right away, and if CI is still running it schedules a
+  task to look again. A run that finds it still running schedules the next one
+  quietly; you hear about it when there is something to say.
+
+When a task runs and has something for you, it posts in the chat it came from
+and rings the attention bell. The item's title names the task, and its text is
+the start of what the assistant found. Click it to open that chat, which also
+reloads it if it was already open. A task the [heads-down](heads-down.md) loop
+scheduled opens the **Heads down** page instead, since its passes run in chats
+you don't see.
+
+- Task messages show in the chat as **Yarvis · scheduled task**, so you can
+  tell them from what you typed.
+- A task runs with nobody watching, so it only gets tools that read: it can
+  look things up, report and schedule another task. It can't write tasks or
+  memories, start sessions, read your browser tabs, or use MCP tools. If you
+  want something done when it runs, ask once you've read what it found.
+- A task can be up to two weeks out. A chat can have 5 tasks waiting at once.
+  A chain of tasks watching the same thing re-checks at most every 5 minutes
+  and stops after 24 runs. Ask "what
+  have you scheduled?" to list them, or "cancel the CI check" to cancel one.
+- If a task fails to run (for example, the model is unavailable or it times out
+  after 5 minutes), the bell tells you so. It also tells you when a chain stops
+  after 24 runs.
+- Tasks report in the app, not in Telegram, even when you asked for one from
+  Telegram.
 
 ### Friday: what did I get done?
 
@@ -156,6 +208,7 @@ named. It works well for status updates and brag docs.
 | --- | --- | --- |
 | **Tasks** | What *you* intend to do, scoped to today or this week | Tasks tab |
 | **Agent todos** | What the *assistant* has promised to do, with a progress log | Memory → Agent todos |
+| **Artifacts** | Markdown documents and diagrams the assistant wrote and can read back, such as a morning brief, a report, an architecture sketch, or a scratchpad it adds to over time | Beside the chat, from a link in a reply; Memory → Artifacts |
 | **Work streams** | Threads of work the assistant is pushing forward, such as a ticket to ship or a message to answer, each with its tickets, workspaces, PRs and messages, what it's waiting on, and the assistant's notes | Heads down page |
 | **Projects** | A status, a focus for the week, and tracked tickets with priorities (urgent, high, medium, low) | Memory → Projects |
 | **Memories** | Durable facts, typed by kind | Memory → Memories |
@@ -163,6 +216,84 @@ named. It works well for status updates and brag docs.
 
 Tasks and agent todos are separate on purpose. One is your plan, the other is
 the assistant's.
+
+### Artifacts
+
+Ask the assistant to write something up, like "put together my morning brief",
+and it saves the result as an artifact rather than only replying in the chat.
+It can read an artifact back later and add to it, so it also uses them as
+scratchpads: notes it builds up over a heads-down run, or a list it keeps
+across conversations. A job on the Jobs tab can write one too, so a
+weekday-morning job can leave a fresh brief waiting for you. A task the
+assistant schedules for itself in a chat can only read them.
+
+A heads-down pass or a specialist (which is what a Jobs-tab job runs) can add
+to the end of an artifact you asked for in a chat, but can't rewrite, rename or
+delete it, and can't grow it past 50,000 characters, so you always have room to
+add to it. They can rewrite and delete artifacts they created themselves, and
+you can still have any artifact rewritten or deleted from a chat.
+
+Those runs may be working from a ticket or message someone else wrote, so their
+artifacts are marked untrusted. So is anything written in a chat turn after it
+read a web page or an untrusted artifact, and anything written from the Chrome
+side panel, whose messages carry the open tab's text. Once a chat turn reads an
+untrusted artifact, actions that can't be undone, rewriting an artifact among
+them, ask for your approval for the rest of that turn, as they do after reading
+a web page. Listing artifacts counts as reading the untrusted ones' titles, so
+once heads-down mode or a specialist has written one, most turns that use
+artifacts will ask. Spoken turns always ask before rewriting one. Like page
+text, what an artifact says isn't replayed into later turns, and an untrusted
+artifact's title stays out of the activity log.
+
+Only reading a web page or an untrusted artifact, or writing from the side
+panel, marks a chat turn's artifacts untrusted. Text a typed chat turn reads
+from your browser tabs, a ticket, a pull request or an MCP tool doesn't, so an
+artifact written from it is shown as trusted. The same limit already applies to
+the approvals within that turn.
+
+When the assistant creates or changes an artifact, it links to it in its
+reply. Click the link and the artifact opens beside the conversation, in the
+Chat tab or the Omni Chat overlay, so you can read it while you keep talking.
+Drag the divider to resize it; ✕ closes it. The pane follows the artifact as it
+changes, so you can watch the assistant write it. A link somewhere other than a
+chat, or **Open beside chat** in Memory → Artifacts, opens it beside the Chat
+tab's conversation. An untrusted artifact's links open where they say rather
+than inside Yarvis.
+
+Ask for a diagram ("sketch how the checkout services talk to each other") and
+the assistant draws one in Excalidraw: boxes, ellipses, diamonds, free text,
+arrows, lines and frames, with Excalidraw's own styling. It writes Excalidraw
+elements directly and places them itself. An arrow joined to two boxes follows
+them when they move. Ask it to change the diagram and it edits it in place,
+element by element, and the open pane redraws with each change. After every
+change the assistant gets back where everything ended up and what looks wrong,
+such as boxes that overlap, labels that don't fit or arrows that cross a box,
+so it can tidy its own drawing. The view follows the drawing until you pan or
+zoom it yourself. Diagrams are view-only: you can pan, zoom and save one as an
+image, but only the assistant edits them. Text is drawn in Helvetica, since
+the app can't load Excalidraw's hand-drawn font.
+
+A heads-down pass or specialist can only add to a diagram you asked for in a
+chat. Changing a diagram asks for approval under the same conditions as
+rewriting a document: on a spoken turn, and once a turn has read a web page or
+an untrusted artifact. A change that only adds new elements doesn't ask, the
+way adding to the end of a document doesn't: the assistant marks it as adding
+only, and the change is refused if it would touch anything already drawn.
+Adding can still make a diagram misleading without changing what is there: a
+new box can be drawn over yours, and a new arrow can join two of your boxes
+with a label of its own. Nothing already drawn is changed or lost, and what a
+pass or specialist adds marks the diagram as written by an agent. In Memory → Artifacts a diagram shows only a note; use
+**Open beside chat** to see it. A diagram can have up to 600 elements.
+
+Open **Memory → Artifacts** to find them later. Each one shows where it came
+from (a chat, heads-down mode, or a specialist or job) and whether it's
+untrusted. Delete one with its ✕, or tick several (or all) and delete them
+together; deleting can't be undone. Only the assistant edits them. Each one is
+capped at 100,000 characters.
+
+The pane hears about changes from the app instance it's running in. If you run
+a second instance against the same database, a change the other one makes
+shows up the next time you open the artifact.
 
 ### Memory kinds
 
@@ -264,7 +395,7 @@ Yarvis records meaningful actions as events. Examples:
 Otherwise, clicking around the UI is not an event. Workspace views stay out of the
 4-hour and daily summaries. The log mostly records what you do *in Yarvis*. The
 one exception is review verdicts: approvals and change requests you give on
-github.com are copied in every 30 minutes by the GitHub review sync (source
+github.com are copied in every hour by the GitHub review sync (source
 `github-sync`). Comments you leave on github.com still don't show up.
 
 Browse and search it under **Memory → Activity**.
@@ -288,7 +419,7 @@ can read the end of that workspace's latest Claude Code transcript.
 
 **It sees after the background jobs run:**
 
-- approvals and change requests you gave on github.com (within 30 minutes),
+- approvals and change requests you gave on github.com (within an hour),
 - what happened inside a Claude Code session, if you turned on the
   transcript digest,
 - summaries of each 4-hour window and each day.
@@ -337,16 +468,28 @@ you asked.
 - **Registering a repo** asks every time. Later tools clone the repo and run
   its code, and a repo name can come from an issue or a look-alike name. Check
   the exact repo before you approve.
+- **Filing an issue on Yarvis itself** asks every time. The Yarvis repo is
+  public, so read the title and body before you approve.
 - **Going heads down** asks every time, since it starts a loop that keeps
-  acting on its own until you stop it. See [Heads-down mode](heads-down.md)
-  for what it may do without asking.
+  acting on its own until you stop it. So do resuming it after a pause and
+  changing when it stops, which keep that loop going. See
+  [Heads-down mode](heads-down.md) for what it may do without asking.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
+- **Reading a web page** asks when the link isn't one you typed in the
+  conversation, such as a link the assistant found on a page. A link can carry
+  data out in its address, so you see the exact URL first.
+- **After it reads a web page**, the rest of that turn asks before anything
+  irreversible, the same list as spoken turns below, and auto-approved MCP
+  tools ask again too. The page may have been written to steer it.
 - **Spoken turns** ask before anything irreversible: deleting a task, archiving
   a workspace, starting work, adding a repo to a workspace, filing, editing,
   moving, assigning or commenting on a ticket in GitHub, JIRA or Azure Boards,
   syncing branches, sending an instruction to a session, launching a
-  session, forgetting a memory, or delegating. A transcript can be misheard,
-  or picked up from the room.
+  session, handing a task to Claude Code, starting a guided review or
+  verification report, forgetting a memory, or delegating.
+  A transcript can be misheard, or picked up from the room.
+- **Scheduled tasks** can't ask, because nobody is watching them. They only
+  get tools that read. See [Scheduled tasks](#scheduled-tasks).
 
 The assistant is also instructed to create workspaces, register a repo, add a
 repo to a workspace, start work, sync, send instructions or archive only when
@@ -377,8 +520,12 @@ Always available:
 - **Activity.** Search the event log and count activity by type.
 - **Planning.** Find dangling work, suggest what's next, dismiss or restore a
   suggestion, and summarize the week.
-- **Delegation.** List specialists and delegate to one.
+- **Delegation.** List specialists and delegate to one. With **Pick
+  specialists for delegated work** on, it can leave the name out and have one
+  picked.
 - **Attention.** Raise a notification when it needs you.
+- **Scheduled tasks.** Schedule, list and cancel a prompt it runs later in the
+  same chat.
 - **Questions.** Ask you something and wait for the answer (`ask_user`,
   `wait_for_answer`). The question rings the attention bell as **Yarvis**, and
   you answer in a dialog from wherever you are in the app. It is meant for when
@@ -387,8 +534,8 @@ Always available:
   to see the bell. A [heads-down](heads-down.md) pass has its own `ask_user` that doesn't wait
   for you, and specialists and scheduled jobs never get these. See
   [MCP](mcp.md#asking-you-questions).
-- **Heads down.** Start heads-down mode once you agree, stop it, and check
-  whether it's running.
+- **Heads down.** Start heads-down mode once you agree, pause, resume or stop
+  it, set when it stops, and check whether it's running.
 
 Loaded on demand:
 
@@ -399,20 +546,96 @@ Loaded on demand:
   on, and start work on a ticket.
 - **GitHub issues.** Read, open, edit (title, body, open or closed, labels,
   assignees) and comment on an issue in a registered repo.
+  Separately, file an issue on Yarvis itself when one of its tools misbehaves
+  or you ask for a change to the app.
 - **Azure Boards.** Search with WIQL or title words, read a work item with its
-  links (parent, children, what blocks it), create one, edit its title,
+  links (parent, children, what blocks it), list a project's work item types,
+  create one, edit its title,
   description, tags or state, assign it to you or unassign it, and comment.
 - **Work streams.** Track a thread of work, link its tickets, workspaces, PRs,
   messages and review requests, mark what it's waiting on, and find the stream
   something belongs to.
-- **PR review.** List your guided reviews and search the notes you took while
-  reviewing.
+- **PR review.** List your guided reviews, search the notes you took while
+  reviewing, and start a guided review or a verification report on a PR.
 - **Calendar.** List events and create one.
+- **Alarms.** List your alarms, set one for a time or for a calendar meeting,
+  and cancel one. In heads-down mode it can only set meeting alarms, and can't
+  cancel any.
+- **Web.** Read a public web page you link to.
+- **Claude Code tasks.** Hand a self-contained task to Claude Code without
+  starting a workspace, and check on it. See
+  [Handing a task to Claude Code](#handing-a-task-to-claude-code).
 - **Help.** Search and read Yarvis's own user docs, and check which parts of
   the app are configured (yes or no only, never a secret's value).
 
 The full list, with each tool's policy, is in **Settings → Tools & MCP → Tool
 Manager**.
+
+### Reading web pages
+
+Paste a link and ask the assistant to read, summarize or answer questions
+about it. It fetches the page as a logged-out visitor would: no cookies, no
+sign-in, and nothing on your local network. For a page behind a login, open it
+in Chrome and use the [browser](browser.md) tools instead. It reads web pages
+and plain text, not PDFs or images, and returns about the first 20,000
+characters of a long page. What it reads goes into the chat like any other
+tool result, so it reaches your LLM provider and stays in the chat history.
+
+A web page can carry text written for an AI rather than for you, such as an
+instruction tucked into a hidden block. Before the assistant sees a page,
+Yarvis:
+
+- removes elements a browser wouldn't show: `hidden`, `aria-hidden`, closed
+  dialogs, common hiding classes like `sr-only`, and inline styles such as
+  `display: none`, zero font size, zero opacity or off-screen positions,
+- removes HTML comments from Markdown and plain-text pages,
+- removes characters that render as nothing, such as zero-width spaces,
+  direction overrides and Unicode tag characters,
+- flags text that looks like instructions to an AI, whether it was visible or
+  hidden, and the assistant tells you when a page tried this,
+- marks the whole page as untrusted data the assistant must not follow.
+
+This is a screen, not a guarantee. Text hidden by a stylesheet, or colored to
+match its background, still comes through, and the flagging is pattern-based.
+Fetching a link you typed doesn't ask. Any other link asks first, and so does
+anything irreversible for the rest of the turn (see
+[What it asks before doing](#what-it-asks-before-doing)). On Telegram, where
+it can't ask, those calls are refused instead. Specialists and scheduled jobs
+can't read web pages unless you grant it to them.
+
+Requests go straight to the site's address after it is checked, which keeps a
+site from passing the check and then pointing its name at your local network.
+That also means they don't go through an HTTP proxy set in your environment.
+
+### Handing a task to Claude Code
+
+Ask for something that is easier to build than to write in chat, such as a
+small website, a formatted brief or a script, and the assistant can hand it to
+Claude Code in the background. No workspace or repo is involved: Claude Code
+starts in a new empty folder under your workspaces root
+(`<workspaces root>/.claude-tasks/<id>`) and leaves its files there. When it
+finishes, the attention bell tells you, and the assistant can show you its
+summary and the files it made.
+
+Each run is locked down more tightly than the review agents' runs:
+
+- It can only read and write inside its own folder. It can't see your repos or
+  any other file, so put everything it needs in your request, or ask the
+  assistant to pass along a ticket or page it has read.
+- It has no shell and no network access, so it can't install packages or
+  fetch anything. It builds with plain files: HTML, CSS, JavaScript, Markdown.
+- It reads none of your Claude Code settings, hooks, plugins or MCP servers,
+  and it can't publish or push anything.
+- It stops after 30 minutes or US$5 of usage, whichever comes first, and at
+  most 3 tasks run at once.
+
+Task folders are kept until you delete them.
+
+It runs on the Claude Code build set in Settings, and its usage counts against
+that Claude Code account. That build needs restricted mode (`--restricted`),
+which keeps the run inside its folder; tasks are checked against Claude Code
+2.1.314. On a build without it, the task fails
+instead of running unconfined, and its notification says to update Claude Code.
 
 ## Specialists
 
@@ -432,6 +655,8 @@ The shipped specialists:
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
 | `workspace-recap` | Says in a few sentences what a workspace's agent session is working on and where it got to. Has no tools, on purpose. | The assistant, when you ask about workspace activity |
 | `yarvis-guide` | Answers "where is X?" and "how do I set up Y?" about Yarvis itself, from these docs. Replies with steps and links that open the right page or Settings tab. | You, via chat or **Help → Ask Yarvis** |
+| `complexity-router` | A decision specialist. Picks the low, medium or max tier for a specialist that names no model of its own. | Delegated runs and scheduled jobs, when **Pick a model tier for specialists** is on |
+| `specialist-picker` | A decision specialist. Picks the specialist for a delegation that doesn't name one. | The assistant, when **Pick specialists for delegated work** is on |
 
 A delegated run has limits:
 
@@ -447,7 +672,9 @@ A delegated run has limits:
 A specialist is a markdown file: YAML frontmatter for its settings, and the
 body as its system prompt. The shipped ones live in
 `sidecar/src/agents/definitions/`. Yours go in `~/.yarvis/agents/*.md`. A file
-with the same name as a shipped one **replaces** it.
+with the same name as a shipped one **replaces** it. When two of your own
+files use the same name, the first by filename loads and the other is listed
+under the problems.
 
 ```markdown
 ---
@@ -488,18 +715,68 @@ The fields:
 A misspelled key is an error too. `tool:` instead of `tools:` would otherwise
 give a specialist with no tools and no warning.
 
+### Decision specialists
+
+A file with `kind: decision` is a **decision specialist**. It doesn't run a
+task. It makes one quick choice on the decision model (see
+[Auto mode](mcp.md)): its body says what is being decided, and the answer is
+one of a fixed set of options plus a one-sentence reason.
+
+```markdown
+---
+name: complexity-router
+kind: decision
+description: Picks the complexity tier a delegated task needs.
+choices: [low, medium, max]   # optional; the caller can supply its own
+---
+
+You decide how capable a model a task needs…
+```
+
+A decision specialist can't set `tools`, `unattended`, `model`, `complexity` or
+`maxSteps`, and the assistant can't delegate to one. Options are letters,
+digits, `_`, `.` or `-`. When the decision model fails, times out, or isn't
+sure, the feature that asked does what it would have done without it.
+
+The app uses two of them, each behind its own switch under **Settings → Tools &
+MCP → Decision model**, both off by default:
+
+- **Pick a model tier for specialists.** A specialist that names no `model`
+  or `complexity` gets a tier from `complexity-router`, based on the task it
+  was handed. That includes a scheduled job with no specialist, judged on its
+  prompt. Without an answer it runs on the default chat model.
+- **Pick specialists for delegated work.** The assistant may delegate without
+  naming a specialist, and `specialist-picker` chooses one from their
+  descriptions. Nothing runs on that call: the assistant delegates again with
+  the name, so when a delegation needs your approval (on a spoken turn, say)
+  the prompt shows which specialist will run. If none clearly fits, the
+  assistant is asked to name one.
+
+A specialist that acts unattended (Settings marks it) is left out of both. It
+is never picked, so it runs only when the assistant names it, and never
+routed, so it keeps the default chat model. It reads text other people wrote
+while holding tools nobody approves per call, so that text must not be able
+to choose it or move it onto a smaller model.
+
+Both send the task text, or the job's prompt, to the decision model's provider. You can override
+either one with a file of the same name, or turn one off with
+`enabled: false`. **Try a decision** under the decision model setting asks
+the saved model once, so you can check how it answers first. It can run a
+decision specialist or instructions you type there.
+
 **Settings → Assistant** lists what loaded, reports any file that failed to
 parse, and reloads without a restart.
 
 Definitions load from `~/.yarvis/agents` only, never from a workspace or a
 cloned repo. A definition is a system prompt plus a tool list, so a repo that
 could supply one could hand the assistant both instructions and the means to
-act on them.
+act on them. For the same reason a symlinked folder or file there is refused
+rather than followed, and listed under the problems with the reason.
 
 ## Background jobs
 
 Four jobs ship with the app and keep memory and the activity log up to date: a
-sync of the reviews you gave on github.com every 30 minutes, a summary of
+sync of the reviews you gave on github.com every hour, a summary of
 recent activity every 4 hours, the transcript digest at 02:00 (if on), and a
 daily rollup at 03:00. Their status and a **Run now** button are under
 **Settings → Assistant**. See [Scheduled jobs](scheduled-jobs.md#background-jobs-that-ship-with-the-app)

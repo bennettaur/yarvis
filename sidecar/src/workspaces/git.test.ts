@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { run } from "./exec.ts";
 import {
   addExistingBranchWorktree,
@@ -10,24 +10,32 @@ import {
   branchSync,
   createWorktree,
   defaultGitRunner,
+  deleteBranch,
   detectDefaultBranch,
+  ensurePrimaryClone,
   existingWorktree,
   fetchBranch,
   fileDiff,
   type GitRunner,
   type GitRunResult,
+  hasUncommittedChanges,
+  landedTip,
   listChangedFiles,
   listFiles,
   listRemoteBranches,
   listWorktrees,
   mergeBaseIntoWorktree,
   nearestBaseRef,
+  parseNameStatusAndNumstat,
+  parseRawNumstat,
   pushBranch,
   remoteExists,
   removeWorktree,
+  unpushedCommitCount,
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { extraWorktrees } from "./worktrees.ts";
 
 /** A scripted GitRunner that records calls and answers based on the args. */
 function fakeRunner(handler: (args: string[]) => Partial<GitRunResult>): {
@@ -63,33 +71,29 @@ const GIT_TEST_ENV = {
 };
 
 describe("detectDefaultBranch", () => {
-  it("reads and strips the origin/HEAD symbolic ref", async () => {
+  it("asks the remote which branch its HEAD points at", async () => {
     const { runner, calls } = fakeRunner((args) =>
-      args[0] === "symbolic-ref" ? { stdout: "origin/main\n" } : {},
+      args[0] === "ls-remote" ? { stdout: "ref: refs/heads/trunk\tHEAD\n0123abcd\tHEAD\n" } : {},
     );
-    expect(await detectDefaultBranch(runner, "/repo")).toBe("main");
-    expect(calls[0]).toEqual(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"]);
-  });
-
-  it("sets origin/HEAD then retries when it is missing", async () => {
-    let firstRead = true;
-    const { runner, calls } = fakeRunner((args) => {
-      if (args[0] === "symbolic-ref") {
-        if (firstRead) {
-          firstRead = false;
-          return { exitCode: 1 };
-        }
-        return { stdout: "origin/trunk\n" };
-      }
-      return {};
-    });
     expect(await detectDefaultBranch(runner, "/repo")).toBe("trunk");
-    expect(calls.some((c) => c[0] === "remote" && c[1] === "set-head")).toBe(true);
+    expect(calls[0]).toEqual(["ls-remote", "--symref", "origin", "HEAD"]);
   });
 
-  it("returns null when the ref can't be determined", async () => {
-    const { runner } = fakeRunner(() => ({ exitCode: 1 }));
+  it("never reads the local origin/HEAD, which a session can write", async () => {
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "symbolic-ref" ? { stdout: "origin/planted\n" } : { exitCode: 1 },
+    );
     expect(await detectDefaultBranch(runner, "/repo")).toBeNull();
+    expect(calls.some((c) => c[0] === "symbolic-ref")).toBe(false);
+  });
+
+  it("returns null when the remote can't be reached or doesn't say", async () => {
+    expect(
+      await detectDefaultBranch(fakeRunner(() => ({ exitCode: 128 })).runner, "/repo"),
+    ).toBeNull();
+    expect(
+      await detectDefaultBranch(fakeRunner(() => ({ stdout: "0123abcd\tHEAD\n" })).runner, "/repo"),
+    ).toBeNull();
   });
 });
 
@@ -118,7 +122,14 @@ describe("createWorktree", () => {
     const worktreePath = join(parent, "service-a");
     await createWorktree(runner, "/repo", worktreePath, "yarvis/task", "main");
     expect(calls[0]).toEqual(["worktree", "prune"]);
-    expect(calls[1]).toEqual(["worktree", "add", "-b", "yarvis/task", worktreePath, "origin/main"]);
+    expect(calls[1]).toEqual([
+      "worktree",
+      "add",
+      "-b",
+      "yarvis/task",
+      worktreePath,
+      "refs/remotes/origin/main",
+    ]);
   });
 });
 
@@ -367,14 +378,55 @@ describe("listRemoteBranches", () => {
 });
 
 describe("addExistingBranchWorktree", () => {
-  it("prunes then adds a worktree on the bare branch name", async () => {
+  it("checks out the local branch when there is one", async () => {
     const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
     tmpDirs.push(parent);
     const { runner, calls } = fakeRunner(() => ({}));
     const worktreePath = join(parent, "service-a");
     await addExistingBranchWorktree(runner, "/repo", worktreePath, "feat/login");
     expect(calls[0]).toEqual(["worktree", "prune"]);
-    expect(calls[1]).toEqual(["worktree", "add", worktreePath, "feat/login"]);
+    expect(calls[1]).toEqual(["rev-parse", "--verify", "--quiet", "refs/heads/feat/login"]);
+    expect(calls[2]).toEqual(["worktree", "add", worktreePath, "feat/login"]);
+  });
+
+  it("tracks the remote branch, named in full, when there is no local one", async () => {
+    // A bare name would let git pick any remote's ref of that name.
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-wt-"));
+    tmpDirs.push(parent);
+    const { runner, calls } = fakeRunner((args) =>
+      args[0] === "rev-parse" ? { exitCode: 1 } : {},
+    );
+    const worktreePath = join(parent, "service-a");
+    await addExistingBranchWorktree(runner, "/repo", worktreePath, "feat/login");
+    expect(calls[2]).toEqual([
+      "worktree",
+      "add",
+      "--track",
+      "-b",
+      "feat/login",
+      worktreePath,
+      "refs/remotes/origin/feat/login",
+    ]);
+  });
+});
+
+describe("ensurePrimaryClone", () => {
+  it("turns off fetching tags, on a new clone and on one already there", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-clone-"));
+    tmpDirs.push(parent);
+    const existing = join(parent, "existing");
+    mkdirSync(join(existing, ".git"), { recursive: true });
+    const { runner, calls } = fakeRunner(() => ({}));
+    await ensurePrimaryClone(runner, "https://github.com/acme/api.git", existing);
+    expect(calls).toEqual([["config", "remote.origin.tagOpt", "--no-tags"]]);
+
+    const fresh = join(parent, "fresh");
+    const second = fakeRunner(() => ({}));
+    await ensurePrimaryClone(second.runner, "https://github.com/acme/api.git", fresh);
+    expect(second.calls).toEqual([
+      ["clone", "https://github.com/acme/api.git", fresh],
+      ["config", "remote.origin.tagOpt", "--no-tags"],
+    ]);
   });
 });
 
@@ -513,6 +565,199 @@ describe("removeWorktree", () => {
     };
     await removeWorktree(runner, clone, worktreePath, { force: false, workspaceRoot });
     expect(timeouts[0]).toBeGreaterThan(120_000);
+  });
+});
+
+describe("archive cleanup helpers", () => {
+  /** A clone whose `origin/main` is its first commit, with a worktree in a workspace folder. */
+  function cloneWithOrigin() {
+    const parent = mkdtempSync(join(tmpdir(), "yarvis-landed-"));
+    tmpDirs.push(parent);
+    const clone = join(parent, "clone");
+    mkdirSync(clone);
+    const git = (...args: string[]) =>
+      spawnSync("git", args, { cwd: clone, env: { ...process.env, ...GIT_TEST_ENV } });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(clone, "a.txt"), "a");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const workspaceRoot = join(parent, "ws");
+    git("worktree", "add", "-q", "-b", "task", join(workspaceRoot, "service-a"));
+    return { clone, git, workspaceRoot, own: join(workspaceRoot, "service-a") };
+  }
+
+  it("finds the other worktrees inside the workspace folder, and none outside it", async () => {
+    const { clone, git, workspaceRoot, own } = cloneWithOrigin();
+    git("worktree", "add", "-q", "-b", "layer-2", join(workspaceRoot, "service-a-layer-2"));
+    git("worktree", "add", "-q", "-b", "nested", join(workspaceRoot, "worktrees", "nested"));
+    git("worktree", "add", "-q", "-b", "elsewhere", join(workspaceRoot, "..", "elsewhere"));
+
+    const found = await extraWorktrees(defaultGitRunner, clone, workspaceRoot, own);
+    expect(found.map((path) => basename(path)).sort()).toEqual(["nested", "service-a-layer-2"]);
+  });
+
+  it("counts a branch the base already contains as landed, and returns its tip", async () => {
+    const { clone, git } = cloneWithOrigin();
+    const tip = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", false)).toBe(tip);
+  });
+
+  it("never counts a branch that points at another branch as landed", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    expect(await landedTip(defaultGitRunner, clone, "alias", "main", true)).toBeNull();
+  });
+
+  it("doesn't count a branch with its own commits as landed unless its PR merged", async () => {
+    const { clone, own } = cloneWithOrigin();
+    writeFileSync(join(own, "b.txt"), "b");
+    spawnSync("git", ["add", "-A"], { cwd: own });
+    spawnSync("git", ["commit", "-qm", "work"], {
+      cwd: own,
+      env: { ...process.env, ...GIT_TEST_ENV },
+    });
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", false)).toBeNull();
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).not.toBeNull();
+  });
+
+  it("keeps a merged branch with commits its remote branch doesn't have", async () => {
+    const { clone, own } = cloneWithOrigin();
+    const commit = (name: string) => {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    };
+    commit("pushed.txt");
+    spawnSync("git", ["update-ref", "refs/remotes/origin/task", "refs/heads/task"], { cwd: clone });
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).not.toBeNull();
+
+    commit("after-merge.txt");
+    expect(await landedTip(defaultGitRunner, clone, "task", "main", true)).toBeNull();
+  });
+
+  it("counts the commits on a branch that no remote has", async () => {
+    const { clone, own } = cloneWithOrigin();
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(0);
+    for (const name of ["one.txt", "two.txt"]) {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    }
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(2);
+  });
+
+  it("counts a squash-merged branch's commits as kept by its PR, but not work after it", async () => {
+    const { clone, git, own } = cloneWithOrigin();
+    const commit = (name: string) => {
+      writeFileSync(join(own, name), name);
+      spawnSync("git", ["add", "-A"], { cwd: own });
+      spawnSync("git", ["commit", "-qm", name], {
+        cwd: own,
+        env: { ...process.env, ...GIT_TEST_ENV },
+      });
+    };
+    commit("pushed.txt");
+    const prHead = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    // Squash-merge onto main. The branch has no remote branch, as after a pruning fetch.
+    const squash = git(
+      "commit-tree",
+      "refs/heads/task^{tree}",
+      "-p",
+      "refs/remotes/origin/main",
+      "-m",
+      "squash",
+    )
+      .stdout.toString()
+      .trim();
+    git("update-ref", "refs/remotes/origin/main", squash);
+
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task")).toBe(1);
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", prHead)).toBe(0);
+
+    commit("after-merge.txt");
+    expect(await unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", prHead)).toBe(1);
+  });
+
+  it("fails rather than counts when the merged head isn't in the clone", async () => {
+    const { clone } = cloneWithOrigin();
+    await expect(
+      unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", "e".repeat(40)),
+    ).rejects.toThrow();
+  });
+
+  it("refuses a merged head that isn't a commit id before it reaches git", async () => {
+    const { clone } = cloneWithOrigin();
+    const sha = "a".repeat(40);
+    for (const bad of ["--all", `${sha} --all`, `--all ${sha}`, sha.slice(1), `${sha}b`]) {
+      await expect(
+        unpushedCommitCount(defaultGitRunner, clone, "refs/heads/task", bad),
+      ).rejects.toThrow("not a commit id");
+    }
+  });
+
+  it("sees untracked files as changes a worktree removal would refuse to drop", async () => {
+    const { own } = cloneWithOrigin();
+    expect(await hasUncommittedChanges(defaultGitRunner, own)).toBe(false);
+    writeFileSync(join(own, "notes.txt"), "notes");
+    expect(await hasUncommittedChanges(defaultGitRunner, own)).toBe(true);
+  });
+
+  it("doesn't count a branch that isn't there as landed", async () => {
+    const { clone } = cloneWithOrigin();
+    expect(await landedTip(defaultGitRunner, clone, "gone", "main", true)).toBeNull();
+  });
+
+  it("deletes a branch once no worktree has it checked out", async () => {
+    const { clone, workspaceRoot, own } = cloneWithOrigin();
+    await expect(deleteBranch(defaultGitRunner, clone, "task")).rejects.toThrow("branch -D");
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+    await deleteBranch(defaultGitRunner, clone, "task");
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(false);
+  });
+
+  it("deletes a branch at the tip it was checked at, with its config", async () => {
+    const { clone, git, workspaceRoot, own } = cloneWithOrigin();
+    const tip = git("rev-parse", "refs/heads/task").stdout.toString().trim();
+    git("config", "branch.task.merge", "refs/heads/task");
+    await expect(deleteBranch(defaultGitRunner, clone, "task", tip)).rejects.toThrow("checked out");
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+    await deleteBranch(defaultGitRunner, clone, "task", tip);
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(false);
+    expect(git("config", "--get-regexp", "^branch\\.task\\.").stdout.toString()).toBe("");
+  });
+
+  it("deletes only the symref when the branch points at another branch", async () => {
+    const { clone, git } = cloneWithOrigin();
+    git("branch", "other", "refs/heads/task");
+    git("symbolic-ref", "refs/heads/alias", "refs/heads/other");
+    const tip = git("rev-parse", "refs/heads/other").stdout.toString().trim();
+    await deleteBranch(defaultGitRunner, clone, "alias", tip);
+    expect(await branchExists(defaultGitRunner, clone, "other")).toBe(true);
+    expect(await branchExists(defaultGitRunner, clone, "alias")).toBe(false);
+  });
+
+  it("keeps a branch that gained a commit after it was checked", async () => {
+    const { clone, workspaceRoot, own } = cloneWithOrigin();
+    const checked = await landedTip(defaultGitRunner, clone, "task", "main", false);
+    expect(checked).not.toBeNull();
+    writeFileSync(join(own, "late.txt"), "late");
+    spawnSync("git", ["add", "-A"], { cwd: own });
+    spawnSync("git", ["commit", "-qm", "late"], {
+      cwd: own,
+      env: { ...process.env, ...GIT_TEST_ENV },
+    });
+    await removeWorktree(defaultGitRunner, clone, own, { force: false, workspaceRoot });
+
+    await expect(deleteBranch(defaultGitRunner, clone, "task", checked!)).rejects.toThrow();
+    expect(await branchExists(defaultGitRunner, clone, "task")).toBe(true);
   });
 });
 
@@ -711,7 +956,14 @@ describe("fileDiff", () => {
     });
     expect(await fileDiff(runner, "/wt", "origin/main", "src/a.ts")).toContain("+new");
     expect(calls[0]).toEqual(["merge-base", "origin/main", "HEAD"]);
-    expect(calls[1]).toEqual(["diff", "abc123", "--", "src/a.ts"]);
+    expect(calls[1]).toEqual([
+      "diff",
+      "--no-ext-diff",
+      "--ignore-submodules=all",
+      "abc123",
+      "--",
+      "src/a.ts",
+    ]);
   });
 
   it("falls back to a --no-index diff for an untracked file", async () => {
@@ -723,7 +975,7 @@ describe("fileDiff", () => {
     });
     const patch = await fileDiff(runner, "/wt", "origin/main", "new.ts");
     expect(patch).toContain("+brand new");
-    expect(calls[2]).toEqual(["diff", "--no-index", "--", "/dev/null", "new.ts"]);
+    expect(calls[2]).toEqual(["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", "new.ts"]);
   });
 
   it("throws when --no-index fails for a real reason (exit > 1)", async () => {
@@ -742,9 +994,9 @@ describe("branchSync", () => {
       if (args[0] === "rev-parse") return { exitCode: 0 }; // origin/<branch> exists
       if (args[0] === "rev-list") {
         const range = args[2];
-        if (range === "HEAD..origin/main") return { stdout: "2\n" }; // base moved on
-        if (range === "origin/feature..HEAD") return { stdout: "3\n" }; // to push
-        if (range === "HEAD..origin/feature") return { stdout: "1\n" }; // to pull
+        if (range === "HEAD..refs/remotes/origin/main") return { stdout: "2\n" }; // base moved on
+        if (range === "refs/remotes/origin/feature..HEAD") return { stdout: "3\n" }; // to push
+        if (range === "HEAD..refs/remotes/origin/feature") return { stdout: "1\n" }; // to pull
       }
       return {};
     });
@@ -761,8 +1013,8 @@ describe("branchSync", () => {
       if (args[0] === "rev-parse") return { exitCode: 1 }; // no origin/<branch> yet
       if (args[0] === "rev-list") {
         const range = args[2];
-        if (range === "HEAD..origin/main") return { stdout: "0\n" };
-        if (range === "origin/main..HEAD") return { stdout: "4\n" };
+        if (range === "HEAD..refs/remotes/origin/main") return { stdout: "0\n" };
+        if (range === "refs/remotes/origin/main..HEAD") return { stdout: "4\n" };
       }
       return {};
     });
@@ -796,7 +1048,13 @@ describe("worktreeStatus", () => {
       inProgress: null,
     });
     // Untracked files never block a merge, so git is asked not to walk them.
-    expect(calls[0]).toEqual(["status", "--porcelain", "-z", "--untracked-files=no"]);
+    expect(calls[0]).toEqual([
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=no",
+      "--ignore-submodules=all",
+    ]);
   });
 
   it("keeps paths git would have quoted, and takes the new path of a rename", async () => {
@@ -848,7 +1106,7 @@ describe("mergeBaseIntoWorktree", () => {
   it("merges the remote base branch, never a local ref", async () => {
     const { runner, calls } = fakeRunner(() => ({ stdout: "Merge made by the 'ort' strategy.\n" }));
     expect(await mergeBaseIntoWorktree(runner, "/wt", "main")).toEqual({ result: "merged" });
-    expect(calls[0]).toEqual(["merge", "--no-edit", "origin/main"]);
+    expect(calls[0]).toEqual(["merge", "--no-edit", "refs/remotes/origin/main"]);
   });
 
   it("distinguishes an already-merged base from a real merge", async () => {
@@ -893,5 +1151,111 @@ describe("pushBranch", () => {
   it("throws with git's own message when the push is rejected", async () => {
     const { runner } = fakeRunner(() => ({ exitCode: 1, stderr: "! [rejected] fetch first" }));
     await expect(pushBranch(runner, "/wt", "feature")).rejects.toThrow("fetch first");
+  });
+});
+
+describe("diff record parsing", () => {
+  const nameStatus = [
+    "M",
+    "src/a.ts",
+    "R087",
+    "src/old.ts",
+    "src/new.ts",
+    "D",
+    "gone.md",
+    "A",
+    "img.bin",
+    "",
+  ].join("\0");
+  const numstat = [
+    "2\t1\tsrc/a.ts",
+    "1\t1\t",
+    "src/old.ts",
+    "src/new.ts",
+    "0\t1\tgone.md",
+    "-\t-\timg.bin",
+    "",
+  ].join("\0");
+  const oid = (c: string) => c.repeat(40);
+  const raw = [
+    `:100644 100644 ${oid("a")} ${oid("b")} M`,
+    "src/a.ts",
+    `:100644 100644 ${oid("c")} ${oid("d")} R087`,
+    "src/old.ts",
+    "src/new.ts",
+    `:100644 000000 ${oid("e")} ${oid("0")} D`,
+    "gone.md",
+    `:000000 100644 ${oid("0")} ${oid("f")} A`,
+    "img.bin",
+  ].join("\0");
+  const expected = [
+    { path: "src/a.ts", code: "M", additions: 2, deletions: 1, binary: false },
+    {
+      path: "src/new.ts",
+      oldPath: "src/old.ts",
+      code: "R087",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+    },
+    { path: "gone.md", code: "D", additions: 0, deletions: 1, binary: false },
+    { path: "img.bin", code: "A", additions: 0, deletions: 0, binary: true },
+  ];
+
+  it("joins name-status and numstat, keeping renames, deletions and binaries", () => {
+    expect(parseNameStatusAndNumstat(nameStatus, numstat)).toEqual(expected);
+  });
+
+  it("reads the same records, plus blob ids, from one --raw --numstat run", () => {
+    const records = parseRawNumstat(`${raw}\0${numstat}`);
+    expect(records.map(({ oldOid: _o, newOid: _n, ...rest }) => rest)).toEqual(expected);
+    expect(records[1]).toMatchObject({ oldOid: oid("c"), newOid: oid("d") });
+  });
+
+  it("keeps a tab inside a filename as part of the path", () => {
+    expect(parseNameStatusAndNumstat("M\0a\tb.txt\0", "1\t0\ta\tb.txt\0")).toEqual([
+      { path: "a\tb.txt", code: "M", additions: 1, deletions: 0, binary: false },
+    ]);
+  });
+
+  it("agrees with itself on a real repo, whichever form git printed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yarvis-diff-parse-"));
+    const g = (...args: string[]) => {
+      const result = spawnSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args],
+        { cwd: dir, encoding: "utf8" },
+      );
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout;
+    };
+    try {
+      g("init", "-q");
+      writeFileSync(join(dir, "keep.txt"), "one\ntwo\nthree\nfour\nfive\n");
+      writeFileSync(join(dir, "edit.txt"), "a\n");
+      writeFileSync(join(dir, "drop.txt"), "bye\n");
+      g("add", "-A");
+      g("commit", "-q", "-m", "base");
+      g("mv", "keep.txt", "moved.txt");
+      writeFileSync(join(dir, "edit.txt"), "a\nb\n");
+      writeFileSync(join(dir, "bin.dat"), Buffer.from([0, 1, 2]));
+      g("rm", "-q", "drop.txt");
+      g("add", "-A");
+      g("commit", "-q", "-m", "change");
+      const separate = parseNameStatusAndNumstat(
+        g("diff", "--name-status", "-z", "-M", "HEAD~1..HEAD"),
+        g("diff", "--numstat", "-z", "-M", "HEAD~1..HEAD"),
+      );
+      const combined = parseRawNumstat(g("diff", "--raw", "--numstat", "-z", "-M", "HEAD~1..HEAD"));
+      expect(combined.map(({ oldOid: _o, newOid: _n, ...rest }) => rest)).toEqual(separate);
+      expect(separate.map((r) => r.path).sort()).toEqual([
+        "bin.dat",
+        "drop.txt",
+        "edit.txt",
+        "moved.txt",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

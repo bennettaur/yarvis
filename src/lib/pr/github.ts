@@ -5,6 +5,7 @@ import type {
   GhPrConfig,
   MergeMethod,
   NewComment,
+  PostedCommentResult,
   PrDetail,
   PrFile,
   PrInvolvement,
@@ -116,8 +117,19 @@ export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
   get<{ content: string }>(
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
   );
-export const ghPostComment = (ref: PrRef, comment: NewComment) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/comments`, "POST", comment);
+export const ghPostComment = (ref: PrRef, comment: NewComment & Record<string, unknown>) =>
+  send<PostedCommentResult>(`${refApiPath(ref)}/comments`, "POST", comment);
+export const ghReplyToThread = (ref: PrRef, threadId: string, body: string) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/replies`,
+    "POST",
+    { body },
+  );
+export const ghSetThreadResolved = (ref: PrRef, threadId: string, resolved: boolean) =>
+  send<{ ok: boolean }>(
+    `${refApiPath(ref)}/threads/${encodeURIComponent(threadId)}/${resolved ? "resolve" : "unresolve"}`,
+    "POST",
+  );
 
 export const ghMarkReady = (ref: PrRef) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/ready`, "POST");
@@ -126,7 +138,8 @@ export const ghSubmitReview = (
   ref: PrRef,
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
   body?: string,
-) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body });
+  seen: Record<string, string> = {},
+) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body, ...seen });
 
 export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });

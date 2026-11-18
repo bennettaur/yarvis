@@ -19,7 +19,7 @@ Three processes, each with a clear owner:
   over authenticated loopback HTTP for data and AI.
 - **Bun sidecar** (`sidecar/`). A Hono HTTP service that owns Postgres (through
   Drizzle), every LLM call, memory, the background jobs and the Telegram bot.
-  In development it runs `sidecar/src/server.ts` directly with Bun.
+  In development it runs `sidecar/src/main.ts` directly with Bun.
 
 Data lives in PostgreSQL with pgvector. Non-secret settings live in
 `~/.yarvis/settings.json`. See [Configuration](configuration.md).
@@ -38,6 +38,7 @@ bun run demo                      # record screenshots and video of the UI (see 
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
 bun run sidecar:test              # sidecar tests; needs a test database
+bun run voice:test-turns          # continuous voice's Python turn logic; needs uv
 bun run typecheck                 # frontend tsc --noEmit
 bun run sidecar:typecheck         # sidecar tsc --noEmit
 bun run build                     # typecheck + vite build
@@ -82,15 +83,21 @@ database.
 Settings kept in `settings.json` (custom providers, voice config and so on)
 aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
-`YARVIS_AGENTS_DIR` at an empty temp folder for the whole suite when it runs
-from `sidecar/`, so your own `~/.yarvis/agents` definitions never change what
-the tests load. A test that writes settings should still set its own path per
-test.
+`YARVIS_AGENTS_DIR` and `YARVIS_ROUTINES_DIR` at empty temp folders for the
+whole suite when it runs from `sidecar/`, so your own `~/.yarvis/agents`
+definitions and `~/.yarvis/routines` never change what the tests load. A
+test that writes settings should still set its own path per test.
+
+The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
+against the real Claude Code by `bun run sidecar/src/agentRuns/canary.ts`, which
+needs a signed-in `claude` and network access, so no suite runs it. Run it after
+upgrading Claude Code or changing how those runs are started.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
-APIs. Component tests stub the sidecar client (`src/lib/api`) and render with
-`renderToHtml` from `src/test/render.tsx`.
+APIs. Component tests stub the sidecar client (`src/lib/api`) through
+`stubSidecarApi` in `src/test/sidecarApi.ts` (cleared with `resetSidecarApi`
+in `afterAll`), never their own `mock.module` of it, and render with `renderToHtml` from `src/test/render.tsx`.
 
 ## Git hooks and CI
 
@@ -104,6 +111,195 @@ APIs. Component tests stub the sidecar client (`src/lib/api`) and render with
 CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
+
+## Verifying a PR for merge
+
+The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
+short verification report on it. The report covers the goal, diff coverage,
+whether the new tests fail without the change, how many small breaking edits to
+the changed lines the tests catch (mutation testing with Stryker, for
+TypeScript), reliability, security, complexity, maintainability and UI. It runs
+locally, since it needs the test database and the demo harness.
+`scripts/verify/` holds the parts that measure and post.
+[How PRs merge through verification](verification.md) shows how the report,
+the CI gate, the merge reviewer and `/approve` fit together, and why reports
+are signed. This section is the reference for the settings and rules.
+
+Only run it on another contributor's PR the way the skill says to. Their
+tests and scripts would run with your `gh` login, so the skill measures their
+PR without running any of its code.
+
+The `Verify` workflow (`.github/workflows/verify.yml`) reacts to two kinds of
+PR comment from users with write access, and acts as the yarvis GitHub App:
+
+- **A report** from a user in `VERIFY_TRUSTED_USER_IDS`, signed by a key in
+  `VERIFY_ALLOWED_SIGNERS`, for this PR and its current head. The workflow
+  sets a `Verification report` commit status on that commit. The status is
+  always a success: it records that a current report exists, and its
+  description carries the verdict. If the PR is a maintainer's, not a draft,
+  low or standard risk, and the report's verdict is `auto`, the bot also
+  approves it and turns on squash auto-merge. A `visual` verdict waits for you
+  to look at the screenshots and comment `/approve`. A push makes the report
+  stale, so run `/verify-pr` again, or `/verify-pr <N> --recheck` to
+  re-verify only what the last report flagged plus the new commits.
+- **`/approve`** from a trusted user. The bot approves the current head and
+  turns on auto-merge, marking a draft ready first. This is how a maintainer
+  merges their own PR, since GitHub won't let them approve it. On an outside
+  contributor's PR, write `/approve <sha>` with the commit you reviewed, so a
+  push made after you read the diff isn't approved with it. Anything else after
+  `/approve` is ignored.
+
+Low- and standard-risk PRs can merge on a report alone; high-risk ones need
+`/approve`. A PR's tier is the strictest of three things:
+
+- **The risk assessment** in the report: how much harm the change could do,
+  judged from what it does, whatever part of the app it is in. A UI change
+  that writes a secret, launches a command, changes which tools ask before
+  running, or sends data somewhere new is high risk. One that only moves
+  things around on screen is low. The `/verify-pr` skill makes this call and
+  signs it into the report.
+- **A floor from the changed paths** (`scripts/verify/tier.ts`, from both
+  sides of any rename), which the assessment can't lower. It is high for the
+  verifier itself and its workflows, agent instructions and hooks
+  (`CLAUDE.md`, `AGENTS.md`, `.claude/`), secrets and shell access, app
+  permissions, sidecar request handling, agent tool approvals, the MCP
+  server, settings, or what the Chrome extension may do. A dependency change
+  that only adds, removes or bumps registry packages, a migration that only
+  adds tables, columns, types or plain indexes, and more than 300 changed
+  lines of code, are standard. "Only adds" is an allowlist of the statement
+  shapes drizzle generates; anything else in a migration is assessed. Install
+  hooks, `verify:` scripts, lockfile sources outside the registry, the root
+  `bunfig.toml`, `tsconfig.json` and `.npmrc`, any `node_modules/` or nested
+  package or tsconfig outside `sidecar/` and `video/`, `.github/actions/`,
+  and any `.github/` change whose added lines name a secret, a write
+  permission or a trigger that runs with them are high. The skill's supply-chain check raises a dependency
+  change to high when it finds a real risk.
+- **Files sent for assessment.** Other workflows and `.github/` files, git
+  hooks, build and test config, the database schema, other migrations, and
+  any other dependency-file edit (a script, a hook, a git or path source) are
+  flagged rather than marked high. The skill rates each one standard or high
+  from what the change does, and signs the paths it rated; the gate counts a
+  flagged file the report didn't rate as high. Anything else starts low: no area is presumed
+  safe or risky.
+
+Tests, docs and lockfiles don't count toward the line limits.
+
+Separately from the tier, the report scores the PR's **impact**: how likely
+it is to break something, and how far that would spread. The skill lists
+each independent change with its kind (passive, reorganization, addition,
+removal, interface or logic), its reach (leaf, local, shared or core, helped
+by the importer counts `collect` takes from the import graph), and whether
+tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
+to 5 with a fixed table, then raises it when the PR bundles many changes. The
+report checks the classification against the facts and never scores below
+them: a `proven` claim coverage doesn't back counts as partly tested, a
+change that could alter behaviour (logic, interface, removal, or an unproven
+reorganization) counts at no less than its files' measured reach, and a
+changed code file the review left out counts as an unlisted logic change,
+at `shared` reach when the import graph doesn't cover it. Only a logic or
+interface entry can cover a folder. A band of 4 makes the verdict at least `agent`, and the report lists those
+changes under "Needs attention" with what to check. A band of 5 makes it
+`human`. The table and thresholds are first guesses. The band is signed into
+the report data so calibration can later check them against reverts.
+
+The workflow and the gate always run as they are on the default branch, so a
+change to either takes effect once it merges. They need these repository
+settings:
+
+- `YARVIS_BOT_CLIENT_ID` (variable) and `YARVIS_BOT_PRIVATE_KEY` (secret): the
+  yarvis GitHub App's client ID and private key. The app needs read and write
+  access to actions, contents, pull requests, issues and commit statuses. The
+  key is a secret of the `yarvis-bot` environment, not of the repo, and that
+  environment only accepts runs on `main`. Only `verify.yml` and
+  `verify-revert.yml` name it, so no other workflow, and no PR branch, can
+  read the key.
+- `VERIFY_TRUSTED_USER_IDS` (variable): comma-separated numeric GitHub user
+  IDs whose reports and `/approve` count (`gh api users/<login> --jq .id`).
+  IDs, not logins, because a login freed by a rename can be taken by someone
+  else. Defaults to `2670128` (bennettaur).
+- `VERIFY_MODE` (variable): `shadow` (the default) sets the status but never
+  auto-approves. `enforce` lets a passing report approve. `/approve` works in
+  both. Before switching to `enforce`, make `Verification report` a required
+  status check in the `Protect Main` ruleset. Once it is required, nothing
+  merges, `/approve` included, without a signed report for the current head.
+- `VERIFY_ALLOWED_SIGNERS` (variable): the public keys allowed to sign, one
+  OpenSSH allowed_signers line each. With none, the gate accepts no report.
+
+#### Signing reports
+
+`verify:report` signs each report's data block, which names the repo, the PR
+and the commit, with your git SSH signing key (`user.signingkey`, through
+`gpg.ssh.program`, so a key in 1Password works). Set `yarvis.verifySigningKey`
+to use a different key. The gate checks the signature with `ssh-keygen -Y
+verify`, so a report posted with a stolen GitHub token, or by a test running
+under your `gh` login, isn't accepted unless it was also signed on your
+machine. Each key is limited to one namespace, so a key allowed to approve
+merges can't sign a report.
+
+What a signature proves is narrower than it sounds. It shows the report was
+signed on a machine holding your key, after 1Password let that session use
+it. It doesn't show the report came from an honest `/verify-pr` run: a
+prompt-injected agent in a session 1Password has approved could sign other
+text. The gate's own tier and checks are the backstop, so approve 1Password
+for the shortest time it offers. A signed report also counts for only six
+hours after it was signed, so an old one can't be re-posted later to merge.
+
+To allow your key, print its line and add it to the variable:
+
+```bash
+bun run --silent verify:signers
+gh variable set VERIFY_ALLOWED_SIGNERS --body "$(bun run --silent verify:signers)"
+```
+
+The second command replaces the variable's whole value, so use it only for
+the first key; otherwise add the line in the repo's settings.
+
+### The merge reviewer
+
+A report's `agent` verdict means it looks right but someone should read the
+diff before it merges. That someone can be Yarvis's `merge-reviewer`
+specialist (see `docs/features/pr-review.md`). It posts a signed agent-review
+comment, and the gate approves on it in enforce mode only when:
+
+- the comment is from a trusted user and signed by a key allowed for agent
+  reviews (namespace `yarvis-agent-review`);
+- it names the PR, its current commit and the exact latest signed report, so
+  a new report needs a new review;
+- that report's verdict is `agent` with no blocking finding, the change isn't
+  high risk by the stricter of the gate's own floor and the report's signed
+  tier, the author is trusted and it isn't a draft.
+
+Each review also counts for only six hours after it was signed, and a signed
+reject of a report stands even if an approve of the same report is posted
+after it. Reviews must be signed by the principal `yarvis-merge-reviewer` and
+reports by `verify-pr` (or `verify-pr-<name>` for another maintainer), so even an allowed_signers line missing its
+`namespaces=` limit can't let one key do the other's job.
+
+Its key lives in Yarvis's Settings → Credentials. `bun run verify:agent-key`
+writes one to `merge-reviewer.key`, readable only by you, and prints its
+`VERIFY_ALLOWED_SIGNERS` line. Add that line beside your report key's line in
+the repo's settings rather than with `gh variable set`, which would replace
+it. Paste the key file's line into Settings, then delete the file. The bot's approval on
+these starts `Agent-approved:`, which calibration reports as its own path and
+auto-revert treats like an auto-merge.
+
+### When an auto-merge breaks main
+
+The `Verify revert` workflow (`.github/workflows/verify-revert.yml`) runs when
+CI fails on a push to `main`. If the gate auto-approved the PR behind that
+commit, CI was passing on the commit before it, and no revert exists yet, it
+re-runs the failed jobs once. If they fail again, it opens a revert PR through
+GitHub's own revert and comments on the original. A maintainer merges the
+revert, or closes it and fixes forward. PRs a person approved, `/approve`
+included, are left alone.
+
+### Checking the thresholds
+
+`bun run verify:calibrate --days 60` lists each verdict, and each way PRs were
+approved, against how many of those merges were later reverted or caused a
+regression. Reverts are found from GitHub's `Reverts owner/repo#N` line. For a
+fix that doesn't revert, add a line `Regression-from: #N` to the fix PR's
+description, so it counts too.
 
 ## Running more than one instance
 
@@ -121,18 +317,19 @@ to the next free pair. The second port is Vite's HMR socket, used when
 `TAURI_DEV_HOST` is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it
 is taken. Because macOS
 derives the app data directory from the identifier, each instance gets its own
-`alarms.json` and control socket. The window title shows the name.
+control socket. The window title shows the name.
 
 Use `dev:instance` rather than setting `YARVIS_INSTANCE` on a plain
 `bun run tauri dev`. The variable alone makes the process skip the hotkeys and
 background workers, but it keeps the main bundle identifier, so it shares the
-main instance's alarms and control socket.
+main instance's control socket.
 
 ### What the instances share
 
 Both instances read the **same secrets item** and the **same
 `~/.yarvis/settings.json`**. By default they also share the database, so the
-second instance sees your real data. That is usually what you want.
+second instance sees your real data, alarms included. That is usually what you
+want. Only the instance running background workers rings alarms.
 `YARVIS_CLAUDE_COMMAND` changes the agent command for one instance without
 touching the shared file.
 
@@ -165,7 +362,8 @@ main one:
 | Workspace and PR poller | Doubles API traffic and writes the same rows twice | `YARVIS_BACKGROUND_WORKERS=1` |
 | Resuming interrupted kick-offs | Would start two agent sessions in one workspace | `YARVIS_BACKGROUND_WORKERS=1` |
 | Stale PR-guide sweep | Deletes rows on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
-| Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule | `YARVIS_BACKGROUND_WORKERS=1` |
+| Alarm scheduler | Two processes would race to ring each alarm | `YARVIS_BACKGROUND_WORKERS=1` |
+| Background jobs | Write memories and the activity log, calling an LLM or GitHub on a schedule. This includes scheduled tasks, so a second instance never runs the ones scheduled in its chats | `YARVIS_BACKGROUND_WORKERS=1` |
 | Global hotkeys (`Control+Shift+Space`, `Control+Shift+V`) | Only one process can hold a hotkey | `YARVIS_GLOBAL_SHORTCUTS=1` |
 
 Set an override to `1` on the instance that should do the work, or `0` on the
@@ -235,16 +433,30 @@ src/            React frontend (Vite + TS + Tailwind)
   components/   one panel per tab (Chat, Tasks, PRs, Memory, Calendar, Terminal,
                 Workspaces, …)
     voice/      the mic button and voice controls shared by the chat surfaces
+    ai-elements/ chat building blocks adapted from Vercel's AI Elements
+                (conversation, message, reasoning, tool, prompt input), on the
+                app's own types and `Markdown`
+    ui/         the shadcn/ui primitives those need (button, badge,
+                collapsible); their colour names map onto the zinc/indigo
+                scale in `index.css`, so themes reach them
     pr/         PR dashboard and embedded review: lists, diffs, context expansion,
                 change minimap, guide panel, insight cards, stack list
     issue/      Issues tab views
+    field/      Agent Field: the canvas and chiptune engine, and its page
     files/      shared file-tree rows
     editor/     CodeMirror 6 wrapper behind the workspace file editor
+    review/editor/ read-only Monaco file and diff views for PR review: line
+                comment/ask buttons, React view zones, review:// models and a
+                go-to-definition hook. Monaco rather than CodeMirror for its
+                diff editor and language workers; loaded lazily, never edits
+    review/navigation/ go-to-definition and references for review tabs: a
+                PR's TypeScript imports fed to Monaco's worker, the sidecar's
+                text search for every other language
     workspaces/ workspace detail views, Omni widgets, self-review comments, editor
     shell/      nav rail, top bar, boot screen, tab shortcuts, cheat sheet
     omni/       Omni view, the chat-built widget canvas
     omnichat/   Omni Chat, the summon-from-anywhere chat overlay
-    memory/     memory library, activity log, agent todos, projects
+    memory/     memory library, activity log, agent todos, artifacts, projects
     clipboard/  clipboard palette
     onboarding/ first-run setup guide and the app tour
     find/       find-on-page bar (Cmd+F)
@@ -258,46 +470,68 @@ src-tauri/      Rust core (Tauri v2)
   src/sidecar.rs        sidecar supervisor
   src/pty.rs            terminal and workspace agent sessions
   src/control.rs        fixed-method socket the sidecar drives sessions through
-  src/alarms.rs         full-screen alarm scheduler
+  src/alarms.rs         rings a due alarm: full-screen takeover, notification, sound
   src/clipboard.rs      clipboard read/write and in-memory clip history
 sidecar/        Bun + TS service (Hono)
   src/core/        client for the Rust core's control socket (sessions, saving
-                   OAuth credentials and a signed-in GitHub token)
+                   OAuth credentials and a signed-in GitHub token, ringing alarms)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
-  src/llm/         provider resolution and the model catalog (catalog.ts)
-  src/voice/       speech to text and text to speech
+  src/llm/         provider resolution, the model catalog (catalog.ts) and
+                   the decision model (decision.ts)
+  src/voice/       speech to text, text to speech, and continuous mode's
+                   turn detector (turnDetector.ts, turn_server.py)
   src/clipboard/   saved clipboard entries and the credential screen (screening.ts)
   src/telegram/    Telegram bot
   src/tasks/       daily and weekly tasks, dedupe, "did I already finish this?"
   src/events/      the local activity log
   src/memory/      pgvector memory, notes, ingestion, recaps
+  src/web/         reading public web pages, with hidden text and injections screened
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
+  src/artifacts/   markdown documents and diagrams the assistant writes and reads back
   src/workStreams/ threads of work heads-down mode pushes forward, and their links
-  src/headsDown/   the heads-down loop: passes, its tool policy, questions and messages
-  src/agents/      specialists and bounded delegated runs
+  src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
+  src/agents/      specialists and bounded delegated runs; decision
+                   specialists (decide.ts) and their playground route
+  src/agentRuns/   headless Claude Code runs streamed to the UI, and the
+                   Claude Code plugins shipped to them
+  src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in
+                   an empty folder, with no workspace
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
   src/jobs/        scheduler and jobs: consolidation, nightly rollup, transcript
                    digest, GitHub review sync, and your own scheduled jobs
+  src/scheduledTasks/
+                   prompts the assistant schedules for itself in a chat, their
+                   tools, and the job that runs them
   src/digest/      dangling work, next-work ranking, weekly summary, dismissals
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
-  src/pr/          provider-neutral PR review: guides, insights, code tools,
+  src/pr/          provider-neutral PR review: guides, insights, code tools, CI evidence,
                    workspace-on-a-PR, stacks
   src/issues/      provider-neutral issue routes and start-work
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
   src/azureBoards/ Azure Boards work item client, routes, HTML to Markdown
   src/google/      Google Calendar OAuth, reads, and create
+  src/alarms/      alarms: the list, when each is due, and the agent's alarm tools
   src/omni/        Omni UI generation and saved layouts
   src/workspaces/  repo registry, worktree provisioning, base-branch sync,
                    teardown, self-review comments, gh-stack bridge, file editor
+  src/reviewWorkspaces/ PRs checked out for review: blobless clones, a detached
+                   worktree per PR, local diffs and file reads, setup consent,
+                   definition/reference search by git grep, and the
+                   verification checklist: one run per section, the report
+                   put together from each section's newest result
+                   (`verification.ts`, `checklist.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held
                    permission prompts
   src/questions/   questions agents ask over MCP, and their answers
+  src/activity/    live agent activity for the Agent Field page: the hub, the
+                   Claude Code hook ingest and the SSE stream
+  claude-plugins/  source of the Claude Code plugins headless runs load
   drizzle/         generated SQL migrations
 scripts/        dev tooling (dev-instance.ts)
 demo/           Playwright demo recordings: mocked Rust core, seeded demo DB (see demo/README.md)

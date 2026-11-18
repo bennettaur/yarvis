@@ -1,7 +1,11 @@
 //! Local control channel: a Unix-domain-socket RPC the Bun sidecar uses to ask
 //! the core to do things it can't do itself — spawning, killing, and typing an
-//! instruction into a Claude Code session in a workspace PTY, and writing an MCP
-//! server's OAuth credentials or a signed-in GitHub token into the Keychain.
+//! instruction or an allowed slash command into a Claude Code session in a
+//! workspace PTY, writing an MCP server's OAuth credentials or a signed-in
+//! GitHub token into the Keychain, and ringing an alarm the sidecar found due
+//! (`alarm.fire`) or stopping one (`alarm.release`). It also starts and ends
+//! the locked-down session over a review workspace's PR checkouts
+//! (`claude.spawnReview`, `claude.killReview`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -15,11 +19,15 @@
 //! instead, which `pty::send_session_instruction` sanitizes, refuses to send
 //! unless the configured agent itself is what reads that prompt, and refuses
 //! outright when it opens with a character the agent reads as a command rather
-//! than a request. `mcp.saveOAuth` and `github.saveToken` are the two methods
-//! that write a secret. `mcp.saveOAuth` can only reach the `oauth` subtree of one
-//! MCP server's entry, and `github.saveToken` only the `github_token` key — never
-//! a provider key, the database URL, or another server's headers. Requests and
-//! responses are newline-delimited JSON.
+//! than a request. `claude.slash` is how a slash command reaches a session: the
+//! sidecar names a command, and `pty::send_session_slash_command` types it only
+//! when it is on the allowlist (built-in defaults plus a list the user keeps in
+//! Settings, which no sidecar route or tool writes). Its arguments are cleaned
+//! like an instruction. `mcp.saveOAuth` and `github.saveToken` are the two
+//! methods that write a secret. `mcp.saveOAuth` can only reach the `oauth`
+//! subtree of one MCP server's entry, and `github.saveToken` only the
+//! `github_token` key — never a provider key, the database URL, or another
+//! server's headers. Requests and responses are newline-delimited JSON.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -44,7 +52,10 @@ mod unix_impl {
     use tokio::net::{UnixListener, UnixStream};
 
     use super::ControlSocketPath;
-    use crate::pty::{kill_session, send_session_instruction, spawn_claude_session, PtyState};
+    use crate::pty::{
+        kill_session, send_session_instruction, send_session_slash_command, spawn_claude_session,
+        spawn_review_claude_session, PtyState,
+    };
 
     /// Cap on a single request line, bounding what one message can buffer.
     const MAX_LINE: usize = 64 * 1024;
@@ -81,6 +92,28 @@ mod unix_impl {
         /// sidecar drives end to end; absent means a session the user drives.
         #[serde(default)]
         instruction: Option<String>,
+        /// A Claude Code session id to continue with `--resume`, set when the
+        /// sidecar relaunches a workspace's agent after the app restarted.
+        #[serde(default)]
+        resume: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct SpawnReviewParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        cwd: String,
+        /// The PR checkouts the session reads, added as
+        /// `permissions.additionalDirectories`.
+        #[serde(rename = "addDirs")]
+        add_dirs: Vec<String>,
+        /// The session's settings as JSON text, written to the file `--settings` reads.
+        settings: String,
+        /// Which PR is checked out where, appended to the session's guardrail.
+        context: String,
+        /// Whether the user chose to load the repos' own skills and CLAUDE.md.
+        #[serde(rename = "loadRepoConfig", default)]
+        load_repo_config: bool,
     }
 
     #[derive(Deserialize)]
@@ -103,6 +136,21 @@ mod unix_impl {
     }
 
     #[derive(Deserialize)]
+    struct SlashParams {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        /// The command's name, with or without its `/`. Checked against the
+        /// allowlist in `pty::send_session_slash_command`.
+        command: String,
+        /// Text after the command. Composed by the chat model, so it is cleaned
+        /// like an instruction before it is typed.
+        #[serde(default)]
+        arguments: Option<String>,
+        #[serde(default, rename = "agentPids")]
+        agent_pids: Vec<u32>,
+    }
+
+    #[derive(Deserialize)]
     struct SaveOAuthParams {
         #[serde(rename = "serverId")]
         server_id: String,
@@ -114,6 +162,16 @@ mod unix_impl {
     #[derive(Deserialize)]
     struct SaveGitHubTokenParams {
         token: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FireAlarmParams {
+        alarm: crate::alarms::Alarm,
+    }
+
+    #[derive(Deserialize)]
+    struct ReleaseAlarmParams {
+        id: String,
     }
 
     fn socket_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -251,8 +309,33 @@ mod unix_impl {
                     p.cwd,
                     &p.name,
                     p.remote_control,
+                    p.resume.as_deref(),
                     p.instruction.as_deref(),
                 )
+            }
+            "claude.spawnReview" => {
+                let p: SpawnReviewParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                spawn_review_claude_session(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    p.cwd,
+                    &p.add_dirs,
+                    &p.settings,
+                    &p.context,
+                    p.load_repo_config,
+                )
+            }
+            "claude.killReview" => {
+                let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                kill_session(
+                    state.inner(),
+                    &crate::pty::review_session_id(&p.workspace_id),
+                );
+                Ok(())
             }
             "claude.kill" => {
                 let p: KillParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -271,6 +354,18 @@ mod unix_impl {
                     &p.agent_pids,
                 )
             }
+            "claude.slash" => {
+                let p: SlashParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_workspace_id(&p.workspace_id)?;
+                send_session_slash_command(
+                    app,
+                    state.inner(),
+                    &p.workspace_id,
+                    &p.command,
+                    p.arguments.as_deref(),
+                    &p.agent_pids,
+                )
+            }
             "mcp.saveOAuth" => {
                 let p: SaveOAuthParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -280,6 +375,20 @@ mod unix_impl {
                 let p: SaveGitHubTokenParams =
                     serde_json::from_value(params).map_err(|e| e.to_string())?;
                 crate::keychain::store_github_token(&p.token)
+            }
+            "alarm.fire" => {
+                let mut p: FireAlarmParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                check_alarm(&mut p.alarm)?;
+                crate::alarms::fire(app, p.alarm);
+                Ok(())
+            }
+            "alarm.release" => {
+                let p: ReleaseAlarmParams =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
+                validate_alarm_id(&p.id)?;
+                crate::alarms::release(app, &p.id);
+                Ok(())
             }
             other => Err(format!("unknown method: {other}")),
         }
@@ -296,6 +405,32 @@ mod unix_impl {
         } else {
             Err("invalid workspaceId".into())
         }
+    }
+
+    /// Alarm ids are UUIDs too; the same bound keeps a junk id out of the
+    /// ringing state, which lives as long as the app.
+    fn validate_alarm_id(id: &str) -> Result<(), String> {
+        validate_workspace_id(id).map_err(|_| "invalid alarm id".to_string())
+    }
+
+    /// The longest label the takeover and notification show; past it, cut.
+    const MAX_ALARM_LABEL_CHARS: usize = 500;
+
+    /// An alarm to ring is checked like any input from the socket: a UUID id, a
+    /// label short enough for a notification, and only a web link behind the
+    /// takeover's Join button.
+    fn check_alarm(alarm: &mut crate::alarms::Alarm) -> Result<(), String> {
+        validate_alarm_id(&alarm.id)?;
+        if let Some(link) = &alarm.meet_link {
+            let lower = link.to_ascii_lowercase();
+            if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+                return Err("meetLink must be an http(s) link".into());
+            }
+        }
+        if alarm.label.chars().count() > MAX_ALARM_LABEL_CHARS {
+            alarm.label = alarm.label.chars().take(MAX_ALARM_LABEL_CHARS).collect();
+        }
+        Ok(())
     }
 
     fn set_dir_private(path: &Path) {
@@ -316,6 +451,125 @@ mod unix_impl {
             }
             Ok(_) => Err("control socket path is occupied by a non-socket file".into()),
             Err(_) => Ok(()), // nothing there yet
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        /// Shaped exactly like `toAlarm()` in `sidecar/src/alarms/service.ts`.
+        fn sidecar_payload(meet_link: Value, label: &str) -> Value {
+            json!({
+                "alarm": {
+                    "id": "0f8b5a4e-1c2d-4e3f-9a8b-7c6d5e4f3a2b",
+                    "label": label,
+                    "fireAtMs": 1_760_000_000_000_i64,
+                    "sound": true,
+                    "meetLink": meet_link,
+                    "status": "fired",
+                    "source": "heads-down",
+                }
+            })
+        }
+
+        #[test]
+        fn reads_the_alarm_the_sidecar_sends() {
+            let mut p: FireAlarmParams = serde_json::from_value(sidecar_payload(
+                json!("https://meet.google.com/abc"),
+                "Meeting: Standup",
+            ))
+            .expect("sidecar payload");
+            check_alarm(&mut p.alarm).expect("valid alarm");
+            assert_eq!(p.alarm.label, "Meeting: Standup");
+            assert_eq!(p.alarm.fire_at_ms, 1_760_000_000_000);
+            assert_eq!(
+                p.alarm.meet_link.as_deref(),
+                Some("https://meet.google.com/abc")
+            );
+        }
+
+        /// Shaped like `spawnClaudeSession` in `sidecar/src/core/controlClient.ts`.
+        #[test]
+        fn reads_the_resume_id_the_sidecar_sends() {
+            let p: SpawnParams = serde_json::from_value(json!({
+                "workspaceId": "w1",
+                "cwd": "/tmp/ws",
+                "name": "ws",
+                "remoteControl": false,
+                "resume": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+            }))
+            .expect("sidecar payload");
+            assert_eq!(
+                p.resume.as_deref(),
+                Some("0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70")
+            );
+        }
+
+        #[test]
+        fn reads_the_review_session_the_sidecar_sends() {
+            // Shaped like `spawnReviewClaudeSession` in `controlClient.ts`.
+            let p: SpawnReviewParams = serde_json::from_value(json!({
+                "workspaceId": "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70",
+                "cwd": "/tmp/.review-sessions/w",
+                "addDirs": ["/tmp/.review/w/pr1", "/tmp/.review/w/pr2"],
+                "settings": "{\"disableAllHooks\":true}",
+                "context": "github/o/r/1 in /tmp/.review/w/pr1.",
+                "loadRepoConfig": true,
+            }))
+            .expect("sidecar payload");
+            assert!(p.load_repo_config);
+            assert!(validate_workspace_id(&p.workspace_id).is_ok());
+            assert_eq!(p.add_dirs.len(), 2);
+            assert_eq!(p.settings, r#"{"disableAllHooks":true}"#);
+            assert!(p.context.starts_with("github/o/r/1"));
+        }
+
+        #[test]
+        fn reads_the_slash_command_the_sidecar_sends() {
+            let p: SlashParams = serde_json::from_value(json!({
+                "workspaceId": "w1",
+                "command": "compact",
+                "arguments": "focus on the tests",
+                "agentPids": [42],
+            }))
+            .expect("sidecar payload");
+            assert_eq!(p.workspace_id, "w1");
+            assert_eq!(p.command, "compact");
+            assert_eq!(p.arguments.as_deref(), Some("focus on the tests"));
+            assert_eq!(p.agent_pids, vec![42]);
+
+            let bare: SlashParams =
+                serde_json::from_value(json!({ "workspaceId": "w1", "command": "compact" }))
+                    .expect("payload without arguments");
+            assert_eq!(bare.arguments, None);
+            assert!(bare.agent_pids.is_empty());
+        }
+
+        #[test]
+        fn refuses_a_join_link_that_isnt_a_web_link() {
+            let mut p: FireAlarmParams =
+                serde_json::from_value(sidecar_payload(json!("file:///etc/passwd"), "x"))
+                    .expect("sidecar payload");
+            assert!(check_alarm(&mut p.alarm).is_err());
+        }
+
+        #[test]
+        fn cuts_a_long_label() {
+            let mut p: FireAlarmParams =
+                serde_json::from_value(sidecar_payload(Value::Null, &"é".repeat(2_000)))
+                    .expect("sidecar payload");
+            check_alarm(&mut p.alarm).expect("valid alarm");
+            assert_eq!(p.alarm.label.chars().count(), MAX_ALARM_LABEL_CHARS);
+        }
+
+        #[test]
+        fn refuses_a_junk_alarm_id() {
+            assert!(validate_alarm_id("").is_err());
+            assert!(validate_alarm_id("../../etc").is_err());
+            assert!(validate_alarm_id(&"a".repeat(65)).is_err());
+            assert!(validate_alarm_id("0f8b5a4e-1c2d-4e3f-9a8b-7c6d5e4f3a2b").is_ok());
         }
     }
 }

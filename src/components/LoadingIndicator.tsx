@@ -1,4 +1,4 @@
-import { Spinner } from "./ThinkingIndicator";
+import { Loader } from "./ai-elements/loader";
 
 /**
  * The placeholder for a surface with nothing to show yet: a spinner beside a
@@ -15,7 +15,7 @@ export default function LoadingIndicator({
 }) {
   return (
     <div role="status" aria-live="polite" className={`flex items-center gap-2 ${className}`}>
-      <Spinner />
+      <Loader />
       {label}
     </div>
   );

@@ -48,7 +48,9 @@ also show a **join** link for Google Meet.
 
 ## Ask the assistant
 
-The assistant can read your calendar and book new events:
+The assistant can read your calendar and book new events. It reads up to a week
+back as well as ahead, and sees the files attached to each event, such as
+Gemini meeting notes:
 
 > What does my week look like? Find me two hours of focus time on Thursday.
 
@@ -59,19 +61,35 @@ spoke. Yarvis can create events, but it can't move or delete them. The Google
 client has no method for either, and no tool offers one. Moving or cancelling a
 meeting stays with you, in your own calendar.
 
+It can also set alarms, without asking, since an alarm only rings on your
+machine and you can cancel it:
+
+> Look through my meetings this week and set alarms for all the ones I've accepted.
+
+> Wake me at 3pm to call the bank.
+
+A meeting alarm it sets is the same one **Set alarm** makes, so the calendar
+shows it as set. It won't set one for a meeting you declined, or set one again
+for a meeting whose alarm you cancelled or dismissed.
+
 ## Alarms
 
 ### Set an alarm
 
 - **From the calendar:** press **Set alarm** on an event, or **Set alarms for
-  all** in the Agenda view, which arms the next 20 upcoming timed events. The alarm fires **one minute before** the event and
-  carries the Meet link. All-day events and events that have already started
+  all** in the Agenda view, which arms the next 20 upcoming timed events. The
+  alarm fires **one minute before** the event and carries the Meet link. All-day events and events that have already started
   can't be armed. Arming the same event twice does nothing.
 - **From the Alarms tab:** in the **New alarm** section, enter a label and a
   time, and press **Set**. **Test in 5s** fires a test alarm.
+- **From the assistant:** ask it in a chat (see above). In
+  [heads-down mode](heads-down.md) it checks your coming meetings a few times a
+  day and sets alarms for the ones you're going to, asking you about the ones it
+  isn't sure of. In that mode it can only set meeting alarms, never one with a
+  label of its own, and it can't cancel any.
 
-Alarms are not armed automatically. Each morning, press **Set alarms for all**
-in the Agenda view. The assistant can't set alarms yet.
+Otherwise alarms are not armed automatically. Each morning, press **Set alarms
+for all** in the Agenda view.
 
 ### When an alarm fires
 
@@ -95,6 +113,18 @@ once you've handled them all.
   what's **Upcoming** (with Cancel).
 - An alarm whose time passed while Yarvis was closed fires as soon as the app
   starts.
-- Alarms are stored in `alarms.json` in the app's data folder, not in Postgres,
-  so they work without a database.
+- Alarms are stored in Postgres, so they need the database. Alarms from older
+  versions, which kept them in `alarms.json` in the app's data folder, are
+  copied over on first start, and the file is renamed to
+  `alarms.json.imported`.
+- Alarms ring only while the sidecar is running, since it decides when one is
+  due. If it can't reach the app's core to ring one, it tries again every few
+  seconds.
+- If Yarvis can't record your choice (Acknowledge or Snooze) because the
+  sidecar is down, the ringing still stops and the alarm screen says so. Try
+  again once it's back, or a snooze won't ring again.
+- Only the instance running background workers rings alarms: the main one, by
+  default. A second instance sharing the database lists them and leaves the
+  ringing to it. One with its own database doesn't ring them at all unless you
+  turn its background workers on (`YARVIS_BACKGROUND_WORKERS=1`).
 - The sound uses macOS system sounds through `afplay`.

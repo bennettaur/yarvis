@@ -281,6 +281,111 @@
       "when": 1792592427248,
       "tag": "0039_complex_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1792767573363,
+      "tag": "0040_breezy_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1792900911273,
+      "tag": "0041_green_secret_warriors",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1792900922958,
+      "tag": "0042_rare_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792900964028,
+      "tag": "0043_windy_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1792900985237,
+      "tag": "0044_glossy_sugar_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1793048371597,
+      "tag": "0045_tiny_speed",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1793075385951,
+      "tag": "0046_skinny_the_phantom",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1793154070723,
+      "tag": "0047_wakeful_nicolaos",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1793573926343,
+      "tag": "0048_polite_karen_page",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1793575903221,
+      "tag": "0049_yielding_gunslinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1793626679476,
+      "tag": "0050_volatile_black_tom",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1793630544842,
+      "tag": "0051_wonderful_maestro",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794199527080,
+      "tag": "0052_public_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794271764930,
+      "tag": "0053_neat_ma_gnuci",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794889127986,
+      "tag": "0054_sour_emma_frost",
+      "breakpoints": true
     }
   ]
 }

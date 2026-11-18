@@ -28,6 +28,7 @@ const detail = (overrides: Partial<PrDetail> = {}): PrDetail => ({
   additions: 0,
   deletions: 0,
   mergeable: "UNKNOWN",
+  hasConflicts: false,
   mergeMethods: ["MERGE", "SQUASH", "REBASE"],
   autoMergeEnabled: false,
   canEnableAutoMerge: false,

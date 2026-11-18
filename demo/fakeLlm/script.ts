@@ -43,6 +43,9 @@ export const SAFE_TOOLS = new Set([
   "recall",
   "list_memories",
   "take_note",
+  "create_artifact",
+  "create_diagram",
+  "update_diagram",
 ]);
 
 /**
@@ -63,6 +66,27 @@ function spec(...patches: object[]): string {
 
 function addElement(key: string, type: string, props: object, children: string[] = []) {
   return { op: "add", path: `/elements/${key}`, value: { type, props, children } };
+}
+
+/** A rounded box with a label, as a model would write one for `create_diagram`. */
+function box(id: string, text: string, x: number, y: number, backgroundColor: string) {
+  return {
+    id,
+    type: "rectangle",
+    x,
+    y,
+    width: 200,
+    height: 80,
+    backgroundColor,
+    fillStyle: "solid",
+    roundness: { type: 3 },
+    label: { text },
+  };
+}
+
+/** An arrow bound to two shapes; the sidecar draws it between them. */
+function arrow(id: string, from: string, to: string, text: string) {
+  return { id, type: "arrow", start: { id: from }, end: { id: to }, label: { text, fontSize: 14 } };
 }
 
 export const REPLIES: Reply[] = [
@@ -100,6 +124,72 @@ export const REPLIES: Reply[] = [
       "",
       "The demo prep is the one with a hard deadline. Want me to block out an hour for it tomorrow morning, before your 11am cutoff?",
     ].join("\n"),
+  },
+  {
+    when: /sketch|draw.*architecture/i,
+    toolCall: {
+      name: "create_diagram",
+      args: {
+        title: "Checkout architecture",
+        elements: [
+          box("web", "Checkout web", 0, 0, "#a5d8ff"),
+          box("api", "Payments API", 320, 0, "#b2f2bb"),
+          { ...box("cache", "Session cache", 640, -110, "#ffec99"), type: "ellipse" },
+          { ...box("db", "Orders DB", 640, 110, "#d0bfff"), type: "ellipse" },
+          arrow("web-api", "web", "api", "POST /pay"),
+          arrow("api-cache", "api", "cache", "session"),
+          arrow("api-db", "api", "db", "orders"),
+        ],
+      },
+    },
+    after:
+      "Here's a first sketch: [Checkout architecture](yarvis://artifact/{{artifactId}}). The web app calls the payments API, which keeps sessions in the cache and writes orders to the database.",
+  },
+  {
+    when: /add a queue/i,
+    toolCall: {
+      name: "update_diagram",
+      args: {
+        id: "{{artifactId}}",
+        callReason: "The user asked to add a receipts queue to the diagram.",
+        addOnly: true,
+        upsert: [
+          {
+            ...box("queue", "Receipts queue", 300, 220, "#ffd8a8"),
+            type: "diamond",
+            width: 220,
+            height: 120,
+          },
+          { ...arrow("api-queue", "api", "queue", "paid"), strokeStyle: "dashed" },
+        ],
+      },
+    },
+    after:
+      "Added the receipts queue to [Checkout architecture](yarvis://artifact/{{artifactId}}). The API drops a message on it once a payment clears.",
+  },
+  {
+    when: /launch plan|write.*plan/i,
+    toolCall: {
+      name: "create_artifact",
+      args: {
+        title: "Payment step launch plan",
+        content: [
+          "# Payment step launch plan",
+          "",
+          "## Before Thursday",
+          "- Finish review of Priya's payment-step PR",
+          "- Turn the flag on for staff",
+          "",
+          "## Rollout",
+          "1. 5% of checkouts, watch error rates for a day",
+          "2. 50%, then everyone by Friday",
+          "",
+          "> Roll back by turning the flag off; no migration to undo.",
+        ].join("\n"),
+      },
+    },
+    after:
+      "Wrote it up: [Payment step launch plan](yarvis://artifact/{{artifactId}}). It covers what's left before Thursday and a three-step rollout.",
   },
   {
     surface: "omni",

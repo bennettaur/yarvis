@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   applyReviewAction,
   disableAutoMerge,
@@ -7,11 +7,23 @@ import {
   type ReviewAction,
 } from "../../lib/pr/api";
 import { invalidate, invalidatePrReview, prDetailKey, prStackKey } from "../../lib/pr/cache";
-import { refDisplayRepo, refNumber, refProviderName } from "../../lib/pr/ref";
-import type { CheckItem, MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
+import { refDisplayRepo, refKey, refNumber, refProviderName } from "../../lib/pr/ref";
+import type {
+  CheckItem,
+  MergeMethod,
+  PrDetail,
+  PrRef,
+  PrSummary,
+  ReviewerState,
+  SeenCommits,
+} from "../../lib/pr/types";
+import { invalidateLastReview } from "../../lib/reviewWorkspaces/sinceReview";
 import { openExternal } from "../../lib/url";
 import CopyLinkButton from "../CopyLinkButton";
+import OpenInReviewWorkspace from "../review/OpenInReviewWorkspace";
+import PrConflictBanner from "./PrConflictBanner";
 import PrWorkspaceAction from "./PrWorkspaceAction";
+import SinceReviewNote from "./SinceReviewNote";
 
 /**
  * The high-level lifecycle states the UI shows in the floating header.
@@ -144,6 +156,8 @@ interface ActionConfig {
   requireBody: boolean;
   placeholder: string;
   confirmLabel: string;
+  /** The viewer's standing review that makes this action already done, and what to show instead. */
+  done?: { when: ReviewerState; label: string; title: string };
 }
 
 const APPROVE: ActionConfig = {
@@ -154,6 +168,7 @@ const APPROVE: ActionConfig = {
   requireBody: false,
   placeholder: "Optional comment for the approval…",
   confirmLabel: "Approve",
+  done: { when: "approved", label: "✓ Approved", title: "You approved this PR" },
 };
 
 const REQUEST_CHANGES: ActionConfig = {
@@ -286,44 +301,24 @@ function MergeMenu({
   );
 }
 
+function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState {
+  return action === "approve" ? "approved" : "changes_requested";
+}
+
 /**
- * The static title/status bar at the top of the in-app PR review. Sits above
- * the scrolling body (the parent `PrDetailView` is a flex column whose body
- * owns the scroll), so it never overlaps body content as the user scrolls.
- * Renders the title, lifecycle status badge, and the publish / approve /
- * request-changes action buttons.
+ * The review and merge actions a PR offers — publish, approve, request changes,
+ * merge, auto-merge — with the in-flight and error state they share. A hook so
+ * the classic review's header and a review workspace's header drive the same
+ * buttons, while each places the error line where its layout has room.
  *
- * The action handlers invalidate the PR cache so the cached detail (which
- * fed the draft / mergeable state) is refetched after a publish or vote.
+ * The handlers invalidate the PR cache so the cached detail (which fed the
+ * draft / mergeable state) is refetched after a publish or vote. `seen` is the
+ * head the surface is showing, which a review records as where the user
+ * reviewed.
  */
-export default function PrFloatingHeader({
-  pr,
-  detail,
-  loading = false,
-  refreshing = false,
-  onBack,
-  starred,
-  onToggleStar,
-}: {
-  pr: PrSummary;
-  detail: PrDetail | null;
-  /**
-   * Whether the detail behind this header is still on its way. Clicking a layer
-   * of a stack swaps the pull request instantly and then waits on a provider
-   * round trip, so without saying so the header reads as a click that did
-   * nothing (#268).
-   */
-  loading?: boolean;
-  /** Whether a reload is running behind a detail already on screen. */
-  refreshing?: boolean;
-  onBack: () => void;
-  starred: boolean;
-  onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
-}) {
-  const prRef: PrRef = pr.ref;
+export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   // Publishing, approving or merging changes both how this pull request reads
-  // and how its layer reads in the stack section below, so the two caches are
-  // dropped together.
+  // and how its layer reads in a stack, so the two caches are dropped together.
   const invalidatePr = (ref: PrRef) => {
     invalidate(prDetailKey(ref));
     invalidate(prStackKey(ref));
@@ -335,22 +330,24 @@ export default function PrFloatingHeader({
   // review in flight don't clobber each other's spinner.
   const [mergeMenu, setMergeMenu] = useState<null | "merge" | "auto_merge">(null);
   const [mergePending, setMergePending] = useState(false);
-  const [starPending, setStarPending] = useState(false);
-  // The summary's title can be empty when the entry came from the workspace
-  // poller cache, which doesn't store PR titles, so prefer the detail's.
-  const title = detail?.title || pr.title;
-
-  const status = derivePrUiStatus(detail, pr);
-  const actions = actionsForStatus(status);
-  const mergeControls = mergeControlsFor(detail, status);
-  const busy = pending !== null || mergePending;
-  const isReloading = loading || refreshing;
+  // The verdict just submitted, keyed by PR, so the buttons reflect it while
+  // the refetched detail is on its way. `PrActionButtons` drops it once that
+  // detail lands, so a later re-request or dismissal still shows.
+  const [submittedReview, setSubmittedReview] = useState<{
+    prKey: string;
+    state: ReviewerState;
+  } | null>(null);
+  const clearSubmittedReview = useCallback(() => setSubmittedReview(null), []);
 
   const run = async (action: ReviewAction, body?: string) => {
     setPending(action);
     setError(null);
     try {
-      await applyReviewAction(prRef, action, body);
+      await applyReviewAction(prRef, action, body, seen);
+      if (action !== "publish") {
+        setSubmittedReview({ prKey: refKey(prRef), state: reviewStateFor(action) });
+        invalidateLastReview(prRef);
+      }
       invalidatePr(prRef);
       setOpen(null);
     } catch (e) {
@@ -388,13 +385,233 @@ export default function PrFloatingHeader({
     }
   };
 
+  return {
+    open,
+    setOpen,
+    pending,
+    error,
+    setError,
+    mergeMenu,
+    setMergeMenu,
+    mergePending,
+    submittedReview: submittedReview?.prKey === refKey(prRef) ? submittedReview.state : undefined,
+    clearSubmittedReview,
+    busy: pending !== null || mergePending,
+    run,
+    runMerge,
+    runDisableAutoMerge,
+  };
+}
+
+export type PrActionsState = ReturnType<typeof usePrActions>;
+
+/**
+ * The action buttons for a PR: its coding workspace, the review and merge
+ * actions its status allows, refresh, open on the provider and copy link.
+ * `leading` goes in front of them, for a control only one host offers.
+ */
+export function PrActionButtons({
+  pr,
+  detail,
+  actions: state,
+  reloading,
+  leading,
+}: {
+  pr: PrSummary;
+  detail: PrDetail | null;
+  actions: PrActionsState;
+  /** Whether the detail is loading or reloading, which spins the refresh button. */
+  reloading: boolean;
+  leading?: ReactNode;
+}) {
+  const prRef = pr.ref;
+  const status = derivePrUiStatus(detail, pr);
+  const actions = actionsForStatus(status);
+  const mergeControls = mergeControlsFor(detail, status);
+  const { open, setOpen, pending, busy, mergeMenu, setMergeMenu, mergePending } = state;
+  const viewerReview = state.submittedReview ?? detail?.viewerReview;
+  // A newly loaded detail is the provider's answer, which outranks the verdict
+  // kept from the submit. A null detail is a reload in flight, not an answer.
+  const { clearSubmittedReview } = state;
+  useEffect(() => {
+    if (detail) clearSubmittedReview();
+  }, [detail, clearSubmittedReview]);
+
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      {leading}
+      <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
+      {actions.map((cfg) => {
+        if (cfg.done && viewerReview === cfg.done.when) {
+          return (
+            <span
+              key={cfg.key}
+              title={cfg.done.title}
+              className="rounded-md border border-emerald-700 bg-emerald-950/60 px-3 py-1.5 text-xs font-medium text-emerald-200"
+            >
+              {cfg.done.label}
+            </span>
+          );
+        }
+        const isPending = pending === cfg.key;
+        const isOpen = open === cfg.key;
+        const onClick = cfg.confirmInline
+          ? () => setOpen(isOpen ? null : cfg.key)
+          : () => void state.run(cfg.key);
+        return (
+          <div key={cfg.key} className="relative">
+            <button
+              onClick={onClick}
+              disabled={busy}
+              title={busy ? BUSY_TITLE : undefined}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
+            >
+              {isPending ? "…" : cfg.label}
+            </button>
+            {isOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1">
+                <CommentPrompt
+                  label={cfg.confirmLabel}
+                  placeholder={cfg.placeholder}
+                  required={cfg.requireBody}
+                  pending={isPending}
+                  onConfirm={(body) => void state.run(cfg.key, body)}
+                  onCancel={() => setOpen(null)}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {detail?.autoMergeEnabled && (
+        <span
+          className="rounded bg-sky-900/60 px-2 py-0.5 text-xs font-medium text-sky-200"
+          title="This PR will merge on its own once its required checks and reviews pass"
+        >
+          Auto-merge on
+        </span>
+      )}
+      {mergeControls.merge && detail && (
+        <MergeMenu
+          label="Merge"
+          title="Merge this PR now, using the method you pick"
+          className="bg-emerald-600 hover:bg-emerald-700"
+          methods={detail.mergeMethods}
+          pending={mergePending}
+          isOpen={mergeMenu === "merge"}
+          disabled={busy}
+          onToggle={() => setMergeMenu(mergeMenu === "merge" ? null : "merge")}
+          onPick={(method) => void state.runMerge("merge", method)}
+        />
+      )}
+      {mergeControls.enableAuto && detail && (
+        <MergeMenu
+          label="Enable auto-merge"
+          title="Merge this PR automatically once its required checks and reviews pass, using the method you pick"
+          className="bg-sky-600 hover:bg-sky-700"
+          methods={detail.mergeMethods}
+          pending={mergePending}
+          isOpen={mergeMenu === "auto_merge"}
+          disabled={busy}
+          onToggle={() => setMergeMenu(mergeMenu === "auto_merge" ? null : "auto_merge")}
+          onPick={(method) => void state.runMerge("auto_merge", method)}
+        />
+      )}
+      {mergeControls.disableAuto && (
+        <button
+          type="button"
+          onClick={() => void state.runDisableAutoMerge()}
+          disabled={busy}
+          title={busy ? BUSY_TITLE : "Turn off auto-merge so this PR no longer merges on its own"}
+          className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {mergePending ? "…" : "Cancel auto-merge"}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => invalidatePrReview(prRef)}
+        disabled={reloading}
+        className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+        title="Refresh this pull request"
+        aria-label="Refresh this pull request"
+      >
+        <span aria-hidden="true" className={`inline-block ${reloading ? "animate-spin" : ""}`}>
+          ↻
+        </span>
+      </button>
+      <button
+        onClick={() => openExternal(pr.url)}
+        className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        title={`Open on ${refProviderName(prRef)}`}
+      >
+        ↗
+      </button>
+      <CopyLinkButton
+        url={pr.url}
+        subject="PR link"
+        title={`Copy the ${refProviderName(prRef)} link to this PR`}
+      />
+    </div>
+  );
+}
+
+/** The lifecycle badge: draft, CI failing, awaiting review, and so on. */
+export function PrStatusBadge({ status }: { status: PrUiStatus }) {
+  return (
+    <span className={`shrink-0 rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[status]}`}>
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+/**
+ * The static title/status bar at the top of the in-app PR review. Sits above
+ * the scrolling body (the parent `PrDetailView` is a flex column whose body
+ * owns the scroll), so it never overlaps body content as the user scrolls.
+ * Renders the title, lifecycle status badge, and the action buttons, with the
+ * conflict banner beneath them when the PR conflicts with its base.
+ */
+export default function PrFloatingHeader({
+  pr,
+  detail,
+  loading = false,
+  refreshing = false,
+  onBack,
+  starred,
+  onToggleStar,
+}: {
+  pr: PrSummary;
+  detail: PrDetail | null;
+  /**
+   * Whether the detail behind this header is still on its way. Clicking a layer
+   * of a stack swaps the pull request instantly and then waits on a provider
+   * round trip, so without saying so the header reads as a click that did
+   * nothing (#268).
+   */
+  loading?: boolean;
+  /** Whether a reload is running behind a detail already on screen. */
+  refreshing?: boolean;
+  onBack: () => void;
+  starred: boolean;
+  onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
+}) {
+  const prRef: PrRef = pr.ref;
+  // The classic page shows the provider's diff, which is at the detail's head.
+  const actions = usePrActions(prRef, { headSha: detail?.headSha });
+  const [starPending, setStarPending] = useState(false);
+  // The summary's title can be empty when the entry came from the workspace
+  // poller cache, which doesn't store PR titles, so prefer the detail's.
+  const title = detail?.title || pr.title;
+  const status = derivePrUiStatus(detail, pr);
+
   const toggleStar = async () => {
     setStarPending(true);
-    setError(null);
+    actions.setError(null);
     try {
       await onToggleStar({ ...pr, title }, starred);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      actions.setError(e instanceof Error ? e.message : String(e));
     } finally {
       setStarPending(false);
     }
@@ -436,121 +653,18 @@ export default function PrFloatingHeader({
             {loading && <span className="shrink-0 animate-pulse text-indigo-300">Loading…</span>}
           </div>
         </div>
-        <span
-          className={`shrink-0 rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[status]}`}
-        >
-          {STATUS_LABEL[status]}
-        </span>
-        <div className="flex shrink-0 items-center gap-2">
-          <PrWorkspaceAction prRef={prRef} fromFork={detail?.fromFork ?? false} />
-          {actions.map((cfg) => {
-            const isPending = pending === cfg.key;
-            const isOpen = open === cfg.key;
-            const onClick = cfg.confirmInline
-              ? () => setOpen(isOpen ? null : cfg.key)
-              : () => void run(cfg.key);
-            return (
-              <div key={cfg.key} className="relative">
-                <button
-                  onClick={onClick}
-                  disabled={busy}
-                  title={busy ? BUSY_TITLE : undefined}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors disabled:opacity-50 ${cfg.className}`}
-                >
-                  {isPending ? "…" : cfg.label}
-                </button>
-                {isOpen && (
-                  <div className="absolute right-0 top-full z-20 mt-1">
-                    <CommentPrompt
-                      label={cfg.confirmLabel}
-                      placeholder={cfg.placeholder}
-                      required={cfg.requireBody}
-                      pending={isPending}
-                      onConfirm={(body) => void run(cfg.key, body)}
-                      onCancel={() => setOpen(null)}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {detail?.autoMergeEnabled && (
-            <span
-              className="rounded bg-sky-900/60 px-2 py-0.5 text-xs font-medium text-sky-200"
-              title="This PR will merge on its own once its required checks and reviews pass"
-            >
-              Auto-merge on
-            </span>
-          )}
-          {mergeControls.merge && detail && (
-            <MergeMenu
-              label="Merge"
-              title="Merge this PR now, using the method you pick"
-              className="bg-emerald-600 hover:bg-emerald-700"
-              methods={detail.mergeMethods}
-              pending={mergePending}
-              isOpen={mergeMenu === "merge"}
-              disabled={busy}
-              onToggle={() => setMergeMenu(mergeMenu === "merge" ? null : "merge")}
-              onPick={(method) => void runMerge("merge", method)}
-            />
-          )}
-          {mergeControls.enableAuto && detail && (
-            <MergeMenu
-              label="Enable auto-merge"
-              title="Merge this PR automatically once its required checks and reviews pass, using the method you pick"
-              className="bg-sky-600 hover:bg-sky-700"
-              methods={detail.mergeMethods}
-              pending={mergePending}
-              isOpen={mergeMenu === "auto_merge"}
-              disabled={busy}
-              onToggle={() => setMergeMenu(mergeMenu === "auto_merge" ? null : "auto_merge")}
-              onPick={(method) => void runMerge("auto_merge", method)}
-            />
-          )}
-          {mergeControls.disableAuto && (
-            <button
-              type="button"
-              onClick={() => void runDisableAutoMerge()}
-              disabled={busy}
-              title={
-                busy ? BUSY_TITLE : "Turn off auto-merge so this PR no longer merges on its own"
-              }
-              className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
-            >
-              {mergePending ? "…" : "Cancel auto-merge"}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => invalidatePrReview(prRef)}
-            disabled={isReloading}
-            className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-            title="Refresh this pull request"
-            aria-label="Refresh this pull request"
-          >
-            <span
-              aria-hidden="true"
-              className={`inline-block ${isReloading ? "animate-spin" : ""}`}
-            >
-              ↻
-            </span>
-          </button>
-          <button
-            onClick={() => openExternal(pr.url)}
-            className="rounded-md border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
-            title={`Open on ${refProviderName(prRef)}`}
-          >
-            ↗
-          </button>
-          <CopyLinkButton
-            url={pr.url}
-            subject="PR link"
-            title={`Copy the ${refProviderName(prRef)} link to this PR`}
-          />
-        </div>
+        <PrStatusBadge status={status} />
+        <PrActionButtons
+          pr={pr}
+          detail={detail}
+          actions={actions}
+          reloading={loading || refreshing}
+          leading={<OpenInReviewWorkspace pr={{ ...pr, title }} />}
+        />
       </div>
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      <PrConflictBanner key={refKey(prRef)} prRef={prRef} detail={detail} />
+      <SinceReviewNote prRef={prRef} title={title} detail={detail} />
+      {actions.error && <p className="mt-2 text-xs text-red-400">{actions.error}</p>}
     </div>
   );
 }

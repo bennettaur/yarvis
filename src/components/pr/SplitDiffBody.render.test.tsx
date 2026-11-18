@@ -5,6 +5,7 @@ import { expandAllGaps } from "../../lib/pr/expand";
 import type { PrFile, PrRef, ReviewThread } from "../../lib/pr/types";
 import { fakeExpansion } from "../../test/expansion";
 import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { reviewThread } from "../../test/reviewThread";
 import SplitDiffBody, { pairAroundGaps } from "./SplitDiffBody";
 
 const prRef: PrRef = { provider: "github", owner: "octo", repo: "repo", number: 1 };
@@ -121,12 +122,7 @@ describe("SplitDiffBody", () => {
   });
 
   it("anchors a thread to its right-side line", async () => {
-    const thread: ReviewThread = {
-      path: file.filename,
-      line: 2,
-      isResolved: false,
-      comments: [{ author: "octocat", body: "needs a guard", createdAt: "" }],
-    };
+    const thread = reviewThread({ path: file.filename, line: 2, bodies: ["needs a guard"] });
     const html = await render(["@@ -1,2 +1,2 @@", " a", "+b"].join("\n"), [thread]);
     expect(html).toContain(CONTAINER_MARKER);
     expect(html).toContain("needs a guard");
@@ -153,11 +149,24 @@ describe("SplitDiffBody", () => {
     ]);
   });
 
-  // Deleted lines only exist on the left, and neither provider accepts a
-  // comment anchored there, so no composer is offered against them.
-  it("offers the composer only where there is a right-side line", async () => {
-    const html = await render(["@@ -1,2 +1,1 @@", "-a", "-b"].join("\n"));
-    expect(html).not.toContain("Comment on this line");
+  // Deleted lines exist only in the old file, so the left gutter's "+" is the
+  // one way to comment on them, and the composer says which file it targets.
+  it("comments on a deleted line against the old file", async () => {
+    const host = await mount(["@@ -1,2 +1,0 @@", "-a", "-b"].join("\n"));
+    const plus = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Comment on this line"]',
+    );
+    plus?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.querySelector("textarea")).not.toBeNull();
+    expect(host.textContent).toContain("Commenting on line 1 (old)");
+  });
+
+  it("anchors an old-side thread below the deleted line", async () => {
+    const thread = reviewThread({ path: file.filename, line: 1, side: "LEFT", bodies: ["gone?"] });
+    const html = await render(["@@ -1,1 +1,1 @@", "-a", "+b"].join("\n"), [thread]);
+    expect(html).toContain("gone?");
+    expect(html).toContain("line 1 (old)");
   });
 
   // A code column sized to its content grows to the longest line in the file,

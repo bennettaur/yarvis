@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { type ActivityEvent, subscribeActivity } from "../activity/hub.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { recordEvent } from "../events/service.ts";
@@ -134,6 +135,32 @@ describe("the runner", () => {
     await claimJob(db, consolidateEventsJob.name);
     const result = await runJob(consolidateEventsJob, config, db);
     expect(result).toEqual({ ran: false, status: "busy", detail: "already running" });
+  });
+
+  it("reports each run to the Agent Field page, ending in done or error", async () => {
+    const job = (name: string, fails: boolean) => ({
+      name,
+      description: "a test job",
+      schedule: everyHours(4),
+      run: async () => {
+        if (fails) throw new Error("boom");
+        return {};
+      },
+    });
+    const seen: ActivityEvent[] = [];
+    const unsubscribe = subscribeActivity((event) => seen.push(event));
+    try {
+      await runJob(job("test-ok", false), config, db, new Date(), "manual");
+      await runJob(job("test-fails", true), config, db);
+    } finally {
+      unsubscribe();
+    }
+    expect(seen.map((e) => [e.source, e.type, e.label])).toEqual([
+      ["job test-ok", "spawn", "manual"],
+      ["job test-ok", "done", "ok"],
+      ["job test-fails", "spawn", "schedule"],
+      ["job test-fails", "error", "job failed"],
+    ]);
   });
 
   it("runs only what is due", async () => {

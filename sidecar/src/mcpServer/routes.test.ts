@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { createHmac } from "node:crypto";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { mcpReply } from "../test/mcpResponse.ts";
 import { questionOrigin } from "./routes.ts";
 
 function testConfig(overrides: Partial<Config> = {}): Config {
@@ -84,7 +86,7 @@ describe("mcp endpoint", () => {
     const app = createApp(testConfig());
     const res = await app.request("/mcp", post(INITIALIZE));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const body = (await mcpReply(res)) as {
       result: { serverInfo: { name: string }; capabilities: { tools?: unknown } };
     };
     expect(body.result.serverInfo.name).toBe("yarvis");
@@ -102,7 +104,9 @@ describe("mcp endpoint", () => {
       post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { result: { tools: { name: string }[] } };
+    // Streamed, so a reply that takes a while still sends its headers at once.
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
     expect(body.result.tools.map((t) => t.name).sort()).toEqual([
       "ask_user",
       "forget",
@@ -123,7 +127,7 @@ describe("mcp endpoint", () => {
           "X-Yarvis-Workspace": workspace,
         }),
       );
-      const body = (await res.json()) as { result: { tools: { name: string }[] } };
+      const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
       return body.result.tools.map((t) => t.name);
     };
 
@@ -134,6 +138,38 @@ describe("mcp endpoint", () => {
     const fallback = await listTools("not-a-uuid");
     expect(fallback).not.toContain("list_review_comments");
     expect(fallback).toContain("recall");
+  });
+
+  it("offers add_worktree only to a terminal proven to be the workspace's own", async () => {
+    const app = createApp(testConfig());
+    const workspace = "11111111-1111-4111-8111-111111111111";
+    const other = "22222222-2222-4222-8222-222222222222";
+    const sessionFor = (id: string) => {
+      const key = `ws-claude:${id}`;
+      const token = createHmac("sha256", "test-token").update(`session:${key}`).digest("hex");
+      return { "X-Yarvis-Session-Key": key, "X-Yarvis-Session-Token": token };
+    };
+    const listTools = async (headers: Record<string, string>) => {
+      const res = await app.request(
+        "/mcp",
+        post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, undefined, HOST, {
+          "X-Yarvis-Workspace": workspace,
+          ...headers,
+        }),
+      );
+      const body = (await mcpReply(res)) as { result: { tools: { name: string }[] } };
+      return body.result.tools.map((t) => t.name);
+    };
+
+    expect(await listTools(sessionFor(workspace))).toContain("add_worktree");
+    // The header alone, a forged token, and another workspace's terminal.
+    const headerOnly = await listTools({});
+    expect(headerOnly).toContain("resolve_review_comment");
+    expect(headerOnly).not.toContain("add_worktree");
+    expect(
+      await listTools({ ...sessionFor(workspace), "X-Yarvis-Session-Token": "0".repeat(64) }),
+    ).not.toContain("add_worktree");
+    expect(await listTools(sessionFor(other))).not.toContain("add_worktree");
   });
 
   it("refuses a request addressed to a host that is not ours", async () => {
@@ -207,7 +243,7 @@ describe("mcp endpoint over a real store", () => {
       ),
     );
     expect(res.status).toBe(200);
-    return ((await res.json()) as { result: { isError?: boolean; content: { text: string }[] } })
+    return ((await mcpReply(res)) as { result: { isError?: boolean; content: { text: string }[] } })
       .result;
   };
 
@@ -298,12 +334,17 @@ describe("mcp endpoint over a real store", () => {
 });
 
 describe("questionOrigin", () => {
-  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers));
+  const BEARER = "test-token";
+  const KEY = "ws-claude:11111111-1111-1111-1111-111111111111";
+  const tokenFor = (key: string) =>
+    createHmac("sha256", BEARER).update(`session:${key}`).digest("hex");
+  const origin = (headers: Record<string, string>) => questionOrigin(new Headers(headers), BEARER);
 
   it("reads the session and workspace a workspace's .mcp.json sends", () => {
     expect(
       origin({
-        "X-Yarvis-Session-Key": "ws-claude:11111111-1111-1111-1111-111111111111",
+        "X-Yarvis-Session-Key": KEY,
+        "X-Yarvis-Session-Token": tokenFor(KEY),
         "X-Yarvis-Workspace": "11111111-1111-1111-1111-111111111111",
       }),
     ).toEqual({
@@ -323,6 +364,29 @@ describe("questionOrigin", () => {
   });
 
   it("refuses a chat session key, which only the in-app assistant may use", () => {
-    expect(origin({ "X-Yarvis-Session-Key": "chat:some-chat" }).sessionKey).toBeNull();
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": "chat:some-chat",
+        "X-Yarvis-Session-Token": tokenFor("chat:some-chat"),
+      }).sessionKey,
+    ).toBeNull();
+  });
+
+  it("refuses a session key without its own terminal's token", () => {
+    expect(origin({ "X-Yarvis-Session-Key": KEY }).sessionKey).toBeNull();
+    expect(
+      origin({ "X-Yarvis-Session-Key": KEY, "X-Yarvis-Session-Token": tokenFor("ws-claude:other") })
+        .sessionKey,
+    ).toBeNull();
+  });
+
+  it("drops a workspace that isn't the verified session's own", () => {
+    expect(
+      origin({
+        "X-Yarvis-Session-Key": KEY,
+        "X-Yarvis-Session-Token": tokenFor(KEY),
+        "X-Yarvis-Workspace": "22222222-2222-2222-2222-222222222222",
+      }),
+    ).toEqual({ sessionKey: KEY, workspaceId: null });
   });
 });

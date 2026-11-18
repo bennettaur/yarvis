@@ -34,6 +34,7 @@ reads one back.
 | Azure DevOps token | Azure PRs, Azure Boards | `AZURE_DEVOPS_TOKEN` |
 | JIRA API token | JIRA issues | `JIRA_API_TOKEN` |
 | Google client secret | Google Calendar | `GOOGLE_CLIENT_SECRET` |
+| Merge reviewer signing key | Signing the merge reviewer's PR approvals | `VERIFY_AGENT_SIGNING_KEY` |
 | Telegram bot token | The Telegram bot | `TELEGRAM_BOT_TOKEN` |
 | Telegram allowed chat ids | Who the bot answers | `TELEGRAM_ALLOWED_CHAT_IDS` |
 | Telegram OTP secret | The bot's optional second factor | `TELEGRAM_OTP_SECRET` |
@@ -77,7 +78,11 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
   Add **Commit statuses: Read** to see legacy status checks. GitHub doesn't
   offer fine-grained tokens a Checks permission, so CI check runs can't be
   read with one: the PR still opens, and its **Checks** section says the
-  token can't read them. A token used with an organization that enforces SAML
+  token can't read them. The review workspace's verification checklist then
+  shows no check annotations either. That checklist's code scanning row needs
+  **Code scanning alerts: Read** on a fine-grained token; `repo` (or
+  `security_events`) covers it for a signed-in token or a classic PAT. The row
+  says so when the token can't read the alerts. A token used with an organization that enforces SAML
   SSO also has to be authorized for that org on GitHub.
 
   When GitHub refuses a request, the app says why: an expired or revoked
@@ -87,20 +92,26 @@ AWS Bedrock uses the standard AWS credential chain (`~/.aws`, `AWS_PROFILE`,
 
   GitHub gives REST and GraphQL separate budgets. The reads Yarvis repeats
   most (the workspace poller, each PR row's status, issue lists and the
-  signed-in account) go through GraphQL and switch to REST only while GraphQL
-  is rate-limited or failing, so polling doesn't spend the REST budget.
+  signed-in account) go through GraphQL, so polling doesn't spend the REST
+  budget. Most switch to REST while GraphQL is rate-limited or failing. The
+  workspace poller switches only while GraphQL is failing: when GraphQL's
+  limit is spent, it waits for the reset rather than spending the REST budget
+  the PR pages need.
 - **Azure DevOps.** A PAT with **Code (read & write)** and **Pull Request
   Threads (read & write)**. Code (read) is enough to browse and comment, but
   voting and publishing a draft write to the PR itself.
   Add **Work Items (read & write)** to use Azure Boards on the Issues
-  tab. Set the organization URL (`https://dev.azure.com/your-org`) under
+  tab. **Work Items (read)** also lets a review workspace's change map and
+  claims checks read a PR's linked work items. Set the organization URL (`https://dev.azure.com/your-org`) under
   Settings → Credentials. The project is picked per search, so there is
   nothing else to set. Code search needs the **Code Search** extension
   installed in your organization. Without it, guided review still works, but
   the agent can't search the repo.
 - **JIRA.** Atlassian Cloud only. Create the token at id.atlassian.com →
   Security → API tokens. Set your site URL (`https://your-org.atlassian.net`)
-  and account email under Settings → Credentials.
+  and account email under Settings → Credentials. The same credentials let a
+  review workspace's change map and claims checks read the Jira tickets a PR
+  is for.
 
 ### Upgrading from an older build
 
@@ -177,6 +188,7 @@ has written your providers and MCP servers into it.
 | --- | --- | --- |
 | `agentName` | `"Claude"` | Title of a workspace's agent tab |
 | `agentCommand` | `"claude --permission-mode auto"` | The command a workspace's agent session runs. Add a model or permission flags here. `YARVIS_CLAUDE_COMMAND` overrides it. |
+| `allowedSlashCommands` | unset | Slash commands or skills, beyond `/compact`, that the assistant may run in a workspace's agent session. Names without the `/`, e.g. `["do-code-review"]`. Set from Settings → Repositories → Agent. |
 | `maxPtySessions` | `60` | Maximum number of open terminal sessions (1–1000) |
 | `secretBackend` | `"keychain"` | `"keychain"` or `"onepassword"` |
 | `onePasswordVault`, `onePasswordItem` | unset | Where the secrets item lives when using 1Password |
@@ -187,6 +199,8 @@ has written your providers and MCP servers into it.
 | `telegramOtpWindowMinutes` | `120` | How long `/unlock` keeps the Telegram bot open |
 | `colorTheme` | `"default"` | `"default"` or `"palenight"`. An unknown name falls back to the default. |
 | `terminalFontSize` | `16` | Text size in every terminal (10–32). Cmd+= and Cmd+- change it. |
+| `channelMessaging` | unset (off) | Experimental: lets the assistant message a workspace's agent session over a Claude Code channel and read its replies, instead of typing at its prompt. Also needs the channel flag in `agentCommand`. Set from Settings → Repositories → Agent; see [Workspaces](features/workspaces.md#messaging-a-session-over-a-channel-experimental). |
+| `attentionAnimation` | `true` | `false` stops the amber band sweeping across the top bar and the bell shaking while the bell has something pending. The count badge still shows. |
 
 `null` and a missing key both mean "use the default".
 
@@ -194,18 +208,23 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI-, Anthropic- or Ollama-compatible endpoints, keyed by id | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic-, Ollama- or System One-compatible endpoints, keyed by id | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
 | `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
-| `decisionModel` | `model`, the provider and model tagged `decision` that answers yes/no judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)) | Settings → Tools & MCP |
+| `decisionModel` | `model`, the provider and model tagged `decision` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
+| `prVerification` | The verification report's Claude Code `model` (`sonnet`, `opus` or `haiku`; `sonnet` by default) and `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
+| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
+| `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
-| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), and the `provider` and `model` its passes run on (unset uses the default chat model). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
-| `voiceConfig` | Speech providers and models, voice, speak replies, hands-free | Settings → Voice |
+| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), `passTimeoutMinutes` (20, at most 240), how long one pass may run before it is stopped, the `provider` and `model` its passes run on (unset uses the default chat model), `guidance`, your standing rules for every pass in your own words (`null` for none), and `maxRoutinesPerPass` (2, from 0 to 10), the most routines one pass takes on (0 turns them off, meeting alarms included; routines themselves are files in `~/.yarvis/routines`). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
+| `voiceConfig` | Speech providers and models, voice, speak replies, continuous mode, the active saved voice (`activeVoiceId`, blank for none), and the Voice Studio's translation model (`translationProvider`, `translationModel`) | Settings → Voice, Voice page |
+| `voiceProfiles` | Saved voices. Their cloning clips are files in `~/.yarvis/voices/`. | Voice page |
+| `speechServer` | The local speech server's `port` (8000) | Voice page |
 | `embeddingsConfig` | The embeddings endpoint | Settings → Embeddings |
 
 Custom providers and MCP servers carry generated ids and timestamps. Add them
@@ -267,6 +286,7 @@ copy of the app, or for debugging.
 | `YARVIS_DEBUG_MEMORY` | `1` logs memory store operations |
 | `YARVIS_SETTINGS_PATH` | A different settings file, for the sidecar only. The Rust core ignores it. |
 | `YARVIS_AGENTS_DIR` | A different directory for your specialist definitions. Default `~/.yarvis/agents`. |
+| `YARVIS_ROUTINES_DIR` | A different directory for your heads-down routines. Default `~/.yarvis/routines`. |
 | `YARVIS_LOG_DEV_TOKEN` | `1` makes a standalone sidecar (`bun run sidecar:dev`) print its API token instead of a fingerprint |
 | `TAURI_DEV_HOST` | Serve the Vite dev server on this host. Also turns on the HMR socket port. |
 | `CLAUDE_HOME` | Where Claude Code keeps sessions. Default `~/.claude`. |
@@ -295,12 +315,15 @@ The tabs in **Settings**, in order:
    integration fields (Azure org URL, JIRA URL and email, Google client id).
 2. **LLM Providers.** Each provider's model list and capability tags, and your
    custom providers.
-3. **Tools & MCP.** MCP servers Yarvis connects to, Yarvis's own MCP endpoint,
-   the Tool manager, and the decision model behind auto mode.
+3. **Tools & MCP.** The decision model (auto mode, picking specialists and
+   model tiers, and a playground to try it), MCP servers Yarvis
+   connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
+   groups start collapsed.
 4. **Repositories.** The repos workspaces can use, the workspace agent
    command, and the terminal cap.
-5. **PR review.** The Needs review search, the Reviewing lookback, and the
-   models behind guided reviews and line questions.
+5. **PR review.** The Needs review search, the Reviewing lookback, the
+   models behind guided reviews and line questions, and the model, budget and
+   mutant cap for mutation testing.
 6. **Voice.** Speech to text and text to speech.
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.
@@ -310,5 +333,7 @@ The tabs in **Settings**, in order:
     jobs.
 11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
-    `settings.json`.
+    `settings.json`. Below it, a toggle turns off the amber band that sweeps
+    across the top bar and the bell's shake while the bell has something
+    pending, saved as `attentionAnimation`.
 12. **Diagnostics.** The sidecar log.

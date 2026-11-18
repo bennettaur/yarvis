@@ -11,11 +11,14 @@ import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  idleDays,
   ignoreWorkspaceError,
   listWorkspaces,
   renameWorkspace,
+  stopWorkspaceAgent,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
+  WORKSPACES_KEY,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
   type WorkspaceRepoStatus,
@@ -160,7 +163,8 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  poll lands per refresh while still being cheap (one local SQL read). */
 const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
-const WORKSPACES_KEY = "workspaces:list";
+const listWithBadges = () => listWorkspaces({ showingBadges: true });
+
 const REPOS_KEY = "workspaces:repos";
 
 /** Stable identities so an unloaded resource doesn't re-render the list. */
@@ -209,7 +213,7 @@ export default function WorkspacesPanel({
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
   );
 
-  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWorkspaces);
+  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWithBadges);
   const reposRes = useCachedResource<Repo[]>(REPOS_KEY, listRepos);
   const items = listRes.data ?? NO_WORKSPACES;
   const repos = reposRes.data ?? NO_REPOS;
@@ -290,7 +294,7 @@ export default function WorkspacesPanel({
     const tick = async () => {
       timer = null;
       try {
-        const ws = await listWorkspaces();
+        const ws = await listWithBadges();
         // Written into the cache rather than into local state so the badges the
         // poller earned survive the next tab switch along with the list itself.
         if (live) primeCache(WORKSPACES_KEY, ws);
@@ -404,6 +408,7 @@ export default function WorkspacesPanel({
             <ul>
               {group.items.map((ws) => {
                 const needsAttention = workspacesNeedingAttention.has(ws.id);
+                const idleForDays = idleDays(ws);
                 return (
                   <li key={ws.id}>
                     <button
@@ -431,9 +436,19 @@ export default function WorkspacesPanel({
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
                           />
                         )}
-                        <span className="truncate">{ws.name}</span>
+                        <span className={`truncate ${idleForDays !== null ? "opacity-60" : ""}`}>
+                          {ws.name}
+                        </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
+                        {idleForDays !== null && (
+                          <span
+                            title={`Not opened and no agent activity for ${idleForDays} days — archive it if the work is done`}
+                            className="text-xs text-zinc-500"
+                          >
+                            idle {idleForDays}d
+                          </span>
+                        )}
                         <WorkspacePrBadges prs={ws.prs} />
                         <StatusBadge status={ws.status} />
                       </span>
@@ -906,7 +921,7 @@ function WorkspaceDetailView({
   const load = useCallback(async () => {
     const gen = generationRef.current;
     try {
-      const next = await getWorkspace(id);
+      const next = await getWorkspace(id, { viewing: true });
       if (gen !== generationRef.current) return;
       setDetail(next);
       setError(null);
@@ -1120,7 +1135,14 @@ function WorkspaceDetailView({
   const dismissAgent = useCallback(() => {
     setAgentDismissed(true);
     setAgentActive(false);
-  }, []);
+    // Killing the PTY doesn't tell the sidecar, so without this it would resume
+    // the session on the next start.
+    stopWorkspaceAgent(id).catch((e) => {
+      setAgentError(
+        `Couldn't record that the session was closed, so it may come back after a restart: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  }, [id]);
 
   // Bring the agent tab back. When a session is already live — something else
   // started one in this workspace — this only un-hides the tab. Otherwise

@@ -11,6 +11,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
+  type ReviewCommentSource,
   repos,
   type WorkspaceReviewComment,
   workspaceRepos,
@@ -25,6 +26,8 @@ export interface CreateReviewCommentInput {
   startLine: number;
   endLine: number;
   body: string;
+  /** `user` when left out. */
+  source?: ReviewCommentSource;
 }
 
 export interface UpdateReviewCommentInput {
@@ -94,8 +97,9 @@ export async function listLocatedReviewComments(
  * taken as given — the route schema is what rejects a backwards one, so there
  * is one answer to that input rather than two.
  *
- * The user is the only author: the MCP endpoint hands bodies to an agent
- * unfenced on that basis, so any other writer has to change that first.
+ * A `user` body is the user's own words, which the MCP endpoint hands to an
+ * agent unfenced. Anything else (a report finding) is fenced there, and stays
+ * out of the event log, which feeds memory.
  */
 export async function createReviewComment(
   db: Db,
@@ -128,9 +132,10 @@ export async function createReviewComment(
       endLine: input.endLine,
       commitSha,
       body: input.body,
+      source: input.source ?? "user",
     })
     .returning();
-  if (row) {
+  if (row && row.source === "user") {
     // The body is the reviewer's own words about their in-flight work, so unlike
     // a session instruction it is safe to keep — it is what makes "what was I
     // worried about in this workspace" answerable later.

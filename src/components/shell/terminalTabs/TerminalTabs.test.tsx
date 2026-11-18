@@ -1,16 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import { resetPtyApi, stubPtyApi } from "../../../test/ptyApi";
 import { mountForInteraction } from "../../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../../test/sidecarApi";
 import type { Pane } from "./paneTree";
 import { storageKeyFor } from "./sessionIds";
 import type { SurfaceState } from "./surfaceState";
 
-// A module mock replaces `lib/pty` for the whole test run; the real exports are
-// spread back in so files reached transitively still link on what they import.
-const realPty = await import("../../../lib/pty");
-
-mock.module("../../../lib/pty", () => ({
-  ...realPty,
+stubPtyApi({
   attachPty: async () => ({ scrollback: [], endOffset: 0 }),
   writePty: async () => {},
   resizePty: async () => {},
@@ -18,21 +15,14 @@ mock.module("../../../lib/pty", () => ({
   isPtyBusy: async () => false,
   onPtyOutput: async () => () => {},
   onPtyExit: async () => () => {},
-}));
+});
+afterAll(resetPtyApi);
 
-// The attention store hydrates and streams from the sidecar on mount. Both
-// exports it uses are named rather than inherited from the real module: another
-// test file may already have replaced `lib/api` wholesale, in which case the
-// spread carries that file's stub rather than the real one.
-const realApi = await import("../../../lib/api");
-
-mock.module("../../../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
   sidecarFetch: async () => new Response("[]", { headers: { "content-type": "application/json" } }),
   streamSSE: async function* () {},
-}));
+});
 
-// Imported after the mocks are registered so the component binds to the stubs.
 const { default: TerminalTabs } = await import("./TerminalTabs");
 
 const SURFACE_KEY = "ws:dimtest";
@@ -155,3 +145,5 @@ describe("split pane dimming", () => {
     expect(dimmedPaneIds(host)).toEqual([]);
   });
 });
+
+afterAll(resetSidecarApi);

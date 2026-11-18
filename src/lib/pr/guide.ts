@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch } from "../api";
+import type { PrGuideGraph } from "./flowDiagram";
 import type { PrRef } from "./types";
 
 /**
@@ -60,6 +61,8 @@ export interface PrGuide {
   /** Commit the guide was generated against. */
   headSha: string;
   steps: PrGuideStep[];
+  /** How the code fits together, as the agent recorded it; null on older guides or when it recorded none. */
+  graph?: PrGuideGraph | null;
   currentStep: number;
   /** True once the pull request has moved past `headSha`. */
   stale: boolean;

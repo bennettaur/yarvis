@@ -147,24 +147,85 @@ describe("parsing one definition", () => {
   });
 });
 
+describe("parsing a decision specialist", () => {
+  const decision = (...extra: string[]) =>
+    [
+      "---",
+      "name: tone-check",
+      "description: Checks tone.",
+      "kind: decision",
+      ...extra,
+      "---",
+      "Judge the tone.",
+    ].join("\n");
+
+  it("reads its kind and choices", () => {
+    expect(parse(decision("choices: [calm, urgent]"))).toMatchObject({
+      kind: "decision",
+      choices: ["calm", "urgent"],
+      prompt: "Judge the tone.",
+      tools: [],
+    });
+  });
+
+  it("defaults to a task specialist with no choices", () => {
+    expect(parse("---\nname: a\ndescription: d\n---\np")).toMatchObject({
+      kind: "task",
+      choices: [],
+    });
+  });
+
+  // It runs on the decision model with no tools, so these would never apply.
+  it("rejects the keys that configure a delegated run", () => {
+    expect(() => parse(decision("tools: [recall]"))).toThrow("cannot set: tools");
+    expect(() => parse(decision("complexity: low"))).toThrow("cannot set: complexity");
+    expect(() => parse(decision("model: anthropic/x"))).toThrow("cannot set: model");
+    expect(() => parse(decision("maxSteps: 3"))).toThrow("cannot set: maxSteps");
+    expect(() => parse(decision("unattended: [recall]"))).toThrow("cannot set: unattended");
+  });
+
+  it("rejects choices on a task specialist, and an unknown kind", () => {
+    expect(() => parse("---\nname: a\ndescription: d\nchoices: [x, y]\n---\np")).toThrow(
+      "only for a decision specialist",
+    );
+    expect(() => parse("---\nname: a\ndescription: d\nkind: oracle\n---\np")).toThrow(
+      "'kind' must be task or decision",
+    );
+  });
+
+  it("rejects a prompt too long for a small decision model's context", () => {
+    const long = ["---", "name: a", "description: d", "kind: decision", "---", "x".repeat(4_001)];
+    expect(() => parse(long.join("\n"))).toThrow("cannot exceed 4000 characters");
+  });
+
+  it("rejects a choice that can't be a System One question name", () => {
+    expect(() => parse(decision("choices: [ok, not ok]"))).toThrow("not ok");
+  });
+});
+
 describe("the catalogue", () => {
   it("ships the built-in definitions, parsed", async () => {
     const { specialists, problems } = await loadCatalog();
     expect(problems).toEqual([]);
     expect(specialists.map((s) => s.name)).toEqual([
       "activity-consolidator",
+      "complexity-router",
+      "merge-reviewer",
       "planner",
       "project-manager",
       "session-summarizer",
+      "specialist-picker",
       "work-scout",
       "workspace-recap",
       "yarvis-guide",
     ]);
     expect(specialists.every((s) => s.source === "builtin")).toBe(true);
-    // The one deliberate unattended grant in the shipped set.
+    // The deliberate unattended grants in the shipped set.
     const granted = specialists.filter((s) => s.unattended.length > 0);
-    expect(granted.map((s) => s.name)).toEqual(["project-manager"]);
-    expect(granted[0]!.unattended).toEqual(["jira_create_issue"]);
+    expect(granted.map((s) => [s.name, s.unattended])).toEqual([
+      ["merge-reviewer", ["post_merge_review"]],
+      ["project-manager", ["jira_create_issue"]],
+    ]);
     // The shipped specialists cheap enough to opt into a tier rather than the
     // chat default.
     expect(specialists.find((s) => s.name === "session-summarizer")?.complexityTier).toBe("low");
@@ -174,6 +235,11 @@ describe("the catalogue", () => {
     expect(specialists.find((s) => s.name === "activity-consolidator")?.complexityTier).toBe(
       "medium",
     );
+    const decisions = specialists.filter((s) => s.kind === "decision");
+    expect(decisions.map((s) => [s.name, s.choices])).toEqual([
+      ["complexity-router", ["low", "medium", "max"]],
+      ["specialist-picker", []],
+    ]);
   });
 
   it("picks up a user definition beside the built-ins", async () => {
@@ -205,20 +271,30 @@ describe("the catalogue", () => {
     });
   });
 
+  it("loads one of two user files with the same name, and reports the other", async () => {
+    writeAgent("a", "---\nname: tidier\ndescription: First.\n---\nYou tidy.");
+    writeAgent("b", "---\nname: tidier\ndescription: Second.\n---\nYou tidy.");
+    const { specialists, problems } = await reloadCatalog();
+    expect(specialists.find((s) => s.name === "tidier")?.description).toBe("First.");
+    expect(problems).toEqual([
+      { path: join(dir, "b.md"), message: expect.stringContaining("already defines 'tidier'") },
+    ]);
+  });
+
   it("reports a file it cannot parse instead of dropping it silently", async () => {
     writeAgent("broken", "no frontmatter here");
     const { specialists, problems } = await reloadCatalog();
     expect(problems.length).toBe(1);
     expect(problems[0]!.message).toContain("frontmatter fence");
     // The rest still load.
-    expect(specialists.length).toBe(7);
+    expect(specialists.length).toBe(10);
   });
 
   it("treats a missing directory as no user definitions", async () => {
     rmSync(dir, { recursive: true, force: true });
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(7);
+    expect(specialists.length).toBe(10);
     mkdirSync(dir, { recursive: true });
   });
 
@@ -227,7 +303,7 @@ describe("the catalogue", () => {
     mkdirSync(join(dir, "nested.md"));
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(7);
+    expect(specialists.length).toBe(10);
   });
 
   it("resolves a name case-insensitively, and answers null for an unknown one", async () => {
@@ -262,6 +338,13 @@ describe("choosing a specialist", () => {
   });
 
   it("returns everything for an empty query rather than nothing", async () => {
-    expect((await searchSpecialists("")).length).toBe(7);
+    expect((await searchSpecialists("")).length).toBe(8);
+  });
+
+  // A decision specialist can't run a task, so delegation never offers one.
+  it("leaves out decision specialists", async () => {
+    const names = (await searchSpecialists("")).map((m) => m.specialist.name);
+    expect(names).not.toContain("complexity-router");
+    expect(names).not.toContain("specialist-picker");
   });
 });

@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type IssueFilter,
@@ -430,4 +430,13 @@ export async function upsertLink(db: Db, input: UpsertLinkInput): Promise<IssueL
     })
     .returning();
   return row!;
+}
+
+/** Marks linked issues `done` locally, e.g. once they were closed on their tracker. */
+export async function markLinksDone(db: Db, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(issueLinks)
+    .set({ localStatus: "done", updatedAt: new Date() })
+    .where(inArray(issueLinks.id, ids));
 }

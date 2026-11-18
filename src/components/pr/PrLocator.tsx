@@ -23,7 +23,13 @@ const HINT = "PR link, owner/repo#123, or repo#123";
  * Registered repos are loaded so a bare `repo#123` resolves without its owner;
  * the owner-qualified and link forms work regardless.
  */
-export default function PrLocator({ onOpen }: { onOpen: (pr: PrSummary) => void }) {
+export default function PrLocator({
+  onOpen,
+  actionLabel = "Open",
+}: {
+  onOpen: (pr: PrSummary) => void;
+  actionLabel?: string;
+}) {
   const [input, setInput] = useState("");
   const [knownRepos, setKnownRepos] = useState<KnownRepo[]>([]);
   const [state, setState] = useState<LocatorState>({ kind: "idle" });
@@ -92,7 +98,7 @@ export default function PrLocator({ onOpen }: { onOpen: (pr: PrSummary) => void 
           disabled={state.kind === "loading"}
           className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:text-zinc-600"
         >
-          {state.kind === "loading" ? "Opening…" : "Open"}
+          {state.kind === "loading" ? "Opening…" : actionLabel}
         </button>
       </div>
       {state.kind === "error" && <p className="mt-1.5 text-sm text-red-400">{state.message}</p>}

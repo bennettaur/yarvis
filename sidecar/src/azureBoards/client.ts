@@ -9,6 +9,8 @@
  * those take the project name read off the item.
  */
 
+import { isAllowedAzureOrgUrl } from "../azure/client.ts";
+import type { Config } from "../config.ts";
 import type { IssueComment, IssueLabel, IssueSummary } from "../issues/types.ts";
 import { htmlToMarkdown, textToHtml } from "./html.ts";
 import type {
@@ -231,6 +233,35 @@ export class AzureBoardsClient {
     const viewer = { login, uniqueName: user.properties?.Account?.$value || login };
     viewerCache.set(cacheKey, viewer);
     return viewer;
+  }
+
+  // --- Types ---
+
+  /**
+   * The work item types a project's process offers for filing, by name. Types
+   * in the hidden category (Code Review Request, Shared Steps and the like) and
+   * disabled ones are left out, since nobody files those by hand.
+   */
+  async workItemTypes(project: string): Promise<string[]> {
+    const base = this.projectBase(project);
+    const [types, categories] = await Promise.all([
+      this.request<{ value?: { name?: string; isDisabled?: boolean }[] }>(
+        "GET",
+        `${base}/_apis/wit/workitemtypes`,
+      ),
+      this.request<{
+        value?: { referenceName?: string; workItemTypes?: { name?: string }[] }[];
+      }>("GET", `${base}/_apis/wit/workitemtypecategories`),
+    ]);
+    const hidden = new Set(
+      (categories.value ?? [])
+        .filter((c) => c.referenceName === "Microsoft.HiddenCategory")
+        .flatMap((c) => c.workItemTypes ?? [])
+        .map((t) => t.name),
+    );
+    return (types.value ?? [])
+      .filter((t) => t.name && !t.isDisabled && !hidden.has(t.name))
+      .map((t) => t.name as string);
   }
 
   // --- States ---
@@ -600,4 +631,12 @@ export class AzureBoardsClient {
     );
     return this.toComment(c);
   }
+}
+
+/** Same gate the Boards routes apply: the PAT only ever goes to Azure's hosts. */
+export function boardsClientFromConfig(config: Pick<Config, "secrets">): AzureBoardsClient | null {
+  const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
+  if (!azureDevopsToken || !azureDevopsOrgUrl) return null;
+  if (!isAllowedAzureOrgUrl(azureDevopsOrgUrl)) return null;
+  return new AzureBoardsClient(azureDevopsToken, azureDevopsOrgUrl);
 }

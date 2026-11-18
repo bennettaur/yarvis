@@ -46,7 +46,11 @@ export async function renderToHtml(element: ReactElement, settleMs = 100): Promi
 export async function mountForInteraction(
   element: ReactElement,
   settleMs = 100,
-): Promise<{ host: HTMLElement; unmount: () => void }> {
+): Promise<{
+  host: HTMLElement;
+  rerender: (next: ReactElement) => void;
+  unmount: () => void;
+}> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -54,6 +58,8 @@ export async function mountForInteraction(
   await new Promise((resolve) => setTimeout(resolve, settleMs));
   return {
     host,
+    // Same root, so state held by the tree survives, as it does when a parent re-renders.
+    rerender: (next) => root.render(next),
     unmount: () => {
       root.unmount();
       host.remove();
@@ -86,4 +92,21 @@ export function firstPaintOf(element: ReactElement): {
       host.remove();
     },
   };
+}
+
+/**
+ * Waits until `condition` holds, polling, and fails with `what` if it doesn't
+ * within the timeout. For a test waiting on a fetch or a re-render to land,
+ * instead of guessing a fixed delay that is either slow or flaky.
+ */
+export async function waitFor(
+  condition: () => boolean,
+  what = "the condition",
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }

@@ -155,7 +155,10 @@ export default function VoiceSection() {
     setTesting(true);
     setStatus(null);
     try {
-      await playAudioBlob(await speak(speechRequestFor(config, TEST_PHRASE)));
+      // The fields on this screen, even while a saved voice is active.
+      await playAudioBlob(
+        await speak(speechRequestFor({ ...config, activeVoiceId: "" }, TEST_PHRASE)),
+      );
       setStatus({ ok: true, message: "Played the test phrase." });
     } catch (e) {
       setStatus({ ok: false, message: e instanceof Error ? e.message : String(e) });
@@ -173,6 +176,12 @@ export default function VoiceSection() {
           whichever one the chat you spoke into is set to. Which models each backend offers here is
           set under LLM Providers — only models tagged for speech appear.
         </p>
+        {config.activeVoiceId && (
+          <p className="text-xs text-amber-300">
+            A saved voice is active on the Voice page, so replies are spoken in it rather than with
+            the text-to-speech fields below.
+          </p>
+        )}
       </header>
 
       <div className="grid gap-4 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4 sm:grid-cols-3">
@@ -309,14 +318,14 @@ export default function VoiceSection() {
         </label>
         <label
           className="flex items-center gap-2 text-sm text-zinc-300"
-          title="Anything audible in the room can become a turn you never addressed to the assistant."
+          title="Keeps the mic open and sends each turn when you finish talking. Anything audible in the room can become a turn you never addressed to the assistant."
         >
           <input
             type="checkbox"
-            checked={config.handsFree}
-            onChange={(e) => void save({ handsFree: e.target.checked })}
+            checked={config.continuous}
+            onChange={(e) => void save({ continuous: e.target.checked })}
           />
-          Hands-free by default
+          Continuous by default
         </label>
         <button
           type="button"

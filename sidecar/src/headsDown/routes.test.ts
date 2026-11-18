@@ -1,13 +1,17 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
+import { addMessage as addChatMessage, createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { CUT_SHORT_RESULT } from "../db/schema.ts";
+import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
+import { startPass, startRun, stopRun } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -38,14 +42,21 @@ const post = (path: string, body?: unknown) =>
     headers: jsonAuth,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-const get = async (path: string) =>
+// biome-ignore lint/suspicious/noExplicitAny: test reads of JSON bodies
+const get = async (path: string): Promise<any> =>
   (await app.request(`/api/heads-down${path}`, { headers: auth })).json();
+
+/** A finished pass of the active run that chose to sleep `minutes`. */
+async function seedFinishedPass(minutes: number) {
+  await sql`INSERT INTO heads_down_passes (run_id, finished_at, sleep_minutes)
+            SELECT id, now(), ${minutes} FROM heads_down_runs WHERE status = 'active'`;
+}
 
 let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, work_streams, job_runs, heads_down_questions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-routes-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
 });
@@ -70,12 +81,109 @@ describe("/api/heads-down", () => {
     expect(items.map((r) => r.status)).toEqual(["resolved"]);
   });
 
+  it("pauses and resumes without dropping the questions it asked", async () => {
+    expect((await post("/pause")).status).toBe(409);
+    await post("/start", {});
+    await askUser(db, { kind: "question", question: "Which repo?" });
+    await seedFinishedPass(30);
+    expect((await get("")).nextPassAt).toBeString();
+    expect((await post("/resume")).status).toBe(409);
+
+    expect((await post("/pause")).status).toBe(200);
+    // No pass is due while paused.
+    expect(await get("")).toMatchObject({ run: { status: "active" }, nextPassAt: null });
+    expect((await get("")).run.pausedAt).not.toBeNull();
+    expect(await get("/questions")).toEqual([expect.objectContaining({ question: "Which repo?" })]);
+
+    expect((await post("/resume")).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { pausedAt: null } });
+  });
+
+  it("shows no next pass when the run stops before it", async () => {
+    await post("/start", { stopAt: new Date(Date.now() + 10 * 60_000).toISOString() });
+    await seedFinishedPass(30);
+    expect((await get("")).nextPassAt).toBeNull();
+  });
+
+  it("sets and clears the stop time, and refuses one already passed", async () => {
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/stop-at", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const later = new Date(Date.now() + 60 * 60_000).toISOString();
+    expect((await put({ stopAt: later })).status).toBe(409);
+
+    expect(
+      (await post("/start", { stopAt: new Date(Date.now() - 60_000).toISOString() })).status,
+    ).toBe(400);
+    expect((await post("/start", { stopAt: "7pm" })).status).toBe(400);
+    expect((await post("/start", { stopAt: later })).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { stopAt: later } });
+    expect((await put({ stopAt: new Date(Date.now() - 60_000).toISOString() })).status).toBe(400);
+    expect((await put({ stopAt: null })).status).toBe(200);
+    expect(await get("")).toMatchObject({ run: { stopAt: null } });
+    // A local time is its next occurrence.
+    expect((await put({ stopAt: "23:59" })).status).toBe(200);
+    expect(new Date((await get("")).run.stopAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
   it("takes a message for the next pass, and refuses an empty one", async () => {
     expect((await post("/messages", { body: "Send Alex the PR link" })).status).toBe(201);
     expect((await post("/messages", { body: "  " })).status).toBe(400);
     expect(await get("/messages")).toEqual([
       expect.objectContaining({ body: "Send Alex the PR link", seenAt: null }),
     ]);
+  });
+
+  it("clears work streams, messages and questions while heads-down mode is off", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await createStream(db, { title: "Chase review", status: "waiting-on-others" });
+    await createStream(db, { title: "Old fix", status: "done" });
+    await post("/messages", { body: "watch #billing-intake" });
+    await askUser(db, { kind: "question", question: "Which repo?" });
+
+    const res = await post("/clear");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ droppedStreams: 2, deletedMessages: 1 });
+
+    const streams = await sql`SELECT status, closed_at FROM work_streams ORDER BY title`;
+    expect(streams.map((r) => r.status)).toEqual(["dropped", "done", "dropped"]);
+    expect(streams.every((r) => r.closed_at !== null)).toBe(true);
+    expect(await get("/messages")).toEqual([]);
+    expect(await get("/questions")).toEqual([]);
+    const items = await sql`SELECT status FROM attention_items`;
+    expect(items.map((r) => r.status)).toEqual(["resolved"]);
+    const closed = await sql`SELECT 1 FROM events WHERE type = 'work_stream.closed'`;
+    expect(closed).toHaveLength(2);
+  });
+
+  it("clears a paused run's work and keeps the run", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await post("/start", {});
+    await post("/pause");
+
+    expect(await (await post("/clear")).json()).toEqual({ droppedStreams: 1, deletedMessages: 0 });
+    expect(await get("")).toMatchObject({ run: { status: "active" } });
+  });
+
+  it("changes nothing while a run is going or a pass holds the lease", async () => {
+    await createStream(db, { title: "Ship billing" });
+    await post("/messages", { body: "watch #billing-intake" });
+
+    await post("/start", {});
+    expect((await post("/clear")).status).toBe(409);
+    await post("/stop");
+
+    await sql`INSERT INTO job_runs (name, lease_until) VALUES ('heads-down', now() + interval '5 minutes')
+              ON CONFLICT (name) DO UPDATE SET lease_until = excluded.lease_until`;
+    expect((await post("/clear")).status).toBe(409);
+    await sql`UPDATE job_runs SET lease_until = NULL WHERE name = 'heads-down'`;
+
+    const streams = await sql`SELECT status FROM work_streams`;
+    expect(streams.map((r) => r.status)).toEqual(["active"]);
+    expect(await get("/messages")).toHaveLength(1);
   });
 
   it("answers a question once, and clears it from the attention bell", async () => {
@@ -105,6 +213,7 @@ describe("/api/heads-down", () => {
       idleSleepMinutes: 60,
       workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
       userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
       provider: null,
       model: null,
     };
@@ -118,9 +227,132 @@ describe("/api/heads-down", () => {
     expect((await put({ ...valid, workingHours: null })).status).toBe(200);
     expect(await get("/config")).toMatchObject({ workingHours: null });
     expect((await put({ ...valid, minSleepMinutes: 200 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 0 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 5 * 60 })).status).toBe(400);
+    expect((await put({ ...valid, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
+    // A client that doesn't send it keeps the saved one.
+    const { passTimeoutMinutes: _, ...withoutTimeout } = valid;
+    expect((await put({ ...withoutTimeout, passTimeoutMinutes: 90 })).status).toBe(200);
+    expect((await put(withoutTimeout)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ passTimeoutMinutes: 90 });
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);
+  });
+
+  it("saves the standing guidance, and treats a blank one as none", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, guidance: "  Merging is fine on my repos.  " })).status).toBe(
+      200,
+    );
+    expect(await get("/config")).toMatchObject({ guidance: "Merging is fine on my repos." });
+    expect((await put({ ...valid, guidance: "   " })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ guidance: null });
+    expect((await put({ ...valid, guidance: "x".repeat(4001) })).status).toBe(400);
+    expect((await put({ ...valid, guidance: null })).status).toBe(200);
+    // A client that doesn't send it can still save.
+    expect((await put(valid)).status).toBe(200);
+  });
+
+  it("saves how many routines a pass takes on, 0 to 10", async () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+
+    expect((await put({ ...valid, maxRoutinesPerPass: 0 })).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 0 });
+    expect((await put({ ...valid, maxRoutinesPerPass: 10 })).status).toBe(200);
+    for (const bad of [11, -1, 1.5]) {
+      expect((await put({ ...valid, maxRoutinesPerPass: bad })).status).toBe(400);
+    }
+    // A client that doesn't know about the setting keeps the stored value.
+    expect((await put(valid)).status).toBe(200);
+    expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 10 });
+  });
+
+  it("lists the routines with when each was last done, and reloads the files", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    try {
+      await post("/routines/reload");
+      // Two runs' worth of passes: the latest one that did it counts, even from a
+      // run that has since stopped, and an empty list counts for nothing.
+      const earlier = await startRun(db, null);
+      await stopRun(db);
+      const current = await startRun(db, null);
+      await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
+                VALUES (${current.id}, '2026-10-27T09:00:00Z', '["meeting-alarms"]'),
+                       (${earlier.id}, '2026-10-27T12:00:00Z', '["meeting-alarms"]'),
+                       (${current.id}, '2026-10-27T13:00:00Z', '[]')`;
+
+      const body = await get("/routines");
+      expect(body.problems).toEqual([]);
+      expect(body.userDir).toBe(routinesDir);
+      expect(body.routines).toContainEqual({
+        name: "meeting-alarms",
+        description: expect.any(String),
+        everyMinutes: 180,
+        workingHoursOnly: false,
+        enabled: true,
+        source: "builtin",
+        lastDoneAt: "2026-10-27T12:00:00.000Z",
+      });
+      expect(body.routines).toContainEqual(
+        expect.objectContaining({ name: "meeting-notes", enabled: false, lastDoneAt: null }),
+      );
+
+      writeFileSync(
+        join(routinesDir, "standup.md"),
+        "---\nname: standup\ndescription: Standup notes\nevery: 1d\n---\n\nWrite them.\n",
+      );
+      writeFileSync(join(routinesDir, "broken.md"), "no frontmatter");
+      // Served from the cache until reloaded.
+      expect((await get("/routines")).routines.map((r: { name: string }) => r.name)).not.toContain(
+        "standup",
+      );
+      const reloaded = (await (await post("/routines/reload")).json()) as {
+        routines: unknown[];
+        problems: { path: string }[];
+      };
+      expect(reloaded.routines).toContainEqual(
+        expect.objectContaining({ name: "standup", source: "user", everyMinutes: 24 * 60 }),
+      );
+      expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      // Later tests in this process read the shared cache.
+      await post("/routines/reload");
+      rmSync(routinesDir, { recursive: true, force: true });
+    }
   });
 
   it("allows an MCP tool for heads-down mode, and refuses a tool that isn't one", async () => {
@@ -148,5 +380,51 @@ describe("/api/heads-down", () => {
       headers: auth,
     });
     expect(res.status).toBe(404);
+  });
+
+  it("lists each pass with how many calls it made and which failed", async () => {
+    const run = await startRun(db, null);
+    const session = await createSession(db, "Heads down", { hidden: true });
+    const pass = await startPass(db, run.id, session.id);
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [
+        { id: "1", name: "list_work_streams", status: "ok", result: "[]" },
+        {
+          id: "2",
+          name: "post_message",
+          server: "Slack",
+          status: "error",
+          result: "channel_not_found",
+        },
+        {
+          id: "3",
+          name: "send_workspace_instruction",
+          status: "error",
+          result: CUT_SHORT_RESULT,
+        },
+      ],
+    });
+    // A retry in the same pass is a second assistant row; both count.
+    await addChatMessage(db, {
+      sessionId: session.id,
+      role: "assistant",
+      content: "(Failed here: overloaded)",
+      toolCalls: [{ id: "4", name: "get_workspace_status", status: "pending" }],
+    });
+
+    const [listed] = (await get("/passes")) as unknown[];
+
+    expect(listed).toMatchObject({
+      id: pass.id,
+      callCount: 4,
+      failedCalls: [
+        { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+        expect.objectContaining({ name: "send_workspace_instruction", noResult: true }),
+        expect.objectContaining({ name: "get_workspace_status", noResult: true }),
+      ],
+    });
   });
 });

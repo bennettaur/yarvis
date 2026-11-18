@@ -12,7 +12,6 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { Alarm } from "../src/lib/alarms";
 import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
@@ -23,7 +22,6 @@ declare global {
     __YARVIS_DEMO_CONFIG__?: DemoConfig;
     __yarvisDemoControls?: {
       emit: typeof emit;
-      fireAlarm: (alarm: Omit<Alarm, "status">) => Promise<void>;
     };
   }
 }
@@ -78,10 +76,13 @@ let settings: Settings = {
   onePasswordItem: null,
   colorTheme: null,
   terminalFontSize: null,
+  attentionAnimation: null,
+  allowedSlashCommands: null,
+  defaultAllowedSlashCommands: ["compact"],
+  channelMessaging: null,
 };
 
 const presentSecrets = new Set(config.presentSecrets);
-let alarms: Alarm[] = [];
 // The core records copies made outside the app; the demo has none.
 const clipboardHistory: ClipboardHistoryItem[] = [];
 
@@ -93,21 +94,6 @@ const terminals = new FakeTerminals((id, chunk) => void emit(`pty-output:${id}`,
 function updateSettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
   return settings;
-}
-
-function updateAlarm(id: string, patch: Partial<Alarm>): void {
-  alarms = alarms.map((a) => (a.id === id ? { ...a, ...patch } : a));
-}
-
-/**
- * Fires an alarm the way the core's scheduler does: the alarm is marked fired
- * in the list first, because the app re-reads that list as soon as the event
- * lands and drops anything it doesn't find there.
- */
-async function fireAlarm(alarm: Omit<Alarm, "status">): Promise<void> {
-  const fired: Alarm = { ...alarm, status: "fired" };
-  alarms = [...alarms.filter((a) => a.id !== alarm.id), fired];
-  await emit("alarm-fired", fired);
 }
 
 function handleCommand(cmd: string, args: CommandArgs): unknown {
@@ -128,12 +114,31 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
       return updateSettings({ colorTheme: (args.value as string | null) || null });
     case "set_terminal_font_size":
       return updateSettings({ terminalFontSize: args.value as number | null });
+    case "set_attention_animation":
+      return updateSettings({ attentionAnimation: args.value as boolean | null });
+    case "set_channel_messaging":
+      return updateSettings({ channelMessaging: args.enabled as boolean });
     case "set_agent":
       // The core stores a blank field as unset.
       return updateSettings({
         agentName: (args.name as string | null) || null,
         agentCommand: (args.command as string | null) || null,
       });
+    case "set_allowed_slash_commands": {
+      // Stored the way the core stores them: no leading '/', lower-case, deduped.
+      const names = [
+        ...new Set(
+          (args.commands as string[])
+            .map((c) => c.trim().replace(/^\//, "").toLowerCase())
+            .filter(Boolean),
+        ),
+      ];
+      const refused = names.find((n) => ["permissions", "hooks", "mcp", "login"].includes(n));
+      if (refused) {
+        throw new Error(`/${refused} changes what the session may do, so it can't be allowed`);
+      }
+      return updateSettings({ allowedSlashCommands: names.length > 0 ? names : null });
+    }
     case "set_azure_devops_org_url":
       return updateSettings({ azureDevopsOrgUrl: args.value as string | null });
     case "set_jira_base_url":
@@ -177,31 +182,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "delete_embeddings_secret":
       return null;
 
-    case "list_alarms":
-      return alarms;
-    case "create_alarm": {
-      const alarm: Alarm = {
-        id: crypto.randomUUID(),
-        label: args.label as string,
-        fireAtMs: args.fireAtMs as number,
-        sound: args.sound as boolean,
-        meetLink: (args.meetLink as string | null) ?? null,
-        status: "scheduled",
-      };
-      alarms = [...alarms, alarm];
-      return alarm;
-    }
-    case "cancel_alarm":
-      updateAlarm(args.id as string, { status: "cancelled" });
-      return null;
-    case "acknowledge_alarm":
-      updateAlarm(args.id as string, { status: "acknowledged" });
-      return null;
-    case "snooze_alarm":
-      updateAlarm(args.id as string, {
-        status: "scheduled",
-        fireAtMs: Date.now() + (args.minutes as number) * 60_000,
-      });
+    // The sidecar keeps the alarms; the core only stops one ringing.
+    case "release_alarm":
       return null;
 
     case "clipboard_history":
@@ -254,4 +236,4 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
 mockIPC((cmd, payload) => handleCommand(cmd, (payload ?? {}) as CommandArgs), {
   shouldMockEvents: true,
 });
-window.__yarvisDemoControls = { emit, fireAlarm };
+window.__yarvisDemoControls = { emit };

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import type { PrsPlace } from "../lib/pr/panelState";
 import { firstPaintOf, mountForInteraction, renderToHtml } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import PrsPanel from "./PrsPanel";
 
 const STORAGE_KEY = "yarvis.prs.place";
@@ -53,51 +54,7 @@ let azureViewerBody: Record<string, string> = { error: "no pat" };
 
 // GitHub is the configured provider throughout; Azure is not, which is what
 // lets the last test exercise a remembered Azure place going stale.
-mock.module("../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Faithful copy of the real implementation: a naive stub here would leak
-  // into any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the
-  // actual error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    // The real `SidecarError` carries the status and the raw body as `detail`.
-    throw Object.assign(
-      new Error(
-        detail
-          ? `${context} failed (${res.status}): ${detail}`
-          : `${context} failed: ${res.status}`,
-      ),
-      { status: res.status, detail: raw },
-    );
-  },
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -189,7 +146,7 @@ mock.module("../lib/api", () => ({
     return json([]);
   },
   streamSSE: async function* () {},
-}));
+});
 
 function storePlace(place: PrsPlace): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(place));
@@ -399,3 +356,5 @@ describe("PrsPanel place", () => {
     expect(html).toContain("no organization URL is set");
   });
 });
+
+afterAll(resetSidecarApi);

@@ -1,16 +1,24 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { clearAttentionScope, createAttention } from "../attention/service.ts";
+import { clearAttentionScope } from "../attention/service.ts";
 import { AzureDevOpsClient, isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
+import type { PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
-import { resolveModel } from "../llm/providers.ts";
+import { markReviewed } from "../reviewWorkspaces/reviewMarks.ts";
 import { askAboutCode } from "./ask.ts";
-import { deleteGuide, getGuide, isStale, saveGuide, setGuideProgress } from "./guides.ts";
+import { FixChecksInFlight, fixFailingChecksForPr } from "./fixChecks.ts";
+import {
+  claimGuide,
+  guideSessionKey,
+  resolvePrRunModel,
+  syncGuideAttention,
+  writeGuide,
+} from "./guideRun.ts";
+import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
 import {
   deleteInsight,
   getInsight,
@@ -18,10 +26,18 @@ import {
   markInsightPosted,
   saveInsight,
 } from "./insights.ts";
-import { type PrModelFeature, resolvePrModel } from "./models.ts";
+import { ResolveConflictsInFlight, resolveConflictsForPr } from "./resolveConflicts.ts";
+import {
+  latestReviewMark,
+  providerComparisons,
+  providerMarks,
+  type ReviewMarkProvider,
+  reviewMarkProvider,
+  toMarkResponse,
+} from "./reviewMarks.ts";
 import { type PrCodeSource, prSourceFor } from "./source.ts";
 import { generateTour } from "./tour.ts";
-import { type PrRef, parseRefKey, refKey } from "./types.ts";
+import { COMMIT_SHA_PATTERN, type CommitsSince, type PrRef, parseRefKey, refKey } from "./types.ts";
 import { PrWorkspaceRefusal, startWorkspaceForPr } from "./workspace.ts";
 
 /**
@@ -98,32 +114,26 @@ const askSchema = z
     path: ["endLine"],
   });
 
-/** Where the attention stream should send the user for this pull request. */
-function navTargetFor(ref: PrRef): AttentionNavTarget {
-  return ref.provider === "github"
-    ? { type: "pr", owner: ref.owner, repo: ref.repo, number: ref.number }
-    : { type: "azure-pr", org: ref.org, project: ref.project, repo: ref.repo, prId: ref.prId };
-}
-
-/** The attention item for a guide is keyed per PR, so re-generating coalesces. */
-const guideSessionKey = (ref: PrRef) => `pr-guide:${refKey(ref)}`;
-
-const stepLabel = (guide: PrGuideRow) =>
-  `Step ${guide.currentStep + 1} of ${guide.steps.length}` +
-  (guide.steps[guide.currentStep] ? ` · ${guide.steps[guide.currentStep]!.path}` : "");
-
 /** The shape the frontend consumes; the row's internals stay on this side. */
 function toGuideResponse(guide: PrGuideRow, headSha: string) {
   return {
     headSha: guide.headSha,
     steps: guide.steps,
+    graph: guide.graph,
     currentStep: guide.currentStep,
     stale: isStale(guide, headSha),
     createdAt: guide.createdAt,
   };
 }
 
-export function createPrRoutes(config: Config): Hono {
+export interface PrRouteOptions {
+  /** Replaces the provider the review marks read back from, for tests. */
+  markProvider?: (ref: PrRef) => ReviewMarkProvider | null;
+  /** Replaces the guide agent, for tests. */
+  generateTour?: typeof generateTour;
+}
+
+export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Hono {
   const router = new Hono();
 
   router.use("*", async (c, next) => {
@@ -132,57 +142,9 @@ export function createPrRoutes(config: Config): Hono {
   });
 
   const db = () => getDb(config.databaseUrl as string).db;
+  const runTour = options.generateTour ?? generateTour;
 
   const sourceFor = (ref: PrRef): PrCodeSource | { error: string } => prSourceFor(config, ref);
-
-  /**
-   * Keeps the attention stream in step with a guide's progress. The item
-   * coalesces on (sessionKey, kind), so regenerating or advancing updates the
-   * one live entry rather than stacking. Reaching the last step resolves it —
-   * the review is no longer in progress, and a finished guide sitting in the
-   * panel would read as outstanding work.
-   */
-  const syncAttention = async (ref: PrRef, guide: PrGuideRow) => {
-    const sessionKey = guideSessionKey(ref);
-    const finished = guide.currentStep >= guide.steps.length - 1;
-    if (finished) {
-      await clearAttentionScope(db(), { sessionKey }, "resolved");
-      return;
-    }
-    await createAttention(db(), {
-      source: "system",
-      sessionKey,
-      kind: "info",
-      title: guide.title ? `Reviewing ${guide.title}` : "PR review in progress",
-      body: stepLabel(guide),
-      navTarget: navTargetFor(ref),
-    });
-  };
-
-  /**
-   * Resolves the model an agent run should use: the one the caller names, else
-   * the one saved for `feature` in Settings, else the default chat model.
-   * Returns a message rather than throwing so the route can answer 400 with
-   * something the user can act on — "no LLM provider is configured" is a
-   * settings problem, not a server fault.
-   */
-  const modelFor = async (
-    feature: PrModelFeature,
-    providerId?: string,
-    modelId?: string,
-  ): Promise<{ model: Awaited<ReturnType<typeof resolveModel>> } | { error: string }> => {
-    const fallback = await resolvePrModel(config, feature);
-    const provider = providerId ?? fallback?.provider;
-    const model = modelId ?? fallback?.model;
-    if (!provider || !model) return { error: "no LLM provider is configured" };
-    try {
-      // Wrapped rather than returned bare: a resolved model can itself be a
-      // string, so an `"error" in x` check would not tell the two apart.
-      return { model: await resolveModel(config, provider, model) };
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
-    }
-  };
 
   // Generate (or regenerate) a guide. Replaces any existing one for the PR.
   router.post("/guide", async (c) => {
@@ -194,17 +156,27 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor("guide", parsed.data.provider, parsed.data.model);
+    const resolved = await resolvePrRunModel(
+      config,
+      "guide",
+      parsed.data.provider,
+      parsed.data.model,
+    );
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
+    // The assistant may already be writing this PR's guide; a second run would
+    // pay twice and overwrite it. Claimed right before the try that releases it.
+    const release = claimGuide(ref);
+    if (!release) return c.json({ error: "a guide for this PR is already being written" }, 409);
     try {
-      const { steps, headSha } = await generateTour(resolved.model, source, c.req.raw.signal);
-      const guide = await saveGuide(dbh, { ref, headSha, steps, title, url });
-      await syncAttention(ref, guide);
-      void emitEvent(dbh, {
-        type: "pr.guide.generated",
-        source: ref.provider,
-        payload: { ref: refKey(ref), title, url, steps: steps.length },
+      const { guide, headSha } = await writeGuide(dbh, config, {
+        ref,
+        source,
+        resolved,
+        title,
+        url,
+        signal: c.req.raw.signal,
+        runTour,
       });
       return c.json(toGuideResponse(guide, headSha));
     } catch (e) {
@@ -213,6 +185,8 @@ export function createPrRoutes(config: Config): Hono {
       // body, which routinely echo credentials back.
       console.error("[pr] guide generation failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    } finally {
+      release();
     }
   });
 
@@ -284,7 +258,7 @@ export function createPrRoutes(config: Config): Hono {
 
     const guide = await setGuideProgress(db(), ref, step);
     if (!guide) return c.json({ error: "no guide for this pull request" }, 404);
-    await syncAttention(ref, guide);
+    await syncGuideAttention(db(), ref, guide);
     return c.json({ currentStep: guide.currentStep });
   });
 
@@ -299,7 +273,12 @@ export function createPrRoutes(config: Config): Hono {
     if ("error" in source) return c.json({ error: source.error }, 400);
 
     const dbh = db();
-    const resolved = await modelFor("ask", parsed.data.provider, parsed.data.model);
+    const resolved = await resolvePrRunModel(
+      config,
+      "ask",
+      parsed.data.provider,
+      parsed.data.model,
+    );
     if ("error" in resolved) return c.json({ error: resolved.error }, 400);
 
     try {
@@ -367,22 +346,29 @@ export function createPrRoutes(config: Config): Hono {
     const ref = parseRefKey(insight.refKey);
     if (!ref) return c.json({ error: "insight has an unreadable pull request identity" }, 500);
 
+    // The answer's line numbers are the head it was asked on, so the comment is anchored there.
+    const viewedHead = COMMIT_SHA_PATTERN.test(insight.headSha) ? insight.headSha : undefined;
+    let placement: "line" | "file" | undefined;
     try {
-      await postComment(ref, {
-        path: insight.path,
-        line: insight.endLine,
-        body: insight.answer,
-      });
+      placement = await postComment(
+        ref,
+        { path: insight.path, line: insight.endLine, body: insight.answer },
+        viewedHead,
+      );
     } catch (e) {
       console.error("[pr] posting an insight failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    }
+    // The answer was asked about, and posted on, the head the insight records.
+    if (COMMIT_SHA_PATTERN.test(insight.headSha)) {
+      await markReviewed(dbh, config, { ref, headSha: insight.headSha, source: "comment" });
     }
     const stamped = await markInsightPosted(dbh, insight.id);
     // The comment is already on the provider at this point. If the row went
     // away underneath us the stamp has nowhere to land, and answering with a
     // null body would have the client splice it into its list.
     if (!stamped) return c.json({ error: "the insight was deleted while posting" }, 409);
-    return c.json(stamped);
+    return c.json({ ...stamped, placement });
   });
 
   router.delete("/insight/:id", async (c) => {
@@ -391,16 +377,27 @@ export function createPrRoutes(config: Config): Hono {
     return c.json({ deleted: await deleteInsight(db(), id.data) });
   });
 
-  /** Posts a line comment through whichever provider owns the pull request. */
+  /**
+   * Posts a line comment through whichever provider owns the pull request.
+   * Resolves to "file" when GitHub put it on the whole file because the line
+   * isn't part of the diff; Azure takes any line, so it resolves to undefined.
+   */
   async function postComment(
     ref: PrRef,
     comment: { path: string; line: number; body: string },
-  ): Promise<void> {
+    viewedHead?: string,
+  ): Promise<"line" | "file" | undefined> {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) throw new Error("github token not configured");
-      await createGitHubClient(config, token).postComment(ref.owner, ref.repo, ref.number, comment);
-      return;
+      const { placement } = await createGitHubClient(config, token).postComment(
+        ref.owner,
+        ref.repo,
+        ref.number,
+        comment,
+        viewedHead,
+      );
+      return placement;
     }
     const { azureDevopsToken, azureDevopsOrgUrl } = config.secrets;
     if (!azureDevopsToken || !azureDevopsOrgUrl) throw new Error("azure devops not configured");
@@ -416,7 +413,56 @@ export function createPrRoutes(config: Config): Hono {
       { project: ref.project, repo: ref.repo, prId: ref.prId },
       comment,
     );
+    return undefined;
   }
+
+  /**
+   * The user's last review of a pull request — recorded through Yarvis or read
+   * back from the provider — and how far the PR has moved on since, for the
+   * classic page's "new commits since your review" note. `head` is the head the
+   * page has loaded; without it the provider is asked. `since` is null when the
+   * provider couldn't say.
+   */
+  router.get("/review-mark", async (c) => {
+    const parsed = prRef.safeParse(parseRefQuery(c.req.query()));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const head = c.req.query("head");
+    if (head !== undefined && !COMMIT_SHA_PATTERN.test(head)) {
+      return c.json({ error: "head must be a full commit sha" }, 400);
+    }
+    const ref = parsed.data;
+    const provider = (options.markProvider ?? ((r) => reviewMarkProvider(config, r)))(ref);
+    await providerMarks.sync(db(), ref, provider);
+    const mark = await latestReviewMark(db(), ref);
+    if (!mark) return c.json({ mark: null, headSha: head ?? null, since: null });
+
+    const atMark = (sha: string | null): CommitsSince | null =>
+      sha === mark.headSha ? { exists: true, commits: 0, rewritten: false } : null;
+    if (head === mark.headSha || !provider) {
+      return c.json({
+        mark: toMarkResponse(mark),
+        headSha: head ?? null,
+        since: atMark(head ?? null),
+      });
+    }
+    // Throttled like the sync above: the page asks again on every poll.
+    const compared = await providerComparisons.get(
+      `${refKey(ref)}:${mark.headSha}:${head ?? "-"}`,
+      async () => {
+        const headSha = head ?? (await provider.headSha(ref));
+        const since =
+          atMark(headSha) ??
+          (headSha ? await provider.commitsSince(ref, mark.headSha, headSha) : null);
+        return { headSha, since };
+      },
+      "could not compare against the last review",
+    );
+    return c.json({
+      mark: toMarkResponse(mark),
+      headSha: compared?.headSha ?? head ?? null,
+      since: compared?.since ?? null,
+    });
+  });
 
   /**
    * Opens a workspace on this pull request's branch, so the reviewer can edit
@@ -441,6 +487,63 @@ export function createPrRoutes(config: Config): Hono {
       // A refusal names something the reviewer can fix; anything else is the
       // provider or the database failing, which the rest of this file answers
       // 502 for.
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
+    }
+  });
+
+  /**
+   * Hands the pull request's merge conflicts to a coding agent: typed at the
+   * prompt of the agent already running in its workspace, or as the brief of a
+   * session started in it, or of a workspace created for it (see
+   * `resolveConflictsForPr`). An agent that looks busy is not interrupted
+   * unless `confirm` is set; the answer says so with `needs_confirm`. 201 means
+   * a workspace was created, as for `/workspace`.
+   */
+  router.post("/resolve-conflicts", async (c) => {
+    const parsed = z
+      .object({ ref: prRef, confirm: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const source = sourceFor(parsed.data.ref);
+    if ("error" in source) return c.json({ error: source.error }, 400);
+
+    try {
+      const result = await resolveConflictsForPr(db(), config, source, {
+        confirm: parsed.data.confirm,
+      });
+      return c.json(result, result.outcome === "created" ? 201 : 200);
+    } catch (e) {
+      console.error("[pr] could not hand the conflicts to an agent:", describeError(e));
+      if (e instanceof ResolveConflictsInFlight) return c.json({ error: clientError(e) }, 409);
+      const refused = e instanceof PrWorkspaceRefusal;
+      return c.json({ error: clientError(e) }, refused ? 400 : 502);
+    }
+  });
+
+  /**
+   * Hands the pull request's failing CI checks to a coding agent, by the same
+   * routes as `/resolve-conflicts` (see `fixFailingChecksForPr`), with the same
+   * `confirm` and status codes.
+   */
+  router.post("/fix-checks", async (c) => {
+    const parsed = z
+      .object({ ref: prRef, confirm: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+
+    const source = sourceFor(parsed.data.ref);
+    if ("error" in source) return c.json({ error: source.error }, 400);
+
+    try {
+      const result = await fixFailingChecksForPr(db(), config, source, {
+        confirm: parsed.data.confirm,
+      });
+      return c.json(result, result.outcome === "created" ? 201 : 200);
+    } catch (e) {
+      console.error("[pr] could not hand the failing checks to an agent:", describeError(e));
+      if (e instanceof FixChecksInFlight) return c.json({ error: clientError(e) }, 409);
       const refused = e instanceof PrWorkspaceRefusal;
       return c.json({ error: clientError(e) }, refused ? 400 : 502);
     }

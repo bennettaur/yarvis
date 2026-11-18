@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { resetAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { mountForInteraction, renderToHtml } from "../test/render";
 
 /**
@@ -12,7 +12,8 @@ import { mountForInteraction, renderToHtml } from "../test/render";
  */
 
 const opened: string[] = [];
-const invoked: Array<{ command: string; args: unknown }> = [];
+const acknowledged: string[] = [];
+let sidecarDown = false;
 
 mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async (url: string) => {
@@ -20,12 +21,14 @@ mock.module("@tauri-apps/plugin-opener", () => ({
   },
 }));
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: unknown) => {
-    invoked.push({ command, args });
-    return nativeInvoke(command);
+stubAlarmsApi({
+  acknowledgeAlarm: async (id: string) => {
+    if (sidecarDown) throw new Error("sidecar unreachable");
+    acknowledged.push(id);
+    return { ...baseAlarm, id, status: "acknowledged" };
   },
-}));
+});
+afterAll(resetAlarms);
 
 const AlarmOverlay = (await import("./AlarmOverlay")).default;
 
@@ -41,7 +44,8 @@ const baseAlarm: Alarm = {
 describe("AlarmOverlay", () => {
   beforeEach(() => {
     opened.length = 0;
-    invoked.length = 0;
+    acknowledged.length = 0;
+    sidecarDown = false;
   });
 
   it("shows a Join meeting button for meeting alarms", async () => {
@@ -94,7 +98,24 @@ describe("AlarmOverlay", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(opened).toEqual(["https://meet.google.com/abc"]);
-    expect(invoked).toContainEqual({ command: "acknowledge_alarm", args: { id: "a1" } });
+    expect(acknowledged).toEqual(["a1"]);
+
+    unmount();
+  });
+
+  it("says so when the choice couldn't be recorded", async () => {
+    sidecarDown = true;
+    const { host, unmount } = await mountForInteraction(
+      createElement(AlarmOverlay, { alarm: baseAlarm, remaining: 0 }),
+      50,
+    );
+
+    Array.from(host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Acknowledge")
+      ?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Couldn't reach Yarvis");
 
     unmount();
   });

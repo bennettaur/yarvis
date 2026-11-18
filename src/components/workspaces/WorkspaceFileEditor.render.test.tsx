@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { EditorSelection } from "@codemirror/state";
 import { useState } from "react";
 import { type EditorPlace, resetEditorPlaces } from "../../lib/editorPlaces";
 import { draftKey, getDraft, resetDrafts, setDraft } from "../../lib/fileDrafts";
-import type { WorkspaceFile } from "../../lib/workspaces";
+import { FileConflictError, type WorkspaceFile } from "../../lib/workspaces";
 import { mountForInteraction } from "../../test/render";
+import { resetWorkspacesApi, stubWorkspacesApi } from "../../test/workspacesApi";
 
 const fileOf = (path: string, content: string, hash: string): WorkspaceFile => ({
   path,
@@ -28,9 +29,7 @@ let saved: { path: string; content: string; expectedHash: string }[] = [];
 let conflictOnSave = false;
 let loadError: string | null = null;
 
-const actual = await import("../../lib/workspaces");
-mock.module("../../lib/workspaces", () => ({
-  ...actual,
+stubWorkspacesApi({
   workspaceRepoFile: async (_workspaceId: string, _repoId: string, path: string) => {
     if (loadError) throw new Error(loadError);
     return filesByPath[path] ?? file;
@@ -42,11 +41,12 @@ mock.module("../../lib/workspaces", () => ({
     content: string,
     expectedHash: string,
   ) => {
-    if (conflictOnSave) throw new actual.FileConflictError("changed on disk");
+    if (conflictOnSave) throw new FileConflictError("changed on disk");
     saved.push({ path, content, expectedHash });
     return { hash: HASH_B, size: content.length };
   },
-}));
+});
+afterAll(resetWorkspacesApi);
 
 interface EditorProps {
   value: string;

@@ -1,7 +1,11 @@
 import type { Tool } from "ai";
 import { buildDelegationTools } from "../agents/tools.ts";
+import { buildAlarmTools } from "../alarms/tools.ts";
+import type { ArtifactWriter } from "../artifacts/service.ts";
+import { buildArtifactTools } from "../artifacts/tools.ts";
 import { buildAzureBoardsTools } from "../azureBoards/tools.ts";
 import { buildBrowserTools } from "../browser/tools.ts";
+import { buildClaudeTaskTools } from "../claudeTasks/tools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { buildDigestTools } from "../digest/tools.ts";
@@ -14,12 +18,17 @@ import { buildJiraTools } from "../jira/tools.ts";
 import type { MemoryService } from "../memory/index.ts";
 import { buildMemoryTools } from "../memory/tools.ts";
 import { buildPrReviewTools } from "../pr/reviewTools.ts";
+import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
+import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
+import { buildMergeReviewTools } from "../verify/tools.ts";
+import { buildWebTools } from "../web/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
+import { newUntrustedReads, type UntrustedReads } from "./destructiveTools.ts";
 import { buildTaskTools } from "./tools.ts";
 
 /**
@@ -42,6 +51,8 @@ export interface BuiltinToolDeps {
   attention: AttentionState;
   /** Whether sessions this turn starts should be remotely controllable. */
   remoteControl: boolean;
+  /** Records which third-party content this turn has read, for its approvals. */
+  untrustedReads: UntrustedReads;
   /**
    * Whether the user can answer a question from the attention bell. False on
    * Telegram, in a heads-down pass and in a delegated run: the question tools
@@ -51,6 +62,10 @@ export interface BuiltinToolDeps {
   atTheApp: boolean;
   /** A turn nobody is watching, a heads-down pass: what it records is marked as its own. */
   unattended?: boolean;
+  /** A specialist run, from a Jobs-tab job or a delegation: also unwatched. */
+  specialistRun?: boolean;
+  /** What a task scheduled from this turn inherits. Absent off a chat turn. */
+  scheduledTask?: ScheduledTaskTurnContext;
 }
 
 /**
@@ -62,26 +77,54 @@ export interface BuiltinToolDeps {
  * silently make a tool unreachable or always-on.
  */
 export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Record<string, Tool>> {
-  const { db, config, sessionId, memory, attention, remoteControl, atTheApp, unattended } = deps;
+  const {
+    db,
+    config,
+    sessionId,
+    memory,
+    attention,
+    remoteControl,
+    untrustedReads,
+    atTheApp,
+    unattended,
+    specialistRun,
+  } = deps;
+  let artifactWriter: ArtifactWriter = "chat";
+  if (unattended) artifactWriter = "heads-down";
+  else if (specialistRun) artifactWriter = "specialist";
+  // Only a chat turn can schedule a task; the others get a context that is never used.
+  const scheduledTask = deps.scheduledTask ?? {
+    provider: null,
+    model: null,
+    attempt: 0,
+    scheduledTaskId: null,
+    origin: "chat",
+  };
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
     attention: buildAttentionTool(attention),
+    scheduledTasks: buildScheduledTaskTools(db, sessionId, scheduledTask),
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
+    artifacts: buildArtifactTools(db, { writer: artifactWriter, reads: untrustedReads }),
     workStreams: buildWorkStreamTools(db, { unattended }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
     delegation: buildDelegationTools(db, config),
-    workspaces: buildWorkspaceTools(db, config, { remoteControl }),
+    claudeTasks: buildClaudeTaskTools(db, config, sessionId, { unattended }),
+    workspaces: buildWorkspaceTools(db, config, { remoteControl, reads: untrustedReads }),
     jira: buildJiraTools(db, config, { remoteControl }),
     githubIssues: buildIssueTools(db, config),
     azureBoards: buildAzureBoardsTools(db, config),
-    prReview: buildPrReviewTools(db),
+    prReview: { ...buildPrReviewTools(db), ...buildPrReviewStartTools(db, config) },
+    mergeReview: buildMergeReviewTools(config),
     calendar: buildCalendarTools(db, config),
+    alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),
+    web: buildWebTools({ reads: untrustedReads }),
     help: buildHelpTools(config),
   };
 }
@@ -116,6 +159,7 @@ function inertDeps(): BuiltinToolDeps {
     // A metadata read starts no sessions, so remote control is irrelevant here —
     // it only shapes wording in two tool descriptions.
     remoteControl: false,
+    untrustedReads: newUntrustedReads(),
     atTheApp: true,
   };
 }

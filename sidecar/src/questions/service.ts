@@ -241,6 +241,11 @@ function wake(id: string): void {
   for (const resolve of set) resolve();
 }
 
+/** Test helper: whether any tool call is still waiting on question `id`. */
+export function hasWaiter(id: string): boolean {
+  return waiters.has(id);
+}
+
 /**
  * Waits up to `timeoutMs` for a reply, then returns the row as it stands —
  * still pending if the user hasn't answered. Resolves early when `signal`

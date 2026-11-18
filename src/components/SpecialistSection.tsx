@@ -68,7 +68,8 @@ export default function SpecialistSection() {
         <code className="text-zinc-400">{catalog?.userDir ?? "~/.yarvis/agents"}</code> — YAML
         frontmatter for <code>tools</code>, <code>model</code> (or <code>complexity</code>) and{" "}
         <code>maxSteps</code>, and the body as the prompt. A file named after one that ships
-        replaces it.
+        replaces it. A file with <code>kind: decision</code> is a decision specialist instead: it
+        has no tools and picks one of a set of options on the decision model.
         {catalog?.userDir && (
           <button
             type="button"
@@ -98,15 +99,26 @@ export default function SpecialistSection() {
               <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">
                 {specialist.source === "user" ? "yours" : "built-in"}
               </span>
-              <span className="text-xs text-zinc-600">{specialist.tools.length} tool(s)</span>
-              <span className="text-xs text-zinc-600">
-                {specialist.provider && specialist.model
-                  ? `${specialist.provider}/${specialist.model}`
-                  : specialist.complexityTier
-                    ? `${specialist.complexityTier} complexity`
-                    : "default model"}
-              </span>
-              <span className="text-xs text-zinc-600">{specialist.maxSteps} steps</span>
+              {specialist.kind === "decision" ? (
+                <>
+                  <span className="rounded bg-sky-900 px-1 text-[10px] text-sky-200">decision</span>
+                  {specialist.choices.length > 0 && (
+                    <span className="text-xs text-zinc-600">{specialist.choices.join(" / ")}</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-xs text-zinc-600">{specialist.tools.length} tool(s)</span>
+                  <span className="text-xs text-zinc-600">
+                    {specialist.provider && specialist.model
+                      ? `${specialist.provider}/${specialist.model}`
+                      : specialist.complexityTier
+                        ? `${specialist.complexityTier} complexity`
+                        : "default model"}
+                  </span>
+                  <span className="text-xs text-zinc-600">{specialist.maxSteps} steps</span>
+                </>
+              )}
               {!specialist.enabled && (
                 <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">disabled</span>
               )}

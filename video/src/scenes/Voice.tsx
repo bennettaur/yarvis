@@ -1,5 +1,6 @@
 import { useCurrentFrame } from "remotion";
 import VoiceControls from "../../../src/components/voice/VoiceControls";
+import { createLevelMeter } from "../../../src/lib/levelMeter";
 import type { UseVoiceResult } from "../../../src/lib/useVoice";
 import { DEFAULT_VOICE_CONFIG } from "../../../src/lib/voiceConfig";
 import { AppScene } from "../components/AppScene";
@@ -62,11 +63,14 @@ function voiceAt(frame: number): UseVoiceResult {
     ? 0.12 + 0.1 * Math.abs(Math.sin(frame / 3.1) * Math.cos(frame / 7.3))
     : 0;
   return {
-    config: { ...DEFAULT_VOICE_CONFIG, speakReplies: true, handsFree: false },
+    config: { ...DEFAULT_VOICE_CONFIG, speakReplies: true, continuous: false },
     updateConfig: asyncNoop,
     ready: { stt: true, tts: true },
     recording: listening,
-    level,
+    starting: false,
+    hearing: listening,
+    queued: 0,
+    level: createLevelMeter(level),
     phase: speaking ? "speaking" : "idle",
     error: null,
     startListening: noop,

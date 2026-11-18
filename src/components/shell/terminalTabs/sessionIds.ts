@@ -67,6 +67,18 @@ export function attentionSurfaceOf(id: string): AttentionSurface | null {
 }
 
 /**
+ * The workspace a session's terminal lives in: its pinned agent session or one
+ * of its terminal tabs. Null for any other session. Read from the id itself, so
+ * it names where the session runs, not the workspace its hook reported.
+ */
+export function sessionWorkspaceId(id: string): string | null {
+  if (id.startsWith("ws-claude:")) return id.slice("ws-claude:".length) || null;
+  const ref = parseSessionId(id);
+  if (!ref?.surfaceKey.startsWith("ws:")) return null;
+  return ref.surfaceKey.slice("ws:".length) || null;
+}
+
+/**
  * A human label for a session — the title of the tab it lives in, read from the
  * surface's persisted state. `TerminalTabs` owns that blob but imports this
  * module, so the shape is restated here rather than imported back. Best-effort:

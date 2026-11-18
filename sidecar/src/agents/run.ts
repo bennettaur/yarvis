@@ -1,4 +1,6 @@
 import { generateText, stepCountIs, type Tool } from "ai";
+import { yarvisToolType } from "../activity/classify.ts";
+import { type ActivityType, reportYarvisActivity } from "../activity/hub.ts";
 import { builtinIdForName, nameForBuiltinId } from "../agentTools/registry.ts";
 import { listDisabledToolIds } from "../agentTools/store.ts";
 import { newAttentionState } from "../chat/attentionTools.ts";
@@ -6,16 +8,22 @@ import { buildBuiltinTools } from "../chat/builtinTools.ts";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
+  newUntrustedReads,
 } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { resolveComplexityModel } from "../llm/complexity.ts";
+import {
+  type ComplexityTier,
+  isComplexityTier,
+  resolveComplexityModel,
+} from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import type { SpecialistDefinition } from "./catalog.ts";
 import { findSpecialist } from "./catalog.ts";
+import { consultDecisionSpecialist } from "./decide.ts";
 
 /**
  * Running a specialist: one bounded, tool-limited turn that returns text.
@@ -90,7 +98,14 @@ export interface SpecialistRun {
  * orchestrator's job: a specialist that could delegate could delegate to itself,
  * and one bad prompt becomes an unbounded chain of runs.
  */
-const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specialists"]);
+const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
+  "delegate",
+  "list_specialists",
+  // A scheduled task is a turn in a chat, and a delegated run has no chat to return to.
+  "schedule_task",
+  "list_scheduled_tasks",
+  "cancel_scheduled_task",
+]);
 
 /**
  * Tools a specialist holds only if it has been granted them explicitly.
@@ -105,6 +120,10 @@ const NEVER_DELEGATABLE: ReadonlySet<string> = new Set(["delegate", "list_specia
 const NEEDS_EXPLICIT_GRANT: ReadonlySet<string> = new Set([
   ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
   ...DESTRUCTIVE_BUILTIN_TOOLS,
+  // Writes nothing, but the URL it fetches is the model's choice, so an
+  // instruction in the material a specialist reads could send data out in a
+  // query string with nobody watching.
+  "read_web_page",
 ]);
 
 export interface SelectToolsOptions {
@@ -173,12 +192,19 @@ export function materialBlock(material: string, nonce: string): string {
 /**
  * Resolves a specialist's own choice of model, from whichever of `provider`/
  * `model` or `complexityTier` its file set — `catalog.ts` rejects a file that
- * sets both, so this never has to choose between them. Falls back to the
- * default chat model when the specialist named neither.
+ * sets both, so this never has to choose between them. When it named neither,
+ * the decision model may pick a tier for the task; otherwise, or when it can't,
+ * this falls back to the default chat model.
+ *
+ * A specialist with `unattended` grants is never routed. It reads text others
+ * wrote while holding tools nobody approves per call, so the task text must
+ * not be able to talk it down onto a smaller, easier-to-steer model.
  */
 export async function specialistModel(
   config: Config,
   specialist: SpecialistDefinition,
+  task: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
 ): Promise<{ provider: string; model: string } | null> {
   if (specialist.provider && specialist.model) {
     return { provider: specialist.provider, model: specialist.model };
@@ -186,7 +212,25 @@ export async function specialistModel(
   if (specialist.complexityTier) {
     return resolveComplexityModel(config, specialist.complexityTier);
   }
+  if (specialist.unattended.length === 0) {
+    const routed = await routedTier(config, task, options);
+    if (routed) return resolveComplexityModel(config, routed);
+  }
   return defaultProviderModel(config);
+}
+
+async function routedTier(
+  config: Config,
+  task: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch },
+): Promise<ComplexityTier | null> {
+  const answer = await consultDecisionSpecialist(config, "routeComplexity", "complexity-router", {
+    input: task,
+    ...options,
+  });
+  // The router's `choices` can be overridden by a user file, so its answer is
+  // checked rather than trusted to be a tier.
+  return answer && isComplexityTier(answer.choice) ? answer.choice : null;
 }
 
 export async function runSpecialist(input: RunSpecialistInput): Promise<SpecialistRun> {
@@ -201,6 +245,18 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
   specialist: SpecialistDefinition;
 }
 
+/** How a specialist run's built-in tools differ from a chat's. */
+export const SPECIALIST_TOOL_DEPS = {
+  // A delegated run is not the user asking for a session, so nothing it starts
+  // is made remotely controllable.
+  remoteControl: false,
+  // The question tools wait on the user for longer than a run may last, holding
+  // up the chat or job that started it, and a run has no chat to show them in.
+  atTheApp: false,
+  // Its artifact writes are its own: append-only on a chat's, and untrusted.
+  specialistRun: true,
+} as const;
+
 /**
  * Runs a definition the caller already holds, skipping the catalogue lookup and
  * the enabled check.
@@ -211,11 +267,14 @@ export interface RunDefinitionInput extends Omit<RunSpecialistInput, "name"> {
  */
 export async function runSpecialistDefinition(input: RunDefinitionInput): Promise<SpecialistRun> {
   const { config, db, specialist, task, material, signal } = input;
+  if (specialist.kind === "decision") {
+    throw new Error(`"${specialist.name}" is a decision specialist and can't run a task`);
+  }
 
   const chosen =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
-      : await specialistModel(config, specialist);
+      : await specialistModel(config, specialist, task, { signal });
   if (!chosen) throw new Error("no chat model is configured");
   const model = await resolveModel(config, chosen.provider, chosen.model);
 
@@ -228,12 +287,11 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     sessionId: "",
     memory,
     attention: newAttentionState(),
-    // A delegated run is not the user asking for a session, so nothing it starts
-    // is made remotely controllable.
-    remoteControl: false,
-    // The question tools wait on the user for longer than a run may last, holding
-    // up the chat or job that started it, and a run has no chat to show them in.
-    atTheApp: false,
+    // A delegated run has no approval channel, so this gates nothing; its
+    // outward-facing tools need an explicit grant instead. (What it writes to an
+    // artifact is marked untrusted regardless.)
+    untrustedReads: newUntrustedReads(),
+    ...SPECIALIST_TOOL_DEPS,
   });
   const disabled = new Set((await listDisabledToolIds(db)).map((t) => t.id));
   const tools = selectTools(allTools, specialist.tools.map(builtinIdForName), {
@@ -244,6 +302,10 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
   const nonce = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const prompt = material ? `${task}\n\n${materialBlock(material, nonce)}` : task;
 
+  const report = (type: ActivityType, label: string) =>
+    reportYarvisActivity(specialist.name, type, label);
+
+  report("spawn", "delegated");
   try {
     const result = await generateText({
       model,
@@ -252,7 +314,14 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
       tools,
       stopWhen: stepCountIs(specialist.maxSteps),
       abortSignal: signal ?? AbortSignal.timeout(DEFAULT_RUN_TIMEOUT_MS),
+      onStepFinish: (step) => {
+        for (const part of step.content) {
+          if (part.type === "tool-call") report(yarvisToolType(part.toolName), part.toolName);
+          else if (part.type === "tool-error") report("error", `${part.toolName} failed`);
+        }
+      },
     });
+    report("subagent_done", "run complete");
     return {
       specialist: specialist.name,
       text: result.text,
@@ -263,6 +332,7 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     // The provider error carries the request and often the key; log the
     // redacted form and re-throw something the caller can show.
     console.error(`[agents] specialist ${specialist.name} failed:`, describeError(e));
+    report("error", "run failed");
     throw new Error(`specialist "${specialist.name}" failed`);
   }
 }

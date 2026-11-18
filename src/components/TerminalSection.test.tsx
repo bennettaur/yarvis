@@ -37,6 +37,10 @@ function defaultSettings(): Settings {
     onePasswordItem: null,
     colorTheme: null,
     terminalFontSize: null,
+    attentionAnimation: null,
+    allowedSlashCommands: null,
+    defaultAllowedSlashCommands: ["compact"],
+    channelMessaging: null,
   };
 }
 

@@ -1,20 +1,43 @@
 import { useState } from "react";
 import { getPass, type HeadsDownPass, type PassMessage } from "../../lib/headsDown";
+import { useWorkspaceNames, type WorkspaceNames } from "../../lib/workspaceMentions";
 import Markdown from "../Markdown";
 import TurnActivity from "../TurnActivity";
+import AgentMark from "./AgentMark";
 import type { LivePass } from "./useLivePass";
 
-/** The sleep reason the sidecar records for a pass the user stopped (`headsDown/pass.ts`). */
+/** The sleep reasons the sidecar records for a pass cut short on purpose (`headsDown/pass.ts`). */
 const STOPPED_BY_USER = "stopped by you";
+const REACHED_STOP_TIME = "reached the stop time";
 
 function describeSleep(pass: HeadsDownPass): string | null {
   if (pass.sleepReason === STOPPED_BY_USER) return "Stopped by you";
+  if (pass.sleepReason === REACHED_STOP_TIME) return "Stopped at the stop time";
   if (pass.sleepMinutes === null) return null;
-  return `then slept ${pass.sleepMinutes} min${pass.sleepReason ? ` (${pass.sleepReason})` : ""}`;
+  return `Then slept ${pass.sleepMinutes} min${pass.sleepReason ? ` (${pass.sleepReason})` : ""}`;
 }
 
-/** One finished pass: a summary line, and its transcript one click away. */
-function PassRow({ pass }: { pass: HeadsDownPass }) {
+function describeCalls(pass: HeadsDownPass): string | null {
+  if (!pass.callCount) return null;
+  const failed = pass.failedCalls?.filter((c) => !c.noResult).length ?? 0;
+  const noResult = (pass.failedCalls?.length ?? 0) - failed;
+  return [
+    `${pass.callCount} tool call${pass.callCount === 1 ? "" : "s"}`,
+    failed > 0 ? `${failed} failed` : null,
+    noResult > 0 ? `${noResult} with no result` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** One finished pass: what it left, how it ended, and its transcript one click away. */
+function PassRow({
+  pass,
+  workspaceNames,
+}: {
+  pass: HeadsDownPass;
+  workspaceNames: WorkspaceNames;
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<PassMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +56,9 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
 
   // The first message is the prompt the pass started from; the rest is what it did.
   const replies = messages?.filter((m) => m.role === "assistant") ?? [];
+  const sleep = describeSleep(pass);
+  const calls = describeCalls(pass);
+  const failedCalls = pass.failedCalls ?? [];
 
   return (
     <li className="rounded-lg border border-zinc-800 bg-zinc-900/40">
@@ -40,18 +66,42 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
         type="button"
         onClick={() => void toggle()}
         aria-expanded={isOpen}
-        className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left"
+        className="w-full px-3 py-2 text-left"
       >
-        <div className="min-w-0">
-          <div className="text-sm text-zinc-200">
-            {new Date(pass.startedAt).toLocaleString()}
-            {pass.error && <span className="ml-2 text-xs text-red-400">failed</span>}
-          </div>
-          {pass.notes && <p className="mt-0.5 text-xs text-zinc-400">{pass.notes}</p>}
-          {pass.error && <p className="mt-0.5 text-xs text-red-300/80">{pass.error}</p>}
+        <div className="flex flex-wrap items-baseline gap-x-2 text-sm text-zinc-200">
+          <span>{new Date(pass.startedAt).toLocaleString()}</span>
+          {pass.error && <span className="text-xs text-red-400">failed</span>}
+          {calls && <span className="text-xs text-zinc-500">{calls}</span>}
         </div>
-        <span className="shrink-0 text-xs text-zinc-500">{describeSleep(pass)}</span>
+        {sleep && <p className="mt-0.5 text-xs text-zinc-500">{sleep}</p>}
       </button>
+      {(pass.notes || pass.error || failedCalls.length > 0) && (
+        <div className="space-y-1 px-3 pb-2">
+          {pass.notes && (
+            <Markdown className="text-xs text-zinc-400" workspaceNames={workspaceNames}>
+              {pass.notes}
+            </Markdown>
+          )}
+          {pass.error && <p className="text-xs text-red-300/80">{pass.error}</p>}
+          {failedCalls.length > 0 && (
+            <ul className="space-y-0.5 text-xs text-zinc-500">
+              {failedCalls.map((call, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: the same call can fail twice, and the list never reorders
+                <li key={i} className="break-words">
+                  {call.noResult ? (
+                    <span className="text-amber-400">?</span>
+                  ) : (
+                    <span className="text-red-400">✕</span>
+                  )}{" "}
+                  {call.server ? `${call.server}/` : ""}
+                  {call.name}
+                  {call.noResult ? ": no result" : call.error ? `: ${call.error}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {isOpen && (
         <div className="border-t border-zinc-800 px-3 py-2">
           {error && <p className="text-xs text-red-400">{error}</p>}
@@ -62,12 +112,37 @@ function PassRow({ pass }: { pass: HeadsDownPass }) {
           {replies.map((m) => (
             <div key={m.id}>
               <TurnActivity activity={m.toolCalls ?? []} />
-              {m.content && <Markdown className="text-sm text-zinc-200">{m.content}</Markdown>}
+              {m.content && (
+                <Markdown className="text-sm text-zinc-200" workspaceNames={workspaceNames}>
+                  {m.content}
+                </Markdown>
+              )}
             </div>
           ))}
         </div>
       )}
     </li>
+  );
+}
+
+/** The latest thing the pass thought, folded to one line until opened. */
+function LatestThought({ text, isThinking }: { text: string; isThinking: boolean }) {
+  const firstLine = text.trim().split("\n")[0] ?? "";
+  return (
+    <details className="group mb-2 rounded-md border border-zinc-800 bg-zinc-900/60 text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-zinc-400 hover:text-zinc-200">
+        <span className="shrink-0 transition-transform group-open:rotate-90">›</span>
+        <span
+          className={`shrink-0 ${isThinking ? "animate-pulse motion-reduce:animate-none" : ""}`}
+        >
+          {isThinking ? "Thinking:" : "Last thought:"}
+        </span>
+        <span className="truncate group-open:hidden">{firstLine}</span>
+      </summary>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap px-2 pb-2 text-zinc-400">
+        {text}
+      </pre>
+    </details>
   );
 }
 
@@ -83,13 +158,32 @@ export default function PassList({
   loading: boolean;
 }) {
   const finished = passes.filter((p) => p.finishedAt !== null);
+  const workspaceNames = useWorkspaceNames();
   return (
     <div className="space-y-2">
       {live && (
         <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/5 p-3">
-          <div className="mb-2 text-xs font-medium text-indigo-300">Working now</div>
-          <TurnActivity activity={live.activity} thinking={live.thinking || undefined} running />
-          {live.text && <Markdown className="text-sm text-zinc-200">{live.text}</Markdown>}
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-indigo-300">
+            <AgentMark state="working" className="h-5 w-5" />
+            Working now
+            {live.activity.length > 0 && (
+              <span className="font-normal text-zinc-500">
+                · {live.activity.length} tool call{live.activity.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+          {live.error && (
+            <p className="mb-2 text-xs text-amber-300">
+              {live.retrying ? `${live.error} Trying again shortly.` : live.error}
+            </p>
+          )}
+          {live.thought && <LatestThought text={live.thought} isThinking={live.isThinking} />}
+          <TurnActivity activity={live.activity} running />
+          {live.text && (
+            <Markdown className="text-sm text-zinc-200" workspaceNames={workspaceNames}>
+              {live.text}
+            </Markdown>
+          )}
         </div>
       )}
       {finished.length === 0 && !live ? (
@@ -97,7 +191,7 @@ export default function PassList({
       ) : (
         <ul className="space-y-2">
           {finished.map((pass) => (
-            <PassRow key={pass.id} pass={pass} />
+            <PassRow key={pass.id} pass={pass} workspaceNames={workspaceNames} />
           ))}
         </ul>
       )}

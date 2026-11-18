@@ -2,21 +2,55 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Yarvis activity</title>
+    <title>Yarvis</title>
     <link rel="stylesheet" href="popup.css" />
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <header>
-      <h1>Yarvis activity</h1>
-      <button id="clear" type="button">Clear</button>
-    </header>
-    <p class="hint">
-      What Yarvis asked this browser to do, newest first, with the full result. Kept until
-      Chrome quits.
-    </p>
-    <p id="empty" class="hint" hidden>Nothing yet.</p>
-    <ol id="entries"></ol>
+    <div class="views" role="tablist">
+      <button id="show-chat" type="button" role="tab" aria-selected="true">Chat</button>
+      <button id="show-activity" type="button" role="tab" aria-selected="false">Activity</button>
+    </div>
+
+    <section id="chat-view" class="chat">
+      <div class="pickers">
+        <select id="instance" aria-label="Yarvis app" hidden></select>
+        <select id="session" aria-label="Chat"></select>
+      </div>
+      <p id="chat-status" class="hint" hidden></p>
+      <ol id="thread" class="thread" aria-live="polite"></ol>
+      <div id="approval" class="approval" role="alertdialog" aria-labelledby="approval-text" hidden>
+        <p id="approval-text"></p>
+        <pre id="approval-args"></pre>
+        <div class="approval-actions">
+          <button id="deny" type="button">Deny</button>
+          <button id="approve" type="button">Allow</button>
+        </div>
+      </div>
+      <form id="composer" class="composer">
+        <label class="share">
+          <input id="share-tab" type="checkbox" checked />
+          <span>Share this tab and selected text: <span id="tab-title" class="tab-title"></span></span>
+        </label>
+        <textarea id="message" rows="3" placeholder="Ask Yarvis…" aria-label="Message"></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </section>
+
+    <section id="activity-view" hidden>
+      <header>
+        <h1>Yarvis activity</h1>
+        <button id="clear" type="button">Clear</button>
+      </header>
+      <p class="hint">
+        What Yarvis asked this browser to do, newest first, with the full result. Kept until
+        Chrome quits.
+      </p>
+      <p id="empty" class="hint" hidden>Nothing yet.</p>
+      <ol id="entries"></ol>
+    </section>
+
     <script type="module" src="sidepanel.js"></script>
+    <script type="module" src="chat.js"></script>
   </body>
 </html>

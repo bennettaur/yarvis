@@ -7,10 +7,12 @@
  * the extension's answer back to the sidecar that asked. Keeping the network
  * half here means the extension needs no host permission for localhost and
  * never sees a sidecar's port or token — both come from the discovery files each
- * sidecar writes on launch.
+ * sidecar writes on launch. The side panel's chat goes the other way through
+ * the same process: see chat.ts.
  */
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { chatRequest, relayChat } from "./chat.ts";
 import { encodeFrame, FrameDecoder } from "./frames.ts";
 import { type Instance, instancesDir, ownedByMe, readTrustedEntry } from "./instances.ts";
 
@@ -200,7 +202,64 @@ async function rescan(): Promise<void> {
   reportStatus();
 }
 
-/** Extension → host: who this profile is, and answers to commands. */
+/** Side-panel chat operations in flight, so closing the panel can stop a turn. */
+const chatAborts = new Map<string, AbortController>();
+
+/** The named instance, or the only one connected when the panel didn't say. */
+function chatInstance(name: unknown): Instance | null {
+  const connected = [...pollers.values()].filter((p) => p.connected).map((p) => p.instance);
+  if (typeof name === "string" && name) return connected.find((i) => i.name === name) ?? null;
+  return connected.length === 1 ? (connected[0] as Instance) : null;
+}
+
+function sendUnlessOversize(message: unknown): void {
+  try {
+    send(message);
+  } catch {
+    // Over Chrome's 1 MiB cap: the reply below still reaches the panel.
+  }
+}
+
+async function handleChat(message: { id: string; instance?: unknown }): Promise<void> {
+  const { id } = message;
+  const request = chatRequest(message);
+  if (!request) {
+    send({ type: "chat_reply", id, ok: false, error: "Not a chat request." });
+    return;
+  }
+  const instance = chatInstance(message.instance);
+  if (!instance) {
+    const error =
+      typeof message.instance === "string" && message.instance
+        ? `Yarvis "${message.instance}" isn't connected.`
+        : "Pick which Yarvis to talk to.";
+    send({ type: "chat_reply", id, ok: false, error });
+    return;
+  }
+  const controller = new AbortController();
+  chatAborts.set(id, controller);
+  try {
+    const reply = await relayChat(
+      instance,
+      request,
+      (event) => sendUnlessOversize({ type: "chat_event", id, event }),
+      controller.signal,
+    );
+    try {
+      send({ type: "chat_reply", id, ...reply });
+    } catch {
+      send({ type: "chat_reply", id, ok: false, error: "That reply is too large to show here." });
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      send({ type: "chat_reply", id, ok: false, error: `Couldn't reach Yarvis: ${String(error)}` });
+    }
+  } finally {
+    chatAborts.delete(id);
+  }
+}
+
+/** Extension → host: who this profile is, answers to commands, and chat. */
 const decoder = new FrameDecoder();
 process.stdin.on("data", (chunk: Buffer) => {
   let messages: unknown[];
@@ -225,6 +284,14 @@ process.stdin.on("data", (chunk: Buffer) => {
       continue;
     }
     if (typeof message?.id !== "string") continue;
+    if (message.type === "chat") {
+      void handleChat(message as { id: string; instance?: unknown });
+      continue;
+    }
+    if (message.type === "chat_cancel") {
+      chatAborts.get(message.id)?.abort();
+      continue;
+    }
     const route = pending.get(message.id);
     if (!route) continue;
     pending.delete(message.id);

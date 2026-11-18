@@ -48,3 +48,9 @@ __pycache__/
 *.sln
 *.sw?
 .worktrees
+
+# TypeScript incremental build state
+*.tsbuildinfo
+
+# Made by verify:agent-key; never commit it
+merge-reviewer.key

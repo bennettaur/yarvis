@@ -1,12 +1,15 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { streamExists, updateStream } from "../workStreams/service.ts";
-import { askUser } from "./attention.ts";
+import { getStream, updateStream } from "../workStreams/service.ts";
+import { STREAM_PAUSED } from "../workStreams/tools.ts";
+import { announceMerge, askUser, mergeKey } from "./attention.ts";
+import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
- * them, and ending the pass with notes and a sleep length.
+ * them, telling them about a merge, and ending the pass with notes and a
+ * sleep length.
  */
 
 /** What `finish_pass` asked for, read by the loop once the pass is over. */
@@ -15,30 +18,116 @@ export interface PassOutcome {
   notes: string | null;
   sleepMinutes: number | null;
   reason: string | null;
+  /** Routines offered this pass that it reported done. */
+  routinesDone: string[];
 }
 
 export function newPassOutcome(): PassOutcome {
-  return { finished: false, notes: null, sleepMinutes: null, reason: null };
+  return { finished: false, notes: null, sleepMinutes: null, reason: null, routinesDone: [] };
 }
 
-export function buildPassTools(db: Db, outcome: PassOutcome, onAsked: () => void) {
+/**
+ * `announcedMerges` collects the PRs this pass announced (see `mergeKey`), so
+ * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
+ * names the routines this pass was given; `finish_pass` records only those.
+ * `mergeFeedback` keeps a merge held for open review feedback from being
+ * announced as happening.
+ */
+export function buildPassTools(
+  db: Db,
+  outcome: PassOutcome,
+  onAsked: () => void,
+  announcedMerges: Set<string>,
+  offeredRoutines: readonly string[],
+  mergeFeedback?: MergeFeedbackLoader,
+) {
   return {
+    announce_merge: tool({
+      description:
+        "Call when a merge can go ahead now, right before you merge the PR, whether with a tool or by telling a workspace's session to. Not while the merge still waits on the user's approval: announce it on the pass that makes it. It pops up an alert over whatever the user has open; it doesn't merge anything or wait for them. Judge the risk from the files the PR changes first, and ask with ask_user instead when it is high or you can't tell.",
+      inputSchema: z.object({
+        repo: z
+          .string()
+          .regex(/^[\w.-]+\/[\w.-]+$/)
+          .describe("The PR's repo, as owner/name"),
+        number: z.number().int().positive(),
+        title: z.string().max(300).optional().describe("The PR's title"),
+        risk: z.enum(["low", "medium", "high"]),
+        why: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe("Why you are merging it now, and why that risk level"),
+      }),
+      execute: async (merge) => {
+        // `githubOnly: false` because announce_merge can't tell which merge tool
+        // the pass will call: a PR no workspace owns comes back unchecked here.
+        // The merge call itself is checked again when it's made.
+        const feedback = mergeFeedback
+          ? await mergeFeedback({ repo: merge.repo, number: merge.number, githubOnly: false })
+          : null;
+        if (holdsMerge(feedback)) {
+          const why =
+            feedback.unchecked !== null
+              ? "Not announced: Yarvis can't check this PR for open review feedback before the merge call."
+              : "Not announced: the PR has open review feedback, so the merge won't run yet.";
+          return {
+            ok: false,
+            message: `${why} If the merging rules let the merge go ahead, make the merge call: it is checked then, and goes to the PR's workspace or the user.`,
+          };
+        }
+        // Added before the alert is written, so a merge call made in the same
+        // step finds it and the backstop doesn't raise a second alert.
+        announcedMerges.add(mergeKey(merge.repo, merge.number));
+        await announceMerge(db, merge);
+        return { ok: true, message: "The user has been shown this merge." };
+      },
+    }),
+
     ask_user: tool({
       description:
-        "Ask the user something only they can answer. They answer on the Heads down page, maybe hours later; you don't wait. Their answer reaches a later pass. Give a streamId and that stream is marked waiting on them. Offer options when the answer is a choice, so it can be stored as a decision and reused.",
+        "Ask the user something only they can answer. They answer on the Heads down page, maybe hours later; you don't wait. Their answer reaches a later pass. Give a streamId and that stream is marked waiting on them. Offer options when the answer is a choice, so it can be stored as a decision and reused. question and situation are both required. Keep the question short and put the background in situation; a call over any limit below fails.",
       inputSchema: z.object({
-        question: z.string().min(1).max(1000),
+        question: z
+          .string()
+          .min(1)
+          .max(1000)
+          .describe(
+            "Required. The question itself, ending with a question mark. At most 1000 characters: summarize long lists instead of pasting them",
+          ),
         situation: z
           .string()
           .max(1000)
-          .describe("What is going on, self-contained, so the answer can be reused later"),
-        streamId: z.string().uuid().optional(),
-        options: z.array(z.string().min(1).max(80)).max(6).optional(),
-        action: z.string().max(100).optional().describe("The tool the question is about, if any"),
+          .describe(
+            "Required. What is going on, self-contained, so the answer can be reused later. At most 1000 characters",
+          ),
+        streamId: z
+          .string()
+          .uuid()
+          .optional()
+          .describe(
+            "The id of the work stream this holds up, exactly as list_work_streams gives it",
+          ),
+        options: z
+          .array(z.string().min(1).max(80))
+          .max(6)
+          .optional()
+          .describe(
+            "The choices, when the answer is one. At most 6, each a short label of at most 80 characters; put the detail in situation",
+          ),
+        action: z
+          .string()
+          .max(100)
+          .optional()
+          .describe(
+            "The name of the tool the question is about, if any, e.g. jira_transition_issue",
+          ),
       }),
       execute: async ({ question, situation, streamId, options, action }) => {
-        if (streamId && !(await streamExists(db, streamId))) {
-          return { error: "no work stream with that id" };
+        if (streamId) {
+          const stream = await getStream(db, streamId);
+          if (!stream) return { error: "no work stream with that id" };
+          if (stream.pausedAt) return { error: STREAM_PAUSED };
         }
         const asked = await askUser(db, {
           kind: "question",
@@ -67,13 +156,31 @@ export function buildPassTools(db: Db, outcome: PassOutcome, onAsked: () => void
           .min(1)
           .max(24 * 60),
         reason: z.string().max(300).describe("Why that long, in a few words"),
+        routinesDone: z
+          .array(z.string().max(64))
+          .max(20)
+          .optional()
+          .describe(
+            "Names of the routines given to this pass that you finished, including ones that turned out to have nothing to do",
+          ),
       }),
-      execute: async ({ notes, sleepMinutes, reason }) => {
+      execute: async ({ notes, sleepMinutes, reason, routinesDone }) => {
         outcome.finished = true;
         outcome.notes = notes?.trim() || null;
         outcome.sleepMinutes = sleepMinutes;
         outcome.reason = reason;
-        return { ok: true, message: "Pass recorded. Stop here." };
+        // A name the pass wasn't given would push that routine's next run back unseen.
+        const reported = [...new Set(routinesDone ?? [])];
+        outcome.routinesDone = reported.filter((name) => offeredRoutines.includes(name));
+        const ignored = reported.filter((name) => !offeredRoutines.includes(name));
+        const notDone = offeredRoutines.filter((name) => !reported.includes(name));
+        const remarks = [
+          ignored.length > 0 &&
+            `Not recorded as done, since this pass wasn't given them: ${ignored.join(", ")}.`,
+          notDone.length > 0 &&
+            `Not reported done, so a later pass gets them again: ${notDone.join(", ")}.`,
+        ].filter(Boolean);
+        return { ok: true, message: ["Pass recorded.", ...remarks, "Stop here."].join(" ") };
       },
     }),
   };

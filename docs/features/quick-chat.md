@@ -39,22 +39,41 @@ Other tabs only say which tab you're on.
 
 ## The Chat tab
 
-Open it with **Cmd+1**. At the top:
+Open it with **Cmd+1**. At the top are **New chat** and a **session**
+dropdown to go back to an earlier chat.
 
-- **New chat**, and a **session** dropdown to go back to an earlier chat.
+The toolbar under the message box holds the rest:
+
 - **Thinking** shows the model's reasoning, for providers that return it.
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
 
 The Chat tab stays loaded when you switch tabs, so a long answer keeps
-streaming while you do something else.
+streaming while you do something else. The thread follows a reply as it
+arrives. Scroll up and it stops following; the arrow button at the bottom of
+the thread jumps back to the newest message.
 
 ### Sending
 
 - **Enter** sends. **Shift+Enter** adds a new line.
 - While a reply is running, **Send** becomes **Stop**. Stopping discards the
   partial reply and saves nothing for that turn.
+- You can keep typing while a reply is running. **Queue** appears beside
+  **Stop**, and **Enter** (or **Queue**) puts the message in a queue above the
+  message box. When the reply finishes, the queued messages go out one per
+  turn, in order. Click **×** to drop one.
+- If the reply fails or you stop it, the queue waits. **Send next** sends the
+  next queued message. Starting a new chat or switching sessions clears the
+  queue. This works the same in Omni Chat.
 - If a turn fails, **Retry** sends the same message again.
+- Hover over one of your messages for **Resend** and **Edit**. Either restarts
+  the chat from that message and discards the replies after it.
+- If the connection to the sidecar drops mid-turn, the error says which of three
+  things happened: the sidecar restarted during the turn (saving API keys in
+  Settings restarts it), it isn't answering at all, or the connection dropped
+  while it kept running. The detail shows how long the turn ran and the last
+  thing it received. `sidecar.log`, whose path Settings → Diagnostics shows,
+  keeps what the sidecar logged across a crash or restart.
 
 There is no file attachment yet. Paste text, or ingest a document under
 **Memory → Ingest document**.
@@ -65,10 +84,24 @@ Above each reply is a list of the tools the assistant called: the tool name,
 which MCP server it came from, whether it worked, and how long it took. Click a
 row to see the arguments and the result. When the reply starts, the list folds
 into one line, for example "Used 4 tool calls". Reasoning, when the provider
-returns it, shows as a "Thinking…" block you can expand.
+returns it, stays open while it streams in and folds a second after it ends.
+Click it to read it again.
+
+On later turns the assistant still sees those calls and their results, so a
+follow-up like "same message, but shorter" reuses the channel or user it
+already looked up instead of searching again. It sees the shortened result
+shown in the list, not the whole one (and at most 1,000 characters of it), and
+calls the tool again when it needs the current state. Those shortened results
+are sent to the model again with every later message in the chat. When a long
+chat is summarized, the calls go into the summary. Pages are the exception: for
+a web page or a page in your browser, later turns see which page it was, but
+not its text. Reading a web page makes the rest of that turn ask before risky
+tools run, and later turns don't carry that over. Other calls made in that same
+turn are still replayed, and their arguments may quote the page.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
-labeled with the Telegram user.
+labeled with the Telegram user. Messages sent from the Chrome extension's side
+panel are labeled `Chrome`.
 
 ### Approving tool calls
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 
@@ -62,6 +62,56 @@ describe("azure route validation", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a comment range that crosses sides with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/comments", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "src/app.ts",
+        line: 9,
+        side: "RIGHT",
+        startLine: 4,
+        startSide: "LEFT",
+        body: "hi",
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a comment range that ends where it starts with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/comments", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "src/app.ts", line: 4, startLine: 4, body: "hi" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a thread id that isn't a plain number with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/threads/1e3/resolve", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-numeric thread id with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/threads/abc/resolve", {
+      method: "POST",
+      headers: auth,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an empty reply with 400", async () => {
+    const res = await configured.request("/api/azure/pr/Shop/web/1/threads/3/replies", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects a vote value outside the allowed enum with 400", async () => {
     const res = await configured.request("/api/azure/pr/Shop/web/1/vote", {
       method: "POST",
@@ -96,6 +146,60 @@ describe("azure route validation", () => {
       body: JSON.stringify({ vote: -10, body: "   \n  " }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * The Azure client is built per request on the global fetch, so a stub there
+ * stands in for Azure. A reply's activity event is recorded after the response
+ * and only logs when the placeholder database can't be reached.
+ */
+describe("azure comment thread routes", () => {
+  const realFetch = globalThis.fetch;
+  const calls: { url: string; method: string; body: any }[] = [];
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    calls.length = 0;
+  });
+
+  function azureAnswers(status: number) {
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        method: String(init?.method),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response("{}", { status });
+    }) as unknown as typeof fetch;
+  }
+
+  const post = (path: string, body?: unknown) =>
+    configured.request(`/api/azure/pr/Shop/web/1${path}`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  it("replies under the parent comment the caller names", async () => {
+    azureAnswers(200);
+    const res = await post("/threads/3/replies", { body: "agreed", parentCommentId: 4 });
+    expect(res.status).toBe(201);
+    expect(calls[0]!.url).toContain("/pullRequests/1/threads/3/comments");
+    expect(calls[0]!.body).toEqual({ content: "agreed", parentCommentId: 4, commentType: 1 });
+  });
+
+  it("reopens a thread as active", async () => {
+    azureAnswers(200);
+    const res = await post("/threads/3/unresolve");
+    expect(res.status).toBe(200);
+    expect(calls[0]).toMatchObject({ method: "PATCH", body: { status: 1 } });
+  });
+
+  it("reports Azure refusing a resolve as a token problem", async () => {
+    azureAnswers(403);
+    const res = await post("/threads/3/resolve");
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { reason: string }).reason).toBe("unauthorized");
   });
 });
 

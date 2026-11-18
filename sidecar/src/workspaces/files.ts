@@ -137,7 +137,9 @@ function openInWorktree(full: string, flags: number): number {
 
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
-const isBinary = (bytes: Buffer): boolean => bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0x00);
+/** Whether bytes look binary the way git decides it: a NUL near the start. */
+export const isBinary = (bytes: Uint8Array): boolean =>
+  bytes.subarray(0, BINARY_SNIFF_BYTES).includes(0x00);
 
 /** Reads one file for the editor. Oversized, binary, and non-UTF-8 files come
  *  back described rather than as an error, so the tab can say what it is

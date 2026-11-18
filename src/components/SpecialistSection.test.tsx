@@ -1,6 +1,7 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const CATALOG = {
   userDir: "/Users/me/.yarvis/agents",
@@ -14,6 +15,8 @@ const CATALOG = {
     {
       name: "planner",
       description: "Suggests what to work on next.",
+      kind: "task",
+      choices: [],
       prompt: "You advise on what to do next.",
       tools: ["recall", "list_todos"],
       unattended: [],
@@ -28,6 +31,8 @@ const CATALOG = {
     {
       name: "project-manager",
       description: "Keeps a project's tickets straight.",
+      kind: "task",
+      choices: [],
       prompt: "You manage project tracking.",
       tools: ["get_project", "jira_create_issue"],
       unattended: ["jira_create_issue"],
@@ -42,6 +47,8 @@ const CATALOG = {
     {
       name: "session-summarizer",
       description: "Summarizes a coding session.",
+      kind: "task",
+      choices: [],
       prompt: "You summarize a session.",
       tools: [],
       unattended: [],
@@ -53,25 +60,32 @@ const CATALOG = {
       source: "builtin",
       path: "definitions/session-summarizer.md",
     },
+    {
+      name: "complexity-router",
+      description: "Picks a complexity tier.",
+      kind: "decision",
+      choices: ["low", "medium", "max"],
+      prompt: "You decide how capable a model a task needs.",
+      tools: [],
+      unattended: [],
+      provider: null,
+      model: null,
+      complexityTier: null,
+      maxSteps: 8,
+      enabled: true,
+      source: "builtin",
+      path: "definitions/complexity-router.md",
+    },
   ],
 };
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that only defines `sidecarFetch` breaks
- * every other file importing this one, and one that redefines `ensureOk`
- * silently replaces what `api.test.ts` is asserting about.
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async () =>
     new Response(JSON.stringify(CATALOG), {
       status: 200,
       headers: { "content-type": "application/json" },
     }),
-}));
+});
 
 const SpecialistSection = (await import("./SpecialistSection")).default;
 
@@ -112,9 +126,18 @@ describe("SpecialistSection", () => {
     expect(html.match(/acts unattended/g)).toHaveLength(1);
   });
 
+  it("shows a decision specialist's options instead of tools and steps", async () => {
+    const text = textOf(await renderToHtml(createElement(SpecialistSection)));
+    expect(text).toContain("decision");
+    expect(text).toContain("low / medium / max");
+    expect(text).not.toContain("8 steps");
+  });
+
   it("keeps each prompt behind a toggle, so the list stays readable", async () => {
     const text = textOf(await renderToHtml(createElement(SpecialistSection)));
     expect(text).toContain("Show prompt");
     expect(text).not.toContain("You advise on what to do next.");
   });
 });
+
+afterAll(resetSidecarApi);

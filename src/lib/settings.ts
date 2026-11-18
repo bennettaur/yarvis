@@ -53,6 +53,17 @@ export interface Settings {
   /** Font size every terminal renders at (`lib/terminalFont`); null means the
    *  default size. */
   terminalFontSize: number | null;
+  /** Whether the top bar's sweep and the bell's shake run while the bell has
+   *  something pending (`lib/attentionAnimation`); null means on. */
+  attentionAnimation: boolean | null;
+  /** Slash commands, beyond the defaults, that Yarvis may send to a workspace's
+   *  agent session. Names without the `/`; null means none added. */
+  allowedSlashCommands: string[] | null;
+  /** Slash commands always allowed, whatever `allowedSlashCommands` holds. */
+  defaultAllowedSlashCommands: string[];
+  /** Experimental: whether the assistant may message workspace sessions over a
+   *  Claude Code channel and read their replies; null means off. */
+  channelMessaging: boolean | null;
 }
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
@@ -71,6 +82,18 @@ export const setMaxPtySessions = (value: number | null) =>
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
 
+/** Replaces the extra slash commands Yarvis may send to workspace sessions; an
+ * empty list clears them. Takes effect on the next send. Rejects a name with
+ * spaces or punctuation, since arguments are never part of the allowlist. */
+export const setAllowedSlashCommands = (commands: string[]) =>
+  invoke<Settings>("set_allowed_slash_commands", { commands });
+
+/** Turns channel messaging to workspace sessions on or off. The sidecar reads it
+ * on each send, each relay start and each workspace provision, so no restart is
+ * needed. */
+export const setChannelMessaging = (enabled: boolean) =>
+  invoke<Settings>("set_channel_messaging", { enabled });
+
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */
 export const saveColorTheme = (value: string | null) =>
@@ -80,6 +103,11 @@ export const saveColorTheme = (value: string | null) =>
  * the theme, it is already applied by the time this is called. */
 export const saveTerminalFontSize = (value: number | null) =>
   invoke<Settings>("set_terminal_font_size", { value });
+
+/** Stores whether the top bar's attention animation runs; `null` clears it back to
+ * the default (on). Like the theme, it is already applied when this is called. */
+export const saveAttentionAnimation = (value: boolean | null) =>
+  invoke<Settings>("set_attention_animation", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn

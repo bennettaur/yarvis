@@ -2,7 +2,7 @@
  * Built-in tools that need the user's explicit go-ahead on an unproof-read turn.
  *
  * A typed turn is read before it is sent; a spoken one is not. Speech recognition
- * mishears, and a hands-free microphone can pick up a sentence the user never
+ * mishears, and an always-open microphone can pick up a sentence the user never
  * addressed to the assistant — so on a voice turn the words reaching the model
  * are not reliably the words the user chose. That is fine for the great majority
  * of the tool surface, which is read-only or trivially undone.
@@ -13,6 +13,7 @@
  * same approval prompt that MCP tools already use, so the user sees the exact
  * operation before it happens.
  */
+
 /**
  * Built-in tools that need approval on *every* turn, typed or spoken.
  *
@@ -31,14 +32,28 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // so the user confirms the exact remote before any of its code can arrive.
   "register_repo",
   // Starts an unattended loop that starts work, files tickets and instructs
-  // agent sessions on its own until it is stopped.
+  // agent sessions on its own until it is stopped. Resuming a paused run or
+  // moving its stop time keeps that loop going, so the user confirms those too.
   "start_heads_down",
+  "resume_heads_down",
+  "set_heads_down_stop_time",
+  // Its approval lets the repo's CI merge the PR with nobody else reading it.
+  // Only the merge-reviewer specialist's grant may skip asking.
+  "post_merge_review",
+  // Posts to Yarvis's public repo, which the user never registered. The model
+  // may decide to file one mid-task, so the user reads the text before anyone
+  // else can.
+  "file_yarvis_issue",
+  // Spends a verification report's runs on up to ten PRs in one call, and
+  // each PR's budget check sees only its own cost, so the user agrees to the
+  // whole queue.
+  "start_pr_verification_queue",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Irreversible, and the system prompt describes it as permanent and unlogged.
   "delete_task",
-  // Tears down worktrees on disk.
+  // Tears down worktrees on disk, and closes linked issues other people can see.
   "archive_workspace",
   // Assigns and labels an issue other people can see, then provisions for it.
   "start_work_on_issue",
@@ -70,6 +85,8 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // session may have been showing a dialog that the text answers instead — so a
   // misheard instruction is both unreviewable and unrecoverable.
   "send_workspace_instruction",
+  // Same delivery caveat, and a skill the user allowed can push or open PRs.
+  "send_workspace_slash_command",
   // Act inside the user's signed-in browser session. The extension keeps them on
   // the current site and off destructive controls, but a misheard "open the
   // billing page" is still an action nobody reviewed.
@@ -77,10 +94,200 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "navigate_browser_tab",
   // Deletes a memory outright, where correcting one keeps the trail.
   "forget_memory",
+  // No trash or history to restore it from.
+  "delete_artifact",
   // Stores an answer that later turns act on without asking, typed ones
   // included, so a misheard "yes" would outlive the turn it was heard in.
   "record_decision",
   // Runs a whole specialist with its own tools; a misheard task becomes a
   // multi-step run nobody reviewed.
   "delegate",
+  // Starts a Claude Code run that spends money and writes files with nobody
+  // reviewing the task it was given.
+  "start_claude_code_task",
+  // Each spends an agent run on a PR nobody confirmed. The report also clones
+  // the PR's code to disk.
+  "start_pr_guided_review",
+  "start_pr_verification_report",
+]);
+
+/** What a turn has read so far that someone else wrote. The tools that read it set it. */
+export interface UntrustedReads {
+  hasReadWebPage: boolean;
+  /** An artifact marked untrusted, such as one a heads-down pass or specialist wrote. */
+  hasReadUntrustedArtifact: boolean;
+  /** A workspace session's reply, which it may have written from whatever it read. */
+  hasReadSessionReply: boolean;
+  /**
+   * The turn's own message quotes a page: the side panel sends the tab's title
+   * and selection. Set when the turn starts, unlike the others.
+   */
+  messageQuotesPage: boolean;
+}
+
+export function newUntrustedReads(options: { messageQuotesPage?: boolean } = {}): UntrustedReads {
+  return {
+    hasReadWebPage: false,
+    hasReadUntrustedArtifact: false,
+    hasReadSessionReply: false,
+    messageQuotesPage: options.messageQuotesPage ?? false,
+  };
+}
+
+/** Whether the turn's next request may be coming from something it read rather than the user. */
+export function hasReadUntrusted(reads: UntrustedReads): boolean {
+  return (
+    reads.hasReadWebPage ||
+    reads.hasReadUntrustedArtifact ||
+    reads.hasReadSessionReply ||
+    reads.messageQuotesPage
+  );
+}
+
+/** An `update_artifact` call that replaces or renames rather than appends: as lossy as a delete. */
+function rewritesArtifact(args: unknown): boolean {
+  const a = args as { content?: unknown; title?: unknown } | null;
+  return a?.content !== undefined || a?.title !== undefined;
+}
+
+/** A bare `/compact`, which only summarizes the session's own context. */
+function isBareCompact(args: unknown): boolean {
+  const a = args as { command?: unknown; arguments?: unknown } | null;
+  const command = typeof a?.command === "string" ? a.command.trim().replace(/^\//, "") : "";
+  const rest = typeof a?.arguments === "string" ? a.arguments.trim() : "";
+  return command.toLowerCase() === "compact" && rest === "";
+}
+
+/**
+ * An `update_diagram` call that may change what is already drawn. One marked
+ * `addOnly` can't (`updateDiagram` refuses it if any id it sends exists), so
+ * it skips the prompt the way an append does.
+ */
+function changesDiagram(args: unknown): boolean {
+  const a = args as { addOnly?: unknown; title?: unknown } | null;
+  return a?.addOnly !== true || a.title !== undefined;
+}
+
+/** A boolean argument the model set to true. */
+function flagSet(args: unknown, name: string): boolean {
+  return (args as Record<string, unknown> | null)?.[name] === true;
+}
+
+/**
+ * Built-ins that ask only under a condition checked when they are called.
+ *
+ * A web page is written by whoever runs the site, and the user never saw it
+ * before the model did. So once a turn has read one, the destructive set asks
+ * first exactly as it does on a spoken turn: the request reaching those tools
+ * may now be the page's rather than the user's. (On a spoken turn they already
+ * always ask.) An untrusted artifact counts the same, since a heads-down pass or
+ * specialist may have copied a page or message into it. So does a workspace
+ * session's reply: the session may have written it from a file or PR it read.
+ *
+ * A slash command other than a bare `/compact` asks on a typed turn too. An
+ * allowed skill acts on its arguments with its own tools, and issue, PR and MCP
+ * text a turn reads doesn't count as untrusted above, so the user confirms
+ * which skill runs and with what.
+ *
+ * Starting a verification report with `confirmed` asks too: the flag answers a
+ * question about cost or an unregistered repo, and that answer has to be the
+ * user's, not the model's. Regenerating a guide asks because it throws away
+ * how far the user got through the old one.
+ *
+ * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
+ * it asks under the same conditions; an append does not. So does an
+ * `update_diagram` call unless it is marked `addOnly`: an upsert onto an
+ * existing id overwrites that element, which is as lossy as removing it, and
+ * which ids exist isn't known until the call runs.
+ *
+ * `read_web_page` itself asks for any URL the user didn't type in this
+ * conversation, because the URL is also a way out: a page can ask for a fetch
+ * whose query string carries the user's memories.
+ */
+export function conditionalConfirmations(options: {
+  spoken: boolean;
+  reads: UntrustedReads;
+  isUserGivenUrl: (url: string) => boolean;
+}): Map<string, (args: unknown) => boolean> {
+  const { spoken, reads, isUserGivenUrl } = options;
+  const conditions = new Map<string, (args: unknown) => boolean>();
+  if (!spoken) {
+    for (const name of DESTRUCTIVE_BUILTIN_TOOLS) {
+      conditions.set(name, () => hasReadUntrusted(reads));
+    }
+    conditions.set(
+      "send_workspace_slash_command",
+      (args) => !isBareCompact(args) || hasReadUntrusted(reads),
+    );
+    conditions.set(
+      "start_pr_verification_report",
+      (args) => flagSet(args, "confirmed") || hasReadUntrusted(reads),
+    );
+    conditions.set(
+      "start_pr_guided_review",
+      (args) => flagSet(args, "regenerate") || hasReadUntrusted(reads),
+    );
+  }
+  conditions.set(
+    "update_artifact",
+    (args) => rewritesArtifact(args) && (spoken || hasReadUntrusted(reads)),
+  );
+  conditions.set(
+    "update_diagram",
+    (args) => changesDiagram(args) && (spoken || hasReadUntrusted(reads)),
+  );
+  conditions.set("read_web_page", (args) => {
+    const url = (args as { url?: unknown } | null)?.url;
+    return typeof url !== "string" || !isUserGivenUrl(url);
+  });
+  return conditions;
+}
+
+/**
+ * The only built-ins a scheduled task's turn is offered.
+ *
+ * A scheduled task runs a prompt the model wrote for itself, often just after
+ * reading a CI log or a PR comment, and nobody is watching it run. Dropping the
+ * tools above is not enough there: a memory or task written on that turn is read
+ * back on later turns as though the user had agreed to it. So the turn gets what
+ * it needs to look, report and look again, and nothing that writes. The
+ * browser tools are left out too: they read the user's signed-in tabs, and what
+ * a task reads can end up in a notification.
+ */
+export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
+  "schedule_task",
+  "list_scheduled_tasks",
+  "cancel_scheduled_task",
+  "request_attention",
+  "list_tasks",
+  "recall",
+  "list_memories",
+  "list_projects",
+  "get_project",
+  "list_project_items",
+  "list_todos",
+  "get_todo",
+  "list_artifacts",
+  "get_artifact",
+  "list_work_streams",
+  "get_work_stream",
+  "find_work_streams_for",
+  "heads_down_status",
+  "search_events",
+  "activity_summary",
+  "find_dangling_work",
+  "work_summary",
+  "list_repos",
+  "list_repo_issues",
+  "list_workspaces",
+  "list_workspace_issues",
+  "get_workspace_activity",
+  "get_workspace_status",
+  "read_workspace_replies",
+  "jira_search_issues",
+  "jira_get_issue",
+  "get_repo_issue",
+  "list_pr_reviews",
+  "search_pr_insights",
+  "list_calendar_events",
 ]);

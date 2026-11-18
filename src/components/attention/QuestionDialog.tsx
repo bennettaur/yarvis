@@ -6,11 +6,11 @@ import {
   answerQuestion,
   declineQuestion,
   type QuestionAnswer,
-  type QuestionItem,
   questionsForItem,
 } from "../../lib/questions";
 import ErrorNotice from "../ErrorNotice";
 import LoadingIndicator from "../LoadingIndicator";
+import { type Draft, EMPTY_DRAFT, emptyDrafts, isAnswered, QuestionField } from "./QuestionField";
 
 /**
  * Answers a coding agent's `ask_user` questions without leaving the current
@@ -19,17 +19,6 @@ import LoadingIndicator from "../LoadingIndicator";
  * order they were asked. Each reply goes straight back to the blocked agent.
  */
 
-interface Draft {
-  selected: string[];
-  text: string;
-}
-
-const EMPTY_DRAFT: Draft = { selected: [], text: "" };
-
-const emptyDrafts = (set: AgentQuestion): Draft[] => set.questions.map(() => EMPTY_DRAFT);
-
-const isAnswered = (draft: Draft) => draft.selected.length > 0 || draft.text.trim() !== "";
-
 function toAnswers(drafts: Draft[]): QuestionAnswer[] {
   return drafts.map((d) => ({
     selected: d.selected,
@@ -37,92 +26,33 @@ function toAnswers(drafts: Draft[]): QuestionAnswer[] {
   }));
 }
 
-function QuestionField({
-  index,
-  question,
-  draft,
-  onChange,
-}: {
-  index: number;
-  question: QuestionItem;
-  draft: Draft;
-  onChange: (draft: Draft) => void;
-}) {
-  const options = question.options ?? [];
-  const toggle = (label: string) => {
-    const isSelected = draft.selected.includes(label);
-    let selected: string[];
-    if (question.multiSelect) {
-      selected = isSelected
-        ? draft.selected.filter((l) => l !== label)
-        : [...draft.selected, label];
-    } else {
-      selected = isSelected ? [] : [label];
-    }
-    onChange({ ...draft, selected });
-  };
-
-  return (
-    <fieldset className="space-y-2">
-      {question.header && (
-        <span className="inline-block rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-          {question.header}
-        </span>
-      )}
-      <legend className="sr-only">Question {index + 1}</legend>
-      <p className="whitespace-pre-wrap text-sm text-zinc-100">{question.question}</p>
-      {options.length > 0 && (
-        <div className="space-y-1.5">
-          {options.map((option) => {
-            const isSelected = draft.selected.includes(option.label);
-            return (
-              <button
-                key={option.label}
-                type="button"
-                aria-pressed={isSelected}
-                onClick={() => toggle(option.label)}
-                className={`block w-full rounded-md border px-3 py-2 text-left ${
-                  isSelected
-                    ? "border-sky-500 bg-sky-950/40"
-                    : "border-zinc-700 bg-zinc-900 hover:border-zinc-500"
-                }`}
-              >
-                <span className="block text-sm text-zinc-100">{option.label}</span>
-                {option.description && (
-                  <span className="block text-xs text-zinc-400">{option.description}</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      <textarea
-        value={draft.text}
-        onChange={(e) => onChange({ ...draft, text: e.target.value })}
-        rows={options.length > 0 ? 2 : 3}
-        placeholder={options.length > 0 ? "Add a note (optional)" : "Your answer"}
-        aria-label={options.length > 0 ? `Note for question ${index + 1}` : `Answer ${index + 1}`}
-        className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
-      />
-    </fieldset>
-  );
-}
-
 export default function QuestionDialog({
   item,
   onClose,
+  onDone = onClose,
   onOpenSession,
+  armingMs = 0,
 }: {
   /** The attention row that was opened; null keeps the dialog closed. */
   item: AttentionItem | null;
   onClose: () => void;
+  /** Called instead of `onClose` once a reply leaves nothing waiting. */
+  onDone?: () => void;
   /** Jumps to the asking session, for a question that needs more than a reply. */
   onOpenSession: (item: AttentionItem) => void;
+  /**
+   * How long each question set ignores clicks after it is shown. Set when the
+   * dialog opens without a click on it, while the pointer may still be over
+   * whatever answered the last prompt.
+   */
+  armingMs?: number;
 }) {
   const [questionSets, setQuestionSets] = useState<AgentQuestion[] | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState<DisplayError | null>(null);
   const [sending, setSending] = useState(false);
+  // Keyed by question set, so a set is never armed on its first render.
+  const [armedId, setArmedId] = useState<string | null>(null);
 
   /**
    * Shows what the session has waiting now. Drafts reset only when the set on
@@ -132,7 +62,7 @@ export default function QuestionDialog({
   const show = useCallback((loaded: AgentQuestion[]) => {
     if (shownId.current !== loaded[0]?.id) {
       shownId.current = loaded[0]?.id;
-      setDrafts(loaded[0] ? emptyDrafts(loaded[0]) : []);
+      setDrafts(loaded[0] ? emptyDrafts(loaded[0].questions) : []);
     }
     setQuestionSets(loaded);
   }, []);
@@ -141,6 +71,8 @@ export default function QuestionDialog({
     if (!item) return;
     let cancelled = false;
     setQuestionSets(null);
+    // A set seen before gets armed again, since the pointer may be over it now.
+    setArmedId(null);
     setError(null);
     shownId.current = undefined;
     questionsForItem(item)
@@ -154,6 +86,13 @@ export default function QuestionDialog({
       cancelled = true;
     };
   }, [item, show]);
+
+  const currentId = questionSets?.[0]?.id ?? null;
+  useEffect(() => {
+    if (!currentId) return;
+    const timer = setTimeout(() => setArmedId(currentId), armingMs);
+    return () => clearTimeout(timer);
+  }, [currentId, armingMs]);
 
   useEffect(() => {
     if (!item) return;
@@ -170,11 +109,12 @@ export default function QuestionDialog({
   if (!item) return null;
 
   const current = questionSets?.[0];
+  const armed = !current || armedId === current.id;
 
   /**
    * Sends the reply, then reloads the session's questions: that picks up a set
    * asked while the dialog was open, and drops one answered elsewhere after a
-   * failed send. Closes once nothing is left.
+   * failed send. Finishes once nothing is left.
    */
   const reply = async (send: (id: string) => Promise<void>) => {
     if (!current) return;
@@ -190,7 +130,7 @@ export default function QuestionDialog({
     try {
       const remaining = await questionsForItem(item);
       if (sent && remaining.length === 0) {
-        onClose();
+        onDone();
         return;
       }
       show(remaining);
@@ -237,7 +177,7 @@ export default function QuestionDialog({
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
+        <div inert={!armed} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
           {current?.context.reason && (
             <p className="whitespace-pre-wrap text-xs text-zinc-400">{current.context.reason}</p>
           )}
@@ -274,7 +214,7 @@ export default function QuestionDialog({
             Go to session
           </button>
           {current && (
-            <div className="flex items-center gap-2">
+            <div inert={!armed} className="flex items-center gap-2">
               <button
                 type="button"
                 disabled={sending}
