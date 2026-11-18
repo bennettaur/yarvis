@@ -788,6 +788,16 @@ describe("Review", () => {
     expect(parsed.changes[0]).toMatchObject({ sensitive: false, count: 1, check: "" });
   });
 
+  it("drops an internal flag, since this band can auto-merge", () => {
+    const logic = change({ kind: "logic", reach: "local", evidence: "partial" });
+    const parsed = Review.parse({ ...makeReview(), changes: [{ ...logic, internal: true }] });
+    expect(parsed.changes[0]).not.toHaveProperty("internal");
+    const plain = Review.parse({ ...makeReview(), changes: [logic] });
+    const band = (review: typeof parsed) =>
+      renderReport(review, makeFacts(), TARGET).data.impactBand;
+    expect(band(parsed)).toBe(band(plain));
+  });
+
   it("only accepts screenshots that are absolute image paths", () => {
     const withShot = (path: string) =>
       Review.safeParse({ ...makeReview(), screenshots: [{ path, caption: "x" }] }).success;

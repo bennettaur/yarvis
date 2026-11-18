@@ -189,10 +189,11 @@ it is to break something, and how far that would spread. The skill lists
 each independent change with its kind (passive, reorganization, addition,
 removal, interface or logic), its reach (leaf, local, shared or core, helped
 by the importer counts `collect` takes from the import graph), and whether
-tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
-to 5 with a fixed table, then raises it when the PR bundles many changes
-(additions don't count toward that, since only other new code reaches them). The
-report checks the classification against the facts and never scores below
+tests prove it. Unlike the review workspace's report, it takes no `internal`
+flag, since this band can auto-merge. `sidecar/src/verify/impact.ts` turns
+that into a band from 1 to 5 with a fixed table, then raises it when the PR
+bundles many changes. Additions don't count toward that, since only other
+new code reaches them. The report checks the classification against the facts and never scores below
 them: a `proven` claim coverage doesn't back counts as partly tested, a
 change that could alter behaviour (logic, interface, removal, or an unproven
 reorganization) counts at no less than its files' measured reach, and a

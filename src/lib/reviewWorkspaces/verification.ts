@@ -48,7 +48,7 @@ export interface VerificationChange {
   reach: "leaf" | "local" | "shared" | "core";
   evidence: "proven" | "partial" | "unproven";
   sensitive: boolean;
-  /** Absent on reports stored before the field existed. */
+  /** Optional because older stored reports lack it. */
   internal?: boolean;
   count: number;
   /** What a reviewer should confirm; empty below the attention band. */

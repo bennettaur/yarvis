@@ -74,6 +74,22 @@ describe("changeBand", () => {
     expect(changeBand(change({ kind: "logic", reach: "leaf", internal: true }))).toBe(1);
   });
 
+  it("ignores internal on shared or core reach, where other features' users can reach it", () => {
+    expect(changeBand(change({ kind: "logic", reach: "shared", internal: true }))).toBe(4);
+    expect(changeBand(change({ kind: "logic", reach: "core", internal: true }))).toBe(4);
+  });
+
+  it("ignores internal on an interface change, since its callers may sit elsewhere", () => {
+    expect(changeBand(change({ kind: "interface", reach: "local", internal: true }))).toBe(2);
+    expect(changeBand(change({ kind: "interface", reach: "leaf", internal: true }))).toBe(2);
+  });
+
+  it("lowers an unproven reorganization marked internal as logic, and leaves a proven one", () => {
+    const reorg = { kind: "reorganization" as const, reach: "local" as const, internal: true };
+    expect(changeBand(change({ ...reorg, evidence: "partial" }))).toBe(2);
+    expect(changeBand(change({ ...reorg, evidence: "proven" }))).toBe(1);
+  });
+
   it("ignores internal on sensitive ground", () => {
     expect(
       changeBand(change({ kind: "logic", reach: "local", sensitive: true, internal: true })),

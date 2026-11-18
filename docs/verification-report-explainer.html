@@ -210,7 +210,7 @@
   <ul>
     <li><b>Unproven</b> adds 1. <b>Partial</b> leaves the band unchanged. <b>Proven</b> takes 1 off a band above 2. It never applies to an interface change, because tests on the changed side don't show that callers elsewhere still work.</li>
     <li><b>Sensitive</b> adds 1.</li>
-    <li><b>Internal</b> takes 1 off, down to 1. A change that is also sensitive doesn't get it.</li>
+    <li><b>Internal</b> takes 1 off, down to 1, for a leaf or local change. A sensitive or interface change doesn't get it.</li>
     <li>Passive changes and proven reorganizations skip these adjustments.</li>
     <li>A <b>reorganization</b> that isn't proven scores as logic. "Mostly a move" is the mistake this score exists to catch.</li>
   </ul>

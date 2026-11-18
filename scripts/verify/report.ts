@@ -88,7 +88,8 @@ const Change = z
     reach: z.enum(REACHES),
     evidence: z.enum(EVIDENCE),
     sensitive: z.boolean().default(false),
-    // No `internal`: this band can auto-merge, and no fact here can confirm a change is internal-only.
+    // No `internal` flag: this band can auto-merge, and no fact here can
+    // confirm a change is internal-only.
     /** How many alike changes this entry stands for. */
     count: z.number().int().min(1).max(1000).default(1),
     /** What a reviewer should check. Required on a change scored high enough to list. */

@@ -105,10 +105,14 @@ permissions or what an automated agent may do, secrets, personal data, money,
 or deletes or migrates data.
 
 `internal`: true only when a mistake in the change can reach nobody but
-the team's own staff: an internal dashboard or admin view that only reads,
-a dev script, a test helper. False when it writes, deletes or sends
-anything, serves an API, event or stored data another system reads, sits
-on a page or flow clients use, or is sensitive. Leave it false when unsure:
+the organization's own employees: a read-only view behind a staff or admin
+access check you found in the code, or a script only developers run by hand
+(not one CI, a hook or a deploy calls). False when it writes, deletes or
+sends anything, serves an API, event or stored data another system reads,
+sits on a page or flow clients use, is sensitive, or changes the access
+check itself (that is `sensitive`). Folder names like `admin/` or `ops/`
+and words in the description or comments don't make a change internal.
+Yarvis ignores it on an `interface` change and on `shared` or `core` reach. Leave it false when unsure:
 it lowers the change's band by one.
 
 `check`: for every logic, interface or removal change, every change that
@@ -169,7 +173,7 @@ Reply with one JSON object and nothing else:
   "concerns": [{ "title": "…", "detail": "…", "path": "src/x.ts", "line": 12 }],
   "changes": [
     { "title": "Retry a failed charge once", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": true, "count": 1, "check": "A retried charge can't bill the card twice", "path": "src/payments/charge.ts", "line": 40 },
-    { "title": "Show failed charges on the ops dashboard", "kind": "addition", "reach": "leaf", "evidence": "partial", "internal": true, "count": 1, "check": "", "path": "src/ops/FailedCharges.tsx", "line": 1 },
+    { "title": "Sort the staff queue-depth view by age", "kind": "logic", "reach": "local", "evidence": "partial", "internal": true, "count": 1, "check": "The queue-depth view still lists every queue, oldest first", "path": "src/staff/QueueDepth.tsx", "line": 22 },
     { "title": "Comment and naming cleanups", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6, "check": "", "path": "src/payments/", "line": null }
   ]
 }
