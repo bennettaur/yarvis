@@ -956,7 +956,7 @@ function WorkspaceDetailView({
   }, [id, onChanged]);
 
   // A PR linked or detected changes this view's status line and the list's badges.
-  const prLinked = useCallback(() => {
+  const prsChanged = useCallback(() => {
     void load();
     onChanged();
   }, [load, onChanged]);
@@ -1322,10 +1322,10 @@ function WorkspaceDetailView({
                   workspaceId={detail.id}
                   repo={wr}
                   showRepoName={detail.repos.length > 1}
-                  onPrLinked={prLinked}
+                  onPrsChanged={prsChanged}
                 />
               ))}
-            <DetectPrsButton workspaceId={detail.id} onDetected={prLinked} />
+            <DetectPrsButton workspaceId={detail.id} onDetected={prsChanged} />
           </div>
         )}
         {detail.tasks.length > 0 && (

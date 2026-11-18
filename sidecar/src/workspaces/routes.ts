@@ -18,6 +18,7 @@ import {
   markWorkspaceListViewed,
   markWorkspaceViewed,
   PrLinkRefusal,
+  PrNotLinked,
   pollerClients,
   unlinkWorkspacePr,
 } from "./poller.ts";
@@ -521,7 +522,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
       await unlinkWorkspacePr(db(), ids.data.id, ids.data.wrId, number.data);
       return c.json({ ok: true });
     } catch (e) {
-      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 404);
+      if (e instanceof PrNotLinked) return c.json({ error: e.message }, 404);
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
       throw e;
     }
   });

@@ -382,14 +382,14 @@ export default function WorkspacePrStatus({
   workspaceId,
   repo,
   showRepoName,
-  onPrLinked,
+  onPrsChanged,
 }: {
   workspaceId: string;
   repo: WorkspaceRepoDetail;
   /** Prefix the block with the repo name (for multi-repo workspaces). */
   showRepoName: boolean;
   /** Called after a PR is linked or unlinked, to re-read the workspace. */
-  onPrLinked: () => void;
+  onPrsChanged: () => void;
 }) {
   const sync = useRepoSync(workspaceId, repo.id);
 
@@ -402,8 +402,13 @@ export default function WorkspacePrStatus({
             {repo.prsPolledAt ? "No PR yet" : "PR not polled yet"}
           </span>
         )}
+        {repo.prsPollError && (
+          <span className="text-red-400" title={repo.prsPollError}>
+            Couldn't search for PRs: {repo.prsPollError}
+          </span>
+        )}
         {sync && <SyncChips sync={sync} />}
-        <LinkPrControl workspaceId={workspaceId} repo={repo} onLinked={onPrLinked} />
+        <LinkPrControl workspaceId={workspaceId} repo={repo} onLinked={onPrsChanged} />
       </div>
       {repo.prs.map((pr) => (
         <PrRow
@@ -411,7 +416,7 @@ export default function WorkspacePrStatus({
           workspaceId={workspaceId}
           repo={repo}
           pr={pr}
-          onChanged={onPrLinked}
+          onChanged={onPrsChanged}
         />
       ))}
     </div>

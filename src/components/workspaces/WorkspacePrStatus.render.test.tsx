@@ -123,7 +123,7 @@ async function mountStatus(prs: WorkspaceRepoPr[] = []) {
       workspaceId: "ws-1",
       repo: { ...repo, prs, pr: prs[0] ?? null },
       showRepoName: false,
-      onPrLinked: () => changed++,
+      onPrsChanged: () => changed++,
     }),
   );
   unmount = mounted.unmount;
@@ -208,9 +208,24 @@ describe("WorkspacePrStatus", () => {
     const host = await mountStatus();
     button(host, "Link PR")?.click();
     await waitFor(() => host.querySelector("input") !== null, "the number field");
-    type(host.querySelector("input") as HTMLInputElement, "abc");
-    await waitFor(() => button(host, "Link") !== undefined, "the Link button");
-    expect(button(host, "Link")?.disabled).toBe(true);
+    for (const notANumber of ["abc", "0", "1.5"]) {
+      type(host.querySelector("input") as HTMLInputElement, notANumber);
+      await waitFor(() => button(host, "Link") !== undefined, "the Link button");
+      expect(button(host, "Link")?.disabled).toBe(true);
+    }
+  });
+
+  it("closes the number field on Escape without sending anything", async () => {
+    const host = await mountStatus();
+    button(host, "Link PR")?.click();
+    await waitFor(() => host.querySelector("input") !== null, "the number field");
+
+    const input = host.querySelector("input") as HTMLInputElement;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    await waitFor(() => host.querySelector("input") === null, "the field to close");
+    expect(button(host, "Link PR")).toBeDefined();
+    expect(sent.filter((r) => r.method === "POST")).toEqual([]);
   });
 });
 

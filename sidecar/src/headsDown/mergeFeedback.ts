@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -191,7 +191,7 @@ async function workspacePrs(
     .where(and(...conditions))
     // A PR linked to several workspaces belongs to the one whose own branch it
     // merges from, so that one is first.
-    .orderBy(desc(prOnOwnBranch));
+    .orderBy(desc(prOnOwnBranch), asc(workspaceRepos.createdAt));
   return rows;
 }
 

@@ -9,11 +9,13 @@ const ROLLUP_LABEL: Record<CheckRollup, string> = {
   none: "no checks",
 };
 
-/** PR-state summary line for a workspace repo, from the poller cache. */
-function prSummary(pr: WorkspaceDetail["repos"][number]["pr"]): string {
-  if (!pr || pr.lastPolledAt === null) return "not polled";
-  if (pr.prNumber === null) return "no PR";
-  return `#${pr.prNumber} · ${pr.prState ?? "open"} · ${ROLLUP_LABEL[pr.checkRollup]}`;
+/** PR-state summary line for a workspace repo's main PR, from the poller cache. */
+function prSummary(repo: WorkspaceDetail["repos"][number]): string {
+  const pr = repo.pr;
+  if (!pr) return repo.prsPolledAt ? "no PR" : "not polled";
+  const others = repo.prs.length > 1 ? ` · +${repo.prs.length - 1} more` : "";
+  if (pr.lastPolledAt === null) return `#${pr.prNumber} · not polled yet${others}`;
+  return `#${pr.prNumber} · ${pr.prState ?? "open"} · ${ROLLUP_LABEL[pr.checkRollup]}${others}`;
 }
 
 /**
@@ -47,7 +49,7 @@ export default function WorkspaceWidget({ workspaceId }: { workspaceId: string }
               <span className="text-zinc-200">{wr.repo.name}</span>{" "}
               <span className="font-mono text-zinc-500">{wr.branch}</span>
             </span>
-            <span className="shrink-0 text-zinc-400">{prSummary(wr.pr)}</span>
+            <span className="shrink-0 text-zinc-400">{prSummary(wr)}</span>
           </li>
         ))}
       </ul>

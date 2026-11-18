@@ -136,6 +136,8 @@ export function dueRefresh(candidate: PollCandidate, now = Date.now()): RefreshM
   const viewedAt = workspaceViewedAt.get(candidate.workspaceId);
   const focused = viewedAt !== undefined && now - viewedAt < VIEW_WINDOW_MS;
   const mode: RefreshMode = candidate.prNumber === null ? "branch" : "number";
+  // A merged PR won't change again, wherever it is shown.
+  if (candidate.prNumber !== null && candidate.prState === "merged") return null;
   const settled = candidate.prState === "merged" || candidate.prState === "closed";
   // The workspace the user has open is searched and re-read every minute, so
   // a PR opened on it shows up quickly. A settled PR there has little left to change.
@@ -143,14 +145,13 @@ export function dueRefresh(candidate: PollCandidate, now = Date.now()): RefreshM
     return dueAfter(candidate, settled ? BACKGROUND_POLL_MS : FOCUSED_POLL_MS, now) ? mode : null;
   }
   // Every other known PR is re-read by number, whether or not anyone is
-  // looking, so every badge stays current. A merged PR won't change again.
-  if (candidate.prNumber !== null) {
-    if (candidate.prState === "merged") return null;
-    return windowTurned(candidate, now) ? "number" : null;
-  }
-  // Other workspaces' branches are only searched while their badges are on screen.
+  // looking, so every badge stays current.
+  if (candidate.prNumber !== null) return windowTurned(candidate, now) ? "number" : null;
+  // Other workspaces' branches are only searched while their badges are on
+  // screen. On the same windows as the number reads, so a PR a search just read
+  // isn't read again by number in the same cycle.
   const listVisible = now - listViewedAt < VIEW_WINDOW_MS;
-  return listVisible && dueAfter(candidate, BACKGROUND_POLL_MS, now) ? "branch" : null;
+  return listVisible && windowTurned(candidate, now) ? "branch" : null;
 }
 
 /** Whether a candidate is older than its refresh interval. */
@@ -558,15 +559,22 @@ async function recordPrError(db: Db, known: KnownPr, e: unknown): Promise<void> 
     );
 }
 
+/** What a run of searches found, by workspace repo id, and whether a rate limit cut it short. */
+interface SearchOutcome {
+  results: Map<string, FoundPr[]>;
+  finished: boolean;
+}
+
 /**
- * Searches each target's branches one at a time, stopping at the first rate
- * limit. Returns what each searched target found, by workspace repo id.
+ * Searches each target's branches one at a time, recording each target's
+ * search as it goes. `finished` is false when a rate limit stopped the loop.
+ * Returns what each searched target found, by workspace repo id.
  */
 async function searchEach(
   db: Db,
   clients: PollerClients,
   targets: SearchTarget[],
-): Promise<{ results: Map<string, FoundPr[]>; finished: boolean }> {
+): Promise<SearchOutcome> {
   const results = new Map<string, FoundPr[]>();
   for (const target of targets) {
     const found: { pr: FoundPr; since: Date }[] = [];
@@ -608,56 +616,62 @@ async function searchGithub(
   clients: PollerClients,
   gh: GitHubClient,
   targets: SearchTarget[],
-): Promise<boolean> {
-  // Batched by branch, but stored by repo, so a repo's branches stay in one batch.
-  const batches: SearchTarget[][] = [[]];
+): Promise<SearchOutcome> {
+  const results = new Map<string, FoundPr[]>();
+  // Batched by branch, but stored by repo, so a repo's branches stay in one
+  // batch. add_worktree caps a repo at 10 added worktrees, so a repo's own 11
+  // branches always fit in one.
+  const batches: SearchTarget[][] = [];
   let size = 0;
   for (const target of targets) {
-    if (size + target.branches.length > POLL_BATCH_SIZE && size > 0) {
-      batches.push([]);
-      size = 0;
+    const last = batches.at(-1);
+    if (last && size + target.branches.length <= POLL_BATCH_SIZE) {
+      last.push(target);
+      size += target.branches.length;
+    } else {
+      batches.push([target]);
+      size = target.branches.length;
     }
-    batches.at(-1)?.push(target);
-    size += target.branches.length;
   }
   for (const batch of batches) {
-    if (batch.length === 0) continue;
     const refs = batch.flatMap((t) =>
       t.branches.map((b) => ({ ...githubRepoOf(t.repo), branch: b.branch })),
     );
-    let results: BatchResult<PolledPr[]>[];
+    let answers: BatchResult<PolledPr[]>[];
     try {
-      results = await gh.branchPrStatuses(refs);
+      answers = await gh.branchPrStatuses(refs);
     } catch (e) {
       if (isRateLimited(e)) {
         // No REST fallback here: a background read waits out GraphQL's limit
         // rather than spending the REST budget the PR pages need.
         console.warn("[workspace poller] GitHub rate limited, backing off this cycle");
-        return false;
+        return { results, finished: false };
       }
       if (e instanceof GitHubError && e.reason === "upstream_error") {
-        const { finished } = await searchEach(db, clients, batch);
-        if (!finished) return false;
+        const fallback = await searchEach(db, clients, batch);
+        for (const [id, prs] of fallback.results) results.set(id, prs);
+        if (!fallback.finished) return { results, finished: false };
         continue;
       }
       // Anything else (a revoked token, SSO) is every repo's answer.
-      for (const target of batch) await recordSearch(db, target, [], e);
+      for (const target of batch) results.set(target.wr.id, await recordSearch(db, target, [], e));
       continue;
     }
+    // Answers come back in `refs` order: each target's branches in turn.
     let i = 0;
     for (const target of batch) {
       const found: { pr: FoundPr; since: Date }[] = [];
       let error: unknown = null;
       for (const { since } of target.branches) {
-        const result = results[i++];
-        if (!result) continue;
-        if (result.ok) for (const pr of result.value) found.push({ pr: toFoundPr(pr), since });
-        else error = result.error;
+        const answer = answers[i++];
+        if (!answer) continue;
+        if (answer.ok) for (const pr of answer.value) found.push({ pr: toFoundPr(pr), since });
+        else error = answer.error;
       }
-      await recordSearch(db, target, found, error);
+      results.set(target.wr.id, await recordSearch(db, target, found, error));
     }
   }
-  return true;
+  return { results, finished: true };
 }
 
 /** Re-reads known GitHub PRs by number in batched reads, storing each batch as it's read. */
@@ -764,10 +778,10 @@ async function knownPrCandidates(db: Db, workspaceIds?: string[]) {
  * One poll cycle: searches the branches of every repo `modeFor` names a read
  * for (which finds new PRs and refreshes the ones on those branches), then
  * re-reads by number every known PR it names that the search didn't just read.
- * A search runs only for "branch"; a known PR is read by number for either
- * mode, so a caller can ask for number reads alone. Both are
- * limited to active workspaces' ready repos. Each provider has its own rate
- * limit, so one running out doesn't hold up the other.
+ * A repo is searched only when `modeFor` says "branch". A known PR is read for
+ * any mode, so a caller that returns "number" for everything gets number reads
+ * alone. Only active workspaces' ready repos are read. Each provider has its
+ * own rate limit, so one running out doesn't hold up the other.
  */
 export async function pollOnce(
   db: Db,
@@ -790,7 +804,7 @@ export async function pollOnce(
   // A spent GitHub limit ends this cycle's GitHub reads, number reads included.
   let githubLimited = false;
   if (clients.github && githubTargets.length) {
-    githubLimited = !(await searchGithub(db, clients, clients.github, githubTargets));
+    githubLimited = !(await searchGithub(db, clients, clients.github, githubTargets)).finished;
   }
   let azureLimited = false;
   if (azureTargets.length) {
@@ -844,7 +858,11 @@ export function refreshWorkspacePrs(
     db,
     clients,
     (candidate) =>
-      candidate.lastPolledAt === null || candidate.lastPolledAt < freshSince ? "branch" : null,
+      // A merged PR won't change again, so the cached state is already current.
+      (candidate.prNumber === null || candidate.prState !== "merged") &&
+      (candidate.lastPolledAt === null || candidate.lastPolledAt < freshSince)
+        ? "branch"
+        : null,
     workspaceIds,
   );
 }
@@ -854,11 +872,17 @@ export function pollDueRepos(db: Db, clients: PollerClients, now = Date.now()): 
   return pollOnce(db, clients, (candidate) => dueRefresh(candidate, now));
 }
 
+/** How many PRs a workspace repo may have before the agent's links are refused. */
+export const MAX_AGENT_LINKED_PRS = 20;
+
 /** GraphQL's `Int` is 32-bit, so a larger PR number can only fail at the provider. */
 export const MAX_PR_NUMBER = 2_147_483_647;
 
 /** A request to link or detect a PR that can't be met, as opposed to a provider failure. */
 export class PrLinkRefusal extends Error {}
+
+/** An unlink naming a PR the repo doesn't have. */
+export class PrNotLinked extends PrLinkRefusal {}
 
 /** A workspace repo and its registered repo, checked to belong to `workspaceId`. */
 async function workspaceRepoIn(
@@ -945,6 +969,22 @@ export async function linkWorkspacePr(
     );
   }
   const { closedAt: _closedAt, ...pr } = found;
+  if (!relink) {
+    // The agent may link the work it opened, not a fork's PR, and not without
+    // limit: every linked PR is re-read on the user's provider rate limit.
+    if (pr.headBranch?.includes(":")) {
+      throw new PrLinkRefusal(`#${number} comes from a fork; only the user can link it`);
+    }
+    const linked = await db
+      .select({ id: workspaceRepoPr.id })
+      .from(workspaceRepoPr)
+      .where(and(eq(workspaceRepoPr.workspaceRepoId, wr.id), eq(workspaceRepoPr.dismissed, false)));
+    if (linked.length >= MAX_AGENT_LINKED_PRS) {
+      throw new PrLinkRefusal(
+        `${repo.name} already has ${linked.length} linked PRs; ask the user to unlink some first`,
+      );
+    }
+  }
   await upsertPr(db, wr.id, {
     ...pr,
     ...(relink ? { dismissed: false } : {}),
@@ -970,7 +1010,7 @@ export async function unlinkWorkspacePr(
     .set({ dismissed: true, updatedAt: new Date() })
     .where(and(eq(workspaceRepoPr.workspaceRepoId, wr.id), eq(workspaceRepoPr.prNumber, number)))
     .returning({ id: workspaceRepoPr.id });
-  if (!unlinked.length) throw new PrLinkRefusal(`#${number} is not linked to this repo`);
+  if (!unlinked.length) throw new PrNotLinked(`#${number} is not linked to this repo`);
 }
 
 /** What a detection search found for one repo in a workspace. */
@@ -997,10 +1037,21 @@ export async function detectWorkspacePrs(
     .where(eq(workspaces.id, workspaceId));
   if (!workspace) throw new PrLinkRefusal("workspace not found");
   if (workspace.status === "archived") throw new PrLinkRefusal("the workspace is archived");
-  // Searched one branch at a time so each read can fall back to REST, and so
-  // the answer says which repo found what.
+  // GitHub repos are searched in batches, as the poller does; Azure has no
+  // batched read.
   const targets = await searchCandidates(db, [workspaceId]);
-  const { results } = await searchEach(db, clients, targets);
+  const results = new Map<string, FoundPr[]>();
+  const githubTargets = targets.filter((t) => !isAzureRepo(t.repo));
+  const azureTargets = targets.filter((t) => isAzureRepo(t.repo));
+  if (clients.github && githubTargets.length) {
+    for (const [id, prs] of (await searchGithub(db, clients, clients.github, githubTargets))
+      .results) {
+      results.set(id, prs);
+    }
+  }
+  for (const [id, prs] of (await searchEach(db, clients, azureTargets)).results) {
+    results.set(id, prs);
+  }
   return [...results.entries()].map(([workspaceRepoId, prs]) => ({
     workspaceRepoId,
     prs: prs.map((pr) => ({

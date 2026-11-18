@@ -776,8 +776,9 @@ export const workspaceRepoPr = pgTable(
     // The branch the PR merges from. Null until the PR is first read. Archive
     // trusts a merged PR only for the branch it merged.
     headBranch: text("head_branch"),
-    // Unlinked by the user: hidden, never refreshed, and never re-added by
-    // detection. Linking the PR again by number clears it.
+    // Unlinked by the user: hidden everywhere and skipped by the number reads.
+    // A branch search may still refresh the row, but never clears this; only
+    // the user linking the PR again does.
     dismissed: boolean("dismissed").notNull().default(false),
     prState: text("pr_state"), // open | closed | merged
     // The PR's head commit as last polled; for a merged PR, what it merged.
