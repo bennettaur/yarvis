@@ -80,12 +80,12 @@ describe("startWorkspaceForPr", () => {
       branch: "topic",
       existingBranch: true,
     });
-    // Linked now, before provisioning or any poll, and pinned to this PR.
+    // Linked now, before provisioning or any poll.
     const [pr] = await db
       .select()
       .from(workspaceRepoPr)
       .where(eq(workspaceRepoPr.workspaceRepoId, detail!.repos[0]!.id));
-    expect(pr).toMatchObject({ prNumber: 7, pinned: true, lastPolledAt: null });
+    expect(pr).toMatchObject({ prNumber: 7, headBranch: "topic", lastPolledAt: null });
   });
 
   it("links the pull request to a workspace already on its branch", async () => {
@@ -101,7 +101,7 @@ describe("startWorkspaceForPr", () => {
 
     expect(result).toEqual({ workspaceId: workspace.id, name: "Existing", existing: true });
     const [pr] = await db.select().from(workspaceRepoPr);
-    expect(pr).toMatchObject({ prNumber: 7, pinned: true });
+    expect(pr).toMatchObject({ prNumber: 7, headBranch: "topic" });
   });
 
   // The session the workspace opens with is a blank prompt, so nothing is

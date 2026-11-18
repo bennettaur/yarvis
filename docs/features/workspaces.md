@@ -306,8 +306,9 @@ handed a flag it doesn't know.
 Drag the line between the list and the open workspace to make the list wider
 or narrower. The width is remembered.
 
-Each row shows the workspace's status and a badge for each repo that has a
-pull request. The badge shows whatever needs acting on first, so a red build on
+Each row shows the workspace's status and a badge for each pull request linked
+to it. A repo can have several: one per layer of a stack, an earlier PR on the
+same branch, or one linked by number. The badge shows whatever needs acting on first, so a red build on
 an approved PR still reads as failing. Hover a badge to see the repo, PR number
 and state.
 
@@ -340,13 +341,12 @@ verdict here, so its badges never reach `★`.
 Badges come from a background PR poll, paced to stay under your GitHub and
 Azure DevOps rate limits:
 
-- Every workspace whose PR is known and not yet merged refreshes every 15
-  minutes, even while Yarvis is in the background. For GitHub, all of them
-  are read in one request.
-- While you're in a workspace with Yarvis in front of you, its PR refreshes
-  about once a minute, or every 15 minutes once it's merged or closed. This is
-  also how a PR opened on its branch gets picked up.
-- A workspace with no PR yet is checked for a new one every 15 minutes while
+- Every linked PR that isn't merged refreshes every 15 minutes, even while
+  Yarvis is in the background. For GitHub, all of them are read in one request.
+- While you're in a workspace with Yarvis in front of you, its PRs refresh
+  about once a minute, or every 15 minutes once merged or closed. Its branches
+  are also searched about once a minute, which is how a new PR gets picked up.
+- Other workspaces' branches are searched for new PRs every 15 minutes while
   the list is in front of you.
 
 So a badge can lag a change by up to 15 minutes, or a minute for the workspace
@@ -362,24 +362,34 @@ A workspace with something waiting on you is also marked in the list. See
 
 ### Linking a pull request
 
-Yarvis finds a workspace's PR by looking for one on each repo's worktree
-branch. When it finds the wrong one, or none, the status line under the
-workspace's header has two fixes:
+A workspace keeps every pull request it finds or is given, for each repo. The
+status line under the workspace's header lists them all, with state, checks
+and merge conflicts. A PR from a branch other than the worktree's own, such as
+a stack layer, is labelled with its branch. A closed PR is dimmed.
 
-- **Detect PRs again** looks now instead of waiting for the next poll. It
-  tries each repo's worktree branch first, then the branches of the worktrees
-  an agent added, newest first. It drops any PR you linked by hand.
-- **Link PR** (or **Change PR**) takes a PR number for that repo. Yarvis checks
-  the PR exists before it saves the link.
+Yarvis finds PRs by searching the repo's worktree branch and the branches of
+the worktrees an agent added. Every PR on those branches is kept, not only the
+newest, except one that was already closed or merged before its branch joined
+the workspace: that is an earlier use of the same branch name.
 
-A PR linked by number stays linked. Yarvis keeps refreshing it by number, even
-if its branch isn't the worktree's, and doesn't swap in another PR found on the
-branch. The same applies to a workspace started from a PR, and to a PR found on
-an added worktree's branch.
+- **Detect PRs again** searches now instead of waiting for the next poll. It
+  only adds PRs.
+- **Link PR** takes a PR number for that repo and adds it beside the others,
+  wherever its branch is. Yarvis checks the PR exists before it saves the link.
+- **Unlink** on a PR stops showing it. Searching its branch won't add it back.
+  Linking it by number again does.
+
+A workspace started from a PR is linked to that PR from the start.
+
+Where something needs a single PR per repo, such as the right column's
+**PR checks** or the stack view, it uses the main PR: the newest open PR on the
+worktree's own branch, else the newest merged one there, else the newest of the
+rest. Archiving only treats a merged PR as proof that a branch landed if the
+PR merged from that branch.
 
 The agent in the workspace can link a PR too, with the MCP tool
 `link_pull_request` ([MCP](mcp.md#linking-a-pull-request)). Its `AGENTS.md`
-tells it to do so after opening one.
+tells it to link each PR it opens.
 
 ## The right column
 

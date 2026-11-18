@@ -287,6 +287,7 @@ describe("azure client", () => {
                 status: "active",
                 isDraft: true,
                 mergeStatus: "succeeded",
+                sourceRefName: "refs/heads/feature/x",
                 repository: {
                   name: "web",
                   webUrl: "https://dev.azure.com/acme/Shop/_git/web",
@@ -305,6 +306,8 @@ describe("azure client", () => {
       number: 42,
       url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
       draft: true,
+      headBranch: "feature/x",
+      closedAt: null,
       state: "open",
       headSha: null,
       mergeable: "MERGEABLE",

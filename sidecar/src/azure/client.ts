@@ -265,6 +265,10 @@ export interface AzureBranchPr {
   number: number;
   url: string;
   draft: boolean;
+  /** The branch the PR merges from. */
+  headBranch: string;
+  /** When the PR was completed or abandoned; null while it is active. */
+  closedAt: string | null;
   /** Normalized to the poller's stored PR-state vocabulary. */
   state: "open" | "closed" | "merged";
   /** The source branch's commit the PR last merged from; null when Azure leaves it out. */
@@ -422,15 +426,24 @@ export class AzureDevOpsClient {
     repo: string,
     branch: string,
   ): Promise<AzureBranchPr | null> {
+    return (await this.findPrsByBranch(project, repo, branch, 1))[0] ?? null;
+  }
+
+  /** Every PR from `branch`, newest first, up to `top`. */
+  async findPrsByBranch(
+    project: string,
+    repo: string,
+    branch: string,
+    top = 20,
+  ): Promise<AzureBranchPr[]> {
     const base = `${this.orgUrl}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(
       repo,
     )}/pullrequests`;
     const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
     const data = await this.get<AzureList<AzurePullRequest>>(
-      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=1`,
+      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=${top}`,
     );
-    const pr = data.value?.[0];
-    return pr ? this.toBranchPr(pr) : null;
+    return (data.value ?? []).map((pr) => this.toBranchPr(pr));
   }
 
   /** One PR by id, in the shape {@link findPrByBranch} answers with. */
@@ -443,6 +456,8 @@ export class AzureDevOpsClient {
       number: pr.pullRequestId,
       url: this.prWebUrl(pr),
       draft: Boolean(pr.isDraft),
+      headBranch: (pr.sourceRefName ?? "").replace(/^refs\/heads\//, ""),
+      closedAt: pr.closedDate ?? null,
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
       headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,

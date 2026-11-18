@@ -25,11 +25,13 @@ export interface Workspace {
   archivedAt: string | null;
 }
 
-/** Poller cache of the PR + checks for a workspace repo (populated in PR3). */
+/** One PR linked to a workspace repo, with its status as the poller last read it. */
 export interface WorkspaceRepoPr {
   prNumber: number | null;
   prUrl: string | null;
   prState: string | null;
+  /** The branch the PR merges from; null until it is first read. */
+  headBranch?: string | null;
   isDraft: boolean | null;
   mergeable: string | null;
   checkRollup: CheckRollup;
@@ -66,7 +68,13 @@ export interface WorkspaceRepoDetail {
   error: string | null;
   createdAt: string;
   repo: Repo;
+  /** The repo's main PR: the newest open one on its own branch, else the most relevant. */
   pr: WorkspaceRepoPr | null;
+  /** Every PR linked to the repo, the main one first. */
+  prs: WorkspaceRepoPr[];
+  /** When the poller last searched the repo's branches for PRs; null if never. */
+  prsPolledAt?: string | null;
+  prsPollError?: string | null;
 }
 
 export interface WorkspaceDetail extends Workspace {
@@ -407,36 +415,44 @@ export async function workspaceRepoSync(
   return res.json();
 }
 
-/** What looking for a workspace repo's PR again found. */
-export interface DetectedPr {
+/** What a detection search found on one repo's branches. */
+export interface DetectedPrs {
   workspaceRepoId: string;
-  /** The branch the PR was found on; null when none was found. */
-  branch: string | null;
-  prNumber: number | null;
-  prUrl: string | null;
-  /** Why this repo couldn't be read, when it couldn't. */
-  error?: string;
+  prs: { number: number; url: string | null; branch: string | null }[];
 }
 
-/** Looks for each of the workspace's repos' PR again, dropping any linked by hand. */
-export async function detectWorkspacePrs(workspaceId: string): Promise<DetectedPr[]> {
+/** Searches every branch of the workspace's repos for PRs now, adding what it finds. */
+export async function detectWorkspacePrs(workspaceId: string): Promise<DetectedPrs[]> {
   const res = await sidecarFetch(`/api/workspaces/${workspaceId}/prs/detect`, { method: "POST" });
   if (!res.ok) return readError(res, "detect pull requests");
   return (await res.json()).repos;
 }
 
-/** Links one of a workspace repo's PRs by number, replacing the PR it had. */
+/** Links one of a workspace repo's PRs by number, beside the ones it has. */
 export async function linkWorkspacePr(
   workspaceId: string,
   workspaceRepoId: string,
   number: number,
 ): Promise<void> {
-  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/pr`, {
-    method: "PUT",
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/prs`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ number }),
   });
   if (!res.ok) return readError(res, "link pull request");
+}
+
+/** Unlinks one of a workspace repo's PRs; detection won't add it back. */
+export async function unlinkWorkspacePr(
+  workspaceId: string,
+  workspaceRepoId: string,
+  number: number,
+): Promise<void> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/prs/${number}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return readError(res, "unlink pull request");
 }
 
 export interface WorkspaceStack {

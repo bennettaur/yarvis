@@ -6,7 +6,7 @@ import type { ChannelSendOptions } from "../channel/send.ts";
 import type { UntrustedReads } from "../chat/destructiveTools.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { Repo } from "../db/schema.ts";
+import type { Repo, WorkspaceRepoPr } from "../db/schema.ts";
 import { emitEvent, lastWorkspaceViews } from "../events/service.ts";
 import { createGitHubClient } from "../github/client.ts";
 import { createIssueCloser, type IssueCloser } from "../issues/close.ts";
@@ -121,12 +121,10 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
     status: detail.status,
     repos: detail.repos.map((wr) => {
       const pr = wr.pr;
-      // A failed read still stamps lastPolledAt, so a fresh read is one with no error too.
-      const readFresh =
-        pr?.lastPolledAt != null &&
-        freshSince !== null &&
-        pr.lastPolledAt >= freshSince &&
-        !pr.lastError;
+      // A failed read still stamps its time, so a fresh read is one with no error too.
+      const readAt = pr ? pr.lastPolledAt : wr.prsPolledAt;
+      const readError = pr ? pr.lastError : wr.prsPollError;
+      const readFresh = readAt != null && freshSince !== null && readAt >= freshSince && !readError;
       // Only an active workspace's ready repos are ever read, so only they can fail to be.
       const refreshable = detail.status === "active" && wr.status === "ready";
       const refresh =
@@ -137,33 +135,38 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
                 "not refreshed (rate limit, a provider error in lastError, or no access to this provider); this is the cached state",
             }
           : {};
-      if (!pr || pr.prNumber === null) {
+      if (!pr) {
         return {
           repo: wr.repo.name,
           branch: wr.branch,
           pr: null,
-          note: pr ? "no PR opened yet" : "not polled yet",
+          note: wr.prsPolledAt ? "no PR opened yet" : "not polled yet",
           ...refresh,
-          lastPolledAt: pr?.lastPolledAt ?? null,
-          lastError: pr?.lastError ?? null,
+          lastPolledAt: wr.prsPolledAt,
+          lastError: wr.prsPollError,
         };
       }
+      const summarize = (p: WorkspaceRepoPr) => ({
+        number: p.prNumber,
+        url: p.prUrl,
+        branch: p.headBranch,
+        state: p.prState,
+        isDraft: p.isDraft,
+        mergeable: p.mergeable,
+        checks: p.checkRollup,
+        checkCounts: p.checks,
+        reviewDecision: p.reviewDecision,
+        lastPolledAt: p.lastPolledAt,
+        lastError: p.lastError,
+      });
+      const others = wr.prs.filter((p) => p.id !== pr.id);
       return {
         repo: wr.repo.name,
         branch: wr.branch,
         ...refresh,
-        pr: {
-          number: pr.prNumber,
-          url: pr.prUrl,
-          state: pr.prState,
-          isDraft: pr.isDraft,
-          mergeable: pr.mergeable,
-          checks: pr.checkRollup,
-          checkCounts: pr.checks,
-          reviewDecision: pr.reviewDecision,
-          lastPolledAt: pr.lastPolledAt,
-          lastError: pr.lastError,
-        },
+        pr: summarize(pr),
+        // The repo's other PRs: stack layers, earlier PRs on the branch, ones linked by number.
+        ...(others.length ? { otherPrs: others.map(summarize) } : {}),
       };
     }),
   };
@@ -1009,11 +1012,15 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         const repos = await Promise.all(
           detail.repos.map(async (wr) => {
             const base = { repo: wr.repo.name, branch: wr.branch };
-            // The poller already found the branch's PR; reusing its number saves
-            // a lookup per repo and agrees with what get_workspace_status said.
+            // The poller already found the repo's main PR; reusing its number
+            // saves a lookup per repo and agrees with what get_workspace_status said.
             const cached = wr.pr;
-            if (!cached || cached.prNumber === null) {
-              return { ...base, pr: null, note: cached ? "no PR opened yet" : "not polled yet" };
+            if (!cached) {
+              return {
+                ...base,
+                pr: null,
+                note: wr.prsPolledAt ? "no PR opened yet" : "not polled yet",
+              };
             }
             const ref = workspacePrRef(wr.repo, cached.prNumber);
             if (!ref)

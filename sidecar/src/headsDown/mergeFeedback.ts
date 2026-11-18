@@ -169,7 +169,11 @@ async function workspacePrs(
   db: Db,
   where: { workspaceId: string } | { owner: string; name: string; number: number },
 ): Promise<WorkspacePr[]> {
-  const conditions = [eq(workspaces.status, "active"), eq(workspaceRepoPr.prState, "open")];
+  const conditions = [
+    eq(workspaces.status, "active"),
+    eq(workspaceRepoPr.prState, "open"),
+    eq(workspaceRepoPr.dismissed, false),
+  ];
   if ("workspaceId" in where) {
     conditions.push(eq(workspaces.id, where.workspaceId));
   } else {
@@ -184,7 +188,7 @@ async function workspacePrs(
     .innerJoin(workspaces, eq(workspaces.id, workspaceRepos.workspaceId))
     .innerJoin(repos, eq(repos.id, workspaceRepos.repoId))
     .where(and(...conditions));
-  return rows.flatMap((r) => (r.prNumber === null ? [] : [{ ...r, prNumber: r.prNumber }]));
+  return rows;
 }
 
 interface Target {

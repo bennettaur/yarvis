@@ -130,7 +130,7 @@ export async function startWorkspaceForPr(
   // branch read to find.
   const onBranch = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
   if (onBranch) {
-    await seedWorkspacePr(db, onBranch.workspaceRepoId, locator.number);
+    await seedWorkspacePr(db, onBranch.workspaceRepoId, locator.number, detail.headRef);
     return { workspaceId: onBranch.id, name: onBranch.name, existing: true };
   }
 
@@ -142,7 +142,7 @@ export async function startWorkspaceForPr(
   });
   // `createWorkspace` doesn't return its repo rows; the branch lookup finds the one it wrote.
   const created = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
-  if (created) await seedWorkspacePr(db, created.workspaceRepoId, locator.number);
+  if (created) await seedWorkspacePr(db, created.workspaceRepoId, locator.number, detail.headRef);
 
   // Without a brief there is no pending prompt: the workspace opens on a
   // session with nothing typed into it. Provisioning is all the kick-off does

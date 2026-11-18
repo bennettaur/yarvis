@@ -23,6 +23,7 @@ import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from
 import { type RunResult, run } from "./exec.ts";
 import { defaultGitRunner, type GitRunner, hardenedGitEnv, refusedResult } from "./git.ts";
 import { checkBeforeWrite, describeFindings } from "./integrity.ts";
+import { branchPr } from "./prs.ts";
 import { parseRepoRemote, raiseIntegrityAlert } from "./service.ts";
 import { symlinkRefusal } from "./symlinkScan.ts";
 import { resolveWorktree } from "./worktrees.ts";
@@ -336,18 +337,21 @@ async function stackContext(
   owner: string;
   repo: string;
   branch: string | null;
-  /** The PR the poller last found, which it only looks for on the primary branch. */
+  /** The main PR the poller found on the primary branch. */
   polledPrNumber: number | null;
 }> {
   const [row] = await db
-    .select({ wr: workspaceRepos, repo: repos, pr: workspaceRepoPr })
+    .select({ wr: workspaceRepos, repo: repos })
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
-    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(
       and(eq(workspaceRepos.id, workspaceRepoId), eq(workspaceRepos.workspaceId, workspaceId)),
     );
   if (!row) throw new Error("workspace repo not found");
+  const prs = await db
+    .select()
+    .from(workspaceRepoPr)
+    .where(eq(workspaceRepoPr.workspaceRepoId, workspaceRepoId));
 
   const remote = parseRepoRemote(row.repo.cloneUrl);
   if (remote && remote.provider !== "github") {
@@ -362,7 +366,7 @@ async function stackContext(
     owner: remote?.provider === "github" ? remote.owner : row.repo.owner,
     repo: remote?.provider === "github" ? remote.repo : row.repo.repo,
     branch: target.branch,
-    polledPrNumber: target.primary ? (row.pr?.prNumber ?? null) : null,
+    polledPrNumber: target.primary ? (branchPr(prs, row.wr.branch)?.prNumber ?? null) : null,
   };
 }
 

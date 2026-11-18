@@ -317,7 +317,7 @@ describe("resolveConflictsForPr", () => {
       .select()
       .from(workspaceRepoPr)
       .where(eq(workspaceRepoPr.workspaceRepoId, wr!.id));
-    expect(linked).toMatchObject({ prNumber: 7, pinned: true });
+    expect(linked).toMatchObject({ prNumber: 7, dismissed: false });
     const viaPr = fakes();
     const result = await resolveConflictsForPr(db, config, fakeSource(), viaPr.options);
     expect(result.workspaceId).toBe(workspace.id);

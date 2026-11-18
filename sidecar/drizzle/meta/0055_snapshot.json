@@ -1,5 +1,5 @@
 {
-  "id": "ac2fcf03-a80e-41c3-bb71-8bbf54407a91",
+  "id": "91883204-9d87-49f3-857f-a5ed3e4cef22",
   "prevId": "208e1a8d-f3de-416d-93d1-c5f4e24a2685",
   "version": "7",
   "dialect": "postgresql",
@@ -5396,7 +5396,7 @@
           "name": "pr_number",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "pr_url": {
           "name": "pr_url",
@@ -5404,8 +5404,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pinned": {
-          "name": "pinned",
+        "head_branch": {
+          "name": "head_branch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dismissed": {
+          "name": "dismissed",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -5476,11 +5482,17 @@
         }
       },
       "indexes": {
-        "workspace_repo_pr_wr_idx": {
-          "name": "workspace_repo_pr_wr_idx",
+        "workspace_repo_pr_wr_number_idx": {
+          "name": "workspace_repo_pr_wr_number_idx",
           "columns": [
             {
               "expression": "workspace_repo_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pr_number",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5583,6 +5595,18 @@
         },
         "error": {
           "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prs_polled_at": {
+          "name": "prs_polled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prs_poll_error": {
+          "name": "prs_poll_error",
           "type": "text",
           "primaryKey": false,
           "notNull": false

@@ -1,1 +1,0 @@
-ALTER TABLE "workspace_repo_pr" ADD COLUMN "pinned" boolean DEFAULT false NOT NULL;

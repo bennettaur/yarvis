@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import type { WorkspaceRepoDetail } from "../../lib/workspaces";
+import type { WorkspaceRepoDetail, WorkspaceRepoPr } from "../../lib/workspaces";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import WorkspacePrStatus, { DetectPrsButton } from "./WorkspacePrStatus";
@@ -76,7 +76,24 @@ const repo: WorkspaceRepoDetail = {
     updatedAt: "2026-01-01T00:00:00Z",
   },
   pr: null,
+  prs: [],
+  prsPolledAt: "2026-01-01T00:00:00Z",
 };
+
+const linkedPr = (prNumber: number, over: Partial<WorkspaceRepoPr> = {}): WorkspaceRepoPr => ({
+  prNumber,
+  prUrl: `https://github.com/acme/widget/pull/${prNumber}`,
+  prState: "open",
+  headBranch: "topic",
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  checkRollup: "success",
+  checks: null,
+  reviewDecision: null,
+  lastPolledAt: "2026-01-01T00:00:00Z",
+  lastError: null,
+  ...over,
+});
 
 const button = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent === label);
@@ -100,11 +117,11 @@ afterEach(() => unmount());
 
 afterAll(resetSidecarApi);
 
-async function mountStatus() {
+async function mountStatus(prs: WorkspaceRepoPr[] = []) {
   const mounted = await mountForInteraction(
     createElement(WorkspacePrStatus, {
       workspaceId: "ws-1",
-      repo,
+      repo: { ...repo, prs, pr: prs[0] ?? null },
       showRepoName: false,
       onPrLinked: () => changed++,
     }),
@@ -114,8 +131,44 @@ async function mountStatus() {
 }
 
 describe("WorkspacePrStatus", () => {
+  it("shows every linked PR, naming the branch of one that isn't the worktree's", async () => {
+    const host = await mountStatus([
+      linkedPr(5),
+      linkedPr(9, { headBranch: "stack-2", checkRollup: "failure" }),
+      linkedPr(3, { prState: "merged" }),
+    ]);
+
+    const rows = [...host.querySelectorAll("[data-testid=workspace-pr]")].map((r) => r.textContent);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain("#5");
+    expect(rows[0]).not.toContain("topic");
+    expect(rows[1]).toContain("#9");
+    expect(rows[1]).toContain("stack-2");
+    expect(rows[1]).toContain("checks failing");
+    expect(rows[2]).toContain("merged");
+    expect(host.textContent).not.toContain("No PR yet");
+  });
+
+  it("says when the branches were searched and had no PR", async () => {
+    const host = await mountStatus();
+    expect(host.textContent).toContain("No PR yet");
+  });
+
+  it("unlinks one PR and leaves the others", async () => {
+    replies = { "/repos/wr-1/prs/9": { status: 200, body: { ok: true } } };
+    const host = await mountStatus([linkedPr(5), linkedPr(9)]);
+
+    const second = host.querySelectorAll("[data-testid=workspace-pr]")[1] as HTMLElement;
+    button(second, "Unlink")?.click();
+
+    await waitFor(() => changed === 1, "the workspace to be re-read");
+    expect(sent.filter((r) => r.method === "DELETE")).toEqual([
+      { path: "/api/workspaces/ws-1/repos/wr-1/prs/9", method: "DELETE", body: null },
+    ]);
+  });
+
   it("links a PR by number, with or without its #", async () => {
-    replies = { "/repos/wr-1/pr": { status: 200, body: { pr: {} } } };
+    replies = { "/repos/wr-1/prs": { status: 200, body: { pr: {} } } };
     const host = await mountStatus();
 
     button(host, "Link PR")?.click();
@@ -125,9 +178,9 @@ describe("WorkspacePrStatus", () => {
     button(host, "Link")?.click();
 
     await waitFor(() => changed === 1, "the workspace to be re-read");
-    expect(sent.find((r) => r.method === "PUT")).toEqual({
-      path: "/api/workspaces/ws-1/repos/wr-1/pr",
-      method: "PUT",
+    expect(sent.find((r) => r.method === "POST")).toEqual({
+      path: "/api/workspaces/ws-1/repos/wr-1/prs",
+      method: "POST",
       body: { number: 42 },
     });
     expect(button(host, "Link PR")).toBeDefined();
@@ -135,7 +188,7 @@ describe("WorkspacePrStatus", () => {
 
   it("shows why a link was refused and keeps the field open", async () => {
     replies = {
-      "/repos/wr-1/pr": { status: 400, body: { error: "widget has no pull request #42" } },
+      "/repos/wr-1/prs": { status: 400, body: { error: "widget has no pull request #42" } },
     };
     const host = await mountStatus();
 
@@ -170,14 +223,20 @@ describe("DetectPrsButton", () => {
     return mounted.host;
   }
 
-  it("says how many repos it found a PR for", async () => {
+  it("says how many PRs it found", async () => {
     replies = {
       "/prs/detect": {
         status: 200,
         body: {
           repos: [
-            { workspaceRepoId: "wr-1", branch: "topic", prNumber: 5, prUrl: "u" },
-            { workspaceRepoId: "wr-2", branch: null, prNumber: null, prUrl: null },
+            {
+              workspaceRepoId: "wr-1",
+              prs: [
+                { number: 5, url: "u5", branch: "topic" },
+                { number: 9, url: "u9", branch: "stack-2" },
+              ],
+            },
+            { workspaceRepoId: "wr-2", prs: [] },
           ],
         },
       },
@@ -187,7 +246,7 @@ describe("DetectPrsButton", () => {
     button(host, "Detect PRs again")?.click();
 
     await waitFor(() => host.querySelector("[role=status]") !== null, "the result");
-    expect(host.querySelector("[role=status]")?.textContent).toBe("Found 1 of 2");
+    expect(host.querySelector("[role=status]")?.textContent).toBe("Found 2 PRs");
     expect(sent).toEqual([{ path: "/api/workspaces/ws-1/prs/detect", method: "POST", body: null }]);
     expect(changed).toBe(1);
   });

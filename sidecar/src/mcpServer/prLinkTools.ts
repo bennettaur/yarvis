@@ -4,9 +4,9 @@ import { MAX_PR_NUMBER } from "../workspaces/poller.ts";
 import { callerError, jsonResult, toolError } from "./results.ts";
 
 /**
- * Lets the agent session in a workspace say which PR it opened for each repo,
- * so the workspace shows that PR's state without waiting for a branch read to
- * find it, and finds it at all when it isn't on the worktree's own branch.
+ * Lets the agent session in a workspace link a PR it opened to one of the
+ * workspace's repos, so the workspace shows that PR's state without waiting
+ * for the next search of its branches to find it.
  */
 
 export interface LinkPullRequestInput {
@@ -44,8 +44,8 @@ export function registerPrLinkTools(
       title: "Link a pull request",
       description: [
         "Record the pull request for one of this workspace's repos, so the user sees its state and checks in Yarvis.",
-        "Call it after opening a PR, or when the work's PR is on a branch other than the worktree's own, such as one in a worktree added with `add_worktree`.",
-        "Each repo has one linked PR: this replaces any PR the repo had.",
+        "Call it after opening a PR, or for a PR on a branch Yarvis doesn't search, such as one you didn't create a worktree for.",
+        "A repo can have any number of linked PRs: this adds one and leaves the others.",
         "The PR must exist in that repo. Returns its `url` and `state`.",
       ].join(" "),
       inputSchema: {

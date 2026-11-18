@@ -31,6 +31,8 @@ function polledPr(number: number, extra: Record<string, unknown> = {}) {
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
     headRefOid: `sha${number}`,
+    headRefName: "main",
+    closedAt: null,
     headRepositoryOwner: { login: "o" },
     commits: {
       nodes: [
@@ -73,22 +75,26 @@ describe("branchPrStatuses", () => {
     expect(rest).toEqual([]);
     expect(results[0]).toEqual({
       ok: true,
-      value: {
-        number: 7,
-        url: "https://github.com/o/r/pull/7",
-        draft: false,
-        status: {
-          state: "open",
-          merged: false,
-          mergeable: true,
-          mergeableState: "clean",
-          headSha: "sha7",
-          checks: { total: 2, success: 1, failure: 0, pending: 1 },
+      value: [
+        {
+          number: 7,
+          url: "https://github.com/o/r/pull/7",
+          draft: false,
+          headBranch: "main",
+          closedAt: null,
+          status: {
+            state: "open",
+            merged: false,
+            mergeable: true,
+            mergeableState: "clean",
+            headSha: "sha7",
+            checks: { total: 2, success: 1, failure: 0, pending: 1 },
+          },
+          reviewDecision: "approved",
         },
-        reviewDecision: "approved",
-      },
+      ],
     });
-    expect(results[1]).toEqual({ ok: true, value: null });
+    expect(results[1]).toEqual({ ok: true, value: [] });
   });
 
   it("passes over a fork's PR on a branch of the same name", async () => {
@@ -104,7 +110,17 @@ describe("branchPrStatuses", () => {
 
     const [result] = await gh.branchPrStatuses([{ owner: "O", repo: "r", branch: "main" }]);
 
-    expect(result?.ok && result.value?.number).toBe(7);
+    expect(result?.ok && result.value.map((pr) => pr.number)).toEqual([7]);
+  });
+
+  it("returns every PR on a branch, newest first", async () => {
+    const { gh } = fakeGitHub(() => ({
+      data: { p0: { pullRequests: { nodes: [polledPr(9), polledPr(7)] } } },
+    }));
+
+    const [result] = await gh.branchPrStatuses([{ owner: "o", repo: "r", branch: "main" }]);
+
+    expect(result?.ok && result.value.map((pr) => pr.number)).toEqual([9, 7]);
   });
 
   it("finds no PR on a branch that only forks have opened", async () => {
@@ -118,7 +134,7 @@ describe("branchPrStatuses", () => {
 
     const [result] = await gh.branchPrStatuses([{ owner: "o", repo: "r", branch: "main" }]);
 
-    expect(result).toEqual({ ok: true, value: null });
+    expect(result).toEqual({ ok: true, value: [] });
   });
 
   it("sends refs only as variables, never in the query text", async () => {
@@ -138,7 +154,7 @@ describe("branchPrStatuses", () => {
 
     const [result] = await gh.branchPrStatuses([{ owner: "o", repo: "r", branch: "a" }]);
 
-    expect(result?.ok && result.value?.reviewDecision).toBeNull();
+    expect(result?.ok && result.value[0]?.reviewDecision).toBeNull();
   });
 });
 

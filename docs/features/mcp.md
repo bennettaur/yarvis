@@ -288,11 +288,12 @@ folder, and sandbox write access to that one branch.
 
 ### Linking a pull request
 
-A workspace session also gets `link_pull_request`, for telling Yarvis which
-pull request it opened for a repo. Yarvis finds a PR on the worktree's own
-branch by itself, but not one on a branch the agent made with `add_worktree`.
-After the call, the workspace shows the PR's state and checks straight away.
-See [Workspaces](workspaces.md#linking-a-pull-request).
+A workspace session also gets `link_pull_request`, for telling Yarvis about a
+pull request it opened for a repo. Yarvis also finds PRs by searching the
+workspace's branches, but only on its next poll, and never on a branch with no
+worktree in the workspace. After the call, the workspace shows the PR's state
+and checks straight away. See
+[Workspaces](workspaces.md#linking-a-pull-request).
 
 | Argument | What it is |
 | --- | --- |
@@ -300,13 +301,13 @@ See [Workspaces](workspaces.md#linking-a-pull-request).
 | `number` | The pull request's number (its id on Azure DevOps) |
 
 It answers with the PR's `url` and `state`. It refuses a repo that isn't in
-the workspace and a number the repo has no PR for. Each repo has one linked PR,
-so a second call replaces the first.
+the workspace and a number the repo has no PR for. A repo can have any number
+of linked PRs, so each call adds one.
 
 Like the other workspace tools, it acts on the workspace the header names. A
-caller can use it to change which of a repo's PRs a workspace shows, and so
+caller can use it to add any of a repo's PRs to a workspace, and so change
 which workspace **Start workspace** on that PR opens. It can't reach a PR in a
-repo the workspace doesn't have.
+repo the workspace doesn't have, and it can't remove one.
 
 ### Sessions Yarvis launches need no setup
 

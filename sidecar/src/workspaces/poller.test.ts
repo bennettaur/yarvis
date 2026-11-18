@@ -25,6 +25,7 @@ import {
   refreshWorkspacePrs,
   resetWorkspaceViews,
   seedWorkspacePr,
+  unlinkWorkspacePr,
 } from "./poller.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -234,10 +235,11 @@ describe("pollOnce", () => {
 
     await pollOnce(db, { github: gh });
 
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBeNull();
-    expect(row?.checkRollup).toBe("none");
-    expect(row?.lastPolledAt).not.toBeNull();
+    expect(await db.select().from(workspaceRepoPr).where(eqWr(wrId))).toEqual([]);
+    expect(await searchedAt(wrId)).toMatchObject({
+      prsPolledAt: expect.any(Date),
+      prsPollError: null,
+    });
   });
 
   it("marks a merged PR's state as merged", async () => {
@@ -308,7 +310,8 @@ describe("pollOnce", () => {
     expect(row?.reviewDecision).toBeNull();
   });
 
-  it("clears a cached verdict when the PR it belonged to is gone", async () => {
+  it("keeps a linked PR that a search of the branch no longer finds", async () => {
+    // Linked by number, or its branch was renamed: it stays the workspace's PR.
     const wrId = await seedReadyRepo();
     await db
       .insert(workspaceRepoPr)
@@ -317,9 +320,8 @@ describe("pollOnce", () => {
 
     await pollOnce(db, { github: gh });
 
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBeNull();
-    expect(row?.reviewDecision).toBeNull();
+    const rows = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(rows.map((r) => r.prNumber)).toEqual([4]);
   });
 
   it("keeps polling the rest of a repo when the verdict can't be read", async () => {
@@ -510,11 +512,11 @@ describe("pollOnce", () => {
 
     await pollOnce(db, { azure: az });
 
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBeNull();
-    expect(row?.checkRollup).toBe("none");
-    expect(row?.lastPolledAt).not.toBeNull();
-    expect(row?.lastError).toBeNull();
+    expect(await db.select().from(workspaceRepoPr).where(eqWr(wrId))).toEqual([]);
+    expect(await searchedAt(wrId)).toMatchObject({
+      prsPolledAt: expect.any(Date),
+      prsPollError: null,
+    });
   });
 
   it("matches a legacy visualstudio.com repo to its subdomain-org client", async () => {
@@ -551,35 +553,39 @@ describe("pollOnce", () => {
     expect(rows).toHaveLength(0); // untouched — no client for its org
   });
 
+  /** The search outcome of each seeded repo that was searched at all. */
+  const searched = async (...wrIds: string[]) =>
+    (await Promise.all(wrIds.map(searchedAt))).filter((r) => r?.prsPolledAt);
+
   it("backs off the whole cycle on a 429 rate limit", async () => {
-    await seedReadyRepo("a");
-    await seedReadyRepo("b");
+    const a = await seedReadyRepo("a");
+    const b = await seedReadyRepo("b");
     // Both repos would 429; the cycle must abort after the first, so only one
-    // PR row is ever written (poll order across the two repos is unspecified).
+    // is ever marked searched (poll order across the two repos is unspecified).
     const gh = clientWith((path) => (path.includes("head=") ? { __status: 429 } : {}));
 
     await pollOnce(db, { github: gh });
 
-    const rows = await db.select().from(workspaceRepoPr);
+    const rows = await searched(a, b);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.lastError).toContain("429");
+    expect(rows[0]?.prsPollError).toContain("429");
   });
 
   it("backs off the whole cycle on a 403 GitHub says is a rate limit", async () => {
-    await seedReadyRepo("a");
-    await seedReadyRepo("b");
+    const a = await seedReadyRepo("a");
+    const b = await seedReadyRepo("b");
     const gh = clientWith((path) =>
       path.includes("head=") ? { __status: 403, message: "API rate limit exceeded" } : {},
     );
 
     await pollOnce(db, { github: gh });
 
-    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
+    expect(await searched(a, b)).toHaveLength(1);
   });
 
   it("keeps polling the other repos when one 403s for access, not a rate limit", async () => {
-    await seedReadyRepo("a");
-    await seedReadyRepo("b");
+    const a = await seedReadyRepo("a");
+    const b = await seedReadyRepo("b");
     const gh = clientWith((path) =>
       path.includes("head=")
         ? { __status: 403, message: "Resource protected by organization SAML enforcement" }
@@ -588,9 +594,9 @@ describe("pollOnce", () => {
 
     await pollOnce(db, { github: gh });
 
-    const rows = await db.select().from(workspaceRepoPr);
+    const rows = await searched(a, b);
     expect(rows).toHaveLength(2);
-    expect(rows[0]?.lastError).toContain("SAML");
+    expect(rows[0]?.prsPollError).toContain("SAML");
   });
 });
 
@@ -637,10 +643,10 @@ describe("isDueForRefresh", () => {
     expect(due("w", "merged", null)).toBe(false);
   });
 
-  it("re-reads a known PR by number, and a branch on screen by branch", () => {
+  it("re-reads a known PR by number, and searches a branch on screen", () => {
     expect(mode("w", "open")).toBe("number");
     markWorkspaceViewed("w", now);
-    expect(mode("w", "open")).toBe("branch");
+    expect(mode("w", "open")).toBe("number");
     expect(mode("w", null)).toBe("branch");
   });
 
@@ -716,7 +722,6 @@ describe("pollOnce with a due filter", () => {
 
     expect(asked.some((p) => p.includes("/oa/ra/"))).toBe(true);
     expect(asked.some((p) => p.includes("/ob/rb/"))).toBe(false);
-    expect(await db.select().from(workspaceRepoPr)).toHaveLength(1);
   });
 
   it("reads each repo's cached poll time to decide whether it's due", async () => {
@@ -729,21 +734,20 @@ describe("pollOnce with a due filter", () => {
       asked++;
       return path.includes("head=") ? [] : {};
     });
-    const pollAt = (lastPolledAt: Date) =>
+    const searchedAgo = (ms: number) =>
       db
-        .insert(workspaceRepoPr)
-        .values({ workspaceRepoId: wrId, prState: "open", lastPolledAt })
-        .onConflictDoUpdate({ target: workspaceRepoPr.workspaceRepoId, set: { lastPolledAt } });
+        .update(workspaceRepos)
+        .set({ prsPolledAt: new Date(now - ms) })
+        .where(eq(workspaceRepos.id, wrId));
 
-    await pollAt(new Date(now - 20_000));
+    await searchedAgo(20_000);
     await pollOnce(db, { github: gh }, (c) => dueRefresh(c, now));
     expect(asked).toBe(0);
 
-    await pollAt(new Date(now - 2 * 60_000));
+    await searchedAgo(2 * 60_000);
     await pollOnce(db, { github: gh }, (c) => dueRefresh(c, now));
     expect(asked).toBeGreaterThan(0);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row!.lastPolledAt!.getTime()).toBeGreaterThanOrEqual(now);
+    expect((await searchedAt(wrId))!.prsPolledAt!.getTime()).toBeGreaterThanOrEqual(now);
   });
 });
 
@@ -777,6 +781,8 @@ const POLLED_PR = (number: number) => ({
   mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN",
   headRefOid: "abc",
+  headRefName: "yarvis/a",
+  closedAt: null,
   headRepositoryOwner: { login: "oa" },
   commits: {
     nodes: [
@@ -809,8 +815,10 @@ describe("batched GitHub reads", () => {
 
     await pollOnce(db, { github: gh }, (c) => (c.prNumber === null ? "branch" : "number"));
 
+    // Both repos' branches are searched in one request; b's known PR, which
+    // the search didn't find, is read by number in a second.
     expect(queries).toEqual([
-      { o0: "oa", r0: "ra", b0: "yarvis/a" },
+      { o0: "oa", r0: "ra", b0: "yarvis/a", o1: "ob", r1: "rb", b1: "yarvis/b" },
       { o0: "ob", r0: "rb", n0: 12 },
     ]);
     expect(rest).toEqual([]);
@@ -838,8 +846,8 @@ describe("batched GitHub reads", () => {
 
     const [okRow] = await db.select().from(workspaceRepoPr).where(eqWr(okWr));
     expect(okRow).toMatchObject({ prNumber: 5, lastError: null });
-    const [goneRow] = await db.select().from(workspaceRepoPr).where(eqWr(goneWr));
-    expect(goneRow?.lastError).toContain("Not found");
+    expect(await searchedAt(okWr)).toMatchObject({ prsPollError: null });
+    expect((await searchedAt(goneWr))?.prsPollError).toContain("Not found");
   });
 
   it("waits out a spent GraphQL limit, without REST, while Azure carries on", async () => {
@@ -861,11 +869,10 @@ describe("batched GitHub reads", () => {
 
     expect(queries).toHaveLength(1); // the known-PR read never goes out
     expect(rest).toEqual([]);
-    expect(await db.select().from(workspaceRepoPr).where(eqWr(branchWr))).toEqual([]);
+    expect((await searchedAt(branchWr))?.prsPolledAt).toBeNull();
     const [knownRow] = await db.select().from(workspaceRepoPr).where(eqWr(knownWr));
     expect(knownRow?.lastPolledAt).toBeNull();
-    const [azureRow] = await db.select().from(workspaceRepoPr).where(eqWr(azureWr));
-    expect(azureRow?.lastPolledAt).not.toBeNull();
+    expect((await searchedAt(azureWr))?.prsPolledAt).not.toBeNull();
   });
 
   it("records a batch-wide refusal on every repo in it, without REST", async () => {
@@ -882,8 +889,7 @@ describe("batched GitHub reads", () => {
 
     expect(rest).toEqual([]);
     for (const wrId of [a, b]) {
-      const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-      expect(row?.lastError).toContain("SAML");
+      expect((await searchedAt(wrId))?.prsPollError).toContain("SAML");
     }
   });
 
@@ -895,8 +901,7 @@ describe("batched GitHub reads", () => {
 
     // The per-repo read reaches REST once GraphQL fails it too.
     expect(rest.some((p) => p.endsWith("/pulls"))).toBe(true);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.lastError).not.toBeNull();
+    expect((await searchedAt(wrId))?.prsPollError).not.toBeNull();
   });
 
   it("leaves known PRs for the next window when GraphQL can't answer", async () => {
@@ -953,6 +958,10 @@ describe("refreshWorkspacePrs", () => {
       { workspaceRepoId: stale, prNumber: 5, lastPolledAt: new Date(Date.now() - 5 * 60_000) },
       { workspaceRepoId: recent, prNumber: 6, lastPolledAt: new Date() },
     ]);
+    await db
+      .update(workspaceRepos)
+      .set({ prsPolledAt: new Date() })
+      .where(eq(workspaceRepos.id, recent));
     const named = await db
       .select()
       .from(workspaces)
@@ -1083,6 +1092,15 @@ function eqWr(wrId: string) {
   return eq(workspaceRepoPr.workspaceRepoId, wrId);
 }
 
+/** When a workspace repo's branches were last searched, and why that failed if it did. */
+async function searchedAt(wrId: string) {
+  const [row] = await db
+    .select({ prsPolledAt: workspaceRepos.prsPolledAt, prsPollError: workspaceRepos.prsPollError })
+    .from(workspaceRepos)
+    .where(eq(workspaceRepos.id, wrId));
+  return row;
+}
+
 /** The workspace id a seeded workspace repo belongs to. */
 async function workspaceOf(wrId: string): Promise<string> {
   const [row] = await db
@@ -1092,46 +1110,154 @@ async function workspaceOf(wrId: string): Promise<string> {
   return row!.id;
 }
 
-describe("linked PRs", () => {
-  it("reads a pinned PR by number even when a branch read is asked for", async () => {
+describe("several PRs per repo", () => {
+  /** A PR as the batched search returns it, on `branch`, closed at `closedAt` (null while open). */
+  const searchedPr = (number: number, branch: string, closedAt: string | null = null) => ({
+    ...POLLED_PR(number),
+    headRefName: branch,
+    closedAt,
+    ...(closedAt ? { state: "MERGED", merged: true } : {}),
+  });
+
+  it("keeps every PR found on the repo's own branch and on its added worktrees' branches", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceExtraWorktrees)
+      .values({ workspaceRepoId: wrId, branch: "stack-2", worktreePath: "/tmp/a/ra-stack-2" });
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const { gh, queries } = graphqlClient(() => ({
+      data: {
+        // A PR reopened on the same branch after the first merged.
+        p0: {
+          pullRequests: { nodes: [searchedPr(5, "yarvis/a"), searchedPr(4, "yarvis/a", later)] },
+        },
+        p1: { pullRequests: { nodes: [searchedPr(9, "stack-2")] } },
+      },
+    }));
+
+    await pollOnce(db, { github: gh });
+
+    expect(queries[0]).toMatchObject({ b0: "yarvis/a", b1: "stack-2" });
+    const rows = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(rows.map((r) => [r.prNumber, r.headBranch, r.prState]).sort()).toEqual([
+      [4, "yarvis/a", "merged"],
+      [5, "yarvis/a", "open"],
+      [9, "stack-2", "open"],
+    ]);
+  });
+
+  it("leaves out a PR that closed before its branch joined the workspace", async () => {
+    // An earlier use of the same branch name, not this workspace's work.
+    const wrId = await seedReadyRepo("a");
+    const { gh } = graphqlClient(() => ({
+      data: {
+        p0: { pullRequests: { nodes: [searchedPr(3, "yarvis/a", "2020-01-01T00:00:00Z")] } },
+      },
+    }));
+
+    await pollOnce(db, { github: gh });
+
+    expect(await db.select().from(workspaceRepoPr).where(eqWr(wrId))).toEqual([]);
+  });
+
+  it("doesn't bring back or refresh a PR the user unlinked", async () => {
     const wrId = await seedReadyRepo("a");
     await db
       .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wrId, prNumber: 12, prState: "open", pinned: true });
+      .values({ workspaceRepoId: wrId, prNumber: 5, prState: "open", dismissed: true });
     const { gh, queries } = graphqlClient(() => ({
-      data: { p0: { pullRequest: POLLED_PR(12) } },
+      data: { p0: { pullRequests: { nodes: [searchedPr(5, "yarvis/a")] } } },
     }));
 
-    await pollOnce(db, { github: gh }, () => "branch");
+    await pollOnce(db, { github: gh });
 
-    expect(queries).toEqual([{ o0: "oa", r0: "ra", n0: 12 }]);
+    expect(queries).toHaveLength(1); // the search, but no number read of the unlinked PR
     const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({ prNumber: 12, pinned: true, checkRollup: "failure" });
+    expect(row?.dismissed).toBe(true);
+    expect(await linkedNumbers(wrId)).toEqual([]);
   });
 
-  it("links a PR by number and pins it", async () => {
+  it("reads a known Azure PR by id", async () => {
+    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 55 });
+
+    await pollOnce(db, { azure: azureById(55) }, () => "number");
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({
+      prNumber: 55,
+      prState: "open",
+      headBranch: "feature/x",
+      prUrl: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/55",
+      lastError: null,
+    });
+  });
+});
+
+/** The numbers of a workspace repo's linked PRs, the unlinked ones left out. */
+async function linkedNumbers(wrId: string): Promise<number[]> {
+  const rows = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+  return rows
+    .filter((r) => !r.dismissed)
+    .map((r) => r.prNumber)
+    .sort((a, b) => a - b);
+}
+
+/** An Azure PR read by id from branch `feature/x`; any other id is a 404. */
+function azureById(number: number) {
+  return azureClientWith((url) => {
+    if (url.includes(`/pullRequests/${number}`)) {
+      return {
+        pullRequestId: number,
+        status: "active",
+        mergeStatus: "succeeded",
+        sourceRefName: "refs/heads/feature/x",
+        lastMergeSourceCommit: { commitId: "e".repeat(40) },
+        repository: {
+          name: "web",
+          webUrl: "https://dev.azure.com/acme/Shop/_git/web",
+          project: { name: "Shop" },
+        },
+      };
+    }
+    if (url.includes("/pullRequests/")) return { __status: 404 };
+    if (url.includes("/pullrequests?")) return { value: [] };
+    return {};
+  });
+}
+
+describe("linking and unlinking", () => {
+  it("links a PR by number beside the ones the repo has", async () => {
     const wrId = await seedReadyRepo("a");
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 7 });
     const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
 
     const pr = await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42);
 
-    expect(pr.prNumber).toBe(42);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({ prNumber: 42, pinned: true, lastError: null });
+    expect(pr).toMatchObject({ prNumber: 42, headBranch: "yarvis/a" });
+    expect(await linkedNumbers(wrId)).toEqual([7, 42]);
   });
 
-  it("refuses a PR the provider doesn't have, and keeps the one linked", async () => {
+  it("links an unlinked PR again", async () => {
     const wrId = await seedReadyRepo("a");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 7 });
-    const { gh } = graphqlClient(() => ({
-      data: { p0: { pullRequest: null } },
-    }));
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 42, dismissed: true });
+    const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
+
+    await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42);
+
+    expect(await linkedNumbers(wrId)).toEqual([42]);
+  });
+
+  it("refuses a PR the provider doesn't have", async () => {
+    const wrId = await seedReadyRepo("a");
+    const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: null } } }));
 
     await expect(
       linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42),
     ).rejects.toBeInstanceOf(PrLinkRefusal);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBe(7);
+    expect(await linkedNumbers(wrId)).toEqual([]);
   });
 
   it("refuses a repo from another workspace", async () => {
@@ -1145,43 +1271,6 @@ describe("linked PRs", () => {
     expect(queries).toEqual([]);
   });
 
-  /** An Azure PR read by id; branch lookups answer with no PR, so a branch read would lose it. */
-  const azureById = (number: number) =>
-    azureClientWith((url) => {
-      if (url.includes(`/pullRequests/${number}`)) {
-        return {
-          pullRequestId: number,
-          status: "active",
-          mergeStatus: "succeeded",
-          lastMergeSourceCommit: { commitId: "e".repeat(40) },
-          repository: {
-            name: "web",
-            webUrl: "https://dev.azure.com/acme/Shop/_git/web",
-            project: { name: "Shop" },
-          },
-        };
-      }
-      if (url.includes("/pullRequests/")) return { __status: 404 };
-      if (url.includes("/pullrequests?")) return { value: [] };
-      return {};
-    });
-
-  it("reads a pinned Azure PR by id, not by branch", async () => {
-    const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 55, pinned: true });
-
-    await pollOnce(db, { azure: azureById(55) }, () => "branch");
-
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({
-      prNumber: 55,
-      prState: "open",
-      prUrl: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/55",
-      pinned: true,
-      lastError: null,
-    });
-  });
-
   it("links an Azure PR by id, and refuses an id the repo doesn't have", async () => {
     const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
     const workspaceId = await workspaceOf(wrId);
@@ -1192,41 +1281,57 @@ describe("linked PRs", () => {
     await expect(
       linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 56),
     ).rejects.toBeInstanceOf(PrLinkRefusal);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBe(55);
+    expect(await linkedNumbers(wrId)).toEqual([55]);
   });
 
-  it("seeds a PR only where the repo has none", async () => {
-    const emptyWr = await seedReadyRepo("a");
-    const linkedWr = await seedReadyRepo("b");
-    // A branch poll that found no PR yet leaves a row with no number.
-    const polledWr = await seedReadyRepo("c");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: linkedWr, prNumber: 7 });
+  it("seeds a PR unpolled, leaves a known one's status alone, and undoes an unlink", async () => {
+    const wrId = await seedReadyRepo("a");
     await db
       .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: polledWr, prNumber: null, lastPolledAt: new Date() });
+      .values({ workspaceRepoId: wrId, prNumber: 7, prState: "merged", dismissed: true });
 
-    await seedWorkspacePr(db, emptyWr, 42);
-    await seedWorkspacePr(db, linkedWr, 42);
-    await seedWorkspacePr(db, polledWr, 42);
+    await seedWorkspacePr(db, wrId, 42, "topic");
+    await seedWorkspacePr(db, wrId, 7, "topic");
 
-    const [empty] = await db.select().from(workspaceRepoPr).where(eqWr(emptyWr));
-    expect(empty).toMatchObject({ prNumber: 42, pinned: true, lastPolledAt: null });
-    const [polled] = await db.select().from(workspaceRepoPr).where(eqWr(polledWr));
-    expect(polled).toMatchObject({ prNumber: 42, pinned: true, lastPolledAt: null });
-    const [linked] = await db.select().from(workspaceRepoPr).where(eqWr(linkedWr));
-    expect(linked).toMatchObject({ prNumber: 7, pinned: false });
+    const rows = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(rows.find((r) => r.prNumber === 42)).toMatchObject({
+      headBranch: "topic",
+      lastPolledAt: null,
+      dismissed: false,
+    });
+    expect(rows.find((r) => r.prNumber === 7)).toMatchObject({
+      prState: "merged",
+      dismissed: false,
+    });
+  });
+
+  it("unlinks a PR, and refuses one the repo doesn't have", async () => {
+    const wrId = await seedReadyRepo("a");
+    const workspaceId = await workspaceOf(wrId);
+    await db.insert(workspaceRepoPr).values([
+      { workspaceRepoId: wrId, prNumber: 7 },
+      { workspaceRepoId: wrId, prNumber: 8 },
+    ]);
+
+    await unlinkWorkspacePr(db, workspaceId, wrId, 7);
+
+    expect(await linkedNumbers(wrId)).toEqual([8]);
+    await expect(unlinkWorkspacePr(db, workspaceId, wrId, 99)).rejects.toBeInstanceOf(
+      PrLinkRefusal,
+    );
   });
 });
 
 describe("detectWorkspacePrs", () => {
-  /** A REST-only client with a PR on each branch named in `prs`. */
-  function branchesClient(prs: Record<string, number>): GitHubClient {
+  /** A REST-only client with PRs on each branch named in `prs`. */
+  function branchesClient(prs: Record<string, number[]>): GitHubClient {
     return clientWith((path) => {
       const head = decodeURIComponent(path).match(/head=[^:]+:([^&]+)/)?.[1];
       if (head !== undefined) {
-        const number = prs[head];
-        return number === undefined ? [] : [pullItem(number, "open")];
+        return (prs[head] ?? []).map((number) => ({
+          ...pullItem(number, "open"),
+          head: { ref: head },
+        }));
       }
       if (path.includes("/reviews")) return REVIEWS();
       if (path.includes("/check-runs")) return CHECKS([]);
@@ -1235,7 +1340,7 @@ describe("detectWorkspacePrs", () => {
     });
   }
 
-  it("finds the PR on an added worktree's branch and pins it", async () => {
+  it("finds the PRs on the repo's own branch and on its added worktrees' branches", async () => {
     const wrId = await seedReadyRepo("a");
     await db
       .insert(workspaceExtraWorktrees)
@@ -1243,51 +1348,30 @@ describe("detectWorkspacePrs", () => {
 
     const detected = await detectWorkspacePrs(
       db,
-      { github: branchesClient({ "stack-2": 9 }) },
+      { github: branchesClient({ "yarvis/a": [5], "stack-2": [9] }) },
       await workspaceOf(wrId),
     );
 
     expect(detected).toEqual([
       {
         workspaceRepoId: wrId,
-        branch: "stack-2",
-        prNumber: 9,
-        prUrl: "https://github.com/acme/widget/pull/9",
+        prs: [
+          { number: 5, url: "https://github.com/acme/widget/pull/5", branch: "yarvis/a" },
+          { number: 9, url: "https://github.com/acme/widget/pull/9", branch: "stack-2" },
+        ],
       },
     ]);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({ prNumber: 9, pinned: true });
+    expect(await linkedNumbers(wrId)).toEqual([5, 9]);
   });
 
-  it("drops a hand-linked PR for the one on the worktree's own branch", async () => {
+  it("keeps a PR linked by hand that no branch has", async () => {
     const wrId = await seedReadyRepo("a");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42, pinned: true });
+    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42 });
 
-    await detectWorkspacePrs(
-      db,
-      { github: branchesClient({ "yarvis/a": 5 }) },
-      await workspaceOf(wrId),
-    );
+    await detectWorkspacePrs(db, { github: branchesClient({}) }, await workspaceOf(wrId));
 
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({ prNumber: 5, pinned: false });
-  });
-
-  it("drops a hand-linked PR when no branch has one", async () => {
-    const wrId = await seedReadyRepo("a");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42, pinned: true });
-
-    const detected = await detectWorkspacePrs(
-      db,
-      { github: branchesClient({}) },
-      await workspaceOf(wrId),
-    );
-
-    expect(detected).toEqual([
-      { workspaceRepoId: wrId, branch: null, prNumber: null, prUrl: null },
-    ]);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row).toMatchObject({ prNumber: null, pinned: false });
+    expect(await linkedNumbers(wrId)).toEqual([42]);
+    expect(await searchedAt(wrId)).toMatchObject({ prsPolledAt: expect.any(Date) });
   });
 
   it("refuses an archived workspace", async () => {
@@ -1298,12 +1382,10 @@ describe("detectWorkspacePrs", () => {
     await expect(detectWorkspacePrs(db, {}, workspaceId)).rejects.toBeInstanceOf(PrLinkRefusal);
   });
 
-  it("leaves a repo no provider can read as it was", async () => {
+  it("leaves out a repo no provider can read", async () => {
     const wrId = await seedReadyRepo("a");
-    await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 42 });
 
     expect(await detectWorkspacePrs(db, {}, await workspaceOf(wrId))).toEqual([]);
-    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
-    expect(row?.prNumber).toBe(42);
+    expect((await searchedAt(wrId))?.prsPolledAt).toBeNull();
   });
 });

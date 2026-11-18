@@ -19,6 +19,7 @@ import {
   markWorkspaceViewed,
   PrLinkRefusal,
   pollerClients,
+  unlinkWorkspacePr,
 } from "./poller.ts";
 import {
   createReviewComment,
@@ -466,7 +467,7 @@ export function createWorkspaceRoutes(config: Config): Hono {
     }
   });
 
-  // Looks for each repo's PR again on its branches, dropping any linked by hand.
+  // Searches every repo's branches for PRs now, adding what it finds.
   router.post("/:id/prs/detect", async (c) => {
     const id = c.req.param("id");
     if (!z.string().uuid().safeParse(id).success) {
@@ -481,15 +482,17 @@ export function createWorkspaceRoutes(config: Config): Hono {
     }
   });
 
-  // Links one of a repo's PRs by number, for a PR that isn't on the worktree's branch.
-  router.put("/:id/repos/:wrId/pr", async (c) => {
-    const ids = z
+  const prNumber = z.coerce.number().int().positive().max(MAX_PR_NUMBER);
+  const repoIds = (c: { req: { param: (name: string) => string | undefined } }) =>
+    z
       .object({ id: z.string().uuid(), wrId: z.string().uuid() })
       .safeParse({ id: c.req.param("id"), wrId: c.req.param("wrId") });
+
+  // Links one of a repo's PRs by number, beside the ones it has.
+  router.post("/:id/repos/:wrId/prs", async (c) => {
+    const ids = repoIds(c);
     if (!ids.success) return c.json({ error: "invalid workspace or repo id" }, 400);
-    const body = z
-      .object({ number: z.number().int().positive().max(MAX_PR_NUMBER) })
-      .safeParse(await c.req.json().catch(() => null));
+    const body = z.object({ number: prNumber }).safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: body.error.flatten() }, 400);
     try {
       const pr = await linkWorkspacePr(
@@ -504,6 +507,20 @@ export function createWorkspaceRoutes(config: Config): Hono {
       if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
       console.error("[workspaces] PR link failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Unlinks one of a repo's PRs; a later search of its branch won't add it back.
+  router.delete("/:id/repos/:wrId/prs/:number", async (c) => {
+    const ids = repoIds(c);
+    const number = prNumber.safeParse(c.req.param("number"));
+    if (!ids.success || !number.success) return c.json({ error: "invalid id or PR number" }, 400);
+    try {
+      await unlinkWorkspacePr(db(), ids.data.id, ids.data.wrId, number.data);
+      return c.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 404);
+      throw e;
     }
   });
 

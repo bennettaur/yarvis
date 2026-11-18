@@ -680,6 +680,11 @@ export const workspaceRepos = pgTable(
     setupLog: text("setup_log"), // capped tail of the last setup run
     setupExitCode: integer("setup_exit_code"),
     error: text("error"),
+    // When the poller last searched this repo's branches for PRs, and why that
+    // search failed if it did. Each PR found keeps its own status in
+    // `workspace_repo_pr`; this is what tells "no PR yet" from "not looked".
+    prsPolledAt: timestamp("prs_polled_at", { withTimezone: true }),
+    prsPollError: text("prs_poll_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("workspace_repos_ws_repo_idx").on(t.workspaceId, t.repoId)],
@@ -746,7 +751,11 @@ export const workspaceAgentSessions = pgTable(
   ],
 );
 
-/** Background-poller cache of the PR + checks for each workspace repo (1:1). */
+/**
+ * Every PR linked to a workspace repo, with its status as last polled. A repo
+ * can have several: one per layer of a stack, a PR reopened on the same
+ * branch, or one the user or the workspace's agent linked by number.
+ */
 export const workspaceRepoPr = pgTable(
   "workspace_repo_pr",
   {
@@ -754,14 +763,14 @@ export const workspaceRepoPr = pgTable(
     workspaceRepoId: uuid("workspace_repo_id")
       .notNull()
       .references(() => workspaceRepos.id, { onDelete: "cascade" }),
-    prNumber: integer("pr_number"), // null = no PR found yet
+    prNumber: integer("pr_number").notNull(),
     prUrl: text("pr_url"),
-    // Set when the PR was named rather than found on the worktree's own branch:
-    // linked by the user or the workspace's agent, found on an added worktree,
-    // or the PR a workspace was started from. The poller then re-reads it by
-    // number, since a branch read would replace it with whatever PR the
-    // worktree's branch has, or with none. "Detect PRs again" clears it.
-    pinned: boolean("pinned").notNull().default(false),
+    // The branch the PR merges from. Null until the PR is first read. Archive
+    // trusts a merged PR only for the branch it merged.
+    headBranch: text("head_branch"),
+    // Unlinked by the user: hidden, never refreshed, and never re-added by
+    // detection. Linking the PR again by number clears it.
+    dismissed: boolean("dismissed").notNull().default(false),
     prState: text("pr_state"), // open | closed | merged
     // The PR's head commit as last polled; for a merged PR, what it merged.
     // Archive deletes a merged branch only up to here, since a squash merge
@@ -782,7 +791,7 @@ export const workspaceRepoPr = pgTable(
     lastError: text("last_error"), // poll failed but the row persists
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("workspace_repo_pr_wr_idx").on(t.workspaceRepoId)],
+  (t) => [uniqueIndex("workspace_repo_pr_wr_number_idx").on(t.workspaceRepoId, t.prNumber)],
 );
 
 export const REVIEW_COMMENT_SOURCES = ["user", "verification"] as const;
