@@ -31,7 +31,7 @@ pub const BUILTIN_HARNESS_ID: &str = "claude";
 pub const SECRET_ENV_SUBTREE: &str = "agent_harness_env";
 
 /// Placeholder in a harness's `promptArgs` that the quoted instruction replaces.
-pub const PROMPT_PLACEHOLDER: &str = "{prompt}";
+const PROMPT_PLACEHOLDER: &str = "{prompt}";
 
 /// Characters refused in `promptArgs`. The instruction is quoted before it
 /// replaces `{prompt}`, so a placeholder the user wrapped in quotes of their
@@ -49,7 +49,7 @@ const MAX_ID_CHARS: usize = 40;
 /// Longest harness name. It is a tab title.
 const MAX_NAME_CHARS: usize = 60;
 /// Most harnesses a user can configure; a bound on what a hand edit can load.
-pub const MAX_HARNESSES: usize = 32;
+const MAX_HARNESSES: usize = 32;
 
 /// The agent program a harness runs. Decides which Claude Code-only launch
 /// options apply, and the default way an instruction is passed.
@@ -274,14 +274,16 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
 }
 
 /// Refuses a harness the assistant named but may not start. The default and
-/// the built-in harness are always allowed, as is a relaunch with `--resume`.
+/// the built-in harness are always allowed, as is a Claude Code harness
+/// started with `--resume`.
 ///
 /// The core can't tell a real resume from a spawn that merely carries a
-/// resume id, so the exemption relies on the sidecar: only its restart sweep
-/// sets one, with the harness from a session row that the session's own hook
-/// wrote using the harness token. No assistant tool can pass a resume id. The
-/// token can't be re-checked here because its signing key changes on every
-/// launch, and a resume always follows a relaunch.
+/// resume id, so the exemption relies on the sidecar. Only its restart sweep
+/// (`resumeAgentSession` in `workspaces/claudeSession.ts`) sets one, with the
+/// harness from a session row that the session's own hook wrote using the
+/// harness token, and no assistant tool can pass a resume id. The token can't
+/// be re-checked here: its signing key changes every time the app starts, and
+/// a resume only happens after the app restarts.
 pub fn check_assistant_may_launch(
     builtin: ResolvedHarness,
     stored: &[AgentHarness],
