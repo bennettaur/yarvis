@@ -24,7 +24,7 @@ import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
 import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import { evidenceKey, mutationKey, treeKey, verificationKey } from "./reviewData";
-import type { TabContext } from "./types";
+import type { TabContext, TabSpec } from "./types";
 import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab";
 
 const pr = {
@@ -892,6 +892,35 @@ describe("evidence from CI, scanners and bots", () => {
     expect(textOf(mutation.innerHTML)).toContain(`older head (${older.slice(0, 7)})`);
     button(mutation, "Open")?.click();
     expect(opened).toEqual([{ kind: "mutation", prId: pr.id }]);
+  });
+
+  it("opens the flow diagram in its own tab, rather than drawing it in the report", async () => {
+    const opened: TabSpec[] = [];
+    const flow = { title: "How an order is saved", explanation: "", mermaid: "flowchart TD" };
+    primeCache(
+      verificationKey(pr.id),
+      checklist({
+        items: { flow: { latest: run(), result: run() } },
+        report: { ...goodReport, flow },
+      }),
+    );
+    primeCache(evidenceKey(pr.id), NO_EVIDENCE);
+    primeCache(changedFilesKey(pr) ?? "", { headSha: "", mergeBaseSha: "", files: [] });
+    primeCache(treeKey(pr) ?? "", { headSha: "", paths: [] });
+    const mounted = await mountForInteraction(
+      createElement(VerificationTab, { ctx: { ...ctx, openTab: (tab) => opened.push(tab) } }),
+    );
+    unmount = mounted.unmount;
+    expect(textOf(mounted.host.innerHTML)).not.toContain("How an order is saved");
+    // Only a section with its own tab offers to open it.
+    expect(button(row(mounted.host, "Summary and must-read files"), "Open")).toBeUndefined();
+    button(row(mounted.host, "Flow diagram"), "Open")?.click();
+    expect(opened).toEqual([{ kind: "diagram", prId: pr.id }]);
+  });
+
+  it("offers no tab for a flow diagram that hasn't been drawn", async () => {
+    const host = await mount(checklist());
+    expect(button(row(host, "Flow diagram"), "Open")).toBeUndefined();
   });
 
   it("says why mutation testing can't run yet", async () => {

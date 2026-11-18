@@ -72,12 +72,12 @@ describe("ReviewPrBar", () => {
     expect(button(draft, "Approve")).toBeUndefined();
   });
 
-  it("opens the guided review, verification and Claude tabs", async () => {
+  it("opens the guided review and Claude tabs, and leaves verification to the nav", async () => {
     const host = await mount();
     button(host, "Guided review")?.click();
-    button(host, "Verification")?.click();
     button(host, "Ask Claude")?.click();
-    expect(opened).toEqual(["guide", "verification", "claude"]);
+    expect(opened).toEqual(["guide", "claude"]);
+    expect(button(host, "Verification")).toBeUndefined();
   });
 
   it("leaves the checkout's controls off an archived workspace", async () => {

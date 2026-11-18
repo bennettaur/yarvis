@@ -68,6 +68,9 @@ title:
 - **Since last review** opens what changed since you last reviewed the PR (see
   [Since last review](#since-last-review)). When there are commits you haven't
   seen, it says how many.
+- **Verification** opens the verification checklist (see
+  [Verification report](#verification-report)), and **Flow diagram** opens
+  the diagram its flow check drew (see [Flow diagram](#flow-diagram)).
 - **Changed files** is a tree of what the PR changes, with how many you've
   viewed. Each file has a viewed checkbox, its comment count (amber while a
   thread is open), and a **must read** marker when the
@@ -195,7 +198,7 @@ counts as read once all its files are viewed, wherever you marked them.
 
 ### Verification report
 
-**Verification** in the PR bar opens a checklist of checks that agents
+**Verification** in the PR's nav opens a checklist of checks that agents
 (Claude Code, running on your machine against the PR's checkout) run on the
 change, each reading every changed file's diff. The checks are grouped by
 theme:
@@ -387,15 +390,6 @@ The report shows only the checks that have a result. When two checks found
 the same problem in results for the same head, it is shown once, under the
 check that comes first: test quality before code quality, for example.
 
-The **Flow diagram** traces the whole flow the change sits in, not just the
-diff. An agent follows the changed code up to what starts the flow (a route, a
-job, a UI action) and down to where it ends, and draws it as a Mermaid
-flowchart with the changed steps highlighted, plus a short explanation.
-Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
-is too long, isn't drawn, and the section says so. The diagram is model-written from the PR's code, so
-it is drawn in Mermaid's strict mode and shown as an image, where it can't run
-anything.
-
 Under each must-read file, the report lists anything in it that already looks
 off or unclear, such as a branch that looks inverted or a value that seems to
 be ignored, each linking to its line. These are questions to check while you
@@ -460,6 +454,30 @@ of them read it.
 
 Under the checklist, the tab names the binary files, any diffs that will be
 cut off, and the bulk the agents will only skim.
+
+### Flow diagram
+
+The verification checklist's **Flow diagram** check traces the whole flow the
+change sits in, not just the diff. An agent (Claude Code, on the PR's
+checkout) follows the changed code up to what starts the flow (a route, a job,
+a UI action) and down to where it ends. It draws the flow as a Mermaid
+flowchart with the changed steps highlighted, plus a short explanation. Like
+any check, it runs from its row on the checklist, but it starts unticked.
+
+The diagram isn't drawn in the report. It has its own tab: **Open** on the
+check's row, or **Flow diagram** in the PR's nav, opens it. The tab follows a
+running check and says when the last run failed, was cancelled or gave no
+diagram. Through all of these it keeps the last diagram shown, marked when it
+was made for an older head. **Open checklist** takes you back to run it again.
+
+Its Mermaid source is under the diagram. A diagram that isn't a flowchart, or
+is too long, isn't drawn, and the tab says so. The diagram is model-written
+from the PR's code, so it is drawn in Mermaid's strict mode and shown as an
+image, where it can't run anything.
+
+This is a different diagram from the one that comes with a guided review,
+shown in the PRs tab and the **Guided review** tab (see
+[See the flow diagram](pr-review.md#see-the-flow-diagram)).
 
 ### Mutation testing
 
@@ -726,9 +744,8 @@ branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
 places. It comes back if the author asks you to review again. It also has:
 
-- **Guided review**, **Story**, **Verification** and **Ask Claude**, which
-  open those tabs (see [Guided review](#guided-review), [Story](#story),
-  [Verification report](#verification-report) and [Ask Claude](#ask-claude)).
+- **Guided review**, **Story** and **Ask Claude**, which open those tabs (see
+  [Guided review](#guided-review), [Story](#story) and [Ask Claude](#ask-claude)).
 - **⋯**, with **Update checkout**, which fetches the PR's latest commits,
   **Mark reviewed here**, which records the checkout's commit as where you
   last reviewed (see [Since last review](#since-last-review)),
