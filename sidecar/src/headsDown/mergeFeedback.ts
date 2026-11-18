@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -19,6 +19,7 @@ import {
   sendSessionInstruction,
   sendToWorkspaceAgent,
 } from "../workspaces/claudeSession.ts";
+import { prOnOwnBranch } from "../workspaces/prs.ts";
 import { getWorkspace, type WorkspaceDetail, workspacePrRef } from "../workspaces/service.ts";
 import { mergeKey } from "./attention.ts";
 
@@ -187,7 +188,10 @@ async function workspacePrs(
     .innerJoin(workspaceRepos, eq(workspaceRepos.id, workspaceRepoPr.workspaceRepoId))
     .innerJoin(workspaces, eq(workspaces.id, workspaceRepos.workspaceId))
     .innerJoin(repos, eq(repos.id, workspaceRepos.repoId))
-    .where(and(...conditions));
+    .where(and(...conditions))
+    // A PR linked to several workspaces belongs to the one whose own branch it
+    // merges from, so that one is first.
+    .orderBy(desc(prOnOwnBranch));
   return rows;
 }
 

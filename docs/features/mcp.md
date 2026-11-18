@@ -303,7 +303,8 @@ and checks straight away. See
 
 It answers with the PR's `url` and `state`. It refuses a repo that isn't in
 the workspace and a number the repo has no PR for. A repo can have any number
-of linked PRs, so each call adds one.
+of linked PRs, so each call adds one. A PR you unlinked stays unlinked: the
+tool refuses it, and only you can link it again.
 
 Like the other workspace tools, it acts on the workspace the header names. A
 caller can use it to add any of a repo's PRs to a workspace, and so change

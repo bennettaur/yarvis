@@ -501,6 +501,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
         ids.data.id,
         ids.data.wrId,
         body.data.number,
+        // The user's own request may undo their earlier unlink.
+        { relink: true },
       );
       return c.json({ pr });
     } catch (e) {

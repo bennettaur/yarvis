@@ -299,7 +299,7 @@ describe("azure client", () => {
         },
       ]),
     );
-    const pr = await az.findPrByBranch("Shop", "web", "feature/x");
+    const [pr] = await az.findPrsByBranch("Shop", "web", "feature/x");
     expect(requestedUrl).toContain("searchCriteria.sourceRefName=refs%2Fheads%2Ffeature%2Fx");
     expect(requestedUrl).toContain("searchCriteria.status=all");
     expect(pr).toEqual({
@@ -324,7 +324,7 @@ describe("azure client", () => {
         { match: (u) => u.includes("/repositories/web/pullrequests"), body: { value: [] } },
       ]),
     );
-    expect(await az.findPrByBranch("Shop", "web", "feature/x")).toBeNull();
+    expect(await az.findPrsByBranch("Shop", "web", "feature/x")).toEqual([]);
   });
 
   it("maps a completed PR to merged state", async () => {
@@ -346,7 +346,7 @@ describe("azure client", () => {
         },
       ]),
     );
-    expect((await az.findPrByBranch("Shop", "web", "b"))?.state).toBe("merged");
+    expect((await az.findPrsByBranch("Shop", "web", "b"))[0]?.state).toBe("merged");
   });
 
   it("searches by reviewer for the review scope", async () => {

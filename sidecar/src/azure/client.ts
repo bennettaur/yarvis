@@ -415,21 +415,11 @@ export class AzureDevOpsClient {
   }
 
   /**
-   * The most recent PR whose source branch is `branch` in the given
-   * project/repo, or null. Used by the workspace poller to auto-detect a
-   * worktree branch's PR. `status=all` mirrors the GitHub client so a
-   * merged/abandoned PR still resolves; Azure returns newest first, so `$top=1`
-   * picks the latest.
+   * Every PR from `branch` in the given project/repo, newest first, up to
+   * `top`. Used by the workspace poller to find a worktree branch's PRs.
+   * `status=all` mirrors the GitHub client so a merged/abandoned PR still
+   * resolves.
    */
-  async findPrByBranch(
-    project: string,
-    repo: string,
-    branch: string,
-  ): Promise<AzureBranchPr | null> {
-    return (await this.findPrsByBranch(project, repo, branch, 1))[0] ?? null;
-  }
-
-  /** Every PR from `branch`, newest first, up to `top`. */
   async findPrsByBranch(
     project: string,
     repo: string,
@@ -446,7 +436,7 @@ export class AzureDevOpsClient {
     return (data.value ?? []).map((pr) => this.toBranchPr(pr));
   }
 
-  /** One PR by id, in the shape {@link findPrByBranch} answers with. */
+  /** One PR by id, in the shape {@link findPrsByBranch} answers with. */
   async branchPrById(ref: AzureRef): Promise<AzureBranchPr> {
     return this.toBranchPr(await this.prRaw(ref));
   }

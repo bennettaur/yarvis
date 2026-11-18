@@ -1,4 +1,5 @@
-import type { WorkspaceRepoPr } from "../db/schema.ts";
+import { sql } from "drizzle-orm";
+import { type WorkspaceRepoPr, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
 
 /**
  * Picking among a workspace repo's PRs. A repo can have several, but some
@@ -11,12 +12,16 @@ import type { WorkspaceRepoPr } from "../db/schema.ts";
 type Pr = Pick<WorkspaceRepoPr, "prNumber" | "prState" | "headBranch" | "dismissed">;
 
 /**
- * Whether a PR merges from `branch`. A PR with no head branch recorded was
- * found by a search of the repo's own branch before head branches were kept.
+ * Whether a PR merges from `branch`. A row with no recorded head branch counts
+ * as on it: the migration that added the column filled it for every row, so
+ * only a PR whose provider never named its branch is left without one.
  */
 export function isOnBranch(pr: Pr, branch: string): boolean {
   return pr.headBranch === null || pr.headBranch === branch;
 }
+
+/** {@link isOnBranch} in SQL, for a query joining a PR to its workspace repo. */
+export const prOnOwnBranch = sql<boolean>`(${workspaceRepoPr.headBranch} is null or ${workspaceRepoPr.headBranch} = ${workspaceRepos.branch})`;
 
 /** Open before merged before closed; newest (highest number) first within each. */
 function byRelevance(a: Pr, b: Pr): number {

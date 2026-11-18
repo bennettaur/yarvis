@@ -209,12 +209,15 @@ async function upsertPr(
   values: BranchPr & Partial<typeof workspaceRepoPr.$inferInsert>,
 ): Promise<void> {
   const row = { ...values, workspaceRepoId, updatedAt: new Date() };
+  // A read that came back without a head branch keeps the one already known:
+  // archive decides which branch a merged PR landed from by it.
+  const { headBranch, ...rest } = row;
   await db
     .insert(workspaceRepoPr)
     .values(row)
     .onConflictDoUpdate({
       target: [workspaceRepoPr.workspaceRepoId, workspaceRepoPr.prNumber],
-      set: row,
+      set: headBranch === null ? rest : row,
     });
 }
 
@@ -280,9 +283,13 @@ async function githubBranchPrs(
   owner: string,
   repo: string,
   branch: string,
+  wanted: BranchSearch,
 ): Promise<FoundPr[]> {
+  const candidates = (await gh.findPrsByBranch(owner, repo, branch))
+    .filter((pr) => !settledBefore(pr.closedAt ?? null, wanted.since))
+    .slice(0, wanted.limit);
   const found: FoundPr[] = [];
-  for (const pr of await gh.findPrsByBranch(owner, repo, branch)) {
+  for (const pr of candidates) {
     found.push(await githubPrStatus(gh, owner, repo, { ...pr, headRef: pr.headRef ?? branch }));
   }
   return found;
@@ -299,10 +306,12 @@ async function azurePolledPr(
   // with GitHub's review verdict, any failure drops the checks rather than the
   // refresh: a 403 here would otherwise be read as a rate limit and end the
   // cycle for every repo after this one. Without a project id they can't be
-  // addressed at all, which is "unknown", not "no checks".
-  const ciChecks = pr.projectId
-    ? await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null)
-    : null;
+  // addressed at all, which is "unknown", not "no checks". A settled PR's
+  // checks can't change, so it isn't asked about at all.
+  const ciChecks =
+    pr.projectId && pr.state === "open"
+      ? await az.prCiChecks(project, pr.projectId, pr.number).catch(() => null)
+      : null;
   const checks = ciChecks ? summarizeCheckItems(ciChecks) : null;
   return {
     prNumber: pr.number,
@@ -345,6 +354,24 @@ function azureFor(
 const isAzureRepo = (repo: Repo) => parseRepoRemote(repo.cloneUrl)?.provider === "azure";
 
 /**
+ * Which of a branch's PRs a one-at-a-time search reads in full. Each costs a
+ * status read (and a review read, or a policy read on Azure), so a PR that
+ * settled before the branch joined the workspace is dropped first, and only
+ * the newest `limit` are read: the same five the batched search reads.
+ */
+interface BranchSearch {
+  since: Date | null;
+  limit: number;
+}
+
+const BRANCH_SEARCH: Omit<BranchSearch, "since"> = { limit: 5 };
+
+/** Whether a PR closed or merged before `since`; false while open or with no `since`. */
+function settledBefore(closedAt: string | null, since: Date | null): boolean {
+  return closedAt !== null && since !== null && new Date(closedAt).getTime() < since.getTime();
+}
+
+/**
  * The PRs on one of a repo's branches, newest first, from whichever provider
  * its clone URL names. Null when no client can reach that provider.
  */
@@ -352,18 +379,21 @@ async function branchPrs(
   clients: PollerClients,
   repo: Repo,
   branch: string,
+  wanted: BranchSearch,
 ): Promise<FoundPr[] | null> {
   if (isAzureRepo(repo)) {
     const azure = azureFor(clients, repo);
     if (!azure) return null;
-    const prs = await azure.az.findPrsByBranch(azure.project, azure.repo, branch);
+    const prs = (await azure.az.findPrsByBranch(azure.project, azure.repo, branch))
+      .filter((pr) => !settledBefore(pr.closedAt, wanted.since))
+      .slice(0, wanted.limit);
     const found: FoundPr[] = [];
     for (const pr of prs) found.push(await azurePolledPr(azure.az, azure.project, pr));
     return found;
   }
   if (!clients.github) return null;
   const { owner, repo: repoName } = githubRepoOf(repo);
-  return githubBranchPrs(clients.github, owner, repoName, branch);
+  return githubBranchPrs(clients.github, owner, repoName, branch, wanted);
 }
 
 /**
@@ -415,7 +445,7 @@ export async function lookupBranchPr(
   repo: Repo,
   branch: string,
 ): Promise<(Omit<BranchPr, "prNumber"> & { prNumber: number | null }) | null> {
-  const prs = await branchPrs(pollerClients(config), repo, branch);
+  const prs = await branchPrs(pollerClients(config), repo, branch, { since: null, limit: 1 });
   if (prs === null) return null;
   const [newest] = prs;
   if (newest) {
@@ -484,7 +514,7 @@ interface KnownPr {
  * earlier use of the same branch name, not this work.
  */
 function belongsToWorkspace(pr: FoundPr, since: Date): boolean {
-  return pr.closedAt === null || new Date(pr.closedAt).getTime() >= since.getTime();
+  return !settledBefore(pr.closedAt, since);
 }
 
 /**
@@ -500,7 +530,7 @@ async function recordSearch(
 ): Promise<FoundPr[]> {
   const kept = new Map<number, FoundPr>();
   for (const { pr, since } of found) {
-    if (pr.prNumber !== null && belongsToWorkspace(pr, since) && !kept.has(pr.prNumber)) {
+    if (belongsToWorkspace(pr, since) && !kept.has(pr.prNumber)) {
       kept.set(pr.prNumber, pr);
     }
   }
@@ -544,7 +574,7 @@ async function searchEach(
     let readable = true;
     for (const { branch, since } of target.branches) {
       try {
-        const prs = await branchPrs(clients, target.repo, branch);
+        const prs = await branchPrs(clients, target.repo, branch, { ...BRANCH_SEARCH, since });
         if (prs === null) {
           readable = false;
           break;
@@ -762,7 +792,10 @@ export async function pollOnce(
   if (clients.github && githubTargets.length) {
     githubLimited = !(await searchGithub(db, clients, clients.github, githubTargets));
   }
-  if (azureTargets.length) await searchEach(db, clients, azureTargets);
+  let azureLimited = false;
+  if (azureTargets.length) {
+    azureLimited = !(await searchEach(db, clients, azureTargets)).finished;
+  }
 
   // Read after the searches, so a PR a search just refreshed isn't read twice.
   const known = (await knownPrCandidates(db, workspaceIds))
@@ -782,7 +815,7 @@ export async function pollOnce(
   if (clients.github && githubKnown.length && !githubLimited) {
     await refreshGithubByNumber(db, clients.github, githubKnown);
   }
-  if (azureKnown.length) await refreshAzureByNumber(db, clients, azureKnown);
+  if (azureKnown.length && !azureLimited) await refreshAzureByNumber(db, clients, azureKnown);
 }
 
 /**
@@ -869,7 +902,9 @@ export async function seedWorkspacePr(
 /**
  * Links one of a workspace repo's PRs by number, beside any it already has.
  * Reads the PR first, so a number the provider doesn't know is refused rather
- * than stored. Undoes an earlier unlink of the same PR.
+ * than stored. A PR the user unlinked is linked again only with `relink`,
+ * which only the user's own request sets: the workspace's agent may add PRs
+ * but must not undo the user's choice.
  */
 export async function linkWorkspacePr(
   db: Db,
@@ -877,8 +912,26 @@ export async function linkWorkspacePr(
   workspaceId: string,
   workspaceRepoId: string,
   number: number,
+  { relink }: { relink: boolean },
 ): Promise<BranchPr> {
   const { wr, repo } = await workspaceRepoIn(db, workspaceId, workspaceRepoId);
+  if (!relink) {
+    const [unlinked] = await db
+      .select({ id: workspaceRepoPr.id })
+      .from(workspaceRepoPr)
+      .where(
+        and(
+          eq(workspaceRepoPr.workspaceRepoId, wr.id),
+          eq(workspaceRepoPr.prNumber, number),
+          eq(workspaceRepoPr.dismissed, true),
+        ),
+      );
+    if (unlinked) {
+      throw new PrLinkRefusal(
+        `the user unlinked #${number} from ${repo.name}; only they can link it again`,
+      );
+    }
+  }
   let found: FoundPr | null;
   try {
     found = await numberPr(clients, repo, number);
@@ -892,7 +945,12 @@ export async function linkWorkspacePr(
     );
   }
   const { closedAt: _closedAt, ...pr } = found;
-  await upsertPr(db, wr.id, { ...pr, dismissed: false, lastPolledAt: new Date(), lastError: null });
+  await upsertPr(db, wr.id, {
+    ...pr,
+    ...(relink ? { dismissed: false } : {}),
+    lastPolledAt: new Date(),
+    lastError: null,
+  });
   return pr;
 }
 
@@ -946,7 +1004,7 @@ export async function detectWorkspacePrs(
   return [...results.entries()].map(([workspaceRepoId, prs]) => ({
     workspaceRepoId,
     prs: prs.map((pr) => ({
-      number: pr.prNumber as number,
+      number: pr.prNumber,
       url: pr.prUrl,
       branch: pr.headBranch,
     })),

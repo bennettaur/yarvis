@@ -27,6 +27,7 @@ import {
   seedWorkspacePr,
   unlinkWorkspacePr,
 } from "./poller.ts";
+import { findWorkspaceForPr } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -1232,22 +1233,45 @@ describe("linking and unlinking", () => {
     await db.insert(workspaceRepoPr).values({ workspaceRepoId: wrId, prNumber: 7 });
     const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
 
-    const pr = await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42);
+    const pr = await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42, {
+      relink: true,
+    });
 
     expect(pr).toMatchObject({ prNumber: 42, headBranch: "yarvis/a" });
     expect(await linkedNumbers(wrId)).toEqual([7, 42]);
   });
 
-  it("links an unlinked PR again", async () => {
+  it("links an unlinked PR again only when the user asks", async () => {
     const wrId = await seedReadyRepo("a");
+    const workspaceId = await workspaceOf(wrId);
     await db
       .insert(workspaceRepoPr)
       .values({ workspaceRepoId: wrId, prNumber: 42, dismissed: true });
     const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(42) } } }));
 
-    await linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42);
+    // The workspace's agent links with relink off, and must not undo the unlink.
+    await expect(
+      linkWorkspacePr(db, { github: gh }, workspaceId, wrId, 42, { relink: false }),
+    ).rejects.toThrow("the user unlinked #42");
+    expect(await linkedNumbers(wrId)).toEqual([]);
 
+    await linkWorkspacePr(db, { github: gh }, workspaceId, wrId, 42, { relink: true });
     expect(await linkedNumbers(wrId)).toEqual([42]);
+  });
+
+  it("keeps a known head branch when a later read comes back without one", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 42, headBranch: "stack-2" });
+    const { gh } = graphqlClient(() => ({
+      data: { p0: { pullRequest: { ...POLLED_PR(42), headRefName: "" } } },
+    }));
+
+    await pollOnce(db, { github: gh }, () => "number");
+
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row).toMatchObject({ headBranch: "stack-2", checkRollup: "failure" });
   });
 
   it("refuses a PR the provider doesn't have", async () => {
@@ -1255,7 +1279,7 @@ describe("linking and unlinking", () => {
     const { gh } = graphqlClient(() => ({ data: { p0: { pullRequest: null } } }));
 
     await expect(
-      linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42),
+      linkWorkspacePr(db, { github: gh }, await workspaceOf(wrId), wrId, 42, { relink: true }),
     ).rejects.toBeInstanceOf(PrLinkRefusal);
     expect(await linkedNumbers(wrId)).toEqual([]);
   });
@@ -1266,7 +1290,7 @@ describe("linking and unlinking", () => {
     const { gh, queries } = graphqlClient(() => ({}));
 
     await expect(
-      linkWorkspacePr(db, { github: gh }, await workspaceOf(otherWr), wrId, 42),
+      linkWorkspacePr(db, { github: gh }, await workspaceOf(otherWr), wrId, 42, { relink: true }),
     ).rejects.toBeInstanceOf(PrLinkRefusal);
     expect(queries).toEqual([]);
   });
@@ -1275,11 +1299,13 @@ describe("linking and unlinking", () => {
     const wrId = await seedReadyRepo("z", "https://dev.azure.com/acme/Shop/_git/web");
     const workspaceId = await workspaceOf(wrId);
 
-    const pr = await linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 55);
+    const pr = await linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 55, {
+      relink: true,
+    });
     expect(pr.prUrl).toBe("https://dev.azure.com/acme/Shop/_git/web/pullrequest/55");
 
     await expect(
-      linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 56),
+      linkWorkspacePr(db, { azure: azureById(55) }, workspaceId, wrId, 56, { relink: true }),
     ).rejects.toBeInstanceOf(PrLinkRefusal);
     expect(await linkedNumbers(wrId)).toEqual([55]);
   });
@@ -1387,5 +1413,41 @@ describe("detectWorkspacePrs", () => {
 
     expect(await detectWorkspacePrs(db, {}, await workspaceOf(wrId))).toEqual([]);
     expect((await searchedAt(wrId))?.prsPolledAt).toBeNull();
+  });
+});
+
+describe("which workspace a PR belongs to", () => {
+  it("prefers the workspace whose own branch the PR merges from", async () => {
+    // Workspace "a" has the PR linked by number from another branch; "b" is on its branch.
+    const linkedWr = await seedReadyRepo("a");
+    const [linked] = await db.select().from(workspaceRepos).where(eq(workspaceRepos.id, linkedWr));
+    const [home] = await db
+      .insert(workspaces)
+      .values({ name: "home", slug: "home", rootPath: "/tmp/home", status: "active" })
+      .returning();
+    const [homeWr] = await db
+      .insert(workspaceRepos)
+      .values({
+        workspaceId: home!.id,
+        repoId: linked!.repoId,
+        branch: "feature",
+        baseBranch: "main",
+        worktreePath: "/tmp/home/ra",
+        status: "ready",
+      })
+      .returning();
+    await db.insert(workspaceRepoPr).values([
+      { workspaceRepoId: linkedWr, prNumber: 7, headBranch: "feature" },
+      { workspaceRepoId: homeWr!.id, prNumber: 7, headBranch: "feature" },
+    ]);
+
+    const found = await findWorkspaceForPr(db, {
+      provider: "github",
+      owner: "oa",
+      repo: "ra",
+      number: 7,
+    });
+
+    expect(found?.id).toBe(home!.id);
   });
 });

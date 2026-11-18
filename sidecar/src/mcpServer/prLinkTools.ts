@@ -46,7 +46,7 @@ export function registerPrLinkTools(
         "Record the pull request for one of this workspace's repos, so the user sees its state and checks in Yarvis.",
         "Call it after opening a PR, or for a PR on a branch Yarvis doesn't search, such as one you didn't create a worktree for.",
         "A repo can have any number of linked PRs: this adds one and leaves the others.",
-        "The PR must exist in that repo. Returns its `url` and `state`.",
+        "The PR must exist in that repo, and must not be one the user unlinked. Returns its `url` and `state`.",
       ].join(" "),
       inputSchema: {
         repo: z

@@ -381,7 +381,8 @@ report there and leaves the fixes to the author.
   (`addExtraWorktree`), since the token is no boundary against a same-user
   process. `link_pull_request` asks for no token because all it can do is add
   a PR of one of that workspace's own repos to the PR list the user already
-  sees, after the provider confirms the PR exists. It can't remove one.
+  sees, after the provider confirms the PR exists. It can't remove one, and it
+  can't bring back one the user unlinked (`relink` is the user route's alone).
   Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,
   because the user wrote them. Any other source (a verification finding the

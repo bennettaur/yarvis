@@ -513,7 +513,8 @@ reopened, so its comments are kept.
 
 ### PR checks
 
-**PR checks** shows the branch's pull request and every one of its CI checks,
+**PR checks** shows the repo's main pull request (see
+[Linking a pull request](#linking-a-pull-request)) and every one of its CI checks,
 read live from GitHub or Azure DevOps. It has copy buttons for the PR link,
 each check, and a summary of all checks. See
 [Clipboard](clipboard.md#copy-buttons).
@@ -842,8 +843,9 @@ deleted if the base branch already contains it, unless another workspace works
 on or stacks on it. Other branches, such as a squash-merged one, are kept.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
-landed: the base branch already contains it, or its PR merged and the remote
-branch, if it's still there, has every local commit. Any other branch is kept
+landed: the base branch already contains it, or a PR that merged from that
+branch did and the remote branch, if it's still there, has every local commit.
+A PR linked from another branch says nothing about this one. Any other branch is kept
 in the shared clone. If a landed branch has commits past what its PR merged
 that no remote has, such as work added after the merge once the remote branch
 was deleted, the archive stops before removing any worktree and says how many,

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
@@ -111,7 +111,7 @@ import {
   type IntegrityFinding,
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
-import { isOnBranch, orderPrs } from "./prs.ts";
+import { isOnBranch, orderPrs, prOnOwnBranch } from "./prs.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
@@ -1586,7 +1586,11 @@ export async function findWorkspaceForPr(
         eq(workspaceRepoPr.dismissed, false),
         ne(workspaces.status, "archived"),
       ),
-    );
+    )
+    // A PR can be linked to several workspaces, one of them by number from
+    // elsewhere. The workspace whose own branch it merges from is the one it
+    // belongs to.
+    .orderBy(desc(prOnOwnBranch));
 
   for (const { cloneUrl, ...ws } of candidates) {
     if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;

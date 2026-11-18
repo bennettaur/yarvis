@@ -168,6 +168,7 @@ export function createMcpEndpointRoutes(config: Config): Hono {
         workspaceId,
         workspaceRepo.id,
         input.number,
+        { relink: false },
       );
       return {
         repo: workspaceRepo.repo.name,
