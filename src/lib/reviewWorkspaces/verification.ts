@@ -49,6 +49,8 @@ export interface VerificationChange {
   reach: "leaf" | "local" | "shared" | "core";
   evidence: "proven" | "partial" | "unproven";
   sensitive: boolean;
+  /** Optional because older stored reports lack it. */
+  internal?: boolean;
   count: number;
   /** What a reviewer should confirm; empty below the attention band. */
   check: string;

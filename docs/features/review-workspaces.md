@@ -373,8 +373,10 @@ line in the report opens the diff there.
 - **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
   agent classifies each change by what it does (a comment edit, a move, an
   addition, a changed interface or changed logic), how much code depends on
-  what changed, and whether tests prove it. Yarvis scores those the same way
-  every time, and raises the score when the PR bundles many changes. Changes
+  what changed, and whether tests prove it. A change whose mistakes could
+  only reach your own staff, such as a read-only internal dashboard, scores
+  one lower. Yarvis scores those the same way every time, and raises the
+  score when the PR bundles many changes that alter existing behavior. Changes
   that score high are listed under **Needs attention** with what to check,
   and every change is listed behind **Every change**.
 - **Simpler approach** rates the PR as a whole, where the complexity check

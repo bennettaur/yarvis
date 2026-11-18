@@ -129,6 +129,7 @@ function countsText(counts: VerificationImpact["counts"]): string {
 function describeChange(change: VerificationChange): string {
   const parts = [change.kind, change.reach, EVIDENCE_TEXT[change.evidence]];
   if (change.sensitive) parts.push("sensitive");
+  else if (change.internal) parts.push("internal only");
   if (change.count > 1) parts.push(`${change.count} like it`);
   return parts.join(" · ");
 }
