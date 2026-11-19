@@ -62,7 +62,7 @@ export interface AddMessageInput {
 
 /**
  * Longest title a chat takes from its first prompt. Counted in code points, as
- * Postgres counts them, so migration 0054's backfill cuts at the same place.
+ * Postgres counts them, so migration 0057's backfill cuts at the same place.
  */
 export const PROMPT_TITLE_MAX = 60;
 
@@ -71,7 +71,7 @@ export const PROMPT_TITLE_MAX = 60;
  * for a prompt with no text to show.
  *
  * Whitespace is the ASCII set spelled out, not `\s`: Postgres's `\s` depends
- * on the database's locale, and migration 0054 must name a chat exactly as this
+ * on the database's locale, and migration 0057 must name a chat exactly as this
  * does, or a rewind can't recognise the name to clear it.
  */
 export function titleFromPrompt(prompt: string): string | null {

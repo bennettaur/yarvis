@@ -66,6 +66,7 @@ export default function OmniChat({
     // collectContext/formatContext are module-level and stable, so this is too.
     getContext: useCallback(() => formatContext(collectContext()), []),
     onAttention,
+    visible: open,
   });
 
   const [input, setInput] = useState("");

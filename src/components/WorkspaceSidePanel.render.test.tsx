@@ -75,6 +75,7 @@ const REPO: WorkspaceRepoDetail = {
     updatedAt: "2026-06-01T09:00:00.000Z",
   },
   pr: null,
+  prs: [],
 };
 
 /** What the background poller caches for a repo whose branch has a PR. */

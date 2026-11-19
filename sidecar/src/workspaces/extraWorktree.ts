@@ -28,12 +28,6 @@ export interface AddExtraWorktreeResult {
 }
 
 /**
- * Extra worktrees one workspace repo can have at a time. Each is a full
- * checkout, and adding one fetches under the repo lock other workspaces share.
- */
-export const MAX_EXTRA_WORKTREES = 10;
-
-/**
  * Whether git or the workspaces sharing the clone read `branch` as something
  * other than a branch, whatever its case. `origin/main` as a local branch
  * would shadow the remote-tracking ref of the same short name.

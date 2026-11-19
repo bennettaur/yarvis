@@ -44,12 +44,16 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // may decide to file one mid-task, so the user reads the text before anyone
   // else can.
   "file_yarvis_issue",
+  // Spends a verification report's runs on up to ten PRs in one call, and
+  // each PR's budget check sees only its own cost, so the user agrees to the
+  // whole queue.
+  "start_pr_verification_queue",
 ]);
 
 export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // Irreversible, and the system prompt describes it as permanent and unlogged.
   "delete_task",
-  // Tears down worktrees on disk.
+  // Tears down worktrees on disk, and closes linked issues other people can see.
   "archive_workspace",
   // Assigns and labels an issue other people can see, then provisions for it.
   "start_work_on_issue",
@@ -169,6 +173,10 @@ function flagSet(args: unknown, name: string): boolean {
   return (args as Record<string, unknown> | null)?.[name] === true;
 }
 
+function argGiven(args: unknown, name: string): boolean {
+  return (args as Record<string, unknown> | null)?.[name] !== undefined;
+}
+
 /**
  * Built-ins that ask only under a condition checked when they are called.
  *
@@ -187,7 +195,10 @@ function flagSet(args: unknown, name: string): boolean {
  *
  * Starting a verification report with `confirmed` asks too: the flag answers a
  * question about cost or an unregistered repo, and that answer has to be the
- * user's, not the model's. Regenerating a guide asks because it throws away
+ * user's, not the model's. So does one naming a `model` or `effort`: it
+ * replaces every check's own, the risk and malicious-intent checks' included,
+ * and PR text could ask for a weaker model on the very PR those checks judge,
+ * or for an effort the cost estimate doesn't price. Regenerating a guide asks because it throws away
  * how far the user got through the old one.
  *
  * Rewriting an artifact loses its text as surely as `delete_artifact` does, so
@@ -217,7 +228,11 @@ export function conditionalConfirmations(options: {
     );
     conditions.set(
       "start_pr_verification_report",
-      (args) => flagSet(args, "confirmed") || hasReadUntrusted(reads),
+      (args) =>
+        flagSet(args, "confirmed") ||
+        argGiven(args, "model") ||
+        argGiven(args, "effort") ||
+        hasReadUntrusted(reads),
     );
     conditions.set(
       "start_pr_guided_review",
@@ -276,6 +291,7 @@ export const SCHEDULED_TASK_TOOLS: ReadonlySet<string> = new Set([
   "list_repos",
   "list_repo_issues",
   "list_workspaces",
+  "list_workspace_issues",
   "get_workspace_activity",
   "get_workspace_status",
   "read_workspace_replies",

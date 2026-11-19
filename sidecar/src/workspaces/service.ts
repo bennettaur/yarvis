@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
@@ -37,9 +37,11 @@ import {
   workspaces,
 } from "../db/schema.ts";
 import { emitEvent, lastWorkspaceViews } from "../events/service.ts";
+import type { IssueCloser } from "../issues/close.ts";
 import {
   deleteLinkForWorkspace,
   listLinksForWorkspace,
+  markLinksDone,
   sanitizeIssueText,
   upsertLink,
 } from "../issues/service.ts";
@@ -61,7 +63,6 @@ import {
   type AddExtraWorktreeResult,
   branchCollision,
   isReservedBranchName,
-  MAX_EXTRA_WORKTREES,
   WorktreeRefusal,
 } from "./extraWorktree.ts";
 import {
@@ -75,7 +76,6 @@ import {
   addWorktreeWithoutHooks,
   type BranchSync,
   branchExists,
-  branchLanded,
   branchSync,
   type ChangedFile,
   canonicalPath,
@@ -90,6 +90,7 @@ import {
   fileDiff,
   type GitRunner,
   hasUncommittedChanges,
+  landedTip,
   listChangedFiles,
   listFiles,
   listLocalBranches,
@@ -102,6 +103,7 @@ import {
   updateDefaultBranch,
   worktreeStatus,
 } from "./git.ts";
+import { harnessStillStartable } from "./harnesses.ts";
 import {
   checkBeforeWrite,
   checkRepoIntegrity,
@@ -109,6 +111,7 @@ import {
   type IntegrityFinding,
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
+import { isOnBranch, orderPrs, prOnOwnBranch } from "./prs.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
@@ -464,11 +467,17 @@ export interface CreateWorkspaceInput {
    * launch survives the UI navigating away — see `workspaces.pendingBrief`.
    */
   brief?: string | null;
+  /** The agent harness the brief's session runs; omitted means the default.
+   *  Ignored without a brief. See `workspaces.pendingHarness`. */
+  harness?: string;
 }
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
   repo: Repo;
+  /** The repo's main PR (see `workspaces/prs.ts`), for what needs one. */
   pr: WorkspaceRepoPr | null;
+  /** Every PR linked to the repo, the main one first, the unlinked ones left out. */
+  prs: WorkspaceRepoPr[];
   /** Worktrees Yarvis added beside this one (`addExtraWorktree`). */
   extraWorktrees: WorkspaceExtraWorktree[];
 }
@@ -544,12 +553,20 @@ export async function createWorkspace(
   // tasks) gets the same defense against hidden instructions surviving into the
   // auto-approved agent session. Sanitizing sanitized text is a no-op.
   const pendingBrief = input.brief?.trim() ? sanitizeIssueText(input.brief) : null;
+  const pendingHarness = pendingBrief ? (input.harness ?? null) : null;
 
   // One transaction so a mid-create failure never leaves a half-built workspace.
   const created = await db.transaction(async (tx) => {
     const [workspace] = await tx
       .insert(workspaces)
-      .values({ name: input.name.trim(), slug, rootPath, status: "creating", pendingBrief })
+      .values({
+        name: input.name.trim(),
+        slug,
+        rootPath,
+        status: "creating",
+        pendingBrief,
+        pendingHarness,
+      })
       .returning();
 
     // A scratch workspace has no repo rows; skip the insert (Drizzle rejects an
@@ -648,6 +665,28 @@ export async function addRepoToWorkspace(
 }
 
 /**
+ * A workspace's ready repo named by its folder in the workspace or by its
+ * name. Either is accepted: AGENTS.md names the folder, the user names the repo.
+ */
+export function findReadyRepo(
+  detail: WorkspaceDetail,
+  name: string,
+): WorkspaceDetail["repos"][number] | undefined {
+  const wanted = name.trim().toLowerCase();
+  return detail.repos.find(
+    (r) =>
+      r.status === "ready" &&
+      (basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted),
+  );
+}
+
+/** The folders of a workspace's ready repos, for naming them in a refusal. */
+export function readyRepoFolders(detail: WorkspaceDetail): string {
+  const ready = detail.repos.filter((r) => r.status === "ready");
+  return ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
+}
+
+/**
  * Adds a worktree for another branch of one of the workspace's repos, at
  * `<workspace>/<folder>-<branch>`, and grants the workspace's sandbox that
  * worktree and branch. Agents ask for this over MCP: inside the sandbox they
@@ -673,17 +712,10 @@ export async function addExtraWorktree(
   const detail = await getWorkspace(db, workspaceId);
   if (!detail) throw new WorktreeRefusal("workspace not found");
   assertOpenForWorktrees(detail);
-  const ready = detail.repos.filter((r) => r.status === "ready");
-  // Either is accepted: AGENTS.md names the folder, the user names the repo.
-  const wanted = input.repo.trim().toLowerCase();
-  const workspaceRepo = ready.find(
-    (r) =>
-      basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted,
-  );
+  const workspaceRepo = findReadyRepo(detail, input.repo);
   if (!workspaceRepo) {
-    const folders = ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
     throw new WorktreeRefusal(
-      `no ready repo "${input.repo}" in this workspace (repos: ${folders})`,
+      `no ready repo "${input.repo}" in this workspace (repos: ${readyRepoFolders(detail)})`,
     );
   }
 
@@ -710,13 +742,6 @@ export async function addExtraWorktree(
     if (repoStatus !== "ready") {
       throw new WorktreeRefusal(`${basename(workspaceRepo.worktreePath)} is no longer ready`);
     }
-    const live = await pruneExtraWorktrees(db, workspaceRepo.id, clone);
-    if (live >= MAX_EXTRA_WORKTREES) {
-      throw new WorktreeRefusal(
-        `${basename(workspaceRepo.worktreePath)} already has ${live} extra worktrees; remove one first`,
-      );
-    }
-
     await fetchRemote(runner, clone);
     const [local, remote, taken] = await Promise.all([
       listLocalBranches(runner, clone),
@@ -851,31 +876,6 @@ async function undoWorktree(
 }
 
 /**
- * Deletes the repo's recorded extra worktrees that git no longer has, and
- * answers how many are left.
- */
-async function pruneExtraWorktrees(
-  db: Db,
-  workspaceRepoId: string,
-  clone: string,
-): Promise<number> {
-  const rows = await db
-    .select()
-    .from(workspaceExtraWorktrees)
-    .where(eq(workspaceExtraWorktrees.workspaceRepoId, workspaceRepoId));
-  const gone = rows.filter((row) => resolveAdminName(clone, row.worktreePath) === null);
-  if (gone.length > 0) {
-    await db.delete(workspaceExtraWorktrees).where(
-      inArray(
-        workspaceExtraWorktrees.id,
-        gone.map((row) => row.id),
-      ),
-    );
-  }
-  return rows.length - gone.length;
-}
-
-/**
  * The branches active workspaces on this repo work on or stack on, the
  * branches other active workspaces added with `add_worktree`, and the repo's
  * default branch. They can be on the remote alone, or gone from the clone
@@ -924,7 +924,7 @@ function assertUsableBranch(branch: string, label: string): void {
  * brief, which holds a whole ticket body and is wanted only by the one
  * workspace being opened — this list is polled, and for every workspace at once.
  */
-export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief"> {
+export interface WorkspaceSummary extends Omit<Workspace, "pendingBrief" | "pendingHarness"> {
   /** Names of the repos in this workspace, for grouping in the sidebar. */
   repoNames: string[];
   /**
@@ -961,48 +961,63 @@ export async function listWorkspaces(
   db: Db,
   { withActivity = false }: { withActivity?: boolean } = {},
 ): Promise<WorkspaceSummary[]> {
-  const { pendingBrief: _omitted, ...listColumns } = getTableColumns(workspaces);
+  const {
+    pendingBrief: _omitted,
+    pendingHarness: _omittedHarness,
+    ...listColumns
+  } = getTableColumns(workspaces);
   const wsRows = await db.select(listColumns).from(workspaces).orderBy(workspaces.createdAt);
   if (!wsRows.length) return [];
 
   const memberships = await db
     .select({
+      id: workspaceRepos.id,
       workspaceId: workspaceRepos.workspaceId,
       repoStatus: workspaceRepos.status,
+      branch: workspaceRepos.branch,
       name: repos.name,
-      prNumber: workspaceRepoPr.prNumber,
-      prState: workspaceRepoPr.prState,
-      isDraft: workspaceRepoPr.isDraft,
-      mergeable: workspaceRepoPr.mergeable,
-      checkRollup: workspaceRepoPr.checkRollup,
-      reviewDecision: workspaceRepoPr.reviewDecision,
     })
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
-    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     // Ordered so a multi-repo workspace's names and PR badges keep the same
-    // order between refreshes rather than shuffling with the join.
+    // order between refreshes.
     .orderBy(repos.name);
+  const prRows = memberships.length
+    ? await db
+        .select()
+        .from(workspaceRepoPr)
+        .where(
+          and(
+            inArray(
+              workspaceRepoPr.workspaceRepoId,
+              memberships.map((m) => m.id),
+            ),
+            eq(workspaceRepoPr.dismissed, false),
+          ),
+        )
+    : [];
   const namesByWorkspace = new Map<string, string[]>();
   const prsByWorkspace = new Map<string, WorkspaceSummaryPr[]>();
   for (const m of memberships) {
     const names = namesByWorkspace.get(m.workspaceId) ?? [];
     names.push(m.name);
     namesByWorkspace.set(m.workspaceId, names);
-    if (m.prNumber === null) continue;
     // A torn-down worktree stops being polled, so whatever its cache last held
     // is frozen — an archived workspace must not keep flashing a live PR badge.
     if (m.repoStatus === "removed") continue;
+    const own = prRows.filter((p) => p.workspaceRepoId === m.id);
     const prs = prsByWorkspace.get(m.workspaceId) ?? [];
-    prs.push({
-      repoName: m.name,
-      prNumber: m.prNumber,
-      prState: m.prState,
-      isDraft: m.isDraft,
-      mergeable: m.mergeable,
-      checkRollup: m.checkRollup ?? "none",
-      reviewDecision: m.reviewDecision,
-    });
+    for (const p of orderPrs(own, m.branch)) {
+      prs.push({
+        repoName: m.name,
+        prNumber: p.prNumber,
+        prState: p.prState,
+        isDraft: p.isDraft,
+        mergeable: p.mergeable,
+        checkRollup: p.checkRollup,
+        reviewDecision: p.reviewDecision,
+      });
+    }
     prsByWorkspace.set(m.workspaceId, prs);
   }
 
@@ -1064,7 +1079,11 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
   const prRows = wrIds.length
     ? await db.select().from(workspaceRepoPr).where(inArray(workspaceRepoPr.workspaceRepoId, wrIds))
     : [];
-  const prByWr = new Map(prRows.map((p) => [p.workspaceRepoId, p]));
+  const prsOf = (wr: WorkspaceRepo) =>
+    orderPrs(
+      prRows.filter((p) => p.workspaceRepoId === wr.id),
+      wr.branch,
+    );
   const extraRows = wrIds.length
     ? await db
         .select()
@@ -1078,7 +1097,8 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
     repos: wrRows.map((wr) => ({
       ...wr,
       repo: repoById.get(wr.repoId)!,
-      pr: prByWr.get(wr.id) ?? null,
+      pr: prsOf(wr)[0] ?? null,
+      prs: prsOf(wr),
       extraWorktrees: extraRows.filter((e) => e.workspaceRepoId === wr.id),
     })),
     tasks: await tasksForWorkspace(db, id),
@@ -1560,7 +1580,17 @@ export async function findWorkspaceForPr(
     .innerJoin(workspaceRepos, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(and(eq(workspaceRepoPr.prNumber, locator.number), ne(workspaces.status, "archived")));
+    .where(
+      and(
+        eq(workspaceRepoPr.prNumber, locator.number),
+        eq(workspaceRepoPr.dismissed, false),
+        ne(workspaces.status, "archived"),
+      ),
+    )
+    // A PR can be linked to several workspaces, one of them by number from
+    // elsewhere. The workspace whose own branch it merges from is the one it
+    // belongs to.
+    .orderBy(desc(prOnOwnBranch));
 
   for (const { cloneUrl, ...ws } of candidates) {
     if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
@@ -1816,6 +1846,13 @@ async function writeWorkspaceFiles(detail: WorkspaceDetail): Promise<void> {
       "is archived. Don't create worktrees or clones anywhere else, such as a",
       "temp folder: nothing tracks those, and they stay on disk after the work",
       "is done.",
+      "",
+      "## Pull requests",
+      "",
+      "After you open a pull request, record it with the Yarvis MCP tool",
+      "`link_pull_request`, giving the repo's folder and the PR's number, so the",
+      "user sees its state and checks in Yarvis right away. Link every PR you open,",
+      "one per layer of a stack included.",
     );
   }
 
@@ -2110,6 +2147,10 @@ export const AGENT_KICKOFF_INSTRUCTION = `Read the work described in ${WORKSPACE
  * leaves the brief in place for `resumeKickOffs` to retry rather than failing
  * the workspace. Retrying is safe — the core keys sessions by workspace and
  * discards a spawn for an id that already has one.
+ *
+ * A stored harness the user has since removed or stopped letting the assistant
+ * start falls back to the default. Otherwise the core would refuse it on every
+ * retry and the kick-off would never run.
  */
 async function launchKickOffSession(
   db: Db,
@@ -2117,6 +2158,14 @@ async function launchKickOffSession(
   startSession: ClaudeSessionStarter,
   remoteControl: boolean,
 ): Promise<void> {
+  const stored = detail.pendingHarness ?? undefined;
+  const fellBack = stored !== undefined && !(await harnessStillStartable(stored));
+  if (fellBack) {
+    console.warn(
+      `[workspaces] the kick-off's harness "${stored}" can no longer be started; using the default`,
+    );
+  }
+  const harness = fellBack ? undefined : stored;
   try {
     await startSession({
       workspaceId: detail.id,
@@ -2124,6 +2173,7 @@ async function launchKickOffSession(
       name: detail.name,
       remoteControl,
       instruction: AGENT_KICKOFF_INSTRUCTION,
+      harness,
     });
   } catch (e) {
     console.error("[workspaces] could not start the kick-off session:", e);
@@ -2132,7 +2182,16 @@ async function launchKickOffSession(
   void emitEvent(db, {
     type: "workspace.session_started",
     source: "workspaces",
-    payload: { workspaceId: detail.id, name: detail.name, kickOff: true, remoteControl },
+    payload: {
+      workspaceId: detail.id,
+      name: detail.name,
+      kickOff: true,
+      remoteControl,
+      harness: harness ?? null,
+      // The harness the assistant picked, when it could no longer be started
+      // and the default ran instead.
+      harnessFallbackFrom: fellBack ? stored : null,
+    },
   });
   await clearPendingBrief(db, detail.id).catch(() => undefined);
 }
@@ -2145,7 +2204,7 @@ async function launchKickOffSession(
 export async function clearPendingBrief(db: Db, id: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ pendingBrief: null, updatedAt: new Date() })
+    .set({ pendingBrief: null, pendingHarness: null, updatedAt: new Date() })
     .where(eq(workspaces.id, id));
 }
 
@@ -2260,6 +2319,11 @@ export interface ArchiveWorkspaceInput {
   mergedPrUrl?: string | null;
   /** Discard uncommitted work in the worktrees. */
   force?: boolean;
+  /**
+   * Ids of this workspace's linked issues to close on their tracker once the
+   * workspace is fully archived. Ids of issues linked elsewhere are ignored.
+   */
+  closeIssueIds?: string[];
 }
 
 export interface ArchiveResult {
@@ -2267,7 +2331,31 @@ export interface ArchiveResult {
   errors: { repo: string; message: string }[];
   /** Number of linked tasks completed (only when fully archived). */
   completedTasks: number;
+  /** Linked issues closed on their tracker, as `issueLabel` names them (only when fully archived). */
+  closedIssues: string[];
+  /** Picked linked issues their tracker refused to close, left open. */
+  issueCloseErrors: IssueCloseError[];
 }
+
+export interface IssueCloseError {
+  /** The issue, as `issueLabel` names it. */
+  issue: string;
+  /** The tracker's reason, sanitized and capped: it is shown to the user and the chat model. */
+  message: string;
+}
+
+/**
+ * How an issue is named to the user, matching the archive dialog:
+ * `owner/repo#12` on GitHub, `PROJ-45` on JIRA, `#678` on Azure Boards.
+ */
+export function issueLabel(link: Pick<IssueLink, "provider" | "sourceKey" | "externalId">): string {
+  if (link.provider === "github") return `${link.sourceKey}#${link.externalId}`;
+  if (link.provider === "azure") return `#${link.externalId}`;
+  return link.externalId;
+}
+
+/** Tracker error bodies can be long; the reason fits well inside this. */
+const ISSUE_CLOSE_ERROR_CAP = 300;
 
 /**
  * The URL of a PR raised from this workspace, so archival can record it even
@@ -2276,9 +2364,11 @@ export interface ArchiveResult {
  * so it's never treated as the workspace's outcome.
  */
 function linkedPrUrl(detail: WorkspaceDetail): string | null {
-  const withPr = detail.repos.filter((r) => r.pr?.prUrl && r.pr.prState !== "closed");
-  const merged = withPr.find((r) => r.pr?.prState === "merged");
-  return (merged ?? withPr[0])?.pr?.prUrl ?? null;
+  const withPr = detail.repos
+    .flatMap((r) => r.prs)
+    .filter((p) => p.prUrl && p.prState !== "closed");
+  const merged = withPr.find((p) => p.prState === "merged");
+  return (merged ?? withPr[0])?.prUrl ?? null;
 }
 
 /** Teardowns in flight, keyed by workspace id, so a second request joins the
@@ -2456,10 +2546,11 @@ export async function archiveWorkspace(
   id: string,
   input: ArchiveWorkspaceInput = {},
   runner: GitRunner = defaultGitRunner,
+  closeIssue?: IssueCloser,
 ): Promise<ArchiveResult> {
   const inFlight = archivals.get(id);
   if (inFlight) return inFlight;
-  return trackArchive(db, await beginArchive(db, id, input), input, runner);
+  return trackArchive(db, await beginArchive(db, id, input), input, runner, closeIssue);
 }
 
 /**
@@ -2473,10 +2564,11 @@ export async function startArchiveWorkspace(
   id: string,
   input: ArchiveWorkspaceInput = {},
   runner: GitRunner = defaultGitRunner,
+  closeIssue?: IssueCloser,
 ): Promise<ArchiveResult> {
   if (!archivals.has(id)) {
     const detail = await beginArchive(db, id, input);
-    void trackArchive(db, detail, input, runner).catch(async (e) => {
+    void trackArchive(db, detail, input, runner, closeIssue).catch(async (e) => {
       const message = e instanceof Error ? e.message : String(e);
       console.error("[workspaces] background archive failed:", e);
       await db
@@ -2489,7 +2581,13 @@ export async function startArchiveWorkspace(
       await raiseArchiveFailure(db, detail, [{ repo: "workspace", message }]);
     });
   }
-  return { status: "archiving", errors: [], completedTasks: 0 };
+  return {
+    status: "archiving",
+    errors: [],
+    completedTasks: 0,
+    closedIssues: [],
+    issueCloseErrors: [],
+  };
 }
 
 function trackArchive(
@@ -2497,8 +2595,9 @@ function trackArchive(
   detail: WorkspaceDetail,
   input: ArchiveWorkspaceInput,
   runner: GitRunner,
+  closeIssue: IssueCloser | undefined,
 ): Promise<ArchiveResult> {
-  const run = removeWorktreesAndFinish(db, detail, input, runner).finally(() =>
+  const run = removeWorktreesAndFinish(db, detail, input, runner, closeIssue).finally(() =>
     archivals.delete(detail.id),
   );
   archivals.set(detail.id, run);
@@ -2506,41 +2605,44 @@ function trackArchive(
 }
 
 /**
- * Whether to delete a repo's local branch once its worktree is gone, so
- * archived workspaces don't pile up branches in the shared clone. Only a
- * landed branch goes, and a git failure keeps it, since a branch left behind
- * costs nothing.
+ * The commit at which to delete a repo's local branch after its worktree is
+ * gone, so archived workspaces don't pile up branches in the shared clone, or
+ * null to keep the branch. Only a landed branch goes, and a git failure keeps
+ * it, since a branch left behind costs nothing.
  *
  * Throws instead when a landed branch has commits that neither a remote nor
  * its merged PR has (work added after the merge) and `force` isn't set, so the
  * user hears about them while the worktree is still there to push from.
  */
-async function checkBranchForArchive(
+async function branchTipToDelete(
   runner: GitRunner,
   wr: WorkspaceRepoDetail,
   force: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   const primaryClonePath = wr.repo.primaryClonePath;
-  const prMerged = wr.pr?.prState === "merged";
-  const mergedHead = prMerged ? (wr.pr?.headSha ?? null) : null;
+  // Only a PR that merged from this branch says anything about it; one linked
+  // from another branch merged other commits.
+  const merged = wr.prs.find((pr) => pr.prState === "merged" && isOnBranch(pr, wr.branch));
+  const prMerged = merged !== undefined;
+  const mergedHead = merged?.headSha ?? null;
   // Declared out here so the throw below isn't caught by the best-effort catch:
   // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;
+  let tip: string | null;
   try {
-    const landed = await branchLanded(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
-    if (!landed) return false;
-    if (force) return true;
-    unpushed = await unpushedCommitCount(runner, primaryClonePath, wr.branch, mergedHead);
+    tip = await landedTip(runner, primaryClonePath, wr.branch, wr.baseBranch, prMerged);
+    if (tip === null || force) return tip;
+    unpushed = await unpushedCommitCount(runner, primaryClonePath, tip, mergedHead);
   } catch (e) {
     console.warn(`[workspaces] couldn't check branch ${wr.branch} before archive, keeping it:`, e);
-    return false;
+    return null;
   }
-  if (unpushed === 0) return true;
+  if (unpushed === 0) return tip;
   if (prMerged && !mergedHead) {
     // Polled before the PR cache kept a head commit: a squash merge's own
     // commits look unpushed too, so there's no telling them from new work.
     console.warn(`[workspaces] kept branch ${wr.branch}: its merged PR's head commit is unknown`);
-    return false;
+    return null;
   }
   const dirty = await hasUncommittedChanges(runner, wr.worktreePath).catch(() => false);
   throw new Error(
@@ -2552,9 +2654,13 @@ async function checkBranchForArchive(
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-async function deleteBranchBestEffort(runner: GitRunner, wr: WorkspaceRepoDetail): Promise<void> {
+async function deleteBranchBestEffort(
+  runner: GitRunner,
+  wr: WorkspaceRepoDetail,
+  tip: string,
+): Promise<void> {
   try {
-    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch);
+    await deleteBranch(runner, wr.repo.primaryClonePath, wr.branch, tip);
   } catch (e) {
     console.warn(
       `[workspaces] couldn't delete branch ${wr.branch} after removing its worktree:`,
@@ -2584,9 +2690,8 @@ async function deleteLandedExtraBranches(
   for (const row of rows) {
     if (inUse.has(row.branch.toLowerCase())) continue;
     try {
-      if (await branchLanded(runner, clone, row.branch, wr.baseBranch, false)) {
-        await deleteBranch(runner, clone, row.branch);
-      }
+      const tip = await landedTip(runner, clone, row.branch, wr.baseBranch, false);
+      if (tip !== null) await deleteBranch(runner, clone, row.branch, tip);
     } catch (e) {
       console.warn(`[workspaces] couldn't delete extra worktree branch ${row.branch}:`, e);
     }
@@ -2601,6 +2706,7 @@ async function removeWorktreesAndFinish(
   detail: WorkspaceDetail,
   input: ArchiveWorkspaceInput,
   runner: GitRunner,
+  closeIssue: IssueCloser | undefined,
 ): Promise<ArchiveResult> {
   const id = detail.id;
 
@@ -2630,11 +2736,11 @@ async function removeWorktreesAndFinish(
         // Checked before anything is removed. An extra worktree that stops this
         // attempt would otherwise hide the unpushed commits, and the Force
         // retry that follows skips the check and deletes them unwarned.
-        let shouldDeleteBranch = false;
+        let branchTip: string | null = null;
         let unpushedCommitsError: unknown = null;
         if (wr.status !== "removed") {
           try {
-            shouldDeleteBranch = await checkBranchForArchive(runner, wr, force);
+            branchTip = await branchTipToDelete(runner, wr, force);
           } catch (e) {
             unpushedCommitsError = e;
           }
@@ -2669,7 +2775,7 @@ async function removeWorktreesAndFinish(
           force,
           workspaceRoot: detail.rootPath,
         });
-        if (shouldDeleteBranch) await deleteBranchBestEffort(runner, wr);
+        if (branchTip !== null) await deleteBranchBestEffort(runner, wr, branchTip);
       });
       if (wr.status === "removed") continue;
       await db
@@ -2711,6 +2817,7 @@ async function removeWorktreesAndFinish(
       // brief still pending on it is only a copy of the work kept alive for
       // nobody.
       pendingBrief: fullyRemoved ? null : detail.pendingBrief,
+      pendingHarness: fullyRemoved ? null : detail.pendingHarness,
       archivedAt: fullyRemoved ? new Date() : null,
       updatedAt: new Date(),
     })
@@ -2733,6 +2840,12 @@ async function removeWorktreesAndFinish(
     await raiseArchiveFailure(db, detail, errors);
   }
 
+  // After the attention scope is cleared, so a close failure it raises stays up.
+  const { closed: closedIssues, failures: issueCloseErrors } =
+    fullyRemoved && closeIssue
+      ? await closeLinkedIssues(db, detail, input, closeIssue)
+      : { closed: [], failures: [] };
+
   if (fullyRemoved) {
     void emitEvent(db, {
       type: "workspace.archived",
@@ -2743,11 +2856,85 @@ async function removeWorktreesAndFinish(
         summary: input.summary ?? detail.summary,
         mergedPrUrl: input.mergedPrUrl ?? detail.mergedPrUrl ?? linkedPrUrl(detail),
         completedTasks: completedTasks.length,
+        closedIssues: closedIssues.length,
       },
     });
   }
 
-  return { status, errors, completedTasks: completedTasks.length };
+  return {
+    status,
+    errors,
+    completedTasks: completedTasks.length,
+    closedIssues,
+    issueCloseErrors,
+  };
+}
+
+/**
+ * Closes the linked issues the user picked when archiving, and marks the ones
+ * that closed `done` locally. Best-effort: the archive has already finished, so a
+ * tracker that refuses only raises an attention item naming the issues left open.
+ * Issues already done locally are skipped. Returns which closed and which failed.
+ */
+async function closeLinkedIssues(
+  db: Db,
+  detail: WorkspaceDetail,
+  input: ArchiveWorkspaceInput,
+  closeIssue: IssueCloser,
+): Promise<{ closed: string[]; failures: IssueCloseError[] }> {
+  const requestedIds = new Set(input.closeIssueIds ?? []);
+  const linksToClose = detail.issues.filter(
+    (link) => requestedIds.has(link.id) && link.localStatus !== "done",
+  );
+  const closedLinks: typeof linksToClose = [];
+  const failures: IssueCloseError[] = [];
+  for (const link of linksToClose) {
+    try {
+      await closeIssue(link);
+      closedLinks.push(link);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn(`[workspaces] failed to close ${link.provider} issue ${link.externalId}:`, e);
+      failures.push({
+        issue: issueLabel(link),
+        message: sanitizeIssueText(message).slice(0, ISSUE_CLOSE_ERROR_CAP),
+      });
+    }
+  }
+  try {
+    await markLinksDone(
+      db,
+      closedLinks.map((link) => link.id),
+    );
+  } catch (e) {
+    // The archive already succeeded; a stale local status mustn't report it as failed.
+    console.warn("[workspaces] failed to mark closed issues done:", e);
+  }
+  if (failures.length > 0) await raiseIssueCloseFailure(db, detail, failures);
+  return { closed: closedLinks.map(issueLabel), failures };
+}
+
+/** Tells the user which linked issues stayed open after the archive. Best-effort. */
+async function raiseIssueCloseFailure(
+  db: Db,
+  detail: WorkspaceDetail,
+  failures: IssueCloseError[],
+): Promise<void> {
+  const summary = failures.map((f) => `${f.issue}: ${f.message}`).join("; ");
+  try {
+    const item = await createAttention(db, {
+      source: "system",
+      workspaceId: detail.id,
+      kind: "error",
+      title: detail.name,
+      body: `Archived, but could not close ${summary}`.slice(0, ARCHIVE_ERROR_BODY_CAP),
+      navTarget: { type: "workspace", workspaceId: detail.id },
+      payload: { issueCloseErrors: failures },
+    });
+    publish(item);
+  } catch (e) {
+    console.error("[workspaces] failed to raise issue-close attention:", e);
+  }
 }
 
 /**

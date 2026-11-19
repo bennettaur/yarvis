@@ -189,9 +189,11 @@ it is to break something, and how far that would spread. The skill lists
 each independent change with its kind (passive, reorganization, addition,
 removal, interface or logic), its reach (leaf, local, shared or core, helped
 by the importer counts `collect` takes from the import graph), and whether
-tests prove it. `sidecar/src/verify/impact.ts` turns that into a band from 1
-to 5 with a fixed table, then raises it when the PR bundles many changes. The
-report checks the classification against the facts and never scores below
+tests prove it. Unlike the review workspace's report, it takes no `internal`
+flag, since this band can auto-merge. `sidecar/src/verify/impact.ts` turns
+that into a band from 1 to 5 with a fixed table, then raises it when the PR
+bundles many changes. Additions don't count toward that, since only other
+new code reaches them. The report checks the classification against the facts and never scores below
 them: a `proven` claim coverage doesn't back counts as partly tested, a
 change that could alter behaviour (logic, interface, removal, or an unproven
 reorganization) counts at no less than its files' measured reach, and a
@@ -508,7 +510,7 @@ sidecar/        Bun + TS service (Hono)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
-  src/pr/          provider-neutral PR review: guides, insights, code tools,
+  src/pr/          provider-neutral PR review: guides, insights, code tools, CI evidence,
                    workspace-on-a-PR, stacks
   src/issues/      provider-neutral issue routes and start-work
   src/jira/        JIRA client, routes, tools, ADF↔Markdown
@@ -520,7 +522,10 @@ sidecar/        Bun + TS service (Hono)
                    teardown, self-review comments, gh-stack bridge, file editor
   src/reviewWorkspaces/ PRs checked out for review: blobless clones, a detached
                    worktree per PR, local diffs and file reads, setup consent,
-                   definition/reference search by git grep
+                   definition/reference search by git grep, and the
+                   verification checklist: one run per section, the report
+                   put together from each section's newest result
+                   (`verification.ts`, `checklist.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

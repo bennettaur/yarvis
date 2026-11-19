@@ -93,6 +93,8 @@ export interface PrSummary {
   baseRef?: string;
   /** The branch this PR merges from. Unset for a PR from a fork. */
   headRef?: string;
+  /** When the PR was closed or merged, null while open. Only branch lookups fill it in. */
+  closedAt?: string | null;
 }
 
 /**
@@ -151,6 +153,8 @@ export interface ReviewComment {
    * unknown, which counts as untrusted.
    */
   trusted?: boolean;
+  /** True when a GitHub App or other bot account wrote it, such as a code scanner or coverage reporter. */
+  isBot?: boolean;
   body: string;
   createdAt: string;
   /** Link to the comment on the provider's site, when it reports one. */
@@ -240,6 +244,55 @@ export interface CheckItem {
   /** "SUCCESS" | "FAILURE" | "NEUTRAL" | null while pending. */
   conclusion: string | null;
   url: string | null;
+  /** GitHub's id for a check run, which tells two runs of the same name apart. */
+  checkRunId?: number;
+}
+
+/** A ticket a PR is for, on one of the trackers Yarvis reads. */
+export type TicketRef =
+  | { kind: "github"; owner: string; repo: string; number: number }
+  | { kind: "jira"; key: string }
+  | { kind: "azure"; id: number };
+
+/** A check run's output on GitHub: its headline, summary and how many line annotations it posted. */
+export interface CheckRunOutput {
+  id: number;
+  name: string;
+  title: string | null;
+  summary: string | null;
+  annotationsCount: number;
+}
+
+export type AnnotationLevel = "failure" | "warning" | "notice";
+
+/** A line a check run pointed at, such as a failing test or a lint warning. */
+export interface CheckAnnotation {
+  path: string;
+  line: number | null;
+  level: AnnotationLevel;
+  title: string | null;
+  message: string;
+}
+
+/** An open code-scanning alert on a PR. */
+export interface ScanAlert {
+  tool: string;
+  rule: string;
+  /** "critical" | "high" | "medium" | "low" for security rules, else "error" | "warning" | "note". */
+  severity: string;
+  description: string;
+  path: string | null;
+  line: number | null;
+  message: string;
+  url: string | null;
+}
+
+/**
+ * A provider that has a kind of evidence but won't show it, such as a token
+ * without the permission. Its message says why, for the reviewer to read.
+ */
+export class EvidenceUnavailable extends Error {
+  override name = "EvidenceUnavailable";
 }
 
 /** Rich detail for the in-app PR review view (description, checks, threads). */
@@ -322,6 +375,8 @@ export interface PrDetail {
 /** A changed file with its unified-diff patch (`patch` is null until loaded). */
 export interface PrFile {
   filename: string;
+  /** The path before a rename, when the provider says. */
+  previousFilename?: string;
   status: string;
   additions: number;
   deletions: number;

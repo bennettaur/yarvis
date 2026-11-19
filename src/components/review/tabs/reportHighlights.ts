@@ -1,11 +1,12 @@
 import {
+  CHECK_LABEL,
   type Severity,
   VERIFICATION_CHECKS,
   type VerificationMustRead,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { type LineDecoration, plainHoverText } from "../editor";
-import { CHECK_LABEL, FLAG_LABEL } from "./VerificationReportView";
+import { CLAIM_LABEL, FLAG_LABEL, isUnmetClaim } from "./VerificationReportView";
 
 /** One thing the verification report says about a line of a file. */
 export interface FileNote {
@@ -35,6 +36,27 @@ export function fileNotes(report: VerificationReport | null, path: string): File
   for (const c of report.risk?.concerns ?? []) {
     if (c.path === path && c.line) {
       notes.push({ source: "Risk", title: c.title, detail: c.detail, line: c.line });
+    }
+  }
+  for (const c of report.claims?.items ?? []) {
+    if (c.path === path && c.line && isUnmetClaim(c.status)) {
+      notes.push({
+        source: `Claim ${CLAIM_LABEL[c.status].toLowerCase()}`,
+        title: c.claim,
+        detail: c.evidence,
+        line: c.line,
+      });
+    }
+  }
+  for (const g of report.claims?.gaps ?? []) {
+    if (g.path === path && g.line) {
+      notes.push({
+        source: "Unfinished work",
+        title: g.title,
+        detail: g.detail,
+        severity: g.severity,
+        line: g.line,
+      });
     }
   }
   for (const key of VERIFICATION_CHECKS) {

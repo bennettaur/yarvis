@@ -265,6 +265,10 @@ export interface AzureBranchPr {
   number: number;
   url: string;
   draft: boolean;
+  /** The branch the PR merges from. */
+  headBranch: string;
+  /** When the PR was completed or abandoned; null while it is active. */
+  closedAt: string | null;
   /** Normalized to the poller's stored PR-state vocabulary. */
   state: "open" | "closed" | "merged";
   /** The source branch's commit the PR last merged from; null when Azure leaves it out. */
@@ -411,30 +415,39 @@ export class AzureDevOpsClient {
   }
 
   /**
-   * The most recent PR whose source branch is `branch` in the given
-   * project/repo, or null. Used by the workspace poller to auto-detect a
-   * worktree branch's PR. `status=all` mirrors the GitHub client so a
-   * merged/abandoned PR still resolves; Azure returns newest first, so `$top=1`
-   * picks the latest.
+   * Every PR from `branch` in the given project/repo, newest first, up to
+   * `top`. Used by the workspace poller to find a worktree branch's PRs.
+   * `status=all` mirrors the GitHub client so a merged/abandoned PR still
+   * resolves.
    */
-  async findPrByBranch(
+  async findPrsByBranch(
     project: string,
     repo: string,
     branch: string,
-  ): Promise<AzureBranchPr | null> {
+    top = 20,
+  ): Promise<AzureBranchPr[]> {
     const base = `${this.orgUrl}/${encodeURIComponent(project)}/_apis/git/repositories/${encodeURIComponent(
       repo,
     )}/pullrequests`;
     const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
     const data = await this.get<AzureList<AzurePullRequest>>(
-      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=1`,
+      `${base}?searchCriteria.sourceRefName=${sourceRef}&searchCriteria.status=all&$top=${top}`,
     );
-    const pr = data.value?.[0];
-    if (!pr) return null;
+    return (data.value ?? []).map((pr) => this.toBranchPr(pr));
+  }
+
+  /** One PR by id, in the shape {@link findPrsByBranch} answers with. */
+  async branchPrById(ref: AzureRef): Promise<AzureBranchPr> {
+    return this.toBranchPr(await this.prRaw(ref));
+  }
+
+  private toBranchPr(pr: AzurePullRequest): AzureBranchPr {
     return {
       number: pr.pullRequestId,
       url: this.prWebUrl(pr),
       draft: Boolean(pr.isDraft),
+      headBranch: (pr.sourceRefName ?? "").replace(/^refs\/heads\//, ""),
+      closedAt: pr.closedDate ?? null,
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
       headSha: pr.lastMergeSourceCommit?.commitId ?? null,
       mergeable: mapMergeStatus(pr.mergeStatus).enum,
@@ -658,6 +671,22 @@ export class AzureDevOpsClient {
       .filter(isCiPolicy)
       .map(mapPolicyEvaluation)
       .filter((c): c is CheckItem => c !== null);
+  }
+
+  /** The ids of the work items linked to a PR. */
+  async prWorkItemIds(ref: AzureRef): Promise<number[]> {
+    const data = await this.get<AzureList<{ id?: string | number }>>(
+      `${this.repoBase(ref)}/pullRequests/${ref.prId}/workitems`,
+    );
+    return (data.value ?? [])
+      .map((w) => Number(w.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+  }
+
+  /** {@link prCiChecks} for a PR known only by its ref. */
+  async prCiChecksFor(ref: AzureRef): Promise<CheckItem[]> {
+    const pr = await this.prRaw(ref);
+    return this.prCiChecks(ref.project, pr.repository?.project?.id ?? "", ref.prId);
   }
 
   /** `prUrl` is the PR's web page, which each thread links into. */

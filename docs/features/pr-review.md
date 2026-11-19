@@ -21,8 +21,11 @@ A PR's header here has **Open in review workspace** to move it there.
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. The same section sets the
-   verification report's Claude model (Sonnet by default) and the most one
-   report may spend ($2 by default).
+   Claude model and effort for each of the verification report's checks, and
+   the most one report may spend ($2 by default). Each check starts on a model
+   matched to its job: Opus at high effort for risk and malicious intent,
+   which feed the merge gate; Haiku at low effort for comment quality and
+   observability; Sonnet at medium effort for the rest.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 
@@ -190,10 +193,32 @@ the background, and the attention bell tells you when they're done.
 - **Verification report**: the report needs a local checkout, so the assistant
   uses the [review workspace](review-workspaces.md) already holding the PR,
   or creates one named after it. It waits for the clone, then starts the
-  report with the default sections unless you name others. The setup script
-  never runs: that still needs your answer in the review workspace. If a
-  report for the PR's current commit already exists, it says so instead of
-  running another, unless you ask for a fresh one.
+  report's checks, the defaults unless you name others, each as its own run.
+  The setup script never runs: that still needs your answer in the review
+  workspace. A check that already has a result for the PR's current commit,
+  or is already running, isn't started again unless you ask for a fresh one.
+  The bell rings once every check it started has finished. Name a model or
+  effort ("verify #612 on Haiku") and every check it starts runs on that
+  instead of its own setting. The cost it quotes is for the model you named;
+  effort isn't priced.
+
+- **Several PRs, or a stack**: ask the assistant to verify a list of PRs
+  ("verify #610, #611 and #612") or a whole stack ("verify the stack #612 is
+  in"; GitHub only), up to ten at a time. It queues them and verifies one PR
+  after another, starting the next only when the last one's checks have
+  ended, so a dozen agent runs per PR don't all start at once. You can name a
+  preset: **quick** (summary, change map and risk), **security** (claims,
+  risk, malicious intent and tests), **standard** (the default: every check
+  but the flow diagram) or **full** (everything), and a model or effort that
+  every check in the queue runs on. The bell rings once when the
+  queue finishes, naming each PR and how it went, and you can ask the
+  assistant how the queue is going, or to stop it, in the meantime. One queue
+  runs at a time, and the assistant asks you to approve each one, since it
+  spends money on every PR in it. A PR that would need your
+  go-ahead (below) is skipped and named at the end, since agreeing to a queue
+  isn't agreeing to any one PR's cost; ask for that PR on its own to start
+  it. The queue lives in the running app, so restarting it drops the rest of
+  the queue.
 
 The assistant asks before it starts a report in four cases: the PR is large,
 its estimate is over your budget, its size couldn't be worked out, or its repo
@@ -216,7 +241,9 @@ While it builds a guide, the agent writes down how the code fits together:
 which handler calls which function, which function writes which table. That
 record is kept with the guide and drawn as a **Flow diagram** section above
 **Files**, and below the current step in a review workspace's guided review
-tab.
+tab. A review workspace's verification checklist can draw a different one, of
+the whole flow, in its own tab (see
+[Flow diagram](review-workspaces.md#flow-diagram)).
 
 1. Generate a guided review, as above. The section appears once the guide is
    ready. It costs nothing extra: the diagram comes from the same agent run.
@@ -307,9 +334,11 @@ Some rules that follow from how it works:
   the screen. The workspace shows its log while it runs.
 - Pressing **Start workspace** twice reuses the first workspace instead of
   creating a second worktree on the branch.
-- Once the workspace is created, the button changes to a link back to it. For
-  a workspace created some other way, the link appears after the next PR poll
-  (within a minute).
+- Once the workspace is created, the button changes to a link back to it,
+  because the workspace is linked to the PR as it is created. For a workspace
+  created some other way, the link appears after the next PR poll (within a
+  minute), or as soon as you link the PR there yourself. See
+  [Linking a pull request](workspaces.md#linking-a-pull-request).
 
 ### Resolve merge conflicts
 

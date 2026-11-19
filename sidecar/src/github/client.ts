@@ -6,7 +6,9 @@
 import type { Config } from "../config.ts";
 import type { IssueDetail, IssueLabel, IssueRepoMeta, IssueSummary } from "../issues/types.ts";
 import type {
+  CheckAnnotation,
   CheckItem,
+  CheckRunOutput,
   ChecksSummary,
   CommitsSince,
   MergeMethod,
@@ -22,6 +24,7 @@ import type {
   Reviewer,
   ReviewerState,
   ReviewThread,
+  ScanAlert,
   StackEntry,
   ViewerReview,
 } from "../pr/types.ts";
@@ -121,6 +124,7 @@ export function toPrSummary(item: any): PrSummary {
     state: item.state,
     createdAt: item.created_at,
     updatedAt: item.updated_at,
+    ...(item.closed_at !== undefined ? { closedAt: item.closed_at } : {}),
   };
 }
 
@@ -286,6 +290,7 @@ function toCheckItem(node: any): CheckItem {
       status: node.status ?? "COMPLETED",
       conclusion: node.conclusion ?? null,
       url: node.detailsUrl ?? null,
+      ...(typeof node.databaseId === "number" ? { checkRunId: node.databaseId } : {}),
     };
   }
   // StatusContext (legacy commit status): map its state onto the same shape.
@@ -437,6 +442,7 @@ export function toPrDetail(pr: any, repo?: any, viewerLogin?: string): PrDetail 
     conversation: (pr.comments?.nodes ?? []).filter(Boolean).map((c: any) => ({
       id: c.id ?? "",
       author: c.author?.login ?? "ghost",
+      ...(c.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: c.body ?? "",
       createdAt: c.createdAt ?? "",
       url: c.url ?? undefined,
@@ -480,6 +486,7 @@ export function toReviewThread(thread: any): ReviewThread {
       id: comment.id ?? "",
       author: comment.author?.login ?? "",
       trusted: isRepoMember(comment.authorAssociation),
+      ...(comment.author?.__typename === "Bot" ? { isBot: true } : {}),
       body: comment.body ?? "",
       createdAt: comment.createdAt ?? "",
       ...(comment.url ? { url: comment.url } : {}),
@@ -864,7 +871,16 @@ const MAX_REVIEW_THREAD_PAGES = 10;
 const REVIEW_THREAD_FIELDS = `
   id isResolved isOutdated path line startLine diffSide startDiffSide
   viewerCanReply viewerCanResolve viewerCanUnresolve
-  comments(first:100){ totalCount nodes{ id author{login} authorAssociation body createdAt url } }`;
+  comments(first:100){ totalCount nodes{ id author{__typename login} authorAssociation body createdAt url } }`;
+
+const PR_CLOSING_ISSUES_QUERY = `
+query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      closingIssuesReferences(first:10){ nodes{ number repository{ nameWithOwner } } }
+    }
+  }
+}`;
 
 const REVIEW_THREADS_PAGE_QUERY = `
 query($owner:String!,$repo:String!,$number:Int!,$after:String!){
@@ -918,12 +934,12 @@ query($owner:String!,$repo:String!,$number:Int!){
       }
       comments(last:${CONVERSATION_PAGE_SIZE}){
         totalCount
-        nodes{ id author{login} body createdAt url }
+        nodes{ id author{__typename login} body createdAt url }
       }
       commits(last:1){
         nodes{ commit{ statusCheckRollup{ contexts(first:100){ nodes{
           __typename
-          ... on CheckRun { name status conclusion detailsUrl }
+          ... on CheckRun { databaseId name status conclusion detailsUrl }
           ... on StatusContext { context state targetUrl }
         }}}}}
       }
@@ -1014,7 +1030,7 @@ const PR_BY_BRANCH_QUERY = `
 query($owner:String!,$repo:String!,$branch:String!){
   repository(owner:$owner,name:$repo){
     pullRequests(headRefName:$branch, first:20, orderBy:{field:CREATED_AT,direction:DESC}){
-      nodes{ ${PR_SUMMARY_FIELDS} headRepositoryOwner{ login } }
+      nodes{ ${PR_SUMMARY_FIELDS} closedAt headRepositoryOwner{ login } }
     }
   }
 }`;
@@ -1046,7 +1062,7 @@ query($owner:String!,$repo:String!,$number:Int!){
 }`;
 
 /** What the workspace poller reads about each PR, in one query: summary, status and reviews. */
-const PR_POLL_FIELDS = `number url isDraft ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
+const PR_POLL_FIELDS = `number url isDraft headRefName closedAt ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
 
 /**
  * Same-named branches a batched branch read looks through for the one in the
@@ -1165,6 +1181,7 @@ function restLikePr(node: any): any {
     state: node.state === "OPEN" ? "open" : "closed",
     created_at: node.createdAt,
     updated_at: node.updatedAt,
+    closed_at: node.closedAt,
   };
 }
 
@@ -1233,6 +1250,10 @@ export interface PolledPr {
   number: number;
   url: string;
   draft: boolean;
+  /** The branch the PR merges from. */
+  headBranch: string;
+  /** When the PR was closed or merged; null while it is open. */
+  closedAt: string | null;
   status: PrStatus;
   /** Null when nothing waits on review: a draft, or a PR that is no longer open. */
   reviewDecision: ReviewDecision | null;
@@ -1246,6 +1267,8 @@ function toPolledPr(pr: any): PolledPr {
     number: pr.number,
     url: pr.url,
     draft: Boolean(pr.isDraft),
+    headBranch: pr.headRefName ?? "",
+    closedAt: pr.closedAt ?? null,
     status,
     reviewDecision: awaitingReview ? summarizeReviewDecision(restLikeReviews(pr)) : null,
   };
@@ -1273,8 +1296,12 @@ const GITHUB_DEFAULT_ENDPOINTS: GitHubEndpoints = {
 };
 
 /** A client for the GitHub the config points at: github.com unless overridden. */
-export function createGitHubClient(config: Pick<Config, "endpoints">, token: string): GitHubClient {
-  return new GitHubClient(token, fetch, {
+export function createGitHubClient(
+  config: Pick<Config, "endpoints">,
+  token: string,
+  fetchImpl: FetchFn = fetch,
+): GitHubClient {
+  return new GitHubClient(token, fetchImpl, {
     api: config.endpoints?.githubApi ?? GITHUB_DEFAULT_ENDPOINTS.api,
     graphql: config.endpoints?.githubGraphql ?? GITHUB_DEFAULT_ENDPOINTS.graphql,
   });
@@ -1597,38 +1624,44 @@ export class GitHubClient {
    * tight secondary rate limit the background poller would otherwise hit).
    */
   async findPrByBranch(owner: string, repo: string, branch: string): Promise<PrSummary | null> {
+    return (await this.findPrsByBranch(owner, repo, branch))[0] ?? null;
+  }
+
+  /**
+   * Every PR whose head branch is `branch` in the repo itself (not a fork's
+   * same-named branch), newest first, up to 20.
+   */
+  async findPrsByBranch(owner: string, repo: string, branch: string): Promise<PrSummary[]> {
     return this.graphqlFirst(
       async () => {
         const data = await this.graphql<{ repository?: { pullRequests?: { nodes?: any[] } } }>(
           PR_BY_BRANCH_QUERY,
           { owner, repo, branch },
         );
-        const pr = (data.repository?.pullRequests?.nodes ?? []).find(
-          (node) => node?.headRepositoryOwner?.login?.toLowerCase() === owner.toLowerCase(),
-        );
-        return pr ? toPrSummary(restLikePr(pr)) : null;
+        return (data.repository?.pullRequests?.nodes ?? [])
+          .filter((node) => node?.headRepositoryOwner?.login?.toLowerCase() === owner.toLowerCase())
+          .map((node) => toPrSummary(restLikePr(node)));
       },
       async () => {
         const head = encodeURIComponent(`${owner}:${branch}`);
         const items = await this.api<any[]>(
-          `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=1`,
+          `/repos/${owner}/${repo}/pulls?head=${head}&state=all&sort=created&direction=desc&per_page=20`,
         );
-        const item = items[0];
-        return item ? toPrSummary(item) : null;
+        return (items ?? []).map(toPrSummary);
       },
     );
   }
 
   /**
-   * The PR on each branch with its status and review verdict, for the
-   * workspace poller: one request for up to {@link POLL_BATCH_SIZE} branches,
-   * where the single-PR reads take three per branch. Null where a branch has
-   * no PR.
+   * The PRs on each branch with their status and review verdicts, newest
+   * first, for the workspace poller: one request for up to
+   * {@link POLL_BATCH_SIZE} branches, where the single-PR reads take three per
+   * PR. Empty where a branch has no PR.
    * GraphQL only, with no REST fallback: a background read that runs out of
    * GraphQL budget waits for it rather than spending the REST budget the PR
    * pages need.
    */
-  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr | null>[]> {
+  async branchPrStatuses(refs: BranchRef[]): Promise<BatchResult<PolledPr[]>[]> {
     return this.pollBatch(
       refs,
       buildBranchPollQuery,
@@ -1637,13 +1670,15 @@ export class GitHubClient {
         [`r${i}`]: ref.repo,
         [`b${i}`]: ref.branch,
       }),
-      (ref, repo) => {
-        const pr = (repo?.pullRequests?.nodes ?? []).find(
-          (node: any) =>
-            node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
-        );
-        return { ok: true, value: pr ? toPolledPr(pr) : null };
-      },
+      (ref, repo) => ({
+        ok: true,
+        value: (repo?.pullRequests?.nodes ?? [])
+          .filter(
+            (node: any) =>
+              node?.headRepositoryOwner?.login?.toLowerCase() === ref.owner.toLowerCase(),
+          )
+          .map(toPolledPr),
+      }),
     );
   }
 
@@ -1991,6 +2026,90 @@ export class GitHubClient {
     } catch (e) {
       console.error("[github] could not compare stack layers:", e);
     }
+  }
+
+  /** The issues a PR says it closes ("Fixes #12"), as GitHub links them. */
+  async prClosingIssues(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ owner: string; repo: string; number: number }[]> {
+    const data = await this.graphql<{ repository?: { pullRequest?: any } }>(
+      PR_CLOSING_ISSUES_QUERY,
+      {
+        owner,
+        repo,
+        number,
+      },
+    );
+    const nodes: any[] = data.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
+    return nodes.flatMap((node) => {
+      const [issueOwner, issueRepo] = String(node?.repository?.nameWithOwner ?? "").split("/");
+      return issueOwner && issueRepo && typeof node.number === "number"
+        ? [{ owner: issueOwner, repo: issueRepo, number: node.number }]
+        : [];
+    });
+  }
+
+  /** The check runs on a commit, with the output each posted. */
+  async commitCheckRuns(owner: string, repo: string, sha: string): Promise<CheckRunOutput[]> {
+    const data = await this.api<{ check_runs?: any[] }>(
+      `/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/check-runs?per_page=100`,
+    );
+    return (data.check_runs ?? []).map((run) => ({
+      id: Number(run.id),
+      name: run.name ?? "check",
+      title: run.output?.title ?? null,
+      summary: run.output?.summary ?? null,
+      annotationsCount: Number(run.output?.annotations_count ?? 0),
+    }));
+  }
+
+  /**
+   * A check run's line annotations: one page of 50, enough to point at what
+   * broke. The rest of a run with more is counted as not shown.
+   */
+  async checkRunAnnotations(
+    owner: string,
+    repo: string,
+    checkRunId: number,
+  ): Promise<CheckAnnotation[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=50`,
+    );
+    return data.map((a) => ({
+      path: a.path ?? "",
+      line: typeof a.start_line === "number" ? a.start_line : null,
+      level:
+        a.annotation_level === "failure" || a.annotation_level === "warning"
+          ? a.annotation_level
+          : "notice",
+      title: a.title ?? null,
+      message: a.message ?? "",
+    }));
+  }
+
+  /**
+   * Open code-scanning alerts found on the PR. Scanners analyse a PR at its
+   * merge ref, so that is the ref asked about.
+   */
+  async prCodeScanningAlerts(owner: string, repo: string, number: number): Promise<ScanAlert[]> {
+    const data = await this.api<any[]>(
+      `/repos/${owner}/${repo}/code-scanning/alerts?ref=${encodeURIComponent(`refs/pull/${number}/merge`)}&state=open&per_page=100`,
+    );
+    return data.map((a) => {
+      const location = a.most_recent_instance?.location;
+      return {
+        tool: a.tool?.name ?? "code scanning",
+        rule: a.rule?.id ?? "",
+        severity: a.rule?.security_severity_level ?? a.rule?.severity ?? "",
+        description: a.rule?.description ?? "",
+        path: location?.path ?? null,
+        line: typeof location?.start_line === "number" ? location.start_line : null,
+        message: a.most_recent_instance?.message?.text ?? "",
+        url: a.html_url ?? null,
+      };
+    });
   }
 
   async prFiles(owner: string, repo: string, number: number): Promise<PrFile[]> {
@@ -2534,6 +2653,7 @@ export class GitHubClient {
       files.push(
         ...batch.map((f) => ({
           filename: f.filename,
+          ...(typeof f.previous_filename === "string" && { previousFilename: f.previous_filename }),
           status: f.status,
           additions: f.additions ?? 0,
           deletions: f.deletions ?? 0,

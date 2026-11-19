@@ -237,9 +237,9 @@ describe("chat service", () => {
   });
 });
 
-describe("migration 0054", () => {
+describe("migration 0057", () => {
   const backfill = readFileSync(
-    new URL("../../drizzle/0054_chat_titles_from_first_prompt.sql", import.meta.url),
+    new URL("../../drizzle/0057_chat_titles_from_first_prompt.sql", import.meta.url),
     "utf8",
   );
 

@@ -56,6 +56,7 @@ export interface AzurePullRequest {
   status?: string;
   isDraft?: boolean;
   creationDate?: string;
+  closedDate?: string;
   createdBy?: AzureUser;
   repository?: AzureRepository;
   sourceRefName?: string;

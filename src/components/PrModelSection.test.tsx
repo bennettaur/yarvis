@@ -14,7 +14,15 @@ const PROVIDERS = [
 ];
 
 let config: Record<string, unknown> = { guide: null, ask: null };
-let verification: Record<string, unknown> = { model: "sonnet", maxBudgetUsd: 2 };
+const VERIFICATION_DEFAULTS = {
+  maxBudgetUsd: 2,
+  sections: {},
+  sectionDefaults: [
+    { section: "risk", label: "Risk", model: "opus", effort: "high" },
+    { section: "comments", label: "Comment quality", model: "haiku", effort: "low" },
+  ],
+};
+let verification: Record<string, unknown> = { ...VERIFICATION_DEFAULTS };
 const REREVIEW_DEFAULTS = { model: "sonnet", maxBudgetUsd: 1, autoStart: false };
 let rereview: Record<string, unknown> = { ...REREVIEW_DEFAULTS };
 /** Requests the section made, so a test can assert what it wrote. */
@@ -33,8 +41,14 @@ stubSidecarApi({
       });
     }
     if (url === "/api/pr-models/verification") {
-      if (method === "PATCH")
-        verification = { ...verification, ...JSON.parse(init.body as string) };
+      if (method === "PATCH") {
+        const patch = JSON.parse(init.body as string);
+        verification = {
+          ...verification,
+          ...patch,
+          sections: { ...(verification.sections as object), ...patch.sections },
+        };
+      }
       return new Response(JSON.stringify(verification), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -70,7 +84,7 @@ afterEach(() => {
   calls.length = 0;
   nextPatchStatus = null;
   config = { guide: null, ask: null };
-  verification = { model: "sonnet", maxBudgetUsd: 2 };
+  verification = { ...VERIFICATION_DEFAULTS };
   rereview = { ...REREVIEW_DEFAULTS };
 });
 
@@ -127,17 +141,28 @@ describe("PrModelSection", () => {
     expect((mounted.host.querySelectorAll("select")[0] as HTMLSelectElement).value).toBe("");
   });
 
-  it("saves the verification report's model and budget", async () => {
+  it("saves a verification check's model and effort, and the report's budget", async () => {
     const mounted = await mountForInteraction(createElement(PrModelSection));
     unmount = mounted.unmount;
     await settle();
     expect(mounted.host.textContent).toContain("Verification report");
+    // One model for the whole report is gone: each check has its own.
+    expect(mounted.host.querySelector('[aria-label="Verification report model"]')).toBeNull();
 
-    const model = mounted.host.querySelector(
-      '[aria-label="Verification report model"]',
-    ) as HTMLSelectElement;
-    expect(model.value).toBe("sonnet");
-    enter(model, "opus", "change");
+    const model = mounted.host.querySelector('[aria-label="Risk model"]') as HTMLSelectElement;
+    expect(model.value).toBe("");
+    expect(model.textContent).toContain("Default (Claude Opus)");
+    enter(model, "sonnet", "change");
+    await settle();
+    const effort = mounted.host.querySelector('[aria-label="Risk effort"]') as HTMLSelectElement;
+    enter(effort, "max", "change");
+    await settle();
+    // Back to the default model, keeping the effort.
+    enter(
+      mounted.host.querySelector('[aria-label="Risk model"]') as HTMLSelectElement,
+      "",
+      "change",
+    );
     await settle();
 
     const budget = mounted.host.querySelector(
@@ -151,7 +176,12 @@ describe("PrModelSection", () => {
     const saves = calls
       .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
       .map((c) => JSON.parse(c.body ?? "{}"));
-    expect(saves).toEqual([{ model: "opus" }, { maxBudgetUsd: 50 }]);
+    expect(saves).toEqual([
+      { sections: { risk: { model: "sonnet" } } },
+      { sections: { risk: { model: "sonnet", effort: "max" } } },
+      { sections: { risk: { effort: "max" } } },
+      { maxBudgetUsd: 50 },
+    ]);
   });
 
   it("saves the What's changed summary's own budget and auto-start", async () => {

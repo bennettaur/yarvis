@@ -6,7 +6,7 @@ import { loadInstanceConfig } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { agentRuns } from "../db/schema.ts";
 import type { ClaudePermissionMode } from "../jobs/agentJobs.ts";
-import { claudeProgram, validateWorkingDir } from "../lib/claudeCli.ts";
+import { type ClaudeEffort, claudeProgram, validateWorkingDir } from "../lib/claudeCli.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import { redactSecrets } from "../llm/errors.ts";
@@ -141,6 +141,8 @@ interface ClaudeRunBaseOptions<T> {
   /** Added after the fixed guardrail. */
   appendSystemPrompt?: string;
   model?: string;
+  /** Left out, the run gets Claude Code's default effort for the model. */
+  effort?: ClaudeEffort;
   /**
    * Claude Code stops the run once it has spent this much. Left out, nothing
    * caps the spend: `timeoutMs` bounds a runaway, and `maxTurns` the main
@@ -373,6 +375,7 @@ export function buildClaudeArgs<T, R>(
   }
   if (options.maxTurns !== undefined) args.push("--max-turns", String(options.maxTurns));
   if (options.model) args.push("--model", options.model);
+  if (options.effort) args.push("--effort", options.effort);
   if (options.outputSchema) args.push("--json-schema", jsonSchemaArg(options.outputSchema));
   if (options.tools) args.push("--tools", options.tools.join(","));
   if (options.restricted) args.push("--restricted", "--permission-prompts", "none");

@@ -10,20 +10,26 @@ import {
   type PrModelConfig,
   type PrModelFeature,
   type RereviewRunConfig,
+  type RunChoice,
   savePrModelConfig,
   saveRereviewRunConfig,
   saveVerificationRunConfig,
   VERIFICATION_BUDGET_MIN_USD,
+  VERIFICATION_EFFORTS,
+  VERIFICATION_MODEL_LABELS,
   VERIFICATION_MODELS,
+  type VerificationEffort,
   type VerificationModel,
   type VerificationRunConfig,
+  type VerificationRunConfigPatch,
 } from "../lib/pr/models";
+import type { ReportSection } from "../lib/reviewWorkspaces/verification";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
  * code. A feature left unset uses the default chat model. The verification report and
- * the "What's changed" summary run on Claude Code instead, so each takes a Claude Code
- * model and a budget.
+ * the "What's changed" summary run on Claude Code instead, so they take Claude Code
+ * models and a budget: the summary one model, the report a model and effort per check.
  */
 
 const FIELD =
@@ -34,16 +40,11 @@ const FEATURE_LABELS: Record<PrModelFeature, { label: string; hint: string }> = 
   ask: { label: "Line questions", hint: "Answers a question about the lines you selected." },
 };
 
-const VERIFICATION_MODEL_LABELS: Record<VerificationModel, string> = {
-  sonnet: "Claude Sonnet",
-  opus: "Claude Opus",
-  haiku: "Claude Haiku",
-};
-
 /**
- * A feature that runs on Claude Code: its model and budget, and whatever else
- * `children` adds. The budget is saved on blur, so a half-typed number isn't
- * sent, and one below the minimum is refused and put back.
+ * A feature that runs on Claude Code: its budget, its model when it has one,
+ * and whatever else `children` adds. The budget is saved on blur, so a
+ * half-typed number isn't sent, and one below the minimum is refused and put
+ * back.
  */
 function ClaudeRunRow({
   label,
@@ -55,8 +56,8 @@ function ClaudeRunRow({
 }: {
   label: string;
   hint: string;
-  value: VerificationRunConfig;
-  onSave: (patch: Partial<VerificationRunConfig>) => void;
+  value: { model?: VerificationModel; maxBudgetUsd: number };
+  onSave: (patch: { model?: VerificationModel; maxBudgetUsd?: number }) => void;
   onError: (message: string) => void;
   children?: ReactNode;
 }) {
@@ -83,18 +84,20 @@ function ClaudeRunRow({
         <p className="text-sm text-zinc-300">{label}</p>
         <p className="text-xs text-zinc-600">{hint}</p>
       </div>
-      <select
-        className={FIELD}
-        aria-label={`${label} model`}
-        value={value.model}
-        onChange={(e) => onSave({ model: e.target.value as VerificationModel })}
-      >
-        {VERIFICATION_MODELS.map((m) => (
-          <option key={m} value={m}>
-            {VERIFICATION_MODEL_LABELS[m]}
-          </option>
-        ))}
-      </select>
+      {value.model && (
+        <select
+          className={FIELD}
+          aria-label={`${label} model`}
+          value={value.model}
+          onChange={(e) => onSave({ model: e.target.value as VerificationModel })}
+        >
+          {VERIFICATION_MODELS.map((m) => (
+            <option key={m} value={m}>
+              {VERIFICATION_MODEL_LABELS[m]}
+            </option>
+          ))}
+        </select>
+      )}
       <label className="flex items-center gap-1 text-sm text-zinc-500">
         $
         <input
@@ -110,6 +113,75 @@ function ClaudeRunRow({
         />
       </label>
       {children && <div className="col-start-2 col-end-4">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * Each verification check's model and effort. "Default" leaves a check on what
+ * Yarvis picked for it; choosing the default value explicitly pins it there.
+ */
+function VerificationSectionRuns({
+  value,
+  onSave,
+}: {
+  value: VerificationRunConfig;
+  onSave: (patch: VerificationRunConfigPatch) => void;
+}) {
+  const save = (section: ReportSection, choice: RunChoice) =>
+    onSave({ sections: { [section]: choice } });
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-zinc-500">
+        Each check's Claude model and effort. A run started from the checklist or the assistant can
+        override them for that run.
+      </p>
+      <div className="grid grid-cols-[1fr_1fr_1fr] items-center gap-x-2 gap-y-1">
+        {value.sectionDefaults.map((check) => {
+          const saved = value.sections[check.section] ?? {};
+          return (
+            <div key={check.section} className="contents">
+              <span className="text-xs text-zinc-400">{check.label}</span>
+              <select
+                className={FIELD}
+                aria-label={`${check.label} model`}
+                value={saved.model ?? ""}
+                onChange={(e) =>
+                  save(check.section, {
+                    ...saved,
+                    model: (e.target.value || undefined) as VerificationModel | undefined,
+                  })
+                }
+              >
+                <option value="">Default ({VERIFICATION_MODEL_LABELS[check.model]})</option>
+                {VERIFICATION_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {VERIFICATION_MODEL_LABELS[m]}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={FIELD}
+                aria-label={`${check.label} effort`}
+                value={saved.effort ?? ""}
+                onChange={(e) =>
+                  save(check.section, {
+                    ...saved,
+                    effort: (e.target.value || undefined) as VerificationEffort | undefined,
+                  })
+                }
+              >
+                <option value="">Default ({check.effort} effort)</option>
+                {VERIFICATION_EFFORTS.map((effort) => (
+                  <option key={effort} value={effort}>
+                    {effort} effort
+                  </option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -159,12 +231,25 @@ export default function PrModelSection() {
     [config],
   );
 
-  const saveVerification = useCallback(async (patch: Partial<VerificationRunConfig>) => {
+  const saveVerification = useCallback(async (patch: VerificationRunConfigPatch) => {
+    // Shown at once, so a second change made before this save returns builds on it.
+    setVerification(
+      (prev) =>
+        prev && {
+          ...prev,
+          ...(patch.maxBudgetUsd !== undefined && { maxBudgetUsd: patch.maxBudgetUsd }),
+          sections: { ...prev.sections, ...patch.sections },
+        },
+    );
     try {
       setVerification(await saveVerificationRunConfig(patch));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // Put back what is saved, so the failed change doesn't look saved.
+      void getVerificationRunConfig()
+        .then(setVerification)
+        .catch(() => undefined);
     }
   }, []);
 
@@ -240,11 +325,16 @@ export default function PrModelSection() {
         {verification && (
           <ClaudeRunRow
             label="Verification report"
-            hint="Runs on Claude Code. A report estimated over the budget asks before it starts."
-            value={verification}
-            onSave={(patch) => void saveVerification(patch)}
+            hint="Runs on Claude Code. The assistant asks before starting a report estimated over the budget."
+            value={{ maxBudgetUsd: verification.maxBudgetUsd }}
+            onSave={({ maxBudgetUsd }) => void saveVerification({ maxBudgetUsd })}
             onError={setError}
-          />
+          >
+            <VerificationSectionRuns
+              value={verification}
+              onSave={(patch) => void saveVerification(patch)}
+            />
+          </ClaudeRunRow>
         )}
         {rereview && (
           <ClaudeRunRow

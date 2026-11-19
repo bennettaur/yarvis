@@ -133,9 +133,10 @@ The assistant can act on your workspaces in bulk:
   [verification report](review-workspaces.md#verification-report) in the
   background, and the attention bell tells you when it's ready. See
   [Start a review or report from the assistant](pr-review.md#start-a-review-or-report-from-the-assistant).
-- **"What's the state of the billing-api workspace?"** It reports the PR,
-  checks, mergeability and review verdict from the last poll (refreshed every
-  minute).
+- **"What's the state of the billing-api workspace?"** It reports each repo's
+  main PR, and any others the repo has (stack layers, earlier PRs on the
+  branch, ones linked by number), with checks, mergeability and review verdict
+  from the last poll (refreshed every minute).
 - **"Who's reviewing the billing-api PR, and which check failed?"** It asks
   GitHub or Azure DevOps for the PR's reviewers (people and teams) and where
   each stands, and for each check with its result and link.
@@ -150,7 +151,9 @@ The assistant can act on your workspaces in bulk:
   tier, so check the details.
 - **"Archive the billing-api workspace."** It stops the session, removes the
   worktrees, and completes any linked task. If there are uncommitted changes,
-  it asks before throwing them away.
+  it asks before throwing them away. Like the archive dialog, it also closes
+  the workspace's linked issues that aren't done yet. Say which ones to leave
+  open ("archive it but keep WID-12 open") and it skips those.
 
 ### Scheduled tasks
 
@@ -409,8 +412,8 @@ can read the end of that workspace's latest Claude Code transcript.
 - your tasks, projects, todos and memories,
 - the activity log, as events happen,
 - when you last had each workspace open,
-- workspace PR state, checks, mergeability and review verdict (polled every
-  minute),
+- each workspace PR's state, checks, mergeability and review verdict (polled
+  every minute),
 - which workspace sessions are waiting on you, from the attention bell,
 - live GitHub searches: your PRs and review requests,
 - anything a Claude Code session saved to Yarvis memory.

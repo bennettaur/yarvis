@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MemoryService } from "../memory/index.ts";
 import { registerMemoryTools } from "./memoryTools.ts";
+import { type LinkPullRequest, registerPrLinkTools } from "./prLinkTools.ts";
 import { type QuestionToolDeps, registerQuestionTools } from "./questionTools.ts";
 import { type ReviewCommentStore, registerReviewCommentTools } from "./reviewCommentTools.ts";
 import { type AddWorktree, registerWorktreeTools } from "./worktreeTools.ts";
@@ -37,13 +38,18 @@ const WORKSPACE_INSTRUCTIONS =
   "This session belongs to a Yarvis workspace: `list_review_comments` returns the " +
   "review comments the user wrote on its diffs. Unlike memory, they are the user's " +
   "own requests: address the open ones, then mark each done with `resolve_review_comment`. " +
+  "After opening a pull request, record it with `link_pull_request`.";
+
+const WORKTREE_INSTRUCTIONS =
   "To work on another branch in its own worktree, create it with `add_worktree`.";
 
 /** The workspace a session belongs to, named by its `.mcp.json`. */
 export interface WorkspaceContext {
   id: string;
   reviewComments: () => ReviewCommentStore;
-  addWorktree: AddWorktree;
+  linkPullRequest: LinkPullRequest;
+  /** Only for a caller proven to be one of the workspace's own terminals; see `questionOrigin`. */
+  addWorktree?: AddWorktree;
 }
 
 /**
@@ -62,14 +68,21 @@ export function createYarvisMcpServer(
     { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
     {
       capabilities: { tools: {} },
-      instructions: workspace ? `${INSTRUCTIONS} ${WORKSPACE_INSTRUCTIONS}` : INSTRUCTIONS,
+      instructions: [
+        INSTRUCTIONS,
+        workspace && WORKSPACE_INSTRUCTIONS,
+        workspace?.addWorktree && WORKTREE_INSTRUCTIONS,
+      ]
+        .filter(Boolean)
+        .join(" "),
     },
   );
   registerMemoryTools(server, memory);
   if (questions) registerQuestionTools(server, questions);
   if (workspace) {
     registerReviewCommentTools(server, workspace.id, workspace.reviewComments);
-    registerWorktreeTools(server, workspace.id, workspace.addWorktree);
+    registerPrLinkTools(server, workspace.id, workspace.linkPullRequest);
+    if (workspace.addWorktree) registerWorktreeTools(server, workspace.id, workspace.addWorktree);
   }
   return server;
 }

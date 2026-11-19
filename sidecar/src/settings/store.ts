@@ -105,6 +105,26 @@ export function withSection<T, R>(
   return task;
 }
 
+/**
+ * Whether the settings file can be read as a document. A missing file counts,
+ * since that is just nothing saved yet; one that exists but can't be read or
+ * parsed doesn't, so a caller can tell it apart from settings that are empty.
+ */
+export async function settingsAreReadable(): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(settingsPath(), "utf8");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 /** Point-in-time read of one section, outside the write queue. */
 export async function readSection<T>(key: string): Promise<T | undefined> {
   const doc = await readDocument(settingsPath());

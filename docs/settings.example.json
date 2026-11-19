@@ -34,8 +34,11 @@
     "ask": null
   },
   "prVerification": {
-    "model": "sonnet",
-    "maxBudgetUsd": 2
+    "maxBudgetUsd": 2,
+    "sections": {
+      "risk": { "model": "sonnet" },
+      "comments": { "effort": "medium" }
+    }
   },
   "wipConfig": {
     "sources": {

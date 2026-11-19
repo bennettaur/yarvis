@@ -678,6 +678,41 @@ describe("ChatPanel", () => {
     expect(document.activeElement).toBe(composerOf(mounted.host));
   });
 
+  // The Chat tab stays mounted while Settings is open, so this is the only
+  // way a provider added there reaches the picker.
+  it("re-reads the providers when it comes back into view, keeping the pick", async () => {
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+    await settle();
+    const picker = (title: string) =>
+      Array.from(mounted.host.querySelectorAll("select")).find((s) => s.title === title);
+    const provider = picker(PROVIDER_HINT);
+    if (!provider) throw new Error("no provider picker");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => picker(MODEL_HINT)?.value === "gpt-6", "the OpenAI model");
+
+    setHostActive(false);
+    await settle();
+    providers.push({
+      id: "custom:litellm",
+      label: "LiteLLM",
+      models: [{ id: "proxy-model", capabilities: ["chat"] }],
+      available: true,
+    });
+    try {
+      setHostActive(true);
+      await waitFor(
+        () => textOf(mounted.host.innerHTML).includes("LiteLLM"),
+        "the added provider in the picker",
+      );
+      expect(picker(PROVIDER_HINT)?.value).toBe("openai");
+      expect(picker(MODEL_HINT)?.value).toBe("gpt-6");
+    } finally {
+      providers.pop();
+    }
+  });
+
   // An Omni widget sits beside the layout builder's own composer.
   it("leaves focus alone without focusOnShow", async () => {
     const mounted = await mountForInteraction(createElement(ChatPanel));

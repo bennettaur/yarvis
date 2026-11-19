@@ -136,6 +136,7 @@ describe("the arguments a run is started with", () => {
   it("leaves out the optional flags when they aren't set", () => {
     for (const flag of [
       "--model",
+      "--effort",
       "--max-turns",
       "--json-schema",
       "--disallowedTools",
@@ -154,6 +155,7 @@ describe("the arguments a run is started with", () => {
     const full = buildClaudeArgs(
       runOptions(dir, {
         model: "haiku",
+        effort: "low",
         maxTurns: 5,
         outputSchema: countSchema,
         disallowedTools: ["Edit"],
@@ -173,6 +175,7 @@ describe("the arguments a run is started with", () => {
       "/ctx/two",
     ]);
     expect(value("--model")).toBe("haiku");
+    expect(value("--effort")).toBe("low");
     expect(value("--max-turns")).toBe("5");
     expect(value("--disallowedTools")).toBe("Edit");
     expect(value("--plugin-dir")).toBe("/plugins/yarvis-review");

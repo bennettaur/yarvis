@@ -237,10 +237,27 @@ describe("agentSessionHookCommand", () => {
     expect(req!.url.pathname).toBe("/ingest/agent-session");
     expect(req!.url.searchParams.get("workspaceId")).toBe(WORKSPACE_ID);
     expect(req!.url.searchParams.get("pid")).toBe(String(shellParent));
+    // Empty here: the test's terminal carries no YARVIS_AGENT_HARNESS.
+    expect(req!.url.searchParams.get("harness")).toBe("");
     expect(req!.headers.get("authorization")).toBe("Bearer tok");
     expect(req!.headers.get("x-yarvis-session-key")).toBe(`ws-claude:${WORKSPACE_ID}`);
     expect(req!.headers.get("x-yarvis-session-token")).toBe("session-tok");
     expect(req!.body).toEqual(hookInput);
+  });
+
+  it("forwards the harness the PTY was launched with, so a resume can reuse it", async () => {
+    const { requests } = await runRegistrationHook(
+      {
+        YARVIS_SESSION_KEY: `ws-claude:${WORKSPACE_ID}`,
+        YARVIS_AGENT_HARNESS: "pi",
+        YARVIS_AGENT_HARNESS_TOKEN: "harness-tok",
+      },
+      hookInput,
+    );
+    expect(requests[0]!.url.searchParams.get("harness")).toBe("pi");
+    // Without the core's token the sidecar refuses the harness, and the
+    // session would lose its resume.
+    expect(requests[0]!.headers.get("x-yarvis-harness-token")).toBe("harness-tok");
   });
 
   it("registers nothing outside a Yarvis PTY", async () => {

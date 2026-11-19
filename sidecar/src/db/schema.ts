@@ -649,6 +649,10 @@ export const workspaces = pgTable(
     // back. Cleared once the agent session is live. The column name is narrower
     // than what it holds; widening it would be a migration for no behaviour.
     pendingBrief: text("pending_issue_prompt"),
+    // The agent harness that kick-off should run, kept beside the brief so a
+    // launch retried after a failure or a restart runs the harness that was
+    // asked for rather than the default. Null means the default.
+    pendingHarness: text("pending_harness"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -680,6 +684,11 @@ export const workspaceRepos = pgTable(
     setupLog: text("setup_log"), // capped tail of the last setup run
     setupExitCode: integer("setup_exit_code"),
     error: text("error"),
+    // When the poller last searched this repo's branches for PRs, and why that
+    // search failed if it did. Each PR found keeps its own status in
+    // `workspace_repo_pr`; this is what tells "no PR yet" from "not looked".
+    prsPolledAt: timestamp("prs_polled_at", { withTimezone: true }),
+    prsPollError: text("prs_poll_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("workspace_repos_ws_repo_idx").on(t.workspaceId, t.repoId)],
@@ -729,6 +738,10 @@ export const workspaceAgentSessions = pgTable(
     sessionKey: text("session_key").notNull(),
     claudeSessionId: text("claude_session_id").notNull(),
     pid: integer("pid").notNull(),
+    // The agent harness the PTY was launched with (`YARVIS_AGENT_HARNESS`), so
+    // a resume relaunches the same one. Null for a session registered before
+    // harnesses existed, which was the built-in agent and resumes as it.
+    harness: text("harness"),
     // Claude's SessionStart `source` (startup, resume, clear, compact) the last
     // time this session started, and SessionEnd's `reason` once it has ended, or
     // `process-gone` when the sidecar found the pid dead without a SessionEnd.
@@ -746,7 +759,11 @@ export const workspaceAgentSessions = pgTable(
   ],
 );
 
-/** Background-poller cache of the PR + checks for each workspace repo (1:1). */
+/**
+ * Every PR linked to a workspace repo, with its status as last polled. A repo
+ * can have several: one per layer of a stack, a PR reopened on the same
+ * branch, or one the user or the workspace's agent linked by number.
+ */
 export const workspaceRepoPr = pgTable(
   "workspace_repo_pr",
   {
@@ -754,8 +771,14 @@ export const workspaceRepoPr = pgTable(
     workspaceRepoId: uuid("workspace_repo_id")
       .notNull()
       .references(() => workspaceRepos.id, { onDelete: "cascade" }),
-    prNumber: integer("pr_number"), // null = no PR found yet
+    prNumber: integer("pr_number").notNull(),
     prUrl: text("pr_url"),
+    // The branch the PR merges from. Null until the PR is first read. Archive
+    // trusts a merged PR only for the branch it merged.
+    headBranch: text("head_branch"),
+    // Unlinked by the user: hidden, never refreshed, and never re-added by
+    // detection. Linking the PR again by number clears it.
+    dismissed: boolean("dismissed").notNull().default(false),
     prState: text("pr_state"), // open | closed | merged
     // The PR's head commit as last polled; for a merged PR, what it merged.
     // Archive deletes a merged branch only up to here, since a squash merge
@@ -776,7 +799,7 @@ export const workspaceRepoPr = pgTable(
     lastError: text("last_error"), // poll failed but the row persists
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("workspace_repo_pr_wr_idx").on(t.workspaceRepoId)],
+  (t) => [uniqueIndex("workspace_repo_pr_wr_number_idx").on(t.workspaceRepoId, t.prNumber)],
 );
 
 export const REVIEW_COMMENT_SOURCES = ["user", "verification"] as const;
@@ -833,8 +856,8 @@ export const issueLocalStatus = pgEnum("issue_local_status", ["todo", "in_progre
 /**
  * Links a tracked issue to the workspace opened to work on it, and records its
  * local lifecycle status. Created when "Start work" opens a workspace for an
- * issue. One row per issue (unique on provider/sourceKey/externalId); archiving
- * the linked workspace marks the issue `done`.
+ * issue. One row per issue (unique on provider/sourceKey/externalId); closing
+ * the issue when archiving the linked workspace marks it `done`.
  */
 export const issueLinks = pgTable(
   "issue_links",
@@ -2145,6 +2168,8 @@ export const reviewWorkspaces = pgTable("review_workspaces", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
+  /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
+  askClaudeRepoConfig: boolean("ask_claude_repo_config").notNull().default(false),
 });
 
 /**

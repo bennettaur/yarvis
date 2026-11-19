@@ -131,13 +131,13 @@
 <!-- ───────────────────────────────────────────── -->
 <section id="in-app">
   <h2>What's in the report</h2>
-  <p>It runs Claude Code on your machine against the PR's checkout. Above <b>Run verification</b> you pick the sections; the summary and must-read files always run. Its progress shows check by check, and every file and line in it opens the diff.</p>
+  <p>It runs Claude Code on your machine against the PR's checkout. The tab is a checklist grouped by theme, and each check runs on its own when you pick it, so one can be re-run, or fail, without the others. The report below the checklist shows each check's newest result, and every file and line in it opens the diff.</p>
   <div class="grid g3">
-    <div class="card"><h3>Summary and must-read files</h3><p>Always run. Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Summary and must-read files</h3><p>Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
     <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
-    <div class="card"><h3>Checks</h3><p>Completeness, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
+    <div class="card"><h3>Checks</h3><p>Claims (the description and linked tickets checked against the code), malicious intent, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
     <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
-    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted.</p></div>
+    <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted. It opens in its own tab rather than in the report.</p></div>
     <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. This list appears at the top of the report, each file with the reason.</p></div>
   </div>
 
@@ -191,7 +191,7 @@
 <!-- ───────────────────────────────────────────── -->
 <section id="risk">
   <h2>The risk section and the impact band</h2>
-  <p>The agent lists each independent change with a <b>kind</b>, a <b>reach</b> and <b>evidence</b> (proven, partial or unproven), and whether it is <b>sensitive</b> (auth and permissions, what an agent may do, secrets, personal data, money, or deleting or migrating data). <code>sidecar/src/verify/impact.ts</code> turns that into a band from 1 (minimal) to 5 (very high).</p>
+  <p>The agent lists each independent change with a <b>kind</b>, a <b>reach</b> and <b>evidence</b> (proven, partial or unproven), whether it is <b>sensitive</b> (auth and permissions, what an agent may do, secrets, personal data, money, or deleting or migrating data), and whether it is <b>internal</b> (a mistake can only reach the team's own staff: a read-only internal dashboard, a dev script, no writes and nothing clients or other systems read). <code>sidecar/src/verify/impact.ts</code> turns that into a band from 1 (minimal) to 5 (very high).</p>
   <p><b>Evidence</b> is the agent's call on whether tests show the change works: <code>proven</code> (tests cover it), <code>partial</code> (some of it), <code>unproven</code> (none).</p>
   <p><b>Kinds</b>: <code>passive</code> changes no behaviour (comments, formatting, docs, tests only). <code>reorganization</code> moves or splits code with the same behaviour. <code>addition</code> is new code that only runs through other new code in this PR, so nothing that exists today reaches it. <code>removal</code> deletes code something might still reach (if nothing can, it's passive; if something outside the repo can, it's interface). <code>interface</code> changes a signature, exported type, schema, payload or setting key. <code>logic</code> means an input that already exists now gets a different result.</p>
   <p><b>Reach</b> is of the changed thing, not its file: <code>leaf</code> is private to its file, or a test, a script, or a view nothing else uses, <code>local</code> is used in its own feature folder and at most one other, <code>shared</code> is used from two to four other feature folders, <code>core</code> from five or more, or something many features go through (shared libraries, base classes, middleware, the database layer, config).</p>
@@ -210,10 +210,11 @@
   <ul>
     <li><b>Unproven</b> adds 1. <b>Partial</b> leaves the band unchanged. <b>Proven</b> takes 1 off a band above 2. It never applies to an interface change, because tests on the changed side don't show that callers elsewhere still work.</li>
     <li><b>Sensitive</b> adds 1.</li>
+    <li><b>Internal</b> takes 1 off, down to 1, for a leaf or local change. A sensitive or interface change doesn't get it.</li>
     <li>Passive changes and proven reorganizations skip these adjustments.</li>
     <li>A <b>reorganization</b> that isn't proven scores as logic. "Mostly a move" is the mistake this score exists to catch.</li>
   </ul>
-  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight (a folded entry such as "9 comment cleanups" counts nine times): band 1 adds 0, band 2 adds 1, band 3 adds 2, bands 4 and 5 add 4. A total of 8 or more raises the PR one band, and 16 or more raises it two. Volume alone can raise a PR to band 4 but never to 5. When volume raised the band, the report says so: splitting the PR would lower it.</p>
+  <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight (a folded entry such as "9 comment cleanups" counts nine times): band 1 adds 0, band 2 adds 1, band 3 adds 2, bands 4 and 5 add 4. Additions add nothing: only other new code reaches them, and the edit that wires them in is scored as its own change. A total of 8 or more raises the PR one band, and 16 or more raises it two. Volume alone can raise a PR to band 4 but never to 5. When volume raised the band, the report says so: splitting the PR would lower it.</p>
 
   <p>Changes at band 4 or above are listed under <b>Needs attention</b> with what to check. A high change with nothing specific to verify says "No check given: read this change." Every change is behind <b>Every change</b>.</p>
   <p>The section's overall level is low (bands 1-2), medium (3) or high (4-5), or the agent's own rating if that is higher. The agent's rating covers what the band can't see, such as a failing CI check, or a reading group whose agent failed and listed nothing.</p>
@@ -273,10 +274,10 @@
 <section id="running">
   <h2>Running it</h2>
   <ul>
-    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Pick sections and press <b>Run verification</b>. Starting a second run for the same PR joins the one already running.</li>
+    <li><b>From the PR bar</b>: <b>Verification</b> opens the tab. Press <b>Run</b> on a check, or tick several and press <b>Run picked</b>. Starting a check that is already running joins that run.</li>
     <li><b>From the assistant</b>: "verify bennettaur/yarvis#612" from chat, voice or Telegram. It uses or creates a review workspace, waits for the clone, and never runs the setup script. It asks first when the PR is large, over budget, of unknown size, or from a repo you haven't registered, since the PR reference may have come from text someone else wrote.</li>
-    <li><b>Cost</b>: before a large run, or one estimated over the budget in <b>Settings → PR review</b>, you see an estimate and are asked. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
-    <li><b>Staleness</b>: a report for an older head says so and offers <b>Re-run</b>. If a re-run fails or is cancelled, the last good report stays.</li>
+    <li><b>Cost</b>: the tab doesn't ask: which checks you run is the budget, and each row shows what its last run cost. The assistant asks first when the PR is large or over the budget in <b>Settings → PR review</b>. The budget only warns; a run cut off at a cap would end with nothing to show for what it spent.</li>
+    <li><b>Staleness</b>: a check whose result is for an older head says so on its row and in the report. If a re-run fails or is cancelled, the check's last good result stays.</li>
   </ul>
 </section>
 <!-- ───────────────────────────────────────────── -->

@@ -14,6 +14,7 @@ import type {
 import { ANSWER_WAIT_MS } from "../questions/contract.ts";
 import { WorktreeRefusal } from "../workspaces/extraWorktree.ts";
 import type { LocatedReviewComment } from "../workspaces/reviewComments.ts";
+import { type LinkPullRequest, PrLinkToolRefusal } from "./prLinkTools.ts";
 import { LONG_ANSWER_WAIT_MS, type QuestionToolDeps } from "./questionTools.ts";
 import type { ReviewCommentStore } from "./reviewCommentTools.ts";
 import { createYarvisMcpServer, type WorkspaceContext } from "./server.ts";
@@ -380,12 +381,16 @@ async function connectToWorkspace(
   addWorktree: AddWorktree = async () => {
     throw new Error("addWorktree not expected in this test");
   },
+  linkPullRequest: LinkPullRequest = async () => {
+    throw new Error("linkPullRequest not expected in this test");
+  },
 ) {
   const store = new FakeReviewComments(WORKSPACE_ID, comments);
   const client = await connect(new FakeMemory(), {
     id: WORKSPACE_ID,
     reviewComments: () => store,
     addWorktree,
+    linkPullRequest,
   });
   return { client, store };
 }
@@ -396,12 +401,75 @@ describe("yarvis mcp server in a workspace", () => {
     const outsideTools = (await outside.listTools()).tools.map((t) => t.name);
     expect(outsideTools).not.toContain("list_review_comments");
     expect(outsideTools).not.toContain("add_worktree");
+    expect(outsideTools).not.toContain("link_pull_request");
 
     const { client } = await connectToWorkspace();
     const tools = (await client.listTools()).tools.map((t) => t.name);
     expect(tools).toContain("list_review_comments");
     expect(tools).toContain("resolve_review_comment");
     expect(tools).toContain("add_worktree");
+    expect(tools).toContain("link_pull_request");
+
+    expect(client.getInstructions()).toContain("add_worktree");
+  });
+
+  it("links a pull request to the session's own workspace", async () => {
+    const calls: unknown[][] = [];
+    const { client } = await connectToWorkspace(undefined, undefined, async (...args) => {
+      calls.push(args);
+      return {
+        repo: "service-a",
+        number: 42,
+        url: "https://github.com/o/service-a/pull/42",
+        state: "open",
+      };
+    });
+    const result = await client.callTool({
+      name: "link_pull_request",
+      arguments: { repo: "service-a", number: 42 },
+    });
+    expect(calls).toEqual([[WORKSPACE_ID, { repo: "service-a", number: 42 }]]);
+    expect(payload(result)).toEqual({
+      repo: "service-a",
+      number: 42,
+      url: "https://github.com/o/service-a/pull/42",
+      state: "open",
+    });
+  });
+
+  it("returns a link refusal's reason, and hides any other failure's detail", async () => {
+    const refused = await connectToWorkspace(undefined, undefined, async () => {
+      throw new PrLinkToolRefusal("service-a has no pull request #42");
+    });
+    const refusal = await refused.client.callTool({
+      name: "link_pull_request",
+      arguments: { repo: "service-a", number: 42 },
+    });
+    expect(refusal.isError).toBe(true);
+    expect(JSON.stringify(refusal.content)).toContain("no pull request #42");
+
+    const failed = await connectToWorkspace(undefined, undefined, async () => {
+      throw new Error("connect ECONNREFUSED /Users/someone/secret-path");
+    });
+    const failure = await failed.client.callTool({
+      name: "link_pull_request",
+      arguments: { repo: "service-a", number: 42 },
+    });
+    expect(failure.isError).toBe(true);
+    expect(JSON.stringify(failure.content)).not.toContain("secret-path");
+  });
+
+  it("doesn't mention add_worktree to a workspace session that isn't offered it", async () => {
+    const client = await connect(new FakeMemory(), {
+      id: WORKSPACE_ID,
+      reviewComments: () => new FakeReviewComments(WORKSPACE_ID, []),
+      linkPullRequest: async () => {
+        throw new Error("linkPullRequest not expected in this test");
+      },
+    });
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("add_worktree");
+    expect(client.getInstructions()).toContain("list_review_comments");
+    expect(client.getInstructions()).not.toContain("add_worktree");
   });
 
   it("adds a worktree to the session's own workspace", async () => {

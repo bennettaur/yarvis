@@ -51,6 +51,57 @@ it runs. The defaults are `Claude` and `claude --permission-mode auto`. Add
 flags there, such as a model or a different permission mode. The
 `YARVIS_CLAUDE_COMMAND` environment variable overrides the stored command.
 
+### Agent harnesses
+
+The same section can add other **agent harnesses**: Pi, OpenCode, a custom
+command (such as a sandbox launcher), or a second Claude Code with its own
+environment, for example one pointed at another model provider. Each harness
+has a name, an id, a kind, a command and, optionally:
+
+- **Prompt arguments**, which say how an instruction is passed when the
+  session starts on one (an issue's **Start work**, or the assistant handing
+  it a brief). Put `{prompt}` where the instruction goes, as in
+  `--task {prompt} --interactive`. Left blank, the instruction is added at the
+  end, except for OpenCode, which gets `--prompt {prompt}`.
+- **Environment variables**, set for the session as written. They are not
+  shell-expanded, so `~` and `$HOME` stay literal.
+- **Secret variables**: names whose values are stored with your other secrets
+  (Keychain or 1Password) rather than in `settings.json`. Save the harness
+  first, then enter each value. A session won't start while one is missing.
+
+Pick the **default** harness there too. Opening a workspace starts the
+default. When more than one harness is configured, the workspace header has a
+picker beside the start-session button, and the agent tab is titled after the
+harness that session runs.
+
+The assistant can start a session with a named harness when you ask it to, but
+only the default, the built-in agent, and harnesses you tick **The assistant may
+start this harness** for. A harness can run with fewer guardrails than your
+default, and what steers the assistant's choice can be text it read in an issue
+or a PR, so each one is off until you turn it on. The Rust core enforces this,
+not only the assistant's instructions. That list is the whole boundary: an
+unattended [heads-down](heads-down.md) pass that starts work on a planned
+ticket can also pick any harness on it, without asking.
+
+When the assistant starts work on a ticket with a named harness and the
+session doesn't launch right away, Yarvis retries it on the next start. If by
+then you've removed that harness or unticked it, the retry uses your default
+instead.
+
+Only Claude Code harnesses can be resumed after a restart or started with
+Remote Control. Asking for Remote Control with another kind fails rather than
+starting a session you can't reach.
+
+Things that come from Claude Code's hooks in the workspace's
+`.claude/settings.json` don't work for other kinds yet: their sessions don't
+register with the workspace, raise attention-bell items, or show on the Agent
+Field page. The assistant can still type an instruction into one, once it
+recognises the harness's program holding the prompt. Channel messaging only
+works for the built-in agent's command.
+
+A harness's variables, secret ones included, are set in the terminal's shell,
+so every command the agent runs there can read them.
+
 The same section lists the **allowed slash commands**: the commands and skills
 the assistant may run in a workspace's session (see
 [Running a slash command in a session](#running-a-slash-command-in-a-session)).
@@ -89,7 +140,9 @@ ticket, an Azure Boards work item, or a task. Yarvis creates the workspace, writ
 [Issues and tasks](issues-and-tasks.md).
 
 **From a pull request.** On a PR's page, press **Start workspace**. You get a
-workspace checked out on the PR's branch, with an agent at a blank prompt. See
+workspace checked out on the PR's branch, with an agent at a blank prompt. The
+workspace is linked to that PR from the start. If a workspace is already on
+the PR's branch, Yarvis opens that one and links the PR to it. See
 [PR review](pr-review.md#work-on-the-pr).
 
 **By asking the assistant.** Tell the assistant what you want, for example
@@ -127,7 +180,7 @@ writes these files into the root:
 
 | File | What it's for |
 | --- | --- |
-| `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch. `CLAUDE.md` just includes `AGENTS.md`. |
+| `AGENTS.md` and `CLAUDE.md` | Tells the agent which repos are present and on what branch, and to record a PR it opens with `link_pull_request`. `CLAUDE.md` just includes `AGENTS.md`. |
 | `.claude/settings.json` | The hooks that tell Yarvis when the session needs you, let you answer its permission prompts from the app (and clear them once you answer in the terminal), register each Claude Code session with the workspace, and let the session's sandbox write to each repo's clone |
 | `.claude/skills/`, `.claude/agents/` | Copies of each repo's own skills and agents |
 | `.claude/.yarvis-copied.json` | A list of the copies above, so they can be cleaned up |
@@ -280,7 +333,8 @@ that tab. No shell tab opens with it. Press `+` or Cmd+T when you want one.
   tab on, one Yarvis stopped, and any in an archived workspace stay ended.
   The relaunched session doesn't have Remote Control on. This needs the
   workspace's registration hooks (see [Sending an instruction to a running session](#sending-an-instruction-to-a-running-session)),
-  and an agent command that runs `claude`: another agent isn't relaunched.
+  and a Claude Code harness: another agent isn't relaunched. The session is
+  relaunched with the harness it was started with.
 
 Workspace tabs are terminals, so everything in [Terminals](terminals.md)
 applies, including splits. A workspace's tabs can also hold diffs, the file
@@ -296,7 +350,7 @@ command, since you're away from the machine then.
 Sessions you start at the laptop (by opening a workspace, pressing **Start
 work**, or asking the in-app assistant) don't get it. They open in a tab you
 are already looking at. Turn on Remote Control from inside the session if you need it
-later. Leaving it off by default also means a non-Claude agent command isn't
+later. Leaving it off by default also means a non-Claude harness isn't
 handed a flag it doesn't know.
 
 ## The workspace list
@@ -304,8 +358,9 @@ handed a flag it doesn't know.
 Drag the line between the list and the open workspace to make the list wider
 or narrower. The width is remembered.
 
-Each row shows the workspace's status and a badge for each repo that has a
-pull request. The badge shows whatever needs acting on first, so a red build on
+Each row shows the workspace's status and a badge for each pull request linked
+to it. A repo can have several: one per layer of a stack, an earlier PR on the
+same branch, or one linked by number. The badge shows whatever needs acting on first, so a red build on
 an approved PR still reads as failing. Hover a badge to see the repo, PR number
 and state.
 
@@ -338,13 +393,12 @@ verdict here, so its badges never reach `★`.
 Badges come from a background PR poll, paced to stay under your GitHub and
 Azure DevOps rate limits:
 
-- Every workspace whose PR is known and not yet merged refreshes every 15
-  minutes, even while Yarvis is in the background. For GitHub, all of them
-  are read in one request.
-- While you're in a workspace with Yarvis in front of you, its PR refreshes
-  about once a minute, or every 15 minutes once it's merged or closed. This is
-  also how a PR opened on its branch gets picked up.
-- A workspace with no PR yet is checked for a new one every 15 minutes while
+- Every linked PR that isn't merged refreshes every 15 minutes, even while
+  Yarvis is in the background. For GitHub, all of them are read in one request.
+- While you're in a workspace with Yarvis in front of you, its PRs refresh
+  about once a minute, or every 15 minutes once merged or closed. Its branches
+  are also searched about once a minute, which is how a new PR gets picked up.
+- Other workspaces' branches are searched for new PRs every 15 minutes while
   the list is in front of you.
 
 So a badge can lag a change by up to 15 minutes, or a minute for the workspace
@@ -357,6 +411,37 @@ and that read updates the badges too.
 
 A workspace with something waiting on you is also marked in the list. See
 [The attention bell](#the-attention-bell).
+
+### Linking a pull request
+
+A workspace keeps every pull request it finds or is given, for each repo. The
+status line under the workspace's header lists them all, with state, checks
+and merge conflicts. A PR from a branch other than the worktree's own, such as
+a stack layer, is labelled with its branch. A closed PR is dimmed.
+
+Yarvis finds PRs by searching the repo's worktree branch and the branches of
+the worktrees an agent added. Every PR on those branches is kept, not only the
+newest, except one that was already closed or merged before its branch joined
+the workspace: that is an earlier use of the same branch name.
+
+- **Detect PRs again** searches now instead of waiting for the next poll. It
+  only adds PRs.
+- **Link PR** takes a PR number for that repo and adds it beside the others,
+  wherever its branch is. Yarvis checks the PR exists before it saves the link.
+- **Unlink** on a PR stops showing it. Searching its branch won't add it back.
+  Linking it by number again does.
+
+A workspace started from a PR is linked to that PR from the start.
+
+Where something needs a single PR per repo, such as the right column's
+**PR checks** or the stack view, it uses the main PR: the newest open PR on the
+worktree's own branch, else the newest merged one there, else the newest of the
+rest. Archiving only treats a merged PR as proof that a branch landed if the
+PR merged from that branch.
+
+The agent in the workspace can link a PR too, with the MCP tool
+`link_pull_request` ([MCP](mcp.md#linking-a-pull-request)). Its `AGENTS.md`
+tells it to link each PR it opens.
 
 ## The right column
 
@@ -428,7 +513,8 @@ reopened, so its comments are kept.
 
 ### PR checks
 
-**PR checks** shows the branch's pull request and every one of its CI checks,
+**PR checks** shows the repo's main pull request (see
+[Linking a pull request](#linking-a-pull-request)) and every one of its CI checks,
 read live from GitHub or Azure DevOps. It has copy buttons for the PR link,
 each check, and a summary of all checks. See
 [Clipboard](clipboard.md#copy-buttons).
@@ -497,7 +583,6 @@ without leaving the sandbox.
   can write the workspace folder, so a checkout straight into it could follow
   a symlink the agent put there. The move is a single rename, which refuses
   anything but an empty folder in its way.
-- **At most 10 extra worktrees per repo.**
 - **The grant follows the worktree.** Once the worktree is removed, the next
   write of `.claude/settings.json` drops its branch too. Yarvis writes it when
   it provisions the workspace, starts its agent, or adds a worktree. Archiving
@@ -590,7 +675,7 @@ the background.
 
 Safety rules:
 
-- **The send is refused unless the configured agent is what's reading the
+- **The send is refused unless the session's agent is what's reading the
   prompt.** If the agent exited, or something else is running in that
   terminal, nothing is typed. Yarvis knows which process is Claude because
   each Claude Code session registers itself with the workspace when it starts.
@@ -730,6 +815,18 @@ column is replaced by a "Removing worktrees…" note, since the worktrees it rea
 are being deleted. If the archive stops on a worktree, the right column comes back so you
 can see what's dirty.
 
+When the workspace has linked issues (GitHub, JIRA or Azure Boards) that aren't
+done yet, the dialog lists them under **Close linked issues**, all ticked.
+Untick any you want to leave open. The ticked ones are closed on their tracker
+once the worktrees are gone: a GitHub issue is closed, a JIRA issue moves to a
+done status ("Done" when the workflow has one), and an Azure Boards work item
+moves to a done state ("Done", then "Closed", never "Removed"). An issue that
+won't close stays open, and an alert names it and the tracker's reason. If the
+archive stops on a worktree, nothing is closed yet; the dialog lists the issues
+again when you retry. Closing an issue that's already closed changes nothing, so
+a retry is safe. Archiving from chat closes them the same way, unless you tell
+the assistant which to leave open.
+
 A worktree with uncommitted work won't remove. The workspace stays in
 "archiving" with that repo's error. Reopen the dialog to see it, and use
 **Force remove** only if the uncommitted work can go.
@@ -746,8 +843,9 @@ deleted if the base branch already contains it, unless another workspace works
 on or stacks on it. Other branches, such as a squash-merged one, are kept.
 
 Once a repo's worktrees are gone, its local branch is deleted if the work has
-landed: the base branch already contains it, or its PR merged and the remote
-branch, if it's still there, has every local commit. Any other branch is kept
+landed: the base branch already contains it, or a PR that merged from that
+branch did and the remote branch, if it's still there, has every local commit.
+A PR linked from another branch says nothing about this one. Any other branch is kept
 in the shared clone. If a landed branch has commits past what its PR merged
 that no remote has, such as work added after the merge once the remote branch
 was deleted, the archive stops before removing any worktree and says how many,

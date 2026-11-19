@@ -117,7 +117,11 @@ export default function ChatPanel({
     stop,
     newChat,
     loadSession,
-  } = useChatThread({ onSessionCreated: addSession, reasoning });
+  } = useChatThread({
+    onSessionCreated: addSession,
+    reasoning,
+    visible: active,
+  });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
   // own, so ours must stop answering the keyboard while it is up.
