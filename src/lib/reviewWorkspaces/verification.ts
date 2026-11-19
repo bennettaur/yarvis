@@ -131,6 +131,14 @@ export interface VerificationApproach {
   line?: number;
 }
 
+/** What each approach rating says, in the report and in an exported copy. */
+export const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
+  "much-simpler": "A much simpler way exists",
+  simpler: "A simpler way exists",
+  "no-simpler": "No simpler way found",
+  unrated: "Not rated",
+};
+
 export type ThemeCohesion = "core" | "supporting" | "outlier";
 
 /** One theme of the change: a reason the code changed, and the files it touched for it. */

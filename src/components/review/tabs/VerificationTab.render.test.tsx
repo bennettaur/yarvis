@@ -20,6 +20,7 @@ import {
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
+import { clipboardWrites, resetClipboardWrites } from "../../../test/clipboard";
 import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
@@ -31,6 +32,7 @@ import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab
 const pr = {
   id: "pr1",
   ref: { provider: "github", owner: "octo", repo: "repo", number: 7 },
+  title: "Cache user lookups",
   status: "ready",
   worktreeStatus: "ready",
   headSha: "h".repeat(40),
@@ -54,6 +56,7 @@ let reread: VerificationChecklist;
 let mutationState: MutationTestingState;
 
 beforeEach(() => {
+  resetClipboardWrites();
   started = [];
   startedSections = [];
   cancelled = [];
@@ -219,6 +222,27 @@ describe("VerificationTab", () => {
     expect(button(row(host, "Test quality"), "Re-run")).toBeDefined();
     expect(text).toContain("Adds a cache in front of the user lookup.");
     expect(text).toContain("No test for eviction");
+  });
+
+  it("copies the whole report as Markdown", async () => {
+    const report: VerificationReport = {
+      ...goodReport,
+      tests: {
+        status: "issues",
+        findings: [{ title: "No test for eviction", detail: "d", severity: "high" }],
+      },
+    };
+    const host = await mount(checklist({ items: answered(report), report }));
+    const copy = host.querySelector(
+      'button[aria-label="Copy the whole report as Markdown, to paste into Claude"]',
+    ) as HTMLButtonElement;
+    copy.click();
+    await waitFor(() => clipboardWrites().length === 1);
+    const [md] = clipboardWrites();
+    expect(md).toContain("# Verification report: Cache user lookups");
+    expect(md).toContain("PR: https://github.com/octo/repo/pull/7");
+    expect(md).toContain("Suggested: **Changes needed**");
+    expect(md).toContain("**[high] No test for eviction**");
   });
 
   it("keeps a section's last result under a failed re-run, marked as from an older head", async () => {
@@ -819,6 +843,28 @@ describe("evidence from CI, scanners and bots", () => {
       },
     ],
   };
+
+  const copyReport = async (host: HTMLElement) => {
+    (
+      host.querySelector(
+        'button[aria-label="Copy the whole report as Markdown, to paste into Claude"]',
+      ) as HTMLButtonElement
+    ).click();
+    await waitFor(() => clipboardWrites().length === 1, "the copied report");
+    return clipboardWrites()[0] ?? "";
+  };
+
+  it("copies CI results for the checkout's commit with the report", async () => {
+    const md = await copyReport(await mount(checklist(), evidence));
+    expect(md).toContain("### CI checks: 1 of 4 failing");
+    expect(md).toContain("- CI: 1 of 4 failing");
+  });
+
+  it("leaves CI results for another commit out of the copied report", async () => {
+    const md = await copyReport(await mount(checklist(), { ...evidence, headSha: older }));
+    expect(md).toContain("## CI, scanners and bots\n\nNo results for this commit.");
+    expect(md).not.toContain("1 of 4 failing");
+  });
 
   it("shows each tool's tally under its theme, and its entries on demand", async () => {
     const host = await mount(checklist(), evidence);
