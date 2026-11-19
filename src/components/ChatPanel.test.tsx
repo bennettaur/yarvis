@@ -42,6 +42,8 @@ let sessions: Array<{ id: string; title: string | null; createdAt: string; updat
 let created = 0;
 /** Events the next turn streams back, in order. */
 let scripted: unknown[] = [];
+/** Turns parked on a `gate` event, oldest first. A test calls one to let that turn go on. */
+let gates: Array<() => void> = [];
 /** Bodies of every chat request, so a test can see what was re-sent. */
 let sent: Array<Record<string, unknown>> = [];
 /** What `/health` answers after a dropped stream, and how long it takes. */
@@ -128,6 +130,11 @@ stubChatApi({
         await new Promise((resolve) => setTimeout(resolve, 200));
         continue;
       }
+      // A pause the test ends itself, for a test that has to know the turn is still running.
+      if ((event as { type?: string }).type === "gate") {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        continue;
+      }
       // The connection failing underneath the turn, as WebKit reports it.
       if ((event as { type?: string }).type === "drop") {
         throw new TypeError((event as { message?: string }).message ?? "Load failed");
@@ -203,6 +210,8 @@ afterEach(() => {
   sessions = [];
   created = 0;
   scripted = [];
+  for (const release of gates) release();
+  gates = [];
   sent = [];
   health = { status: "ok", service: "s", uptimeMs: 3_600_000 };
   healthDelayMs = 0;
@@ -466,22 +475,28 @@ describe("ChatPanel", () => {
   });
 
   it("sends what is left in the queue in order, one turn at a time", async () => {
-    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    scripted = [{ type: "gate" }, { type: "delta", text: "a reply" }, { type: "done" }];
     const mounted = await mountForInteraction(createElement(ThreadHarness));
     unmount = mounted.unmount;
     await settle(50);
 
     void thread?.send("first question");
-    await settle(20);
+    await waitFor(() => gates.length === 1, "the first turn to start");
     thread?.enqueue("one");
     thread?.enqueue("two");
     thread?.enqueue("three");
-    await settle(20);
+    await waitFor(() => thread?.queued.length === 3, "three messages to queue");
     thread?.removeQueued(1);
-    await settle(100);
+    await waitFor(() => thread?.queued.length === 2, "the removed message to leave the queue");
     expect(sent).toHaveLength(1);
 
-    await settle(900);
+    // Each turn is let go only once the one before it is the only one running.
+    for (const turns of [2, 3]) {
+      gates.shift()?.();
+      await waitFor(() => sent.length === turns && gates.length === 1, `turn ${turns} to start`);
+    }
+    gates.shift()?.();
+    await waitFor(() => thread?.busy === false, "the last turn to finish");
     expect(sent.map((body) => body.message)).toEqual(["first question", "one", "three"]);
   });
 

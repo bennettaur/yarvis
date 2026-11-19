@@ -4,7 +4,7 @@ import { useState } from "react";
 import { type EditorPlace, resetEditorPlaces } from "../../lib/editorPlaces";
 import { draftKey, getDraft, resetDrafts, setDraft } from "../../lib/fileDrafts";
 import { FileConflictError, type WorkspaceFile } from "../../lib/workspaces";
-import { mountForInteraction } from "../../test/render";
+import { mountForInteraction, waitFor } from "../../test/render";
 import { resetWorkspacesApi, stubWorkspacesApi } from "../../test/workspacesApi";
 
 const fileOf = (path: string, content: string, hash: string): WorkspaceFile => ({
@@ -122,6 +122,8 @@ const switchTo = async (path: string) => {
   await settle();
 };
 
+const editorText = (host: HTMLElement) => host.querySelector('[data-testid="editor"]')?.textContent;
+
 const button = (host: HTMLElement, label: string) =>
   [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith(label));
 
@@ -210,12 +212,16 @@ describe("WorkspaceFileEditor", () => {
     setDraft(draftKey("ws-1", "wr-1", "src/a.ts"), { text: "MINE\n", baseHash: HASH_A });
     conflictOnSave = true;
     const host = await mountSwitchable();
+    await waitFor(() => editorText(host) === "MINE\n", "src/a.ts's draft to load");
     button(host, "Save")?.click();
-    await settle();
-    expect(host.textContent).toContain("changed on disk after you opened it");
+    await waitFor(
+      () => host.textContent?.includes("changed on disk after you opened it") === true,
+      "the conflict to show",
+    );
 
     conflictOnSave = false;
-    await switchTo("src/b.ts");
+    showFile?.("src/b.ts");
+    await waitFor(() => editorText(host) === "BBB\n", "src/b.ts to load");
 
     expect(host.textContent).not.toContain("changed on disk after you opened it");
   });
