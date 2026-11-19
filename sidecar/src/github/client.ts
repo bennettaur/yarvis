@@ -1062,7 +1062,7 @@ query($owner:String!,$repo:String!,$number:Int!){
 }`;
 
 /** What the workspace poller reads about each PR, in one query: summary, status and reviews. */
-const PR_POLL_FIELDS = `number url isDraft headRefName closedAt ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
+const PR_POLL_FIELDS = `number url isDraft headRefName isCrossRepository headRepositoryOwner{ login } closedAt ${PR_STATUS_FIELDS} ${PR_REVIEW_FIELDS}`;
 
 /**
  * Same-named branches a batched branch read looks through for the one in the
@@ -1250,13 +1250,27 @@ export interface PolledPr {
   number: number;
   url: string;
   draft: boolean;
-  /** The branch the PR merges from. */
+  /** The branch the PR merges from; `owner:branch` for a fork's. */
   headBranch: string;
   /** When the PR was closed or merged; null while it is open. */
   closedAt: string | null;
   status: PrStatus;
   /** Null when nothing waits on review: a draft, or a PR that is no longer open. */
   reviewDecision: ReviewDecision | null;
+}
+
+/**
+ * A fork's head branch as `owner:branch`, GitHub's own label for it. Git
+ * refuses `:` in a branch name, so a fork's same-named branch can never be
+ * mistaken for one of the repo's own.
+ */
+export function forkQualified(
+  branch: string,
+  isCrossRepository: unknown,
+  headOwner: { login?: string } | null | undefined,
+): string {
+  if (!branch || !isCrossRepository) return branch;
+  return `${headOwner?.login ?? "fork"}:${branch}`;
 }
 
 /** A PR read with {@link PR_POLL_FIELDS} as a {@link PolledPr}. */
@@ -1267,7 +1281,7 @@ function toPolledPr(pr: any): PolledPr {
     number: pr.number,
     url: pr.url,
     draft: Boolean(pr.isDraft),
-    headBranch: pr.headRefName ?? "",
+    headBranch: forkQualified(pr.headRefName ?? "", pr.isCrossRepository, pr.headRepositoryOwner),
     closedAt: pr.closedAt ?? null,
     status,
     reviewDecision: awaitingReview ? summarizeReviewDecision(restLikeReviews(pr)) : null,

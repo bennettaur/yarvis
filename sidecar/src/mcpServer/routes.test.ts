@@ -353,6 +353,28 @@ describe("mcp endpoint over a real store", () => {
     expect(noToken.content[0]?.text).toContain("token");
     expect(await sql`SELECT 1 FROM workspace_repo_pr`).toHaveLength(0);
   });
+
+  it("won't link again a PR the user unlinked", async () => {
+    await sql`TRUNCATE repos, workspaces RESTART IDENTITY CASCADE`;
+    const mine = await workspaceWithComment("mcp-mine");
+    await sql`UPDATE workspace_repos SET status = 'ready'`;
+    await sql`
+      INSERT INTO workspace_repo_pr (workspace_repo_id, pr_number, dismissed)
+      SELECT id, 4, true FROM workspace_repos`;
+
+    const refused = await rawCallTool(
+      2,
+      "link_pull_request",
+      { repo: "mcp-mine", number: 4 },
+      { "X-Yarvis-Workspace": mine.workspaceId },
+    );
+
+    // Refused for the unlink, before any provider is asked about the PR.
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]?.text).toContain("the user unlinked #4");
+    const [row] = await sql`SELECT dismissed FROM workspace_repo_pr`;
+    expect(row?.dismissed).toBe(true);
+  });
 });
 
 describe("questionOrigin", () => {

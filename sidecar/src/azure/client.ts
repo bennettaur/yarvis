@@ -265,7 +265,7 @@ export interface AzureBranchPr {
   number: number;
   url: string;
   draft: boolean;
-  /** The branch the PR merges from. */
+  /** The branch the PR merges from; `fork:branch` for a fork's. */
   headBranch: string;
   /** When the PR was completed or abandoned; null while it is active. */
   closedAt: string | null;
@@ -446,7 +446,10 @@ export class AzureDevOpsClient {
       number: pr.pullRequestId,
       url: this.prWebUrl(pr),
       draft: Boolean(pr.isDraft),
-      headBranch: (pr.sourceRefName ?? "").replace(/^refs\/heads\//, ""),
+      // A fork's head is qualified like GitHub's, so it can't pass for the repo's own branch.
+      headBranch: pr.forkSource
+        ? `${pr.forkSource.repository?.name ?? "fork"}:${(pr.sourceRefName ?? "").replace(/^refs\/heads\//, "")}`
+        : (pr.sourceRefName ?? "").replace(/^refs\/heads\//, ""),
       closedAt: pr.closedDate ?? null,
       state: pr.status === "completed" ? "merged" : pr.status === "abandoned" ? "closed" : "open",
       headSha: pr.lastMergeSourceCommit?.commitId ?? null,

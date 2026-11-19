@@ -303,13 +303,16 @@ and checks straight away. See
 
 It answers with the PR's `url` and `state`. It refuses a repo that isn't in
 the workspace and a number the repo has no PR for. A repo can have any number
-of linked PRs, so each call adds one. A PR you unlinked stays unlinked: the
-tool refuses it, and only you can link it again.
+of linked PRs, so each call adds one. It refuses a PR you unlinked (only you
+can link it again), a PR from a fork, and a PR past the 20th for one repo. You
+can link either of the last two from the workspace's status line.
 
 Like the other workspace tools, it acts on the workspace the header names. A
-caller can use it to add any of a repo's PRs to a workspace, and so change
-which workspace **Start workspace** on that PR opens. It can't reach a PR in a
-repo the workspace doesn't have, and it can't remove one.
+caller can use it to add a repo's PRs to a workspace. A linked PR is polled,
+holds the workspace's merges in heads-down mode while it has feedback, and can
+change which workspace **Start workspace** on that PR opens when no workspace
+has it on its own branch. It can't reach a PR in a repo the workspace doesn't
+have, and it can't remove one.
 
 ### Sessions Yarvis launches need no setup
 

@@ -12,16 +12,16 @@ import { type WorkspaceRepoPr, workspaceRepoPr, workspaceRepos } from "../db/sch
 type Pr = Pick<WorkspaceRepoPr, "prNumber" | "prState" | "headBranch" | "dismissed">;
 
 /**
- * Whether a PR merges from `branch`. A row with no recorded head branch counts
- * as on it: the migration that added the column filled it for every row, so
- * only a PR whose provider never named its branch is left without one.
+ * Whether a PR merges from the repo's own `branch`. A fork's head is stored as
+ * `owner:branch`, so it never matches. A PR whose head branch is unknown isn't
+ * trusted to be on it: archive deletes a branch on the strength of this.
  */
 export function isOnBranch(pr: Pr, branch: string): boolean {
-  return pr.headBranch === null || pr.headBranch === branch;
+  return pr.headBranch === branch;
 }
 
 /** {@link isOnBranch} in SQL, for a query joining a PR to its workspace repo. */
-export const prOnOwnBranch = sql<boolean>`(${workspaceRepoPr.headBranch} is null or ${workspaceRepoPr.headBranch} = ${workspaceRepos.branch})`;
+export const prOnOwnBranch = sql<boolean>`coalesce(${workspaceRepoPr.headBranch} = ${workspaceRepos.branch}, false)`;
 
 /** Open before merged before closed; newest (highest number) first within each. */
 function byRelevance(a: Pr, b: Pr): number {

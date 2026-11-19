@@ -379,11 +379,15 @@ report there and leaves the fixes to the author.
   Even then it may only check out a branch not yet in the clone, inside that
   workspace's folder, and widen the sandbox to that one branch
   (`addExtraWorktree`), since the token is no boundary against a same-user
-  process. `link_pull_request` asks for no token because all it can do is add
-  a PR of one of that workspace's own repos to the PR list the user already
-  sees, after the provider confirms the PR exists. It can't remove one, and it
-  can't bring back one the user unlinked (`relink` is the user route's alone).
-  Bodies
+  process. `link_pull_request` asks for no token because what it can do is
+  narrow: add an existing, non-fork PR of one of that workspace's own repos,
+  up to `MAX_AGENT_LINKED_PRS` per repo. A linked PR shows in the workspace,
+  holds its merges for heads-down feedback, is re-read on the user's provider
+  rate limit, and can make the workspace the one **Start workspace** opens for
+  that PR when no workspace has it on its own branch. It can't remove a PR,
+  bring back one the user unlinked (`relink` is the user route's alone), or
+  make a PR count as on the workspace's branch, which archive's branch
+  deletion and routing trust. Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,
   because the user wrote them. Any other source (a verification finding the
   user chose to add) is fenced there and kept out of the event log; a new
