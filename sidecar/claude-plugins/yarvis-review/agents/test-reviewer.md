@@ -1,7 +1,9 @@
 ---
 name: test-reviewer
 description: Judges whether a pull request's tests cover its changes and would actually catch a regression. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 

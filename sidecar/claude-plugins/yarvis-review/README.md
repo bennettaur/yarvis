@@ -39,13 +39,15 @@ Every verification agent takes its inputs and trust rules from
 `shared/inputs-and-trust.md`, which `plugins.ts` puts in place of the
 `<!-- yarvis-review:inputs-and-trust -->` line when it writes a run's copy;
 `rereviewer` takes its own from `shared/rereview-inputs-and-trust.md`, in place
-of `<!-- yarvis-review:rereview-inputs-and-trust -->`. Claude Code has no include for agent files,
-and the system prompt a run appends doesn't reach subagents, so this is how
-each agent gets the same guardrail.
+of `<!-- yarvis-review:rereview-inputs-and-trust -->`. Claude Code has no
+include for agent files, so this is how each agent gets the same guardrail
+from one source. Every agent here runs as a run's main thread, so its
+`tools:` line lists `StructuredOutput`, the tool a run started with
+`--json-schema` answers through.
 
-To add an agent or a skill, put its file here in Claude Code's plugin layout
-(`agents/<name>.md`, `skills/<name>/SKILL.md`) and add it to the plugin's file
-list in `plugins.ts`. A file that isn't listed there never reaches the run.
+To add an agent, put its file here in Claude Code's plugin layout
+(`agents/<name>.md`) and add it to the plugin's file list in `plugins.ts`. A
+file that isn't listed there never reaches the run.
 
 To try the plugin by hand against a checkout, use a copy `writePluginCopy`
 wrote, since the agents here lack the shared section:

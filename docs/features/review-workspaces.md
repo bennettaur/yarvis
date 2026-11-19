@@ -459,9 +459,10 @@ finding check run as one Claude Code process per group. Yarvis merges their
 answers itself: a check keeps its five most severe findings across groups,
 and risk takes the highest level any group gave. An agent whose answer
 doesn't fit the report's shape, or whose process fails, is asked once more.
-If it fails again, its part of the report says the check didn't complete, so
-you know to review that area by hand. If every process of a check fails, the
-run fails and the check's last good result stays.
+If it fails again while other groups answered, the check says that group
+didn't complete, so you know to review that area by hand. Otherwise, as for
+a check that runs once over the whole PR, the run fails and the check's last
+good result stays. A run's time limit covers all of its processes.
 
 Yarvis then counts, from the files the agents actually opened, which changed
 files no check read in full. A read only counts when it shows the lines: a

@@ -283,19 +283,24 @@ const flowSchema = z
       : { ...flow, mermaid: flow.mermaid.trim() },
   );
 
+const APPROACH_RATINGS = ["no-simpler", "simpler", "much-simpler"] as const;
+const approachFields = {
+  reason: boundedText(500),
+  alternative: boundedText(700),
+  path: optionalPath,
+  line: optionalLine,
+};
+
+/** What the approach agent may answer: never `unrated`, which only a failed agent's report has. */
+const approachAnswerSchema = z.object({ rating: z.enum(APPROACH_RATINGS), ...approachFields });
+
 /**
  * Whether the PR as a whole has a materially simpler way to its goal. The
- * complexity check judges code line by line; this judges the design.
- * `unrated` is the server's stand-in when the agent failed.
+ * complexity check judges code line by line; this judges the design. Stored
+ * reports can be `unrated`, from when a failed agent's answer stood in.
  */
 const approachSchema = z
-  .object({
-    rating: z.enum(["no-simpler", "simpler", "much-simpler", "unrated"]),
-    reason: boundedText(500),
-    alternative: boundedText(700),
-    path: optionalPath,
-    line: optionalLine,
-  })
+  .object({ rating: z.enum([...APPROACH_RATINGS, "unrated"]), ...approachFields })
   // Without a simpler way there is nothing to point at.
   .transform((approach) =>
     approach.rating === "simpler" || approach.rating === "much-simpler"
@@ -759,17 +764,13 @@ function answerSchemas(limits: ReportLimits, audit: ReportAudit) {
 /**
  * The answer one process of a section's run gives: its agent's JSON object,
  * which is the section's field (both `summary` and `mustRead` for the
- * summary). An approach answer of `unrated` is the server's stand-in for a
- * failed agent, so an agent giving it is asked again.
+ * summary).
  */
 export function sectionAnswerSchema(section: ReportSection, limits: ReportLimits): z.ZodType {
+  // The audit is for the combined answer, so what a part's check drops isn't kept.
   const { sectionSchemas, summarySchemas } = answerSchemas(limits, emptyAudit());
   if (section === "summary") return z.object(summarySchemas);
-  if (section === "approach") {
-    return sectionSchemas.approach.refine((a) => a.rating !== "unrated", {
-      message: "rating must be no-simpler, simpler or much-simpler",
-    });
-  }
+  if (section === "approach") return approachAnswerSchema;
   return sectionSchemas[section];
 }
 
@@ -783,46 +784,19 @@ const CHECK_FAILED = {
 };
 
 /**
- * What a process answers when it fails twice: an answer that says the check
- * didn't complete, so the report shows a gap instead of hiding it.
+ * What a reading group's process answers when it fails twice while other
+ * groups answered: a finding (for risk, a concern at medium) saying the check
+ * didn't complete, which the merge always keeps. A section run as one process
+ * has no fallback: its run fails instead, and the section keeps its last good
+ * result.
  */
-const SECTION_FALLBACKS: Record<ReportSection, unknown> = {
-  summary: { summary: "Summary unavailable.", mustRead: [] },
-  changeMap: { intent: "The change map agent failed to answer.", themes: [] },
-  claims: {
-    items: [],
-    gaps: [
-      {
-        title: "Check did not complete",
-        detail: "The claims agent failed to answer; compare the description with the code by hand.",
-        severity: "low",
-      },
-    ],
-  },
-  risk: {
-    level: "medium",
-    clientImpact: "",
-    mitigations: [],
-    concerns: [{ title: CHECK_FAILED.title, detail: CHECK_FAILED.detail }],
-    changes: [],
-  },
-  malice: { status: "issues", findings: [CHECK_FAILED] },
-  tests: { status: "issues", findings: [CHECK_FAILED] },
-  complexity: { status: "issues", findings: [CHECK_FAILED] },
-  performance: { status: "issues", findings: [CHECK_FAILED] },
-  comments: { status: "issues", findings: [CHECK_FAILED] },
-  observability: { status: "issues", findings: [CHECK_FAILED] },
-  quality: { status: "issues", findings: [CHECK_FAILED] },
-  approach: {
-    rating: "unrated",
-    reason: "The approach agent failed to answer; judge the approach by hand.",
-    alternative: "",
-  },
-  flow: {
-    title: "Diagram unavailable",
-    explanation: "The flow agent failed to answer.",
-    mermaid: "",
-  },
+const CHECK_FALLBACK = { status: "issues", findings: [CHECK_FAILED] };
+const RISK_FALLBACK = {
+  level: "medium",
+  clientImpact: "",
+  mitigations: [],
+  concerns: [{ title: CHECK_FAILED.title, detail: CHECK_FAILED.detail }],
+  changes: [],
 };
 
 /** An answer as an agent gave it, before the schema cuts or scores anything. */
@@ -837,14 +811,14 @@ type RawRisk = {
 
 /**
  * Puts a section's answers, one per reading group in group order, together
- * into the report's fields for that section, without rewording anything:
+ * into the report's fields for that section, without rewording anything.
+ * `fellBack[i]` marks a group whose answer is its fallback.
  *
- * - a check: every group's findings, most severe first (in group order within
- *   a severity), the {@link MAX_FINDINGS} most severe kept;
- * - risk: the highest level any group gave, with that group's client impact;
- *   the first three mitigations; the first {@link MAX_FINDINGS} concerns, the
- *   highest-level group's first; and every group's changes, since the impact
- *   score is over the whole list.
+ * - A check: every answered group's findings, most severe first (in group
+ *   order within a severity), the {@link MAX_FINDINGS} most severe kept, with
+ *   one "did not complete" finding kept whatever its severity when a group
+ *   fell back, so the gap can't be crowded out.
+ * - Risk: see {@link combineRisk}.
  *
  * A section that runs once just has its answer moved into place. Duplicates
  * across sections and length limits are handled by the report's schema.
@@ -852,11 +826,14 @@ type RawRisk = {
 export function combineSectionAnswers(
   section: ReportSection,
   answers: readonly unknown[],
+  fellBack: readonly boolean[] = [],
 ): Record<string, unknown> {
+  // Each answer already parsed against `sectionAnswerSchema`, so its shape holds.
   if (section === "summary") return answers[0] as Record<string, unknown>;
-  if (section === "risk") return { risk: combineRisk(answers as RawRisk[]) };
+  if (section === "risk") return { risk: combineRisk(answers as RawRisk[], fellBack) };
   if (!(CHECK_SECTIONS as readonly string[]).includes(section)) return { [section]: answers[0] };
-  const findings = (answers as RawCheck[])
+  const { answered, gap } = splitFallbacks(answers as RawCheck[], fellBack, (a) => a.findings);
+  const findings = answered
     .flatMap((a) => a.findings)
     .map((finding, order) => ({ finding, order }))
     .sort(
@@ -864,22 +841,49 @@ export function combineSectionAnswers(
         SEVERITY_ORDER[a.finding.severity] - SEVERITY_ORDER[b.finding.severity] ||
         a.order - b.order,
     )
-    .slice(0, MAX_FINDINGS)
+    .slice(0, MAX_FINDINGS - gap.length)
     .map(({ finding }) => finding);
-  return { [section]: { status: findings.length > 0 ? "issues" : "pass", findings } };
+  const all = [...findings, ...gap];
+  return { [section]: { status: all.length > 0 ? "issues" : "pass", findings: all } };
 }
 
-function combineRisk(answers: RawRisk[]): RawRisk {
-  const top = answers.reduce((best, a) =>
-    LEVEL_RANK[a.level] > LEVEL_RANK[best.level] ? a : best,
-  );
-  const topFirst = [top, ...answers.filter((a) => a !== top)];
+/**
+ * The answered groups, and the first fallback's first item (a finding or a
+ * concern) to keep for every group that fell back.
+ */
+function splitFallbacks<A, I>(
+  answers: readonly A[],
+  fellBack: readonly boolean[],
+  items: (answer: A) => readonly I[],
+): { answered: A[]; gap: I[] } {
+  const answered = answers.filter((_, i) => !fellBack[i]);
+  const fallback = answers.find((_, i) => fellBack[i]);
+  return { answered, gap: fallback ? items(fallback).slice(0, 1) : [] };
+}
+
+/**
+ * Risk across groups: the highest level any group gave, a fallen-back group's
+ * medium included; the client impact of the highest answered group; the first
+ * three mitigations; the first {@link MAX_FINDINGS} concerns, the highest
+ * answered group's first, keeping the "did not complete" one when a group fell
+ * back; and every answered group's changes, since the impact score is over the
+ * whole list.
+ */
+function combineRisk(answers: RawRisk[], fellBack: readonly boolean[]): RawRisk {
+  const highest = (list: RawRisk[]) =>
+    list.reduce((best, a) => (LEVEL_RANK[a.level] > LEVEL_RANK[best.level] ? a : best));
+  const { answered, gap } = splitFallbacks(answers, fellBack, (a) => a.concerns);
+  // The fan-out run fails when every group failed, so one answered; this keeps
+  // the merge total anyway.
+  const real = answered.length > 0 ? answered : answers;
+  const top = highest(real);
+  const topFirst = [top, ...real.filter((a) => a !== top)];
   return {
-    level: top.level,
+    level: highest(answers).level,
     clientImpact: top.clientImpact,
-    mitigations: answers.flatMap((a) => a.mitigations).slice(0, 3),
-    concerns: topFirst.flatMap((a) => a.concerns).slice(0, MAX_FINDINGS),
-    changes: answers.flatMap((a) => a.changes ?? []),
+    mitigations: real.flatMap((a) => a.mitigations).slice(0, 3),
+    concerns: [...topFirst.flatMap((a) => a.concerns).slice(0, MAX_FINDINGS - gap.length), ...gap],
+    changes: real.flatMap((a) => a.changes ?? []),
   };
 }
 
@@ -894,10 +898,10 @@ export function sectionParts(
   material: Pick<VerificationMaterial, "task" | "groups">,
 ): RunPart[] {
   const agent = SECTION_AGENTS[section];
-  const fallback = SECTION_FALLBACKS[section];
   if (!GROUPED_SECTIONS.has(section) || material.groups === 0) {
-    return [{ description: "the whole PR", agent, prompt: material.task, fallback }];
+    return [{ description: "the whole PR", agent, prompt: material.task }];
   }
+  const fallback = section === "risk" ? RISK_FALLBACK : CHECK_FALLBACK;
   return Array.from({ length: material.groups }, (_, i) => ({
     description: `group ${i + 1} of ${material.groups}`,
     agent,
@@ -1776,7 +1780,7 @@ async function startSectionRun(
         addDirs: [contextDir],
         parts: sectionParts(section, material),
         partSchema: sectionAnswerSchema(section, limits),
-        combine: (answers) => combineSectionAnswers(section, answers),
+        combine: (answers, fellBack) => combineSectionAnswers(section, answers, fellBack),
         outputSchema: verificationReportSchema(limits, audit),
         finishOutput: (report, activity): CoveredReport => {
           const counted = safeCoverage("verification", () =>
@@ -1875,8 +1879,8 @@ export interface VerificationSize {
   /**
    * About what one section's run costs on each model: agents reading every
    * file plus a fixed overhead. BASE_TOKENS was measured on a run of eight
-   * agents under a coordinating model, which runs no longer have, so charging
-   * it to every section rounds up rather than down. Effort isn't counted.
+   * agents under a coordinating model, so charging it to every section
+   * rounds up rather than down. Effort isn't counted.
    */
   checkCostUsd: Record<VerificationModel, number>;
   /** What the summary's run adds to {@link checkCostUsd}: the first page of each bulk file. */

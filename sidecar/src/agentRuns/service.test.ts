@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -482,7 +482,7 @@ describe("a fan-out run", () => {
     }),
     outputSchema: countsSchema,
   };
-  const part = (word: string, fallback = { count: -1 }) => ({
+  const part = (word: string, fallback: unknown = { count: -1 }) => ({
     description: `the ${word} part`,
     agent: `test:${word}-agent`,
     prompt: `count the ${word} files`,
@@ -497,6 +497,19 @@ describe("a fan-out run", () => {
       content: [{ type: "tool_use", id, name: "Read", input: { file_path: path } }],
     },
   });
+  const events = async (id: string) => (await getAgentRunEvents(db, id))?.events ?? [];
+  const retried = (list: AgentRunEvent[]) =>
+    list.flatMap((e) =>
+      e.type === "status" && e.message.startsWith("Retrying") ? [e.message] : [],
+    );
+
+  async function until(check: () => Promise<boolean>, what: string): Promise<void> {
+    for (let i = 0; i < 400; i++) {
+      if (await check()) return;
+      await Bun.sleep(25);
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
 
   /** A fake whose answer depends on which part's prompt it was given. */
   function partsFake(name: string, cases: Record<string, string>): string {
@@ -509,6 +522,8 @@ describe("a fan-out run", () => {
   it("runs each part as its own agent, on its own lane, and combines their answers in order", async () => {
     const one = join(dir, "fan-one.jsonl");
     const two = join(dir, "fan-two.jsonl");
+    const go = join(dir, "fan-go");
+    const argvDir = makeTempDir("yarvis-fan-argv-");
     writeFileSync(
       one,
       lines(
@@ -520,9 +535,12 @@ describe("a fan-out run", () => {
       two,
       lines(resultLine({ structured_output: { count: 2 }, total_cost_usd: 0.03 })),
     );
+    // Each process records its argv, then both wait for the test, and the
+    // first part answers last.
+    const wait = `printf '%s\\n' "$@" > "${argvDir}/$$"; while [ ! -f "${go}" ]; do sleep 0.02; done`;
     const program = partsFake("fan-ok", {
-      one: `sleep 0.2; cat "${one}"`,
-      two: `cat "${two}"`,
+      one: `${wait}; sleep 0.2; cat "${one}"`,
+      two: `${wait}; cat "${two}"`,
     });
     let activity: RunActivity | undefined;
     const handle = await startClaudeFanOutRun(
@@ -537,6 +555,34 @@ describe("a fan-out run", () => {
       },
       deps(program),
     );
+
+    // While they run, both processes are on the crash sweep's list.
+    await until(
+      async () => ((await row(handle.id))?.processes.length ?? 0) === 2,
+      "both processes",
+    );
+    const pids = (await row(handle.id))?.processes.map((p) => p.pid) ?? [];
+    expect(new Set(pids).size).toBe(2);
+    // Every process gets the locked-down argv, its own agent and the part's schema.
+    await until(async () => readdirSync(argvDir).length === 2, "both argvs");
+    const argvs = readdirSync(argvDir).map((f) =>
+      readFileSync(join(argvDir, f), "utf8").split("\n"),
+    );
+    for (const argv of argvs) {
+      const after = (flag: string) => argv[argv.indexOf(flag) + 1];
+      expect(after("--setting-sources")).toBe("");
+      expect(JSON.parse(after("--settings") ?? "")).toEqual(lockedDownSettings());
+      expect(after("--permission-mode")).toBe("dontAsk");
+      expect(JSON.parse(after("--json-schema") ?? "")).toEqual(
+        JSON.parse(jsonSchemaArg(countSchema)),
+      );
+    }
+    expect(argvs.map((argv) => argv[argv.indexOf("--agent") + 1]).sort()).toEqual([
+      "test:one-agent",
+      "test:two-agent",
+    ]);
+    writeFileSync(go, "");
+
     const outcome = await handle.done;
     // In parts order, though the first part finished last.
     expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [1, 2] } });
@@ -546,25 +592,26 @@ describe("a fan-out run", () => {
     ]);
     expect(activity?.subagents.get("part-1")).toBe("test:one-agent");
 
-    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
-    expect(events).toContainEqual({
+    const log = await events(handle.id);
+    expect(log).toContainEqual({
       type: "subagent",
       phase: "start",
       id: "part-2",
       name: "test:two-agent",
       description: "the two part",
     });
-    expect(events).toContainEqual(
+    for (const id of ["part-1", "part-2"]) {
+      expect(log).toContainEqual(
+        expect.objectContaining({ type: "subagent", phase: "stop", id, failed: false }),
+      );
+    }
+    expect(log).toContainEqual(
       expect.objectContaining({ type: "tool", name: "Read", subagentId: "part-1" }),
     );
-    expect(events.at(-1)).toEqual({ type: "done", status: "succeeded" });
-
-    for (let i = 0; i < 100 && ((await row(handle.id))?.processes.length ?? 0) < 2; i++) {
-      await Bun.sleep(20);
-    }
-    const processes = (await row(handle.id))?.processes ?? [];
-    expect(processes).toHaveLength(2);
-    expect(processes.every((p) => p.pid > 0)).toBe(true);
+    expect(log.at(-1)).toEqual({ type: "done", status: "succeeded" });
+    // Once a process exits it leaves the list, so the sweep can't kill a reused pid.
+    await until(async () => (await row(handle.id))?.processes.length === 0, "the list to empty");
+    rmSync(argvDir, { recursive: true, force: true });
   });
 
   it("asks a part again once when its answer doesn't fit, and falls back after a second failure", async () => {
@@ -577,25 +624,32 @@ describe("a fan-out run", () => {
       flaky: `if [ -f "${tried}" ]; then cat "${good}"; else touch "${tried}"; cat "${bad}"; fi`,
       broken: `echo "broken part" >&2; exit 1`,
     });
+    let fellBack: boolean[] = [];
     const handle = await startClaudeFanOutRun(
       db,
-      { ...base, parts: [part("flaky"), part("broken", { count: 100 })] },
+      {
+        ...base,
+        parts: [part("flaky"), part("broken", { count: 100 })],
+        combine: (answers: unknown[], flags: boolean[]) => {
+          fellBack = flags;
+          return base.combine(answers);
+        },
+      },
       deps(program),
     );
     const outcome = await handle.done;
     expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [3, 100] } });
-    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
-    const retries = events.filter((e) => e.type === "status" && e.message.startsWith("Retrying"));
-    const messages = retries.map((e) => (e as { message: string }).message);
+    expect(fellBack).toEqual([false, true]);
+    const log = await events(handle.id);
     // The parts run at once, so either may retry first.
-    expect(messages).toHaveLength(2);
-    expect(messages).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("Retrying the flaky part: its answer did not match"),
-        expect.stringContaining("Retrying the broken part: claude exited with code 1"),
-      ]),
+    expect(retried(log).sort()).toEqual([
+      expect.stringContaining("Retrying the broken part: claude exited with code 1"),
+      expect.stringContaining("Retrying the flaky part: its answer did not match"),
+    ]);
+    expect(log).toContainEqual(
+      expect.objectContaining({ type: "subagent", phase: "stop", id: "part-1", failed: false }),
     );
-    expect(events).toContainEqual(
+    expect(log).toContainEqual(
       expect.objectContaining({ type: "subagent", phase: "stop", id: "part-2", failed: true }),
     );
   });
@@ -613,9 +667,26 @@ describe("a fan-out run", () => {
     expect(outcome.error).toContain("no key");
   });
 
-  it("fails when the combined answer doesn't fit the run's schema", async () => {
+  it("fails when a part with no fallback fails twice, though another answered", async () => {
+    const answer = join(dir, "fan-only-one.jsonl");
+    writeFileSync(answer, lines(resultLine({ structured_output: { count: 1 } })));
+    const program = partsFake("fan-no-fallback", {
+      one: `cat "${answer}"`,
+      two: `echo "two broke" >&2; exit 1`,
+    });
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one"), { ...part("two"), fallback: undefined }] },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("the two part failed");
+  });
+
+  it("fails, keeping what the parts cost, when the combined answer doesn't fit the run's schema", async () => {
     const program = fakePrinting(dir, "fan-one-part", [
-      resultLine({ structured_output: { count: 1 } }),
+      resultLine({ structured_output: { count: 1 }, total_cost_usd: 0.04 }),
     ]);
     const handle = await startClaudeFanOutRun(
       db,
@@ -625,44 +696,123 @@ describe("a fan-out run", () => {
     const outcome = await handle.done;
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toContain("did not match the expected shape");
+    expect(outcome.costUsd).toBeCloseTo(0.04);
+
+    const throwing = await startClaudeFanOutRun(
+      db,
+      {
+        ...base,
+        parts: [part("one")],
+        combine: () => {
+          throw new Error("bad merge");
+        },
+      },
+      deps(program),
+    );
+    const thrown = await throwing.done;
+    expect(thrown.error).toContain("bad merge");
+    expect(thrown.costUsd).toBeCloseTo(0.04);
   });
 
   it("stops every part on a cancel, without retrying any", async () => {
     const program = fakeClaude(dir, "fan-slow", "cat > /dev/null; sleep 5");
+    const started = Date.now();
     const handle = await startClaudeFanOutRun(
       db,
       { ...base, parts: [part("one"), part("two")] },
       deps(program),
     );
-    for (let i = 0; i < 100 && ((await row(handle.id))?.processes.length ?? 0) < 2; i++) {
-      await Bun.sleep(20);
-    }
+    await until(
+      async () => ((await row(handle.id))?.processes.length ?? 0) === 2,
+      "both processes",
+    );
     registry.cancel(handle.id);
     const outcome = await handle.done;
     expect(outcome.status).toBe("cancelled");
-    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
-    expect(events.some((e) => e.type === "status" && e.message.startsWith("Retrying"))).toBe(false);
+    // Killed, not left to finish their sleep.
+    expect(Date.now() - started).toBeLessThan(4_000);
+    const log = await events(handle.id);
+    expect(retried(log)).toEqual([]);
+    for (const id of ["part-1", "part-2"]) {
+      expect(log).toContainEqual(
+        expect.objectContaining({ type: "subagent", phase: "stop", id, failed: true }),
+      );
+    }
   });
 
-  it("waits for a free slot, so the processes of every run stay under the limit", async () => {
-    const busy = join(dir, "fan-busy");
+  it("cancels a part still waiting for a slot without starting it, and gives the slot back", async () => {
+    const started = join(dir, "fan-started");
+    const program = fakeClaude(
+      dir,
+      "fan-waiting",
+      `cat > /dev/null; echo x >> "${started}"; sleep 5`,
+    );
+    const slots = new ProcessSlots(1);
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one"), part("two")] },
+      { ...deps(program), slots },
+    );
+    await until(async () => existsSync(started), "the first process");
+    registry.cancel(handle.id);
+    expect((await handle.done).status).toBe("cancelled");
+    expect(readFileSync(started, "utf8")).toBe("x\n");
+    const log = await events(handle.id);
+    expect(log).toContainEqual(
+      expect.objectContaining({ type: "subagent", phase: "stop", id: "part-2", failed: true }),
+    );
+    const next = slots.acquire(new AbortController().signal);
+    expect(await Promise.race([next, Promise.resolve("still waiting")])).not.toBe("still waiting");
+  });
+
+  it("fails the whole run at its deadline, stopping every part, retrying none", async () => {
+    const quick = join(dir, "fan-quick.jsonl");
+    writeFileSync(quick, lines(resultLine({ structured_output: { count: 1 } })));
+    const program = partsFake("fan-deadline", { one: `cat "${quick}"`, two: "sleep 5" });
+    const started = Date.now();
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, timeoutMs: 600, parts: [part("one"), part("two")] },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(4_000);
+    const log = await events(handle.id);
+    expect(retried(log)).toEqual([]);
+    expect(log).toContainEqual(
+      expect.objectContaining({ type: "subagent", phase: "stop", id: "part-2", failed: true }),
+    );
+  });
+
+  it("waits for a free slot, so the processes of every run together stay under the limit", async () => {
+    const lock = join(dir, "fan-lock");
     const overlap = join(dir, "fan-overlap");
     const answer = join(dir, "fan-slot.jsonl");
     writeFileSync(answer, lines(resultLine({ structured_output: { count: 1 } })));
+    // mkdir is atomic: a second process inside the slot at once can't miss the first.
     const program = fakeClaude(
       dir,
       "fan-slot",
       `cat > /dev/null
-[ -f "${busy}" ] && touch "${overlap}"
-touch "${busy}"; sleep 0.2; rm -f "${busy}"
+mkdir "${lock}" 2>/dev/null || touch "${overlap}"
+sleep 0.1; rmdir "${lock}" 2>/dev/null
 cat "${answer}"`,
     );
-    const handle = await startClaudeFanOutRun(
-      db,
-      { ...base, parts: [part("one"), part("two"), part("three")] },
-      { ...deps(program), slots: new ProcessSlots(1) },
+    const slots = new ProcessSlots(1);
+    const runs = await Promise.all(
+      [0, 1].map(() =>
+        startClaudeFanOutRun(
+          db,
+          { ...base, parts: [part("one"), part("two")] },
+          { ...deps(program), slots },
+        ),
+      ),
     );
-    expect(await handle.done).toMatchObject({ status: "succeeded", output: { counts: [1, 1, 1] } });
+    for (const handle of runs) {
+      expect(await handle.done).toMatchObject({ status: "succeeded", output: { counts: [1, 1] } });
+    }
     expect(existsSync(overlap)).toBe(false);
   });
 

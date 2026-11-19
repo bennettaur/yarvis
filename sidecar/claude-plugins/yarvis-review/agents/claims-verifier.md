@@ -1,7 +1,9 @@
 ---
 name: claims-verifier
 description: Lists what a pull request's title, description and linked tickets say it does, and checks each claim against the code. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 

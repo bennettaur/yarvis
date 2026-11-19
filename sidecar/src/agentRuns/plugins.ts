@@ -63,9 +63,8 @@ export const REREVIEW_INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:rereview-inp
 
 /**
  * A review agent with the shared section spliced in. Claude Code agent files
- * have no include, and the system prompt a run appends never reaches a
- * subagent, so each agent carries the trust rules itself; keeping them in
- * one file is what stops the copies drifting apart. Throws at load when an
+ * have no include, so each agent carries the trust rules itself; keeping them
+ * in one file is what stops the copies drifting apart. Throws at load when an
  * agent lacks the marker, so a missing guardrail can't ship.
  */
 export function withInputsAndTrust(

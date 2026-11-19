@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { inArray } from "drizzle-orm";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
+import { ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
@@ -99,14 +100,14 @@ beforeEach(async () => {
     fakeDir,
     "claude",
     `input=$(cat)
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 ${printAgentAnswer(fakeDir)}`,
   );
   failingProgram = fakeClaude(
     fakeDir,
     "claude-fails",
     `cat > /dev/null
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 echo "agent blew up reading the PR" >&2
 exit 1`,
   );
@@ -148,6 +149,8 @@ exit 1`,
         program,
         registry: new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 }),
         instance: "test",
+        // Its own, so a fake a test leaves running can't hold another test's slot.
+        slots: new ProcessSlots(12),
       },
     },
     isRegistered: async () => true,
@@ -390,7 +393,7 @@ describe("kickOffVerification", () => {
       fakeDir,
       "claude-tests-fail",
       `input=$(cat)
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 case "$*" in *"yarvis-review:test-reviewer"*) echo "tests agent blew up" >&2; exit 1;; esac
 ${printAgentAnswer(fakeDir)}`,
     );

@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { lockedDownSettings } from "../agentRuns/service.ts";
+import { lockedDownSettings, ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { ControlTimeoutError } from "../core/controlClient.ts";
@@ -889,7 +889,7 @@ printf '%s\\n' "$@" > "${fakeDir}/args.$$" && mv "${fakeDir}/args.$$" "${fakeDir
 printf '%s' "$YARVIS_TEST_HARNESS_KEY" > "${fakeDir}/env.$$" && mv "${fakeDir}/env.$$" "${fakeDir}/env.txt"
 ctx=""; prev=""
 for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
 ${printAgentAnswer(fakeDir)}`,
     );
@@ -930,6 +930,8 @@ ${printAgentAnswer(fakeDir)}`,
             },
             registry,
             instance: "test",
+            // Its own, so a fake a test leaves running can't hold another test's slot.
+            slots: new ProcessSlots(12),
           },
           loadHarnessRunEnv: async (harness) => {
             harnessesAsked.push(harness);
@@ -1583,7 +1585,7 @@ describe("re-review summary", () => {
 printf '%s\\n' "$@" > "${fakeDir}/args.tmp" && mv "${fakeDir}/args.tmp" "${fakeDir}/args.txt"
 ctx=""; prev=""
 for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
 cat "${fakeDir}/result.jsonl"`,
     );

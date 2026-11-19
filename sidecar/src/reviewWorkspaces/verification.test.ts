@@ -1183,9 +1183,9 @@ describe("the size a warning states", () => {
 
   it("never prices the calibration runs below what they cost", () => {
     // The two Haiku runs the constants were fitted to, from their files' line counts.
-    // Those were one run of seven check agents. Each section now pays a
-    // coordinator's overhead of its own, which wasn't measured, so the estimate
-    // charges the whole base to each and lands above what one run cost.
+    // Those were one run of seven check agents. Each section runs on its own,
+    // with overhead of its own that wasn't measured, so the estimate charges
+    // the whole base to each and lands above what one run cost.
     const code = verificationSize(
       [f("src/mod.ts", 600), f("docs/discounts.md", 3), f("zz/core.ts", 15)],
       [],
@@ -1367,19 +1367,75 @@ describe("putting a section's answers together", () => {
     expect(combineSectionAnswers("flow", [flow])).toEqual({ flow });
   });
 
-  it("has a fallback for every section that its schemas take, and says the check didn't complete", () => {
+  it("gives each group of a grouped section a fallback its schemas take, and none to a whole-PR run", () => {
     for (const section of REPORT_SECTIONS) {
-      const [part] = sectionParts(section, { task: "", groups: 1 });
-      const fallback = part?.fallback;
-      const combined = combineSectionAnswers(section, [fallback]);
+      const parts = sectionParts(section, { task: "", groups: 2 });
+      const fallback = parts[1]?.fallback;
+      if (parts.length === 1) {
+        expect(fallback).toBeUndefined();
+        continue;
+      }
+      expect(sectionAnswerSchema(section, limits).safeParse(fallback).success).toBe(true);
+      const combined = combineSectionAnswers(section, [fallback, fallback], [false, true]);
       const report = verificationReportSchema({ ...limits, sections: [section] }).parse(combined);
-      expect(JSON.stringify(report)).toMatch(/did not complete|failed to answer|unavailable/i);
-      if (section !== "approach")
-        expect(sectionAnswerSchema(section, limits).safeParse(fallback).success).toBe(true);
+      expect(JSON.stringify(report)).toContain("did not complete");
     }
+    expect(sectionParts("tests", { task: "", groups: 0 })[0]?.fallback).toBeUndefined();
   });
 
-  it("asks an approach agent again when it answers unrated, which only the fallback may", () => {
+  it("keeps a group's 'did not complete' finding however many findings the others have", () => {
+    const [, failed] = sectionParts("malice", { task: "", groups: 2 });
+    const busy = {
+      status: "issues",
+      findings: ["a", "b", "c", "d", "e", "f"].map((t) => finding(t, "high")),
+    };
+    const { malice } = combineSectionAnswers("malice", [busy, failed?.fallback], [false, true]) as {
+      malice: { findings: { title: string }[] };
+    };
+    expect(malice.findings.map((f) => f.title)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "Check did not complete",
+    ]);
+  });
+
+  it("raises risk to medium for a group that fell back, keeping the answered group's impact and changes", () => {
+    const [, failed] = sectionParts("risk", { task: "", groups: 2 });
+    const answered = {
+      level: "low",
+      clientImpact: "None.",
+      mitigations: ["m"],
+      concerns: Array.from({ length: 6 }, (_, i) => ({ title: `c${i}`, detail: "d" })),
+      changes: [{ title: "change", kind: "logic", reach: "local", evidence: "partial" }],
+    };
+    const { risk } = combineSectionAnswers("risk", [answered, failed?.fallback], [false, true]) as {
+      risk: {
+        level: string;
+        clientImpact: string;
+        concerns: { title: string }[];
+        changes: unknown[];
+      };
+    };
+    expect(risk.level).toBe("medium");
+    expect(risk.clientImpact).toBe("None.");
+    expect(risk.concerns.map((c) => c.title)).toEqual([
+      "c0",
+      "c1",
+      "c2",
+      "c3",
+      "Check did not complete",
+    ]);
+    expect(risk.changes).toHaveLength(1);
+  });
+
+  it("passes a single group's risk through, and takes a missing list of changes as none", () => {
+    const one = { level: "high", clientImpact: "i", mitigations: [], concerns: [], changes: null };
+    expect(combineSectionAnswers("risk", [one])).toEqual({ risk: { ...one, changes: [] } });
+  });
+
+  it("asks an approach agent again when it answers unrated", () => {
     const schema = sectionAnswerSchema("approach", limits);
     const answer = { rating: "simpler", reason: "r", alternative: "a" };
     expect(schema.safeParse(answer).success).toBe(true);

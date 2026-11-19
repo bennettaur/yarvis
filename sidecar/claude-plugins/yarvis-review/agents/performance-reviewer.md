@@ -1,7 +1,9 @@
 ---
 name: performance-reviewer
 description: Flags obvious performance problems a pull request introduces. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 

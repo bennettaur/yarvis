@@ -1,7 +1,9 @@
 ---
 name: approach-reviewer
 description: Rates whether a pull request as a whole could reach its goal in a materially simpler way, and names that way. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 
