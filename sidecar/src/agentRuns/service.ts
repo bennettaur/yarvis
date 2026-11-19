@@ -180,6 +180,11 @@ export interface ClaudeRunDeps {
   registry?: RunRegistry<AgentRunEvent>;
   /** The executable; defaults to the configured Claude Code build. */
   program?: string;
+  /**
+   * Set over the run's built environment: a harness's variables, which can
+   * hold credentials, so they are never logged or stored.
+   */
+  env?: Record<string, string>;
   /** The app instance recorded on the row; defaults to this process's. */
   instance?: string;
 }
@@ -482,6 +487,7 @@ export async function startClaudeRun<T, R = T>(
         args,
         stdin: options.prompt,
         cwd,
+        env: deps.env,
         signal,
         timeoutMs: options.timeoutMs,
         onSpawn: (pid) => void recordPid(db, id, pid),

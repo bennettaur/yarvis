@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import type { RunChoice } from "../../../lib/pr/models";
+import { type RunChoice, VERIFICATION_SETTINGS_KEY } from "../../../lib/pr/models";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
@@ -446,6 +446,50 @@ describe("VerificationTab", () => {
     button(row(host, "Risk"), "Run")?.click();
     await waitFor(() => sent.length === 2, "the second start");
     expect(sent).toEqual([{}, { model: "haiku", effort: "low" }]);
+  });
+
+  it("starts checks with the harness picked for the run, or the one set in Settings", async () => {
+    primeCache(VERIFICATION_SETTINGS_KEY, {
+      maxBudgetUsd: 2,
+      sections: {},
+      sectionDefaults: [],
+      harness: "bedrock",
+      harnesses: [
+        { id: "claude", name: "Claude" },
+        { id: "bedrock", name: "Bedrock" },
+      ],
+    });
+    const sent: (string | undefined)[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, _tickets, _override, harness) => {
+        sent.push(harness);
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    try {
+      const host = await mount(checklist());
+      const select = host.querySelector(
+        'select[aria-label="Harness for the checks you run"]',
+      ) as HTMLSelectElement;
+      // Settings' choice comes first and stands for itself; the others follow.
+      expect([...select.options].map((o) => o.textContent)).toEqual(["Bedrock", "Claude"]);
+      button(row(host, "Risk"), "Run")?.click();
+      await waitFor(() => sent.length === 1, "the first start");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        "claude",
+      );
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => select.value === "claude", "the pick to change");
+      button(row(host, "Risk"), "Run")?.click();
+      await waitFor(() => sent.length === 2, "the second start");
+      expect(sent).toEqual([undefined, "claude"]);
+    } finally {
+      invalidate(VERIFICATION_SETTINGS_KEY);
+    }
   });
 
   it("offers the last run's tickets again, and sends at most five", async () => {

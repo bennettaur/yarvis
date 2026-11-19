@@ -18,12 +18,15 @@ import {
   VERIFICATION_EFFORTS,
   VERIFICATION_MODEL_LABELS,
   VERIFICATION_MODELS,
+  VERIFICATION_SETTINGS_KEY,
   type VerificationEffort,
   type VerificationModel,
   type VerificationRunConfig,
   type VerificationRunConfigPatch,
 } from "../lib/pr/models";
+import { invalidate } from "../lib/resourceCache";
 import type { ReportSection } from "../lib/reviewWorkspaces/verification";
+import { BUILTIN_HARNESS_ID } from "../lib/settings";
 
 /**
  * Which model writes guided reviews and answers line questions about a pull request's
@@ -128,10 +131,37 @@ function VerificationSectionRuns({
   value: VerificationRunConfig;
   onSave: (patch: VerificationRunConfigPatch) => void;
 }) {
+  // A harness deleted or changed since it was picked: shown, so it can be changed.
+  const missingHarness =
+    value.harness && !value.harnesses.some((h) => h.id === value.harness) ? value.harness : null;
   const save = (section: ReportSection, choice: RunChoice) =>
     onSave({ sections: { [section]: choice } });
   return (
     <div className="space-y-1">
+      {(value.harnesses.length > 1 || missingHarness) && (
+        <label className="flex items-center gap-2 text-xs text-zinc-400">
+          Run the checks with
+          <select
+            className={FIELD}
+            aria-label="Verification harness"
+            value={value.harness ?? BUILTIN_HARNESS_ID}
+            onChange={(e) =>
+              onSave({ harness: e.target.value === BUILTIN_HARNESS_ID ? null : e.target.value })
+            }
+          >
+            {value.harnesses.map((h) => (
+              <option key={h.id} value={h.id}>
+                {h.name}
+              </option>
+            ))}
+            {missingHarness && (
+              <option value={missingHarness}>
+                {missingHarness} (no longer saved; checks fail)
+              </option>
+            )}
+          </select>
+        </label>
+      )}
       <p className="text-xs text-zinc-500">
         Each check's Claude model and effort. A run started from the checklist or the assistant can
         override them for that run.
@@ -243,6 +273,7 @@ export default function PrModelSection() {
     );
     try {
       setVerification(await saveVerificationRunConfig(patch));
+      invalidate(VERIFICATION_SETTINGS_KEY);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

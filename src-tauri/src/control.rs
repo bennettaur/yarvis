@@ -5,7 +5,8 @@
 //! GitHub token into the Keychain, and ringing an alarm the sidecar found due
 //! (`alarm.fire`) or stopping one (`alarm.release`). It also starts and ends
 //! the locked-down session over a review workspace's PR checkouts
-//! (`claude.spawnReview`, `claude.killReview`).
+//! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code
+//! harness's program and environment to a verification run (`harness.runEnv`).
 //!
 //! Security model: the socket lives in the app's private data dir (mode 0700) as
 //! a mode-0600 file, so only the same user can connect, and a UDS is never
@@ -28,7 +29,16 @@
 //! methods that write a secret. `mcp.saveOAuth` can only reach the `oauth`
 //! subtree of one MCP server's entry, and `github.saveToken` only the
 //! `github_token` key — never a provider key, the database URL, or another
-//! server's headers. Requests and responses are newline-delimited JSON.
+//! server's headers. `harness.runEnv` is the one method that reads a secret
+//! back: it answers with one Claude Code harness's program and environment,
+//! that harness's secret variables included, for a headless verification run
+//! the sidecar starts with it. It refuses any other kind, and never answers
+//! with another harness's values or anything else in the store. Like every
+//! method here it trusts any process running as the user, so such a process
+//! can read a Claude Code harness's secrets through it; that was accepted
+//! rather than tying the socket to the sidecar's pid. Requests and
+//! responses are newline-delimited JSON; a reply carries `result` only for a
+//! method that answers with data.
 
 /// Absolute path to the control socket, kept in managed state so `sidecar.rs`
 /// can pass it to the child process via env.
@@ -44,6 +54,7 @@ pub use unix_impl::init;
 
 #[cfg(unix)]
 mod unix_impl {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     use serde::{Deserialize, Serialize};
@@ -74,6 +85,8 @@ mod unix_impl {
     struct Response {
         id: Value,
         ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     }
@@ -182,6 +195,11 @@ mod unix_impl {
     #[derive(Deserialize)]
     struct SaveGitHubTokenParams {
         token: String,
+    }
+
+    #[derive(Deserialize)]
+    struct HarnessRunEnvParams {
+        harness: String,
     }
 
     #[derive(Deserialize)]
@@ -298,22 +316,49 @@ mod unix_impl {
                 return Response {
                     id: Value::Null,
                     ok: false,
+                    result: None,
                     error: Some(format!("bad request: {e}")),
                 }
             }
         };
-        match run_method(app, &req.method, req.params) {
-            Ok(()) => Response {
+        // `harness.runEnv` is the one method that answers with data; the rest are in `run_method`.
+        let outcome = match req.method.as_str() {
+            "harness.runEnv" => harness_run_env(app, req.params).map(Some),
+            method => run_method(app, method, req.params).map(|()| None),
+        };
+        match outcome {
+            Ok(result) => Response {
                 id: req.id,
                 ok: true,
+                result,
                 error: None,
             },
             Err(e) => Response {
                 id: req.id,
                 ok: false,
+                result: None,
                 error: Some(e),
             },
         }
+    }
+
+    /// `harness.runEnv`: see the module doc for what it may answer with.
+    fn harness_run_env(app: &AppHandle, params: Value) -> Result<Value, String> {
+        let p: HarnessRunEnvParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+        // `resolve` reads a blank id as "the default", which this method never means.
+        if !crate::harness::is_valid_id(&p.harness) {
+            return Err("invalid harness id".into());
+        }
+        let (program, env) = crate::pty::headless_harness(app, &p.harness)?;
+        Ok(run_env_reply(program, env))
+    }
+
+    /// The shape `harnessRunEnvSchema` in `sidecar/src/core/controlClient.ts` reads.
+    fn run_env_reply(program: String, env: Vec<(String, String)>) -> Value {
+        serde_json::json!({
+            "program": program,
+            "env": env.into_iter().collect::<BTreeMap<_, _>>(),
+        })
     }
 
     fn run_method(app: &AppHandle, method: &str, params: Value) -> Result<(), String> {
@@ -527,6 +572,37 @@ mod unix_impl {
                     "source": "heads-down",
                 }
             })
+        }
+
+        /// Shaped like `harnessRunEnv` in `controlClient.ts`, and answered in
+        /// the shape it parses.
+        #[test]
+        fn reads_the_harness_the_sidecar_asks_for_and_answers_its_run_env() {
+            let p: HarnessRunEnvParams =
+                serde_json::from_value(json!({ "harness": "bedrock" })).expect("sidecar payload");
+            assert_eq!(p.harness, "bedrock");
+            let reply = run_env_reply(
+                "/opt/bin/claude".into(),
+                vec![("API_KEY".into(), "sk".into())],
+            );
+            assert_eq!(
+                reply,
+                json!({ "program": "/opt/bin/claude", "env": { "API_KEY": "sk" } })
+            );
+        }
+
+        #[test]
+        fn a_reply_carries_result_only_when_a_method_answers_with_data() {
+            let plain = Response {
+                id: json!(1),
+                ok: true,
+                result: None,
+                error: None,
+            };
+            assert_eq!(
+                serde_json::to_value(plain).unwrap(),
+                json!({ "id": 1, "ok": true })
+            );
         }
 
         #[test]

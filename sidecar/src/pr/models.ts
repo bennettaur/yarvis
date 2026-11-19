@@ -4,6 +4,7 @@ import { CLAUDE_EFFORTS } from "../lib/claudeCli.ts";
 import type { ModelSelection } from "../llm/complexity.ts";
 import { defaultProviderModel } from "../llm/providers.ts";
 import { readSection, withSection } from "../settings/store.ts";
+import { harnessIdSchema } from "../workspaces/harnesses.ts";
 
 /**
  * Which model backs each PR review feature, kept as one plain object under the
@@ -79,6 +80,12 @@ export interface VerificationRunConfig {
   maxBudgetUsd: number;
   /** Overrides by section name. The route checks the names; one stored by hand that names no section is never read. */
   sections: Record<string, RunChoice>;
+  /**
+   * The agent harness the checks run with, by id; left out, the built-in
+   * agent. It must be a Claude Code harness: the settings route checks on
+   * save, and the core again when it hands over the harness's environment.
+   */
+  harness?: string;
 }
 
 export const DEFAULT_VERIFICATION_RUN_CONFIG: VerificationRunConfig = {
@@ -114,9 +121,11 @@ function verificationConfigFrom(
   stored: Record<string, unknown> | undefined,
 ): VerificationRunConfig {
   const budget = verificationBudgetSchema.safeParse(stored?.maxBudgetUsd);
+  const harness = harnessIdSchema.safeParse(stored?.harness).data;
   return {
     maxBudgetUsd: budget.success ? budget.data : DEFAULT_VERIFICATION_RUN_CONFIG.maxBudgetUsd,
     sections: sectionsFrom(stored?.sections),
+    ...(harness && { harness }),
   };
 }
 
@@ -128,6 +137,8 @@ interface VerificationRunConfigPatch {
   maxBudgetUsd?: number;
   /** Replaces each named section's override; an empty one puts the section back on its default. */
   sections?: Record<string, RunChoice>;
+  /** `null` goes back to the built-in agent. */
+  harness?: string | null;
 }
 
 /** Merges the given fields onto the stored settings and writes them back. */
@@ -138,9 +149,11 @@ export async function saveVerificationRunConfig(
     VERIFICATION_SETTINGS_KEY,
     (current) => {
       const before = verificationConfigFrom(current);
+      const harness = input.harness === undefined ? before.harness : input.harness;
       const next = {
         maxBudgetUsd: input.maxBudgetUsd ?? before.maxBudgetUsd,
         sections: sectionsFrom({ ...before.sections, ...input.sections }),
+        ...(harness && { harness }),
       };
       return { next, result: next };
     },

@@ -23,10 +23,21 @@ Three processes, each with a clean ownership boundary:
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
   method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
   `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
-  `github.saveToken`, `alarm.fire`, `alarm.release`)
+  `github.saveToken`, `alarm.fire`, `alarm.release`, `harness.runEnv`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
-  a PTY. `claude.spawn` can name a saved agent harness by id, never a command,
+  a PTY. `harness.runEnv` is the one method that hands a secret back to the
+  sidecar: one Claude Code harness's program and environment, its secret
+  variables included, for a verification run. The harness is the one the user
+  set in Settings or picked for a run on the Verification tab; the
+  assistant's tools take none, though the runs it starts use the Settings one.
+  The values go only into the run's environment, never a log or a row, and a
+  harness setting a variable that would move what the run may not read
+  (`HOME`, `CLAUDE_CONFIG_DIR`) is refused. Like every method it trusts any
+  process running as the user, so such a process can read those secrets
+  through the socket; that was accepted rather than tying the socket to the
+  sidecar's pid.
+  `claude.spawn` can name a saved agent harness by id, never a command,
   and the core refuses one the user hasn't let the assistant start
   (`harness::check_assistant_may_launch`): the id comes from a model that may
   have read it in an issue. A spawn with a resume id skips that check for a

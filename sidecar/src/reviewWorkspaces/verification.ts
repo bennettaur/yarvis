@@ -20,6 +20,7 @@ import { z } from "zod";
 import { ratesFor } from "../agentRuns/pricing.ts";
 import { type ClaudeRunDeps, spotlight, startClaudeRun } from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
+import { type HarnessRunEnv, harnessRunEnv } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
 import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
@@ -47,6 +48,7 @@ import {
   REACHES,
   scoreImpact,
 } from "../verify/impact.ts";
+import { BUILTIN_HARNESS_ID } from "../workspaces/harnesses.ts";
 import {
   boundedList,
   boundedText,
@@ -1238,6 +1240,8 @@ export interface VerificationDeps {
   settings(): Promise<VerificationRunConfig>;
   /** Passed to `startClaudeRun`; tests swap in a fake `claude`. */
   run?: ClaudeRunDeps;
+  /** A saved harness's program and environment, from the core; tests swap it out. */
+  loadHarnessRunEnv?: (harness: string) => Promise<HarnessRunEnv>;
 }
 
 export function defaultVerificationDeps(config: Config): VerificationDeps {
@@ -1379,6 +1383,8 @@ export function requireCheckout(config: Config, pr: ReviewWorkspacePr): string {
 interface RunInputs {
   /** The model or effort the caller picked for every section it starts. */
   override: RunChoice;
+  /** Resolved once for every section, since the secret store may prompt. */
+  harness: { id: string; runDeps?: ClaudeRunDeps };
   pr: ReviewWorkspacePr;
   headSha: string;
   sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
@@ -1396,6 +1402,8 @@ export interface StartVerificationOptions {
   namedTickets?: readonly string[];
   /** A model or effort for every section this call starts, over the user's settings. */
   override?: RunChoice;
+  /** The harness every section this call starts runs with, over the user's setting. */
+  harness?: string;
 }
 
 /**
@@ -1416,7 +1424,7 @@ export async function startVerification(
   prId: string,
   reviewDeps: ReviewDeps,
   deps: VerificationDeps,
-  { sections: picked, namedTickets = [], override = {} }: StartVerificationOptions = {},
+  { sections: picked, namedTickets = [], override = {}, harness }: StartVerificationOptions = {},
 ): Promise<StartedVerification> {
   const sections = normalizeSections(picked);
   // Read once for the lock key, which can't change; everything else comes
@@ -1436,7 +1444,11 @@ export async function startVerification(
       else toStart.push(section);
     }
     if (toStart.length > 0) {
-      const [{ sources }, detail, settings] = await Promise.all([
+      // First, so a harness that can't run fails before the provider reads.
+      const settings = await deps.settings();
+      // The run's pick wins over Settings.
+      const runHarness = await harnessRun(deps, harness ?? settings.harness);
+      const [{ sources }, detail] = await Promise.all([
         reviewPatchSources(config, pr, reviewDeps, PATCH_LIMITS.maxPatchBytes),
         deps.loadDetail(pr.ref).catch((e) => {
           // The report is still worth having without the description and checks;
@@ -1445,7 +1457,6 @@ export async function startVerification(
           console.error("[verification] could not load PR details:", describeError(e));
           return null;
         }),
-        deps.settings(),
       ]);
       // Each run writes its own copy of the patches, so read each diff once.
       const once = sources.map((source) => {
@@ -1457,6 +1468,7 @@ export async function startVerification(
         : undefined;
       const inputs: RunInputs = {
         override,
+        harness: runHarness,
         pr,
         headSha,
         sources: once,
@@ -1486,6 +1498,31 @@ export async function startVerification(
       failed,
     };
   });
+}
+
+/**
+ * The run dependencies for `harness`: the configured Claude Code build for the
+ * built-in agent, or a saved harness's program and environment from the core,
+ * which refuses one that isn't Claude Code. Read once for every section a call
+ * starts, since the secret store may prompt.
+ */
+async function harnessRun(
+  deps: VerificationDeps,
+  harness: string | undefined,
+): Promise<RunInputs["harness"]> {
+  if (!harness || harness === BUILTIN_HARNESS_ID) {
+    return { id: BUILTIN_HARNESS_ID, runDeps: deps.run };
+  }
+  let runEnv: HarnessRunEnv;
+  try {
+    runEnv = await (deps.loadHarnessRunEnv ?? harnessRunEnv)(harness);
+  } catch (e) {
+    throw new ReviewWorkspaceError(
+      `can't run the checks with harness "${harness}": ${clientError(e)}`,
+      400,
+    );
+  }
+  return { id: harness, runDeps: { ...deps.run, program: runEnv.program, env: runEnv.env } };
 }
 
 /**
@@ -1523,7 +1560,7 @@ function knownSource(source: string, tickets: readonly { key: string }[]): strin
 /** Starts one section's run, with a context directory of its own that goes when the run ends. */
 async function startSectionRun(
   db: Db,
-  { override, pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
+  { override, harness, pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
   section: ReportSection,
   deps: VerificationDeps,
 ): Promise<string> {
@@ -1624,10 +1661,11 @@ async function startSectionRun(
           sections,
           model,
           effort,
+          harness: harness.id,
           format: RUN_FORMAT,
         },
       },
-      deps.run,
+      harness.runDeps,
     );
     void handle.done
       .then(async (outcome) => {

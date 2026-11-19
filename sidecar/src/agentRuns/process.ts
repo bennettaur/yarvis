@@ -71,6 +71,8 @@ export interface StreamingLaunch {
   /** Written to the child's stdin, then closed. */
   stdin: string;
   cwd: string;
+  /** Set over the built environment, e.g. a harness pointing Claude Code at another provider. */
+  env?: Record<string, string>;
   /** Aborting it stops the run: the whole process group is terminated. */
   signal: AbortSignal;
   timeoutMs: number;
@@ -177,7 +179,7 @@ export function launchStreaming(launch: StreamingLaunch): Promise<StreamingExit>
   return new Promise<StreamingExit>((resolve, reject) => {
     const child = spawn(launch.program, launch.args, {
       cwd: launch.cwd,
-      env: claudeChildEnv(),
+      env: { ...claudeChildEnv(), ...launch.env },
       // No shell: the directory and arguments reach the child as argv, so
       // nothing in them is ever interpreted as a command.
       shell: false,

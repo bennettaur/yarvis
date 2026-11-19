@@ -676,6 +676,17 @@ fn launch_harness(
     Ok((harness, env))
 }
 
+/// The program and full environment, secrets included, a headless Claude Code
+/// run uses for harness `id`. See `harness::headless_run_env`.
+pub fn headless_harness(
+    app: &AppHandle,
+    id: &str,
+) -> Result<(String, Vec<(String, String)>), String> {
+    let (builtin, stored, default_id) = harness_settings(app);
+    let harness = crate::harness::resolve(builtin, &stored, default_id.as_deref(), Some(id))?;
+    crate::harness::headless_run_env(&harness, crate::keychain::read_root)
+}
+
 /// Refuses a harness the sidecar names on the assistant's behalf that the user
 /// hasn't allowed it to start. See `harness::check_assistant_may_launch`.
 pub fn check_sidecar_harness(

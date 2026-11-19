@@ -1,5 +1,6 @@
 import { ensureOk, sidecarFetch } from "../api";
 import type { ModelSelection } from "../complexityModels";
+import { type Resource, useCachedResource } from "../resourceCache";
 import type { ReportSection } from "../reviewWorkspaces/verification";
 
 /**
@@ -57,6 +58,10 @@ export interface VerificationRunConfig {
   maxBudgetUsd: number;
   /** The user's overrides, by section name. */
   sections: Partial<Record<ReportSection, RunChoice>>;
+  /** The agent harness the checks run with; left out, the built-in agent. */
+  harness?: string;
+  /** The harnesses a check can run with: the built-in agent first, then saved Claude Code ones. */
+  harnesses: { id: string; name: string }[];
   /** Every section, in report order, with what it runs on when not overridden. */
   sectionDefaults: {
     section: ReportSection;
@@ -70,6 +75,16 @@ export interface VerificationRunConfigPatch {
   maxBudgetUsd?: number;
   /** Replaces each named section's override; an empty one puts it back on its default. */
   sections?: Partial<Record<ReportSection, RunChoice>>;
+  /** `null` goes back to the built-in agent. */
+  harness?: string | null;
+}
+
+/** Cache key for the verification settings; Settings invalidates it on save. */
+export const VERIFICATION_SETTINGS_KEY = "pr-models:verification";
+
+/** The verification settings, cached for the tabs that show the harness choice. */
+export function useVerificationSettings(): Resource<VerificationRunConfig> {
+  return useCachedResource(VERIFICATION_SETTINGS_KEY, getVerificationRunConfig);
 }
 
 /** Mirrors `VERIFICATION_BUDGET_MIN_USD` in `sidecar/src/pr/models.ts`. */

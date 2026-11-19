@@ -476,7 +476,8 @@ src-tauri/      Rust core (Tauri v2)
   src/clipboard.rs      clipboard read/write and in-memory clip history
 sidecar/        Bun + TS service (Hono)
   src/core/        client for the Rust core's control socket (sessions, saving
-                   OAuth credentials and a signed-in GitHub token, ringing alarms)
+                   OAuth credentials and a signed-in GitHub token, ringing alarms,
+                   reading a harness's environment for a verification run)
   src/db/          Drizzle schema, client, migrations (applied on startup)
   src/chat/        streaming multi-provider chat and tools (agent.ts: the shared turn)
   src/llm/         provider resolution, the model catalog (catalog.ts) and
