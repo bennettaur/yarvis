@@ -269,6 +269,10 @@ check's last good result in place. While checks run, the tab checks on them
 every few seconds, and **Cancel** on a running check's row stops it. A check
 another Yarvis instance is running says so, and can't be started twice. If
 some picked checks can't start, the tab names them and the rest still run.
+Each check runs on the Claude model and effort set for it in **Settings → PR
+review**. The two pickers beside **Run picked** override both for the checks
+you start from the tab, whether picked or run from a row, until you set them
+back to "Each check's model" and "Each check's effort".
 Nothing asks about cost first: which checks you run is the budget.
 
 Beside the checks are rows for what other tools already reported on the PR,
@@ -295,6 +299,18 @@ and the row counts what it left out; the rest is on the PR. **Re-read CI results
 again after a minute. If CI ran on a different commit than the checkout, the
 tab says so. Azure DevOps PRs show their build and policy checks; Azure has no
 annotations, code scanning alerts or bot comments to show.
+
+The copy button beside the **Verification** heading copies the whole report
+as Markdown, to paste into Claude and talk the PR through. It has the
+suggested decision and its reasons, which head each check's result is from,
+every check's newest result, the newest mutation-testing pass if it finished,
+and what CI, scanners and bots reported for the current commit. Most of that
+text comes from the PR's code and its tools, so the copy puts the report
+inside tags named with a random value, after a line telling Claude to treat
+what's inside as claims to check, not instructions. What the agents wrote
+is quoted, line breaks in one-line fields are flattened, and hidden and
+control characters are stripped, so that text can't pass for part of the
+report's own structure.
 
 Below the checklist, the report shows each check's newest result. A section
 whose result is from an older head is marked "older head". Every file and
@@ -369,8 +385,10 @@ line in the report opens the diff there.
 - **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
   agent classifies each change by what it does (a comment edit, a move, an
   addition, a changed interface or changed logic), how much code depends on
-  what changed, and whether tests prove it. Yarvis scores those the same way
-  every time, and raises the score when the PR bundles many changes. Changes
+  what changed, and whether tests prove it. A change whose mistakes could
+  only reach your own staff, such as a read-only internal dashboard, scores
+  one lower. Yarvis scores those the same way every time, and raises the
+  score when the PR bundles many changes that alter existing behavior. Changes
   that score high are listed under **Needs attention** with what to check,
   and every change is listed behind **Every change**.
 - **Simpler approach** rates the PR as a whole, where the complexity check

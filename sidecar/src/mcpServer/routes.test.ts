@@ -331,6 +331,28 @@ describe("mcp endpoint over a real store", () => {
       await sql`SELECT resolved_at FROM workspace_review_comments WHERE id = ${theirs.commentId}`;
     expect(theirRow?.resolved_at).toBeNull();
   });
+
+  it("links a pull request only to a ready repo of the named workspace", async () => {
+    await sql`TRUNCATE repos, workspaces RESTART IDENTITY CASCADE`;
+    const mine = await workspaceWithComment("mcp-mine");
+    await sql`UPDATE workspace_repos SET status = 'ready'`;
+    const header = { "X-Yarvis-Workspace": mine.workspaceId };
+
+    const unknown = await rawCallTool(2, "link_pull_request", { repo: "other", number: 4 }, header);
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0]?.text).toContain("mcp-mine");
+
+    // This config holds no provider token, so the refusal has to reach the agent as such.
+    const noToken = await rawCallTool(
+      3,
+      "link_pull_request",
+      { repo: "mcp-mine", number: 4 },
+      header,
+    );
+    expect(noToken.isError).toBe(true);
+    expect(noToken.content[0]?.text).toContain("token");
+    expect(await sql`SELECT 1 FROM workspace_repo_pr`).toHaveLength(0);
+  });
 });
 
 describe("questionOrigin", () => {

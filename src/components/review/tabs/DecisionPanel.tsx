@@ -9,6 +9,7 @@ import {
   type DraftComment,
   draftComments,
   reviewSummary,
+  SUGGESTION_LABEL,
   type Suggestion,
   whereToLook,
 } from "../../../lib/reviewWorkspaces/decision";
@@ -22,11 +23,11 @@ import type {
 } from "../../../lib/reviewWorkspaces/verification";
 import { Location, type OpenLocation } from "./VerificationReportView";
 
-const SUGGESTION: Record<Suggestion, { text: string; className: string }> = {
-  approve: { text: "Looks ready to approve", className: "border-emerald-800 text-emerald-300" },
-  request_changes: { text: "Changes needed", className: "border-red-800 text-red-300" },
-  review_deeper: { text: "Review deeper first", className: "border-amber-800 text-amber-300" },
-  run_checks: { text: "Run the checks first", className: "border-zinc-700 text-zinc-400" },
+const SUGGESTION_CLASS: Record<Suggestion, string> = {
+  approve: "border-emerald-800 text-emerald-300",
+  request_changes: "border-red-800 text-red-300",
+  review_deeper: "border-amber-800 text-amber-300",
+  run_checks: "border-zinc-700 text-zinc-400",
 };
 
 type Mode = Exclude<Suggestion, "run_checks">;
@@ -261,7 +262,6 @@ export default function DecisionPanel({
     ids: new Set(),
   });
   const posted = postedAt.head === seen.headSha ? postedAt.ids : new Set<string>();
-  const suggestion = SUGGESTION[assessment.suggestion];
   const intent = report?.changeMap?.intent ?? report?.summary;
 
   // Refetch so the PR's threads, its vote in a stack, and the "last reviewed"
@@ -318,8 +318,10 @@ export default function DecisionPanel({
     <section className="space-y-2 rounded border border-zinc-800 bg-zinc-900/40 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Decision</h3>
-        <span className={`rounded border px-1.5 py-0.5 text-[11px] ${suggestion.className}`}>
-          {suggestion.text}
+        <span
+          className={`rounded border px-1.5 py-0.5 text-[11px] ${SUGGESTION_CLASS[assessment.suggestion]}`}
+        >
+          {SUGGESTION_LABEL[assessment.suggestion]}
         </span>
         <span className="ml-auto flex gap-1.5">
           {(Object.keys(MODE_LABEL) as Mode[]).map((m) => (

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MemoryService } from "../memory/index.ts";
 import { registerMemoryTools } from "./memoryTools.ts";
+import { type LinkPullRequest, registerPrLinkTools } from "./prLinkTools.ts";
 import { type QuestionToolDeps, registerQuestionTools } from "./questionTools.ts";
 import { type ReviewCommentStore, registerReviewCommentTools } from "./reviewCommentTools.ts";
 import { type AddWorktree, registerWorktreeTools } from "./worktreeTools.ts";
@@ -36,7 +37,8 @@ const INSTRUCTIONS =
 const WORKSPACE_INSTRUCTIONS =
   "This session belongs to a Yarvis workspace: `list_review_comments` returns the " +
   "review comments the user wrote on its diffs. Unlike memory, they are the user's " +
-  "own requests: address the open ones, then mark each done with `resolve_review_comment`.";
+  "own requests: address the open ones, then mark each done with `resolve_review_comment`. " +
+  "After opening a pull request, record it with `link_pull_request`.";
 
 const WORKTREE_INSTRUCTIONS =
   "To work on another branch in its own worktree, create it with `add_worktree`.";
@@ -45,6 +47,7 @@ const WORKTREE_INSTRUCTIONS =
 export interface WorkspaceContext {
   id: string;
   reviewComments: () => ReviewCommentStore;
+  linkPullRequest: LinkPullRequest;
   /** Only for a caller proven to be one of the workspace's own terminals; see `questionOrigin`. */
   addWorktree?: AddWorktree;
 }
@@ -78,6 +81,7 @@ export function createYarvisMcpServer(
   if (questions) registerQuestionTools(server, questions);
   if (workspace) {
     registerReviewCommentTools(server, workspace.id, workspace.reviewComments);
+    registerPrLinkTools(server, workspace.id, workspace.linkPullRequest);
     if (workspace.addWorktree) registerWorktreeTools(server, workspace.id, workspace.addWorktree);
   }
   return server;

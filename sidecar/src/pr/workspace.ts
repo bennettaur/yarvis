@@ -1,5 +1,6 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
+import { seedWorkspacePr } from "../workspaces/poller.ts";
 import {
   assertSafeBranchName,
   createWorkspace,
@@ -76,9 +77,10 @@ function workspaceName(number: number, title: string): string {
  * it in the background.
  *
  * Two lookups, because neither alone covers the PR view's second click: the
- * cached PR match is free but only exists once the poller has seen a
- * provisioned workspace, and the branch match is the fact the create path
- * writes itself, so it holds from the moment the row exists. Without the
+ * cached PR match is free but only exists once the PR is linked (by this
+ * call, or by the poller for a workspace made some other way), and the branch
+ * match is the fact the create path writes itself, so it holds from the moment
+ * the row exists. Without the
  * second, a click during provisioning cuts a second worktree on a branch git
  * has already checked out, which fails and leaves a stranded workspace behind.
  *
@@ -124,8 +126,13 @@ export async function startWorkspaceForPr(
     throw new PrWorkspaceRefusal(e instanceof Error ? e.message : String(e));
   }
 
+  // The PR is already known, so it is linked here rather than left for a
+  // branch read to find.
   const onBranch = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
-  if (onBranch) return { workspaceId: onBranch.id, name: onBranch.name, existing: true };
+  if (onBranch) {
+    await seedWorkspacePr(db, onBranch.workspaceRepoId, locator.number, detail.headRef);
+    return { workspaceId: onBranch.id, name: onBranch.name, existing: true };
+  }
 
   const workspace = await createWorkspace(db, config, {
     name: workspaceName(locator.number, detail.title),
@@ -133,6 +140,9 @@ export async function startWorkspaceForPr(
     existingBranches: { [repo.id]: detail.headRef },
     brief,
   });
+  // `createWorkspace` doesn't return its repo rows; the branch lookup finds the one it wrote.
+  const created = await findWorkspaceOnBranch(db, repo.id, detail.headRef);
+  if (created) await seedWorkspacePr(db, created.workspaceRepoId, locator.number, detail.headRef);
 
   // Without a brief there is no pending prompt: the workspace opens on a
   // session with nothing typed into it. Provisioning is all the kick-off does

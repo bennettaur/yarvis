@@ -373,12 +373,17 @@ report there and leaves the fixes to the author.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments. The
-  header is not a boundary, so `add_worktree` also needs one of that
-  workspace's terminals' session tokens (`questionOrigin`). Even then it may
-  only check out a branch not yet in the clone, inside that workspace's
-  folder, and widen the sandbox to that one branch (`addExtraWorktree`),
-  since the token is no boundary against a same-user process. Bodies
+  workspace, listing and resolving that workspace's review comments and
+  `link_pull_request`. The header is not a boundary, so `add_worktree` also
+  needs one of that workspace's terminals' session tokens (`questionOrigin`).
+  Even then it may only check out a branch not yet in the clone, inside that
+  workspace's folder, and widen the sandbox to that one branch
+  (`addExtraWorktree`), since the token is no boundary against a same-user
+  process. `link_pull_request` asks for no token because all it can do is add
+  a PR of one of that workspace's own repos to the PR list the user already
+  sees, after the provider confirms the PR exists. It can't remove one, and it
+  can't bring back one the user unlinked (`relink` is the user route's alone).
+  Bodies
   with `source = 'user'` go out unfenced, the one exception to the rule below,
   because the user wrote them. Any other source (a verification finding the
   user chose to add) is fenced there and kept out of the event log; a new

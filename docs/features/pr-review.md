@@ -21,8 +21,11 @@ A PR's header here has **Open in review workspace** to move it there.
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. The same section sets the
-   verification report's Claude model (Sonnet by default) and the most one
-   report may spend ($2 by default).
+   Claude model and effort for each of the verification report's checks, and
+   the most one report may spend ($2 by default). Each check starts on a model
+   matched to its job: Opus at high effort for risk and malicious intent,
+   which feed the merge gate; Haiku at low effort for comment quality and
+   observability; Sonnet at medium effort for the rest.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 
@@ -194,7 +197,10 @@ the background, and the attention bell tells you when they're done.
   The setup script never runs: that still needs your answer in the review
   workspace. A check that already has a result for the PR's current commit,
   or is already running, isn't started again unless you ask for a fresh one.
-  The bell rings once every check it started has finished.
+  The bell rings once every check it started has finished. Name a model or
+  effort ("verify #612 on Haiku") and every check it starts runs on that
+  instead of its own setting. The cost it quotes is for the model you named;
+  effort isn't priced.
 
 - **Several PRs, or a stack**: ask the assistant to verify a list of PRs
   ("verify #610, #611 and #612") or a whole stack ("verify the stack #612 is
@@ -203,7 +209,8 @@ the background, and the attention bell tells you when they're done.
   ended, so a dozen agent runs per PR don't all start at once. You can name a
   preset: **quick** (summary, change map and risk), **security** (claims,
   risk, malicious intent and tests), **standard** (the default: every check
-  but the flow diagram) or **full** (everything). The bell rings once when the
+  but the flow diagram) or **full** (everything), and a model or effort that
+  every check in the queue runs on. The bell rings once when the
   queue finishes, naming each PR and how it went, and you can ask the
   assistant how the queue is going, or to stop it, in the meantime. One queue
   runs at a time, and the assistant asks you to approve each one, since it
@@ -327,9 +334,11 @@ Some rules that follow from how it works:
   the screen. The workspace shows its log while it runs.
 - Pressing **Start workspace** twice reuses the first workspace instead of
   creating a second worktree on the branch.
-- Once the workspace is created, the button changes to a link back to it. For
-  a workspace created some other way, the link appears after the next PR poll
-  (within a minute).
+- Once the workspace is created, the button changes to a link back to it,
+  because the workspace is linked to the PR as it is created. For a workspace
+  created some other way, the link appears after the next PR poll (within a
+  minute), or as soon as you link the PR there yourself. See
+  [Linking a pull request](workspaces.md#linking-a-pull-request).
 
 ### Resolve merge conflicts
 

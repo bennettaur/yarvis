@@ -2,10 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
+import {
+  type RunChoice,
+  VERIFICATION_EFFORTS,
+  VERIFICATION_MODEL_LABELS,
+  VERIFICATION_MODELS,
+  type VerificationEffort,
+  type VerificationModel,
+} from "../../../lib/pr/models";
 import { refKey } from "../../../lib/pr/ref";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
+import { assessReview } from "../../../lib/reviewWorkspaces/decision";
+import { verificationReportMarkdown } from "../../../lib/reviewWorkspaces/exportReport";
 import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
+import { prWebUrl } from "../../../lib/reviewWorkspaces/open";
 import { invalidateLastReview } from "../../../lib/reviewWorkspaces/sinceReview";
 import {
   type ChecklistItem,
@@ -22,6 +33,7 @@ import { openExternal } from "../../../lib/url";
 import { createReviewComment } from "../../../lib/workspaceReview";
 import { findWorkspaceForPr, type WorkspaceForPr } from "../../../lib/workspaces";
 import { Loader } from "../../ai-elements/loader";
+import CopyButton from "../../CopyButton";
 import LoadingIndicator from "../../LoadingIndicator";
 import DecisionPanel from "./DecisionPanel";
 import {
@@ -513,6 +525,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   }, [anyRunning, refresh]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Empty means each check runs on its own model and effort from Settings.
+  const [runChoice, setRunChoice] = useState<RunChoice>({});
   // Tickets the reviewer names for the change map and claims, beside the ones
   // the PR links. Until they type, the last run's are offered again.
   const [typedTickets, setTypedTickets] = useState<string | null>(null);
@@ -562,7 +576,13 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
     setStarting(true);
     setActionError(null);
     try {
-      const { runs, failed } = await startVerification(workspaceId, pr.id, sections, namedTickets);
+      const { runs, failed } = await startVerification(
+        workspaceId,
+        pr.id,
+        sections,
+        namedTickets,
+        runChoice,
+      );
       // Untick only what started, so a check that failed to start stays picked
       // for another try. With nothing left ticked by hand, go back to the
       // suggestions, which follow the PR to its next head.
@@ -603,6 +623,27 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   };
 
   const notReady = pr.status !== "ready" || pr.worktreeStatus !== "ready";
+  // CI on another commit says nothing about this one.
+  const currentEvidence =
+    evidence.data && evidence.data.headSha === checklist.data?.headSha ? evidence.data.items : null;
+  const mutationRun = mutation.data?.run ?? null;
+  // Built on click, so polling a running check doesn't rebuild it every few seconds.
+  const exportMarkdown = () =>
+    verificationReportMarkdown({
+      pr: {
+        title: pr.title,
+        url: prWebUrl(ctx.prRef),
+        author: pr.author,
+        headRef: pr.headRef,
+        baseRef: pr.baseRef,
+      },
+      headSha: checklist.data?.headSha ?? null,
+      report,
+      items,
+      assessment: assessReview(report, currentEvidence, items, mutationRun, upstack),
+      evidence: currentEvidence,
+      mutation: mutationRun,
+    });
 
   if (checklist.loading) {
     return (
@@ -618,7 +659,52 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       <div className="mx-auto w-4/5 min-w-[min(100%,48rem)] space-y-4 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-zinc-200">Verification</h2>
-          <span className="ml-auto">
+          {checklist.data && (
+            <CopyButton
+              value={exportMarkdown}
+              subject="report as Markdown"
+              title="Copy the whole report as Markdown, to paste into Claude"
+            />
+          )}
+          <span className="ml-auto flex items-center gap-2">
+            <select
+              aria-label="Model for the checks you run"
+              title="Run the checks you start on one model instead of each check's own, set in Settings"
+              value={runChoice.model ?? ""}
+              onChange={(e) =>
+                setRunChoice((prev) => ({
+                  ...prev,
+                  model: (e.target.value || undefined) as VerificationModel | undefined,
+                }))
+              }
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
+            >
+              <option value="">Each check's model</option>
+              {VERIFICATION_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {VERIFICATION_MODEL_LABELS[m]}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Effort for the checks you run"
+              title="Run the checks you start at one effort instead of each check's own, set in Settings"
+              value={runChoice.effort ?? ""}
+              onChange={(e) =>
+                setRunChoice((prev) => ({
+                  ...prev,
+                  effort: (e.target.value || undefined) as VerificationEffort | undefined,
+                }))
+              }
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
+            >
+              <option value="">Each check's effort</option>
+              {VERIFICATION_EFFORTS.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort} effort
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={() => void run(picked)}
@@ -641,14 +727,9 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           prRef={ctx.prRef}
           seen={{ headSha: ctx.pr.headSha, mergeBaseSha: ctx.pr.mergeBaseSha }}
           report={report}
-          evidence={
-            // CI on another commit says nothing about this one.
-            evidence.data && evidence.data.headSha === checklist.data?.headSha
-              ? evidence.data.items
-              : null
-          }
+          evidence={currentEvidence}
           items={items}
-          mutation={mutation.data?.run ?? null}
+          mutation={mutationRun}
           upstack={upstack}
           currentSections={currentSections}
           onOpen={open}

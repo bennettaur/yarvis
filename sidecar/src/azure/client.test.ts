@@ -287,6 +287,7 @@ describe("azure client", () => {
                 status: "active",
                 isDraft: true,
                 mergeStatus: "succeeded",
+                sourceRefName: "refs/heads/feature/x",
                 repository: {
                   name: "web",
                   webUrl: "https://dev.azure.com/acme/Shop/_git/web",
@@ -298,13 +299,15 @@ describe("azure client", () => {
         },
       ]),
     );
-    const pr = await az.findPrByBranch("Shop", "web", "feature/x");
+    const [pr] = await az.findPrsByBranch("Shop", "web", "feature/x");
     expect(requestedUrl).toContain("searchCriteria.sourceRefName=refs%2Fheads%2Ffeature%2Fx");
     expect(requestedUrl).toContain("searchCriteria.status=all");
     expect(pr).toEqual({
       number: 42,
       url: "https://dev.azure.com/acme/Shop/_git/web/pullrequest/42",
       draft: true,
+      headBranch: "feature/x",
+      closedAt: null,
       state: "open",
       headSha: null,
       mergeable: "MERGEABLE",
@@ -321,7 +324,7 @@ describe("azure client", () => {
         { match: (u) => u.includes("/repositories/web/pullrequests"), body: { value: [] } },
       ]),
     );
-    expect(await az.findPrByBranch("Shop", "web", "feature/x")).toBeNull();
+    expect(await az.findPrsByBranch("Shop", "web", "feature/x")).toEqual([]);
   });
 
   it("maps a completed PR to merged state", async () => {
@@ -343,7 +346,7 @@ describe("azure client", () => {
         },
       ]),
     );
-    expect((await az.findPrByBranch("Shop", "web", "b"))?.state).toBe("merged");
+    expect((await az.findPrsByBranch("Shop", "web", "b"))[0]?.state).toBe("merged");
   });
 
   it("searches by reviewer for the review scope", async () => {

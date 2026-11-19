@@ -63,6 +63,11 @@ export interface UseChatThreadOptions {
    * to hear about those, since the hook owns when they happen.
    */
   onSessionCreated?: (session: ChatSession) => void;
+  /**
+   * Whether the surface is on screen. Coming back on screen re-reads the
+   * provider list, since it may have changed in Settings meanwhile.
+   */
+  visible?: boolean;
 }
 
 /**
@@ -73,7 +78,14 @@ export interface UseChatThreadOptions {
  * across summons.
  */
 export function useChatThread(options: UseChatThreadOptions = {}) {
-  const { sessionStorageKey, getContext, onAttention, onSessionCreated, reasoning } = options;
+  const {
+    sessionStorageKey,
+    getContext,
+    onAttention,
+    onSessionCreated,
+    reasoning,
+    visible = true,
+  } = options;
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -181,29 +193,47 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     [abandonTurn],
   );
 
-  // Load providers and restore the last-used provider/model.
+  // Read through refs so a provider reload keeps the thread's own pick without
+  // re-running whenever the user changes it.
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  const providersLoaded = useRef(false);
+  const providersSeq = useRef(0);
+
+  // Loads providers on mount and again each time the surface comes back on
+  // screen. Both surfaces stay mounted while hidden, so a provider added or a
+  // key saved in Settings would otherwise never reach the picker.
   useEffect(() => {
+    if (!visible && providersLoaded.current) return;
+    providersLoaded.current = true;
+    const seq = ++providersSeq.current;
     void (async () => {
       try {
         const provs = await listProviders();
+        if (seq !== providersSeq.current) return;
         setProviders(provs);
-        const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
-        const savedModel = localStorage.getItem(MODEL_KEY);
+        // The thread's current pick wins over the saved one, which the other
+        // chat surface may have changed since.
+        const wantedProvider =
+          providerRef.current || (localStorage.getItem(PROVIDER_KEY) as ProviderId | null);
+        const wantedModel = modelRef.current || localStorage.getItem(MODEL_KEY);
         const chosen =
-          provs.find((p) => p.id === savedProvider) ?? provs.find((p) => p.available) ?? provs[0];
+          provs.find((p) => p.id === wantedProvider) ?? provs.find((p) => p.available) ?? provs[0];
         if (chosen) {
           setProvider(chosen.id);
           setModel(
-            savedModel && chosen.models.some((m) => m.id === savedModel)
-              ? savedModel
+            wantedModel && chosen.models.some((m) => m.id === wantedModel)
+              ? wantedModel
               : (chosen.models[0]?.id ?? ""),
           );
         }
       } catch (e) {
-        setError(formatError(e));
+        if (seq === providersSeq.current) setError(formatError(e));
       }
     })();
-  }, []);
+  }, [visible]);
 
   // Resume the persisted session once on mount.
   const restored = useRef(false);

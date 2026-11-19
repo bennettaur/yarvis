@@ -93,6 +93,8 @@ export interface PrSummary {
   baseRef?: string;
   /** The branch this PR merges from. Unset for a PR from a fork. */
   headRef?: string;
+  /** When the PR was closed or merged, null while open. Only branch lookups fill it in. */
+  closedAt?: string | null;
 }
 
 /**

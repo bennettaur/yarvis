@@ -1,5 +1,6 @@
 import type { AgentRunStatus } from "../agentRuns";
 import { ensureOk, sidecarFetch } from "../api";
+import type { RunChoice } from "../pr/models";
 
 /**
  * Client for a review PR's verification checklist: starting a run for each
@@ -48,6 +49,8 @@ export interface VerificationChange {
   reach: "leaf" | "local" | "shared" | "core";
   evidence: "proven" | "partial" | "unproven";
   sensitive: boolean;
+  /** Optional because older stored reports lack it. */
+  internal?: boolean;
   count: number;
   /** What a reviewer should confirm; empty below the attention band. */
   check: string;
@@ -127,6 +130,14 @@ export interface VerificationApproach {
   path?: string;
   line?: number;
 }
+
+/** What each approach rating says, in the report and in an exported copy. */
+export const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
+  "much-simpler": "A much simpler way exists",
+  simpler: "A simpler way exists",
+  "no-simpler": "No simpler way found",
+  unrated: "Not rated",
+};
 
 export type ThemeCohesion = "core" | "supporting" | "outlier";
 
@@ -483,11 +494,17 @@ export async function startVerification(
   sections: readonly ReportSection[],
   /** Tickets for the change map and claims, as keys or links, beside the ones the PR links. */
   namedTickets: readonly string[] = [],
+  /** A model or effort for every section started, over each section's setting. */
+  override: RunChoice = {},
 ): Promise<{ runs: StartedCheck[]; failed: { section: ReportSection; error: string }[] }> {
   const res = await sidecarFetch(path(workspaceId, prId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sections, ...(namedTickets.length > 0 && { namedTickets }) }),
+    body: JSON.stringify({
+      sections,
+      ...(namedTickets.length > 0 && { namedTickets }),
+      ...((override.model || override.effort) && { override }),
+    }),
   });
   await ensureOk(res, "start verification checks");
   return res.json();

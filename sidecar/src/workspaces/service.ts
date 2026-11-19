@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { and, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
@@ -111,6 +111,7 @@ import {
   type IntegrityFinding,
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
+import { isOnBranch, orderPrs, prOnOwnBranch } from "./prs.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
 import { setSymlinkHandler } from "./symlinkScan.ts";
@@ -473,7 +474,10 @@ export interface CreateWorkspaceInput {
 
 export interface WorkspaceRepoDetail extends WorkspaceRepo {
   repo: Repo;
+  /** The repo's main PR (see `workspaces/prs.ts`), for what needs one. */
   pr: WorkspaceRepoPr | null;
+  /** Every PR linked to the repo, the main one first, the unlinked ones left out. */
+  prs: WorkspaceRepoPr[];
   /** Worktrees Yarvis added beside this one (`addExtraWorktree`). */
   extraWorktrees: WorkspaceExtraWorktree[];
 }
@@ -661,6 +665,28 @@ export async function addRepoToWorkspace(
 }
 
 /**
+ * A workspace's ready repo named by its folder in the workspace or by its
+ * name. Either is accepted: AGENTS.md names the folder, the user names the repo.
+ */
+export function findReadyRepo(
+  detail: WorkspaceDetail,
+  name: string,
+): WorkspaceDetail["repos"][number] | undefined {
+  const wanted = name.trim().toLowerCase();
+  return detail.repos.find(
+    (r) =>
+      r.status === "ready" &&
+      (basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted),
+  );
+}
+
+/** The folders of a workspace's ready repos, for naming them in a refusal. */
+export function readyRepoFolders(detail: WorkspaceDetail): string {
+  const ready = detail.repos.filter((r) => r.status === "ready");
+  return ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
+}
+
+/**
  * Adds a worktree for another branch of one of the workspace's repos, at
  * `<workspace>/<folder>-<branch>`, and grants the workspace's sandbox that
  * worktree and branch. Agents ask for this over MCP: inside the sandbox they
@@ -686,17 +712,10 @@ export async function addExtraWorktree(
   const detail = await getWorkspace(db, workspaceId);
   if (!detail) throw new WorktreeRefusal("workspace not found");
   assertOpenForWorktrees(detail);
-  const ready = detail.repos.filter((r) => r.status === "ready");
-  // Either is accepted: AGENTS.md names the folder, the user names the repo.
-  const wanted = input.repo.trim().toLowerCase();
-  const workspaceRepo = ready.find(
-    (r) =>
-      basename(r.worktreePath).toLowerCase() === wanted || r.repo.name.toLowerCase() === wanted,
-  );
+  const workspaceRepo = findReadyRepo(detail, input.repo);
   if (!workspaceRepo) {
-    const folders = ready.map((r) => basename(r.worktreePath)).join(", ") || "none";
     throw new WorktreeRefusal(
-      `no ready repo "${input.repo}" in this workspace (repos: ${folders})`,
+      `no ready repo "${input.repo}" in this workspace (repos: ${readyRepoFolders(detail)})`,
     );
   }
 
@@ -952,42 +971,53 @@ export async function listWorkspaces(
 
   const memberships = await db
     .select({
+      id: workspaceRepos.id,
       workspaceId: workspaceRepos.workspaceId,
       repoStatus: workspaceRepos.status,
+      branch: workspaceRepos.branch,
       name: repos.name,
-      prNumber: workspaceRepoPr.prNumber,
-      prState: workspaceRepoPr.prState,
-      isDraft: workspaceRepoPr.isDraft,
-      mergeable: workspaceRepoPr.mergeable,
-      checkRollup: workspaceRepoPr.checkRollup,
-      reviewDecision: workspaceRepoPr.reviewDecision,
     })
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
-    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     // Ordered so a multi-repo workspace's names and PR badges keep the same
-    // order between refreshes rather than shuffling with the join.
+    // order between refreshes.
     .orderBy(repos.name);
+  const prRows = memberships.length
+    ? await db
+        .select()
+        .from(workspaceRepoPr)
+        .where(
+          and(
+            inArray(
+              workspaceRepoPr.workspaceRepoId,
+              memberships.map((m) => m.id),
+            ),
+            eq(workspaceRepoPr.dismissed, false),
+          ),
+        )
+    : [];
   const namesByWorkspace = new Map<string, string[]>();
   const prsByWorkspace = new Map<string, WorkspaceSummaryPr[]>();
   for (const m of memberships) {
     const names = namesByWorkspace.get(m.workspaceId) ?? [];
     names.push(m.name);
     namesByWorkspace.set(m.workspaceId, names);
-    if (m.prNumber === null) continue;
     // A torn-down worktree stops being polled, so whatever its cache last held
     // is frozen — an archived workspace must not keep flashing a live PR badge.
     if (m.repoStatus === "removed") continue;
+    const own = prRows.filter((p) => p.workspaceRepoId === m.id);
     const prs = prsByWorkspace.get(m.workspaceId) ?? [];
-    prs.push({
-      repoName: m.name,
-      prNumber: m.prNumber,
-      prState: m.prState,
-      isDraft: m.isDraft,
-      mergeable: m.mergeable,
-      checkRollup: m.checkRollup ?? "none",
-      reviewDecision: m.reviewDecision,
-    });
+    for (const p of orderPrs(own, m.branch)) {
+      prs.push({
+        repoName: m.name,
+        prNumber: p.prNumber,
+        prState: p.prState,
+        isDraft: p.isDraft,
+        mergeable: p.mergeable,
+        checkRollup: p.checkRollup,
+        reviewDecision: p.reviewDecision,
+      });
+    }
     prsByWorkspace.set(m.workspaceId, prs);
   }
 
@@ -1049,7 +1079,11 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
   const prRows = wrIds.length
     ? await db.select().from(workspaceRepoPr).where(inArray(workspaceRepoPr.workspaceRepoId, wrIds))
     : [];
-  const prByWr = new Map(prRows.map((p) => [p.workspaceRepoId, p]));
+  const prsOf = (wr: WorkspaceRepo) =>
+    orderPrs(
+      prRows.filter((p) => p.workspaceRepoId === wr.id),
+      wr.branch,
+    );
   const extraRows = wrIds.length
     ? await db
         .select()
@@ -1063,7 +1097,8 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
     repos: wrRows.map((wr) => ({
       ...wr,
       repo: repoById.get(wr.repoId)!,
-      pr: prByWr.get(wr.id) ?? null,
+      pr: prsOf(wr)[0] ?? null,
+      prs: prsOf(wr),
       extraWorktrees: extraRows.filter((e) => e.workspaceRepoId === wr.id),
     })),
     tasks: await tasksForWorkspace(db, id),
@@ -1545,7 +1580,17 @@ export async function findWorkspaceForPr(
     .innerJoin(workspaceRepos, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
     .innerJoin(workspaces, eq(workspaceRepos.workspaceId, workspaces.id))
-    .where(and(eq(workspaceRepoPr.prNumber, locator.number), ne(workspaces.status, "archived")));
+    .where(
+      and(
+        eq(workspaceRepoPr.prNumber, locator.number),
+        eq(workspaceRepoPr.dismissed, false),
+        ne(workspaces.status, "archived"),
+      ),
+    )
+    // A PR can be linked to several workspaces, one of them by number from
+    // elsewhere. The workspace whose own branch it merges from is the one it
+    // belongs to.
+    .orderBy(desc(prOnOwnBranch));
 
   for (const { cloneUrl, ...ws } of candidates) {
     if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
@@ -1801,6 +1846,13 @@ async function writeWorkspaceFiles(detail: WorkspaceDetail): Promise<void> {
       "is archived. Don't create worktrees or clones anywhere else, such as a",
       "temp folder: nothing tracks those, and they stay on disk after the work",
       "is done.",
+      "",
+      "## Pull requests",
+      "",
+      "After you open a pull request, record it with the Yarvis MCP tool",
+      "`link_pull_request`, giving the repo's folder and the PR's number, so the",
+      "user sees its state and checks in Yarvis right away. Link every PR you open,",
+      "one per layer of a stack included.",
     );
   }
 
@@ -2312,9 +2364,11 @@ const ISSUE_CLOSE_ERROR_CAP = 300;
  * so it's never treated as the workspace's outcome.
  */
 function linkedPrUrl(detail: WorkspaceDetail): string | null {
-  const withPr = detail.repos.filter((r) => r.pr?.prUrl && r.pr.prState !== "closed");
-  const merged = withPr.find((r) => r.pr?.prState === "merged");
-  return (merged ?? withPr[0])?.pr?.prUrl ?? null;
+  const withPr = detail.repos
+    .flatMap((r) => r.prs)
+    .filter((p) => p.prUrl && p.prState !== "closed");
+  const merged = withPr.find((p) => p.prState === "merged");
+  return (merged ?? withPr[0])?.prUrl ?? null;
 }
 
 /** Teardowns in flight, keyed by workspace id, so a second request joins the
@@ -2566,8 +2620,11 @@ async function branchTipToDelete(
   force: boolean,
 ): Promise<string | null> {
   const primaryClonePath = wr.repo.primaryClonePath;
-  const prMerged = wr.pr?.prState === "merged";
-  const mergedHead = prMerged ? (wr.pr?.headSha ?? null) : null;
+  // Only a PR that merged from this branch says anything about it; one linked
+  // from another branch merged other commits.
+  const merged = wr.prs.find((pr) => pr.prState === "merged" && isOnBranch(pr, wr.branch));
+  const prMerged = merged !== undefined;
+  const mergedHead = merged?.headSha ?? null;
   // Declared out here so the throw below isn't caught by the best-effort catch:
   // unpushed commits must stop the archive, not quietly keep the branch.
   let unpushed: number;

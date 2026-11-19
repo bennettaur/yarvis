@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CommentPlacement } from "../../../lib/pr/types";
 import {
+  APPROACH_LABEL,
   CHECK_LABEL,
   type ChangeKind,
   type ClaimStatus,
@@ -129,16 +130,10 @@ function countsText(counts: VerificationImpact["counts"]): string {
 function describeChange(change: VerificationChange): string {
   const parts = [change.kind, change.reach, EVIDENCE_TEXT[change.evidence]];
   if (change.sensitive) parts.push("sensitive");
+  else if (change.internal) parts.push("internal only");
   if (change.count > 1) parts.push(`${change.count} like it`);
   return parts.join(" · ");
 }
-
-const APPROACH_LABEL: Record<VerificationApproach["rating"], string> = {
-  "much-simpler": "A much simpler way exists",
-  simpler: "A simpler way exists",
-  "no-simpler": "No simpler way found",
-  unrated: "Not rated",
-};
 
 const APPROACH_CLASS: Record<VerificationApproach["rating"], string> = {
   "much-simpler": RISK_CLASS.high,

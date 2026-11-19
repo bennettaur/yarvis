@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
+import type { RunChoice } from "../../../lib/pr/models";
 import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
@@ -19,6 +20,7 @@ import {
   type VerificationSize,
 } from "../../../lib/reviewWorkspaces/verification";
 import type { CreateReviewCommentInput } from "../../../lib/workspaceReview";
+import { clipboardWrites, resetClipboardWrites } from "../../../test/clipboard";
 import { resetPrApi, stubPrApi } from "../../../test/prApi";
 import { mountForInteraction, textOf, waitFor } from "../../../test/render";
 import { resetReviewComments, stubReviewComments } from "../../../test/reviewCommentsApi";
@@ -30,6 +32,7 @@ import VerificationTab, { findingPoster, resultVerdict } from "./VerificationTab
 const pr = {
   id: "pr1",
   ref: { provider: "github", owner: "octo", repo: "repo", number: 7 },
+  title: "Cache user lookups",
   status: "ready",
   worktreeStatus: "ready",
   headSha: "h".repeat(40),
@@ -53,6 +56,7 @@ let reread: VerificationChecklist;
 let mutationState: MutationTestingState;
 
 beforeEach(() => {
+  resetClipboardWrites();
   started = [];
   startedSections = [];
   cancelled = [];
@@ -220,6 +224,27 @@ describe("VerificationTab", () => {
     expect(text).toContain("No test for eviction");
   });
 
+  it("copies the whole report as Markdown", async () => {
+    const report: VerificationReport = {
+      ...goodReport,
+      tests: {
+        status: "issues",
+        findings: [{ title: "No test for eviction", detail: "d", severity: "high" }],
+      },
+    };
+    const host = await mount(checklist({ items: answered(report), report }));
+    const copy = host.querySelector(
+      'button[aria-label="Copy the whole report as Markdown, to paste into Claude"]',
+    ) as HTMLButtonElement;
+    copy.click();
+    await waitFor(() => clipboardWrites().length === 1);
+    const [md] = clipboardWrites();
+    expect(md).toContain("# Verification report: Cache user lookups");
+    expect(md).toContain("PR: https://github.com/octo/repo/pull/7");
+    expect(md).toContain("Suggested: **Changes needed**");
+    expect(md).toContain("**[high] No test for eviction**");
+  });
+
   it("keeps a section's last result under a failed re-run, marked as from an older head", async () => {
     const host = await mount(
       checklist({
@@ -383,6 +408,44 @@ describe("VerificationTab", () => {
     button(row(host, "Claims"), "Run")?.click();
     await waitFor(() => named.length > 0, "the start");
     expect(named).toEqual(["ABC-12", "#45", "https://acme.atlassian.net/browse/XY-3"]);
+  });
+
+  it("starts checks on the model and effort picked for the run, or each check's own", async () => {
+    const sent: RunChoice[] = [];
+    stubReviewApi({
+      startVerification: async (_ws, _pr, sections, _tickets, override = {}) => {
+        sent.push(override);
+        return {
+          runs: sections.map((section) => ({ section, runId: "r", existing: false })),
+          failed: [],
+        };
+      },
+    });
+    const host = await mount(checklist());
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 1, "the first start");
+    const choose = (label: string, value: string) => {
+      const select = host.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(
+        select,
+        value,
+      );
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("Model for the checks you run", "haiku");
+    choose("Effort for the checks you run", "low");
+    await waitFor(
+      () =>
+        (
+          host.querySelector(
+            'select[aria-label="Effort for the checks you run"]',
+          ) as HTMLSelectElement
+        ).value === "low",
+      "the picks to change",
+    );
+    button(row(host, "Risk"), "Run")?.click();
+    await waitFor(() => sent.length === 2, "the second start");
+    expect(sent).toEqual([{}, { model: "haiku", effort: "low" }]);
   });
 
   it("offers the last run's tickets again, and sends at most five", async () => {
@@ -780,6 +843,28 @@ describe("evidence from CI, scanners and bots", () => {
       },
     ],
   };
+
+  const copyReport = async (host: HTMLElement) => {
+    (
+      host.querySelector(
+        'button[aria-label="Copy the whole report as Markdown, to paste into Claude"]',
+      ) as HTMLButtonElement
+    ).click();
+    await waitFor(() => clipboardWrites().length === 1, "the copied report");
+    return clipboardWrites()[0] ?? "";
+  };
+
+  it("copies CI results for the checkout's commit with the report", async () => {
+    const md = await copyReport(await mount(checklist(), evidence));
+    expect(md).toContain("### CI checks: 1 of 4 failing");
+    expect(md).toContain("- CI: 1 of 4 failing");
+  });
+
+  it("leaves CI results for another commit out of the copied report", async () => {
+    const md = await copyReport(await mount(checklist(), { ...evidence, headSha: older }));
+    expect(md).toContain("## CI, scanners and bots\n\nNo results for this commit.");
+    expect(md).not.toContain("1 of 4 failing");
+  });
 
   it("shows each tool's tally under its theme, and its entries on demand", async () => {
     const host = await mount(checklist(), evidence);
