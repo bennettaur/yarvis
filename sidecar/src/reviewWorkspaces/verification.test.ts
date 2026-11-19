@@ -12,6 +12,7 @@ import {
   buildVerificationMaterial,
   checkOutcome,
   checksCostUsd,
+  combineSectionAnswers,
   DEFAULT_SECTIONS,
   emptyAudit,
   estimateReadBytes,
@@ -24,6 +25,8 @@ import {
   normalizeSections,
   REPORT_SECTIONS,
   SECTION_RUN_DEFAULTS,
+  sectionAnswerSchema,
+  sectionParts,
   sectionRunChoice,
   similarTitles,
   summaryWordCap,
@@ -1039,7 +1042,7 @@ function outsideFences(text: string): string {
 describe("building the run's material", () => {
   it("keeps PR-written text out of the prompt, and fenced in the context files", () => {
     const material = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
-    expect(material.prompt).not.toContain(MARK);
+    expect(material.task).not.toContain(MARK);
     for (const text of [material.contextFile, material.indexFile, ...material.groupFiles]) {
       expect(text).toContain(MARK);
       expect(outsideFences(text)).not.toContain(MARK);
@@ -1047,15 +1050,15 @@ describe("building the run's material", () => {
     }
   });
 
-  it("gives the orchestrator only the instructions, the context location and the caps", () => {
-    const { prompt, limits: caps } = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
-    expect(prompt).toContain("yarvis-review:verification-report");
-    expect(prompt).toContain("REVIEW_CONTEXT=/tmp/ctx");
-    expect(prompt).toContain(`SUMMARY_WORDS=${caps.summaryWords}`);
-    expect(prompt).toContain(`MUST_READ_MAX=${caps.mustReadMax}`);
-    expect(prompt).toContain(`MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`);
-    expect(prompt).not.toContain("CI checks (");
-    expect(prompt).not.toContain("Changed files (");
+  it("gives each process only the context location and the caps", () => {
+    const { task, limits: caps } = buildVerificationMaterial(hostileInput(), "/tmp/ctx");
+    expect(task.split("\n")).toEqual([
+      "REVIEW_CONTEXT=/tmp/ctx",
+      `SUMMARY_WORDS=${caps.summaryWords}`,
+      `MUST_READ_MAX=${caps.mustReadMax}`,
+      `MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`,
+      expect.stringMatching(/^READ_BUDGET_KB=\d+$/),
+    ]);
   });
 
   it("puts the CI status and comments in pr.md, and every changed file in index.md", () => {
@@ -1275,11 +1278,111 @@ describe("picking sections", () => {
     expect(normalizeSections()).not.toContain("flow");
   });
 
-  it("tells the run which sections to write", () => {
-    const material = buildVerificationMaterial(
-      { ...hostileInput(), sections: ["tests", "flow"] },
-      "/tmp/ctx",
-    );
-    expect(material.prompt).toContain("SECTIONS=tests,flow");
+  it("runs a grouped section once per reading group, and the others once", () => {
+    const material = { task: "REVIEW_CONTEXT=/tmp/ctx", groups: 3 };
+    const tests = sectionParts("tests", material);
+    expect(tests.map((p) => p.prompt)).toEqual([
+      "REVIEW_CONTEXT=/tmp/ctx\nGROUP=1",
+      "REVIEW_CONTEXT=/tmp/ctx\nGROUP=2",
+      "REVIEW_CONTEXT=/tmp/ctx\nGROUP=3",
+    ]);
+    expect(new Set(tests.map((p) => p.agent))).toEqual(new Set(["yarvis-review:test-reviewer"]));
+    expect(sectionParts("risk", material)).toHaveLength(3);
+    expect(sectionParts("flow", material)).toEqual([
+      expect.objectContaining({ agent: "yarvis-review:flow-diagram", prompt: material.task }),
+    ]);
+    expect(sectionParts("quality", { ...material, groups: 0 })).toEqual([
+      expect.objectContaining({ prompt: material.task }),
+    ]);
+  });
+});
+
+describe("putting a section's answers together", () => {
+  const limits = {
+    summaryWords: 40,
+    mustReadMax: 5,
+    changedPaths: new Set(["src/a.ts"]),
+    sections: REPORT_SECTIONS,
+  };
+  const finding = (title: string, severity: string) => ({
+    title,
+    detail: "d",
+    severity,
+    path: "src/a.ts",
+  });
+
+  it("keeps a check's five most severe findings across groups, in group order within a severity", () => {
+    const combined = combineSectionAnswers("tests", [
+      { status: "issues", findings: [finding("a-low", "low"), finding("a-high", "high")] },
+      { status: "pass", findings: [] },
+      {
+        status: "issues",
+        findings: ["b1", "b2", "b3", "b4"].map((t) => finding(t, "medium")),
+      },
+    ]);
+    expect(combined).toEqual({
+      tests: {
+        status: "issues",
+        findings: [
+          finding("a-high", "high"),
+          ...["b1", "b2", "b3", "b4"].map((t) => finding(t, "medium")),
+        ],
+      },
+    });
+    expect(combineSectionAnswers("tests", [{ status: "issues", findings: [] }])).toEqual({
+      tests: { status: "pass", findings: [] },
+    });
+  });
+
+  it("takes risk's level and client impact from its highest group, and every group's changes", () => {
+    const risk = (level: string, n: number) => ({
+      level,
+      clientImpact: `impact ${n}`,
+      mitigations: [`m${n}a`, `m${n}b`],
+      concerns: [{ title: `c${n}`, detail: "d" }],
+      changes: [{ title: `change ${n}`, kind: "logic", reach: "local", evidence: "partial" }],
+    });
+    const { risk: combined } = combineSectionAnswers("risk", [
+      risk("low", 1),
+      risk("high", 2),
+      risk("high", 3),
+    ]) as { risk: Record<string, unknown> };
+    expect(combined).toEqual({
+      level: "high",
+      clientImpact: "impact 2",
+      mitigations: ["m1a", "m1b", "m2a"],
+      concerns: [
+        { title: "c2", detail: "d" },
+        { title: "c1", detail: "d" },
+        { title: "c3", detail: "d" },
+      ],
+      changes: [1, 2, 3].map((n) => expect.objectContaining({ title: `change ${n}` })),
+    });
+  });
+
+  it("moves a whole-PR section's answer into place", () => {
+    const summary = { summary: "s", mustRead: [] };
+    expect(combineSectionAnswers("summary", [summary])).toEqual(summary);
+    const flow = { title: "t", explanation: "e", mermaid: "flowchart TD" };
+    expect(combineSectionAnswers("flow", [flow])).toEqual({ flow });
+  });
+
+  it("has a fallback for every section that its schemas take, and says the check didn't complete", () => {
+    for (const section of REPORT_SECTIONS) {
+      const [part] = sectionParts(section, { task: "", groups: 1 });
+      const fallback = part?.fallback;
+      const combined = combineSectionAnswers(section, [fallback]);
+      const report = verificationReportSchema({ ...limits, sections: [section] }).parse(combined);
+      expect(JSON.stringify(report)).toMatch(/did not complete|failed to answer|unavailable/i);
+      if (section !== "approach")
+        expect(sectionAnswerSchema(section, limits).safeParse(fallback).success).toBe(true);
+    }
+  });
+
+  it("asks an approach agent again when it answers unrated, which only the fallback may", () => {
+    const schema = sectionAnswerSchema("approach", limits);
+    const answer = { rating: "simpler", reason: "r", alternative: "a" };
+    expect(schema.safeParse(answer).success).toBe(true);
+    expect(schema.safeParse({ ...answer, rating: "unrated" }).success).toBe(false);
   });
 });

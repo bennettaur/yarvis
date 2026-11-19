@@ -39,7 +39,6 @@ describe("writing out a shipped plugin", () => {
         // Spliced into the agents rather than shipped.
         .filter((path) => !path.startsWith("shared/"))
         .sort();
-      expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
       expect(agents).toHaveLength(14);
       for (const path of sourceFiles) {

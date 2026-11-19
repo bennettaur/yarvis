@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -14,10 +14,12 @@ import {
   getAgentRunEvents,
   jsonSchemaArg,
   lockedDownSettings,
+  ProcessSlots,
   pruneAgentRunEvents,
   RUN_GUARDRAIL,
   type RunActivity,
   spotlight,
+  startClaudeFanOutRun,
   startClaudeRun,
   TASK_RUN_GUARDRAIL,
 } from "./service.ts";
@@ -466,6 +468,242 @@ describe("a run", () => {
   });
 });
 
+describe("a fan-out run", () => {
+  const countsSchema = z.object({ counts: z.array(z.number()) });
+  const base = {
+    kind: "test-kind",
+    targetKey: "gh:o/r/1",
+    cwd: dir,
+    allowedTools: ["Read"],
+    timeoutMs: 10_000,
+    partSchema: countSchema,
+    combine: (answers: unknown[]) => ({
+      counts: answers.map((a) => (a as { count: number }).count),
+    }),
+    outputSchema: countsSchema,
+  };
+  const part = (word: string, fallback = { count: -1 }) => ({
+    description: `the ${word} part`,
+    agent: `test:${word}-agent`,
+    prompt: `count the ${word} files`,
+    fallback,
+  });
+  const lines = (...items: unknown[]) => `${items.map((i) => JSON.stringify(i)).join("\n")}\n`;
+  const readLine = (id: string, path: string) => ({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      id: `msg_${id}`,
+      content: [{ type: "tool_use", id, name: "Read", input: { file_path: path } }],
+    },
+  });
+
+  /** A fake whose answer depends on which part's prompt it was given. */
+  function partsFake(name: string, cases: Record<string, string>): string {
+    const branches = Object.entries(cases)
+      .map(([word, body]) => `  *"${word}"*) ${body} ;;`)
+      .join("\n");
+    return fakeClaude(dir, name, `input=$(cat)\ncase "$input" in\n${branches}\nesac`);
+  }
+
+  it("runs each part as its own agent, on its own lane, and combines their answers in order", async () => {
+    const one = join(dir, "fan-one.jsonl");
+    const two = join(dir, "fan-two.jsonl");
+    writeFileSync(
+      one,
+      lines(
+        readLine("toolu_one", "/work/one.txt"),
+        resultLine({ structured_output: { count: 1 }, total_cost_usd: 0.02 }),
+      ),
+    );
+    writeFileSync(
+      two,
+      lines(resultLine({ structured_output: { count: 2 }, total_cost_usd: 0.03 })),
+    );
+    const program = partsFake("fan-ok", {
+      one: `sleep 0.2; cat "${one}"`,
+      two: `cat "${two}"`,
+    });
+    let activity: RunActivity | undefined;
+    const handle = await startClaudeFanOutRun(
+      db,
+      {
+        ...base,
+        parts: [part("one"), part("two")],
+        finishOutput: (output: { counts: number[] }, seen: RunActivity) => {
+          activity = seen;
+          return output;
+        },
+      },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    // In parts order, though the first part finished last.
+    expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [1, 2] } });
+    expect(outcome.costUsd).toBeCloseTo(0.05);
+    expect(activity?.reads.map((r) => [r.path, r.subagentId])).toEqual([
+      ["/work/one.txt", "part-1"],
+    ]);
+    expect(activity?.subagents.get("part-1")).toBe("test:one-agent");
+
+    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
+    expect(events).toContainEqual({
+      type: "subagent",
+      phase: "start",
+      id: "part-2",
+      name: "test:two-agent",
+      description: "the two part",
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "tool", name: "Read", subagentId: "part-1" }),
+    );
+    expect(events.at(-1)).toEqual({ type: "done", status: "succeeded" });
+
+    for (let i = 0; i < 100 && ((await row(handle.id))?.processes.length ?? 0) < 2; i++) {
+      await Bun.sleep(20);
+    }
+    const processes = (await row(handle.id))?.processes ?? [];
+    expect(processes).toHaveLength(2);
+    expect(processes.every((p) => p.pid > 0)).toBe(true);
+  });
+
+  it("asks a part again once when its answer doesn't fit, and falls back after a second failure", async () => {
+    const tried = join(dir, "fan-flaky-tried");
+    const bad = join(dir, "fan-bad.jsonl");
+    const good = join(dir, "fan-good.jsonl");
+    writeFileSync(bad, lines(resultLine({ structured_output: { count: "many" } })));
+    writeFileSync(good, lines(resultLine({ structured_output: { count: 3 } })));
+    const program = partsFake("fan-retry", {
+      flaky: `if [ -f "${tried}" ]; then cat "${good}"; else touch "${tried}"; cat "${bad}"; fi`,
+      broken: `echo "broken part" >&2; exit 1`,
+    });
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("flaky"), part("broken", { count: 100 })] },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [3, 100] } });
+    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
+    const retries = events.filter((e) => e.type === "status" && e.message.startsWith("Retrying"));
+    const messages = retries.map((e) => (e as { message: string }).message);
+    // The parts run at once, so either may retry first.
+    expect(messages).toHaveLength(2);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Retrying the flaky part: its answer did not match"),
+        expect.stringContaining("Retrying the broken part: claude exited with code 1"),
+      ]),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "subagent", phase: "stop", id: "part-2", failed: true }),
+    );
+  });
+
+  it("fails the run when every part fails, rather than answering only fallbacks", async () => {
+    const program = fakeClaude(dir, "fan-all-fail", `cat > /dev/null; echo "no key" >&2; exit 1`);
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one"), part("two")] },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "failed", output: null });
+    expect(outcome.error).toContain("every part of the run failed");
+    expect(outcome.error).toContain("no key");
+  });
+
+  it("fails when the combined answer doesn't fit the run's schema", async () => {
+    const program = fakePrinting(dir, "fan-one-part", [
+      resultLine({ structured_output: { count: 1 } }),
+    ]);
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one")], combine: () => ({ counts: "one" }) },
+      deps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("did not match the expected shape");
+  });
+
+  it("stops every part on a cancel, without retrying any", async () => {
+    const program = fakeClaude(dir, "fan-slow", "cat > /dev/null; sleep 5");
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one"), part("two")] },
+      deps(program),
+    );
+    for (let i = 0; i < 100 && ((await row(handle.id))?.processes.length ?? 0) < 2; i++) {
+      await Bun.sleep(20);
+    }
+    registry.cancel(handle.id);
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("cancelled");
+    const events = (await getAgentRunEvents(db, handle.id))?.events ?? [];
+    expect(events.some((e) => e.type === "status" && e.message.startsWith("Retrying"))).toBe(false);
+  });
+
+  it("waits for a free slot, so the processes of every run stay under the limit", async () => {
+    const busy = join(dir, "fan-busy");
+    const overlap = join(dir, "fan-overlap");
+    const answer = join(dir, "fan-slot.jsonl");
+    writeFileSync(answer, lines(resultLine({ structured_output: { count: 1 } })));
+    const program = fakeClaude(
+      dir,
+      "fan-slot",
+      `cat > /dev/null
+[ -f "${busy}" ] && touch "${overlap}"
+touch "${busy}"; sleep 0.2; rm -f "${busy}"
+cat "${answer}"`,
+    );
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("one"), part("two"), part("three")] },
+      { ...deps(program), slots: new ProcessSlots(1) },
+    );
+    expect(await handle.done).toMatchObject({ status: "succeeded", output: { counts: [1, 1, 1] } });
+    expect(existsSync(overlap)).toBe(false);
+  });
+
+  it("refuses a run with no parts, before recording anything", async () => {
+    await expect(startClaudeFanOutRun(db, { ...base, parts: [] }, deps("claude"))).rejects.toThrow(
+      "at least one part",
+    );
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+});
+
+describe("process slots", () => {
+  it("hands a freed slot to the longest waiter, and none to one whose wait was cancelled", async () => {
+    const slots = new ProcessSlots(1);
+    const first = await slots.acquire(new AbortController().signal);
+    const gaveUp = new AbortController();
+    const order: string[] = [];
+    const cancelled = slots.acquire(gaveUp.signal).then((r) => {
+      order.push(r ? "cancelled got one" : "cancelled");
+      return r;
+    });
+    const waiting = slots.acquire(new AbortController().signal).then((r) => {
+      order.push("waiter");
+      return r;
+    });
+    gaveUp.abort();
+    expect(await cancelled).toBeNull();
+    first?.();
+    const second = await waiting;
+    expect(order).toEqual(["cancelled", "waiter"]);
+    // Releasing twice frees one slot, not two.
+    second?.();
+    second?.();
+    const third = await slots.acquire(new AbortController().signal);
+    // A granted slot resolves at once, so it would win the race.
+    const fourth = slots.acquire(new AbortController().signal);
+    expect(await Promise.race([fourth, Promise.resolve("still waiting")])).toBe("still waiting");
+    third?.();
+  });
+});
+
 describe("after a restart", () => {
   it("fails this instance's leftover runs, kills what they left, and leaves the rest", async () => {
     const before = new Date(Date.now() - 60_000);
@@ -478,6 +716,18 @@ describe("after a restart", () => {
         startedAt: before,
         pid: 4242,
         pidStartedAt: "then",
+      },
+      // A fan-out run: every process it started leads a group of its own.
+      {
+        kind: "k",
+        targetKey: "t",
+        status: "running",
+        instance: "main",
+        startedAt: before,
+        processes: [
+          { pid: 5151, startedAt: "earlier" },
+          { pid: 5252, startedAt: null },
+        ],
       },
       { kind: "k", targetKey: "t", status: "running", instance: "other", startedAt: before },
       { kind: "k", targetKey: "t", status: "running", instance: "main" },
@@ -493,10 +743,17 @@ describe("after a restart", () => {
         return true;
       },
     );
-    expect(failed).toBe(1);
-    expect(killed).toEqual([[4242, "then"]]);
+    expect(failed).toBe(2);
+    expect(killed.sort()).toEqual([
+      [4242, "then"],
+      [5151, "earlier"],
+      [5252, null],
+    ]);
     const rows = await db.select().from(agentRuns);
-    expect(rows.filter((r) => r.status === "failed").map((r) => r.instance)).toEqual(["main"]);
+    expect(rows.filter((r) => r.status === "failed").map((r) => r.instance)).toEqual([
+      "main",
+      "main",
+    ]);
     expect(rows.filter((r) => r.status === "running")).toHaveLength(2);
   });
 

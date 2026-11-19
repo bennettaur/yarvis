@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { inArray } from "drizzle-orm";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
+import { fakeClaude } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, reviewWorkspacePrs } from "../db/schema.ts";
@@ -13,6 +13,7 @@ import { RunRegistry } from "../lib/runRegistry.ts";
 import type { RunChoice } from "../pr/models.ts";
 import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
+import { printAgentAnswer, writeAgentAnswers } from "./fakeAgents.ts";
 import { reviewGit } from "./git.ts";
 import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
 import { cancelVerificationQueue, getVerificationQueue, startVerificationQueue } from "./queue.ts";
@@ -92,17 +93,14 @@ beforeEach(async () => {
   checkoutFails = false;
   checkoutGate = null;
   fakeDir = mkdtempSync(join(tmpdir(), "yarvis-kickoff-fake-"));
-  writeFileSync(
-    join(fakeDir, "result.jsonl"),
-    `${JSON.stringify(resultLine({ structured_output: report }))}\n`,
-  );
-  // Holds the run open until the test releases it, then hands in the report.
+  writeAgentAnswers(fakeDir, report);
+  // Holds the run open until the test releases it, then hands in its agent's answer.
   const program = fakeClaude(
     fakeDir,
     "claude",
-    `cat > /dev/null
+    `input=$(cat)
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
-cat "${fakeDir}/result.jsonl"`,
+${printAgentAnswer(fakeDir)}`,
   );
   failingProgram = fakeClaude(
     fakeDir,
@@ -393,8 +391,8 @@ describe("kickOffVerification", () => {
       "claude-tests-fail",
       `input=$(cat)
 while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
-case "$input" in *"SECTIONS=tests"*) echo "tests agent blew up" >&2; exit 1;; esac
-cat "${fakeDir}/result.jsonl"`,
+case "$*" in *"yarvis-review:test-reviewer"*) echo "tests agent blew up" >&2; exit 1;; esac
+${printAgentAnswer(fakeDir)}`,
     );
     if (kickoff.verification.run) kickoff.verification.run.program = program;
     await kickOffVerification(db, config, ref, {}, kickoff);

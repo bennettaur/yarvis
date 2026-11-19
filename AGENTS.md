@@ -764,6 +764,13 @@ report there and leaves the fixes to the author.
   program lookup, directory check and built environment (`lib/claudeCli.ts`),
   streams `--output-format stream-json` into typed events any number of viewers
   follow over `/api/agent-runs/:id/events`, and ends in an `agent_runs` row.
+  A job split into several agents' answers uses `startClaudeFanOutRun`
+  instead of a model coordinating subagents: one process per part (at most
+  `MAX_FAN_OUT_PROCESSES` at once across every run, since each is a few
+  hundred MB), each answer checked against a schema and asked again once,
+  and the answers put together in code, so no model rewords or drops what
+  another wrote. The verification report runs each section that way, one
+  process per reading group.
   These runs are pointed at a pull request's checkout, which its author
   controls, so they read no settings files at all (`--setting-sources ""`):
   the checkout's can declare hooks, which are shell commands Claude Code runs

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_runs" ADD COLUMN "processes" jsonb DEFAULT '[]'::jsonb NOT NULL;

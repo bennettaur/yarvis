@@ -454,8 +454,14 @@ first 200 lines of each bulk file to say what it is.
 
 On a big PR, one agent can't hold every diff at once, and what it read early
 would drop out of its context. So the diffs are split into reading groups of
-about 512 KB (one huge diff is split by lines), and each check runs as one
-agent per group, with their findings merged into one report.
+about 512 KB (one huge diff is split by lines), and the risk check and each
+finding check run as one Claude Code process per group. Yarvis merges their
+answers itself: a check keeps its five most severe findings across groups,
+and risk takes the highest level any group gave. An agent whose answer
+doesn't fit the report's shape, or whose process fails, is asked once more.
+If it fails again, its part of the report says the check didn't complete, so
+you know to review that area by hand. If every process of a check fails, the
+run fails and the check's last good result stays.
 
 Yarvis then counts, from the files the agents actually opened, which changed
 files no check read in full. A read only counts when it shows the lines: a
