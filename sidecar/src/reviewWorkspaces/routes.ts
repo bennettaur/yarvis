@@ -622,6 +622,7 @@ export function createReviewWorkspaceRoutes(
       return c.json({ error: "from must be a full commit sha" }, 400);
     }
     const registry = options.rereview?.run?.registry ?? agentRunRegistry;
+    const rereviewDeps = options.rereview ?? defaultRereviewDeps(config);
     try {
       return c.json(
         await latestRereview(
@@ -631,7 +632,11 @@ export function createReviewWorkspaceRoutes(
           deps(),
           (id) => registry.isLive(id),
           from,
-          { config, settings: (options.rereview ?? defaultRereviewDeps(config)).settings },
+          {
+            config,
+            settings: rereviewDeps.settings,
+            readerBudgetBytes: rereviewDeps.readerBudgetBytes,
+          },
         ),
       );
     } catch (e) {

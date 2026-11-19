@@ -1009,6 +1009,8 @@ export interface RereviewDeps {
   settings(): Promise<RereviewRunConfig>;
   /** Passed to `startClaudeRun`; tests swap in a fake `claude`. */
   run?: ClaudeRunDeps;
+  /** How much interdiff one agent may read. Defaults to {@link READER_BUDGET_BYTES}; tests lower it. */
+  readerBudgetBytes?: number;
 }
 
 export function defaultRereviewDeps(config: Config): RereviewDeps {
@@ -1166,10 +1168,11 @@ export async function startRereview(
       writeFileSync(join(contextDir, "rereview.md"), material.contextFile);
       writeFileSync(join(contextDir, "index.md"), material.indexFile);
       const reading = rereviewReadBytes(index);
-      if (reading > READER_BUDGET_BYTES) {
+      const budget = deps.readerBudgetBytes ?? READER_BUDGET_BYTES;
+      if (reading > budget) {
         throw new ReviewWorkspaceError(
           `what changed since the review is too much for one agent to read (about ` +
-            `${sizeText(reading)} of interdiffs, past ${sizeText(READER_BUDGET_BYTES)}); ` +
+            `${sizeText(reading)} of interdiffs, past ${sizeText(budget)}); ` +
             "review it in the Since last review tab instead",
           409,
         );
@@ -1285,6 +1288,7 @@ async function rereviewSize(
   prId: string,
   reviewDeps: ReviewDeps,
   settings: RereviewRunConfig,
+  readerBudgetBytes: number,
   from?: string,
 ): Promise<RereviewSize> {
   const since = await reviewSinceReview(db, config, workspaceId, prId, reviewDeps, from);
@@ -1308,7 +1312,7 @@ async function rereviewSize(
     noInterdiff: since.files.filter((f) => f.tooLarge).map((f) => f.path),
     skimmed: text.filter((f) => bulk.get(f.path)?.skim).map((f) => f.path),
     readBytes,
-    overAgentBudget: readBytes > READER_BUDGET_BYTES,
+    overAgentBudget: readBytes > readerBudgetBytes,
     estimatedCostUsd,
     budgetUsd: settings.maxBudgetUsd,
     overBudget: estimatedCostUsd > settings.maxBudgetUsd,
@@ -1327,7 +1331,11 @@ export async function latestRereview(
   reviewDeps: ReviewDeps,
   isLive: (id: string) => boolean,
   from?: string,
-  sizing?: { config: Config; settings: () => Promise<RereviewRunConfig> },
+  sizing?: {
+    config: Config;
+    settings: () => Promise<RereviewRunConfig>;
+    readerBudgetBytes?: number;
+  },
 ): Promise<LatestRereview> {
   const pr = await getReviewPr(db, workspaceId, prId);
   let size: RereviewSize | null = null;
@@ -1341,6 +1349,7 @@ export async function latestRereview(
         prId,
         reviewDeps,
         await sizing.settings(),
+        sizing.readerBudgetBytes ?? READER_BUDGET_BYTES,
         from,
       );
     } catch (e) {

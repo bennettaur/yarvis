@@ -1522,6 +1522,8 @@ cat "${fakeDir}/result.jsonl"`,
           viewer: async () => ({ login: viewer }),
           settings: async () => ({ model: "haiku", maxBudgetUsd: 0.5, autoStart: false }),
           run: { program, registry, instance: "test" },
+          // Small, so the sizing test can go past it without pushing a huge file.
+          readerBudgetBytes: 16 * 1024,
         },
       }),
     );
@@ -1690,8 +1692,8 @@ cat "${fakeDir}/result.jsonl"`,
       overAgentBudget: false,
       budgetUsd: 0.5,
     });
-    // ~900 KB of new code since the review: more than one agent can hold.
-    remote.pushToPr("src/big.ts", `${"export const value = 1234567890;\n".repeat(28_000)}`);
+    // ~32 KB of new code since the review: past the test's 16 KB reader budget.
+    remote.pushToPr("src/big.ts", `${"export const value = 1234567890;\n".repeat(1_000)}`);
     await call("POST", `/${wsId}/prs/${prId}/refresh`);
     await progress(wsId, prId);
     expect((await latest(wsId, prId)).size).toMatchObject({ overAgentBudget: true });
