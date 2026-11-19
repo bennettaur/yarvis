@@ -32,9 +32,6 @@ function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
   }));
 }
 
-/** localStorage key under which the Chat tab's open session id is kept. */
-export const CHAT_TAB_SESSION_KEY = "yarvis.chat.sessionId";
-
 /** A message typed while a turn was running, waiting to be sent. */
 export interface QueuedMessage {
   text: string;
