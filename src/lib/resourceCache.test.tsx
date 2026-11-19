@@ -28,12 +28,12 @@ let failWith: string | null = null;
  */
 let script: { value?: string; ms?: number; fail?: string }[] = [];
 /** When set, every load waits for it before answering, so a case decides when a load lands. */
-let heldUntil: Promise<void> | null = null;
+let loadsReleased: Promise<void> | null = null;
 
 /** Holds every load from here on until the returned function is called. */
 function holdLoads(): () => void {
   let release = () => {};
-  heldUntil = new Promise<void>((resolve) => {
+  loadsReleased = new Promise<void>((resolve) => {
     release = resolve;
   });
   return release;
@@ -44,7 +44,7 @@ async function load(): Promise<string> {
   const step = script.shift();
   const ms = step?.ms ?? loadMs;
   if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
-  if (heldUntil) await heldUntil;
+  if (loadsReleased) await loadsReleased;
   const fail = step?.fail ?? failWith;
   if (fail) throw new Error(fail);
   return step?.value ?? value;
@@ -100,7 +100,7 @@ beforeEach(() => {
   loadMs = 0;
   failWith = null;
   script = [];
-  heldUntil = null;
+  loadsReleased = null;
   rendered.length = 0;
   lastRefresh = null;
 });
@@ -179,7 +179,7 @@ describe("useCachedResource", () => {
     await waitFor(() => host.textContent === "page-a/-:-/-", "page a to load");
     root.render(createElement(Probe, { subject: "b", freshness: BRIEF }));
     await waitFor(() => host.textContent === "page-b/-:-/-", "page b to load");
-    // Page a's answer has to be past BRIEF's TTL before the test returns to it.
+    // At least BRIEF's TTL, so page a's answer is stale when the test returns to it.
     await settle();
 
     value = "page-a refreshed";

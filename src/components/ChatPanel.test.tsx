@@ -210,7 +210,7 @@ afterEach(() => {
   sessions = [];
   created = 0;
   scripted = [];
-  for (const open of gates) open();
+  for (const release of gates) release();
   gates = [];
   sent = [];
   health = { status: "ok", service: "s", uptimeMs: 3_600_000 };

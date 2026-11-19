@@ -95,9 +95,13 @@ function type(host: HTMLElement, value: string): void {
 const saveButton = (host: HTMLElement) =>
   Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith("Sav"));
 
+/** Clicks Save and waits for its outcome: every save ends in an error or a notice. */
 async function clickSave(host: HTMLElement): Promise<void> {
   saveButton(host)?.click();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitFor(
+    () => host.querySelector(".text-red-400, .text-emerald-400") !== null,
+    "the save's outcome",
+  );
 }
 
 describe("TerminalSection", () => {
@@ -173,10 +177,8 @@ describe("TerminalSection", () => {
     const { host, cleanup } = await mount();
     type(host, "5");
     await clickSave(host);
-    await waitFor(
-      () => host.innerHTML.includes("the session cap must be at least 1"),
-      "the core's rejection to show",
-    );
+
+    expect(host.innerHTML).toContain("the session cap must be at least 1");
 
     expect(host.innerHTML).not.toContain("Saved.");
     cleanup();
@@ -189,8 +191,7 @@ describe("TerminalSection", () => {
     expect(host.innerHTML).toContain("Saved.");
 
     type(host, "121");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(host.innerHTML).not.toContain("Saved.");
+    await waitFor(() => !host.innerHTML.includes("Saved."), "the stale notice to clear");
     cleanup();
   });
 });

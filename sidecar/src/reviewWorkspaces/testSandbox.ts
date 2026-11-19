@@ -718,8 +718,9 @@ export interface SandboxSession {
  * Starts one sandboxed helper for a pass, so the profile is compiled once.
  * Resolves once the helper is running, so the first command's timeout doesn't
  * also have to cover the compile. Falls back to a sandbox per command
- * (`runSandboxed`) when the helper can't start; the protection is the same
- * either way, only slower.
+ * (`runSandboxed`) when perl is missing; the protection is the same either
+ * way, only slower. Rejects with `SandboxUnavailableError` when the helper
+ * dies or doesn't answer before it is ready.
  */
 export async function openSandboxSession(base: {
   cwd: string;
