@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
-import { and, desc, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNotNull, ne } from "drizzle-orm";
 import { publish } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import { ccProjectDirFor, latestSessionFile } from "../cc/sessions.ts";
@@ -996,6 +996,7 @@ export async function listWorkspaces(
           ),
         )
     : [];
+  const prRowsByRepo = Map.groupBy(prRows, (p) => p.workspaceRepoId);
   const namesByWorkspace = new Map<string, string[]>();
   const prsByWorkspace = new Map<string, WorkspaceSummaryPr[]>();
   for (const m of memberships) {
@@ -1005,9 +1006,8 @@ export async function listWorkspaces(
     // A torn-down worktree stops being polled, so whatever its cache last held
     // is frozen — an archived workspace must not keep flashing a live PR badge.
     if (m.repoStatus === "removed") continue;
-    const own = prRows.filter((p) => p.workspaceRepoId === m.id);
     const prs = prsByWorkspace.get(m.workspaceId) ?? [];
-    for (const p of orderPrs(own, m.branch)) {
+    for (const p of orderPrs(prRowsByRepo.get(m.id) ?? [], m.branch)) {
       prs.push({
         repoName: m.name,
         prNumber: p.prNumber,
@@ -1094,13 +1094,16 @@ export async function getWorkspace(db: Db, id: string): Promise<WorkspaceDetail 
 
   return {
     ...workspace,
-    repos: wrRows.map((wr) => ({
-      ...wr,
-      repo: repoById.get(wr.repoId)!,
-      pr: prsOf(wr)[0] ?? null,
-      prs: prsOf(wr),
-      extraWorktrees: extraRows.filter((e) => e.workspaceRepoId === wr.id),
-    })),
+    repos: wrRows.map((wr) => {
+      const prs = prsOf(wr);
+      return {
+        ...wr,
+        repo: repoById.get(wr.repoId)!,
+        pr: prs[0] ?? null,
+        prs,
+        extraWorktrees: extraRows.filter((e) => e.workspaceRepoId === wr.id),
+      };
+    }),
     tasks: await tasksForWorkspace(db, id),
     issues: await listLinksForWorkspace(db, id),
   };
@@ -1590,7 +1593,8 @@ export async function findWorkspaceForPr(
     // A PR can be linked to several workspaces, one of them by number from
     // elsewhere. The workspace whose own branch it merges from is the one it
     // belongs to.
-    .orderBy(desc(prOnOwnBranch));
+    // Then the workspace that has held the repo longest, so a tie is stable.
+    .orderBy(desc(prOnOwnBranch), asc(workspaceRepos.createdAt));
 
   for (const { cloneUrl, ...ws } of candidates) {
     if (remoteMatchesLocator(parseRepoRemote(cloneUrl), locator)) return ws;
@@ -2364,9 +2368,13 @@ const ISSUE_CLOSE_ERROR_CAP = 300;
  * so it's never treated as the workspace's outcome.
  */
 function linkedPrUrl(detail: WorkspaceDetail): string | null {
-  const withPr = detail.repos
-    .flatMap((r) => r.prs)
-    .filter((p) => p.prUrl && p.prState !== "closed");
+  // A PR from the workspace's own branch is its work; one linked from another
+  // branch counts only when the repo has none of its own.
+  const withPr = detail.repos.flatMap((r) =>
+    r.prs
+      .filter((p) => p.prUrl && p.prState !== "closed")
+      .sort((a, b) => Number(isOnBranch(b, r.branch)) - Number(isOnBranch(a, r.branch))),
+  );
   const merged = withPr.find((p) => p.prState === "merged");
   return (merged ?? withPr[0])?.prUrl ?? null;
 }

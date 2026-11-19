@@ -42,6 +42,7 @@ import { writeClaudeSettings } from "./claudeSettings.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
 import { harnessChoiceError, harnessIdSchema, listAgentHarnesses } from "./harnesses.ts";
 import { FRESH_ENOUGH_MS, pollerClients, refreshWorkspacePrs } from "./poller.ts";
+import { isOnBranch } from "./prs.ts";
 import {
   addRepoToWorkspace,
   archiveWorkspace,
@@ -150,7 +151,9 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
       const summarize = (p: WorkspaceRepoPr) => ({
         number: p.prNumber,
         url: p.prUrl,
-        branch: p.headBranch,
+        // Whether the PR is from this workspace's own branch. Not the branch's
+        // name: a PR linked by number can carry a name its author chose.
+        onWorkspaceBranch: isOnBranch(p, wr.branch),
         state: p.prState,
         isDraft: p.isDraft,
         mergeable: p.mergeable,
@@ -166,12 +169,17 @@ function summarizeWorkspaceStatus(detail: WorkspaceDetail, freshSince: Date | nu
         branch: wr.branch,
         ...refresh,
         pr: summarize(pr),
-        // The repo's other PRs: stack layers, earlier PRs on the branch, ones linked by number.
-        ...(others.length ? { otherPrs: others.map(summarize) } : {}),
+        // The repo's other PRs: stack layers, earlier PRs on the branch, ones
+        // linked by number. Bounded, since a call can cover every workspace.
+        ...(others.length ? { otherPrs: others.slice(0, MAX_OTHER_PRS).map(summarize) } : {}),
+        ...(others.length > MAX_OTHER_PRS ? { morePrs: others.length - MAX_OTHER_PRS } : {}),
       };
     }),
   };
 }
+
+/** The most of a repo's other PRs get_workspace_status lists; the rest are counted. */
+const MAX_OTHER_PRS = 10;
 
 /** Bounds a reviewer or check name; nothing upstream caps a CI job's name. */
 const MAX_PR_NAME_CHARS = 200;

@@ -48,9 +48,11 @@ describe("branchPr", () => {
 });
 
 describe("isOnBranch", () => {
-  // Rows from before head branches were kept were all found on the worktree's own branch.
-  it("counts a PR with no recorded head branch as on the branch", () => {
-    expect(isOnBranch(pr(1, "open", null), "topic")).toBe(true);
+  it("trusts only a PR known to merge from the repo's own branch", () => {
+    expect(isOnBranch(pr(1, "open", "topic"), "topic")).toBe(true);
+    expect(isOnBranch(pr(1, "open", null), "topic")).toBe(false);
     expect(isOnBranch(pr(1, "open", "other"), "topic")).toBe(false);
+    // A fork's same-named branch, as the providers' reads store it.
+    expect(isOnBranch(pr(1, "open", "someone:topic"), "topic")).toBe(false);
   });
 });

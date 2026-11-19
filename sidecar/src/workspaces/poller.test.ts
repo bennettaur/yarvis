@@ -16,6 +16,7 @@ import {
   dueRefresh,
   isDueForRefresh,
   linkWorkspacePr,
+  MAX_AGENT_LINKED_PRS,
   markWorkspaceListViewed,
   markWorkspaceViewed,
   PrLinkRefusal,
@@ -681,10 +682,11 @@ describe("isDueForRefresh", () => {
     expect(due("w", "open", polledAgo(10 * 60_000))).toBe(true);
   });
 
-  it("looks for new PRs on the list's branches every fifteen minutes", () => {
+  it("searches the list's branches once per quarter hour, with the known PRs' reads", () => {
     markWorkspaceListViewed(now);
-    expect(due("listed", null, polledAgo(10 * 60_000))).toBe(false);
-    expect(due("listed", null, polledAgo(15 * 60_000))).toBe(true);
+    // 12:02:30 is in this window; 11:57:30 is in the last one.
+    expect(due("listed", null, polledAgo(5 * 60_000))).toBe(false);
+    expect(due("listed", null, polledAgo(10 * 60_000))).toBe(true);
     expect(mode("listed", null)).toBe("branch");
   });
 
@@ -699,12 +701,15 @@ describe("isDueForRefresh", () => {
     expect(due("w", "open", polledAgo(90_000))).toBe(true);
   });
 
-  it("refreshes a settled PR in the open workspace every fifteen minutes", () => {
+  it("refreshes a closed PR in the open workspace every fifteen minutes", () => {
     markWorkspaceViewed("w", now);
-    for (const prState of ["merged", "closed"]) {
-      expect(due("w", prState, polledAgo(10 * 60_000))).toBe(false);
-      expect(due("w", prState, polledAgo(15 * 60_000))).toBe(true);
-    }
+    expect(due("w", "closed", polledAgo(10 * 60_000))).toBe(false);
+    expect(due("w", "closed", polledAgo(15 * 60_000))).toBe(true);
+  });
+
+  it("never re-reads a merged PR, even in the open workspace", () => {
+    markWorkspaceViewed("w", now);
+    expect(due("w", "merged", polledAgo(60 * 60_000))).toBe(false);
   });
 });
 
@@ -1284,6 +1289,40 @@ describe("linking and unlinking", () => {
     expect(await linkedNumbers(wrId)).toEqual([]);
   });
 
+  it("won't let the agent link a fork's PR, or more than its cap", async () => {
+    const wrId = await seedReadyRepo("a");
+    const workspaceId = await workspaceOf(wrId);
+    const fork = graphqlClient(() => ({
+      data: {
+        p0: {
+          pullRequest: {
+            ...POLLED_PR(42),
+            isCrossRepository: true,
+            headRepositoryOwner: { login: "forker" },
+          },
+        },
+      },
+    }));
+    await expect(
+      linkWorkspacePr(db, { github: fork.gh }, workspaceId, wrId, 42, { relink: false }),
+    ).rejects.toThrow("comes from a fork");
+    // The user may still link it, and it is kept apart from the repo's own branch.
+    await linkWorkspacePr(db, { github: fork.gh }, workspaceId, wrId, 42, { relink: true });
+    const [row] = await db.select().from(workspaceRepoPr).where(eqWr(wrId));
+    expect(row?.headBranch).toBe("forker:yarvis/a");
+
+    await db.insert(workspaceRepoPr).values(
+      Array.from({ length: MAX_AGENT_LINKED_PRS }, (_, i) => ({
+        workspaceRepoId: wrId,
+        prNumber: 100 + i,
+      })),
+    );
+    const own = graphqlClient(() => ({ data: { p0: { pullRequest: POLLED_PR(7) } } }));
+    await expect(
+      linkWorkspacePr(db, { github: own.gh }, workspaceId, wrId, 7, { relink: false }),
+    ).rejects.toThrow("ask the user to unlink some first");
+  });
+
   it("refuses a repo from another workspace", async () => {
     const wrId = await seedReadyRepo("a");
     const otherWr = await seedReadyRepo("b");
@@ -1400,6 +1439,21 @@ describe("detectWorkspacePrs", () => {
     expect(await searchedAt(wrId)).toMatchObject({ prsPolledAt: expect.any(Date) });
   });
 
+  it("doesn't bring back a PR the user unlinked", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 5, dismissed: true });
+
+    await detectWorkspacePrs(
+      db,
+      { github: branchesClient({ "yarvis/a": [5] }) },
+      await workspaceOf(wrId),
+    );
+
+    expect(await linkedNumbers(wrId)).toEqual([]);
+  });
+
   it("refuses an archived workspace", async () => {
     const wrId = await seedReadyRepo("a");
     const workspaceId = await workspaceOf(wrId);
@@ -1449,5 +1503,16 @@ describe("which workspace a PR belongs to", () => {
     });
 
     expect(found?.id).toBe(home!.id);
+  });
+
+  it("is no workspace's once the user unlinked it", async () => {
+    const wrId = await seedReadyRepo("a");
+    await db
+      .insert(workspaceRepoPr)
+      .values({ workspaceRepoId: wrId, prNumber: 7, headBranch: "yarvis/a", dismissed: true });
+
+    expect(
+      await findWorkspaceForPr(db, { provider: "github", owner: "oa", repo: "ra", number: 7 }),
+    ).toBeNull();
   });
 });

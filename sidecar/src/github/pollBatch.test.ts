@@ -158,6 +158,30 @@ describe("branchPrStatuses", () => {
   });
 });
 
+describe("a fork's head branch", () => {
+  it("is stored as owner:branch, which no branch of the repo's own can match", async () => {
+    const { gh } = fakeGitHub(() => ({
+      data: {
+        p0: {
+          pullRequest: polledPr(7, {
+            isCrossRepository: true,
+            headRefName: "main",
+            headRepositoryOwner: { login: "forker" },
+          }),
+        },
+        p1: { pullRequest: polledPr(8) },
+      },
+    }));
+
+    const results = await gh.prStatusesByNumber([
+      { owner: "o", repo: "r", number: 7 },
+      { owner: "o", repo: "r", number: 8 },
+    ]);
+
+    expect(results.map((r) => r.ok && r.value.headBranch)).toEqual(["forker:main", "main"]);
+  });
+});
+
 describe("prStatusesByNumber", () => {
   it("fails only the PR whose repo GitHub couldn't resolve", async () => {
     const { gh } = fakeGitHub(() => ({

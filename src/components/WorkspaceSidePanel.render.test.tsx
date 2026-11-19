@@ -258,6 +258,24 @@ describe("WorkspaceSidePanel", () => {
     expect(clipboardWrites()).toEqual(["https://github.com/octo/web/pull/12"]);
   });
 
+  it("tells a branch searched without a PR from one never searched", async () => {
+    const searched = await mount(
+      () => {},
+      () => {},
+      {
+        ...REPO,
+        prsPolledAt: "2026-06-01T10:00:00.000Z",
+      },
+    );
+    await clickTab(searched, "PR checks");
+    expect(searched.textContent).toContain("No PR for feature yet.");
+    unmount?.();
+
+    const never = await mount();
+    await clickTab(never, "PR checks");
+    expect(never.textContent).toContain("Not polled yet.");
+  });
+
   it("lists the PR's failing checks with a button to fix them", async () => {
     const prRef: PrRef = { provider: "github", owner: "octo", repo: "web", number: 12 };
     primeCache(prDetailKey(prRef), {

@@ -658,9 +658,13 @@ describe("workspace worktrees", () => {
       await git(wr.worktreePath, "commit", "-m", "feature");
       const prHead = await head(clone, `refs/heads/${wr.branch}`);
       await git(clone, "update-ref", "refs/remotes/origin/main", await squash(clone, prHead));
-      await db
-        .insert(workspaceRepoPr)
-        .values({ workspaceRepoId: wr.id, prNumber: 7, prState: "merged", headSha: prHead });
+      await db.insert(workspaceRepoPr).values({
+        workspaceRepoId: wr.id,
+        prNumber: 7,
+        prState: "merged",
+        headSha: prHead,
+        headBranch: wr.branch,
+      });
       writeFileSync(join(wr.worktreePath, "late.ts"), "late");
       await git(wr.worktreePath, "add", "late.ts");
       await git(wr.worktreePath, "commit", "-m", "late");
@@ -1353,6 +1357,29 @@ describe("workspace routes", () => {
         reviewDecision: "approved",
       },
     ]);
+  });
+
+  it("lists a badge for every PR a repo has, own branch first, and none for an unlinked one", async () => {
+    const repo = await addRepo();
+    const created = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ name: "several prs", repoIds: [repo.id] }),
+    });
+    const ws = (await created.json()) as { id: string };
+    const [wr] = await db
+      .select()
+      .from(workspaceRepos)
+      .where(eq(workspaceRepos.workspaceId, ws.id));
+    await db.insert(workspaceRepoPr).values([
+      { workspaceRepoId: wr!.id, prNumber: 9, prState: "open", headBranch: "stack-2" },
+      { workspaceRepoId: wr!.id, prNumber: 5, prState: "open", headBranch: wr!.branch },
+      { workspaceRepoId: wr!.id, prNumber: 3, prState: "open", dismissed: true },
+    ]);
+
+    const res = await app.request("/api/workspaces", { headers: auth });
+    const list = (await res.json()) as { prs: { prNumber: number }[] }[];
+    expect(list[0]?.prs.map((p) => p.prNumber)).toEqual([5, 9]);
   });
 
   it("keeps a multi-repo workspace's names whole while listing only its PRs", async () => {
@@ -3018,9 +3045,13 @@ describe("provision + archive (injected git runner)", () => {
       .select()
       .from(workspaceRepos)
       .where(eq(workspaceRepos.workspaceId, ws.id));
-    await db
-      .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wr!.id, prNumber: 1, prState: "merged", headSha: PR_HEAD });
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 1,
+      prState: "merged",
+      headSha: PR_HEAD,
+      headBranch: wr!.branch,
+    });
 
     const deleted: string[] = [];
     // The local branch exists, the base doesn't contain it (a squash merge), and
@@ -3056,9 +3087,13 @@ describe("provision + archive (injected git runner)", () => {
       .select()
       .from(workspaceRepos)
       .where(eq(workspaceRepos.workspaceId, ws.id));
-    await db
-      .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wr!.id, prNumber: 2, prState: "merged", headSha: PR_HEAD });
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 2,
+      prState: "merged",
+      headSha: PR_HEAD,
+      headBranch: wr!.branch,
+    });
 
     const deleted: string[] = [];
     // Merged and the remote branch deleted, but two commits were made after the merge.
@@ -3143,9 +3178,13 @@ describe("provision + archive (injected git runner)", () => {
       .select()
       .from(workspaceRepos)
       .where(eq(workspaceRepos.workspaceId, ws.id));
-    await db
-      .insert(workspaceRepoPr)
-      .values({ workspaceRepoId: wr!.id, prNumber: 4, prState: "merged", headSha: PR_HEAD });
+    await db.insert(workspaceRepoPr).values({
+      workspaceRepoId: wr!.id,
+      prNumber: 4,
+      prState: "merged",
+      headSha: PR_HEAD,
+      headBranch: wr!.branch,
+    });
     const extra = join(ws.rootPath, "widget-layer-2");
     mkdirSync(extra);
     const extraReal = canonicalPath(extra);

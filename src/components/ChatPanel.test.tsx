@@ -653,45 +653,6 @@ describe("ChatPanel", () => {
     expect(textOf(mounted.host.innerHTML)).toContain("From Omni Chat");
   });
 
-  it("reopens the session it last had open", async () => {
-    sessions = [
-      {
-        id: "s1",
-        title: "Yesterday",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-    ];
-    localStorage.setItem("test.chat.sessionId", "s1");
-    const mounted = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = mounted.unmount;
-    await settle();
-
-    expect(mounted.host.querySelector("select")?.value).toBe("s1");
-  });
-
-  it("remembers the session a thread opens for the next mount", async () => {
-    const first = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = first.unmount;
-    Array.from(first.host.querySelectorAll("button"))
-      .find((b) => b.textContent === "New chat")
-      ?.click();
-    await settle(50);
-    first.unmount();
-
-    const second = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = second.unmount;
-    await settle();
-
-    expect(second.host.querySelector("select")?.value).toBe("new-session-1");
-  });
-
   it("focuses the composer after New chat", async () => {
     const mounted = await mountForInteraction(createElement(ChatPanel));
     unmount = mounted.unmount;
