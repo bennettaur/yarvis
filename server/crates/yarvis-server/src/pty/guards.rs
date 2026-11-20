@@ -155,8 +155,8 @@ pub(crate) fn prepare_slash_command(
 }
 
 /// Composes the remote-control launch line from a base command and a session
-/// name. Extracted from `spawn_claude_session` so the composition is unit-testable
-/// without reading the environment or spawning a PTY.
+/// name. Separate from `spawn_claude_session` so the composition can be
+/// unit-tested without reading the environment or spawning a PTY.
 pub(crate) fn remote_control_command(base: &str, name: &str) -> String {
     // `--remote-control` takes the name as an optional value, so Claude Code
     // reads a name starting with `-` as a flag of its own. Names come from issue
@@ -216,8 +216,8 @@ pub(crate) fn check_remote_control(kind: HarnessKind, remote_control: bool) -> R
 /// single argument and placed where the harness's `prompt_args` put `{prompt}`
 /// (appended at the end without them).
 ///
-/// Extracted from `spawn_claude_session` alongside `remote_control_command` so
-/// the choice is unit-testable without app state.
+/// Separate from `spawn_claude_session`, like `remote_control_command`, so the
+/// choice can be unit-tested without settings or a PTY.
 ///
 /// The instruction carries issue text, which an outside party writes, so it is
 /// quoted like the session name rather than interpolated raw.

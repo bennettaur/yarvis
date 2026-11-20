@@ -354,6 +354,11 @@ response = its return value, `204` for none):
 
 PTY (`chat` to drive a session, `read` to look at one):
 
+`chat` lets a device run a shell as the user the server runs as. From there
+it can reach everything that user can, the control socket and the secrets
+store included, so treat `chat` as full trust. Don't give it to a token for
+a bot or a script.
+
 - `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
 - `POST /api/core/pty_resize` `{ id, cols, rows }` → `204`. Attached clients
   get a `size` message; who owns the size doesn't change.
@@ -367,6 +372,7 @@ PTY (`chat` to drive a session, `read` to look at one):
   the shell holds the terminal.
 - `POST /api/core/pty_session_harness` `{ id }` → `{ id, name }` or `null`.
 - `POST /api/core/get_agent_config` → `{ name, command, harnesses, defaultHarness }`.
+  `chat`, since the commands are user-written and can carry a `VAR=secret`.
 
 - `GET /api/pty/{id}` (WebSocket, `chat`). `{id}` is the session id,
   URL-encoded (ids such as `ws:<workspaceId>/<tab>/<pane>` hold slashes). The
@@ -446,8 +452,9 @@ uses.
 
 Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
 `enabled = false`, `upstream_socket` when set, else the server's own value;
-with `enabled = true`, the server agent's socket while it runs, and none at
-all while the vault is locked, so git can't sign through another agent.
+with `enabled = true`, the socket the server's ssh-agent reports through
+`PtyManager::set_server_ssh_agent`, and none at all until it does (or while
+the vault is locked), so git can't sign through another agent.
 
 Vault (only when `secrets.backend = "vault"`):
 

@@ -14,8 +14,12 @@ use crate::error::ApiError;
 /// The scope a PTY command needs, or `None` when `command` isn't one.
 pub fn scope_of(command: &str) -> Option<Scope> {
     Some(match command {
-        "pty_exists" | "pty_is_busy" | "pty_session_harness" | "get_agent_config" => Scope::Read,
-        "pty_write" | "pty_resize" | "pty_kill" | "pty_start_claude" => Scope::Chat,
+        "pty_exists" | "pty_is_busy" | "pty_session_harness" => Scope::Read,
+        // The agent commands are user-written and can carry an inline
+        // `VAR=secret`, so only a device that may start sessions sees them.
+        "get_agent_config" | "pty_write" | "pty_resize" | "pty_kill" | "pty_start_claude" => {
+            Scope::Chat
+        }
         _ => return None,
     })
 }
@@ -159,8 +163,8 @@ mod tests {
         assert_eq!(scope_of("pty_write"), Some(Scope::Chat));
         assert_eq!(scope_of("pty_start_claude"), Some(Scope::Chat));
         assert_eq!(scope_of("pty_exists"), Some(Scope::Read));
-        assert_eq!(scope_of("get_agent_config"), Some(Scope::Read));
-        // Attaching is the WebSocket; the Tauri command has no HTTP form.
+        assert_eq!(scope_of("get_agent_config"), Some(Scope::Chat));
+        // Attaching is the `/api/pty/{id}` WebSocket, not a core command.
         assert_eq!(scope_of("pty_attach"), None);
     }
 }

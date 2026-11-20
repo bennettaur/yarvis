@@ -42,7 +42,7 @@ pub fn raise_fd_limit() -> Result<(), String> {
 /// The soft limit to raise to, or `None` when the inherited one already suffices
 /// and the call can be skipped. Never lowers an existing limit and never exceeds
 /// the hard limit, which is what a process without privileges is allowed to ask
-/// for. Extracted from `raise_fd_limit` so the arithmetic is unit-testable
+/// for. Separate from `raise_fd_limit` so the arithmetic can be unit-tested
 /// without touching the process's real limits.
 #[cfg(unix)]
 fn target_fd_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t> {

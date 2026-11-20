@@ -280,13 +280,15 @@ mod unix_impl {
     pub async fn start(state: AppState) -> Result<PathBuf, String> {
         let dir = state.config.server.data_dir.clone();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        set_dir_private(&dir);
+        // Who can connect is decided by these permissions alone, so the
+        // socket isn't served when they can't be set.
+        set_private(&dir, 0o700)?;
         let path = dir.join(SOCKET_FILE);
         // Clear a stale socket from a previous run, but only if it really is a
         // socket, so a symlink is never followed or a planted file clobbered.
         remove_stale_socket(&path)?;
         let listener = UnixListener::bind(&path).map_err(|e| format!("bind failed: {e}"))?;
-        set_file_private(&path);
+        set_private(&path, 0o600)?;
         tokio::spawn(accept_loop(state, listener));
         Ok(path)
     }
@@ -513,14 +515,10 @@ mod unix_impl {
         })
     }
 
-    fn set_dir_private(path: &Path) {
+    fn set_private(path: &Path, mode: u32) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-    }
-
-    fn set_file_private(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| format!("couldn't make {} private: {e}", path.display()))
     }
 
     pub(super) fn remove_stale_socket(path: &Path) -> Result<(), String> {

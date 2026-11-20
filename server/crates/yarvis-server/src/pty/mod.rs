@@ -79,7 +79,7 @@ const AGENT_HARNESS_TOKEN_ENV: &str = "YARVIS_AGENT_HARNESS_TOKEN";
 
 /// Which harness an agent session runs, kept for as long as the session lives
 /// so a later check judges it against what was launched there rather than
-/// whatever the default is now.
+/// whatever the default has since become.
 #[derive(Clone)]
 pub struct SessionAgent {
     harness_id: String,
@@ -127,6 +127,9 @@ pub struct PtyOptions {
     pub client_queue: usize,
     /// How long one WebSocket send may block before the client is dropped.
     pub send_timeout: Duration,
+    /// The pause between an agent send's text and its Enter. See
+    /// [`INSTRUCTION_SUBMIT_DELAY`].
+    pub submit_delay: Duration,
 }
 
 impl Default for PtyOptions {
@@ -136,6 +139,7 @@ impl Default for PtyOptions {
             scrollback_cap: MAX_SCROLLBACK,
             client_queue: CLIENT_QUEUE,
             send_timeout: Duration::from_secs(10),
+            submit_delay: INSTRUCTION_SUBMIT_DELAY,
         }
     }
 }
@@ -209,7 +213,7 @@ impl PtyManager {
         &self.inner.options
     }
 
-    /// Sets the sidecar details sessions spawned from now on get. Called by
+    /// Sets the sidecar details later spawns get. Called by
     /// whatever starts the sidecar, each time it does.
     pub fn set_sidecar_env(&self, env: Option<SidecarSessionEnv>) {
         *self
@@ -220,8 +224,9 @@ impl PtyManager {
     }
 
     /// Sets the socket of the server's own ssh-agent, or `None` while it isn't
-    /// running (the vault is locked). Sessions spawned from now on use it when
-    /// `ssh_agent.enabled` is on; running shells keep what they started with.
+    /// running (the vault is locked). The server's ssh-agent calls this as it
+    /// starts and stops. Later spawns use it when `ssh_agent.enabled` is on;
+    /// running shells keep what they started with.
     pub fn set_server_ssh_agent(&self, socket: Option<PathBuf>) {
         *self
             .inner
@@ -252,7 +257,7 @@ impl PtyManager {
     }
 
     /// The built-in harness, the stored ones, and the stored default id, as
-    /// they stand on disk now.
+    /// they are stored on disk.
     fn harness_settings(&self) -> (ResolvedHarness, Vec<harness::AgentHarness>, Option<String>) {
         let settings = self.inner.settings.snapshot();
         (
@@ -787,13 +792,14 @@ impl PtyManager {
     ) -> Result<(), String> {
         let id = format!("ws-claude:{workspace_id}");
         let session = self.agent_session_for_input(&id, agent_pids)?;
-        let gate = session.hold_input();
-        // Checked again under the gate: a client's write may have landed while
-        // it was being taken.
+        let gate = session.hold_input()?;
+        // Checked again once what clients queued before the gate has reached
+        // the PTY, since that input may have ended the agent.
+        session.write_and_wait(&gate, b"")?;
         check_agent_reads_prompt(&session, agent_pids)?;
         session.write_and_wait(&gate, text.as_bytes())?;
         let typed_into = (session.shell_pid(), session.foreground_pid());
-        std::thread::sleep(INSTRUCTION_SUBMIT_DELAY);
+        std::thread::sleep(self.inner.options.submit_delay);
         let not_submitted = |e: String| format!("the text was typed but not submitted: {e}");
         // Checked again before the Enter: if the agent exited or was replaced
         // during the pause, the Enter would run the typed text in whatever

@@ -89,7 +89,7 @@ pub(crate) fn is_attention_addressable(id: &str) -> bool {
 ///
 /// The attention token lets a tool running in the session (a Claude Code session
 /// and its hooks, a script) raise an attention item for *that* session. The
-/// session key is the PTY id, which the frontend maps back to the exact terminal
+/// session key is the PTY id, which the UI maps back to the exact terminal
 /// tab and pane, so an item can point at the tab that raised it rather than at
 /// the workspace as a whole; `YARVIS_WORKSPACE_ID` is set only when the id
 /// encodes one.
