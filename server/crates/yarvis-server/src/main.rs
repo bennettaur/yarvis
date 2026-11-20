@@ -46,7 +46,7 @@ async fn main() {
             std::process::exit(1);
         });
     let state = AppState::new(config, store);
-    start_core(&state).await;
+    let supervisor = start_core(&state).await;
     tracing::info!("listening on http://{bind}");
     let server = axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
@@ -59,6 +59,12 @@ async fn main() {
             shutdown_signal().await;
             tokio::time::sleep(SHUTDOWN_GRACE).await;
         } => tracing::info!("open connections didn't close in time; exiting"),
+    }
+    // Dropping the supervisor kills the sidecar (`kill_on_drop`), so it never
+    // outlives the server.
+    if let Some(supervisor) = supervisor {
+        supervisor.abort();
+        let _ = supervisor.await;
     }
 }
 
@@ -98,8 +104,9 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("server.toml"))
 }
 
-/// Settings and secrets housekeeping, then the sidecar.
-async fn start_core(state: &AppState) {
+/// Settings and secrets housekeeping, then the sidecar. Returns the
+/// supervisor's task, if the sidecar runs.
+async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
     state.settings.ensure_dir();
     // Both migrations move values a past desktop build wrote to the Keychain,
     // so they run unless server.toml picked another store for this server.
@@ -120,7 +127,7 @@ async fn start_core(state: &AppState) {
     }
     if !state.config.sidecar.enabled {
         tracing::info!("sidecar.enabled is false; not starting the sidecar");
-        return;
+        return None;
     }
     let deps = SupervisorDeps {
         config: state.config.clone(),
@@ -128,5 +135,5 @@ async fn start_core(state: &AppState) {
         secrets: state.secrets.clone(),
         events: state.events.clone(),
     };
-    tokio::spawn(state.sidecar.clone().supervise(deps));
+    Some(tokio::spawn(state.sidecar.clone().supervise(deps)))
 }
