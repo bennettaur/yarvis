@@ -1,4 +1,4 @@
-//! `POST /api/core/{command}`: the settings, secrets and sidecar commands.
+//! `POST /api/core/{command}`: the settings, secrets, sidecar and PTY commands.
 //!
 //! The body is the command's arguments as a JSON object with camelCase keys,
 //! the shape the desktop app's commands took, so the UI's `core(cmd, args)`
@@ -6,12 +6,13 @@
 //! The response is the command's return value, or `204` when it has none. A
 //! command's own error (a rejected value, a store that can't be read) comes
 //! back as `400` with the message in `error`, since the UI shows it to the
-//! user. Reads need `read`; anything that writes a secret or a setting, or
-//! restarts the sidecar, needs `admin`.
+//! user. Reads need `read`, driving a PTY needs `chat`, and anything that
+//! writes a secret or a setting, or restarts the sidecar, needs `admin`.
 //!
-//! Every command runs on the blocking pool: a secrets access can wait on a
-//! Keychain or 1Password prompt, and settings are a file read and an atomic
-//! write.
+//! Every settings and secrets command runs on the blocking pool: a secrets
+//! access can wait on a Keychain or 1Password prompt, and settings are a file
+//! read and an atomic write. The PTY commands ([`crate::pty::core`]) put
+//! their own blocking work there.
 
 use axum::Json;
 use axum::body::{Body, to_bytes};
@@ -23,11 +24,11 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::auth::{Admin, Authed, Read, Scope};
+use crate::auth::{Admin, Authed, Chat, Read, Scope};
 use crate::error::ApiError;
 use crate::harness::AgentHarness;
 use crate::settings::{BackendSwitchError, TextField};
-use crate::{custom_providers, embeddings_secrets, mcp};
+use crate::{custom_providers, embeddings_secrets, mcp, pty};
 
 /// Settings and secret arguments are small; a harness list is the largest.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -95,6 +96,9 @@ async fn handle(
     command: String,
     request: Request,
 ) -> Result<Option<Value>, ApiError> {
+    if let Some(scope) = pty::core::scope_of(&command) {
+        return pty_command(state, scope, command, request).await;
+    }
     let scope = scope_of(&command).ok_or_else(ApiError::not_found)?;
     let (mut parts, body) = request.into_parts();
     match scope {
@@ -114,6 +118,32 @@ async fn handle(
     tokio::task::spawn_blocking(move || run(&state, &command, args))
         .await
         .map_err(ApiError::internal)?
+}
+
+/// The PTY commands ([`pty::core`]), which need `chat` to drive a session
+/// and run on the PTY manager rather than the blocking pool.
+async fn pty_command(
+    state: AppState,
+    scope: Scope,
+    command: String,
+    request: Request,
+) -> Result<Option<Value>, ApiError> {
+    let (mut parts, body) = request.into_parts();
+    match scope {
+        Scope::Read => {
+            Authed::<Read>::from_request_parts(&mut parts, &state).await?;
+        }
+        Scope::Chat => {
+            Authed::<Chat>::from_request_parts(&mut parts, &state).await?;
+        }
+        Scope::Approve | Scope::Admin => {
+            return Err(ApiError::internal(format!(
+                "{command} is listed with a scope this route doesn't check"
+            )));
+        }
+    }
+    let args = read_args(body).await?;
+    pty::core::run(&state.pty, &command, args).await
 }
 
 async fn read_args(body: Body) -> Result<Value, ApiError> {
