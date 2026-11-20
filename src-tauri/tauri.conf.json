@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "identifier": "com.mikebennett.yarvis",
   "build": {
-    "beforeDevCommand": "bun run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": {
+      "script": "bun run build && cargo build --manifest-path server/Cargo.toml",
+      "wait": true
+    },
+    "frontendDist": "connect"
   },
   "app": {
     "windows": [
@@ -18,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
     }
   },
   "bundle": {

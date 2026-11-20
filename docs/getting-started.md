@@ -19,14 +19,17 @@ pgvector, creates the database, and runs `bun install`. That covers steps 1 to
 
 ## What you are setting up
 
-Yarvis is a Tauri desktop app made of three processes:
+Yarvis is a Tauri desktop app made of four pieces:
 
-- a **Rust core** (`src-tauri/`) that owns the window, the terminals, and your
-  secrets,
+- a **Tauri app** (`src-tauri/`) that owns the window, the tray and the global
+  hotkeys,
+- a **server** (`server/`) that owns the terminals and your secrets, and serves
+  the UI,
 - a **React frontend** (`src/`) that draws the UI,
 - a **Bun sidecar** (`sidecar/`) that talks to Postgres and the LLM providers.
 
-`bun run tauri dev` starts all three. Data lives in a local PostgreSQL database
+`bun run tauri dev` builds the frontend and the server, then the app starts the
+server, which starts the sidecar. Data lives in a local PostgreSQL database
 with the `pgvector` extension. Secrets live in the macOS Keychain. Everything
 else lives in `~/.yarvis/settings.json`. See [Configuration](configuration.md)
 for the details.
@@ -150,8 +153,9 @@ and `cargo clippy` on staged files.
 bun run tauri dev
 ```
 
-The first run compiles the whole Rust core, which takes a few minutes. Later
-runs take seconds. When the build finishes, a Yarvis window opens.
+The first run compiles the Tauri app and the server, which takes a few minutes.
+Later runs take seconds. The frontend is built once per launch, so a change to
+`src/` needs a restart of `bun run tauri dev` to show up. When the build finishes, a Yarvis window opens.
 
 If macOS asks whether Yarvis may use the Keychain, choose **Always Allow**. Dev
 builds aren't code-signed, so you may be asked for your login password
@@ -236,6 +240,8 @@ rest of the app is built around.
 | Chat, memory, tasks, workspaces, PR notes | The Postgres database |
 | Workspace clones and worktrees | `~/dev/yarvis-workspaces` (set `YARVIS_WORKSPACES_ROOT` to change it) |
 | Sidecar log | `~/Library/Logs/com.mikebennett.yarvis/sidecar.log`, and **Settings → Diagnostics** |
+| Which server the app uses | `~/Library/Application Support/com.mikebennett.yarvis/connection.json`; change it from the tray's **Server connection…** |
+| The local server's config, data and log | `server.toml` and `server/` in that same folder; `~/Library/Logs/com.mikebennett.yarvis/server.log` |
 
 ## Troubleshooting
 
@@ -263,9 +269,9 @@ terminal.
 the `bun` on your `PATH`. Start the app from a terminal where `bun --version`
 works.
 
-**Port 1420 is in use.** Another Yarvis dev build (or Vite) is already running.
-Quit it, or run a second copy with `bun run dev:instance <name>`. See
-[Development](development.md#running-more-than-one-instance).
+**The window stays on "Couldn't connect".** The local server didn't start. Its
+log is `~/Library/Logs/com.mikebennett.yarvis/server.log`. In a dev build,
+check that `server/target/debug/yarvis-server` was built.
 
 **Keychain prompts keep coming back.** Choose **Always Allow** rather than
 **Allow**. Unsigned dev builds can't use Touch ID for the Keychain. The

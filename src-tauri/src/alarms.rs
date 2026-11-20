@@ -1,29 +1,29 @@
 //! Ringing alarms with a full-screen takeover.
 //!
 //! The sidecar owns the alarm list and decides when one is due
-//! (`sidecar/src/alarms/scheduler.ts`), then asks the core over the control
-//! channel to ring it. Ringing lives here because only the core can take over
-//! the window and play sound reliably while the webview is hidden and
-//! throttled. When an alarm fires the core takes over the main window
-//! (fullscreen + always-on-top + focus), shows a notification, plays an
-//! escalating sound, and emits an event the frontend renders as a full-screen
-//! overlay. It rings until the alarm is released: acknowledged, snoozed or
-//! cancelled, from the webview or the sidecar.
+//! (`sidecar/src/alarms/scheduler.ts`). yarvis-server sends `alarm.fire` and
+//! `alarm.release` events to every client, and the page in this window
+//! answers them with [`fire_alarm`] and [`release_alarm`]. Ringing lives here
+//! because only native code can take over the window and play sound reliably
+//! while the webview is hidden and throttled. When an alarm fires the app
+//! takes over the main window (fullscreen + always-on-top + focus), shows a
+//! notification and plays an escalating sound; the page draws the overlay
+//! itself from the event. It rings until the alarm is released: acknowledged,
+//! snoozed or cancelled, from this window or another device.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
 /// Seconds after firing before the alert escalates (more frequent, louder).
 const ESCALATE_AFTER_SECS: i64 = 60;
 
-/// An alarm as the sidecar sends it and the frontend's takeover reads it.
+/// An alarm as the `alarm.fire` event carries it.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alarm {
@@ -62,26 +62,18 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Manages the ringing state. Call from `setup` before the control channel
-/// opens, so a fire request can never find it missing.
+/// Manages the ringing state. Call from `setup`, before the page can load.
 pub fn init<R: Runtime>(app: &AppHandle<R>) {
     app.manage(AlarmState::default());
-}
-
-/// The file this instance kept its alarms in before the sidecar owned them.
-pub fn legacy_store_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("alarms.json"))
 }
 
 /// Takes over the window and rings `alarm` until it is released.
 pub fn fire<R: Runtime>(app: &AppHandle<R>, alarm: Alarm) {
     let state = app.state::<AlarmState>();
     if let Ok(mut firing) = state.firing.lock() {
-        // Already ringing: the sidecar retried, and a second ring loop would
-        // outlive the release that stops the first.
+        // Already ringing: the event was delivered twice (a reconnect replays
+        // it), and a second ring loop would outlive the release that stops
+        // the first.
         if !firing.insert(alarm.id.clone()) {
             return;
         }
@@ -99,10 +91,6 @@ pub fn fire<R: Runtime>(app: &AppHandle<R>, alarm: Alarm) {
         }
     });
 
-    // The frontend raises its takeover straight off this payload, so the
-    // sidecar must have marked the alarm fired before asking for it — see
-    // `handleFired` in src/lib/alarmStore.ts.
-    let _ = app.emit("alarm-fired", &alarm);
     let _ = notify(app, &alarm);
 
     if alarm.sound {
@@ -207,8 +195,9 @@ fn remove_from_firing(firing: &mut HashSet<String>, id: &str) -> bool {
 }
 
 /// Stops an alarm ringing and gives up its hold on the window. Safe to call
-/// for one that isn't ringing, and more than once: the webview and the sidecar
-/// both release an alarm the user dealt with.
+/// for one that isn't ringing, and more than once: the page releases an alarm
+/// both when the user deals with it and when the `alarm.release` event for it
+/// arrives.
 pub fn release<R: Runtime>(app: &AppHandle<R>, id: &str) {
     stop_ringing(app, id);
     release_firing(app, id);
@@ -216,8 +205,14 @@ pub fn release<R: Runtime>(app: &AppHandle<R>, id: &str) {
 
 // --- Commands ---
 
-/// Called by the webview as soon as the user acknowledges, snoozes or cancels,
-/// so the ringing stops even when the sidecar can't be reached.
+/// Called by the page when an `alarm.fire` event arrives.
+#[tauri::command]
+pub fn fire_alarm<R: Runtime>(app: AppHandle<R>, alarm: Alarm) {
+    fire(&app, alarm);
+}
+
+/// Called by the page as soon as the user acknowledges, snoozes or cancels,
+/// so the ringing stops even when the server can't be reached.
 #[tauri::command]
 pub fn release_alarm<R: Runtime>(app: AppHandle<R>, id: String) {
     release(&app, &id);
@@ -314,6 +309,25 @@ mod tests {
     }
 
     #[test]
+    fn the_fire_command_takes_the_alarm_as_the_event_carries_it() {
+        let app = app();
+        let handle = app.handle().clone();
+        // `data` of an `alarm.fire` event, with no `meetLink`.
+        let alarm: Alarm = serde_json::from_value(serde_json::json!({
+            "id": "a",
+            "label": "Yarvis cargo test alarm a (safe to ignore)",
+            "fireAtMs": now_ms(),
+            "sound": false,
+            "status": "fired",
+        }))
+        .unwrap();
+
+        fire_alarm(handle.clone(), alarm);
+
+        assert_eq!(firing_ids(&handle), vec!["a".to_string()]);
+    }
+
+    #[test]
     fn releasing_one_of_two_leaves_the_other_holding_the_takeover() {
         // The server-side half of issue #201: the first acknowledgement used to
         // restore the window unconditionally, dropping the takeover the second
@@ -332,7 +346,7 @@ mod tests {
 
     #[test]
     fn releasing_twice_is_harmless() {
-        // The webview and the sidecar both release an alarm the user dealt with.
+        // The page releases on the user's action and again on the event.
         let app = app();
         let handle = app.handle().clone();
         fire(&handle, alarm("a"));
@@ -345,8 +359,7 @@ mod tests {
 
     #[test]
     fn firing_the_same_alarm_twice_is_one_takeover() {
-        // The sidecar retries a fire it didn't hear back about; one release
-        // must still end it.
+        // A reconnecting page replays the event; one release must still end it.
         let app = app();
         let handle = app.handle().clone();
         fire(&handle, alarm("a"));
@@ -365,7 +378,7 @@ mod tests {
 
     #[test]
     fn releasing_an_alarm_that_never_rang_does_nothing() {
-        // The sidecar releases on every status change, ringing or not.
+        // A release arrives on every status change, ringing or not.
         let app = app();
         let handle = app.handle().clone();
         fire(&handle, alarm("a"));

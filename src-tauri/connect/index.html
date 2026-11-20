@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yarvis</title>
+    <link rel="stylesheet" href="connect.css" />
+    <script src="connect.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>Yarvis</h1>
+      <p id="status" role="status">Starting…</p>
+      <button id="open" type="button" hidden>Back to Yarvis</button>
+
+      <form id="form">
+        <fieldset>
+          <legend>Server</legend>
+          <label>
+            <input type="radio" name="mode" value="local" checked />
+            This Mac (starts a Yarvis server here)
+          </label>
+          <label>
+            <input type="radio" name="mode" value="remote" />
+            Another machine
+          </label>
+        </fieldset>
+
+        <div id="remote" hidden>
+          <label>
+            Server URL
+            <input id="url" type="url" placeholder="https://yarvis.example.com" autocomplete="off" />
+          </label>
+          <label>
+            Pairing token
+            <input id="token" type="password" autocomplete="off" />
+          </label>
+          <p class="hint">
+            Sign in to the server in a browser, open Settings → Devices, and create a token
+            for this app. Leave the token empty to keep the one already saved for that server.
+          </p>
+        </div>
+
+        <p id="error" role="alert" hidden></p>
+        <button type="submit">Save and restart</button>
+      </form>
+    </main>
+  </body>
+</html>

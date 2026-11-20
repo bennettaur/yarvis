@@ -12,11 +12,20 @@ feature docs — this file is about working in the codebase.
 
 ## Architecture
 
-Three processes, each with a clean ownership boundary:
+Four pieces, each with a clean ownership boundary (`docs/client-server.md` has
+the design):
 
-- **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage (macOS Keychain or 1Password), sidecar
-  supervision
+- **Thin Tauri app** (`src-tauri/`) — what has to run on the Mac in front of
+  you: the window, tray, notifications, global hotkeys, clipboard history and
+  alarm takeovers. It starts a bundled `yarvis-server` on loopback (the
+  default) or connects to a remote one (`server_link.rs`), keeps its device
+  token in the Keychain, and loads the server's origin in its window. That
+  origin gets a runtime capability naming only the bridge commands
+  (`server_link::BRIDGE_PERMISSIONS`); every app command is listed in
+  `build.rs` so nothing else is callable from it. A command added for the page
+  goes in both, and never one that changes which server the app talks to.
+- **yarvis-server** (`server/`) — secret storage (macOS Keychain, 1Password
+  or its own vault), settings, sidecar supervision
   (port selection, bearer token, secrets injected as env vars), and every PTY
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
@@ -70,10 +79,10 @@ Run from the repo root unless noted.
 ```bash
 bun install                      # install deps (root + sidecar workspace)
 
-bun run tauri dev                # full app: frontend + Rust core + sidecar
-bun run tauri:preview            # same, but on the production frontend build
-                                  #   (no Vite dev server, React prod mode)
-bun run tauri:build              # release bundle, with the compiled sidecar
+bun run tauri dev                # full app: builds the frontend and server/,
+                                  #   then the Tauri app starts the server
+bun run tauri:build              # release bundle, with the server and the
+                                  #   compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
