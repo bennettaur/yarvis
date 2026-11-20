@@ -7,6 +7,8 @@
 //! - The web UI renders model output and markdown, so a strict CSP limits
 //!   what an injected script could do with the token the page holds, and
 //!   `frame-ancestors 'none'` stops another site framing the approvals page.
+//!   Images may come from any HTTPS host, since the UI shows avatars and
+//!   pictures from GitHub, JIRA and the like; an image can't run script.
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, header};
@@ -17,7 +19,7 @@ use crate::AppState;
 use crate::error::ApiError;
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-                   img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; \
+                   img-src 'self' data: blob: https:; media-src 'self' blob:; connect-src 'self'; \
                    font-src 'self' data:; worker-src 'self' blob:; frame-ancestors 'none'; \
                    base-uri 'none'; form-action 'self'";
 
