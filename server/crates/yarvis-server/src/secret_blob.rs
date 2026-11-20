@@ -27,7 +27,7 @@
 //! For the same reason, two writes must not overlap: each would save its own
 //! copy of the blob, and the one that lands second drops the other's change.
 //! Writers come from HTTP requests, the sidecar's control channel and startup
-//! migrations, and from the desktop app if it still runs beside the server,
+//! migrations, and from a desktop app running beside the server,
 //! since they share the item. So every write holds [`SecretBlob::lock_for_write`]
 //! from the read to the write, usually through [`SecretBlob::update_root`].
 //!
@@ -101,6 +101,9 @@ impl Store {
 
 #[derive(Clone)]
 enum Selection {
+    /// `server.toml` names no backend, so `settings.json`'s `secretBackend`
+    /// decides on every access, as it does for the desktop app.
+    FromSettings,
     Keychain,
     /// The item named by `onePasswordVault`/`onePasswordItem` in settings.
     OnePassword,
@@ -124,14 +127,16 @@ pub struct SecretStatus {
 }
 
 impl SecretBlob {
-    /// The blob in the store `kind` names. The vault backend isn't built yet,
-    /// so it gives a blob whose every access fails; `main` refuses to start
-    /// with it rather than run a server that can't read its secrets.
-    pub fn from_config(kind: SecretBackendKind, settings: SettingsStore) -> Self {
+    /// The blob in the store `kind` names, or the one `settings.json` names
+    /// when `kind` is unset. The vault backend isn't built yet, so it gives a
+    /// blob whose every access fails; `main` refuses to start with it rather
+    /// than run a server that can't read its secrets.
+    pub fn from_config(kind: Option<SecretBackendKind>, settings: SettingsStore) -> Self {
         let selection = match kind {
-            SecretBackendKind::Keychain => Selection::Keychain,
-            SecretBackendKind::OnePassword => Selection::OnePassword,
-            SecretBackendKind::Vault => Selection::Unusable(VAULT_NOT_BUILT),
+            None => Selection::FromSettings,
+            Some(SecretBackendKind::Keychain) => Selection::Keychain,
+            Some(SecretBackendKind::OnePassword) => Selection::OnePassword,
+            Some(SecretBackendKind::Vault) => Selection::Unusable(VAULT_NOT_BUILT),
         };
         Self {
             selection,
@@ -151,27 +156,29 @@ impl SecretBlob {
         &self.settings
     }
 
-    /// The store in use right now. 1Password's item is read from settings on
-    /// every call, so a switch to another item made since is honored.
+    /// The store in use right now. Settings are read on every call, so a
+    /// switch made since, here or by a desktop app sharing the file, is
+    /// honored.
     ///
     /// A 1Password selection with no usable item is an error rather than a
-    /// fallback to the Keychain: the server was told to use 1Password, and
-    /// reading or writing somewhere else would leave the user looking at one
-    /// store while their secrets went to another.
+    /// fallback to the Keychain: reading or writing somewhere else would leave
+    /// the user looking at one store while their secrets went to another.
     pub fn active(&self) -> Result<Store, String> {
-        match &self.selection {
-            Selection::Keychain => Ok(Store::keychain()),
-            Selection::OnePassword => {
-                let settings = self.settings.snapshot();
-                let item = ItemRef::new(
-                    settings.one_password_vault.as_deref().unwrap_or_default(),
-                    settings.one_password_item.as_deref().unwrap_or_default(),
-                )
+        let onepassword = || {
+            self.settings
+                .snapshot()
+                .onepassword_item()
+                .map(Store::onepassword)
                 .map_err(|e| {
                     format!("the 1Password backend needs a vault and an item in Settings: {e}")
-                })?;
-                Ok(Store::onepassword(item))
+                })
+        };
+        match &self.selection {
+            Selection::FromSettings if self.settings.snapshot().selects_onepassword() => {
+                onepassword()
             }
+            Selection::FromSettings | Selection::Keychain => Ok(Store::keychain()),
+            Selection::OnePassword => onepassword(),
             Selection::Fixed(store) => Ok(store.clone()),
             Selection::Unusable(reason) => Err((*reason).to_string()),
         }
@@ -579,6 +586,30 @@ pub(crate) mod tests {
         );
     }
 
+    /// What keeps a desktop app beside the server from writing at the same
+    /// time: the blob's lock takes `secrets.lock` beside `settings.json`.
+    #[test]
+    fn the_write_lock_holds_the_shared_lock_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob = blob_over(dir.path(), MemoryBackend::empty());
+        let path = blob.settings().secrets_lock_path();
+        let soon = || Instant::now() + Duration::from_millis(100);
+        let guard = blob.lock_for_write().unwrap();
+        assert_eq!(lock_file(&path, soon()).unwrap_err(), LOCK_BUSY);
+        drop(guard);
+        assert!(lock_file(&path, soon()).is_ok());
+    }
+
+    #[test]
+    fn a_subtree_edit_that_changes_nothing_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = MemoryBackend::holding(r#"{"github_token":"t"}"#);
+        blob_over(dir.path(), fake.clone())
+            .update_subtree("mcpServers", |_| Ok(false))
+            .unwrap();
+        assert!(fake.writes().is_empty());
+    }
+
     #[test]
     fn a_subtree_that_is_not_an_object_reads_as_empty() {
         let mut root = json!({ "mcpServers": "garbage" });
@@ -594,11 +625,35 @@ pub(crate) mod tests {
     fn the_vault_backend_fails_clearly_rather_than_falling_back() {
         let dir = tempfile::tempdir().unwrap();
         let blob = SecretBlob::from_config(
-            SecretBackendKind::Vault,
+            Some(SecretBackendKind::Vault),
             SettingsStore::new(dir.path().join("settings.json")),
         );
         let err = blob.read_root().unwrap_err();
         assert!(err.contains("vault backend isn't built yet"), "{err}");
+    }
+
+    /// With no backend in `server.toml`, the desktop app's choice in
+    /// `settings.json` decides, so an existing 1Password install stays on it.
+    #[test]
+    fn an_unset_backend_follows_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = SettingsStore::new(dir.path().join("settings.json"));
+        let blob = SecretBlob::from_config(None, settings.clone());
+        assert_eq!(blob.active().unwrap().label, "the macOS Keychain");
+        std::fs::write(
+            settings.path(),
+            json!({ "secretBackend": "onepassword", "onePasswordVault": "Private", "onePasswordItem": "Yarvis" })
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(blob.active().unwrap().label, "1Password");
+        std::fs::write(
+            settings.path(),
+            json!({ "secretBackend": "onepassword" }).to_string(),
+        )
+        .unwrap();
+        let err = blob.active().err().unwrap();
+        assert!(err.contains("needs a vault and an item"), "{err}");
     }
 
     /// A server told to use 1Password must not quietly use the Keychain while
@@ -607,7 +662,7 @@ pub(crate) mod tests {
     fn onepassword_without_an_item_is_an_error_not_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
         let blob = SecretBlob::from_config(
-            SecretBackendKind::OnePassword,
+            Some(SecretBackendKind::OnePassword),
             SettingsStore::new(dir.path().join("settings.json")),
         );
         let err = blob.read_root().unwrap_err();

@@ -30,14 +30,14 @@ use yarvis_server::{AppState, app};
 
 const SIDECAR_TOKEN: &str = "sidecar-token";
 
-struct Harness {
+struct TestServer {
     state: AppState,
     dir: tempfile::TempDir,
 }
 
 /// A server whose settings live in a temp dir, whose secrets are in memory,
 /// and whose sidecar is whatever listens on `port`.
-fn harness(config: Config, backend: Arc<dyn SecretBackend>, port: u16) -> Harness {
+fn test_server(config: Config, backend: Arc<dyn SecretBackend>, port: u16) -> TestServer {
     let dir = tempfile::tempdir().unwrap();
     let mut state = AppState::new(config, Store::open_in_memory().unwrap());
     state.settings = SettingsStore::new(dir.path().join("settings.json"));
@@ -55,13 +55,22 @@ fn harness(config: Config, backend: Arc<dyn SecretBackend>, port: u16) -> Harnes
         },
         dir.path().join("logs").join("sidecar.log"),
     );
-    Harness { state, dir }
+    TestServer { state, dir }
 }
 
 async fn token(state: &AppState, scopes: &[Scope]) -> (String, String) {
     create_device(&state.store, "test", "token", scopes, None)
         .await
         .unwrap()
+}
+
+/// A loopback port nothing listens on: bound and dropped.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Serves `router` on a free loopback port and returns the port.
@@ -103,6 +112,20 @@ async fn oneshot(state: &AppState, mut request: Request<Body>) -> Response {
     app(state.clone()).oneshot(request).await.unwrap()
 }
 
+/// A fake sidecar running [`echo`] on every `/api` path, counting requests.
+async fn counted_echo() -> (u16, Arc<AtomicUsize>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = hits.clone();
+    let router = Router::new().route(
+        "/api/{*rest}",
+        any(move |headers: HeaderMap, request: Request<Body>| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            echo(headers, request)
+        }),
+    );
+    (serve(router).await, hits)
+}
+
 async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, Value) {
     let response = oneshot(state, request).await;
     let status = response.status();
@@ -126,7 +149,7 @@ fn request(method: &str, path: &str, token: &str, body: Value) -> Request<Body> 
 #[tokio::test]
 async fn a_get_reaches_the_sidecar_with_its_token_and_the_device_id() {
     let port = serve(Router::new().route("/api/{*rest}", any(echo))).await;
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let (device_id, device_token) = token(&h.state, &[Scope::Read]).await;
 
     let mut req = request(
@@ -149,8 +172,8 @@ async fn a_get_reaches_the_sidecar_with_its_token_and_the_device_id() {
 
 #[tokio::test]
 async fn a_write_needs_the_chat_scope_and_carries_its_body() {
-    let port = serve(Router::new().route("/api/{*rest}", any(echo))).await;
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let (port, hits) = counted_echo().await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let (_, reader) = token(&h.state, &[Scope::Read]).await;
     let (_, chatter) = token(&h.state, &[Scope::Chat]).await;
 
@@ -165,6 +188,7 @@ async fn a_write_needs_the_chat_scope_and_carries_its_body() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
 
     let (status, seen) = send(
         &h.state,
@@ -181,6 +205,86 @@ async fn a_write_needs_the_chat_scope_and_carries_its_body() {
     assert_eq!(seen["body"], r#"{"text":"hi"}"#);
 }
 
+/// Defining an MCP server can make the sidecar run a command, so a chat
+/// device can't, and the request never reaches the sidecar.
+#[tokio::test]
+async fn a_route_that_changes_what_the_sidecar_may_do_needs_admin() {
+    let (port, hits) = counted_echo().await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
+    let (_, chatter) = token(&h.state, &[Scope::Read, Scope::Chat]).await;
+    let (_, admin) = token(&h.state, &[Scope::Admin]).await;
+    let server = json!({ "transport": "stdio", "command": "sh" });
+    let (status, _) = send(
+        &h.state,
+        request(
+            "POST",
+            "/api/sidecar/api/mcp/servers",
+            &chatter,
+            server.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    let (status, _) = send(
+        &h.state,
+        request("POST", "/api/sidecar/api/mcp/servers", &admin, server),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+/// While the supervisor has no sidecar up, its port may belong to anyone,
+/// so nothing is sent there.
+#[tokio::test]
+async fn nothing_is_sent_while_no_sidecar_is_running() {
+    let (port, hits) = counted_echo().await;
+    let mut h = test_server(Config::default(), MemoryBackend::empty(), port);
+    h.state.sidecar = Sidecar::new(h.dir.path()).unwrap();
+    let (_, reader) = token(&h.state, &[Scope::Read]).await;
+    let (status, _) = send(
+        &h.state,
+        request("GET", "/api/sidecar/api/status", &reader, json!(null)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_revoked_device_loses_its_open_stream() {
+    let port = serve(Router::new().route(
+        "/api/stream",
+        get(|| async {
+            let first = futures_util::stream::once(async {
+                Ok::<_, Infallible>(Bytes::from("data: one\n\n"))
+            });
+            let rest = futures_util::stream::pending::<Result<Bytes, Infallible>>();
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(first.chain(rest)))
+                .unwrap()
+        }),
+    ))
+    .await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
+    let (device_id, reader) = token(&h.state, &[Scope::Read]).await;
+    let response = oneshot(
+        &h.state,
+        request("GET", "/api/sidecar/api/stream", &reader, json!(null)),
+    )
+    .await;
+    let mut body = response.into_body();
+    let first = body.frame().await.unwrap().unwrap();
+    assert_eq!(first.into_data().unwrap(), "data: one\n\n");
+    h.state.auth.announce_revocation(&device_id);
+    let end = tokio::time::timeout(Duration::from_secs(5), body.frame())
+        .await
+        .expect("the stream ended once the device was revoked");
+    assert!(end.is_none(), "{end:?}");
+}
+
 #[tokio::test]
 async fn no_token_gets_401_and_nothing_reaches_the_sidecar() {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -193,7 +297,7 @@ async fn no_token_gets_401_and_nothing_reaches_the_sidecar() {
         }),
     ))
     .await;
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let req = Request::get("/api/sidecar/api/status")
         .body(Body::empty())
         .unwrap();
@@ -206,7 +310,7 @@ async fn no_token_gets_401_and_nothing_reaches_the_sidecar() {
 #[tokio::test]
 async fn routes_outside_the_bearer_wall_are_not_proxied() {
     let port = serve(Router::new().route("/{*rest}", any(echo))).await;
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let (_, all) = token(&h.state, &Scope::ALL).await;
     for path in [
         "/api/sidecar/mcp",
@@ -220,13 +324,7 @@ async fn routes_outside_the_bearer_wall_are_not_proxied() {
 
 #[tokio::test]
 async fn a_sidecar_that_is_down_gets_503() {
-    // Bound and dropped, so nothing listens there.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let h = test_server(Config::default(), MemoryBackend::empty(), free_port());
     let (_, reader) = token(&h.state, &[Scope::Read]).await;
     let (status, body) = send(
         &h.state,
@@ -263,7 +361,7 @@ async fn sse_streams_through_without_buffering() {
         }),
     ))
     .await;
-    let h = harness(Config::default(), MemoryBackend::empty(), port);
+    let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let (_, reader) = token(&h.state, &[Scope::Read]).await;
     let response = oneshot(
         &h.state,
@@ -308,10 +406,89 @@ async fn ws_echo(headers: HeaderMap, upgrade: WebSocketUpgrade) -> impl IntoResp
     })
 }
 
+/// A fake sidecar serving [`ws_echo`] at `/api/socket`, counting the sockets
+/// opened to it.
+async fn ws_upstream() -> (u16, Arc<AtomicUsize>) {
+    let opened = Arc::new(AtomicUsize::new(0));
+    let counted = opened.clone();
+    let router = Router::new().route(
+        "/api/socket",
+        get(move |headers: HeaderMap, upgrade: WebSocketUpgrade| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            ws_echo(headers, upgrade)
+        }),
+    );
+    (serve(router).await, opened)
+}
+
+/// Opens a proxied socket and sends the auth message.
+async fn open_proxied_socket(
+    state: &AppState,
+    token: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let server = serve(app(state.clone())).await;
+    let url = format!("ws://127.0.0.1:{server}/api/sidecar/api/socket");
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let auth = json!({ "type": "auth", "token": token }).to_string();
+    socket.send(tungstenite::Message::text(auth)).await.unwrap();
+    socket
+}
+
+async fn next_close_code<S>(socket: &mut S) -> u16
+where
+    S: futures_util::Stream<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
+{
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("a message arrived");
+        match message {
+            Some(Ok(tungstenite::Message::Close(Some(frame)))) => return frame.code.into(),
+            Some(Ok(_)) => {}
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_device_loses_its_relayed_websocket() {
+    let (upstream, _) = ws_upstream().await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), upstream);
+    let (device_id, chatter) = token(&h.state, &[Scope::Chat]).await;
+    let (other_id, _) = token(&h.state, &[Scope::Chat]).await;
+    let mut socket = open_proxied_socket(&h.state, &chatter).await;
+    next_text(&mut socket).await;
+
+    h.state.auth.announce_revocation(&other_id);
+    socket
+        .send(tungstenite::Message::text("still here"))
+        .await
+        .unwrap();
+    assert_eq!(next_text(&mut socket).await, "echo still here");
+
+    h.state.auth.announce_revocation(&device_id);
+    assert_eq!(next_close_code(&mut socket).await, 4401);
+}
+
+#[tokio::test]
+async fn a_websocket_with_a_bad_token_or_no_sidecar_is_closed() {
+    let (upstream, opened) = ws_upstream().await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), upstream);
+    let mut socket = open_proxied_socket(&h.state, "not-a-token").await;
+    assert_eq!(next_close_code(&mut socket).await, 4401);
+    assert_eq!(opened.load(Ordering::SeqCst), 0);
+
+    // Bound and dropped, so nothing listens there.
+    let down = test_server(Config::default(), MemoryBackend::empty(), free_port());
+    let (_, chatter) = token(&down.state, &[Scope::Chat]).await;
+    let mut socket = open_proxied_socket(&down.state, &chatter).await;
+    assert_eq!(next_close_code(&mut socket).await, 1011);
+}
+
 #[tokio::test]
 async fn a_websocket_is_authenticated_by_its_first_message_and_relayed() {
     let upstream = serve(Router::new().route("/api/socket", get(ws_echo))).await;
-    let h = harness(Config::default(), MemoryBackend::empty(), upstream);
+    let h = test_server(Config::default(), MemoryBackend::empty(), upstream);
     let (device_id, chatter) = token(&h.state, &[Scope::Chat]).await;
     let server = serve(app(h.state.clone())).await;
 
@@ -334,21 +511,12 @@ async fn a_websocket_is_authenticated_by_its_first_message_and_relayed() {
 
 #[tokio::test]
 async fn a_websocket_from_a_read_only_device_is_closed_before_the_sidecar_is_reached() {
-    let upstream = serve(Router::new().route("/api/socket", get(ws_echo))).await;
-    let h = harness(Config::default(), MemoryBackend::empty(), upstream);
+    let (upstream, opened) = ws_upstream().await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), upstream);
     let (_, reader) = token(&h.state, &[Scope::Read]).await;
-    let server = serve(app(h.state.clone())).await;
-
-    let url = format!("ws://127.0.0.1:{server}/api/sidecar/api/socket");
-    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
-    let auth = json!({ "type": "auth", "token": reader }).to_string();
-    socket.send(tungstenite::Message::text(auth)).await.unwrap();
-    match socket.next().await {
-        Some(Ok(tungstenite::Message::Close(Some(frame)))) => {
-            assert_eq!(u16::from(frame.code), 4403)
-        }
-        other => panic!("expected a close frame, got {other:?}"),
-    }
+    let mut socket = open_proxied_socket(&h.state, &reader).await;
+    assert_eq!(next_close_code(&mut socket).await, 4403);
+    assert_eq!(opened.load(Ordering::SeqCst), 0);
 }
 
 async fn next_text<S>(socket: &mut S) -> String
@@ -370,7 +538,7 @@ where
 #[tokio::test]
 async fn secrets_are_written_by_admins_and_only_their_presence_is_read_back() {
     let backend = MemoryBackend::empty();
-    let h = harness(Config::default(), backend.clone(), 1);
+    let h = test_server(Config::default(), backend.clone(), 1);
     let (_, admin) = token(&h.state, &[Scope::Read, Scope::Admin]).await;
     let (_, reader) = token(&h.state, &[Scope::Read]).await;
 
@@ -408,7 +576,7 @@ async fn secrets_are_written_by_admins_and_only_their_presence_is_read_back() {
 
 #[tokio::test]
 async fn an_unknown_secret_key_is_a_400_naming_it() {
-    let h = harness(Config::default(), MemoryBackend::empty(), 1);
+    let h = test_server(Config::default(), MemoryBackend::empty(), 1);
     let (_, admin) = token(&h.state, &[Scope::Admin]).await;
     let (status, body) = send(
         &h.state,
@@ -426,7 +594,7 @@ async fn an_unknown_secret_key_is_a_400_naming_it() {
 
 #[tokio::test]
 async fn settings_round_trip_in_the_frontends_shape() {
-    let h = harness(Config::default(), MemoryBackend::empty(), 1);
+    let h = test_server(Config::default(), MemoryBackend::empty(), 1);
     let (_, admin) = token(&h.state, &[Scope::Read, Scope::Admin]).await;
 
     let (status, view) = send(
@@ -472,7 +640,9 @@ async fn settings_round_trip_in_the_frontends_shape() {
 
 #[tokio::test]
 async fn switching_to_a_backend_server_toml_did_not_choose_is_a_409() {
-    let h = harness(Config::default(), MemoryBackend::empty(), 1);
+    let mut config = Config::default();
+    config.secrets.backend = Some(SecretBackendKind::Keychain);
+    let h = test_server(config, MemoryBackend::empty(), 1);
     let (_, admin) = token(&h.state, &[Scope::Admin]).await;
     let (status, body) = send(
         &h.state,
@@ -490,7 +660,7 @@ async fn switching_to_a_backend_server_toml_did_not_choose_is_a_409() {
 
 #[tokio::test]
 async fn an_unknown_or_client_local_command_is_a_404() {
-    let h = harness(Config::default(), MemoryBackend::empty(), 1);
+    let h = test_server(Config::default(), MemoryBackend::empty(), 1);
     let (_, all) = token(&h.state, &Scope::ALL).await;
     for command in ["get_sidecar_info", "focus_main_window", "nope"] {
         let (status, _) = send(
@@ -510,7 +680,7 @@ async fn the_web_ui_is_served_with_a_fallback_to_index_but_not_under_api() {
     std::fs::write(web.path().join("assets").join("app.js"), "js").unwrap();
     let mut config = Config::default();
     config.server.web_dir = Some(web.path().to_path_buf());
-    let h = harness(config, MemoryBackend::empty(), 1);
+    let h = test_server(config, MemoryBackend::empty(), 1);
 
     let body = |path: &str| {
         let state = h.state.clone();
@@ -530,6 +700,18 @@ async fn the_web_ui_is_served_with_a_fallback_to_index_but_not_under_api() {
     let (status, text) = body("/api/nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(text.contains("\"error\""), "{text}");
+}
+
+#[tokio::test]
+async fn with_no_web_dir_every_other_path_is_a_json_404() {
+    let h = test_server(Config::default(), MemoryBackend::empty(), 1);
+    let (status, body) = send(
+        &h.state,
+        Request::get("/settings").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].is_string());
 }
 
 /// A backend that fails until told otherwise, counting its reads.
@@ -589,8 +771,8 @@ async fn the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidec
     );
     let mut config = Config::default();
     config.sidecar.command = Some(vec!["sh".into(), "-c".into(), script]);
-    config.secrets.backend = SecretBackendKind::Keychain;
-    let h = harness(config, locked.clone(), 1);
+    config.secrets.backend = Some(SecretBackendKind::Keychain);
+    let h = test_server(config, locked.clone(), 1);
     let deps = SupervisorDeps {
         config: h.state.config.clone(),
         settings: h.state.settings.clone(),
@@ -599,14 +781,22 @@ async fn the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidec
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
 
+    // A second failed read means the first one was handled by waiting, not
+    // by starting anyway. The restart request skips the retry delay.
     until("a failed secrets read", async || {
         locked.reads.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    h.state.sidecar.restart();
+    until("a second failed read", async || {
+        locked.reads.load(Ordering::SeqCst) > 1
     })
     .await;
     assert!(
         kinds(&h.state).await.is_empty(),
         "started without its secrets"
     );
+    assert!(!env_file.exists(), "started without its secrets");
 
     locked.open.store(true, Ordering::SeqCst);
     h.state.sidecar.restart();
@@ -632,5 +822,33 @@ async fn the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidec
     let stopped = h.state.events.since(0).await.unwrap()[1].clone();
     assert_eq!(stopped.data["reason"], "restart");
     assert_eq!(stopped.device_id, None);
+    supervisor.abort();
+}
+
+/// A sidecar that dies on its own is started again, and the stop records why.
+#[tokio::test]
+async fn a_sidecar_that_exits_is_restarted() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran-once");
+    let script = format!(
+        "if [ -f '{0}' ]; then exec sleep 30; else touch '{0}'; exit 3; fi",
+        marker.display()
+    );
+    let mut config = Config::default();
+    config.sidecar.command = Some(vec!["sh".into(), "-c".into(), script]);
+    let h = test_server(config, MemoryBackend::empty(), 1);
+    let deps = SupervisorDeps {
+        config: h.state.config.clone(),
+        settings: h.state.settings.clone(),
+        secrets: h.state.secrets.clone(),
+        events: h.state.events.clone(),
+    };
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
+    until("a restart after the exit", async || {
+        kinds(&h.state).await == ["sidecar.started", "sidecar.stopped", "sidecar.started"]
+    })
+    .await;
+    let stopped = h.state.events.since(0).await.unwrap()[1].clone();
+    assert_eq!(stopped.data, json!({ "reason": "exited", "code": 3 }));
     supervisor.abort();
 }

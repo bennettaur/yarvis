@@ -27,7 +27,7 @@ async fn main() {
         eprintln!("{e}");
         std::process::exit(1);
     });
-    if config.secrets.backend == SecretBackendKind::Vault {
+    if config.secrets.backend == Some(SecretBackendKind::Vault) {
         eprintln!(
             "the vault backend isn't built yet; set [secrets] backend to \"keychain\" or \"onepassword\" in {}",
             config_path.display()
@@ -102,8 +102,11 @@ fn default_config_path() -> PathBuf {
 async fn start_core(state: &AppState) {
     state.settings.ensure_dir();
     // Both migrations move values a past desktop build wrote to the Keychain,
-    // so they only run on a server that uses it.
-    if state.config.secrets.backend == SecretBackendKind::Keychain {
+    // so they run unless server.toml picked another store for this server.
+    if matches!(
+        state.config.secrets.backend,
+        None | Some(SecretBackendKind::Keychain)
+    ) {
         let (settings, secrets) = (state.settings.clone(), state.secrets.clone());
         let migrated = tokio::task::spawn_blocking(move || {
             let keychain = SecretStore::keychain();

@@ -10,7 +10,7 @@
 //! Unlike `custom_providers`, there is only one embeddings provider, so the
 //! blob is a single secret bundle rather than a map keyed by provider id.
 //!
-//! This used to be its own standalone Keychain item, which cost a second
+//! Older builds kept it in its own standalone Keychain item, which cost a second
 //! authorization prompt at startup on top of the shared item everything else
 //! lives in. [`migrate_legacy_item`] folds any pre-existing value into the
 //! shared item once and deletes the old one.

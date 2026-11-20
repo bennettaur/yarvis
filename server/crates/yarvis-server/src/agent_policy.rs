@@ -1,9 +1,8 @@
 //! The limits and defaults a workspace agent session runs under: the PTY cap,
 //! the agent's name and launch command, and the slash commands Yarvis may type.
 //!
-//! These are the parts of `src-tauri/src/pty.rs` that the settings module
-//! validates against and the PTY module enforces, kept apart so both read the
-//! same constants. The stored values live in `settings.json`
+//! The settings module validates against these, and the code that opens agent
+//! sessions enforces them, so both read the same constants. The stored values live in `settings.json`
 //! ([`crate::settings`]); this module only says what they default to and which
 //! of them are allowed.
 
@@ -14,7 +13,7 @@
 /// chosen value as `maxPtySessions`.
 pub const DEFAULT_MAX_SESSIONS: usize = 60;
 
-/// Hard ceiling on the configured cap. The setting is writable from the UI and
+/// Hard ceiling on the configured cap. The setting is writable through the core API and
 /// persists across restarts, so a value that outlived whatever wrote it must
 /// not be able to retire the guard entirely. At roughly three file descriptors
 /// per session, past this point an `EMFILE` would surface somewhere unrelated

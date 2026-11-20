@@ -7,20 +7,23 @@
 //! carry their own scoped tokens or state nonces, and are called on loopback by
 //! local processes and browser redirects, so they stay off the proxy.
 //!
-//! The device is checked here (`read` for `GET`/`HEAD`, `chat` for everything
-//! else). Its `Authorization` header is dropped and replaced with the sidecar's
-//! own bearer token, so the sidecar never sees a device token. The device id
-//! goes along in `X-Yarvis-Device-Id`, replacing any the client sent, so the
-//! sidecar can record who asked.
+//! The device is checked here. `GET`/`HEAD` need `read` and other methods
+//! `chat`, except for the routes in [`SCOPE_RULES`]: those that change what
+//! the sidecar or its agents may do need `admin`, and those that answer an
+//! approval need `approve`. The device's `Authorization` header is dropped and
+//! replaced with the sidecar's own bearer token, so the sidecar never sees a
+//! device token. The device id goes along in `X-Yarvis-Device-Id`, replacing
+//! any the client sent, so the sidecar can record who asked.
 //!
 //! Bodies stream both ways. Chat replies are SSE, and holding a response until
-//! it ends would hold the whole reply.
+//! it ends would hold the whole reply. A response still streaming ends when
+//! its device is revoked.
 //!
 //! A WebSocket upgrade is answered here, not passed through: a browser can't
 //! set headers on a WebSocket, so the device authenticates with its first
 //! message ([`crate::auth::authenticate_ws`]). Only then is the sidecar's
 //! socket opened, with the bearer header, and frames relayed both ways. A
-//! socket can send as well as read, so it needs `chat`.
+//! socket can send as well as read, so it needs what a write to its path does.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -29,16 +32,21 @@ use axum::body::Body;
 use axum::extract::ws::{self, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::header::{AUTHORIZATION, CONNECTION, COOKIE, HOST, HeaderName};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
+use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 
 use crate::AppState;
-use crate::auth::{Authed, Chat, DeviceContext, Read, Scope, authenticate_ws};
+use crate::auth::{
+    Admin, Approve, Authed, Chat, CloseReason, DeviceContext, Read, Scope, authenticate_ws,
+};
 use crate::error::ApiError;
 
 pub const DEVICE_ID_HEADER: &str = "x-yarvis-device-id";
@@ -46,6 +54,10 @@ pub const DEVICE_ID_HEADER: &str = "x-yarvis-device-id";
 /// The connection is on loopback, so a sidecar that takes longer than this to
 /// accept is down or restarting rather than slow.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The largest message a client may send on a proxied socket. The first one
+/// is parsed before anyone is authenticated.
+const MAX_CLIENT_MESSAGE: usize = 1024 * 1024;
 
 /// Headers that describe one hop, not the request, so a proxy never forwards
 /// them (RFC 9110 §7.6.1).
@@ -60,6 +72,104 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
+/// Which methods a [`SCOPE_RULES`] entry covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Methods {
+    /// Anything but `GET` and `HEAD`.
+    Writes,
+    All,
+}
+
+/// Sidecar routes that need more than the default scope, matched by path
+/// segment (`*` is any one segment) on the path and everything below it. The
+/// first match wins, so the narrow exceptions come before their prefixes.
+///
+/// `admin`: routes that change what the sidecar or its agents may do: MCP
+/// servers (a stdio server is a command the sidecar runs), LLM providers and
+/// model choices, the settings sections the sidecar owns, credentials (the
+/// GitHub sign-in stores a token), standing consent for tools, scheduled job
+/// and specialist definitions, and registered repos with their setup scripts.
+/// The MCP endpoint's connection info carries the MCP token, so even reading
+/// it is `admin`.
+///
+/// `approve`: answers to tool approvals, permission prompts and agent
+/// questions, and the grant that lets a PR's setup script run.
+const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
+    ("/api/mcp-endpoint/connection", Methods::All, Scope::Admin),
+    ("/api/mcp/tools/search", Methods::Writes, Scope::Chat),
+    ("/api/jobs/agent-jobs/*/run", Methods::Writes, Scope::Chat),
+    ("/api/chat/approvals", Methods::Writes, Scope::Approve),
+    (
+        "/api/attention/permissions",
+        Methods::Writes,
+        Scope::Approve,
+    ),
+    ("/api/questions", Methods::Writes, Scope::Approve),
+    ("/api/heads-down/questions", Methods::Writes, Scope::Approve),
+    (
+        "/api/review-workspaces/*/prs/*/setup",
+        Methods::Writes,
+        Scope::Approve,
+    ),
+    ("/api/custom-providers", Methods::Writes, Scope::Admin),
+    ("/api/model-catalog", Methods::Writes, Scope::Admin),
+    ("/api/complexity-models", Methods::Writes, Scope::Admin),
+    ("/api/decision-model", Methods::Writes, Scope::Admin),
+    ("/api/pr-models", Methods::Writes, Scope::Admin),
+    (
+        "/api/mutation-testing-config",
+        Methods::Writes,
+        Scope::Admin,
+    ),
+    ("/api/mcp", Methods::Writes, Scope::Admin),
+    ("/api/github/config", Methods::Writes, Scope::Admin),
+    ("/api/github-auth", Methods::Writes, Scope::Admin),
+    ("/api/google/disconnect", Methods::Writes, Scope::Admin),
+    (
+        "/api/memory/embeddings/config",
+        Methods::Writes,
+        Scope::Admin,
+    ),
+    ("/api/chat/config", Methods::Writes, Scope::Admin),
+    ("/api/wip/config", Methods::Writes, Scope::Admin),
+    ("/api/voice/config", Methods::Writes, Scope::Admin),
+    ("/api/voice/server", Methods::Writes, Scope::Admin),
+    ("/api/jobs/config", Methods::Writes, Scope::Admin),
+    ("/api/jobs/agent-jobs", Methods::Writes, Scope::Admin),
+    ("/api/heads-down/config", Methods::Writes, Scope::Admin),
+    (
+        "/api/heads-down/allowed-tools",
+        Methods::Writes,
+        Scope::Admin,
+    ),
+    ("/api/heads-down/routines", Methods::Writes, Scope::Admin),
+    ("/api/specialists", Methods::Writes, Scope::Admin),
+    ("/api/repos", Methods::Writes, Scope::Admin),
+];
+
+/// The scope a request to the sidecar's `path` (no query) needs.
+fn required_scope(method: &Method, path: &str) -> Scope {
+    let read = matches!(*method, Method::GET | Method::HEAD);
+    let rule = SCOPE_RULES.iter().find(|(pattern, methods, _)| {
+        (*methods == Methods::All || !read) && path_matches(pattern, path)
+    });
+    match rule {
+        Some((_, _, scope)) => *scope,
+        None if read => Scope::Read,
+        None => Scope::Chat,
+    }
+}
+
+/// Whether `path` is `pattern` or below it, segment by segment.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let mut segments = path.split('/');
+    pattern.split('/').all(|want| {
+        segments
+            .next()
+            .is_some_and(|got| want == "*" || want == got)
+    })
+}
+
 pub async fn proxy(State(state): State<AppState>, request: Request) -> Response {
     match forward(state, request).await {
         Ok(response) => response,
@@ -69,27 +179,34 @@ pub async fn proxy(State(state): State<AppState>, request: Request) -> Response 
 
 async fn forward(state: AppState, request: Request) -> Result<Response, ApiError> {
     let path_and_query = upstream_path(request.uri()).ok_or_else(ApiError::not_found)?;
+    let path = path_and_query
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_string();
     let (mut parts, body) = request.into_parts();
     if is_websocket_upgrade(&parts.headers) {
         let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &state)
             .await
             .map_err(|e| ApiError::bad_request(e.body_text()))?;
-        return Ok(upgrade.on_upgrade(move |socket| relay(socket, state, path_and_query)));
+        let scope = required_scope(&Method::POST, &path);
+        return Ok(upgrade
+            .max_message_size(MAX_CLIENT_MESSAGE)
+            .on_upgrade(move |socket| relay(socket, state, path_and_query, scope)));
     }
-    let device = if matches!(parts.method, Method::GET | Method::HEAD) {
-        Authed::<Read>::from_request_parts(&mut parts, &state)
-            .await?
-            .device
-    } else {
-        Authed::<Chat>::from_request_parts(&mut parts, &state)
-            .await?
-            .device
-    };
+    // Subscribed before the token is checked, so a revocation that lands in
+    // between still ends the response.
+    let revoked = state.auth.subscribe_revocations();
+    let scope = required_scope(&parts.method, &path);
+    let device = authorize(&mut parts, &state, scope).await?;
+    if !state.sidecar.is_running() {
+        return Err(not_running());
+    }
 
     let endpoint = state.sidecar.endpoint();
     let uri: Uri = format!("http://127.0.0.1:{}{path_and_query}", endpoint.port)
         .parse()
-        .map_err(|_| ApiError::not_found())?;
+        .map_err(ApiError::internal)?;
     let mut upstream = hyper::Request::builder()
         .method(parts.method)
         .uri(uri)
@@ -99,27 +216,80 @@ async fn forward(state: AppState, request: Request) -> Result<Response, ApiError
 
     let response = client().request(upstream).await.map_err(|e| {
         tracing::warn!("sidecar proxy: {e}");
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the sidecar isn't reachable right now",
-        )
+        not_running()
     })?;
     let (mut parts, body) = response.into_parts();
     strip_hop_by_hop(&mut parts.headers);
-    Ok(Response::from_parts(parts, Body::new(body)))
+    let body = body
+        .into_data_stream()
+        .take_until(until_revoked(revoked, device.device_id));
+    Ok(Response::from_parts(parts, Body::from_stream(body)))
+}
+
+fn not_running() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the sidecar isn't running right now",
+    )
+}
+
+async fn authorize(
+    parts: &mut Parts,
+    state: &AppState,
+    scope: Scope,
+) -> Result<DeviceContext, ApiError> {
+    Ok(match scope {
+        Scope::Read => {
+            Authed::<Read>::from_request_parts(parts, state)
+                .await?
+                .device
+        }
+        Scope::Chat => {
+            Authed::<Chat>::from_request_parts(parts, state)
+                .await?
+                .device
+        }
+        Scope::Approve => {
+            Authed::<Approve>::from_request_parts(parts, state)
+                .await?
+                .device
+        }
+        Scope::Admin => {
+            Authed::<Admin>::from_request_parts(parts, state)
+                .await?
+                .device
+        }
+    })
+}
+
+/// Resolves once `device_id` is revoked. A lagged receiver may have missed the
+/// revocation, so it resolves then too.
+async fn until_revoked(mut revoked: broadcast::Receiver<String>, device_id: String) {
+    loop {
+        match revoked.recv().await {
+            Ok(id) if id == device_id => return,
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(_)) => return,
+            Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+        }
+    }
 }
 
 /// The sidecar path for a proxied URI, or `None` for one the proxy doesn't
-/// serve. Dot segments are refused, raw or percent-encoded, so a path that
-/// starts under `/api/` can't climb out to a route outside the bearer wall.
+/// serve. Dot segments and encoded slashes or backslashes are refused, so a
+/// path that starts under `/api/` can't climb out to a route outside the
+/// bearer wall, and every path is matched against [`SCOPE_RULES`] the way the
+/// sidecar will route it.
 fn upstream_path(uri: &Uri) -> Option<String> {
     let rest = uri.path().strip_prefix("/api/sidecar")?;
     let allowed = rest == "/health" || rest.starts_with("/api/");
-    let dotted = rest.split('/').any(|segment| {
-        let decoded = segment.replace("%2e", ".").replace("%2E", ".");
+    let lowered = rest.to_ascii_lowercase();
+    let dotted = lowered.split('/').any(|segment| {
+        let decoded = segment.replace("%2e", ".");
         decoded == "." || decoded == ".."
     });
-    if !allowed || dotted || rest.contains('\\') {
+    let encoded_separator = lowered.contains("%2f") || lowered.contains("%5c");
+    if !allowed || dotted || encoded_separator || rest.contains('\\') || rest.contains("//") {
         return None;
     }
     Some(match uri.query() {
@@ -192,25 +362,27 @@ fn client() -> &'static Client<HttpConnector, Body> {
 
 /// Authenticates the device on its first message, opens the sidecar's socket,
 /// and relays frames until either side closes or the device is revoked.
-async fn relay(mut socket: WebSocket, state: AppState, path_and_query: String) {
-    let Some((device, _)) = authenticate_ws(&mut socket, &state.auth, Scope::Chat).await else {
+async fn relay(mut socket: WebSocket, state: AppState, path_and_query: String, scope: Scope) {
+    // Subscribed before authenticating, so a revocation that lands while the
+    // token is being checked still closes this socket.
+    let mut revoked = state.auth.subscribe_revocations();
+    let Some((device, _)) = authenticate_ws(&mut socket, &state.auth, scope).await else {
         return;
     };
     let endpoint = state.sidecar.endpoint().clone();
-    let upstream = match connect_upstream(&endpoint, &path_and_query, &device).await {
+    let upstream = if state.sidecar.is_running() {
+        connect_upstream(&endpoint, &path_and_query, &device).await
+    } else {
+        Err("the sidecar isn't running".to_string())
+    };
+    let upstream = match upstream {
         Ok(upstream) => upstream,
         Err(e) => {
             tracing::warn!("sidecar proxy websocket: {e}");
-            let _ = socket
-                .send(ws::Message::Close(Some(ws::CloseFrame {
-                    code: 1011,
-                    reason: "the sidecar isn't reachable right now".into(),
-                })))
-                .await;
+            crate::auth::close(&mut socket, CloseReason::Internal).await;
             return;
         }
     };
-    let mut revoked = state.auth.subscribe_revocations();
     let (mut to_client, mut from_client) = socket.split();
     let (mut to_upstream, mut from_upstream) = upstream.split();
     loop {
@@ -230,12 +402,20 @@ async fn relay(mut socket: WebSocket, state: AppState, path_and_query: String) {
                     break;
                 }
             }
-            id = revoked.recv() => {
-                if matches!(id, Ok(id) if id == device.device_id) {
-                    let _ = to_client.send(ws::Message::Close(None)).await;
+            id = revoked.recv() => match id {
+                // A lagged receiver may have missed this device's revocation,
+                // so it closes too and the client authenticates again.
+                Ok(id) if id != device.device_id => {}
+                Err(broadcast::error::RecvError::Closed) => {}
+                _ => {
+                    let frame = ws::CloseFrame {
+                        code: CloseReason::Unauthorized.code(),
+                        reason: "sign in first".into(),
+                    };
+                    let _ = to_client.send(ws::Message::Close(Some(frame))).await;
                     break;
                 }
-            }
+            },
         }
     }
     let _ = to_upstream.close().await;
@@ -346,6 +526,101 @@ mod tests {
         ] {
             assert_eq!(path(uri), None, "{uri}");
         }
+    }
+
+    #[test]
+    fn encoded_separators_and_empty_segments_are_refused() {
+        for uri in [
+            "/api/sidecar/api/x%2f..%2fmcp",
+            "/api/sidecar/api/x%2F..",
+            "/api/sidecar/api/x%5c..%5cmcp",
+            "/api/sidecar/api//mcp",
+        ] {
+            assert_eq!(path(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn reads_and_writes_get_the_default_scopes() {
+        assert_eq!(
+            required_scope(&Method::GET, "/api/chat/threads"),
+            Scope::Read
+        );
+        assert_eq!(
+            required_scope(&Method::HEAD, "/api/chat/threads"),
+            Scope::Read
+        );
+        assert_eq!(required_scope(&Method::POST, "/api/chat"), Scope::Chat);
+        assert_eq!(required_scope(&Method::DELETE, "/api/todos/1"), Scope::Chat);
+        assert_eq!(required_scope(&Method::GET, "/health"), Scope::Read);
+    }
+
+    /// A stdio MCP server is a command the sidecar runs, and the GitHub
+    /// sign-in stores a token, so neither is a chat device's to change.
+    #[test]
+    fn routes_that_change_what_the_sidecar_may_do_need_admin() {
+        for (method, path) in [
+            (Method::POST, "/api/mcp/servers"),
+            (Method::PATCH, "/api/mcp/servers/abc"),
+            (Method::PATCH, "/api/mcp/tools/abc"),
+            (Method::POST, "/api/custom-providers"),
+            (Method::PUT, "/api/model-catalog"),
+            (Method::POST, "/api/github-auth/device"),
+            (Method::PUT, "/api/github/config"),
+            (Method::POST, "/api/repos"),
+            (Method::POST, "/api/jobs/agent-jobs"),
+            (Method::PUT, "/api/heads-down/allowed-tools/x"),
+            (Method::POST, "/api/voice/server/start"),
+            (Method::GET, "/api/mcp-endpoint/connection"),
+        ] {
+            assert_eq!(
+                required_scope(&method, path),
+                Scope::Admin,
+                "{method} {path}"
+            );
+        }
+        // Reading these stays `read`.
+        assert_eq!(
+            required_scope(&Method::GET, "/api/mcp/servers"),
+            Scope::Read
+        );
+        assert_eq!(required_scope(&Method::GET, "/api/repos"), Scope::Read);
+    }
+
+    #[test]
+    fn answering_an_approval_needs_approve() {
+        for path in [
+            "/api/chat/approvals/call-1",
+            "/api/attention/permissions/p1",
+            "/api/questions/q1/answer",
+            "/api/heads-down/questions/q1/dismiss",
+            "/api/review-workspaces/w1/prs/p1/setup",
+        ] {
+            assert_eq!(
+                required_scope(&Method::POST, path),
+                Scope::Approve,
+                "{path}"
+            );
+        }
+    }
+
+    /// The narrow exceptions sit before the prefixes they carve out of.
+    #[test]
+    fn exceptions_inside_admin_prefixes_stay_chat() {
+        assert_eq!(
+            required_scope(&Method::POST, "/api/mcp/tools/search"),
+            Scope::Chat
+        );
+        assert_eq!(
+            required_scope(&Method::POST, "/api/jobs/agent-jobs/j1/run"),
+            Scope::Chat
+        );
+        assert_eq!(
+            required_scope(&Method::PUT, "/api/jobs/agent-jobs/j1"),
+            Scope::Admin
+        );
+        // A prefix only matches whole segments.
+        assert_eq!(required_scope(&Method::POST, "/api/mcpx"), Scope::Chat);
     }
 
     #[test]

@@ -1,8 +1,8 @@
-//! `POST /api/core/{command}`: HTTP versions of the Tauri core's commands for
-//! settings, secrets and the sidecar.
+//! `POST /api/core/{command}`: the settings, secrets and sidecar commands.
 //!
-//! The body is the command's arguments, with the same camelCase keys the UI
-//! passes to `invoke`, so `core(cmd, args)` in the client is a straight swap.
+//! The body is the command's arguments as a JSON object with camelCase keys,
+//! the shape the desktop app's commands took, so the UI's `core(cmd, args)`
+//! sends what it always sent.
 //! The response is the command's return value, or `204` when it has none. A
 //! command's own error (a rejected value, a store that can't be read) comes
 //! back as `400` with the message in `error`, since the UI shows it to the
@@ -32,44 +32,50 @@ use crate::{custom_providers, embeddings_secrets, mcp};
 /// Settings and secret arguments are small; a harness list is the largest.
 const MAX_BODY_BYTES: usize = 256 * 1024;
 
-/// The scope each command needs, or `None` for one this route doesn't serve.
+/// Every command this route serves and the scope it needs. Only `read` and
+/// `admin` appear: a command either only reads, or writes a secret or a
+/// setting.
+pub const COMMANDS: &[(&str, Scope)] = &[
+    ("get_settings", Scope::Read),
+    ("get_secret_status", Scope::Read),
+    ("list_secret_status", Scope::Read),
+    ("list_custom_provider_secret_status", Scope::Read),
+    ("list_mcp_secret_status", Scope::Read),
+    ("get_embeddings_secret_status", Scope::Read),
+    ("list_agent_harness_secret_status", Scope::Read),
+    ("set_secret", Scope::Admin),
+    ("delete_secret", Scope::Admin),
+    ("set_custom_provider_secret", Scope::Admin),
+    ("delete_custom_provider_secret", Scope::Admin),
+    ("delete_custom_provider_all_secrets", Scope::Admin),
+    ("set_mcp_secret", Scope::Admin),
+    ("delete_mcp_secret", Scope::Admin),
+    ("delete_mcp_all_secrets", Scope::Admin),
+    ("set_embeddings_secret", Scope::Admin),
+    ("delete_embeddings_secret", Scope::Admin),
+    ("set_max_pty_sessions", Scope::Admin),
+    ("set_agent", Scope::Admin),
+    ("set_agent_harnesses", Scope::Admin),
+    ("set_agent_harness_secret", Scope::Admin),
+    ("set_allowed_slash_commands", Scope::Admin),
+    ("set_azure_devops_org_url", Scope::Admin),
+    ("set_jira_base_url", Scope::Admin),
+    ("set_jira_email", Scope::Admin),
+    ("set_google_client_id", Scope::Admin),
+    ("set_telegram_otp_window_minutes", Scope::Admin),
+    ("set_color_theme", Scope::Admin),
+    ("set_terminal_font_size", Scope::Admin),
+    ("set_channel_messaging", Scope::Admin),
+    ("set_attention_animation", Scope::Admin),
+    ("set_secret_backend", Scope::Admin),
+    ("restart_sidecar", Scope::Admin),
+];
+
 fn scope_of(command: &str) -> Option<Scope> {
-    Some(match command {
-        "get_settings"
-        | "get_secret_status"
-        | "list_secret_status"
-        | "list_custom_provider_secret_status"
-        | "list_mcp_secret_status"
-        | "get_embeddings_secret_status"
-        | "list_agent_harness_secret_status" => Scope::Read,
-        "set_secret"
-        | "delete_secret"
-        | "set_custom_provider_secret"
-        | "delete_custom_provider_secret"
-        | "delete_custom_provider_all_secrets"
-        | "set_mcp_secret"
-        | "delete_mcp_secret"
-        | "delete_mcp_all_secrets"
-        | "set_embeddings_secret"
-        | "delete_embeddings_secret"
-        | "set_max_pty_sessions"
-        | "set_agent"
-        | "set_agent_harnesses"
-        | "set_agent_harness_secret"
-        | "set_allowed_slash_commands"
-        | "set_azure_devops_org_url"
-        | "set_jira_base_url"
-        | "set_jira_email"
-        | "set_google_client_id"
-        | "set_telegram_otp_window_minutes"
-        | "set_color_theme"
-        | "set_terminal_font_size"
-        | "set_channel_messaging"
-        | "set_attention_animation"
-        | "set_secret_backend"
-        | "restart_sidecar" => Scope::Admin,
-        _ => return None,
-    })
+    COMMANDS
+        .iter()
+        .find(|(name, _)| *name == command)
+        .map(|(_, scope)| *scope)
 }
 
 pub async fn command(
@@ -95,8 +101,13 @@ async fn handle(
         Scope::Read => {
             Authed::<Read>::from_request_parts(&mut parts, &state).await?;
         }
-        _ => {
+        Scope::Admin => {
             Authed::<Admin>::from_request_parts(&mut parts, &state).await?;
+        }
+        Scope::Chat | Scope::Approve => {
+            return Err(ApiError::internal(format!(
+                "{command} is listed with a scope this route doesn't check"
+            )));
         }
     }
     let args = read_args(body).await?;
@@ -409,20 +420,14 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
 mod tests {
     use super::*;
 
-    /// Every command routed in `run` has a scope, so none is unreachable and
-    /// none is served without a check.
+    /// A command that only reads is named `get_` or `list_`, and everything
+    /// else writes, so a write listed as a read stands out here.
     #[test]
-    fn every_write_needs_admin() {
-        for command in [
-            "set_secret",
-            "set_secret_backend",
-            "set_agent",
-            "restart_sidecar",
-        ] {
-            assert_eq!(scope_of(command), Some(Scope::Admin), "{command}");
-        }
-        for command in ["get_settings", "list_secret_status"] {
-            assert_eq!(scope_of(command), Some(Scope::Read), "{command}");
+    fn only_get_and_list_commands_are_reads() {
+        for (name, scope) in COMMANDS {
+            let reads = name.starts_with("get_") || name.starts_with("list_");
+            let expected = if reads { Scope::Read } else { Scope::Admin };
+            assert_eq!(*scope, expected, "{name}");
         }
     }
 

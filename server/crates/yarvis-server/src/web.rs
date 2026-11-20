@@ -15,7 +15,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::error::ApiError;
 
-/// The fallback for every route the app doesn't define.
+/// The fallback for every route the router doesn't define.
 pub fn fallback<S: Clone + Send + Sync + 'static>(web_dir: Option<&Path>) -> Router<S> {
     let Some(dir) = web_dir else {
         return Router::new().fallback(|| async { ApiError::not_found() });
