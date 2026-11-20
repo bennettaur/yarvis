@@ -12,12 +12,19 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::AppState;
-use crate::auth::{Scope, authenticate_ws};
+use crate::auth::{CloseReason, Scope, authenticate_ws, close};
 use crate::store::{Store, StoreError, now_ms};
 
-/// How many events a reconnecting client can catch up on in one go. Past
-/// this it should reload whatever it shows rather than replay history.
+/// How many events a reconnecting client can catch up on. A client further
+/// behind than this gets `lagged` and should reload what it shows instead of
+/// replaying history.
 const MAX_CATCH_UP: i64 = 1000;
+
+/// How many events can wait for a slow client before it gets `lagged`.
+const LIVE_BUFFER: usize = 256;
+
+/// The auth message and pings are all a client sends on this socket.
+const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,42 +44,42 @@ pub struct EventLog {
 
 impl EventLog {
     pub fn new(store: Store) -> Self {
-        let (tx, _) = broadcast::channel(256);
+        let (tx, _) = broadcast::channel(LIVE_BUFFER);
         Self { store, tx }
     }
 
-    /// Stores an event and sends it to every connected client.
+    /// Stores an event and sends it to every connected client. Any device
+    /// with `read` can see every event, past ones included, so `data` must
+    /// never hold a token or a secret value.
     pub async fn append(
         &self,
         device_id: Option<&str>,
         kind: &str,
         data: serde_json::Value,
     ) -> Result<Event, StoreError> {
-        let (device, kind_owned, text) = (
-            device_id.map(str::to_string),
-            kind.to_string(),
-            data.to_string(),
-        );
-        let at = now_ms();
-        let seq = self
-            .store
+        let tx = self.tx.clone();
+        let (device_id, kind) = (device_id.map(str::to_string), kind.to_string());
+        // The broadcast happens inside the store call, under its lock, so
+        // clients receive events in `seq` order. A client that reconnects with
+        // the highest `seq` it saw would otherwise skip one that arrived late.
+        self.store
             .call(move |conn| {
+                let at = now_ms();
                 conn.execute(
                     "INSERT INTO events (at, device_id, kind, data) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![at, device, kind_owned, text],
+                    rusqlite::params![at, device_id, kind, data.to_string()],
                 )?;
-                Ok(conn.last_insert_rowid())
+                let event = Event {
+                    seq: conn.last_insert_rowid(),
+                    at,
+                    device_id,
+                    kind,
+                    data,
+                };
+                let _ = tx.send(event.clone());
+                Ok(event)
             })
-            .await?;
-        let event = Event {
-            seq,
-            at,
-            device_id: device_id.map(str::to_string),
-            kind: kind.to_string(),
-            data,
-        };
-        let _ = self.tx.send(event.clone());
-        Ok(event)
+            .await
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -88,13 +95,21 @@ impl EventLog {
                      WHERE seq > ?1 ORDER BY seq LIMIT ?2",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![seq, MAX_CATCH_UP], |row| {
+                    let seq = row.get(0)?;
                     let data: String = row.get(4)?;
+                    // Only `append` writes this column, from a `Value`, so a
+                    // parse failure means a corrupt row. Send null rather than
+                    // stop every client's catch-up on it.
+                    let data = serde_json::from_str(&data).unwrap_or_else(|e| {
+                        tracing::error!("event {seq} has unreadable data: {e}");
+                        serde_json::Value::Null
+                    });
                     Ok(Event {
-                        seq: row.get(0)?,
+                        seq,
                         at: row.get(1)?,
                         device_id: row.get(2)?,
                         kind: row.get(3)?,
-                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                        data,
                     })
                 })?;
                 rows.collect()
@@ -107,36 +122,56 @@ impl EventLog {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Outgoing<'a> {
     Event(&'a Event),
-    /// The client fell too far behind and missed events. It should reload.
+    /// The client fell too far behind and missed events. It should reload,
+    /// then reconnect without `since`. The server closes the socket after this.
     Lagged,
 }
 
 pub async fn ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| stream(socket, state))
+    ws.max_message_size(MAX_CLIENT_MESSAGE)
+        .on_upgrade(move |socket| stream(socket, state))
 }
 
 async fn stream(mut socket: WebSocket, state: AppState) {
+    // Subscribe before authenticating, so a revocation that lands while the
+    // token is being checked still reaches this socket.
+    let mut revoked = state.auth.subscribe_revocations();
     let Some((device, hello)) = authenticate_ws(&mut socket, &state.auth, Scope::Read).await else {
         return;
     };
-    // Subscribe before reading the backlog so nothing lands in the gap.
-    let mut live = state.events.subscribe();
-    let mut revoked = state.auth.subscribe_revocations();
-    let mut last_seq = 0;
-    if let Some(since) = hello.extra.get("since").and_then(|v| v.as_i64()) {
-        match state.events.since(since).await {
-            Ok(backlog) => {
-                for event in &backlog {
-                    if send(&mut socket, &Outgoing::Event(event)).await.is_err() {
-                        return;
-                    }
-                    last_seq = event.seq;
-                }
-            }
-            Err(e) => {
-                tracing::error!("event catch-up failed: {e}");
+    let since = match hello.extra.get("since") {
+        None => None,
+        Some(value) => match value.as_i64() {
+            Some(seq) if seq >= 0 => Some(seq),
+            _ => {
+                close(&mut socket, CloseReason::BadRequest).await;
                 return;
             }
+        },
+    };
+    // Subscribe before reading the backlog so nothing lands in the gap.
+    let mut live = state.events.subscribe();
+    // The highest seq already sent, so the live stream skips events the
+    // backlog covered.
+    let mut last_seq = 0;
+    if let Some(since) = since {
+        let backlog = match state.events.since(since).await {
+            Ok(backlog) => backlog,
+            Err(e) => {
+                tracing::error!("event catch-up failed: {e}");
+                close(&mut socket, CloseReason::Internal).await;
+                return;
+            }
+        };
+        if backlog.len() as i64 >= MAX_CATCH_UP {
+            let _ = send(&mut socket, &Outgoing::Lagged).await;
+            return;
+        }
+        for event in &backlog {
+            if send(&mut socket, &Outgoing::Event(event)).await.is_err() {
+                return;
+            }
+            last_seq = event.seq;
         }
     }
     loop {
@@ -154,12 +189,16 @@ async fn stream(mut socket: WebSocket, state: AppState) {
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             },
-            id = revoked.recv() => {
-                if matches!(id, Ok(id) if id == device.device_id) {
-                    let _ = socket.send(Message::Close(None)).await;
+            id = revoked.recv() => match id {
+                Ok(id) if id != device.device_id => {}
+                // Revoked, or revocations were missed and this device might be
+                // among them: close either way, and let the client re-auth.
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                    close(&mut socket, CloseReason::Unauthorized).await;
                     return;
                 }
-            }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(_)) => {}

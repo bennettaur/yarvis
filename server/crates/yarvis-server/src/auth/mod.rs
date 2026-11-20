@@ -125,8 +125,9 @@ impl Auth {
                 let device = conn
                     .query_row(
                         "SELECT id, name, scopes, verified_at FROM devices
-                         WHERE token_hash = ?1 AND revoked_at IS NULL",
-                        [&hash],
+                         WHERE token_hash = ?1 AND revoked_at IS NULL
+                           AND COALESCE(last_seen_at, created_at) > ?2",
+                        rusqlite::params![hash, now_ms() - IDLE_EXPIRY_MS],
                         |row| {
                             Ok(DeviceContext {
                                 device_id: row.get(0)?,
@@ -138,9 +139,12 @@ impl Auth {
                     )
                     .optional()?;
                 if let Some(device) = &device {
+                    // Throttled, so a busy client doesn't turn every read into a write.
+                    let now = now_ms();
                     conn.execute(
-                        "UPDATE devices SET last_seen_at = ?1 WHERE id = ?2",
-                        rusqlite::params![now_ms(), device.device_id],
+                        "UPDATE devices SET last_seen_at = ?1
+                         WHERE id = ?2 AND (last_seen_at IS NULL OR last_seen_at < ?3)",
+                        rusqlite::params![now, device.device_id, now - LAST_SEEN_RESOLUTION_MS],
                     )?;
                 }
                 Ok(device)
@@ -223,13 +227,20 @@ where
     }
 }
 
+/// A token unused for this long stops working, so one left behind in a
+/// forgotten browser profile doesn't stay valid for good.
+pub const IDLE_EXPIRY_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
+/// How stale `last_seen_at` may get. It's for the devices list, not security.
+const LAST_SEEN_RESOLUTION_MS: i64 = 60_000;
+
 /// How long a new WebSocket has to send its auth message.
 const WS_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The first message on every WebSocket. Browsers can't set headers on a
 /// WebSocket, and a token in the URL ends up in logs, so it comes here.
 /// Routes read their own extra fields (`since`, `offset`) from `extra`.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct WsHello {
     #[serde(rename = "type")]
     pub kind: String,
@@ -238,9 +249,57 @@ pub struct WsHello {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+// Written by hand so the token never reaches a log through `{:?}`.
+impl std::fmt::Debug for WsHello {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsHello")
+            .field("kind", &self.kind)
+            .field("token", &"<redacted>")
+            .field("extra", &self.extra)
+            .finish()
+    }
+}
+
+/// Why the server closed a WebSocket. The codes sit in the private-use range
+/// and mirror HTTP statuses, so a client can tell "sign in again" (4401) from
+/// a server fault (1011) it should retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    /// No auth message, a bad or revoked token, or the device was revoked
+    /// while connected.
+    Unauthorized,
+    /// The device lacks the route's scope.
+    Forbidden,
+    /// A message the route can't use, such as a malformed `since`.
+    BadRequest,
+    /// The server failed. Reconnect and try again.
+    Internal,
+}
+
+impl CloseReason {
+    pub fn code(self) -> u16 {
+        match self {
+            Self::Unauthorized => 4401,
+            Self::Forbidden => 4403,
+            Self::BadRequest => 4400,
+            Self::Internal => 1011,
+        }
+    }
+
+    fn text(self) -> &'static str {
+        match self {
+            Self::Unauthorized => "sign in first",
+            Self::Forbidden => "missing scope",
+            Self::BadRequest => "bad request",
+            Self::Internal => "internal error",
+        }
+    }
+}
+
 /// Reads the auth message from a new WebSocket and checks the device holds
-/// `scope`. On failure the socket gets a close frame with the reason and the
-/// caller just returns.
+/// `scope`. On failure the socket gets a close frame and the caller returns.
+/// Callers should cap the upgrade's `max_message_size`, since this parses the
+/// first message before anyone is authenticated.
 pub async fn authenticate_ws(
     socket: &mut WebSocket,
     auth: &Auth,
@@ -252,40 +311,34 @@ pub async fn authenticate_ws(
         _ => None,
     };
     let Some(hello) = hello.filter(|h| h.kind == "auth") else {
-        close(socket, "send {\"type\":\"auth\",\"token\":...} first").await;
+        close(socket, CloseReason::Unauthorized).await;
         return None;
     };
     let device = match auth.authenticate(&hello.token).await {
         Ok(Some(device)) => device,
         Ok(None) => {
-            close(socket, "sign in first").await;
+            close(socket, CloseReason::Unauthorized).await;
             return None;
         }
         Err(e) => {
             tracing::error!("websocket auth failed: {e}");
-            close(socket, "internal error").await;
+            close(socket, CloseReason::Internal).await;
             return None;
         }
     };
     if !device.has(scope) {
-        close(socket, "missing scope").await;
+        close(socket, CloseReason::Forbidden).await;
         return None;
     }
     Some((device, hello))
 }
 
-async fn close(socket: &mut WebSocket, reason: &str) {
+pub async fn close(socket: &mut WebSocket, reason: CloseReason) {
     use axum::extract::ws::CloseFrame;
-    // 4401/4403 mirror HTTP 401/403 in the private-use close code range.
-    let code = if reason == "missing scope" {
-        4403
-    } else {
-        4401
-    };
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
+            code: reason.code(),
+            reason: reason.text().into(),
         })))
         .await;
 }
@@ -348,6 +401,26 @@ mod tests {
             .unwrap();
         store
             .call(move |conn| conn.execute("UPDATE devices SET revoked_at = 1 WHERE id = ?1", [id]))
+            .await
+            .unwrap();
+        assert!(auth.authenticate(&token).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_token_idle_past_the_expiry_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        let auth = Auth::new(store.clone());
+        let (id, token) = create_device(&store, "old", "token", &[Scope::Read], None)
+            .await
+            .unwrap();
+        let long_ago = now_ms() - IDLE_EXPIRY_MS - 1;
+        store
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE devices SET created_at = ?1, last_seen_at = ?1 WHERE id = ?2",
+                    rusqlite::params![long_ago, id],
+                )
+            })
             .await
             .unwrap();
         assert!(auth.authenticate(&token).await.unwrap().is_none());

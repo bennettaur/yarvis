@@ -30,6 +30,10 @@ pub struct ServerConfig {
     pub data_dir: PathBuf,
     /// The built web UI (`dist/`). Unset means the server serves only `/api`.
     pub web_dir: Option<PathBuf>,
+    /// The server speaks plain HTTP. Binding anything but loopback sends
+    /// tokens in the clear, so it is refused unless this is set, which is
+    /// for a server behind something that adds TLS, such as `tailscale serve`.
+    pub allow_plain_http: bool,
 }
 
 impl Default for ServerConfig {
@@ -38,6 +42,7 @@ impl Default for ServerConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 7878)),
             data_dir: default_data_dir(),
             web_dir: None,
+            allow_plain_http: false,
         }
     }
 }
@@ -64,6 +69,7 @@ impl Default for AuthConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretBackendKind {
+    // `keychain` and `onepassword` need a logged-in macOS session.
     /// The server's own encrypted vault, unlocked with a passkey. The only
     /// choice that works for a server started before anyone logs in.
     Vault,
@@ -82,10 +88,15 @@ pub struct SecretsConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct SshAgentConfig {
-    /// Off by default. When off, workspace shells keep the user's own
-    /// `SSH_AUTH_SOCK` (1Password's agent on a work laptop) and the server
-    /// never holds a signing key.
+    /// Off by default. When off, the server never holds a signing key, and
+    /// workspace shells get `upstream_socket` (or the server's own
+    /// `SSH_AUTH_SOCK`) instead. Needs the vault backend, which holds the key.
     pub enabled: bool,
+    /// The agent workspace shells use when `enabled` is off, such as
+    /// 1Password's `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`.
+    /// Needed when the server runs under launchd, which doesn't pass on the
+    /// login shell's `SSH_AUTH_SOCK`.
+    pub upstream_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -126,6 +137,8 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("{0}")]
+    Invalid(String),
 }
 
 impl Config {
@@ -134,7 +147,11 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let config = Self::default();
+                config.validate()?;
+                return Ok(config);
+            }
             Err(source) => {
                 return Err(ConfigError::Read {
                     path: path.into(),
@@ -142,10 +159,37 @@ impl Config {
                 });
             }
         };
-        toml::from_str(&text).map_err(|source| ConfigError::Parse {
+        let config: Self = toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.into(),
             source,
-        })
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Refuses combinations that would quietly do something unsafe.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let invalid = |message: &str| Err(ConfigError::Invalid(message.into()));
+        if !self.server.bind.ip().is_loopback() && !self.server.allow_plain_http {
+            return invalid(
+                "server.bind isn't loopback, and the server only speaks plain HTTP. Put TLS in \
+                 front of it (for example `tailscale serve`) and set server.allow_plain_http = true",
+            );
+        }
+        if self.ssh_agent.enabled && self.secrets.backend != SecretBackendKind::Vault {
+            return invalid(
+                "ssh_agent.enabled needs secrets.backend = \"vault\", which holds the signing key",
+            );
+        }
+        if self.ssh_agent.enabled && self.ssh_agent.upstream_socket.is_some() {
+            return invalid("ssh_agent.upstream_socket is only used when ssh_agent.enabled is off");
+        }
+        if self.server.data_dir.is_relative() {
+            return invalid(
+                "server.data_dir must be an absolute path (HOME isn't set, so set it explicitly)",
+            );
+        }
+        Ok(())
     }
 }
 
@@ -180,6 +224,39 @@ mod tests {
     fn rejects_a_misspelled_key() {
         let err = toml::from_str::<Config>("[ssh_agent]\nenable = true\n").unwrap_err();
         assert!(err.to_string().contains("enable"), "{err}");
+    }
+
+    #[test]
+    fn the_defaults_are_valid() {
+        Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn refuses_a_lan_bind_without_an_opt_in() {
+        let mut config: Config = toml::from_str("[server]\nbind = \"0.0.0.0:7878\"\n").unwrap();
+        assert!(config.validate().is_err());
+        config.server.allow_plain_http = true;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn refuses_the_ssh_agent_without_the_vault() {
+        let config: Config = toml::from_str("[ssh_agent]\nenabled = true\n").unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("vault"), "{err}");
+    }
+
+    #[test]
+    fn load_checks_what_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, "[ssh_agent]\nenabled = true\n").unwrap();
+        assert!(matches!(Config::load(&path), Err(ConfigError::Invalid(_))));
+        std::fs::write(&path, "[server\n").unwrap();
+        assert!(matches!(
+            Config::load(&path),
+            Err(ConfigError::Parse { .. })
+        ));
     }
 
     #[test]

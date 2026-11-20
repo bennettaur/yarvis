@@ -14,6 +14,10 @@ use rusqlite::Connection;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error(
+        "the database has {found} migrations applied but this build knows {known}; run a newer yarvis-server"
+    )]
+    TooNew { found: i64, known: usize },
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("database task failed: {0}")]
@@ -58,11 +62,15 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens or creates the database. The data dir is made private (0700),
+    /// since it holds the event log and, with the vault backend, the vault.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            create_private_dir(dir)?;
         }
-        Self::init(Connection::open(path)?)
+        let store = Self::init(Connection::open(path)?)?;
+        restrict_to_owner(path)?;
+        Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -70,6 +78,9 @@ impl Store {
     }
 
     fn init(mut conn: Connection) -> Result<Self, StoreError> {
+        // A CLI run (`yarvis-server device add`) can open the file while the
+        // server has it open, so wait for the lock rather than fail.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
@@ -96,14 +107,50 @@ impl Store {
     }
 }
 
-fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-    let done: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", index as i64 + 1)?;
-        tx.commit()?;
+fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+    // One immediate transaction, with the version read inside it, so a
+    // second process opening the file at the same time can't run a
+    // migration twice.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let applied: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if applied as usize > MIGRATIONS.len() {
+        return Err(StoreError::TooNew {
+            found: applied,
+            known: MIGRATIONS.len(),
+        });
     }
+    for sql in &MIGRATIONS[applied as usize..] {
+        tx.execute_batch(sql)?;
+    }
+    tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    restrict_dir_to_owner(dir)
+}
+
+#[cfg(unix)]
+fn restrict_dir_to_owner(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_to_owner(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -131,5 +178,33 @@ mod tests {
         drop(conn);
         // A second open would fail on `CREATE TABLE devices` if it re-ran.
         Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.db");
+        drop(Store::open(&path).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 999)
+            .unwrap();
+        assert!(matches!(
+            Store::open(&path),
+            Err(StoreError::TooNew { found: 999, .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_data_dir_and_database_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("nested").join("data");
+        let path = data.join("server.db");
+        drop(Store::open(&path).unwrap());
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&path), 0o600);
     }
 }

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod http_guard;
 pub mod secret_store;
 pub mod store;
 
@@ -51,6 +52,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/devices/me", get(me))
         .route("/api/events", get(events::ws))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            http_guard::guard,
+        ))
         .with_state(state)
 }
 
