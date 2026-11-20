@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["crates/yarvis-server"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89"
+
+[profile.release]
+strip = true

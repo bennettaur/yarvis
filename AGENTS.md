@@ -101,6 +101,9 @@ bun run check:write                # same, auto-fixing what it can
 cargo fmt --manifest-path src-tauri/Cargo.toml            # Rust format
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
+cargo test --manifest-path server/Cargo.toml --all-targets      # yarvis-server
+                                #   (fmt and clippy the same way); see
+                                #   docs/client-server.md
 (cd src-tauri && cargo audit)   # Rust advisories — run from src-tauri/ so the
                                 #   accepted-advisory list in
                                 #   src-tauri/.cargo/audit.toml applies

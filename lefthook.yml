@@ -50,3 +50,14 @@ pre-commit:
       tags: [rust, lint]
       glob: "src-tauri/**/*.rs"
       run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings
+
+    - name: rustfmt-server
+      tags: [rust, format]
+      glob: "server/**/*.rs"
+      run: cargo fmt --manifest-path server/Cargo.toml --all
+      stage_fixed: true
+
+    - name: clippy-server
+      tags: [rust, lint]
+      glob: "server/**/*.rs"
+      run: cargo clippy --manifest-path server/Cargo.toml --all-targets --no-deps -- -D warnings
