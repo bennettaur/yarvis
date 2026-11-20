@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   childEnv,
+  DEV_SERVER_PORT_OFFSET,
   devPortFor,
   identifierFor,
   overrideConfig,
@@ -61,6 +62,10 @@ describe("resolveDevPort", () => {
     expect(await resolveDevPort(1436, freeExcept([1437]))).toBe(1438);
   });
 
+  it("skips a pair whose local server port is taken", async () => {
+    expect(await resolveDevPort(1436, freeExcept([1436 + DEV_SERVER_PORT_OFFSET]))).toBe(1438);
+  });
+
   it("moves to the next free pair rather than failing the launch", async () => {
     expect(await resolveDevPort(1436, freeExcept([1436, 1438]))).toBe(1440);
   });
@@ -76,17 +81,15 @@ describe("resolveDevPort", () => {
 
 describe("overrideConfig", () => {
   it("namespaces the identifier under the primary one", () => {
-    expect(overrideConfig("feature-x-1", 1436).identifier).toBe(
-      "com.mikebennett.yarvis.feature-x-1",
-    );
+    expect(overrideConfig("feature-x-1").identifier).toBe("com.mikebennett.yarvis.feature-x-1");
   });
 
-  it("points the webview at this instance's dev server", () => {
-    expect(overrideConfig("dev", 1436).build.devUrl).toBe("http://localhost:1436");
+  it("sets no devUrl, so the window opens on the app's own connect page", () => {
+    expect(overrideConfig("dev")).not.toHaveProperty("build");
   });
 
   it("leaves the window config alone, since merging would replace it wholesale", () => {
-    expect(overrideConfig("dev", 1436)).not.toHaveProperty("app");
+    expect(overrideConfig("dev")).not.toHaveProperty("app");
   });
 });
 
@@ -97,11 +100,8 @@ describe("identifierFor", () => {
 });
 
 describe("childEnv", () => {
-  it("hands the child the same port the webview is told to load from", () => {
-    const port = 1436;
-    expect(childEnv("dev", port).YARVIS_DEV_PORT).toBe(
-      new URL(overrideConfig("dev", port).build.devUrl).port,
-    );
+  it("hands the child the dev port Vite and the app both read", () => {
+    expect(childEnv("dev", 1436).YARVIS_DEV_PORT).toBe("1436");
   });
 
   it("names the instance so the core knows it is not the primary", () => {

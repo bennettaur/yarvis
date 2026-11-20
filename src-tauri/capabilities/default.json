@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "The app's own connect page. A page served by yarvis-server gets the bridge capability `server_link.rs` adds at runtime instead.",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default", "opener:allow-open-url", "notification:default"]
+  "permissions": [
+    "core:default",
+    "allow-get-connection-settings",
+    "allow-save-connection-settings",
+    "allow-open-server"
+  ]
 }
