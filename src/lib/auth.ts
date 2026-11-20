@@ -8,7 +8,8 @@ import { saveDeviceToken, serverFetch } from "./server";
  */
 
 export type Scope = "read" | "chat" | "approve" | "admin";
-export const ALL_SCOPES: readonly Scope[] = ["read", "chat", "approve", "admin"];
+/** What a token minted from Settings can carry: the server keeps `admin` for passkey devices and its own CLI. */
+export const MINTABLE_SCOPES: readonly Scope[] = ["read", "chat", "approve"];
 
 export interface AuthStatus {
   setupRequired: boolean;
@@ -16,14 +17,17 @@ export interface AuthStatus {
   vault: "absent" | "locked" | "unlocked";
 }
 
+/** A device as the server returns it. Times are milliseconds since the epoch. */
 export interface Device {
-  id: string;
+  deviceId: string;
   name: string;
-  kind?: "passkey" | "token";
   scopes: Scope[];
-  createdAt?: number | string | null;
-  lastSeenAt?: number | string | null;
-  revokedAt?: number | string | null;
+  verifiedAt?: number | null;
+  /** The devices list adds these. */
+  kind?: "passkey" | "token";
+  createdAt?: number;
+  lastSeenAt?: number | null;
+  revokedAt?: number | null;
 }
 
 export interface SignedIn {
@@ -49,7 +53,7 @@ async function get<T>(path: string, context: string): Promise<T> {
 
 export const getAuthStatus = () => get<AuthStatus>("/api/auth/status", "auth status");
 
-// --- WebAuthn: the server sends binary fields as base64url; the browser API wants ArrayBuffers.
+/* ---------- WebAuthn: the server sends binary fields as base64url; the browser wants ArrayBuffers ---------- */
 
 export function base64urlToBuffer(s: string): ArrayBuffer {
   const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
@@ -91,16 +95,10 @@ interface JsonRequestOptions {
   };
 }
 
-/**
- * What a ceremony's `start` route answers: the options, either bare or beside
- * a ceremony id the matching `finish` route needs back.
- */
-type Started<O> = O | { options: O; ceremonyId?: string };
-
-function unwrap<O extends { publicKey: unknown }>(
-  started: Started<O>,
-): { options: O; ceremonyId?: string } {
-  return "options" in started ? started : { options: started };
+/** What every ceremony's `start` route answers; its `finish` route takes the id back. */
+interface Started<O> {
+  ceremonyId: string;
+  options: O;
 }
 
 const descriptor = (c: JsonCredentialDescriptor): PublicKeyCredentialDescriptor => ({
@@ -164,15 +162,13 @@ export function assertionJson(cred: PublicKeyCredential): unknown {
   };
 }
 
-function noCredential(): Error {
-  return new Error("no passkey was chosen");
-}
+const NO_CREDENTIAL = "no passkey was chosen";
 
 async function createPasskey(json: JsonCreationOptions): Promise<unknown> {
   const cred = (await navigator.credentials.create(
     toCreationOptions(json),
   )) as PublicKeyCredential | null;
-  if (!cred) throw noCredential();
+  if (!cred) throw new Error(NO_CREDENTIAL);
   return registrationJson(cred);
 }
 
@@ -180,23 +176,21 @@ async function assertPasskey(json: JsonRequestOptions): Promise<unknown> {
   const cred = (await navigator.credentials.get(
     toRequestOptions(json),
   )) as PublicKeyCredential | null;
-  if (!cred) throw noCredential();
+  if (!cred) throw new Error(NO_CREDENTIAL);
   return assertionJson(cred);
 }
 
 /** First run: registers a passkey with the setup code the server printed, and signs in. */
 export async function setUpWithCode(code: string, deviceName: string): Promise<SignedIn> {
-  const started = unwrap(
-    await post<Started<JsonCreationOptions>>(
-      "/api/auth/setup/start",
-      { code, deviceName },
-      "start setup",
-    ),
+  const { ceremonyId, options } = await post<Started<JsonCreationOptions>>(
+    "/api/auth/setup/start",
+    { code, deviceName },
+    "start setup",
   );
-  const credential = await createPasskey(started.options);
+  const credential = await createPasskey(options);
   const signedIn = await post<SignedIn>(
     "/api/auth/setup/finish",
-    { credential, ceremonyId: started.ceremonyId, deviceName },
+    { ceremonyId, credential },
     "finish setup",
   );
   saveDeviceToken(signedIn.token);
@@ -205,53 +199,65 @@ export async function setUpWithCode(code: string, deviceName: string): Promise<S
 
 /** Signs in with a passkey; the server makes this browser a new device. */
 export async function signInWithPasskey(deviceName: string): Promise<SignedIn> {
-  const started = unwrap(
-    await post<Started<JsonRequestOptions>>("/api/auth/login/start", {}, "start sign-in"),
+  const { ceremonyId, options } = await post<Started<JsonRequestOptions>>(
+    "/api/auth/login/start",
+    {},
+    "start sign-in",
   );
-  const credential = await assertPasskey(started.options);
+  const credential = await assertPasskey(options);
   const signedIn = await post<SignedIn>(
     "/api/auth/login/finish",
-    { credential, ceremonyId: started.ceremonyId, deviceName },
+    { ceremonyId, credential, deviceName },
     "sign in",
   );
   saveDeviceToken(signedIn.token);
   return signedIn;
 }
 
-/** Checks the passkey again, which admin actions need within the last few minutes. */
+/** Checks the passkey again, which device management needs within the last 10 minutes. */
 export async function reverify(): Promise<void> {
-  const started = unwrap(
-    await post<Started<JsonRequestOptions>>("/api/auth/reverify/start", {}, "start check"),
+  const { ceremonyId, options } = await post<Started<JsonRequestOptions>>(
+    "/api/auth/reverify/start",
+    {},
+    "start passkey check",
   );
-  const credential = await assertPasskey(started.options);
-  await post<unknown>(
+  const credential = await assertPasskey(options);
+  await post<{ verifiedAt: number }>(
     "/api/auth/reverify/finish",
-    { credential, ceremonyId: started.ceremonyId },
+    { ceremonyId, credential },
     "passkey check",
   );
 }
 
-// --- Devices
+/* ---------- Devices ---------- */
 
 export const getMyDevice = () => get<Device>("/api/devices/me", "this device");
 
 export const listDevices = () => get<Device[]>("/api/devices", "devices");
 
+/** What the server says when an action needs a passkey check from the last 10 minutes. */
+const REAUTH_REQUIRED = "reauth_required";
+
 /**
- * Runs an admin action, checking the passkey once and retrying when the server
- * refuses it (403) for want of a recent check.
+ * Runs a device-management action, checking the passkey and retrying once when
+ * the server refuses it for want of a recent check.
  */
 async function withFreshPasskey<T>(action: () => Promise<T>): Promise<T> {
   try {
     return await action();
   } catch (e) {
-    if (!(e instanceof SidecarError) || e.status !== 403) throw e;
+    if (!(e instanceof SidecarError && e.status === 403 && e.message.endsWith(REAUTH_REQUIRED))) {
+      throw e;
+    }
     await reverify();
     return action();
   }
 }
 
-/** Mints a token for a client that can't use a passkey. The token is shown once and never again. */
+/**
+ * Mints a token for a client that can't use a passkey. The server refuses
+ * `admin` here. The response is the only time the token is shown.
+ */
 export const mintDeviceToken = (name: string, scopes: Scope[]) =>
   withFreshPasskey(() => post<SignedIn>("/api/devices/tokens", { name, scopes }, "create token"));
 
@@ -261,25 +267,20 @@ export const revokeDevice = (id: string) =>
     await ensureOk(res, "revoke device");
   });
 
-// --- Approvals
+/* ---------- Approvals ---------- */
 
+/** A request waiting on a device with the `approve` scope. */
 export interface Approval {
   id: string;
   kind: string;
   /** What is being asked, as the server words it. */
   summary?: string;
   detail?: string;
-  createdAt?: number | string;
-  deviceId?: string | null;
-  status?: "pending" | "approved" | "denied" | "expired";
+  createdAt?: number;
 }
 
-export async function listApprovals(): Promise<Approval[]> {
-  const body = await get<unknown>("/api/approvals", "approvals");
-  if (Array.isArray(body)) return body as Approval[];
-  const items = (body as { approvals?: unknown })?.approvals;
-  return Array.isArray(items) ? (items as Approval[]) : [];
-}
+/** The approvals still waiting on an answer. */
+export const listApprovals = () => get<Approval[]>("/api/approvals", "approvals");
 
 /** Answers an approval. A 409 means another device answered first. */
 export async function answerApproval(id: string, approve: boolean): Promise<void> {

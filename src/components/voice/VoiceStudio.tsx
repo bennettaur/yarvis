@@ -221,19 +221,22 @@ function TakeRow({ take }: { take: StudioTake }) {
       )}
       {saveError && <span className="text-xs text-red-400">{saveError}</span>}
       <span className="ml-auto flex items-center gap-2">
-        {take.savedPath && !localFeaturesAvailable() ? (
-          <span className="text-xs text-zinc-500" title={take.savedPath}>
-            Saved
-          </span>
-        ) : take.savedPath ? (
-          <button
-            type="button"
-            onClick={() => void revealItemInDir(take.savedPath ?? "")}
-            title={take.savedPath}
-            className={BUTTON}
-          >
-            Show in Finder
-          </button>
+        {take.savedPath ? (
+          // The clip is saved on the server's machine, which only the desktop app can open.
+          localFeaturesAvailable() ? (
+            <button
+              type="button"
+              onClick={() => void revealItemInDir(take.savedPath ?? "")}
+              title={take.savedPath}
+              className={BUTTON}
+            >
+              Show in Finder
+            </button>
+          ) : (
+            <span className="text-xs text-zinc-500" title={take.savedPath}>
+              Saved
+            </span>
+          )
         ) : (
           <button type="button" onClick={() => void save()} className={BUTTON}>
             Save

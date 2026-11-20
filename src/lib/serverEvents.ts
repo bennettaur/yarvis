@@ -1,4 +1,5 @@
-import { openServerSocket, WS_UNAUTHORIZED } from "./server";
+import { invalidatePrefix } from "./resourceCache";
+import { onAuthChange, openServerSocket, refusedByServer } from "./server";
 
 /**
  * The server's event stream (`/api/events`): alarms firing, approvals, devices,
@@ -8,7 +9,8 @@ import { openServerSocket, WS_UNAUTHORIZED } from "./server";
 
 export interface ServerEvent<T = unknown> {
   seq: number;
-  at: string;
+  /** Milliseconds since the epoch. */
+  at: number;
   deviceId: string | null;
   kind: string;
   data: T;
@@ -37,6 +39,23 @@ function dispatch(event: ServerEvent): void {
       }
     }
   }
+}
+
+/** Closes the socket without the close handler reconnecting, since it is no longer `socket`. */
+function dropSocket(): void {
+  const open = socket;
+  socket = null;
+  open?.close();
+}
+
+/**
+ * The server fell too far behind to replay what this client missed. Whatever
+ * the page shows may be stale, so every cached list reloads, and the next
+ * connection starts from now.
+ */
+function handleLagged(): void {
+  lastSeq = null;
+  invalidatePrefix("");
 }
 
 function subscriberCount(): number {
@@ -69,6 +88,10 @@ async function connect(): Promise<void> {
     } catch {
       return;
     }
+    if (msg.type === "lagged") {
+      handleLagged();
+      return;
+    }
     if (msg.type !== "event" || typeof msg.seq !== "number" || typeof msg.kind !== "string") {
       return;
     }
@@ -80,8 +103,8 @@ async function connect(): Promise<void> {
   next.addEventListener("close", (e) => {
     if (socket !== next) return;
     socket = null;
-    // A 4401 signs the device out; `restartEvents` reconnects after sign-in.
-    if (e.code === WS_UNAUTHORIZED || subscriberCount() === 0) return;
+    // After a 4401 sign-out, `restartEvents` reconnects on the next sign-in.
+    if (refusedByServer(e.code) || subscriberCount() === 0) return;
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => void connect(), retryMs);
     retryMs = Math.min(retryMs * 2, RECONNECT_MAX_MS);
@@ -108,19 +131,24 @@ export function onServerEvent<T = unknown>(
     set.delete(listener);
     if (subscriberCount() === 0) {
       clearTimeout(retryTimer);
-      const open = socket;
-      socket = null;
-      open?.close();
+      dropSocket();
     }
   };
 }
 
 /** Drops the current connection and opens a fresh one, after a sign-in. */
 export function restartEvents(): void {
-  const open = socket;
-  socket = null;
-  open?.close();
+  dropSocket();
   clearTimeout(retryTimer);
   retryMs = RECONNECT_MIN_MS;
   if (subscriberCount() > 0) void connect();
 }
+
+// A signed-out device has no business holding the stream open, and the next
+// sign-in starts from now rather than replaying another device's history.
+onAuthChange((signedIn) => {
+  if (signedIn) return;
+  clearTimeout(retryTimer);
+  dropSocket();
+  lastSeq = null;
+});

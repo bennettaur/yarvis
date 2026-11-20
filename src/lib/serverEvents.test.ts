@@ -66,6 +66,26 @@ describe("onServerEvent", () => {
     expect(seen).toEqual([10, 11]);
   });
 
+  it("reloads cached data after falling behind, and starts the next connection from now", async () => {
+    const { cachedFetch, resourceCacheSize } = await import("./resourceCache");
+    await cachedFetch("probe", async () => "cached");
+    expect(resourceCacheSize()).toBe(1);
+    const before = fakeSockets().length;
+    unsubscribers.push(onServerEvent("*", () => {}));
+    await waitFor(() => fakeSockets().length === before + 1, "the socket");
+    const first = fakeSockets()[before];
+    first?.open();
+    first?.sendJson(event(50, "sidecar.started"));
+    first?.sendJson({ type: "lagged" });
+    first?.serverClose(1000);
+
+    expect(resourceCacheSize()).toBe(0);
+    await waitFor(() => fakeSockets().length === before + 2, "the reconnect", 3_000);
+    const second = fakeSockets()[before + 1];
+    second?.open();
+    expect(second?.sent[0]).toEqual({ type: "auth", token: "tok-1" });
+  });
+
   it("signs the device out when the server refuses the token", async () => {
     const before = fakeSockets().length;
     unsubscribers.push(onServerEvent("*", () => {}));

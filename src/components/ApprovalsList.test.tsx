@@ -37,7 +37,6 @@ const signing: Approval = {
   id: "ap-1",
   kind: "ssh.sign",
   summary: "Sign a commit in yarvis",
-  status: "pending",
 };
 
 const buttonNamed = (host: HTMLElement, text: string) =>

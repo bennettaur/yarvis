@@ -2,7 +2,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bu
 import { realCore } from "../test/coreApi";
 import { actAsDesktopApp } from "../test/desktopApp";
 import { SidecarError } from "./api";
-import { deviceToken, onAuthChange, saveDeviceToken, serverFetch, signOut } from "./server";
+import {
+  deviceToken,
+  onAuthChange,
+  refusedByServer,
+  saveDeviceToken,
+  serverFetch,
+  signOut,
+} from "./server";
 
 const { core, LocalOnlyError } = realCore;
 
@@ -43,6 +50,13 @@ describe("serverFetch", () => {
     off();
     expect(changes).toEqual([false]);
     expect(await deviceToken()).toBeNull();
+  });
+});
+
+describe("refusedByServer", () => {
+  it("tells the server's own refusals from failures worth a retry", () => {
+    expect([4400, 4401, 4403].map(refusedByServer)).toEqual([true, true, true]);
+    expect([1000, 1006, 1011].map(refusedByServer)).toEqual([false, false, false]);
   });
 });
 

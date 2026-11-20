@@ -28,7 +28,7 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
     };
   }, []);
 
-  const pending = (approvals.data ?? []).filter((a) => !a.status || a.status === "pending");
+  const pending = approvals.data ?? [];
 
   const answer = async (approval: Approval, approve: boolean) => {
     setError(null);

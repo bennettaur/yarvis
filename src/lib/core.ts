@@ -5,7 +5,7 @@ import { inTauri, serverFetch } from "./server";
 
 /**
  * Commands that act on the machine in front of the user, not on the server:
- * the clipboard history, focusing the window, silencing an alarm's ring. The
+ * the clipboard history, focusing the window, ringing an alarm. The
  * Tauri app answers them itself, and a browser has no such feature.
  */
 const LOCAL_COMMANDS = new Set([
@@ -13,6 +13,7 @@ const LOCAL_COMMANDS = new Set([
   "clipboard_clear_history",
   "clipboard_write",
   "focus_main_window",
+  "fire_alarm",
   "release_alarm",
 ]);
 
@@ -32,7 +33,8 @@ export class LocalOnlyError extends Error {
 /**
  * Runs one of the core's commands (settings, secrets, PTY control) on the
  * server, as `POST /api/core/{command}` with the same arguments `invoke` took.
- * Resolves undefined when the server answers 204.
+ * Resolves undefined when the server answers 204. A machine-local command goes
+ * to the Tauri bridge instead, and throws `LocalOnlyError` in a browser.
  */
 export async function core<T = void>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (LOCAL_COMMANDS.has(command)) {

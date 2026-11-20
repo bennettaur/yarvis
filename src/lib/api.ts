@@ -75,7 +75,7 @@ async function readErrorDetail(res: Response): Promise<{ reason: string | null; 
 }
 
 /**
- * A failed sidecar call. Carries the HTTP status and the server's own longer
+ * A failed sidecar call, or any server call that goes through `ensureOk`. Carries the HTTP status and the server's own longer
  * explanation so the UI can show one line and keep the diagnosis behind an
  * expander instead of throwing it away.
  */

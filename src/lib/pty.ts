@@ -1,6 +1,6 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { core } from "./core";
-import { openServerSocket } from "./server";
+import { onAuthChange, openServerSocket, refusedByServer } from "./server";
 import type { HarnessKind } from "./settings";
 
 /**
@@ -30,13 +30,15 @@ export interface PtyOutput {
   bytes: Uint8Array;
 }
 
-/** What the server sends before the catch-up bytes, on attach and on resync. */
-interface AttachedMessage {
+/**
+ * What the server sends just before a binary frame of catch-up bytes: on
+ * attach (`attached`), and when this client fell behind and is caught up
+ * again (`resync`). Only the end offset matters here, since every frame
+ * carries its own start.
+ */
+interface AttachHeader {
   type: "attached" | "resync";
-  mode: "resume" | "snapshot";
-  startOffset: number;
   endOffset: number;
-  exit: number | null;
 }
 
 const RECONNECT_MS = 1_000;
@@ -52,12 +54,12 @@ interface Connection {
   pendingAttach: {
     resolve: (snapshot: PtySnapshot) => void;
     reject: (e: Error) => void;
-    attached: AttachedMessage | null;
+    header: AttachHeader | null;
   } | null;
   exited: boolean;
   retry?: ReturnType<typeof setTimeout>;
-  /** The size and folder the session was attached with, resent on reconnect. */
-  hello: { cols: number; rows: number; cwd?: string };
+  /** The size and folder sent with the auth message, and again on a reconnect. */
+  attachArgs: { cols: number; rows: number; cwd?: string };
 }
 
 const connections = new Map<string, Connection>();
@@ -72,7 +74,7 @@ function connectionFor(id: string): Connection {
       nextOffset: null,
       pendingAttach: null,
       exited: false,
-      hello: { cols: 80, rows: 24 },
+      attachArgs: { cols: 80, rows: 24 },
     };
     connections.set(id, conn);
   }
@@ -85,14 +87,16 @@ function readFrame(data: ArrayBuffer): PtyOutput {
 }
 
 function handleText(conn: Connection, text: string): void {
-  let msg: { type?: string; code?: number } & Partial<AttachedMessage>;
+  let msg: { type?: string } & Partial<AttachHeader>;
   try {
     msg = JSON.parse(text);
   } catch {
     return;
   }
   if (msg.type === "attached" || msg.type === "resync") {
-    if (conn.pendingAttach) conn.pendingAttach.attached = msg as AttachedMessage;
+    // A resync's bytes go to the output listeners like any others; only the
+    // first header after `attachPty` belongs to the snapshot it returns.
+    if (conn.pendingAttach) conn.pendingAttach.header = msg as AttachHeader;
   } else if (msg.type === "exit") {
     conn.exited = true;
     for (const cb of conn.exit) cb();
@@ -103,11 +107,11 @@ function handleBinary(conn: Connection, data: ArrayBuffer): void {
   const chunk = readFrame(data);
   conn.nextOffset = chunk.offset + chunk.bytes.length;
   const pending = conn.pendingAttach;
-  if (pending?.attached) {
+  if (pending?.header) {
     conn.pendingAttach = null;
     pending.resolve({
       scrollback: Array.from(chunk.bytes),
-      endOffset: pending.attached.endOffset,
+      endOffset: pending.header.endOffset,
     });
     return;
   }
@@ -115,9 +119,9 @@ function handleBinary(conn: Connection, data: ArrayBuffer): void {
 }
 
 async function openSocket(id: string, conn: Connection): Promise<void> {
-  const hello: Record<string, unknown> = { ...conn.hello };
-  if (conn.nextOffset !== null) hello.offset = conn.nextOffset;
-  const socket = await openServerSocket(`/api/pty/${encodeURIComponent(id)}`, hello);
+  const args: Record<string, unknown> = { ...conn.attachArgs };
+  if (conn.nextOffset !== null) args.offset = conn.nextOffset;
+  const socket = await openServerSocket(`/api/pty/${encodeURIComponent(id)}`, args);
   if (!socket) {
     conn.pendingAttach?.reject(new Error("not signed in to the Yarvis server"));
     conn.pendingAttach = null;
@@ -138,20 +142,31 @@ async function openSocket(id: string, conn: Connection): Promise<void> {
     }
     // Reconnect while someone is still watching and the shell is alive. The
     // catch-up after a reconnect arrives as ordinary output from `nextOffset`.
-    if (!conn.exited && conn.output.size > 0 && e.code < 4000) {
+    if (!conn.exited && conn.output.size > 0 && !refusedByServer(e.code)) {
       conn.retry = setTimeout(() => void openSocket(id, conn), RECONNECT_MS);
     }
   });
 }
 
-function release(id: string, conn: Connection): void {
-  if (conn.output.size > 0 || conn.exit.size > 0) return;
+/** Closes the socket without its close handler reconnecting, since it is no longer `conn.socket`. */
+function dropSocket(conn: Connection): void {
   clearTimeout(conn.retry);
   const socket = conn.socket;
   conn.socket = null;
   socket?.close();
+}
+
+function release(id: string, conn: Connection): void {
+  if (conn.output.size > 0 || conn.exit.size > 0) return;
+  dropSocket(conn);
   connections.delete(id);
 }
+
+// A signed-out device closes its terminals; they attach again after sign-in.
+onAuthChange((signedIn) => {
+  if (signedIn) return;
+  for (const conn of connections.values()) dropSocket(conn);
+});
 
 /** Attaches to session `id`, which the server spawns a shell for if it does
  * not yet exist. Returns the scrollback to replay and the offset it ends at.
@@ -160,21 +175,19 @@ function release(id: string, conn: Connection): void {
  * snapshot is missed. */
 export const attachPty = (id: string, cols: number, rows: number, cwd?: string) => {
   const conn = connectionFor(id);
-  conn.hello = { cols, rows, cwd };
+  conn.attachArgs = { cols, rows, cwd };
   conn.nextOffset = null;
   conn.exited = false;
-  clearTimeout(conn.retry);
-  const old = conn.socket;
-  conn.socket = null;
-  old?.close();
+  dropSocket(conn);
   return new Promise<PtySnapshot>((resolve, reject) => {
-    conn.pendingAttach = { resolve, reject, attached: null };
+    conn.pendingAttach = { resolve, reject, header: null };
     void openSocket(id, conn);
   });
 };
 
-/** Sends user input to the session's shell. Over the open socket when there
- * is one, which also makes this client the one whose size the PTY takes. */
+/** Sends user input to the session's shell, over the open socket when there is
+ * one. The server sizes the PTY to whichever client typed last, so typing here
+ * also makes this terminal's viewport the size the shell sees. */
 export const writePty = async (id: string, data: string): Promise<void> => {
   const socket = connections.get(id)?.socket;
   if (socket?.readyState === WebSocket.OPEN) {
@@ -187,7 +200,7 @@ export const writePty = async (id: string, data: string): Promise<void> => {
 /** Resizes the session's PTY to match the terminal viewport. */
 export const resizePty = async (id: string, cols: number, rows: number): Promise<void> => {
   const conn = connections.get(id);
-  if (conn) conn.hello = { ...conn.hello, cols, rows };
+  if (conn) conn.attachArgs = { ...conn.attachArgs, cols, rows };
   if (conn?.socket?.readyState === WebSocket.OPEN) {
     conn.socket.send(JSON.stringify({ type: "resize", cols, rows }));
     return;

@@ -8,6 +8,7 @@ import {
   snoozeAlarm as invokeSnooze,
   listAlarms,
   onAlarmFired,
+  onAlarmReleased,
 } from "./alarms";
 
 /**
@@ -39,6 +40,7 @@ const firedThisRun = new Set<string>();
 const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unlistenFired: (() => void) | undefined;
+let unlistenReleased: (() => void) | undefined;
 let stopFollowing: (() => void) | undefined;
 
 /**
@@ -114,8 +116,8 @@ export async function refreshAlarms(): Promise<void> {
 
 function handleFired(alarm: Alarm): void {
   firedThisRun.add(alarm.id);
-  // The core has already fullscreened and pinned the window by the time this
-  // arrives, so raise the overlay straight off the payload. Waiting on the
+  // The desktop app fullscreens and pins the window as this arrives, so raise
+  // the overlay straight off the payload. Waiting on the
   // refresh would strand the user in a pinned window with no alarm UI whenever
   // that one `list_alarms` call fails.
   applyList(
@@ -144,6 +146,11 @@ function subscribe(notify: () => void): () => void {
       if (generation === listenGeneration && listeners.size > 0) unlistenFired = unlisten;
       else unlisten();
     });
+    // Dealt with on another device: the list drops it from ringing on refresh.
+    onAlarmReleased(() => void refreshAlarms()).then((unlisten) => {
+      if (generation === listenGeneration && listeners.size > 0) unlistenReleased = unlisten;
+      else unlisten();
+    });
   }
   return () => {
     listeners.delete(notify);
@@ -154,6 +161,8 @@ function subscribe(notify: () => void): () => void {
       stopFollowing = undefined;
       unlistenFired?.();
       unlistenFired = undefined;
+      unlistenReleased?.();
+      unlistenReleased = undefined;
     }
   };
 }
