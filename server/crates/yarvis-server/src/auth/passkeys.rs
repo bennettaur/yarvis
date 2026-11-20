@@ -6,6 +6,7 @@
 //! expiry: a restart only costs a client its current prompt.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -28,9 +29,15 @@ const USER_ID: Uuid = Uuid::from_u128(0x6f1d2b3c_0000_4000_8000_0000000000a1);
 /// How long a ceremony may sit between start and finish.
 const CEREMONY_TTL: Duration = Duration::from_secs(300);
 
-/// Ceremonies in flight at once. Starting one needs no token, so without a
-/// cap anyone who can reach the port could grow this map without limit.
-const MAX_CEREMONIES: usize = 256;
+/// Setup and sign-in ceremonies in flight at once. Starting one needs no
+/// token, so the map needs a bound. At the bound the oldest is dropped rather
+/// than new ones refused: a flood then has to outpace the owner's own prompt,
+/// instead of only having to fill the map once.
+const MAX_OPEN_CEREMONIES: usize = 256;
+
+/// Ceremonies started by signed-in devices, which a flood of the open routes
+/// can't crowd out. Only a valid admin token can start one.
+const MAX_SIGNED_IN_CEREMONIES: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -66,6 +73,30 @@ pub enum Ceremony {
     },
 }
 
+impl Ceremony {
+    /// Started by a route that needs no token.
+    fn is_open(&self) -> bool {
+        matches!(self, Ceremony::Setup { .. } | Ceremony::Login { .. })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SetupCodeError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error("couldn't write the setup code file: {0}")]
+    File(#[from] std::io::Error),
+}
+
+pub enum RemovePasskey {
+    /// Carries the ids of the devices that were revoked with it.
+    Removed {
+        revoked: Vec<String>,
+    },
+    LastOne,
+    NotFound,
+}
+
 #[derive(Clone)]
 pub struct PasskeyRecord {
     pub id: String,
@@ -82,6 +113,7 @@ struct Inner {
     rp_id: String,
     store: Store,
     setup_code: Mutex<SetupCode>,
+    setup_code_file: Mutex<Option<PathBuf>>,
     ceremonies: Mutex<HashMap<String, (Instant, Ceremony)>>,
 }
 
@@ -92,6 +124,7 @@ impl PasskeyAuth {
             rp_id: config.rp_id.clone(),
             store,
             setup_code: Mutex::default(),
+            setup_code_file: Mutex::default(),
             ceremonies: Mutex::default(),
         })))
     }
@@ -107,20 +140,43 @@ impl PasskeyAuth {
     }
 
     /// Issues the setup code when no passkey exists yet. The caller prints it
-    /// where only the server's operator sees it: stdout, never a log.
-    pub async fn issue_setup_code_if_needed(&self) -> Result<Option<String>, StoreError> {
+    /// to stdout, never a log. With `file`, the code is also written there,
+    /// readable only by the owner, for a server whose stdout goes to a log
+    /// file; the file is deleted once the code is used. A file left by an
+    /// earlier run is deleted when no code is needed.
+    pub async fn issue_setup_code_if_needed(
+        &self,
+        file: Option<&Path>,
+    ) -> Result<Option<String>, SetupCodeError> {
+        if let Some(file) = file {
+            remove_if_present(file)?;
+        }
         if !self.setup_required().await? {
             return Ok(None);
         }
-        Ok(Some(lock(&self.0.setup_code).issue()))
+        let code = lock(&self.0.setup_code).issue();
+        if let Some(file) = file {
+            write_private(file, &format!("{code}\n"))?;
+            *lock(&self.0.setup_code_file) = Some(file.to_path_buf());
+        }
+        Ok(Some(code))
     }
 
     pub fn check_setup_code(&self, given: &str) -> Result<CodeHash, CodeError> {
         lock(&self.0.setup_code).check(given)
     }
 
+    /// Uses the code up and deletes its file.
     pub fn consume_setup_code(&self, code: &CodeHash) -> bool {
-        lock(&self.0.setup_code).consume(code)
+        if !lock(&self.0.setup_code).consume(code) {
+            return false;
+        }
+        if let Some(file) = lock(&self.0.setup_code_file).take()
+            && let Err(e) = remove_if_present(&file)
+        {
+            tracing::warn!("couldn't delete the used setup code file: {e}");
+        }
+        true
     }
 
     pub async fn setup_required(&self) -> Result<bool, StoreError> {
@@ -136,12 +192,25 @@ impl PasskeyAuth {
 
     // ---- ceremonies ----
 
-    /// Stores a ceremony and returns its id, or `None` when too many are
-    /// already in flight.
+    /// Stores a ceremony and returns its id. Returns `None` when too many
+    /// signed-in ceremonies are in flight; open ones push out the oldest.
     pub fn start_ceremony(&self, ceremony: Ceremony) -> Option<String> {
         let mut ceremonies = lock(&self.0.ceremonies);
         ceremonies.retain(|_, (at, _)| at.elapsed() < CEREMONY_TTL);
-        if ceremonies.len() >= MAX_CEREMONIES {
+        let open = ceremony.is_open();
+        let same_kind = ceremonies.values().filter(|(_, c)| c.is_open() == open);
+        if open {
+            if same_kind.count() >= MAX_OPEN_CEREMONIES {
+                let oldest = ceremonies
+                    .iter()
+                    .filter(|(_, (_, c))| c.is_open())
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(id, _)| id.clone());
+                if let Some(oldest) = oldest {
+                    ceremonies.remove(&oldest);
+                }
+            }
+        } else if same_kind.count() >= MAX_SIGNED_IN_CEREMONIES {
             return None;
         }
         let id = new_id();
@@ -250,6 +319,44 @@ impl PasskeyAuth {
         Ok(id)
     }
 
+    /// Deletes a passkey and revokes every device it signed in, which is what
+    /// a compromised passkey calls for. The last passkey is never removed,
+    /// since nothing could sign in after it.
+    pub async fn remove_passkey(&self, id: &str) -> Result<RemovePasskey, StoreError> {
+        let id = id.to_string();
+        self.0
+            .store
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let (exists, total): (bool, i64) = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = ?1), COUNT(*) FROM passkeys",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                if !exists {
+                    return Ok(RemovePasskey::NotFound);
+                }
+                if total == 1 {
+                    return Ok(RemovePasskey::LastOne);
+                }
+                let revoked = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id FROM devices WHERE passkey_id = ?1 AND revoked_at IS NULL",
+                    )?;
+                    stmt.query_map([&id], |row| row.get(0))?
+                        .collect::<rusqlite::Result<Vec<String>>>()?
+                };
+                tx.execute(
+                    "UPDATE devices SET revoked_at = ?1 WHERE passkey_id = ?2 AND revoked_at IS NULL",
+                    rusqlite::params![now_ms(), id],
+                )?;
+                tx.execute("DELETE FROM passkeys WHERE id = ?1", [&id])?;
+                tx.commit()?;
+                Ok(RemovePasskey::Removed { revoked })
+            })
+            .await
+    }
+
     /// Records a verified assertion: the new sign count and when the passkey
     /// was last used. Returns the passkey's id, or `None` if it was removed
     /// while the ceremony was open.
@@ -282,6 +389,24 @@ impl PasskeyAuth {
             })
             .await
     }
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Creates the file fresh with mode 0600, so it is never readable by others,
+/// even for a moment.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(text.as_bytes())
 }
 
 fn build_webauthn(config: &AuthConfig) -> Result<Webauthn, ConfigError> {

@@ -103,8 +103,13 @@ impl Approvals {
             created_at,
             expires_at: created_at + timeout.as_millis() as i64,
         };
+        // Registered before the row exists, since `pending()` lists the row at
+        // once and an answer that arrives first must still find its waiter.
+        let (tx, rx) = oneshot::channel();
+        lock(&self.waiters).insert(pending.id.clone(), tx);
         let row = pending.clone();
-        self.store
+        let inserted = self
+            .store
             .call(move |conn| {
                 conn.execute(
                     "INSERT INTO approvals (id, kind, summary, data, created_at, expires_at, status)
@@ -119,12 +124,11 @@ impl Approvals {
                     ],
                 )
             })
-            .await?;
-
-        // Registered before the event goes out, so an answer can't land
-        // before anyone is listening for it.
-        let (tx, rx) = oneshot::channel();
-        lock(&self.waiters).insert(pending.id.clone(), tx);
+            .await;
+        if let Err(e) = inserted {
+            lock(&self.waiters).remove(&pending.id);
+            return Err(e);
+        }
         let mut guard = AbandonGuard {
             approvals: self.clone(),
             id: Some(pending.id.clone()),

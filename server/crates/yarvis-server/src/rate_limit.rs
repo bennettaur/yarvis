@@ -21,8 +21,13 @@ use axum::response::{IntoResponse, Response};
 use crate::error::ApiError;
 
 /// Past this many tracked addresses, expired windows are swept on the next
-/// request so the map can't grow without bound.
+/// request.
 const SWEEP_AT: usize = 1024;
+
+/// The most addresses tracked at once. When every slot holds a live window,
+/// a new address is refused: a flood from many addresses can't grow the map
+/// or make each sweep slower than this bound.
+const MAX_TRACKED: usize = 8192;
 
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -42,6 +47,7 @@ impl RateLimiter {
     }
 
     fn allow(&self, ip: IpAddr) -> bool {
+        let ip = budget_key(ip);
         let now = Instant::now();
         let mut windows = self
             .windows
@@ -50,6 +56,9 @@ impl RateLimiter {
         if windows.len() >= SWEEP_AT {
             windows.retain(|_, (start, _)| now.duration_since(*start) < self.window);
         }
+        if windows.len() >= MAX_TRACKED && !windows.contains_key(&ip) {
+            return false;
+        }
         let (start, count) = windows.entry(ip).or_insert((now, 0));
         if now.duration_since(*start) >= self.window {
             *start = now;
@@ -57,6 +66,20 @@ impl RateLimiter {
         }
         *count += 1;
         *count <= self.limit
+    }
+}
+
+/// One budget per IPv4 address, and per /64 for IPv6, since a single host
+/// usually holds a whole /64 and could otherwise pick a fresh address per
+/// request.
+fn budget_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            segments[4..].fill(0);
+            IpAddr::from(segments)
+        }
     }
 }
 
@@ -82,13 +105,24 @@ mod tests {
 
     #[test]
     fn each_address_gets_its_own_budget_and_it_refills() {
-        let limiter = RateLimiter::new(2, Duration::from_millis(50));
+        let limiter = RateLimiter::new(2, Duration::from_millis(500));
         let (a, b) = (IpAddr::from([10, 0, 0, 1]), IpAddr::from([10, 0, 0, 2]));
         assert!(limiter.allow(a) && limiter.allow(a));
         assert!(!limiter.allow(a));
         assert!(limiter.allow(b));
         // Real time: the limiter reads the clock itself.
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(Duration::from_millis(600));
         assert!(limiter.allow(a));
+    }
+
+    #[test]
+    fn ipv6_addresses_in_one_64_share_a_budget() {
+        let limiter = RateLimiter::new(1, Duration::from_secs(60));
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert!(limiter.allow(a));
+        assert!(!limiter.allow(b));
+        assert!(limiter.allow(other));
     }
 }

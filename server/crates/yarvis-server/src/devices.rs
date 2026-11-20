@@ -111,6 +111,12 @@ async fn mint(
     if scopes.is_empty() {
         return Err(ApiError::bad_request("a token needs at least one scope"));
     }
+    // An admin token could revoke the owner's devices. Only the CLI on the
+    // server machine may make one, since whoever runs it can read the database.
+    if scopes.contains(&Scope::Admin) {
+        return Err(ApiError::bad_request("a token made here can't have admin")
+            .with_detail("run `yarvis-server device add` on the server instead"));
+    }
     let signed_in = add_token_device(
         &state.store,
         &state.events,

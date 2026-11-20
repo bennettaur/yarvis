@@ -39,7 +39,18 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
         let Authed { device, .. } = Authed::<S>::from_request_parts(parts, state).await?;
-        if !is_fresh(device.verified_at, now_ms()) {
+        // Token devices never get `verified_at`, but checking the kind as well
+        // keeps a stray write to that column from making a token fresh.
+        let id = device.device_id.clone();
+        let kind: String = Auth::from_ref(state)
+            .store()
+            .call(move |conn| {
+                conn.query_row("SELECT kind FROM devices WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
+            })
+            .await?;
+        if kind != "passkey" || !is_fresh(device.verified_at, now_ms()) {
             return Err(ApiError::forbidden(REAUTH_REQUIRED)
                 .with_detail("confirm with your passkey first: POST /api/auth/reverify/start"));
         }

@@ -50,15 +50,24 @@ async fn serve(config: Config, store: Store) {
         fail(e);
     }
     let bind = config.server.bind;
+    let setup_code_file = config.server.data_dir.join("setup-code");
     let state = AppState::new(config, store);
     match state.approvals.deny_orphaned().await {
         Ok(0) => {}
         Ok(n) => tracing::info!("denied {n} approvals left pending by the last run"),
         Err(e) => fail(e),
     }
-    // stdout, never the log: whoever holds this code can claim the server.
-    match state.passkeys.issue_setup_code_if_needed().await {
-        Ok(Some(code)) => println!("No passkey is registered yet. Setup code: {code}"),
+    // stdout and a private file, never the log: whoever holds this code can
+    // claim the server.
+    match state
+        .passkeys
+        .issue_setup_code_if_needed(Some(&setup_code_file))
+        .await
+    {
+        Ok(Some(code)) => println!(
+            "No passkey is registered yet. Setup code: {code} (also in {})",
+            setup_code_file.display()
+        ),
         Ok(None) => {}
         Err(e) => fail(e),
     }
@@ -117,33 +126,29 @@ fn fail(message: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
+/// Flags may come before or after the `device add` words, so a caller can
+/// put `--config` first for every command.
 fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), String> {
-    let args: Vec<String> = args.collect();
-    let (device_add, rest) = match args.first().map(String::as_str) {
-        Some("device") => match args.get(1).map(String::as_str) {
-            Some("add") => (true, &args[2..]),
-            _ => return Err("the device command is `device add`".into()),
-        },
-        _ => (false, &args[..]),
-    };
-    let (mut config, mut name, mut scopes) = (None, None, None);
-    let mut rest = rest.iter();
-    while let Some(arg) = rest.next() {
-        let mut value = |flag: &str| rest.next().cloned().ok_or(format!("{flag} needs a value"));
+    let (mut words, mut config, mut name, mut scopes) = (Vec::new(), None, None, None);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
             "--config" => config = Some(value("--config")?),
-            "--name" if device_add => name = Some(value("--name")?),
-            "--scopes" if device_add => scopes = Some(value("--scopes")?),
-            other => return Err(format!("unknown argument: {other}")),
+            "--name" => name = Some(value("--name")?),
+            "--scopes" => scopes = Some(value("--scopes")?),
+            flag if flag.starts_with('-') => return Err(format!("unknown argument: {flag}")),
+            _ => words.push(arg),
         }
     }
-    let command = if device_add {
-        Command::AddDevice {
+    let command = match words.as_slice() {
+        [] if name.is_none() && scopes.is_none() => Command::Serve,
+        [] => return Err("--name and --scopes go with `device add`".into()),
+        [device, add] if device == "device" && add == "add" => Command::AddDevice {
             name: name.ok_or("device add needs --name")?,
             scopes: scopes.ok_or("device add needs --scopes")?,
-        }
-    } else {
-        Command::Serve
+        },
+        _ => return Err(format!("unknown command: {}", words.join(" "))),
     };
     let config = config
         .map(PathBuf::from)
@@ -181,6 +186,16 @@ mod tests {
         assert!(
             matches!(command, Command::AddDevice { ref name, ref scopes } if name == "tauri" && scopes == "read,chat")
         );
+        assert_eq!(config, PathBuf::from("x.toml"));
+    }
+
+    #[test]
+    fn config_may_come_before_the_subcommand() {
+        let (command, config) = parse(&[
+            "--config", "x.toml", "device", "add", "--name", "t", "--scopes", "read",
+        ])
+        .unwrap();
+        assert!(matches!(command, Command::AddDevice { .. }));
         assert_eq!(config, PathBuf::from("x.toml"));
     }
 

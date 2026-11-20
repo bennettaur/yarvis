@@ -11,6 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
+use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{RequestChallengeResponse, Url};
 use yarvis_server::auth::Scope;
 use yarvis_server::devices::add_token_device;
@@ -53,8 +54,8 @@ async fn setup_then_login_and_the_setup_code_cannot_be_replayed() {
     let (st, body) = h
         .call("POST", "/api/auth/setup/start", None, Some(replay))
         .await;
-    assert_eq!(st, StatusCode::UNAUTHORIZED);
-    assert_eq!(body["error"], "no setup code is outstanding");
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "setup is done");
     let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(status["setupRequired"], false);
 
@@ -111,7 +112,7 @@ async fn two_ceremonies_racing_on_one_setup_code_get_only_one_passkey() {
             Some(answer_registration(&mut b, &rb)),
         )
         .await;
-    assert_eq!(st, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
     assert_eq!(h.state.passkeys.passkeys().await.unwrap().len(), 1);
 
     // A finished ceremony can't be finished twice.
@@ -185,6 +186,20 @@ async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
     );
     let (st, _) = h.call("GET", "/api/devices", Some(&reader), None).await;
     assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/devices/tokens",
+            Some(&laptop),
+            Some(json!({ "name": "ops", "scopes": ["read", "admin"] })),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "only the CLI makes admin tokens"
+    );
+    assert!(body["error"].as_str().unwrap().contains("admin"), "{body}");
 
     // An admin token can list devices, but nothing that needs a passkey check.
     let (st, _) = h.call("GET", "/api/devices", Some(&admin), None).await;
@@ -194,6 +209,7 @@ async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
         ("POST", "/api/devices/tokens"),
         ("POST", "/api/passkeys/register/start"),
         ("DELETE", "/api/devices/whatever"),
+        ("DELETE", "/api/passkeys/whatever"),
     ] {
         let (st, r) = h.call(method, path, Some(&admin), Some(body.clone())).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{path} must refuse a token");
@@ -454,16 +470,269 @@ async fn events_name_the_device_that_caused_them() {
 
 #[tokio::test]
 async fn the_sign_in_routes_are_rate_limited() {
-    let h = Harness::new().await;
+    let h = Harness::with_default_limit(Store::open_in_memory().unwrap()).await;
     let mut last = StatusCode::OK;
     for _ in 0..40 {
-        last = h.call("GET", "/api/auth/status", None, None).await.0;
+        last = h.call("POST", "/api/auth/login/start", None, None).await.0;
         if last == StatusCode::TOO_MANY_REQUESTS {
             break;
         }
     }
     assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
-    // Only the sign-in routes share that budget.
-    let (st, _) = h.call("GET", "/api/health", None, None).await;
+    let guess = json!({ "code": h.setup_code, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/setup/start", None, Some(guess))
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "setup shares the budget");
+    // Polling status doesn't spend it, so a polling client can't lock the
+    // owner out, and status stays answerable.
+    let (st, _) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_login_assertion_finishes_only_its_own_ceremony_once() {
+    let h = Harness::new().await;
+    let mut pk = authenticator();
+    let laptop = h.setup(&mut pk).await;
+    let (_, a) = h.call("POST", "/api/auth/login/start", None, None).await;
+    let (_, b) = h.call("POST", "/api/auth/login/start", None, None).await;
+
+    let options: RequestChallengeResponse = serde_json::from_value(a["options"].clone()).unwrap();
+    let answer_a = pk
+        .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
+        .unwrap();
+    let swapped =
+        json!({ "ceremonyId": b["ceremonyId"], "credential": answer_a, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/login/finish", None, Some(swapped))
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "A's answer doesn't fit B's challenge"
+    );
+
+    let body = json!({ "ceremonyId": a["ceremonyId"], "credential": answer_a, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/login/finish", None, Some(body.clone()))
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = h
+        .call("POST", "/api/auth/login/finish", None, Some(body))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "a ceremony finishes once");
+
+    // A reverify ceremony can't be finished as a login.
+    let (_, start) = h
+        .call("POST", "/api/auth/reverify/start", Some(&laptop), None)
+        .await;
+    let options: RequestChallengeResponse =
+        serde_json::from_value(start["options"].clone()).unwrap();
+    let credential = pk
+        .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
+        .unwrap();
+    let body =
+        json!({ "ceremonyId": start["ceremonyId"], "credential": credential, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/login/finish", None, Some(body))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (_, devices) = h.call("GET", "/api/devices", Some(&laptop), None).await;
+    assert_eq!(
+        devices.as_array().unwrap().len(),
+        2,
+        "exactly one login made a device"
+    );
+}
+
+#[tokio::test]
+async fn an_add_passkey_ceremony_belongs_to_the_device_that_started_it() {
+    let h = Harness::new().await;
+    let mut pk = authenticator();
+    let laptop = h.setup(&mut pk).await;
+    let phone = h.login(&mut pk, "phone").await;
+    let (_, start) = h
+        .call(
+            "POST",
+            "/api/passkeys/register/start",
+            Some(&laptop),
+            Some(json!({ "label": "yubikey" })),
+        )
+        .await;
+    let body = answer_registration(&mut authenticator(), &start);
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/passkeys/register/finish",
+            Some(&phone),
+            Some(body),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(h.state.passkeys.passkeys().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_flood_of_sign_in_starts_pushes_out_old_ones_but_not_signed_in_ones() {
+    let h = Harness::new().await;
+    let mut pk = authenticator();
+    let laptop = h.setup(&mut pk).await;
+    // The owner's re-check, started before the flood.
+    let (_, reverify) = h
+        .call("POST", "/api/auth/reverify/start", Some(&laptop), None)
+        .await;
+    let (_, first_login) = h.call("POST", "/api/auth/login/start", None, None).await;
+    for _ in 0..300 {
+        let (st, _) = h.call("POST", "/api/auth/login/start", None, None).await;
+        assert_eq!(st, StatusCode::OK, "new sign-ins are never refused");
+    }
+
+    let finish = |start: &serde_json::Value, pk: &mut SoftPasskey| {
+        let options: RequestChallengeResponse =
+            serde_json::from_value(start["options"].clone()).unwrap();
+        let credential = pk
+            .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
+            .unwrap();
+        json!({ "ceremonyId": start["ceremonyId"], "credential": credential, "deviceName": "x" })
+    };
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login/finish",
+            None,
+            Some(finish(&first_login, &mut pk)),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "the oldest sign-in was pushed out"
+    );
+    let (st, r) = h
+        .call(
+            "POST",
+            "/api/auth/reverify/finish",
+            Some(&laptop),
+            Some(finish(&reverify, &mut pk)),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+}
+
+#[tokio::test]
+async fn the_setup_code_file_is_private_and_goes_once_the_code_is_used() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("setup-code");
+    let state = yarvis_server::AppState::new(
+        yarvis_server::config::Config::default(),
+        Store::open_in_memory().unwrap(),
+    );
+    let code = state
+        .passkeys
+        .issue_setup_code_if_needed(Some(&file))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), code);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let hash = state.passkeys.check_setup_code(&code).unwrap();
+    assert!(state.passkeys.consume_setup_code(&hash));
+    assert!(!file.exists());
+}
+
+#[tokio::test]
+async fn removing_a_passkey_signs_out_its_devices() {
+    let h = Harness::new().await;
+    let (mut first, mut yubikey) = (authenticator(), authenticator());
+    let laptop = h.setup(&mut first).await;
+    let laptop_passkey = h.state.passkeys.passkeys().await.unwrap()[0].id.clone();
+    let (_, body) = h
+        .register(
+            &mut yubikey,
+            "/api/passkeys/register",
+            Some(&laptop),
+            json!({ "label": "attacker" }),
+        )
+        .await;
+    let added = body["passkeyId"].as_str().unwrap().to_string();
+    let via_added = h.login(&mut yubikey, "attacker").await;
+    let via_added_id = h.device_id(&via_added).await;
+
+    let (_, list) = h.call("GET", "/api/passkeys", Some(&laptop), None).await;
+    let labels: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["label"].clone())
+        .collect();
+    assert_eq!(labels, [json!("laptop"), json!("attacker")]);
+
+    let (st, body) = h
+        .call(
+            "DELETE",
+            &format!("/api/passkeys/{added}"),
+            Some(&laptop),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revokedDevices"], json!([via_added_id]));
+    let (st, _) = h
+        .call("GET", "/api/devices/me", Some(&via_added), None)
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    assert_eq!(st, StatusCode::OK, "other passkeys' devices stay");
+
+    let (st, _) = h
+        .call(
+            "DELETE",
+            &format!("/api/passkeys/{laptop_passkey}"),
+            Some(&laptop),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "the last passkey stays");
+}
+
+#[tokio::test]
+async fn the_device_add_command_prints_a_working_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    let data_dir = dir.path().join("data");
+    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
+    let run = |scopes: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+            .args(["--config", config.to_str().unwrap(), "device", "add"])
+            .args(["--name", "Tauri on test", "--scopes", scopes])
+            .output()
+            .unwrap()
+    };
+
+    let output = run("read,chat");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "only the token goes to stdout");
+    let token = stdout.trim();
+
+    let h = Harness::on(Store::open(&data_dir.join("server.db")).unwrap()).await;
+    let (st, me) = h.call("GET", "/api/devices/me", Some(token), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(me["scopes"], json!(["read", "chat"]));
+    assert_eq!(me["name"], "Tauri on test");
+
+    let output = run("read,root");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
 }

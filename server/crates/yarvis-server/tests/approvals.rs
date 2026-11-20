@@ -13,6 +13,14 @@ use yarvis_server::approvals::{Approvals, Decision};
 use yarvis_server::events::EventLog;
 use yarvis_server::store::Store;
 
+/// Waits for a requester, failing rather than stalling if it was never woken.
+async fn settled(requester: tokio::task::JoinHandle<Decision>) -> Decision {
+    tokio::time::timeout(Duration::from_secs(5), requester)
+        .await
+        .expect("the requester was woken")
+        .unwrap()
+}
+
 /// Starts an approval in the background and waits until it is listed.
 async fn ask(
     h: &Harness,
@@ -86,7 +94,7 @@ async fn the_first_answer_wins_and_the_event_names_its_device() {
         );
         winners.insert(winner.clone());
 
-        let decision = requester.await.unwrap();
+        let decision = settled(requester).await;
         if winner == &laptop_id {
             assert_eq!(
                 decision,
@@ -183,7 +191,7 @@ async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
         )
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    assert!(requester.await.unwrap().approved());
+    assert!(settled(requester).await.approved());
     let (_, list) = h.call("GET", "/api/approvals", Some(&reader), None).await;
     assert_eq!(list, json!([]));
 }
@@ -205,6 +213,8 @@ async fn an_approval_whose_requester_stopped_waiting_is_denied() {
             .then_some(())
     })
     .await;
+    let answered = h.events("approval.answered").await;
+    assert_eq!(answered[0].data["reason"], "abandoned");
     let (st, _) = h
         .call(
             "POST",
@@ -243,5 +253,105 @@ async fn approvals_left_pending_by_a_restart_are_denied() {
     let answered = h.events("approval.answered").await;
     assert_eq!(answered.len(), 1);
     assert_eq!(answered[0].data["reason"], "restart");
+    let id = answered[0].data["id"].as_str().unwrap().to_string();
+    let laptop = h.setup(&mut authenticator()).await;
+    let (st, _) = h
+        .call(
+            "POST",
+            &format!("/api/approvals/{id}"),
+            Some(&laptop),
+            Some(json!({ "approve": true })),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "nothing is left to act on a late yes"
+    );
     pending.abort();
+}
+
+#[tokio::test]
+async fn an_answer_after_the_deadline_is_refused_even_before_the_timeout_fires() {
+    let h = Harness::new().await;
+    let laptop = h.setup(&mut authenticator()).await;
+    let (id, requester) = ask(&h, "late", Duration::from_secs(30)).await;
+    // Past its deadline in the database, while the requester still waits.
+    let row_id = id.clone();
+    h.state
+        .store
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE approvals SET expires_at = 0 WHERE id = ?1",
+                [row_id],
+            )
+        })
+        .await
+        .unwrap();
+    let (st, body) = h
+        .call(
+            "POST",
+            &format!("/api/approvals/{id}"),
+            Some(&laptop),
+            Some(json!({ "approve": true })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("in time"),
+        "{body}"
+    );
+    let (_, list) = h.call("GET", "/api/approvals", Some(&laptop), None).await;
+    assert_eq!(list, json!([]));
+    requester.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_requester_and_the_answer_agree_when_an_answer_races_the_timeout() {
+    let h = Harness::new().await;
+    let laptop = h.setup(&mut authenticator()).await;
+    let laptop_id = h.device_id(&laptop).await;
+    for round in 0..50u64 {
+        let approvals = h.state.approvals.clone();
+        let summary = format!("race #{round}");
+        let owned = summary.clone();
+        let requester = tokio::spawn(async move {
+            approvals
+                .request(
+                    "test",
+                    &owned,
+                    json!({}),
+                    Duration::from_millis(1 + round % 5),
+                )
+                .await
+                .unwrap()
+        });
+        let id = until("the request event", || async {
+            h.events("approval.requested")
+                .await
+                .into_iter()
+                .find(|e| e.data["summary"] == summary.as_str())
+                .map(|e| e.data["id"].as_str().unwrap().to_string())
+        })
+        .await;
+        let (st, _) = h
+            .call(
+                "POST",
+                &format!("/api/approvals/{id}"),
+                Some(&laptop),
+                Some(json!({ "approve": true })),
+            )
+            .await;
+        let decision = settled(requester).await;
+        match st {
+            StatusCode::OK => assert_eq!(
+                decision,
+                Decision::Approved {
+                    by: laptop_id.clone()
+                }
+            ),
+            StatusCode::CONFLICT => assert_eq!(decision, Decision::Unanswered),
+            other => panic!("unexpected {other}"),
+        }
+    }
 }

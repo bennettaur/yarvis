@@ -240,6 +240,8 @@ jobs:
       - name: cargo audit
         working-directory: src-tauri
         run: cargo audit
+      # The server's accepted advisories live in server/.cargo/audit.toml, the
+      # same way.
       - name: cargo audit (server)
         working-directory: server
         run: cargo audit

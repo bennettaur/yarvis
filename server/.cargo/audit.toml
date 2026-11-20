@@ -1,0 +1,13 @@
+[advisories]
+# RUSTSEC-2023-0071 is the Marvin timing side channel in `rsa`, which can leak
+# an RSA private key through the timing of decryption or signing. webauthn-rs
+# 0.6.2 reaches rsa 0.10.0-rc.19 through crypto-glue 0.2.2. The server holds no
+# RSA private key: webauthn-rs only verifies RS256 signatures from
+# authenticators with their public keys, which the advisory doesn't cover.
+# The fixed rsa 0.10.0 can't be selected yet, because crypto-glue 0.2.2 asks
+# for an rsa feature (`sha2`) that 0.10.0 removed. Drop this once crypto-glue
+# moves to rsa 0.10.
+#
+# This suppresses noise only: with no `deny` set, cargo audit fails on
+# vulnerabilities and merely warns on informational advisories.
+ignore = ["RUSTSEC-2023-0071"]
