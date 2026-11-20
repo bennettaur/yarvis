@@ -54,6 +54,30 @@ const MIGRATIONS: &[&str] = &[
         data       TEXT NOT NULL
     );
     "#,
+    // 2: passkeys and approvals.
+    r#"
+    CREATE TABLE passkeys (
+        id             TEXT PRIMARY KEY,
+        credential_id  BLOB NOT NULL UNIQUE,
+        label          TEXT NOT NULL,
+        passkey        TEXT NOT NULL,
+        created_at     INTEGER NOT NULL,
+        last_used_at   INTEGER
+    );
+    CREATE TABLE approvals (
+        id           TEXT PRIMARY KEY,
+        kind         TEXT NOT NULL,
+        summary      TEXT NOT NULL,
+        data         TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        expires_at   INTEGER NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied')),
+        outcome      TEXT CHECK (outcome IN ('answered', 'timeout', 'abandoned', 'restart')),
+        answered_by  TEXT,
+        answered_at  INTEGER
+    );
+    CREATE INDEX approvals_pending ON approvals (status, created_at);
+    "#,
 ];
 
 #[derive(Clone)]
