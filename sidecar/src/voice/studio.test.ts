@@ -68,7 +68,7 @@ async function translateWith(reply: string, text: string, finishReason?: string)
       name: "chat",
       baseUrl: `http://127.0.0.1:${server.port}/v1`,
       apiKind: "openai-chat",
-      models: ["m"],
+      models: [{ id: "m", capabilities: ["chat"] }],
       headerNames: [],
     });
     const withKey = {
@@ -141,7 +141,7 @@ describe("translateText", () => {
         name: "hung",
         baseUrl: `http://127.0.0.1:${hung.port}/v1`,
         apiKind: "openai-chat",
-        models: ["m"],
+        models: [{ id: "m", capabilities: ["chat"] }],
         headerNames: [],
       });
       const withKey = {

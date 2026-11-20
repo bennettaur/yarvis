@@ -73,7 +73,7 @@ describe("decide through System One", () => {
       name: "system one",
       baseUrl: "http://127.0.0.1:11434/",
       apiKind: "systemone",
-      models: ["nimble"],
+      models: [{ id: "nimble", capabilities: ["chat"] }],
       headerNames: [],
     });
     return { provider: `custom:${row.id}`, model: "nimble" };
@@ -156,7 +156,7 @@ describe("decide through Ollama", () => {
       name: "local ollama",
       baseUrl: "http://127.0.0.1:11434/",
       apiKind: "ollama",
-      models: ["jev"],
+      models: [{ id: "jev", capabilities: ["chat"] }],
       headerNames: [],
     });
     return { provider: `custom:${row.id}`, model: "jev" };

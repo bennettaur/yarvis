@@ -78,12 +78,15 @@ export async function resolvePrRunModel(
   const provider = providerId ?? fallback?.provider;
   const model = modelId ?? fallback?.model;
   if (!provider || !model) return { error: "no LLM provider is configured" };
+  // The saved effort belongs to the saved model, not to one the caller named instead.
+  const effort =
+    provider === fallback?.provider && model === fallback.model ? fallback.effort : undefined;
   try {
     // Wrapped rather than returned bare: a resolved model can itself be a
     // string, so an `"error" in x` check would not tell the two apart.
     return {
       selection: { provider, model },
-      ...(await resolveModelWithOllama(config, provider, model)),
+      ...(await resolveModelWithOllama(config, provider, model, { effort })),
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };

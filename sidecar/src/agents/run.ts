@@ -15,6 +15,7 @@ import type { Db } from "../db/client.ts";
 import {
   type ComplexityTier,
   isComplexityTier,
+  type ModelSelection,
   resolveComplexityModel,
 } from "../llm/complexity.ts";
 import { describeError } from "../llm/errors.ts";
@@ -205,18 +206,22 @@ export async function specialistModel(
   specialist: SpecialistDefinition,
   task: string,
   options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
-): Promise<{ provider: string; model: string } | null> {
+): Promise<ModelSelection | null> {
+  const effort = specialist.effort ?? undefined;
+  const tierFor = async (tier: ComplexityTier): Promise<ModelSelection | null> => {
+    const selection = await resolveComplexityModel(config, tier);
+    return selection && { ...selection, effort: effort ?? selection.effort };
+  };
   if (specialist.provider && specialist.model) {
-    return { provider: specialist.provider, model: specialist.model };
+    return { provider: specialist.provider, model: specialist.model, effort };
   }
-  if (specialist.complexityTier) {
-    return resolveComplexityModel(config, specialist.complexityTier);
-  }
+  if (specialist.complexityTier) return tierFor(specialist.complexityTier);
   if (specialist.unattended.length === 0) {
     const routed = await routedTier(config, task, options);
-    if (routed) return resolveComplexityModel(config, routed);
+    if (routed) return tierFor(routed);
   }
-  return defaultProviderModel(config);
+  const fallback = await defaultProviderModel(config);
+  return fallback && { ...fallback, effort };
 }
 
 async function routedTier(
@@ -271,12 +276,14 @@ export async function runSpecialistDefinition(input: RunDefinitionInput): Promis
     throw new Error(`"${specialist.name}" is a decision specialist and can't run a task`);
   }
 
-  const chosen =
+  const chosen: ModelSelection | null =
     input.provider && input.model
       ? { provider: input.provider, model: input.model }
       : await specialistModel(config, specialist, task, { signal });
   if (!chosen) throw new Error("no chat model is configured");
-  const model = await resolveModel(config, chosen.provider, chosen.model);
+  const model = await resolveModel(config, chosen.provider, chosen.model, {
+    effort: chosen.effort,
+  });
 
   const memory = new PgVectorMemoryStore(db, await chooseEmbedder(config, db));
   const allTools = buildBuiltinTools({

@@ -10,6 +10,23 @@ import type { ModelCapability, ModelInfo } from "./chat";
  * catalogue over from the bundled defaults; clearing its rows hands it back.
  */
 
+/**
+ * What each tag means, shown as a checkbox's title so a list of them needs no
+ * key. Its keys are also the full tag list, in the order the editors show them.
+ */
+export const CAPABILITY_HINTS: Record<ModelCapability, string> = {
+  chat: "Can answer a chat turn — the model that thinks.",
+  stt: "Can turn recorded speech into text.",
+  tts: "Can speak text aloud.",
+  vision: "Can read images in a prompt.",
+  embed: "Can produce embedding vectors.",
+  decision: "Can answer a yes/no judgement, such as whether a tool call is safe to run unasked.",
+  reasoning:
+    "Takes an effort level: how much it thinks before answering. Tag only models whose provider accepts it.",
+};
+
+export const MODEL_CAPABILITIES = Object.keys(CAPABILITY_HINTS) as ModelCapability[];
+
 export interface ProviderModel {
   id: string;
   providerId: string;

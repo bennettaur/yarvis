@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
+import type { ModelInfo } from "./chat";
 
 /**
  * Wire protocol the proxy speaks:
@@ -11,6 +12,9 @@ import { ensureOk, sidecarFetch } from "./api";
  */
 export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama" | "systemone";
 
+/** One model the proxy serves, tagged with what it can do, like a catalogue entry. */
+export type CustomProviderModel = Pick<ModelInfo, "id" | "capabilities">;
+
 /**
  * Structural fields for a user-configured proxy. Stored in Postgres. Secret
  * values (apiKey + each custom header value) are managed separately via the
@@ -21,7 +25,7 @@ export interface CustomProvider {
   name: string;
   baseUrl: string;
   apiKind: CustomProviderApiKind;
-  models: string[];
+  models: CustomProviderModel[];
   headerNames: string[];
   createdAt: string;
   updatedAt: string;
@@ -31,7 +35,7 @@ export interface CustomProviderInput {
   name: string;
   baseUrl: string;
   apiKind: CustomProviderApiKind;
-  models: string[];
+  models: CustomProviderModel[];
   headerNames: string[];
 }
 
@@ -82,6 +86,36 @@ export async function deleteCustomProvider(id: string): Promise<void> {
     method: "DELETE",
   });
   await ensureOk(res, "delete custom provider");
+}
+
+/**
+ * A failed test is a result, not a thrown error: the sidecar answers 200 with
+ * `ok: false` and the provider's own message, so the UI can show why.
+ */
+export type ConnectionTestResult =
+  | { ok: true; latencyMs: number; models: string[] }
+  | { ok: false; latencyMs: number; error: string; detail?: string };
+
+export type ModelTestResult =
+  | { ok: true; latencyMs: number; reply: string }
+  | { ok: false; latencyMs: number; error: string; detail?: string };
+
+/** Asks the proxy for its model list with the saved URL and credentials. */
+export async function testCustomProvider(id: string): Promise<ConnectionTestResult> {
+  const res = await sidecarFetch(`/api/custom-providers/${id}/test`, { method: "POST" });
+  await ensureOk(res, "test custom provider");
+  return res.json();
+}
+
+/** Sends one model a short prompt through the same path a chat turn uses. */
+export async function testCustomProviderModel(id: string, model: string): Promise<ModelTestResult> {
+  const res = await sidecarFetch(`/api/custom-providers/${id}/test-model`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  await ensureOk(res, "test custom provider model");
+  return res.json();
 }
 
 /* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */

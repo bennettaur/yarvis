@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { createCustomProvider, deleteCustomProvider } from "../customProviders/service.ts";
 
 const config: Config = {
   port: 0,
@@ -52,6 +53,103 @@ describe("omni routes", () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain("Anthropic API key");
+  });
+
+  it("rejects an effort level the SDK doesn't name", async () => {
+    const res = await app.request("/api/omni/generate", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        system: "x",
+        messages: [{ role: "user", content: "x" }],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        effort: "ludicrous",
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("streams through a LiteLLM-shaped proxy and sends the chosen effort", async () => {
+    // A streamed Responses reply whose reasoning item has no `summary`, as LiteLLM sends one.
+    const reasoning = { type: "reasoning", id: "rs_1", content: [], encrypted_content: "sig" };
+    const done = {
+      type: "message",
+      id: "msg_1",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Here.", annotations: [] }],
+    };
+    const response = { id: "resp_1", created_at: 0, model: "m", object: "response", output: [] };
+    const events = [
+      { type: "response.created", response: { ...response, status: "in_progress" } },
+      { type: "response.output_item.added", output_index: 0, item: reasoning },
+      { type: "response.output_item.done", output_index: 0, item: reasoning },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { ...done, status: "in_progress", content: [] },
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: "msg_1",
+        output_index: 1,
+        content_index: 0,
+        delta: "Here.",
+      },
+      { type: "response.output_item.done", output_index: 1, item: done },
+      {
+        type: "response.completed",
+        response: {
+          ...response,
+          status: "completed",
+          output: [reasoning, done],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    ];
+    const bodies: Record<string, unknown>[] = [];
+    const gateway = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        bodies.push((await req.json()) as Record<string, unknown>);
+        return new Response(
+          events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: `http://127.0.0.1:${gateway.port}/v1`,
+      apiKind: "openai",
+      models: [{ id: "bedrock-claude-opus-5-5", capabilities: ["chat", "reasoning"] }],
+      headerNames: [],
+    });
+    config.customProviderSecrets[row.id] = { apiKey: "sk-fake", headers: {} };
+    try {
+      const res = await app.request("/api/omni/generate", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({
+          system: "You generate UI.",
+          messages: [{ role: "user", content: "show my tasks" }],
+          provider: `custom:${row.id}`,
+          model: "bedrock-claude-opus-5-5",
+          effort: "medium",
+        }),
+      });
+      const stream = await res.text();
+      expect(stream).toContain("Here.");
+      expect(stream).not.toContain('"type":"error"');
+      expect((bodies[0]?.reasoning as { effort?: string } | undefined)?.effort).toBe("medium");
+      expect(bodies[0]?.store).toBe(false);
+    } finally {
+      gateway.stop(true);
+      delete config.customProviderSecrets[row.id];
+      await deleteCustomProvider(row.id);
+    }
   });
 
   it("requires the bearer token", async () => {

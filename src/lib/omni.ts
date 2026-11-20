@@ -1,6 +1,7 @@
 import type { Spec } from "@json-render/core";
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
 import type { ProviderId } from "./chat";
+import type { ReasoningEffort } from "./effort";
 
 /** A conversational turn sent to the Omni generator. */
 export interface OmniMessage {
@@ -14,6 +15,7 @@ export interface OmniRequest {
   messages: OmniMessage[];
   provider: ProviderId;
   model: string;
+  effort?: ReasoningEffort;
 }
 
 export interface OmniEvent {

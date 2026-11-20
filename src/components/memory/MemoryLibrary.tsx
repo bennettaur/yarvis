@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { ProviderId } from "../../lib/chat";
+import { readChatEffort } from "../../lib/effort";
 import {
   type MemoryKind,
   type MemoryRecord,
@@ -198,7 +199,7 @@ export default function MemoryLibrary() {
     try {
       const provider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
       const model = localStorage.getItem(MODEL_KEY);
-      setRecap(await memRecap(range, provider ?? undefined, model ?? undefined));
+      setRecap(await memRecap(range, provider ?? undefined, model ?? undefined, readChatEffort()));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

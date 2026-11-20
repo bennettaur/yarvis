@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { reasoningEffortSchema } from "../llm/effort.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { resolveModel } from "../llm/providers.ts";
 import { deleteLayout, getLayout, listLayouts, saveLayout } from "./service.ts";
@@ -38,6 +39,7 @@ const generateSchema = z.object({
     .max(MAX_OMNI_MESSAGES),
   provider: z.string().min(1),
   model: z.string().min(1),
+  effort: reasoningEffortSchema.optional(),
 });
 
 const saveLayoutSchema = z.object({
@@ -114,11 +116,11 @@ export function createOmniRoutes(config: Config): Hono {
     const body = await c.req.json().catch(() => null);
     const parsed = generateSchema.safeParse(body);
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { system, messages, provider, model } = parsed.data;
+    const { system, messages, provider, model, effort } = parsed.data;
 
     let chatModel;
     try {
-      chatModel = await resolveModel(config, provider, model);
+      chatModel = await resolveModel(config, provider, model, { effort });
     } catch (e) {
       console.error("[omni] model resolution failed:", e);
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

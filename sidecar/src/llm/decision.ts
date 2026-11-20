@@ -142,9 +142,11 @@ export async function decide<T>(
     config,
     selection.provider,
     selection.model,
+    { effort: selection.effort },
   );
   // Ollama's native API holds the answer to the schema; its OpenAI-compatible
-  // endpoint, which `model` would use, only promises JSON.
+  // endpoint, which `model` would use, only promises JSON. It has no effort
+  // level, so a saved one is not sent there.
   if (ollama) {
     const reply = await ollamaChat({
       target: ollama,

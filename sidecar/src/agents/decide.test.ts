@@ -69,7 +69,7 @@ async function decisionModel(apiKind: "ollama" | "systemone" = "ollama") {
     name: apiKind,
     baseUrl: "http://127.0.0.1:11434",
     apiKind,
-    models: ["jev"],
+    models: [{ id: "jev", capabilities: ["chat"] }],
     headerNames: [],
   });
   const provider = `custom:${row.id}`;

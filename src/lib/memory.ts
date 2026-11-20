@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { sidecarFetch } from "./api";
 import type { ProviderId } from "./chat";
+import type { ReasoningEffort } from "./effort";
 
 /** Kinds a memory can have; mirrors `MEMORY_KINDS` in the sidecar's schema. */
 export type MemoryKind =
@@ -166,8 +167,12 @@ export const memDelete = (id: string) => send<{ deleted: boolean }>(`/api/memory
 export const memIngest = (input: { url?: string; text?: string; title?: string }) =>
   send<IngestResult>("/api/memory/ingest", "POST", input);
 
-export const memRecap = (range: "day" | "week", provider?: ProviderId, model?: string) =>
-  send<RecapResult>("/api/memory/recap", "POST", { range, provider, model });
+export const memRecap = (
+  range: "day" | "week",
+  provider?: ProviderId,
+  model?: string,
+  effort?: ReasoningEffort,
+) => send<RecapResult>("/api/memory/recap", "POST", { range, provider, model, effort });
 
 /* ---------- Embeddings provider ---------- */
 
