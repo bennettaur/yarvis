@@ -1,4 +1,5 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { onNativeEvent } from "./core";
 
 /** localStorage key under which Omni Chat's persistent session id is kept. */
 export const OMNI_CHAT_SESSION_KEY = "yarvis.omnichat.sessionId";
@@ -8,4 +9,4 @@ export const OMNI_CHAT_SESSION_KEY = "yarvis.omnichat.sessionId";
  * is already focused by the time this fires; the handler opens the overlay.
  */
 export const onOmniChatSummon = (cb: () => void): Promise<UnlistenFn> =>
-  listen("omni-chat-summon", () => cb());
+  onNativeEvent("omni-chat-summon", cb);

@@ -1,10 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
+import { core } from "./core";
+import { onServerEvent } from "./serverEvents";
 
 /**
  * Client for alarms. The sidecar keeps the list (`/api/alarms`) and decides
- * when one is due; the Rust core rings it and emits `alarm-fired`.
+ * when one is due; the server rings it and sends `alarm.fire` on `/api/events`.
  */
 
 export interface Alarm {
@@ -49,7 +50,7 @@ export const createAlarm = (
  * the sidecar can't be reached to record what the user chose.
  */
 async function releaseAndRecord(id: string, action: string, body?: unknown): Promise<Alarm> {
-  await invoke("release_alarm", { id }).catch(() => {});
+  await core("release_alarm", { id }).catch(() => {});
   return request<Alarm>(`/${id}/${action}`, "POST", body);
 }
 
@@ -60,9 +61,9 @@ export const acknowledgeAlarm = (id: string) => releaseAndRecord(id, "acknowledg
 export const snoozeAlarm = (id: string, minutes: number) =>
   releaseAndRecord(id, "snooze", { minutes });
 
-/** Subscribe to alarm-fired events from the Rust core. */
+/** Subscribe to alarms firing, from the server's event stream. */
 export const onAlarmFired = (cb: (alarm: Alarm) => void): Promise<UnlistenFn> =>
-  listen<Alarm>("alarm-fired", (e) => cb(e.payload));
+  Promise.resolve(onServerEvent<Alarm>("alarm.fire", (e) => cb(e.data)));
 
 /** How long to wait before reconnecting a dropped stream. */
 const RECONNECT_MS = 5_000;

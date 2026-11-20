@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import BootGate from "./components/shell/BootGate";
+import SignInGate from "./components/shell/SignInGate";
 import "./index.css";
 import { loadAttentionAnimation } from "./lib/attentionAnimation";
 import { getSettings } from "./lib/settings";
@@ -11,9 +12,11 @@ import { loadColorTheme } from "./lib/theme";
 function render() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <BootGate>
-        <App />
-      </BootGate>
+      <SignInGate>
+        <BootGate>
+          <App />
+        </BootGate>
+      </SignInGate>
     </React.StrictMode>,
   );
 }
