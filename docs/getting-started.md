@@ -153,9 +153,12 @@ and `cargo clippy` on staged files.
 bun run tauri dev
 ```
 
-The first run compiles the Tauri app and the server, which takes a few minutes.
-Later runs take seconds. The frontend is built once per launch, so a change to
-`src/` needs a restart of `bun run tauri dev` to show up. When the build finishes, a Yarvis window opens.
+The first run compiles the Tauri app and the server, which takes a few
+minutes. Later runs take seconds. When the build finishes, a Yarvis window
+opens.
+
+The frontend is built once per launch, so a change to `src/` needs a restart
+of `bun run tauri dev` to show up.
 
 If macOS asks whether Yarvis may use the Keychain, choose **Always Allow**. Dev
 builds aren't code-signed, so you may be asked for your login password

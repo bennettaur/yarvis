@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Builds yarvis-server in release mode for a release bundle.
+ * Builds yarvis-server for the release bundle.
  *
  * Tauri's `externalBin` expects the binary at
  * `src-tauri/binaries/yarvis-server-<target triple>` and bundles it beside the
@@ -49,6 +49,7 @@ if (import.meta.main) {
     ["build", "--release", "--locked", "--manifest-path", MANIFEST, "--target", triple],
     { stdio: "inherit" },
   );
+  // `status` is null when cargo couldn't be started at all.
   if (result.error) console.error(result.error);
   if (result.status !== 0) process.exit(result.status ?? 1);
   mkdirSync(OUT_DIR, { recursive: true });

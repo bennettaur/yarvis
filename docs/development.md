@@ -396,6 +396,10 @@ server with the `PATH` of your login shell (`src-tauri/src/login_path.rs`),
 since an app opened from Finder gets one without Homebrew or mise on it. The
 server passes that `PATH` on to the sidecar.
 
+`tauri.conf.json`'s `frontendDist` is `src-tauri/connect/`, the app's own
+connect page. The UI itself is built to `dist/` and served by the server, which
+is why a dev build runs `bun run build` first and has no hot reload.
+
 The nightly is ad-hoc code-signed but not notarized, so macOS blocks the first
 launch:
 
