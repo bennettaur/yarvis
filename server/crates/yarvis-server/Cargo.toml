@@ -8,14 +8,21 @@ rust-version.workspace = true
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 rand = "0.9"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tokio-tungstenite = "0.29"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "process", "io-util"] }
 toml = "0.9"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -23,8 +30,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 keyring = { version = "3", features = ["apple-native"] }
 
 [dev-dependencies]
-futures-util = "0.3"
-http-body-util = "0.1"
 tempfile = "3"
-tokio-tungstenite = "0.28"
-tower = { version = "0.5", features = ["util"] }

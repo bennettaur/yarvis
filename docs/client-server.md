@@ -371,10 +371,24 @@ Sidecar:
   (MCP servers, custom providers, agent and job definitions, settings) need
   `admin`. The proxy keeps that list. A path with `..` or an encoded slash is
   refused. The client's own `Authorization` and `X-Yarvis-Device-Id` headers
-  are dropped before the server adds its own.
+  are dropped before the server adds its own. `sidecarFetch("/api/status")`
+  becomes `/api/sidecar/api/status`: only `/health` and paths under `/api/`
+  are served.
 - Routes that local processes call on the sidecar with their own scoped
   tokens (Claude Code hooks posting to `/ingest/*`, the browser extension's
   host, the MCP endpoint) are not proxied. They stay on loopback.
+- A WebSocket on the proxy authenticates with its first message like every
+  other socket, and needs `chat`, since a socket can send as well as read.
+
+Core commands that changed on the way from `invoke`:
+
+- `set_secret_backend` can't change which kind of store is used: that is
+  `[secrets] backend` in `server.toml`, and a request naming another kind gets
+  `409`. On a 1Password server it switches the item, copying the secrets into
+  it as before. The first item a server is given is filled from the Keychain.
+- `get_sidecar_info` and `get_sidecar_log_path` are gone. Clients reach the
+  sidecar through the proxy, and the log is on the server's disk (the sidecar's
+  `/api/logs` serves its recent lines).
 
 ## Open questions
 
