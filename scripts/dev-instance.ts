@@ -4,9 +4,11 @@
  * can run beside the primary one.
  *
  * The name selects a bundle identifier, and Tauri derives the app data
- * directory and the single-instance socket from that — so the instance gets
- * its own `connection.json`, local yarvis-server (on a port of its own) and
- * Keychain device token without further work.
+ * directory and the single-instance socket from that, so the instance gets its
+ * own `connection.json`, local yarvis-server data and Keychain device token
+ * without further work. It also selects a Vite dev-server port, and with it the
+ * local server's port, since the default ones are taken by whatever is already
+ * running.
  *
  * The instance's own behaviour (which database it uses, whether it runs the
  * background workers or claims the global hotkeys) is decided by the env vars
@@ -19,9 +21,21 @@
  */
 
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 
 /** Identifier of the primary instance, from `tauri.conf.json`. */
 const BASE_IDENTIFIER = "com.mikebennett.yarvis";
+
+/**
+ * Dev-server ports available to named instances, starting above the primary's
+ * 1420. Allocated in pairs: `vite.config.ts` puts the HMR socket on `port + 1`
+ * when `TAURI_DEV_HOST` is set, so handing two instances adjacent ports would
+ * put one's HMR socket on the other's dev server.
+ */
+const PORT_RANGE_START = 1430;
+const PORT_RANGE_SIZE = 60;
+const PORTS_PER_INSTANCE = 2;
+const INSTANCE_SLOTS = PORT_RANGE_SIZE / PORTS_PER_INSTANCE;
 
 /**
  * Longest slug that still fits the single-instance guard. The plugin builds
@@ -48,6 +62,67 @@ export function slugify(name: string): string {
   return slug;
 }
 
+/**
+ * The port an instance prefers. Derived from its slug rather than assigned in
+ * order, so relaunching lands on the port it used last and a bookmarked dev URL
+ * keeps working. Taking the slug rather than the raw name keeps it agreeing with
+ * the identifier: two spellings that share an app data directory must not run on
+ * two different ports.
+ */
+export function devPortFor(slug: string): number {
+  // FNV-1a, for a spread that doesn't cluster on names sharing a prefix.
+  let hash = 0x811c9dc5;
+  for (const char of slug) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return PORT_RANGE_START + (hash % INSTANCE_SLOTS) * PORTS_PER_INSTANCE;
+}
+
+/**
+ * In a dev build the local yarvis-server listens this far above the Vite port,
+ * so Vite's `/api` proxy knows where it is before the app starts it. Matches
+ * `vite.config.ts` and `DEV_SERVER_PORT_OFFSET` in `src-tauri/src/instance.rs`.
+ */
+export const DEV_SERVER_PORT_OFFSET = 6000;
+
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => server.close(() => resolve(true)));
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+/**
+ * The port this run actually uses: the preferred one when its pair is free,
+ * otherwise the next free pair in the range. Vite runs with `strictPort`, so
+ * without this an unrelated service sitting on the derived port would stop the
+ * launch rather than move it. Both ports of the pair have to be free — the
+ * second is the HMR socket — and so does the local server's port above them.
+ */
+export async function resolveDevPort(
+  preferred: number,
+  isFree: (port: number) => Promise<boolean> = isPortFree,
+): Promise<number> {
+  const preferredSlot = Math.floor((preferred - PORT_RANGE_START) / PORTS_PER_INSTANCE);
+  for (let offset = 0; offset < INSTANCE_SLOTS; offset++) {
+    const slot = (preferredSlot + offset) % INSTANCE_SLOTS;
+    const port = PORT_RANGE_START + slot * PORTS_PER_INSTANCE;
+    if (
+      (await isFree(port)) &&
+      (await isFree(port + 1)) &&
+      (await isFree(port + DEV_SERVER_PORT_OFFSET))
+    ) {
+      return port;
+    }
+  }
+  throw new Error(
+    `no free port pair between ${PORT_RANGE_START} and ${PORT_RANGE_START + PORT_RANGE_SIZE - 1}`,
+  );
+}
+
 export function identifierFor(slug: string): string {
   return `${BASE_IDENTIFIER}.${slug}`;
 }
@@ -62,9 +137,14 @@ export function overrideConfig(slug: string): { identifier: string } {
   return { identifier: identifierFor(slug) };
 }
 
-/** What the child process is told about itself. */
-export function childEnv(name: string): Record<string, string> {
-  return { YARVIS_INSTANCE: name };
+/**
+ * What the child process is told about itself. Vite (started by `tauri dev`)
+ * and the app both read `YARVIS_DEV_PORT`: Vite serves on it and proxies `/api`
+ * to the server port above it, and the app starts the server there and loads
+ * the window from Vite.
+ */
+export function childEnv(name: string, port: number): Record<string, string> {
+  return { YARVIS_INSTANCE: name, YARVIS_DEV_PORT: String(port) };
 }
 
 async function main() {
@@ -78,9 +158,18 @@ async function main() {
     process.exit(1);
   }
 
-  const config = overrideConfig(slugify(name));
+  // Slugify before anything binds a socket, so an unusable name fails outright
+  // rather than after a port search.
+  const slug = slugify(name);
+  // An explicit port is taken as given — if it's occupied, saying so beats
+  // quietly serving somewhere the user didn't ask for.
+  const port = Number(process.env.YARVIS_DEV_PORT) || (await resolveDevPort(devPortFor(slug)));
+  const config = overrideConfig(slug);
 
-  console.log(`[dev-instance] "${name}" — identifier ${config.identifier}`);
+  console.log(
+    `[dev-instance] "${name}" — identifier ${config.identifier}, dev server on ${port}, ` +
+      `local yarvis-server on ${port + DEV_SERVER_PORT_OFFSET}`,
+  );
   console.log(
     process.env.YARVIS_DATABASE_URL
       ? "[dev-instance] using YARVIS_DATABASE_URL (isolated from the primary database)"
@@ -89,7 +178,7 @@ async function main() {
 
   const child = spawn("bun", ["run", "tauri", "dev", "--config", JSON.stringify(config)], {
     stdio: "inherit",
-    env: { ...process.env, ...childEnv(name) },
+    env: { ...process.env, ...childEnv(name, port) },
   });
 
   child.on("exit", (code, signal) => {

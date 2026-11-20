@@ -5,8 +5,8 @@
   "identifier": "com.mikebennett.yarvis",
   "build": {
     "beforeDevCommand": {
-      "script": "bun run build && cargo build --manifest-path server/Cargo.toml",
-      "wait": true
+      "script": "cargo build --manifest-path server/Cargo.toml && bun run dev",
+      "wait": false
     },
     "frontendDist": "connect"
   },

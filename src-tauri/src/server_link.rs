@@ -67,7 +67,10 @@ pub enum Status {
 
 /// The server the window is using and the token it signs in with.
 struct ServerSession {
-    origin: String,
+    /// Where the window loads the UI from, and the only origin given the
+    /// bridge: the server itself, or in a dev build the Vite dev server that
+    /// proxies `/api` to it.
+    page_origin: String,
     token: String,
     /// Started by this app on loopback, rather than a remote server.
     local: bool,
@@ -140,7 +143,7 @@ async fn connect_and_open(app: &AppHandle) -> Status {
     if let Err(message) = open(app, &session) {
         return Status::Failed { message };
     }
-    let origin = session.origin.clone();
+    let origin = session.page_origin.clone();
     *lock(&app.state::<ServerLink>().session) = Some(session);
     Status::Connected { origin }
 }
@@ -174,7 +177,7 @@ async fn connect(app: &AppHandle) -> Result<Option<ServerSession>, String> {
             };
             let token = stored_token(identifier(app), origin.clone()).await?;
             Ok(token.map(|token| ServerSession {
-                origin,
+                page_origin: origin,
                 token,
                 local: false,
             }))
@@ -199,15 +202,7 @@ async fn start_local(
         ));
     }
 
-    // Another process could take the port before the server binds it; the
-    // health wait then reports a failed start.
-    let previous_port = config.local_port;
-    let port = local_server::pick_port(previous_port)
-        .map_err(|e| format!("couldn't find a free port: {e}"))?;
-    if previous_port != Some(port) {
-        config.local_port = Some(port);
-        connection::save(&connection::config_path(data_dir), &config)?;
-    }
+    let (port, previous_port) = local_port(data_dir, &mut config).await?;
     let server_toml = write_server_config(data_dir, port, previous_port, &paths)?;
 
     let log = app.path().app_log_dir().ok().and_then(|dir| {
@@ -238,10 +233,75 @@ async fn start_local(
     })
     .await?;
     Ok(ServerSession {
-        origin: local_server::origin(port),
+        page_origin: local_page_origin(port),
         token,
         local: true,
     })
+}
+
+/// The port for the local server, and the one it had last run (whose origins
+/// `render_server_config` drops). The last port is reused when it is still
+/// free, so a browser tab on this Mac keeps working.
+#[cfg(not(debug_assertions))]
+async fn local_port(
+    data_dir: &Path,
+    config: &mut ConnectionConfig,
+) -> Result<(u16, Option<u16>), String> {
+    // Another process could take the port before the server binds it; the
+    // health wait then reports a failed start.
+    let previous_port = config.local_port;
+    let port = local_server::pick_port(previous_port)
+        .map_err(|e| format!("couldn't find a free port: {e}"))?;
+    if previous_port != Some(port) {
+        config.local_port = Some(port);
+        connection::save(&connection::config_path(data_dir), config)?;
+    }
+    Ok((port, previous_port))
+}
+
+/// A dev build's server port is fixed above the Vite port, because Vite's
+/// `/api` proxy is set up before the app starts. `tauri dev` starts Vite only
+/// after `server/` has built, so waiting for Vite also waits for the binary.
+/// Nothing is saved: a dev build shares `connection.json` with an installed
+/// app of the same identifier.
+#[cfg(debug_assertions)]
+async fn local_port(
+    _data_dir: &Path,
+    _config: &mut ConnectionConfig,
+) -> Result<(u16, Option<u16>), String> {
+    let vite = crate::instance::dev_port();
+    let port = crate::instance::dev_server_port()
+        .ok_or_else(|| format!("YARVIS_DEV_PORT {vite} leaves no room for the server's port"))?;
+    eprintln!("[server] waiting for the Vite dev server on {vite} (it starts once server/ builds)");
+    local_server::wait_for_port(vite, VITE_TIMEOUT).await?;
+    if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+        return Err(format!(
+            "port {port} is taken; another dev build of Yarvis may still be running"
+        ));
+    }
+    Ok((port, None))
+}
+
+/// The first `tauri dev` compiles `server/` before Vite starts.
+#[cfg(debug_assertions)]
+const VITE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// Where the window loads the UI for a local server on `port`.
+#[cfg(not(debug_assertions))]
+fn local_page_origin(port: u16) -> String {
+    local_server::origin(port)
+}
+
+/// A dev build loads Vite, for hot reload, and Vite proxies `/api` to the
+/// server.
+#[cfg(debug_assertions)]
+fn local_page_origin(_port: u16) -> String {
+    dev_ui_origin()
+}
+
+#[cfg(debug_assertions)]
+fn dev_ui_origin() -> String {
+    format!("http://localhost:{}", crate::instance::dev_port())
 }
 
 /// Merges the app's keys into `server.toml` and returns its path.
@@ -257,13 +317,21 @@ fn write_server_config(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(format!("couldn't read {}: {e}", server_toml.display())),
     };
+    #[cfg(debug_assertions)]
+    let dev_ui_origin = Some(dev_ui_origin());
+    #[cfg(not(debug_assertions))]
+    let dev_ui_origin: Option<String> = None;
+    let agent_socket = local_server::onepassword_agent_socket();
     let rendered = local_server::render_server_config(
         &existing,
-        port,
-        &data_dir.join("server"),
-        previous_port,
-        paths,
-        local_server::onepassword_agent_socket().as_deref(),
+        &local_server::ServerConfigInputs {
+            port,
+            previous_port,
+            default_data_dir: &data_dir.join("server"),
+            paths,
+            agent_socket: agent_socket.as_deref(),
+            dev_ui_origin: dev_ui_origin.as_deref(),
+        },
     )?;
     std::fs::write(&server_toml, rendered)
         .map_err(|e| format!("couldn't write {}: {e}", server_toml.display()))?;
@@ -303,15 +371,15 @@ async fn server_path() -> Option<String> {
 
 /// Lets the server's origin call the bridge commands, then loads it.
 fn open(app: &AppHandle, session: &ServerSession) -> Result<(), String> {
-    let url = Url::parse(&session.origin).map_err(|e| format!("bad server URL: {e}"))?;
-    app.add_capability(bridge_capability(&session.origin, session.local))
+    let url = Url::parse(&session.page_origin).map_err(|e| format!("bad server URL: {e}"))?;
+    app.add_capability(bridge_capability(&session.page_origin, session.local))
         .map_err(|e| format!("couldn't grant the server's page the bridge: {e}"))?;
     let window = app
         .get_webview_window("main")
         .ok_or("the main window is missing")?;
     window
         .navigate(url)
-        .map_err(|e| format!("couldn't load {}: {e}", session.origin))
+        .map_err(|e| format!("couldn't load {}: {e}", session.page_origin))
 }
 
 fn bridge_capability(origin: &str, local_server: bool) -> CapabilityBuilder {
@@ -454,7 +522,7 @@ pub async fn save_connection_settings(
 pub fn open_server(app: AppHandle, link: tauri::State<'_, ServerLink>) -> Result<(), String> {
     let origin = lock(&link.session)
         .as_ref()
-        .map(|s| s.origin.clone())
+        .map(|s| s.page_origin.clone())
         .ok_or("not connected to a server")?;
     let url = Url::parse(&origin).map_err(|e| e.to_string())?;
     app.get_webview_window("main")

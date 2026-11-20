@@ -79,8 +79,9 @@ Run from the repo root unless noted.
 ```bash
 bun install                      # install deps (root + sidecar workspace)
 
-bun run tauri dev                # full app: builds the frontend and server/,
-                                  #   then the Tauri app starts the server
+bun run tauri dev                # full app: builds server/, starts Vite
+                                  #   (hot reload; it proxies /api to the
+                                  #   server), then the app starts the server
 bun run tauri:build              # release bundle, with the server and the
                                   #   compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
