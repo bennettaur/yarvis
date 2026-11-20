@@ -38,6 +38,10 @@ async fn main() {
         eprintln!("{e}");
         std::process::exit(1);
     });
+    #[cfg(unix)]
+    if let Err(e) = yarvis_server::pty::process::raise_fd_limit() {
+        tracing::warn!("couldn't raise the file descriptor limit: {e}");
+    }
     let bind = config.server.bind;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -46,6 +50,15 @@ async fn main() {
             std::process::exit(1);
         });
     let state = AppState::new(config, store);
+    // Before the sidecar starts, since it gets the path as `YARVIS_CORE_SOCK`.
+    #[cfg(unix)]
+    match yarvis_server::control::start(state.clone()).await {
+        Ok(path) => state
+            .sidecar
+            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy()),
+        Err(e) => tracing::error!("the control socket isn't available: {e}"),
+    }
+    let pty = state.pty.clone();
     let supervisor = start_core(&state).await;
     tracing::info!("listening on http://{bind}");
     let server = axum::serve(listener, app(state))
@@ -66,6 +79,7 @@ async fn main() {
         supervisor.abort();
         let _ = supervisor.await;
     }
+    pty.kill_all();
 }
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
