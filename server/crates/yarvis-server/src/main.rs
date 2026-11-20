@@ -2,7 +2,9 @@ use std::future::IntoFuture;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
-use yarvis_server::config::Config;
+use yarvis_server::config::{Config, SecretBackendKind};
+use yarvis_server::secret_blob::Store as SecretStore;
+use yarvis_server::sidecar::SupervisorDeps;
 use yarvis_server::store::Store;
 use yarvis_server::{AppState, app};
 
@@ -25,6 +27,13 @@ async fn main() {
         eprintln!("{e}");
         std::process::exit(1);
     });
+    if config.secrets.backend == Some(SecretBackendKind::Vault) {
+        eprintln!(
+            "the vault backend isn't built yet; set [secrets] backend to \"keychain\" or \"onepassword\" in {}",
+            config_path.display()
+        );
+        std::process::exit(1);
+    }
     let store = Store::open(&config.server.data_dir.join("server.db")).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
@@ -36,8 +45,10 @@ async fn main() {
             eprintln!("couldn't listen on {bind}: {e}");
             std::process::exit(1);
         });
+    let state = AppState::new(config, store);
+    let supervisor = start_core(&state).await;
     tracing::info!("listening on http://{bind}");
-    let server = axum::serve(listener, app(AppState::new(config, store)))
+    let server = axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .into_future();
     // Graceful shutdown waits for every connection, and event and PTY
@@ -48,6 +59,12 @@ async fn main() {
             shutdown_signal().await;
             tokio::time::sleep(SHUTDOWN_GRACE).await;
         } => tracing::info!("open connections didn't close in time; exiting"),
+    }
+    // Dropping the supervisor kills the sidecar (`kill_on_drop`), so it never
+    // outlives the server.
+    if let Some(supervisor) = supervisor {
+        supervisor.abort();
+        let _ = supervisor.await;
     }
 }
 
@@ -85,4 +102,38 @@ fn default_config_path() -> PathBuf {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".yarvis").join("server.toml"))
         .unwrap_or_else(|| PathBuf::from("server.toml"))
+}
+
+/// Settings and secrets housekeeping, then the sidecar. Returns the
+/// supervisor's task, if the sidecar runs.
+async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
+    state.settings.ensure_dir();
+    // Both migrations move values a past desktop build wrote to the Keychain,
+    // so they run unless server.toml picked another store for this server.
+    if matches!(
+        state.config.secrets.backend,
+        None | Some(SecretBackendKind::Keychain)
+    ) {
+        let (settings, secrets) = (state.settings.clone(), state.secrets.clone());
+        let migrated = tokio::task::spawn_blocking(move || {
+            let keychain = SecretStore::keychain();
+            settings.migrate_keychain_settings(&secrets, &keychain);
+            yarvis_server::embeddings_secrets::migrate_legacy_item(&secrets, &keychain);
+        })
+        .await;
+        if let Err(e) = migrated {
+            tracing::error!("the Keychain migrations panicked: {e}");
+        }
+    }
+    if !state.config.sidecar.enabled {
+        tracing::info!("sidecar.enabled is false; not starting the sidecar");
+        return None;
+    }
+    let deps = SupervisorDeps {
+        config: state.config.clone(),
+        settings: state.settings.clone(),
+        secrets: state.secrets.clone(),
+        events: state.events.clone(),
+    };
+    Some(tokio::spawn(state.sidecar.clone().supervise(deps)))
 }
